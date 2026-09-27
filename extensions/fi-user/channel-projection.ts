@@ -15,8 +15,10 @@ import {
   nextMaintenanceLane,
   type ProjectionMaintenanceLane,
   RECONCILE_BATCH_SIZE,
+  RECONCILE_BACKLOG_DELAY_MS,
   RECONCILE_FULL_REFRESH_BUDGET,
   RECONCILE_HISTORY_BATCH_SIZE,
+  RECONCILE_IDLE_DELAY_MS,
   takeSweepBatch,
 } from "./reconciliation-batch.js";
 
@@ -46,6 +48,39 @@ type SlackThreadReader = {
 type SlackChannelScope = Omit<SlackSnapshot, "rootMessageId" | "messages"> & {
   readThread: (rootMessageId: string) => Promise<SlackSnapshot>;
 };
+
+export function isMissingSlackThread(error: unknown): boolean {
+  const seen = new Set<unknown>();
+  let current: unknown = error;
+  while (current && !seen.has(current)) {
+    seen.add(current);
+    if (typeof current === "string") {
+      return /\bthread_not_found\b/i.test(current);
+    }
+    if (typeof current !== "object") {
+      return false;
+    }
+    const value = current as {
+      message?: unknown;
+      error?: unknown;
+      data?: { error?: unknown };
+      response?: { data?: { error?: unknown } };
+      cause?: unknown;
+    };
+    for (const candidate of [
+      value.message,
+      value.error,
+      value.data?.error,
+      value.response?.data?.error,
+    ]) {
+      if (typeof candidate === "string" && /\bthread_not_found\b/i.test(candidate)) {
+        return true;
+      }
+    }
+    current = value.cause;
+  }
+  return false;
+}
 
 export type ChannelProjectionParams = {
   api: OpenClawPluginApi;
@@ -277,6 +312,7 @@ export function registerSlackProjectionReconciler(
   let maintenanceLane: ProjectionMaintenanceLane = "channel";
   let channelWorkKind: "acl" | "history" = "acl";
   let detachedWorkKind: "acl" | "history" = "acl";
+  let lastDriftAt = 0;
   let discoveryCursor = "";
   const bindingSweepSeen = new Set<string>();
   const directSweepSeen = new Set<string>();
@@ -549,7 +585,11 @@ export function registerSlackProjectionReconciler(
           });
         } catch (error) {
           if (identity) {
-            outcomes.set(identity, "error");
+            // A deleted Slack root is terminal for this durable source. Keep
+            // the session available for explicit operator archival, but do
+            // not spend a maintenance slot retrying it forever. A restart
+            // probes once again, so restoring the Slack source self-heals.
+            outcomes.set(identity, isMissingSlackThread(error) ? "skipped" : "error");
           }
           if (roomId && !enteredPublisher) {
             await projectSlackChannelThread({
@@ -620,29 +660,34 @@ export function registerSlackProjectionReconciler(
           directPrioritySessionKey,
         );
       }
-      // Drift pass, every tick and independent of the lane rotation.
-      driftReport =
-        (await runProjectionDriftPass({
-          api,
-          drift,
-          inventory,
-          bindings,
-          budget: fullRefreshesPerTick ?? RECONCILE_FULL_REFRESH_BUDGET,
-          configured: configuredBindings,
-          active: () => !stopped && controller === generation,
-          channelAccount: (agentId, channelId, sessionKey) => {
-            const entry = getSessionEntry({ agentId, sessionKey, readConsistency: "latest" });
-            const stored = sessionDeliveryOrigin(entry)?.accountId;
-            return entry && resolveAccount(agentId, channelId, sessionKey, stored);
-          },
-          publish: (params) =>
-            projectSlackChannelThread({
-              ...params,
-              ...config,
-              token: config.token ?? "",
-              signal: AbortSignal.any([generation.signal, AbortSignal.timeout(90_000)]),
-            }),
-        })) ?? driftReport;
+      // During a historical drain, passes run every second. Keep the expensive
+      // all-room drift inventory on its normal minute cadence; live activity
+      // still enters through its immediate hook above.
+      if (lastDriftAt === 0 || Date.now() - lastDriftAt >= RECONCILE_IDLE_DELAY_MS) {
+        driftReport =
+          (await runProjectionDriftPass({
+            api,
+            drift,
+            inventory,
+            bindings,
+            budget: fullRefreshesPerTick ?? RECONCILE_FULL_REFRESH_BUDGET,
+            configured: configuredBindings,
+            active: () => !stopped && controller === generation,
+            channelAccount: (agentId, channelId, sessionKey) => {
+              const entry = getSessionEntry({ agentId, sessionKey, readConsistency: "latest" });
+              const stored = sessionDeliveryOrigin(entry)?.accountId;
+              return entry && resolveAccount(agentId, channelId, sessionKey, stored);
+            },
+            publish: (params) =>
+              projectSlackChannelThread({
+                ...params,
+                ...config,
+                token: config.token ?? "",
+                signal: AbortSignal.any([generation.signal, AbortSignal.timeout(90_000)]),
+              }),
+          })) ?? driftReport;
+        lastDriftAt = Date.now();
+      }
       maintenanceLane = wakeRequested ? maintenanceLane : nextMaintenanceLane(maintenanceLane);
       report = {
         scanned: candidates.size,
@@ -668,7 +713,9 @@ export function registerSlackProjectionReconciler(
     } finally {
       running = false;
       if (!stopped && controller === generation) {
-        timer = setTimeout(() => void reconcile(), wakeRequested ? 1_000 : 60_000);
+        const delay =
+          wakeRequested || !report.complete ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
+        timer = setTimeout(() => void reconcile(), delay);
         wakeRequested = false;
         timer.unref();
       }
@@ -688,6 +735,7 @@ export function registerSlackProjectionReconciler(
       maintenanceLane = "channel";
       channelWorkKind = "acl";
       detachedWorkKind = "acl";
+      lastDriftAt = 0;
       bindingSweepSeen.clear();
       directSweepSeen.clear();
       controller = new AbortController();

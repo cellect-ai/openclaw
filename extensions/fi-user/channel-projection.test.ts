@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerSlackChannelProjection } from "./channel-projection-registration.js";
 import {
+  isMissingSlackThread,
   projectSlackChannelThread,
   registerSlackProjectionReconciler,
 } from "./channel-projection.js";
@@ -31,6 +32,15 @@ describe("Fi Slack channel publisher", () => {
     vi.useRealTimers();
     discovery.list.mockReset().mockReturnValue([]);
     discovery.entry.mockReset();
+  });
+  it("recognizes only Slack's terminal missing-thread error across SDK wrappers", () => {
+    expect(isMissingSlackThread(new Error("Slack API failed: thread_not_found"))).toBe(true);
+    expect(isMissingSlackThread({ data: { error: "thread_not_found" } })).toBe(true);
+    expect(
+      isMissingSlackThread({ cause: { response: { data: { error: "THREAD_NOT_FOUND" } } } }),
+    ).toBe(true);
+    expect(isMissingSlackThread(new Error("Slack API failed: ratelimited"))).toBe(false);
+    expect(isMissingSlackThread({ data: { error: "channel_not_found" } })).toBe(false);
   });
   it.each([false, true, "mention" as const])(
     "requires native parent identity and actual bot participation for detached roots (%s)",

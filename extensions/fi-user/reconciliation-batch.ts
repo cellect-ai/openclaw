@@ -14,6 +14,14 @@ export const RECONCILE_HISTORY_BATCH_SIZE = 1;
 /** Default full-snapshot refreshes of drifted bound rooms per reconciler tick. */
 export const RECONCILE_FULL_REFRESH_BUDGET = 1;
 
+// Backlog recovery remains globally serialized: a reconciliation pass admits
+// at most one maintenance item from one lane.  While durable work remains we
+// schedule the next pass promptly instead of sleeping a full minute between
+// items.  The network operation itself must settle before this delay starts,
+// so this cannot create concurrent Slack/Fi repair bursts.
+export const RECONCILE_BACKLOG_DELAY_MS = 1_000;
+export const RECONCILE_IDLE_DELAY_MS = 60_000;
+
 export type ProjectionMaintenanceLane = "channel" | "detached" | "direct";
 
 export function nextMaintenanceLane(lane: ProjectionMaintenanceLane): ProjectionMaintenanceLane {
