@@ -472,12 +472,39 @@ export function registerSlackProjectionReconciler(
         .filter((binding) => CHANNEL_SESSION.test(binding.sessionKey))
         .map((binding) => binding.sessionKey)
         .toSorted();
+      const unseenBindingKeys = bindingKeys.filter((sessionKey) => {
+        const [, agentId, channelId] = CHANNEL_SESSION.exec(sessionKey) ?? [];
+        if (!agentId || !channelId) {
+          return false;
+        }
+        const accountId = resolveAccount(agentId, channelId, sessionKey);
+        const identity = accountId && rootIdentity(sessionKey, accountId);
+        return Boolean(identity && !outcomes.has(identity));
+      });
+      const directPending = Math.max(
+        0,
+        directReport.scanned -
+          directReport.created -
+          directReport.existing -
+          directReport.skipped -
+          directReport.error,
+      );
+      // Once this lane has classified all bindings, let the other recovery
+      // lanes drain before rotating completed ACL checks. Transient channel
+      // errors are retried on the normal idle cadence after the global
+      // backlog settles rather than consuming every fast recovery cycle.
+      const bindingSweepKeys =
+        unseenBindingKeys.length > 0
+          ? unseenBindingKeys
+          : detachedReport.pending > 0 || directPending > 0
+            ? []
+            : bindingKeys;
       const priority = prioritySessionKey
         ? bindings.find((binding) => binding.sessionKey === prioritySessionKey)
         : undefined;
       const bindingBatch =
         maintenanceLane === "channel" && !priority
-          ? takeSweepBatch(bindingKeys, bindingSweepSeen, RECONCILE_BATCH_SIZE)
+          ? takeSweepBatch(bindingSweepKeys, bindingSweepSeen, RECONCILE_BATCH_SIZE)
           : new Set<string>();
       const channelScopes = new Map<
         string,
@@ -713,8 +740,20 @@ export function registerSlackProjectionReconciler(
     } finally {
       running = false;
       if (!stopped && controller === generation) {
+        const directPending = Math.max(
+          0,
+          directReport.scanned -
+            directReport.created -
+            directReport.existing -
+            directReport.skipped -
+            directReport.error,
+        );
+        const actionablePending =
+          report.pending > report.unavailable ||
+          report.historyDiscoveryPending > 0 ||
+          directPending > 0;
         const delay =
-          wakeRequested || !report.complete ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
+          wakeRequested || actionablePending ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
         timer = setTimeout(() => void reconcile(), delay);
         wakeRequested = false;
         timer.unref();
