@@ -20,6 +20,7 @@ export type MatrixThreadBindingRecord = {
   externalSource?: ProjectionExternalSource;
   sourceReplyAuthorization?: string;
   sourceAccountId?: string;
+  sourceActorId?: string;
   environment?: string;
   projectedConversationId?: string;
   sourceSnapshotDigest?: string;
@@ -136,6 +137,7 @@ export function toSessionBindingRecord(
       externalSource: record.externalSource,
       sourceReplyAuthorization: record.sourceReplyAuthorization,
       sourceAccountId: record.sourceAccountId,
+      sourceActorId: record.sourceActorId,
       environment: record.environment,
       projectedConversationId: record.projectedConversationId,
       sourceSnapshotDigest: record.sourceSnapshotDigest,

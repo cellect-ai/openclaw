@@ -9,6 +9,7 @@ export function parseProjectionBindingMetadata(value: Record<string, unknown> | 
     externalSource: parseProjectionExternalSource(value?.externalSource),
     sourceReplyAuthorization: normalizeOptionalString(value?.sourceReplyAuthorization) || undefined,
     sourceAccountId: normalizeOptionalString(value?.sourceAccountId) || undefined,
+    sourceActorId: normalizeOptionalString(value?.sourceActorId) || undefined,
     environment: normalizeOptionalString(value?.environment) || undefined,
     projectedConversationId: normalizeOptionalString(value?.projectedConversationId) || undefined,
     sourceSnapshotDigest:
