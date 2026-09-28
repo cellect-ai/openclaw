@@ -1,6 +1,7 @@
 // Session binding service multiplexes channel adapters and the generic current
 // conversation store behind one bind/list/resolve/touch/unbind API.
 import { uniqueValues } from "@openclaw/normalization-core/string-normalization";
+import { wrapCurrentPluginInstance } from "../../plugins/plugin-instance-scope.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import {
   testing as genericCurrentConversationBindingTesting,
@@ -144,11 +145,15 @@ const ADAPTERS_BY_CHANNEL_ACCOUNT = resolveGlobalMap<string, SessionBindingAdapt
 );
 
 export function registerSessionBindingAdapter(adapter: SessionBindingAdapter): void {
+  // Adapters are invoked later by host-owned lifecycle paths (notably
+  // sessions.delete). Preserve the registering plugin instance so runtime
+  // stores and replacement fencing remain available outside registration.
+  const ownedAdapter = wrapCurrentPluginInstance(adapter);
   const normalizedAdapter: NativeCapableSessionBindingAdapter = {
-    ...adapter,
+    ...ownedAdapter,
     ...normalizeConversationRef({
-      channel: adapter.channel,
-      accountId: adapter.accountId,
+      channel: ownedAdapter.channel,
+      accountId: ownedAdapter.accountId,
       conversationId: "unused",
     }),
   };
