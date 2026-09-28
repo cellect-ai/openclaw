@@ -175,6 +175,11 @@ async function projectToMatrix(params: {
         return;
       }
       const sourceMessageId = clean(params.messageId) || clean(params.runId);
+      const sourceActorId =
+        clean(params.senderId) ||
+        (sourceChannel === "webchat" && params.role === "user"
+          ? clean(binding.metadata?.sourceActorId)
+          : "");
       const originalTime =
         params.publishedAtMs ??
         (sourceChannel === "slack" && /^\d+\.\d+$/.test(params.messageId ?? "")
@@ -191,7 +196,7 @@ async function projectToMatrix(params: {
           )
         : originalTime !== undefined &&
             sourceMessageId &&
-            params.senderId &&
+            sourceActorId &&
             typeof binding.metadata?.environment === "string" &&
             typeof binding.metadata?.projectedConversationId === "string"
           ? createMatrixSourcePublication({
@@ -201,7 +206,7 @@ async function projectToMatrix(params: {
               provider: sourceChannel,
               accountId: binding.conversation.accountId,
               messageId: sourceMessageId,
-              actorId: params.senderId,
+              actorId: sourceActorId,
               publishedAtMs: originalTime,
               role: params.role,
             })
@@ -515,6 +520,7 @@ export async function createMatrixSessionProjection(params: {
   roomId: string;
   environment?: string;
   conversationId?: string;
+  sourceActorId?: string;
   accountId?: string;
   label?: string;
   readOnly?: boolean;
@@ -665,6 +671,27 @@ export async function createMatrixSessionProjection(params: {
           });
         }
       }
+      if (existing && params.sourceActorId) {
+        if (
+          existing.metadata?.sourceActorId &&
+          existing.metadata.sourceActorId !== params.sourceActorId
+        ) {
+          throw new ProjectionError("ownership_changed", "Projection source actor cannot change");
+        }
+        if (!existing.metadata?.sourceActorId) {
+          existing = await bindingService.bind({
+            targetSessionKey,
+            targetKind: "session",
+            placement: "current",
+            conversation: existing.conversation,
+            metadata: {
+              ...existing.metadata,
+              sourceActorId: params.sourceActorId,
+              introText: false,
+            },
+          });
+        }
+      }
       if (existing) {
         if (
           params.sourceDetached &&
@@ -761,6 +788,7 @@ export async function createMatrixSessionProjection(params: {
           agentId,
           label,
           ...(environment ? { environment, projectedConversationId: conversationId } : {}),
+          ...(params.sourceActorId ? { sourceActorId: params.sourceActorId } : {}),
           externalSource: params.sourceDetached ? externalSource : undefined,
           ...(authorizedSource
             ? {
@@ -839,6 +867,7 @@ export async function handleMatrixSessionProjectionCreate(
       roomId: clean(params?.roomId),
       environment: clean(params?.environment) || undefined,
       conversationId: clean(params?.conversationId) || undefined,
+      sourceActorId: clean(params?.sourceActorId) || undefined,
       accountId: clean(params?.accountId) || undefined,
       label: clean(params?.label) || undefined,
       readOnly: params?.readOnly === true,

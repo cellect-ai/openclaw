@@ -146,6 +146,7 @@ describe("Matrix session projection", () => {
         targetSessionKey: sessionKey,
         roomId: "!room",
         label: "Slack invoice thread",
+        sourceActorId: "user-123",
       }),
     ).resolves.toEqual({
       status: "created",
@@ -173,6 +174,7 @@ describe("Matrix session projection", () => {
         metadata: expect.objectContaining({
           boundBy: MATRIX_SESSION_PROJECTION_BOUND_BY,
           label: "Slack invoice thread",
+          sourceActorId: "user-123",
           idleTimeoutMs: 0,
           maxAgeMs: 0,
         }),
@@ -338,6 +340,52 @@ describe("Matrix session projection", () => {
     await expect(
       createMatrixSessionProjection({ cfg, targetSessionKey: sessionKey, roomId: "!room" }),
     ).resolves.toMatchObject({ status: "existing", threadRootEventId: "$root" });
+    expect(mocks.bind).not.toHaveBeenCalled();
+  });
+
+  it("adds an authenticated source actor to an existing projection without replaying it", async () => {
+    mocks.listBySession.mockReturnValue([projectionBinding]);
+    mocks.bind.mockImplementation(async (input) => ({
+      ...projectionBinding,
+      metadata: input.metadata,
+    }));
+
+    await expect(
+      createMatrixSessionProjection({
+        cfg,
+        targetSessionKey: sessionKey,
+        roomId: "!room",
+        sourceActorId: "user-123",
+      }),
+    ).resolves.toMatchObject({ status: "existing", threadRootEventId: "$root" });
+    expect(mocks.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placement: "current",
+        metadata: expect.objectContaining({
+          sourceActorId: "user-123",
+          introText: false,
+        }),
+      }),
+    );
+    expect(mocks.sendMessageMatrix).not.toHaveBeenCalled();
+  });
+
+  it("refuses to replace an existing projection's authenticated source actor", async () => {
+    mocks.listBySession.mockReturnValue([
+      {
+        ...projectionBinding,
+        metadata: { ...projectionBinding.metadata, sourceActorId: "user-123" },
+      },
+    ]);
+
+    await expect(
+      createMatrixSessionProjection({
+        cfg,
+        targetSessionKey: sessionKey,
+        roomId: "!room",
+        sourceActorId: "different-user",
+      }),
+    ).rejects.toThrow("source actor cannot change");
     expect(mocks.bind).not.toHaveBeenCalled();
   });
   it("adopts a checkpoint without replaying an existing projection", async () => {
@@ -633,6 +681,40 @@ describe("Matrix session projection", () => {
       }),
     );
     expect(mocks.touch).toHaveBeenCalledWith(projectionBinding.bindingId);
+  });
+
+  it("uses the binding's authenticated actor for native chat hooks that omit sender identity", async () => {
+    const browserBinding = {
+      ...projectionBinding,
+      metadata: { ...projectionBinding.metadata, sourceActorId: "fi-user-123" },
+    };
+    mocks.listBySession.mockReturnValue([browserBinding]);
+    mocks.resolveByConversation.mockReturnValue(browserBinding);
+
+    await handleMatrixSessionProjectionMessageReceived(
+      {
+        content: "Continue this OpenClaw conversation",
+        runId: "native-chat-run-2",
+        sessionKey,
+      },
+      { channelId: "webchat", sessionKey, runId: "native-chat-run-2" },
+      cfg,
+    );
+
+    expect(mocks.sendMessageMatrix).toHaveBeenCalledWith(
+      "room:!room",
+      "**OpenClaw · User**\nContinue this OpenClaw conversation",
+      expect.objectContaining({
+        publication: expect.objectContaining({
+          role: "user",
+          origin: expect.objectContaining({
+            provider: "webchat",
+            messageId: "native-chat-run-2",
+            actorId: "fi-user-123",
+          }),
+        }),
+      }),
+    );
   });
 
   it("projects only final visible assistant answers", async () => {
