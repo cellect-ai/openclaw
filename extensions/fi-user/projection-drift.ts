@@ -13,8 +13,8 @@ import {
 //
 // Planning a room is a read-only dry run against Matrix, so it can cover many
 // rooms per tick. Only a full refresh reads Slack, so refreshes stay at the
-// configured per-tick budget and back off when a refresh does not converge
-// the room.
+// configured per-tick budget. A Matrix-only plan cannot detect missing Slack
+// messages, so even clean rooms rotate through complete source checks.
 
 /** Every bound room is planned at least once per this many ticks. */
 export const DRIFT_ROTATION_TICKS = 30;
@@ -30,6 +30,8 @@ export const DRIFT_ACTIVITY_SETTLE_MS = 60_000;
 export const DRIFT_SUSPECT_REPLAN_MS = 15 * 60_000;
 /** A refreshed room is planned again this soon, to confirm it converged. */
 export const DRIFT_REFRESH_CONFIRM_MS = 2 * 60_000;
+/** Healthy rooms periodically check Slack for missed delivery, edits and deletion. */
+export const DRIFT_SOURCE_CHECK_MS = 30 * 60_000;
 /** Delay before the next refresh of a room that is still drifted. */
 export const DRIFT_REFRESH_BACKOFF_MS = [
   60 * 60_000,
@@ -56,9 +58,10 @@ type RoomState = {
   /** When a room that is not clean is planned again ahead of the rotation. */
   replanAt: number;
   verdict: "converged" | "drifted" | "unread" | "invariant" | "failed";
-  driftSince?: number;
   refreshAttempts: number;
   refreshAfter: number;
+  /** Source attempts are independent of Matrix-only structural plans. */
+  refreshedAt: number;
   /** When Fi last declined a refresh of this room. */
   declinedAt?: number;
 };
@@ -66,7 +69,6 @@ type RoomState = {
 export function createProjectionDriftScheduler(now: () => number = Date.now) {
   const rooms = new Map<string, RoomState>();
   const activity = new Map<string, number>();
-  let tickStartedAt = 0;
   const activityAt = (room: { roomId: string; sessionKey: string }) =>
     Math.max(activity.get(room.roomId) ?? 0, activity.get(room.sessionKey) ?? 0);
   return {
@@ -79,7 +81,6 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
     /** Rooms to plan this tick: active and suspect rooms first, then the rotation. */
     selectPlans(bound: ReadonlyArray<{ roomId: string; sessionKey: string }>): string[] {
       const at = now();
-      tickStartedAt = at;
       const current = new Set(bound.map((room) => room.roomId));
       for (const roomId of rooms.keys()) {
         if (!current.has(roomId)) {
@@ -107,9 +108,10 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
           at >= state.replanAt
         ) {
           priority.push({ roomId: room.roomId, tier: 1, rank: state.replanAt });
-        } else {
-          rotation.push({ roomId: room.roomId, plannedAt });
         }
+        // Priority candidates still participate in the fair rotation if they
+        // do not get a priority slot; sustained activity cannot starve a room.
+        rotation.push({ roomId: room.roomId, plannedAt });
       }
       priority.sort(
         (a, b) => a.tier - b.tier || a.rank - b.rank || a.roomId.localeCompare(b.roomId),
@@ -121,23 +123,29 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
         Math.max(DRIFT_MIN_ROTATION_PLANS, Math.ceil(bound.length / DRIFT_ROTATION_TICKS)),
       );
       const first = priority.slice(0, DRIFT_PRIORITY_PLANS).map((room) => room.roomId);
-      const rotated = rotation.slice(0, rotationSlots).map((room) => room.roomId);
-      // Unused rotation slots serve the remaining priority rooms.
-      const spare = priority
-        .slice(DRIFT_PRIORITY_PLANS, DRIFT_PRIORITY_PLANS + rotationSlots - rotated.length)
+      const selected = new Set(first);
+      const rotated = rotation
+        .filter((room) => !selected.has(room.roomId))
+        .slice(0, rotationSlots)
         .map((room) => room.roomId);
-      return [...first, ...rotated, ...spare];
+      return [...first, ...rotated];
     },
     recordPlan(roomId: string, verdict: DriftPlanVerdict | undefined) {
       const at = now();
       const previous = rooms.get(roomId);
+      const source = {
+        refreshAttempts: previous?.refreshAttempts ?? 0,
+        refreshAfter: previous?.refreshAfter ?? 0,
+        refreshedAt: previous?.refreshedAt ?? 0,
+        declinedAt: previous?.declinedAt,
+      };
+      // Structural convergence is not evidence that Slack history was read.
       if (verdict?.converged && verdict.invariantsOk) {
         rooms.set(roomId, {
           plannedAt: at,
           replanAt: Number.POSITIVE_INFINITY,
           verdict: "converged",
-          refreshAttempts: 0,
-          refreshAfter: 0,
+          ...source,
         });
         return;
       }
@@ -149,30 +157,23 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
           plannedAt: at,
           replanAt: Number.POSITIVE_INFINITY,
           verdict: "unread",
-          refreshAttempts: 0,
-          refreshAfter: 0,
+          ...source,
         });
         return;
       }
       const drifted = verdict ? !verdict.converged : false;
-      const declinedAt = drifted ? previous?.declinedAt : undefined;
       rooms.set(roomId, {
         plannedAt: at,
         // A declined room is left to the rotation; it cannot jump the queue.
-        replanAt: declinedAt ? Number.POSITIVE_INFINITY : at + DRIFT_SUSPECT_REPLAN_MS,
-        declinedAt,
+        replanAt: source.declinedAt ? Number.POSITIVE_INFINITY : at + DRIFT_SUSPECT_REPLAN_MS,
         verdict: !verdict ? "failed" : drifted ? "drifted" : "invariant",
-        driftSince: drifted ? (previous?.driftSince ?? at) : undefined,
-        // A refresh cannot repair an invariant the plan does not act on, and a
-        // room that stops drifting starts its backoff afresh next time.
-        refreshAttempts: drifted ? (previous?.refreshAttempts ?? 0) : 0,
-        refreshAfter: drifted ? (previous?.refreshAfter ?? 0) : 0,
+        ...source,
       });
     },
     /**
-     * Drifted rooms due a full refresh, recent activity first, then longest
-     * drifted. Only rooms planned this tick qualify, so a room that converged
-     * through live delivery since its last plan is never refreshed.
+     * Full source checks due, least recently attempted first. Live activity
+     * can wake a healthy or declined room, but cannot erase failure backoff.
+     * The caller re-plans any selected room not already planned this tick.
      */
     selectRefreshes(
       bound: ReadonlyArray<{ roomId: string; sessionKey: string }>,
@@ -182,20 +183,36 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
       return bound
         .flatMap((room) => {
           const state = rooms.get(room.roomId);
-          return state?.verdict === "drifted" &&
-            state.plannedAt >= tickStartedAt &&
+          const active = activityAt(room);
+          const settled =
+            state && active > state.refreshedAt && at - active >= DRIFT_ACTIVITY_SETTLE_MS;
+          return state &&
+            (state.verdict === "drifted" || state.verdict === "converged") &&
             (state.refreshAfter <= at ||
-              (state.declinedAt !== undefined && activityAt(room) > state.declinedAt))
-            ? [{ roomId: room.roomId, active: activityAt(room), since: state.driftSince ?? at }]
+              (settled &&
+                (state.refreshAttempts === 0 ||
+                  (state.declinedAt !== undefined && active > state.declinedAt))))
+            ? [
+                {
+                  roomId: room.roomId,
+                  active,
+                  refreshedAt: state.refreshedAt,
+                  drifted: Number(state.verdict === "drifted"),
+                },
+              ]
             : [];
         })
         .toSorted(
-          (a, b) => b.active - a.active || a.since - b.since || a.roomId.localeCompare(b.roomId),
+          (a, b) =>
+            a.refreshedAt - b.refreshedAt ||
+            b.drifted - a.drifted ||
+            b.active - a.active ||
+            a.roomId.localeCompare(b.roomId),
         )
         .slice(0, Math.max(0, budget))
         .map((room) => room.roomId);
     },
-    /** Every attempt backs off; only a clean plan resets the room. */
+    /** Assume failure until the authenticated publisher confirms acceptance. */
     recordRefresh(roomId: string) {
       const state = rooms.get(roomId);
       if (!state) {
@@ -206,8 +223,20 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
           Math.min(state.refreshAttempts, DRIFT_REFRESH_BACKOFF_MS.length - 1)
         ] ?? DRIFT_REFRESH_BACKOFF_MS[0];
       state.refreshAttempts++;
+      // A re-admitted declined room is now an attempt, not still a decline:
+      // later activity must not erase its new failure backoff.
+      state.declinedAt = undefined;
+      state.refreshedAt = now();
       state.refreshAfter = now() + delay;
       state.replanAt = now() + DRIFT_REFRESH_CONFIRM_MS;
+    },
+    recordPublished(roomId: string) {
+      const state = rooms.get(roomId);
+      if (state) {
+        state.refreshAttempts = 0;
+        state.declinedAt = undefined;
+        state.refreshAfter = now() + DRIFT_SOURCE_CHECK_MS;
+      }
     },
     /** Fi accepted the refresh but declined to publish it (status `skipped`). */
     recordDeclined(roomId: string) {
@@ -240,7 +269,7 @@ const CHANNEL_THREAD =
 
 /**
  * One drift pass: plan the selected bound rooms against Matrix, then refresh
- * the drifted ones from a full Slack snapshot within the budget. A budget of 0
+ * the source-check candidates from a full Slack snapshot within the budget. A budget of 0
  * (or a Matrix runtime without `plan`) disables the pass.
  */
 export async function runProjectionDriftPass(params: {
@@ -270,11 +299,13 @@ export async function runProjectionDriftPass(params: {
       (binding.externalSource?.provider === "slack" && PARENT.test(binding.sessionKey)),
   );
   let planned = 0;
+  const plannedRooms = new Set<string>();
   for (const roomId of drift.selectPlans(rooms)) {
     if (!params.active()) {
       return undefined;
     }
     drift.recordPlan(roomId, await planProjectionRoom(inventory, roomId, api.logger));
+    plannedRooms.add(roomId);
     planned++;
   }
   let refreshed = 0;
@@ -284,6 +315,15 @@ export async function runProjectionDriftPass(params: {
     const binding = rooms.find((candidate) => candidate.roomId === roomId);
     if (!binding || !params.active()) {
       break;
+    }
+    // Fair source rotation is independent of the structural plan rotation.
+    // Always obtain a fresh verdict before publishing a selected room.
+    if (!plannedRooms.has(roomId)) {
+      drift.recordPlan(roomId, await planProjectionRoom(inventory, roomId, api.logger));
+      planned++;
+      if (!drift.selectRefreshes([binding], 1).length || !params.active()) {
+        continue;
+      }
     }
     drift.recordRefresh(roomId);
     const thread = CHANNEL_THREAD.exec(binding.sessionKey);
@@ -302,7 +342,7 @@ export async function runProjectionDriftPass(params: {
         throw new Error("Slack source account unavailable");
       }
       let status: string | undefined;
-      await params.publish({
+      const published = await params.publish({
         api: api as OpenClawPluginApi,
         sessionKey: binding.sessionKey,
         accountId,
@@ -322,6 +362,10 @@ export async function runProjectionDriftPass(params: {
         refreshDeclined++;
         continue;
       }
+      if (!published || (status !== "created" && status !== "existing")) {
+        throw new Error("Source refresh was not acknowledged by Fi");
+      }
+      drift.recordPublished(roomId);
       logProjectionRefresh(api.logger, lane, roomId, binding.sessionKey);
       refreshed++;
     } catch (error) {

@@ -1,10 +1,13 @@
-import { describe, expect, it } from "vitest";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { describe, expect, it, vi } from "vitest";
 import {
   DRIFT_ACTIVITY_SETTLE_MS,
   DRIFT_DECLINED_BACKOFF_MS,
   DRIFT_REFRESH_BACKOFF_MS,
   DRIFT_SUSPECT_REPLAN_MS,
+  DRIFT_SOURCE_CHECK_MS,
   createProjectionDriftScheduler,
+  runProjectionDriftPass,
 } from "./projection-drift.js";
 
 const TICK = 60_000;
@@ -27,6 +30,62 @@ function clock() {
 }
 
 describe("projection drift scheduler", () => {
+  it("checks source history even when the partial Matrix mirror is structurally clean", async () => {
+    const time = clock();
+    const drift = createProjectionDriftScheduler(time.now);
+    const bound = rooms(1);
+    const api = { logger: { info: vi.fn(), warn: vi.fn() } } as unknown as OpenClawPluginApi;
+    const publish = vi.fn(
+      async (params: Parameters<Parameters<typeof runProjectionDriftPass>[0]["publish"]>[0]) => {
+        params.onResult?.("existing");
+        return true;
+      },
+    );
+    const result = await runProjectionDriftPass({
+      api,
+      drift,
+      inventory: { list: async () => bound, plan: async () => clean },
+      bindings: bound,
+      budget: 1,
+      configured: [],
+      active: () => true,
+      channelAccount: () => "fi-admin",
+      publish,
+    });
+    expect(result).toMatchObject({ refreshed: 1, refreshFailed: 0 });
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionKey: bound[0]!.sessionKey,
+        projectionRoomId: bound[0]!.roomId,
+        accountId: "fi-admin",
+        reconcile: true,
+        refresh: true,
+      }),
+    );
+  });
+
+  it.each(["false", "no-receipt"])(
+    "does not claim a source refresh succeeded with %s",
+    async (outcome) => {
+      const time = clock();
+      const drift = createProjectionDriftScheduler(time.now);
+      const bound = rooms(1);
+      const api = { logger: { info: vi.fn(), warn: vi.fn() } } as unknown as OpenClawPluginApi;
+      const result = await runProjectionDriftPass({
+        api,
+        drift,
+        inventory: { list: async () => bound, plan: async () => drifted },
+        bindings: bound,
+        budget: 1,
+        configured: [],
+        active: () => true,
+        channelAccount: () => "fi-admin",
+        publish: async () => outcome !== "false",
+      });
+      expect(result).toMatchObject({ refreshed: 0, refreshFailed: 1 });
+    },
+  );
+
   it("plans every one of 300 rooms within 30 ticks", () => {
     const time = clock();
     const drift = createProjectionDriftScheduler(time.now);
@@ -96,7 +155,7 @@ describe("projection drift scheduler", () => {
     expect(drift.summary()).toMatchObject({ invariant: 1, planFailed: 1, drifted: 0 });
   });
 
-  it("refreshes drifted rooms planned this tick within the budget, active rooms first", () => {
+  it("checks clean and drifted rooms within the budget, oldest source attempts first", () => {
     const time = clock();
     const drift = createProjectionDriftScheduler(time.now);
     const bound = rooms(4);
@@ -107,13 +166,13 @@ describe("projection drift scheduler", () => {
     }
     expect(drift.selectRefreshes(bound, 2)).toEqual([bound[3]?.roomId, bound[1]?.roomId]);
     expect(drift.selectRefreshes(bound, 0)).toEqual([]);
-    // Next tick: nothing was re-planned yet, so nothing is refreshed on a stale verdict.
+    // A room removed from the inventory loses its recovery state.
     time.advance(TICK);
     drift.selectPlans([]);
     expect(drift.selectRefreshes(bound, 3)).toEqual([]);
   });
 
-  it("backs off a room that stays drifted after a refresh, and resets once it converges", () => {
+  it("keeps source failure backoff across clean Matrix plans, resetting only after publication", () => {
     const time = clock();
     const drift = createProjectionDriftScheduler(time.now);
     const bound = rooms(1);
@@ -143,16 +202,15 @@ describe("projection drift scheduler", () => {
     expect(refreshTimes[3]! - refreshTimes[2]!).toBeGreaterThanOrEqual(
       DRIFT_REFRESH_BACKOFF_MS[2] / TICK,
     );
-    // It converges; a later drift is refreshed immediately again.
+    // A clean Matrix plan does not prove that Slack was read successfully.
     for (let minute = 0; minute < 40; minute++) {
       tick(clean);
     }
     expect(drift.summary().drifted).toBe(0);
-    let refreshedAgain = 0;
-    for (let minute = 0; minute < 40 && !refreshedAgain; minute++) {
-      refreshedAgain = tick(drifted);
-    }
-    expect(refreshedAgain).toBe(1);
+    expect(tick(clean)).toBe(0);
+    drift.recordPublished(bound[0]!.roomId);
+    time.advance(DRIFT_SOURCE_CHECK_MS);
+    expect(tick(clean)).toBe(1);
   });
 
   it("does not refresh a room Fi declined until it has new activity or a week passes", () => {
@@ -162,7 +220,7 @@ describe("projection drift scheduler", () => {
     const room = bound[0]!;
     const tick = () => {
       for (const planned of drift.selectPlans(bound)) {
-        drift.recordPlan(planned, drifted);
+        drift.recordPlan(planned, clean);
       }
       const refreshes = drift.selectRefreshes(bound, 1);
       time.advance(TICK);
@@ -176,7 +234,7 @@ describe("projection drift scheduler", () => {
       refreshes += tick().length;
     }
     expect(refreshes).toBe(0);
-    expect(drift.summary()).toMatchObject({ drifted: 1, declined: 1 });
+    expect(drift.summary()).toMatchObject({ drifted: 0, declined: 1 });
     // New activity in the room (e.g. someone used Claw in it again) re-admits it.
     drift.noteActivity(room.sessionKey);
     time.advance(DRIFT_ACTIVITY_SETTLE_MS);
@@ -209,7 +267,11 @@ describe("projection drift scheduler", () => {
       for (const roomId of planned) {
         drift.recordPlan(roomId, roomId === target ? unread : clean);
       }
-      refreshes += drift.selectRefreshes(bound, 5).length;
+      for (const roomId of drift.selectRefreshes(bound, 5)) {
+        refreshes += Number(roomId === target);
+        drift.recordRefresh(roomId);
+        drift.recordPublished(roomId);
+      }
       time.advance(TICK);
     }
     expect(refreshes).toBe(0);
@@ -222,10 +284,31 @@ describe("projection drift scheduler", () => {
       for (const roomId of drift.selectPlans(bound)) {
         drift.recordPlan(roomId, roomId === target ? { ...drifted, hasHumanMember: true } : clean);
       }
-      refreshed = drift.selectRefreshes(bound, 5);
+      refreshed = drift.selectRefreshes(bound, 5).filter((roomId) => roomId === target);
       time.advance(TICK);
     }
     expect(refreshed).toEqual([target]);
+  });
+
+  it("does not let new activity bypass a failed attempt after a previous decline", () => {
+    const time = clock();
+    const drift = createProjectionDriftScheduler(time.now);
+    const bound = rooms(1);
+    const room = bound[0]!;
+    drift.selectPlans(bound);
+    drift.recordPlan(room.roomId, drifted);
+    drift.recordRefresh(room.roomId);
+    drift.recordDeclined(room.roomId);
+    time.advance(TICK);
+    drift.noteActivity(room.sessionKey);
+    time.advance(DRIFT_ACTIVITY_SETTLE_MS);
+    expect(drift.selectRefreshes(bound, 1)).toEqual([room.roomId]);
+    drift.recordRefresh(room.roomId); // source fails, no accepted publication
+    time.advance(TICK);
+    drift.noteActivity(room.sessionKey);
+    time.advance(DRIFT_ACTIVITY_SETTLE_MS);
+    drift.recordPlan(room.roomId, drifted);
+    expect(drift.selectRefreshes(bound, 1)).toEqual([]);
   });
 
   it("forgets rooms that are no longer bound", () => {
@@ -238,5 +321,27 @@ describe("projection drift scheduler", () => {
     expect(drift.summary().tracked).toBe(3);
     drift.selectPlans(bound.slice(0, 1));
     expect(drift.summary()).toMatchObject({ tracked: 1, drifted: 1 });
+  });
+
+  it("does not starve quiet source checks when the same rooms stay active", () => {
+    const time = clock();
+    const drift = createProjectionDriftScheduler(time.now);
+    const bound = rooms(20);
+    const checked = new Set<string>();
+    for (let minute = 0; minute < 20; minute++) {
+      for (const room of bound.slice(0, 12)) {
+        drift.noteActivity(room.sessionKey);
+      }
+      time.advance(DRIFT_ACTIVITY_SETTLE_MS);
+      for (const roomId of drift.selectPlans(bound)) {
+        drift.recordPlan(roomId, clean);
+      }
+      for (const roomId of drift.selectRefreshes(bound, 1)) {
+        checked.add(roomId);
+        drift.recordRefresh(roomId);
+        drift.recordPublished(roomId);
+      }
+    }
+    expect(checked.size).toBe(20);
   });
 });

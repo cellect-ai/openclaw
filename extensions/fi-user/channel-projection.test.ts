@@ -569,6 +569,42 @@ describe("Fi Slack channel publisher", () => {
     return { service, plan, readThread, payloads, refreshLines, logger };
   }
 
+  it("publishes complete Slack history through the registered reconciler despite a clean partial Matrix plan", async () => {
+    vi.useFakeTimers();
+    const f = driftFixture(1, new Set());
+    const messages = Array.from({ length: 9 }, (_, index) => ({
+      messageId: `1700000000.${String(index).padStart(6, "0")}`,
+      senderId: "U111",
+      content: `Source message ${index}`,
+      bot: false,
+    }));
+    f.readThread.mockResolvedValue({
+      workspaceId: "T123",
+      channelId: "C123",
+      rootMessageId: "1700000000.000000",
+      memberSenderIds: ["U111"],
+      messages,
+    });
+    f.service.start();
+    await vi.advanceTimersByTimeAsync(5000);
+    f.service.stop();
+    const full = f.payloads().filter((payload) => payload.snapshot);
+    expect(full).toHaveLength(1);
+    expect(full[0]).toMatchObject({
+      reconcile: true,
+      snapshot: {
+        complete: true,
+        messages: messages.map(({ messageId, senderId, content }) => ({
+          messageId,
+          senderId,
+          content,
+          role: "user",
+        })),
+      },
+    });
+    expect(full[0]).not.toHaveProperty("unavailable");
+  });
+
   it("plans every bound room in one tick and refreshes drifted rooms within the budget", async () => {
     vi.useFakeTimers();
     const f = driftFixture(undefined, new Set(["!room1", "!roomD"]));
@@ -613,10 +649,10 @@ describe("Fi Slack channel publisher", () => {
     f.service.start();
     await vi.advanceTimersByTimeAsync(5000 + 6 * 60 * 60_000);
     f.service.stop();
-    expect(f.readThread).toHaveBeenCalledTimes(1);
-    expect(f.refreshLines()).toEqual([
-      "fi-user: projection refresh lane=channel room=!room1 session=agent:cellect-fi-admin:slack:channel:c123:thread:1700000000.000001 outcome=declined",
-    ]);
+    expect(f.readThread).toHaveBeenCalledTimes(4);
+    expect(new Set(f.readThread.mock.calls.map(([, root]) => root)).size).toBe(4);
+    expect(f.refreshLines()).toHaveLength(4);
+    expect(f.refreshLines().every((line) => line.endsWith("outcome=declined"))).toBe(true);
   });
 
   it("never reads Slack for a drifted room that no human can read", async () => {
@@ -632,8 +668,9 @@ describe("Fi Slack channel publisher", () => {
     await vi.advanceTimersByTimeAsync(5000 + 60 * 60_000);
     f.service.stop();
     expect(f.plan).toHaveBeenCalled();
-    expect(f.readThread).not.toHaveBeenCalled();
-    expect(f.refreshLines()).toEqual([]);
+    expect(f.readThread.mock.calls.map(([, root]) => root)).not.toContain("1700000000.000001");
+    expect(f.readThread.mock.calls.map(([, root]) => root)).not.toContain("1700000000.000009");
+    expect(f.readThread).toHaveBeenCalledTimes(4);
   });
 
   it("neither plans nor refreshes with a zero budget", async () => {
@@ -653,11 +690,13 @@ describe("Fi Slack channel publisher", () => {
     f.service.start();
     await vi.advanceTimersByTimeAsync(5000 + 30 * 60_000);
     f.service.stop();
-    expect(f.readThread).toHaveBeenCalledTimes(1);
+    expect(f.readThread).toHaveBeenCalledTimes(4);
+    expect(new Set(f.readThread.mock.calls.map(([, root]) => root)).size).toBe(4);
     expect(f.payloads().some((payload) => payload.unavailable || payload.snapshot)).toBe(false);
-    expect(f.refreshLines()).toEqual([
-      "fi-user: projection refresh lane=channel room=!room1 session=agent:cellect-fi-admin:slack:channel:c123:thread:1700000000.000001 outcome=failed error=Slack rate limited",
-    ]);
+    expect(f.refreshLines()).toHaveLength(4);
+    expect(
+      f.refreshLines().every((line) => line.endsWith("outcome=failed error=Slack rate limited")),
+    ).toBe(true);
   });
 
   it.each([false, true])(
