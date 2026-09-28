@@ -1,7 +1,43 @@
 // Builds and validates channel pairing challenges for first-time setup.
+import { resolveGlobalDedupeCache } from "../infra/dedupe.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { normalizeAccountId } from "../routing/account-id.js";
-import { buildPairingReply } from "./pairing-messages.js";
+import { buildPairingReminderReply, buildPairingReply } from "./pairing-messages.js";
+
+/**
+ * Minimum spacing between pairing replies to the same sender. A repeat sender
+ * must never be met with silence, but every message must not re-trigger a
+ * challenge either, so at most one reply per sender per interval is sent.
+ * Pending requests expire after `CHANNEL_PAIRING_PENDING_TTL_MS` (1h), so this
+ * bounds a pending window to a handful of replies.
+ */
+export const PAIRING_REPLY_INTERVAL_MS = 15 * 60 * 1000;
+
+const PAIRING_REPLY_CACHE_MAX = 500;
+
+// Process-global so a second module copy (plugin-sdk re-export, extension
+// bundle) shares the same throttle instead of doubling replies.
+const pairingReplyThrottleKey = Symbol.for("openclaw.pairing.replyThrottle");
+
+function resolvePairingReplyThrottle() {
+  return resolveGlobalDedupeCache(pairingReplyThrottleKey, {
+    ttlMs: PAIRING_REPLY_INTERVAL_MS,
+    maxSize: PAIRING_REPLY_CACHE_MAX,
+  });
+}
+
+function pairingReplyThrottleKeyFor(params: {
+  channel: string;
+  accountId?: string;
+  senderId: string;
+}): string {
+  return `${params.channel}\u0000${normalizeAccountId(params.accountId)}\u0000${params.senderId}`;
+}
+
+/** Clears the reply throttle. Tests only. */
+export function resetPairingReplyThrottle(): void {
+  resolvePairingReplyThrottle().clear();
+}
 
 type PairingMeta = Record<string, string | undefined>;
 
@@ -18,6 +54,8 @@ type PairingChallengeParams = {
   sendPairingReply: (text: string) => Promise<void>;
   buildReplyText?: (params: { code: string; senderIdLine: string }) => string;
   onCreated?: (params: { code: string }) => void;
+  /** Called when a repeat sender is reminded that their request is still pending. */
+  onReminded?: (params: { code: string }) => void;
   onReplyError?: (err: unknown) => void;
 };
 
@@ -59,9 +97,37 @@ export async function issuePairingChallenge(
     id: params.senderId,
     meta: params.meta,
   });
+  const throttle = resolvePairingReplyThrottle();
+  const throttleKey = pairingReplyThrottleKeyFor({
+    channel: params.channel,
+    accountId: params.accountId,
+    senderId: params.senderId,
+  });
   if (!created) {
-    return { created: false };
+    // An empty code means the pending-request cap rejected this sender, so
+    // there is no challenge to remind them about.
+    if (!code) {
+      return { created: false };
+    }
+    if (throttle.peek(throttleKey)) {
+      return { created: false, code };
+    }
+    throttle.check(throttleKey);
+    params.onReminded?.({ code });
+    try {
+      await params.sendPairingReply(
+        buildPairingReminderReply({
+          channel: params.channel,
+          idLine: params.senderIdLine,
+          code,
+        }),
+      );
+    } catch (err) {
+      params.onReplyError?.(err);
+    }
+    return { created: false, code };
   }
+  throttle.check(throttleKey);
   params.onCreated?.({ code });
   const accountId = params.accountId ? normalizeAccountId(params.accountId) : undefined;
   // Notification/audit hooks must not delay the pairing-code reply.

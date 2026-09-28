@@ -31,7 +31,10 @@ only those senders, and pairing-store approvals do not widen `open` access.
 Pairing codes:
 
 - 8 characters, uppercase, no ambiguous chars (`0O1I`).
-- **Expire after 1 hour**. The bot only sends the pairing message when a new request is created (roughly once per hour per sender).
+- **Expire after 1 hour**. The full pairing message is sent when a new request is created. A sender who
+  writes again while their request is still pending gets a shorter "still waiting for approval" reminder
+  carrying the same code, at most once every 15 minutes per sender, so a repeat sender is never answered
+  with silence and is never spammed.
 - Pending DM pairing requests are capped at **3 per channel account**; additional requests are ignored until one expires or is approved.
 
 ### Approve from the Control UI
