@@ -734,9 +734,17 @@ export function registerSlackProjectionReconciler(
       api.logger.info(
         `fi-user: Slack discovery ${JSON.stringify({ ...report, drift: { ...driftReport, ...drift.summary() } })}`,
       );
-    } catch {
+    } catch (error) {
       report = { ...report, complete: false, error: report.error + 1 };
-      api.logger.warn("fi-user: Slack projection reconciliation scan failed");
+      const detail =
+        error instanceof Error
+          ? error.message
+              .replace(/xox[baprs]-\S+/g, "[redacted]")
+              .replace(/Bearer\s+\S+/gi, "Bearer [redacted]")
+              .replace(/\s+/g, " ")
+              .slice(0, 240)
+          : "unknown error";
+      api.logger.warn(`fi-user: Slack projection reconciliation scan failed: ${detail}`);
     } finally {
       running = false;
       if (!stopped && controller === generation) {
