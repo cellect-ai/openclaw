@@ -25,7 +25,7 @@ export function buildRealtimeProviderCatalog(params: {
     // Config reads can themselves resolve SecretRefs (and throw when a provider's
     // secret is unavailable in this runtime snapshot). Keep that failure scoped
     // to the affected provider just like provider-specific normalization below.
-    const rawConfig = resolveCatalogValue(
+    const rawConfig = resolveCatalogValue<RealtimeVoiceProviderConfig>(
       () => params.resolveRawConfig(provider),
       () => ({}),
     );
