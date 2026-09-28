@@ -166,6 +166,15 @@ export type SlackAccountConfig = Omit<
       contact?: string;
       /** Log admitted explicit mentions with no reply after this many minutes; 0 disables. Default: 10. */
       alertAfterMinutes?: number;
+      /**
+       * Replay mentions that arrived while the socket was disconnected. Socket
+       * Mode delivers nothing that happened while the app was away and Slack
+       * never redelivers it, so without this a mention posted during a restart
+       * is lost silently. Default: true.
+       */
+      recoverMissed?: boolean;
+      /** How far back a reconnect will look for missed mentions; 0 disables. Default: 720. */
+      recoverWithinMinutes?: number;
     };
     /** Reply once, in thread, when a channel message appears to contain bank details. Default: false. */
     paymentDetailWarning?: boolean;

@@ -113,6 +113,8 @@ const SlackAccountSchema = z
         notice: z.boolean().optional(),
         contact: z.string().trim().max(500).optional(),
         alertAfterMinutes: z.number().int().min(0).optional(),
+        recoverMissed: z.boolean().optional(),
+        recoverWithinMinutes: z.number().int().min(0).optional(),
       })
       .strict()
       .optional(),
