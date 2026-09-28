@@ -37,6 +37,12 @@ const runtimeConfig = {
         config: {
           baseUrl: "https://fi.example.test",
           brokerTokenEnv: "TEST_BROKER_TOKEN",
+          matrixEnvironments: {
+            dev: {
+              baseUrl: "https://dev-fi.example.test",
+              brokerTokenEnv: "TEST_DEV_BROKER_TOKEN",
+            },
+          },
           gamBinary: "/opt/gam",
           gamConfigDir: "/opt/gam-config",
           sharedInboxMailbox: "shared@example.com",
@@ -156,6 +162,11 @@ function delegation(body?: Record<string, unknown>) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.stubEnv("TEST_BROKER_TOKEN", BROKER);
+  vi.stubEnv("TEST_DEV_BROKER_TOKEN", "dev-broker-token");
+  vi.stubEnv(
+    "FI_THREADS_ENV_BY_ACCOUNT",
+    JSON.stringify({ "fi-user": "prod", "fi-user-dev": "dev" }),
+  );
   routes = [];
   calls.length = 0;
   vi.stubGlobal(
@@ -220,7 +231,74 @@ describe("fi_user_api", () => {
     });
   });
 
-  it("works on Matrix as the homeserver-recorded sender", async () => {
+  it.each([
+    { accountId: "fi-user", origin: "https://fi.example.test", broker: BROKER },
+    { accountId: "fi-user-dev", origin: "https://dev-fi.example.test", broker: "dev-broker-token" },
+  ])(
+    "uses the $accountId environment for Matrix delegation and subsequent API calls",
+    async ({ accountId, origin, broker }) => {
+      routes.push((url) =>
+        url.pathname === "/api/shape/documents/search" ? json({ results: [] }) : undefined,
+      );
+      await plugin()
+        .tool(
+          "fi_user_api",
+          context({
+            messageChannel: "matrix",
+            agentAccountId: accountId,
+            requesterSenderId: "@member:threads.example",
+            sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
+          }),
+        )
+        .execute("c2", { path: "/api/shape/documents/search", query: { q: "title commitment" } });
+      expect(delegationBody()).toEqual({
+        requesterMatrixUserId: "@member:threads.example",
+        agentId: "cellect-fi-user",
+      });
+      const delegationCall = calls.find((call) =>
+        call.url.endsWith("/api/openclaw-user-delegation"),
+      );
+      expect(delegationCall?.url).toBe(`${origin}/api/openclaw-user-delegation`);
+      expect(authorization(delegationCall!.init)).toBe(`Bearer ${broker}`);
+      expect(
+        calls.some(
+          (entry) => entry.url === `${origin}/api/shape/documents/search?q=title+commitment`,
+        ),
+      ).toBe(true);
+    },
+  );
+
+  it.each([
+    { label: "missing account", accountId: undefined, delivery: undefined },
+    { label: "unknown account", accountId: "unknown", delivery: undefined },
+    {
+      label: "conflicting route",
+      accountId: "fi-user-dev",
+      delivery: { channel: "matrix", accountId: "fi-user" },
+    },
+    {
+      label: "wrong fallback channel",
+      accountId: undefined,
+      delivery: { channel: "slack", accountId: "fi-user" },
+    },
+  ])("refuses Matrix $label before delegation", async ({ accountId, delivery }) => {
+    await expect(
+      plugin()
+        .tool(
+          "fi_user_api",
+          context({
+            messageChannel: "matrix",
+            requesterSenderId: "@member:threads.example",
+            agentAccountId: accountId,
+            deliveryContext: delivery,
+          }),
+        )
+        .execute("bad", { path: "/api/shape/documents/search" }),
+    ).rejects.toThrow(/Matrix.*(environment|route)/);
+    expect(calls).toEqual([]);
+  });
+
+  it("uses a trusted Matrix delivery account when the requester account is absent", async () => {
     routes.push((url) =>
       url.pathname === "/api/shape/documents/search" ? json({ results: [] }) : undefined,
     );
@@ -230,18 +308,33 @@ describe("fi_user_api", () => {
         context({
           messageChannel: "matrix",
           requesterSenderId: "@member:threads.example",
-          sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
+          agentAccountId: undefined,
+          deliveryContext: { channel: "matrix", accountId: "fi-user-dev" },
         }),
       )
-      .execute("c2", { path: "/api/shape/documents/search", query: { q: "title commitment" } });
-    expect(delegationBody()).toEqual({
-      requesterMatrixUserId: "@member:threads.example",
-      agentId: "cellect-fi-user",
-    });
-    expect(
-      calls.some((entry) => entry.url.endsWith("/api/shape/documents/search?q=title+commitment")),
-    ).toBe(true);
+      .execute("fallback", { path: "/api/shape/documents/search" });
+    expect(calls.every((call) => call.url.startsWith("https://dev-fi.example.test/"))).toBe(true);
   });
+
+  it.each(["invalid-json", JSON.stringify({ "fi-user-dev": "unconfigured" })])(
+    "does not use prod for an unusable Matrix environment map",
+    async (map) => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", map);
+      await expect(
+        plugin()
+          .tool(
+            "fi_user_api",
+            context({
+              messageChannel: "matrix",
+              requesterSenderId: "@member:threads.example",
+              agentAccountId: "fi-user-dev",
+            }),
+          )
+          .execute("unconfigured", { path: "/api/shape/documents/search" }),
+      ).rejects.toThrow("Matrix account environment is not configured");
+      expect(calls).toEqual([]);
+    },
+  );
 
   it("works on webchat with the Fi-signed context credential of that chat", async () => {
     const sessionKey = "agent:cellect-fi-user:webchat:member";

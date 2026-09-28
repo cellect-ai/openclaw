@@ -22,6 +22,19 @@
     "properties": {
       "baseUrl": { "type": "string", "minLength": 1 },
       "brokerTokenEnv": { "type": "string", "minLength": 1 },
+      "matrixTenantOrgId": { "type": "string", "minLength": 1 },
+      "matrixEnvironments": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["baseUrl", "brokerTokenEnv"],
+          "properties": {
+            "baseUrl": { "type": "string", "minLength": 1 },
+            "brokerTokenEnv": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
       "gamBinary": { "type": "string", "minLength": 1 },
       "gamConfigDir": { "type": "string", "minLength": 1 },
       "sharedInboxMailbox": { "type": "string", "minLength": 3 },

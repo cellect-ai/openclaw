@@ -152,7 +152,11 @@ describe("Fi user requester-bound Google Drive", () => {
     expect(registeredTools(slackContext()).map((tool) => tool.name)).toEqual(names);
     expect(
       registeredTools(
-        slackContext({ messageChannel: "matrix", requesterSenderId: "@member:threads.example" }),
+        slackContext({
+          messageChannel: "matrix",
+          agentAccountId: "fi-user",
+          requesterSenderId: "@member:threads.example",
+        }),
       ).map((tool) => tool.name),
     ).toEqual(names);
     expect(

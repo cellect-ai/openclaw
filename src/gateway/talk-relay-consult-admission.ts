@@ -1,3 +1,4 @@
+import type { PluginHookChannelContext } from "../plugins/hook-channel-context.types.js";
 import type { ChatSendExplicitOrigin } from "./server-methods/chat-origin-routing.js";
 import { relaySessions, type RelaySession } from "./talk/relay/state.js";
 
@@ -15,6 +16,8 @@ export type TalkRelayConsultAdmission = {
    * (operator-scoped `talk.binding.resolve`). It is the consult run's requester.
    */
   readonly speakerMxid?: string;
+  /** Host-only Talk identity; chat.send wire input cannot supply this context. */
+  readonly channelContext?: PluginHookChannelContext;
 };
 
 export function prepareTalkRelayConsultAdmission(params: {
@@ -66,5 +69,16 @@ export function prepareTalkRelayConsultAdmission(params: {
   return Object.freeze({
     assertCurrent,
     ...(relay?.speakerMxid ? { speakerMxid: relay.speakerMxid } : {}),
+    ...(relay?.speakerMxid
+      ? {
+          channelContext: Object.freeze({
+            sender: Object.freeze({ id: relay.speakerMxid }),
+            chat: Object.freeze({
+              id: route.roomId,
+              talkThreadRootEventId: route.threadRootEventId,
+            }),
+          }),
+        }
+      : {}),
   });
 }

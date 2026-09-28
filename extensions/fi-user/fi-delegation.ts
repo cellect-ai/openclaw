@@ -4,6 +4,10 @@ import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
 export type PluginConfig = {
   baseUrl?: string;
   brokerTokenEnv?: string;
+  /** Explicit Fi origins and broker credentials for Matrix account environments. */
+  matrixEnvironments?: Record<string, { baseUrl: string; brokerTokenEnv: string }>;
+  /** Tenant whose credentials and sandbox this configured runtime owns. */
+  matrixTenantOrgId?: string;
   gamBinary?: string;
   gamConfigDir?: string;
   /**
@@ -31,6 +35,8 @@ export type ResolvedPluginConfig = Required<
   adminApprovers: string[];
   adminPrincipals: string[];
   projectionFullRefreshesPerTick: number;
+  matrixEnvironments: Record<string, { baseUrl: string; brokerTokenEnv: string }>;
+  matrixTenantOrgId?: string;
 };
 
 export type Delegation = {
@@ -53,6 +59,8 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
   return {
     baseUrl: raw?.baseUrl?.replace(/\/+$/, "") || "https://app.cellect.ai/fi",
     brokerTokenEnv: raw?.brokerTokenEnv || "OPENCLAW_FI_USER_BROKER_TOKEN",
+    matrixEnvironments: raw?.matrixEnvironments ?? {},
+    ...(raw?.matrixTenantOrgId?.trim() ? { matrixTenantOrgId: raw.matrixTenantOrgId.trim() } : {}),
     gamBinary: raw?.gamBinary || "/home/node/.openclaw/bin/gam7/gam",
     gamConfigDir: raw?.gamConfigDir || "/home/claude/GAMConfig",
     adminAgentId: raw?.adminAgentId?.trim() || "cellect-fi-admin",
@@ -74,15 +82,55 @@ export function configFromRuntime(api: OpenClawPluginApi): ResolvedPluginConfig 
   return resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined);
 }
 
+/** Resolve an environment only from the host-proven inbound Matrix account. */
+export function matrixConnection(
+  config: ResolvedPluginConfig,
+  accountId: string | undefined,
+): Pick<ResolvedPluginConfig, "baseUrl" | "brokerTokenEnv"> | undefined {
+  if (!accountId) {
+    return undefined;
+  }
+  let environments: unknown;
+  try {
+    environments = JSON.parse(process.env.FI_THREADS_ENV_BY_ACCOUNT ?? "{}");
+  } catch {
+    return undefined;
+  }
+  if (!environments || typeof environments !== "object" || Array.isArray(environments)) {
+    return undefined;
+  }
+  const environment = Object.hasOwn(environments, accountId)
+    ? (environments as Record<string, unknown>)[accountId]
+    : undefined;
+  return typeof environment === "string"
+    ? (config.matrixEnvironments[environment] ?? (environment === "prod" ? config : undefined))
+    : undefined;
+}
+
 export function pluginConfig(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
 ): ResolvedPluginConfig {
   const cfg = context.getRuntimeConfig?.() ?? context.runtimeConfig ?? context.config;
-  if (!cfg) {
-    return configFromRuntime(api);
+  const resolved = cfg
+    ? resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined)
+    : configFromRuntime(api);
+  if (context.messageChannel !== "matrix") {
+    return resolved;
   }
-  return resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined);
+  const accountId = context.agentAccountId?.trim();
+  const deliveryAccountId = context.deliveryContext?.accountId?.trim();
+  if (accountId && deliveryAccountId && accountId !== deliveryAccountId) {
+    throw new Error("The Matrix requester account disagrees with its delivery route");
+  }
+  const connection = matrixConnection(
+    resolved,
+    accountId ?? (context.deliveryContext?.channel === "matrix" ? deliveryAccountId : undefined),
+  );
+  if (!connection) {
+    throw new Error("The current Matrix account environment is not configured");
+  }
+  return { ...resolved, ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
 }
 
 /**

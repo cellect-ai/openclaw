@@ -46,6 +46,7 @@ import {
   runGam,
   type DriveFileMetadata,
 } from "./gam.js";
+import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "./member-tools.js";
 import {
   ON_BEHALF_OF_AGENTS,
@@ -506,6 +507,7 @@ export default definePluginEntry({
   name: "Fi User Delegation",
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
+    const matrixEntitlements = registerMatrixEntitlements(api);
     const projectionConnection = () => {
       const config = configFromRuntime(api);
       return {
@@ -531,26 +533,39 @@ export default definePluginEntry({
       // Keep source-channel delivery independent of Fi/Matrix latency.
       void projectVerifiedSlackMessage(api, event, context, slackProjection);
     });
-    api.on("before_tool_call", (event, ctx) => {
-      const config = configFromRuntime(api);
-      const blocked = adminHandoffBlock(config, event, ctx);
-      if (blocked) {
-        return blocked;
-      }
-      if (!ON_BEHALF_OF_AGENTS.has(ctx.agentId ?? "") || !ON_BEHALF_OF_TOOLS.has(event.toolName)) {
-        return undefined;
-      }
-      const secret = brokerToken(config);
-      const requester = onBehalfOfRequester(
-        ctx.requester,
-        ctx.sessionKey ? adminActionSessions.get(ctx.sessionKey) : undefined,
-      );
-      const assertion =
-        secret && requester && ctx.agentId
-          ? signOnBehalfOf({ secret, agentId: ctx.agentId, requester })
-          : undefined;
-      return { params: withOnBehalfOfEnv(event.params, assertion) };
-    });
+    api.on(
+      "before_tool_call",
+      (event, ctx) => {
+        const authorizeAndAttribute = () => {
+          const config = configFromRuntime(api);
+          const blocked = adminHandoffBlock(config, event, ctx);
+          if (blocked) {
+            return blocked;
+          }
+          if (
+            !ON_BEHALF_OF_AGENTS.has(ctx.agentId ?? "") ||
+            !ON_BEHALF_OF_TOOLS.has(event.toolName)
+          ) {
+            return undefined;
+          }
+          const secret = brokerToken(config);
+          const requester = onBehalfOfRequester(
+            ctx.requester,
+            ctx.sessionKey ? adminActionSessions.get(ctx.sessionKey) : undefined,
+          );
+          const assertion =
+            secret && requester && ctx.agentId
+              ? signOnBehalfOf({ secret, agentId: ctx.agentId, requester })
+              : undefined;
+          return { params: withOnBehalfOfEnv(event.params, assertion) };
+        };
+        const authorized = matrixEntitlements(ctx);
+        return authorized instanceof Promise
+          ? authorized.then((denied) => denied ?? authorizeAndAttribute())
+          : (authorized ?? authorizeAndAttribute());
+      },
+      { priority: 10_000 },
+    );
     api.registerTool((context: OpenClawPluginToolContext) => {
       if (!isFiUserTurn(context)) {
         return null;

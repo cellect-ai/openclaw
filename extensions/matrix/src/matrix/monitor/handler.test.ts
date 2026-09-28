@@ -1000,6 +1000,7 @@ describe("matrix monitor handler pairing account scope", () => {
       "!room:example.org",
       createMatrixTextMessageEvent({
         eventId: "$native-plain-text-mention",
+        sender: "@sender:example.org",
         body,
         mentions: { user_ids: ["@bot:example.org"] },
       }),
@@ -1009,6 +1010,10 @@ describe("matrix monitor handler pairing account scope", () => {
     expect(runPrepared.mock.calls[0]?.[0].ctxPayload).toMatchObject({
       AccountId: "ops",
       WasMentioned: true,
+      ChannelContext: {
+        sender: { id: "@sender:example.org" },
+        chat: { id: "!room:example.org", eventId: "$native-plain-text-mention" },
+      },
     });
     expect(getMemberDisplayName).not.toHaveBeenCalledWith("!room:example.org", "@bot:example.org");
   });

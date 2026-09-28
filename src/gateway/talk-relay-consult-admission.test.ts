@@ -70,7 +70,7 @@ function fixture() {
     matrixRoute: route,
   });
   const assertAllowed = () => capability.assertCurrent(sessionKey, connId, origin);
-  return { relay, controller, assertAllowed };
+  return { relay, controller, assertAllowed, capability };
 }
 
 afterEach(() => {
@@ -78,6 +78,15 @@ afterEach(() => {
 });
 
 describe("Matrix consult authority transfers only while its relay is live", () => {
+  it("carries the attested speaker and bound thread in host hook context", () => {
+    const { capability } = fixture();
+    expect(capability.channelContext).toEqual({
+      sender: { id: "@speaker:example.test" },
+      chat: { id: route.roomId, talkThreadRootEventId: route.threadRootEventId },
+    });
+    expect(Object.isFrozen(capability.channelContext)).toBe(true);
+    expect(Object.isFrozen(capability.channelContext?.chat)).toBe(true);
+  });
   it.each(["expired", "replaced", "cancelled", "completed", "detached"] as const)(
     "rejects %s authority after mint while admission waits on the real writer barrier",
     async (failure) => {
@@ -123,7 +132,7 @@ describe("Matrix consult authority transfers only while its relay is live", () =
           relay.toolCalls.markAgentCompleted([callId]);
         }
         if (failure === "detached") {
-          closeRelaySession(relay, "completed");
+          await closeRelaySession(relay, "completed");
         }
         releaseWriter.resolve();
         expect(await outcome).toEqual(
@@ -149,7 +158,7 @@ describe("Matrix consult authority transfers only while its relay is live", () =
       assertAllowed,
     });
     try {
-      closeRelaySession(relay, "completed");
+      await closeRelaySession(relay, "completed");
       expect(relay.closeDisposition).toBe("detach");
       expect(controller.signal.aborted).toBe(false);
       expect(isSessionWorkAdmissionActive(scope, [sessionKey])).toBe(true);

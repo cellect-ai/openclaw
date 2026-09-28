@@ -319,6 +319,7 @@ async function handleChatSendWithOptions(
     // that Matrix conversation, not for the browser client that relays audio.
     if (options?.talkRelayAdmission?.speakerMxid) {
       preparedUserTurn.ctx.SenderId = options.talkRelayAdmission.speakerMxid;
+      preparedUserTurn.ctx.ChannelContext = options.talkRelayAdmission.channelContext;
     }
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
     admitted.value.setPendingInputCleanup(() => {

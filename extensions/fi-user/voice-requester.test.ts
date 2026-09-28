@@ -71,6 +71,7 @@ function delegationRequest() {
 describe("fi-user on a realtime voice consult", () => {
   beforeEach(() => {
     vi.stubEnv("TEST_BROKER_TOKEN", "broker-token");
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ "fi-user": "prod" }));
     calls.length = 0;
     vi.stubGlobal(
       "fetch",
