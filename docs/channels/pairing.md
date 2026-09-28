@@ -57,7 +57,9 @@ and previously approved senders revive the same way.
 A pending request nobody has acted on for **24 hours** is reported as stale:
 `openclaw pairing list` labels it, the Gateway logs a warning naming the channel,
 account, sender and age, and repeats that warning every few hours for as long as
-the request goes unanswered.
+the request goes unanswered. The same escalation is also sent as a direct
+message to a human operator; see [When a request arrives](#when-a-request-arrives)
+below for who that is and how to configure it.
 
 ### When a request arrives
 
@@ -65,8 +67,31 @@ The Gateway logs a warning naming the channel, account and sender, and the
 `openclaw pairing list` command that reviews it. The pairing code is deliberately
 not logged: it is the secret the sender and the approver share.
 
+**The Gateway log is not enough on its own.** Nothing tails it live, and a
+self-hosted deployment may only retain it for a bounded window, so a request
+that only ever reaches the log is exactly as invisible as one that reaches
+nothing. To close that gap, the same "a request needs your attention" text is
+also sent as an ordinary message to a resolved human operator, on the channel
+they already have open:
+
+- If `commands.ownerAllowFrom` names this channel (or is unprefixed, e.g. a
+  bare Telegram user id with one configured channel), that operator is used.
+- Otherwise, the request's own channel account's configured DM allowlist is
+  used — whoever is already allowed to DM that exact bot. This never crosses
+  into another channel account's allowlist: an `fi-user`-scoped request is
+  never sent to `fi-admin`'s operator, or the reverse.
+- If neither resolves to anyone, no message is sent; the log line above is
+  still there.
+
+This repeats on the same six-hour cadence as the stale-request log warning
+above, for as long as the request goes unanswered. It never grants access and
+never adds an approve/deny control of its own — it only names the exact
+`openclaw pairing list` / `openclaw pairing approve` commands to run.
+Approval stays in the CLI.
+
 Plugins can subscribe to the `channel_pairing_requested` hook to route the same
-event somewhere else. The log line does not depend on any plugin being installed.
+event somewhere else. Neither the log line nor the direct notice above depends
+on any plugin being installed.
 
 ### Approve from the Control UI
 

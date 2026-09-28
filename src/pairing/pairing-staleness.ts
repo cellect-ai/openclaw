@@ -5,7 +5,9 @@
 // the start is indistinguishable from silence. A pending request therefore
 // gets louder on a schedule instead of only once.
 import { listPairingChannels } from "../channels/plugins/pairing.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { notifyPairingStaleOwner } from "./pairing-owner-notify.js";
 import { formatPairingListHint } from "./pairing-request-notice.js";
 import { resolvePairingRequestAccountId } from "./pairing-store-sqlite.js";
 import {
@@ -42,10 +44,17 @@ export async function sweepStalePairingRequests(params: {
   env?: NodeJS.ProcessEnv;
   log: PairingStalenessLogger;
   nowMs?: number;
+  /**
+   * Optional: also pushes the same escalation directly to the resolved owner
+   * (see pairing-owner-notify.ts), not only this logger. Opt-in so callers
+   * that only want the log (e.g. tests) see no behavior change by omitting it.
+   */
+  getConfig?: () => OpenClawConfig;
 }): Promise<number> {
   const env = params.env ?? process.env;
   const nowMs = params.nowMs ?? Date.now();
   const channels = params.channels ?? listPairingChannels();
+  const getConfig = params.getConfig;
   let stale = 0;
   for (const channel of channels) {
     // Per-channel failures must not hide the remaining channels' requests.
@@ -63,11 +72,16 @@ export async function sweepStalePairingRequests(params: {
       stale += 1;
       const accountId = resolvePairingRequestAccountId(request);
       const senderId = request.meta?.senderId ?? request.id;
+      const ageLabel = formatAgeHours(resolvePairingRequestAgeMs(request, nowMs));
       params.log.warn(
-        `DM access request unanswered for ${formatAgeHours(resolvePairingRequestAgeMs(request, nowMs))} ` +
+        `DM access request unanswered for ${ageLabel} ` +
           `on ${channel}:${accountId} from ${senderId}. ` +
           `Approve or dismiss it: ${formatPairingListHint({ channel, accountId, senderId })}`,
       );
+      if (getConfig) {
+        // Best-effort and self-contained: never throws, never blocks the sweep.
+        await notifyPairingStaleOwner({ channel, accountId, senderId, ageLabel }, { getConfig });
+      }
     }
   }
   return stale;
@@ -82,12 +96,14 @@ export function startPairingStalenessSweep(params?: {
   intervalMs?: number;
   startDelayMs?: number;
   log?: PairingStalenessLogger;
+  getConfig?: () => OpenClawConfig;
 }): () => void {
   const log = params?.log ?? createSubsystemLogger("pairing");
   const intervalMs = params?.intervalMs ?? PAIRING_STALENESS_SWEEP_INTERVAL_MS;
   const run = () => {
     void sweepStalePairingRequests({
       ...(params?.env ? { env: params.env } : {}),
+      ...(params?.getConfig ? { getConfig: params.getConfig } : {}),
       log,
     }).catch((err: unknown) => {
       log.warn(`pairing staleness sweep failed: ${String(err)}`);
