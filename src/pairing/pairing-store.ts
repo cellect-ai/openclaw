@@ -19,13 +19,28 @@ import {
   sqliteOptionsForEnv,
   writeChannelPairingStateToDatabase,
 } from "./pairing-store-sqlite.js";
-import type { PairingChannel, PairingRequestRecord } from "./pairing-store.types.js";
+import type {
+  PairingChannel,
+  PairingRequestRecord,
+  PairingRequestStatus,
+} from "./pairing-store.types.js";
 
 const PAIRING_CODE_LENGTH = 8;
 const PAIRING_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 const PAIRING_CODE_MAX_ATTEMPTS = 500;
-export const CHANNEL_PAIRING_PENDING_TTL_MS = 60 * 60 * 1000;
+/**
+ * How long a request stays approvable. An hour was short enough that a request
+ * could become unapprovable before anyone looked at it, so this is a multi-day
+ * window instead. Expiry no longer deletes the record: the request stays
+ * listable as `expired`, because an access request nobody answered is exactly
+ * the thing an operator must still be able to see.
+ */
+export const CHANNEL_PAIRING_PENDING_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+/** A pending request older than this is conspicuous rather than merely waiting. */
+export const CHANNEL_PAIRING_STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 export const CHANNEL_PAIRING_PENDING_MAX = 3;
+/** Retained non-pending records per channel account. Bounds the history table. */
+export const CHANNEL_PAIRING_HISTORY_MAX = 25;
 
 export type PairingRequest = PairingRequestRecord;
 
@@ -47,23 +62,52 @@ function isExpired(entry: PairingRequest, nowMs: number): boolean {
   return createdAt === undefined || nowMs - createdAt > CHANNEL_PAIRING_PENDING_TTL_MS;
 }
 
-function pruneExpiredRequests(reqs: PairingRequest[], nowMs: number) {
-  const kept: PairingRequest[] = [];
-  let removed = false;
-  for (const req of reqs) {
-    if (isExpired(req, nowMs)) {
-      removed = true;
-      continue;
-    }
-    kept.push(req);
+/** Effective status, adding the derived `expired` to what the row stores. */
+export function resolvePairingRequestStatus(
+  entry: PairingRequest,
+  nowMs: number = Date.now(),
+): PairingRequestStatus {
+  return entry.status === "pending" && isExpired(entry, nowMs) ? "expired" : entry.status;
+}
+
+/** Only a request that is still pending occupies a slot or can be approved. */
+export function isPairingRequestPending(entry: PairingRequest, nowMs: number): boolean {
+  return resolvePairingRequestStatus(entry, nowMs) === "pending";
+}
+
+/** The instant a pending request stops being approvable. */
+export function resolvePairingRequestExpiresAt(entry: PairingRequest): string {
+  const createdAt = parseDateStringTimestampMs(entry.createdAt) ?? 0;
+  return new Date(createdAt + CHANNEL_PAIRING_PENDING_TTL_MS).toISOString();
+}
+
+/** A pending request left unanswered past the staleness window. */
+export function isPairingRequestStale(entry: PairingRequest, nowMs: number = Date.now()): boolean {
+  if (!isPairingRequestPending(entry, nowMs)) {
+    return false;
   }
-  return { requests: kept, removed };
+  const createdAt = parseDateStringTimestampMs(entry.createdAt);
+  return createdAt !== undefined && nowMs - createdAt >= CHANNEL_PAIRING_STALE_AFTER_MS;
+}
+
+/** How long a pending request has waited, for logs and operator surfaces. */
+export function resolvePairingRequestAgeMs(
+  entry: PairingRequest,
+  nowMs: number = Date.now(),
+): number {
+  const createdAt = parseDateStringTimestampMs(entry.createdAt);
+  return createdAt === undefined ? 0 : Math.max(0, nowMs - createdAt);
 }
 
 function resolveLastSeenAt(entry: PairingRequest): number {
   return (
     parseDateStringTimestampMs(entry.lastSeenAt) ?? parseDateStringTimestampMs(entry.createdAt) ?? 0
   );
+}
+
+/** Orders retained history oldest-first so the oldest record is evicted first. */
+function resolveHistoryOrder(entry: PairingRequest): number {
+  return parseDateStringTimestampMs(entry.resolvedAt ?? "") ?? resolveLastSeenAt(entry);
 }
 
 function normalizePairingAccountId(accountId?: string): string {
@@ -74,12 +118,15 @@ function requestMatchesAccountId(entry: PairingRequest, normalizedAccountId: str
   return !normalizedAccountId || resolvePairingRequestAccountId(entry) === normalizedAccountId;
 }
 
-function pruneExcessRequestsByAccount(reqs: PairingRequest[], maxPending: number) {
-  if (maxPending <= 0 || reqs.length <= maxPending) {
-    return { requests: reqs, removed: false };
-  }
+function groupIndexesByAccount(
+  reqs: PairingRequest[],
+  include: (entry: PairingRequest) => boolean,
+): Map<string, Array<{ index: number; request: PairingRequest }>> {
   const grouped = new Map<string, Array<{ index: number; request: PairingRequest }>>();
   for (const [index, entry] of reqs.entries()) {
+    if (!include(entry)) {
+      continue;
+    }
     const accountId = resolvePairingRequestAccountId(entry);
     const current = grouped.get(accountId);
     if (current) {
@@ -88,22 +135,69 @@ function pruneExcessRequestsByAccount(reqs: PairingRequest[], maxPending: number
       grouped.set(accountId, [{ index, request: entry }]);
     }
   }
+  return grouped;
+}
 
-  const droppedIndexes = new Set<number>();
-  for (const entries of grouped.values()) {
-    if (entries.length <= maxPending) {
+function collectExcessIndexes(params: {
+  grouped: Map<string, Array<{ index: number; request: PairingRequest }>>;
+  max: number;
+  order: (entry: PairingRequest) => number;
+  dropped: Set<number>;
+}): void {
+  for (const entries of params.grouped.values()) {
+    if (entries.length <= params.max) {
       continue;
     }
     const sorted = entries.toSorted(
-      (left, right) => resolveLastSeenAt(left.request) - resolveLastSeenAt(right.request),
+      (left, right) => params.order(left.request) - params.order(right.request),
     );
-    for (const { index } of sorted.slice(0, sorted.length - maxPending)) {
-      droppedIndexes.add(index);
+    for (const { index } of sorted.slice(0, sorted.length - params.max)) {
+      params.dropped.add(index);
     }
+  }
+}
+
+/**
+ * Caps pending slots and retained history independently, per account. Retention
+ * is what makes an unanswered request visible later, so a resolved record must
+ * never consume a pending slot and a pending request must never be evicted to
+ * make room for history.
+ */
+function pruneExcessRequestsByAccount(
+  reqs: PairingRequest[],
+  params: { maxPending: number; maxHistory: number; nowMs: number },
+) {
+  const droppedIndexes = new Set<number>();
+  if (params.maxPending > 0) {
+    collectExcessIndexes({
+      grouped: groupIndexesByAccount(reqs, (entry) => isPairingRequestPending(entry, params.nowMs)),
+      max: params.maxPending,
+      order: resolveLastSeenAt,
+      dropped: droppedIndexes,
+    });
+  }
+  if (params.maxHistory >= 0) {
+    collectExcessIndexes({
+      grouped: groupIndexesByAccount(
+        reqs,
+        (entry) => !isPairingRequestPending(entry, params.nowMs),
+      ),
+      max: params.maxHistory,
+      order: resolveHistoryOrder,
+      dropped: droppedIndexes,
+    });
   }
   return droppedIndexes.size === 0
     ? { requests: reqs, removed: false }
     : { requests: reqs.filter((_, index) => !droppedIndexes.has(index)), removed: true };
+}
+
+function pruneRequests(reqs: PairingRequest[], nowMs: number) {
+  return pruneExcessRequestsByAccount(reqs, {
+    maxPending: CHANNEL_PAIRING_PENDING_MAX,
+    maxHistory: CHANNEL_PAIRING_HISTORY_MAX,
+    nowMs,
+  });
 }
 
 function randomCode(): string {
@@ -240,6 +334,11 @@ export async function removeChannelAllowFromStoreEntry(
   });
 }
 
+/**
+ * Every retained request for the channel: pending, expired, approved and
+ * dismissed. Callers that only want actionable ones filter on
+ * {@link resolvePairingRequestStatus}.
+ */
 export async function listChannelPairingRequests(
   channel: PairingChannel,
   env: NodeJS.ProcessEnv = process.env,
@@ -247,9 +346,8 @@ export async function listChannelPairingRequests(
 ): Promise<PairingRequest[]> {
   return runOpenClawStateWriteTransaction((database) => {
     const state = readChannelPairingStateFromDatabase(database, channel);
-    const expired = pruneExpiredRequests(state.requests, Date.now());
-    const capped = pruneExcessRequestsByAccount(expired.requests, CHANNEL_PAIRING_PENDING_MAX);
-    if (expired.removed || capped.removed) {
+    const capped = pruneRequests(state.requests, Date.now());
+    if (capped.removed) {
       state.requests = capped.requests;
       writeChannelPairingStateToDatabase(database, channel, state);
     }
@@ -280,7 +378,8 @@ export async function upsertChannelPairingRequest(params: {
 }): Promise<{ code: string; created: boolean }> {
   const env = params.env ?? process.env;
   return runOpenClawStateWriteTransaction((database) => {
-    const now = new Date().toISOString();
+    const nowMs = Date.now();
+    const now = new Date(nowMs).toISOString();
     const id = normalizeId(params.id);
     const accountId = normalizePairingAccountId(params.accountId) || DEFAULT_ACCOUNT_ID;
     const baseMeta = params.meta
@@ -292,37 +391,49 @@ export async function upsertChannelPairingRequest(params: {
       : undefined;
     const meta = { ...baseMeta, accountId };
     const state = readChannelPairingStateFromDatabase(database, params.channel);
-    const expired = pruneExpiredRequests(state.requests, Date.now());
-    let requests = expired.requests;
+    let requests = state.requests;
     const existingIndex = requests.findIndex(
       (request) => request.id === id && requestMatchesAccountId(request, accountId),
     );
+    const existing = existingIndex >= 0 ? requests[existingIndex] : undefined;
     const existingCodes = new Set(
       requests.map((request) => (normalizeOptionalString(request.code) ?? "").toUpperCase()),
     );
 
-    if (existingIndex >= 0) {
-      const existing = requests[existingIndex];
-      const code = normalizeOptionalString(existing?.code) || generateUniqueCode(existingCodes);
+    // A still-pending request is reused, so a repeat sender keeps one code and
+    // gets the reminder rather than a second challenge.
+    if (existing && isPairingRequestPending(existing, nowMs)) {
+      const code = normalizeOptionalString(existing.code) || generateUniqueCode(existingCodes);
       requests[existingIndex] = {
         id,
         code,
-        createdAt: existing?.createdAt ?? now,
+        createdAt: existing.createdAt,
         lastSeenAt: now,
+        status: "pending",
         meta,
       };
-      state.requests = pruneExcessRequestsByAccount(requests, CHANNEL_PAIRING_PENDING_MAX).requests;
+      state.requests = pruneRequests(requests, nowMs).requests;
       writeChannelPairingStateToDatabase(database, params.channel, state);
       return { code, created: false };
     }
 
-    const capped = pruneExcessRequestsByAccount(requests, CHANNEL_PAIRING_PENDING_MAX);
+    const capped = pruneRequests(requests, nowMs);
     requests = capped.requests;
-    const accountRequestCount = requests.filter((request) =>
-      requestMatchesAccountId(request, accountId),
+    // An expired, dismissed or previously approved record is history, not a
+    // live request: the sender asking again starts a fresh one with a new code.
+    const retainedIndex = existing
+      ? requests.findIndex(
+          (request) => request.id === id && requestMatchesAccountId(request, accountId),
+        )
+      : -1;
+    const pendingCount = requests.filter(
+      (request, index) =>
+        index !== retainedIndex &&
+        requestMatchesAccountId(request, accountId) &&
+        isPairingRequestPending(request, nowMs),
     ).length;
-    if (CHANNEL_PAIRING_PENDING_MAX > 0 && accountRequestCount >= CHANNEL_PAIRING_PENDING_MAX) {
-      if (expired.removed || capped.removed) {
+    if (CHANNEL_PAIRING_PENDING_MAX > 0 && pendingCount >= CHANNEL_PAIRING_PENDING_MAX) {
+      if (capped.removed) {
         state.requests = requests;
         writeChannelPairingStateToDatabase(database, params.channel, state);
       }
@@ -330,7 +441,18 @@ export async function upsertChannelPairingRequest(params: {
     }
 
     const code = generateUniqueCode(existingCodes);
-    state.requests = [...requests, { id, code, createdAt: now, lastSeenAt: now, meta }];
+    const created: PairingRequest = {
+      id,
+      code,
+      createdAt: now,
+      lastSeenAt: now,
+      status: "pending",
+      meta,
+    };
+    state.requests =
+      retainedIndex >= 0
+        ? requests.map((request, index) => (index === retainedIndex ? created : request))
+        : [...requests, created];
     writeChannelPairingStateToDatabase(database, params.channel, state);
     return { code, created: true };
   }, sqliteOptionsForEnv(env));
@@ -350,11 +472,18 @@ async function resolveChannelPairingRequest(
 ): Promise<{ id: string; entry: PairingRequest } | null> {
   const env = params.env ?? process.env;
   return runOpenClawStateWriteTransaction((database) => {
+    const nowMs = Date.now();
     const state = readChannelPairingStateFromDatabase(database, params.channel);
-    const pruned = pruneExpiredRequests(state.requests, Date.now());
+    const pruned = pruneRequests(state.requests, nowMs);
     const accountId = normalizePairingAccountId(params.accountId);
+    // Only a live request resolves. An expired one stays listed as expired and
+    // has to be asked for again, so an approval always answers a request the
+    // sender still wants rather than reviving a code that aged out of a chat log.
     const index = pruned.requests.findIndex(
-      (request) => requestMatchesAccountId(request, accountId) && params.matches(request),
+      (request) =>
+        requestMatchesAccountId(request, accountId) &&
+        isPairingRequestPending(request, nowMs) &&
+        params.matches(request),
     );
     if (index < 0) {
       if (pruned.removed) {
@@ -367,8 +496,13 @@ async function resolveChannelPairingRequest(
     if (!entry) {
       return null;
     }
-    pruned.requests.splice(index, 1);
-    state.requests = pruned.requests;
+    const resolved: PairingRequest = {
+      ...entry,
+      status: params.approve ? "approved" : "dismissed",
+      resolvedAt: new Date(nowMs).toISOString(),
+    };
+    pruned.requests[index] = resolved;
+    state.requests = pruneRequests(pruned.requests, nowMs).requests;
 
     if (params.approve) {
       const allowAccountId = resolveAllowFromAccountId(
@@ -395,7 +529,7 @@ async function resolveChannelPairingRequest(
     }
 
     writeChannelPairingStateToDatabase(database, params.channel, state);
-    return { id: entry.id, entry };
+    return { id: resolved.id, entry: resolved };
   }, sqliteOptionsForEnv(env));
 }
 

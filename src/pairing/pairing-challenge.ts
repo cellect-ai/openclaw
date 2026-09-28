@@ -3,13 +3,14 @@ import { resolveGlobalDedupeCache } from "../infra/dedupe.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { normalizeAccountId } from "../routing/account-id.js";
 import { buildPairingReminderReply, buildPairingReply } from "./pairing-messages.js";
+import { recordChannelPairingRequested } from "./pairing-request-notice.js";
 
 /**
  * Minimum spacing between pairing replies to the same sender. A repeat sender
  * must never be met with silence, but every message must not re-trigger a
  * challenge either, so at most one reply per sender per interval is sent.
- * Pending requests expire after `CHANNEL_PAIRING_PENDING_TTL_MS` (1h), so this
- * bounds a pending window to a handful of replies.
+ * Pending requests stay approvable for `CHANNEL_PAIRING_PENDING_TTL_MS`, so a
+ * sender who keeps writing is answered at this spacing for as long as they do.
  */
 export const PAIRING_REPLY_INTERVAL_MS = 15 * 60 * 1000;
 
@@ -59,13 +60,21 @@ type PairingChallengeParams = {
   onReplyError?: (err: unknown) => void;
 };
 
-async function runPairingRequestedHook(params: {
+async function announcePairingRequested(params: {
   channel: string;
   accountId?: string;
   senderId: string;
   code: string;
   meta?: PairingMeta;
 }): Promise<void> {
+  // The core notice runs first and unconditionally: a request must be visible
+  // whether or not any plugin subscribed to the hook.
+  recordChannelPairingRequested({
+    channel: params.channel,
+    ...(params.accountId ? { accountId: params.accountId } : {}),
+    senderId: params.senderId,
+    ...(params.meta ? { metadata: params.meta } : {}),
+  });
   const hookRunner = getGlobalHookRunner();
   if (!hookRunner?.hasHooks("channel_pairing_requested")) {
     return;
@@ -131,7 +140,7 @@ export async function issuePairingChallenge(
   params.onCreated?.({ code });
   const accountId = params.accountId ? normalizeAccountId(params.accountId) : undefined;
   // Notification/audit hooks must not delay the pairing-code reply.
-  void runPairingRequestedHook({
+  void announcePairingRequested({
     channel: params.channel,
     accountId,
     senderId: params.senderId,

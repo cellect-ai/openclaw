@@ -445,8 +445,14 @@ describe("channels controller DM pairing", () => {
   const emptyPairing: ChannelsPairingListResult = {
     accounts: [],
     requests: [],
+    history: [],
     commandOwnerConfigured: true,
-    limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+    limits: {
+      pendingPerAccount: 3,
+      historyPerAccount: 25,
+      ttlMs: 7 * 24 * 60 * 60_000,
+      staleAfterMs: 24 * 60 * 60_000,
+    },
   };
   const pendingPairing: ChannelsPairingListResult = {
     ...emptyPairing,
@@ -468,7 +474,9 @@ describe("channels controller DM pairing", () => {
         senderLabel: "Phone number",
         createdAt: "2026-07-20T10:00:00.000Z",
         lastSeenAt: "2026-07-20T10:00:00.000Z",
-        expiresAt: "2026-07-20T11:00:00.000Z",
+        expiresAt: "2026-07-27T10:00:00.000Z",
+        status: "pending",
+        stale: false,
         notifySupported: true,
       },
     ],

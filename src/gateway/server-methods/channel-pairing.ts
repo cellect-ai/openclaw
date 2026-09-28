@@ -22,11 +22,16 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { bootstrapCommandOwnerFromPairing } from "../../pairing/command-owner.js";
 import {
   approveChannelPairingRequest,
+  CHANNEL_PAIRING_HISTORY_MAX,
   CHANNEL_PAIRING_PENDING_MAX,
   CHANNEL_PAIRING_PENDING_TTL_MS,
+  CHANNEL_PAIRING_STALE_AFTER_MS,
   dismissChannelPairingRequest,
+  isPairingRequestStale,
   listChannelPairingRequests,
   resolveChannelPairingRequestId,
+  resolvePairingRequestExpiresAt,
+  resolvePairingRequestStatus,
 } from "../../pairing/pairing-store.js";
 import { formatForLog } from "../ws-log.js";
 import { respondUnavailable, respondUnavailableOnThrow } from "./response.js";
@@ -142,6 +147,7 @@ function publicAccount(account: PairingAccount) {
 function publicRequest(params: {
   account: PairingAccount;
   request: Awaited<ReturnType<typeof listChannelPairingRequests>>[number];
+  nowMs: number;
 }): ChannelsPairingRequest {
   const adapter = params.account.plugin.pairing;
   if (!adapter) {
@@ -154,8 +160,8 @@ function publicRequest(params: {
         ),
       )
     : undefined;
-  const createdAtMs = Date.parse(params.request.createdAt);
   const senderId = params.request.meta?.senderId ?? params.request.id;
+  const resolvedAt = params.request.resolvedAt;
   return {
     requestId: resolveChannelPairingRequestId(params.account.plugin.id, params.request),
     channel: params.account.plugin.id,
@@ -167,7 +173,10 @@ function publicRequest(params: {
     ...(metadata && Object.keys(metadata).length > 0 ? { metadata } : {}),
     createdAt: params.request.createdAt,
     lastSeenAt: params.request.lastSeenAt,
-    expiresAt: new Date(createdAtMs + CHANNEL_PAIRING_PENDING_TTL_MS).toISOString(),
+    expiresAt: resolvePairingRequestExpiresAt(params.request),
+    status: resolvePairingRequestStatus(params.request, params.nowMs),
+    ...(resolvedAt ? { resolvedAt } : {}),
+    stale: isPairingRequestStale(params.request, params.nowMs),
     notifySupported: Boolean(adapter.notifyApproval),
   };
 }
@@ -216,24 +225,36 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
         ...(parsed.channel ? { channel: parsed.channel } : {}),
         ...(parsed.accountId ? { accountId: parsed.accountId } : {}),
       });
+      const nowMs = Date.now();
       const requests: ChannelsPairingRequest[] = [];
+      const history: ChannelsPairingRequest[] = [];
       for (const account of accounts) {
-        const pending = await listChannelPairingRequests(
+        const stored = await listChannelPairingRequests(
           account.plugin.id,
           process.env,
           account.accountId,
         );
-        requests.push(...pending.map((request) => publicRequest({ account, request })));
+        for (const request of stored) {
+          const entry = publicRequest({ account, request, nowMs });
+          // Approvable requests stay in `requests`; everything else is history,
+          // so an existing client never gets an unapprovable row to act on.
+          (entry.status === "pending" ? requests : history).push(entry);
+        }
       }
+      // Newest first: history is read to answer "who asked, and what happened".
+      history.sort((left, right) => right.createdAt.localeCompare(left.createdAt));
       respond(
         true,
         {
           accounts: accounts.map(publicAccount),
           requests,
+          history,
           commandOwnerConfigured: hasConfiguredCommandOwners(cfg),
           limits: {
             pendingPerAccount: CHANNEL_PAIRING_PENDING_MAX,
+            historyPerAccount: CHANNEL_PAIRING_HISTORY_MAX,
             ttlMs: CHANNEL_PAIRING_PENDING_TTL_MS,
+            staleAfterMs: CHANNEL_PAIRING_STALE_AFTER_MS,
           },
         },
         undefined,
@@ -283,7 +304,11 @@ export const channelPairingHandlers: GatewayRequestHandlers = {
         respond(
           false,
           undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "pending DM access request no longer exists"),
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "DM access request is no longer pending; it expired, was already resolved, " +
+              "or the sender must request access again",
+          ),
         );
         return;
       }
