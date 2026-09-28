@@ -9,6 +9,11 @@ import {
   expectSingleToolErrorPayload,
 } from "./payloads.test-helpers.js";
 
+// The actionable tail every non-verbose tool-failure banner carries, so a
+// reader who is not an operator still knows what happened and what to do.
+const HINT =
+  " I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.";
+
 describe("buildEmbeddedRunPayloads tool warnings", () => {
   const errorJson =
     '{"type":"error","error":{"details":null,"type":"overloaded_error","message":"Overloaded"},"request_id":"req_011CX7DwS7tSvggaNHmefwWg"}';
@@ -207,7 +212,7 @@ describe("buildEmbeddedRunPayloads tool warnings", () => {
     });
 
     expectSinglePayloadSummary(payloads, {
-      text: "⚠️ Exec failed (exit 1)",
+      text: "⚠️ Exec failed (exit 1)." + HINT,
       isError: true,
     });
   });
@@ -232,11 +237,11 @@ describe("buildEmbeddedRunPayloads tool warnings", () => {
   });
 
   it.each([
-    [false, "off", "⚠️ Exec blocked (exit 7)"],
+    [false, "off", "⚠️ Exec blocked (exit 7)." + HINT],
     [false, "full", "⚠️ Exec blocked: `make build`: Command exited with code 7"],
-    [true, "off", "⚠️ Exec failed (exit 7)"],
+    [true, "off", "⚠️ Exec failed (exit 7)." + HINT],
     [true, "full", "⚠️ Exec failed: `make build`: Command exited with code 7"],
-    [undefined, "off", "⚠️ Exec failed (exit 7)"],
+    [undefined, "off", "⚠️ Exec failed (exit 7)." + HINT],
     [undefined, "full", "⚠️ Exec failed: `make build`: Command exited with code 7"],
   ] as const)(
     "renders executionStarted=%s at %s verbosity from structured state",
