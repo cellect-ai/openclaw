@@ -129,6 +129,8 @@ export async function reconcileSlackDirectProjections(
   sweepSeen = new Set<string>(),
   limit = RECONCILE_HISTORY_BATCH_SIZE,
   prioritySessionKey?: string,
+  /** Sessions with an outcome since the gateway started; the rest are backlog. */
+  reconciled?: Set<string>,
 ) {
   const config = api.runtime.config?.current?.() ?? api.config;
   const configured = (config?.bindings ?? []).filter(
@@ -154,11 +156,33 @@ export async function reconcileSlackDirectProjections(
     sessions.add(prioritySessionKey);
   }
   const sessionKeys = [...sessions].toSorted();
+  if (reconciled) {
+    for (const sessionKey of reconciled) {
+      if (!sessions.has(sessionKey)) {
+        reconciled.delete(sessionKey);
+      }
+    }
+  }
+  const unreconciled = () =>
+    reconciled ? sessionKeys.filter((sessionKey) => !reconciled.has(sessionKey)) : [];
+  const backlog = unreconciled();
   const scheduled =
     prioritySessionKey && sessions.has(prioritySessionKey)
       ? [prioritySessionKey]
-      : takeSweepBatch(sessionKeys, sweepSeen, limit);
-  const report = { scanned: sessions.size, created: 0, existing: 0, skipped: 0, error: 0 };
+      : backlog.length
+        ? backlog.slice(0, limit)
+        : takeSweepBatch(sessionKeys, sweepSeen, limit);
+  const report = {
+    scanned: sessions.size,
+    // Re-snapshotting a DM that already has an outcome is rotation, not
+    // backlog: counting it kept the reconciler on its one-second cadence
+    // whenever more than one DM existed.
+    pending: 0,
+    created: 0,
+    existing: 0,
+    skipped: 0,
+    error: 0,
+  };
   const post = async (body: unknown) => {
     const response = await fetch(`${connection.baseUrl}/api/openclaw-session-projection`, {
       method: "POST",
@@ -249,6 +273,8 @@ export async function reconcileSlackDirectProjections(
         `fi-user: direct projection session=${sessionKey} failed (${error instanceof Error ? error.message.replace(/xox[baprs]-\S+/g, "[redacted]").slice(0, 150) : "unknown"})`,
       );
     }
+    reconciled?.add(sessionKey);
   }
+  report.pending = unreconciled().length;
   return report;
 }

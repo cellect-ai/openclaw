@@ -316,6 +316,7 @@ export function registerSlackProjectionReconciler(
   let discoveryCursor = "";
   const bindingSweepSeen = new Set<string>();
   const directSweepSeen = new Set<string>();
+  const directReconciled = new Set<string>();
   const outcomes = new Map<string, "created" | "existing" | "skipped" | "error">();
   const drift = createProjectionDriftScheduler();
   let driftReport = { rooms: 0, planned: 0, refreshed: 0, refreshFailed: 0, refreshDeclined: 0 };
@@ -328,12 +329,14 @@ export function registerSlackProjectionReconciler(
     error: 0,
     unavailable: 0,
     historyDiscoveryPending: 0,
+    historyDiscoveryActionable: 0,
     complete: false,
   };
-  let directReport = { scanned: 0, created: 0, existing: 0, skipped: 0, error: 0 };
+  let directReport = { scanned: 0, pending: 0, created: 0, existing: 0, skipped: 0, error: 0 };
   let detachedReport = {
     channels: 0,
     pending: 0,
+    actionable: 0,
     unavailable: 0,
     error: 0,
     created: 0,
@@ -488,14 +491,6 @@ export function registerSlackProjectionReconciler(
         const identity = accountId && rootIdentity(sessionKey, accountId);
         return Boolean(identity && !outcomes.has(identity));
       });
-      const directPending = Math.max(
-        0,
-        directReport.scanned -
-          directReport.created -
-          directReport.existing -
-          directReport.skipped -
-          directReport.error,
-      );
       // Once this lane has classified all bindings, let the other recovery
       // lanes drain before rotating completed ACL checks. Transient channel
       // errors are retried on the normal idle cadence after the global
@@ -503,7 +498,7 @@ export function registerSlackProjectionReconciler(
       const bindingSweepKeys =
         unseenBindingKeys.length > 0
           ? unseenBindingKeys
-          : detachedReport.pending > 0 || directPending > 0
+          : detachedReport.actionable > 0 || directReport.pending > 0
             ? []
             : bindingKeys;
       const priority = prioritySessionKey
@@ -692,6 +687,7 @@ export function registerSlackProjectionReconciler(
           directSweepSeen,
           RECONCILE_HISTORY_BATCH_SIZE,
           directPrioritySessionKey,
+          directReconciled,
         );
       }
       // During a historical drain, passes run every second. Keep the expensive
@@ -729,6 +725,7 @@ export function registerSlackProjectionReconciler(
         ...counts,
         unavailable: unavailableSessions.size,
         historyDiscoveryPending: detachedReport.pending,
+        historyDiscoveryActionable: detachedReport.actionable,
         complete:
           pending === 0 &&
           counts.error === 0 &&
@@ -755,18 +752,13 @@ export function registerSlackProjectionReconciler(
     } finally {
       running = false;
       if (!stopped && controller === generation) {
-        const directPending = Math.max(
-          0,
-          directReport.scanned -
-            directReport.created -
-            directReport.existing -
-            directReport.skipped -
-            directReport.error,
-        );
+        // Only new work earns the backlog cadence. Rescans, failed-source
+        // retries and DM rotation are maintenance on the idle cadence;
+        // `historyDiscoveryPending` still reports them.
         const actionablePending =
           report.pending > report.unavailable ||
-          report.historyDiscoveryPending > 0 ||
-          directPending > 0;
+          report.historyDiscoveryActionable > 0 ||
+          directReport.pending > 0;
         const delay =
           wakeRequested || actionablePending ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
         timer = setTimeout(() => void reconcile(), delay);
@@ -792,6 +784,7 @@ export function registerSlackProjectionReconciler(
       lastDriftAt = 0;
       bindingSweepSeen.clear();
       directSweepSeen.clear();
+      directReconciled.clear();
       controller = new AbortController();
       timer = setTimeout(() => void reconcile(), 5_000);
       timer.unref();

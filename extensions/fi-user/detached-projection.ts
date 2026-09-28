@@ -8,6 +8,7 @@ import type { ChannelProjectionParams } from "./channel-projection.js";
 import {
   RECONCILE_BATCH_SIZE,
   RECONCILE_HISTORY_BATCH_SIZE,
+  reconcileRetryDelay,
   takePendingOrRotatingBatch,
 } from "./reconciliation-batch.js";
 
@@ -155,21 +156,48 @@ export function createDetachedProjectionReconciler(
   api: OpenClawPluginApi,
   publish: (params: ChannelProjectionParams) => Promise<boolean>,
 ) {
-  const scans = new Map<
-    string,
-    {
-      cursor?: string;
-      roots: string[];
-      failed: Set<string>;
-      pages: number;
-      done: boolean;
-      completedAt?: number;
-      created: number;
-      existing: number;
-      skipped: number;
-      error?: string;
-    }
-  >();
+  type Scan = {
+    cursor?: string;
+    roots: string[];
+    /** Failed roots keep their own backoff across rescans; they never hold a scan open. */
+    failed: Map<string, { failures: number; retryAt: number }>;
+    pages: number;
+    done: boolean;
+    /** A periodic safety rescan, not new work: it runs at the idle cadence. */
+    background: boolean;
+    /** Consecutive whole-channel failures and when the channel may be read again. */
+    failures: number;
+    retryAt?: number;
+    completedAt?: number;
+    created: number;
+    existing: number;
+    skipped: number;
+    error?: string;
+  };
+  const scans = new Map<string, Scan>();
+  const newScan = (background: boolean, failed: Scan["failed"] = new Map()): Scan => ({
+    roots: [],
+    failed,
+    pages: 0,
+    done: false,
+    background,
+    failures: 0,
+    created: 0,
+    existing: 0,
+    skipped: 0,
+  });
+  const due = (retryAt: number | undefined) => retryAt === undefined || Date.now() >= retryAt;
+  // Only unread history is actionable. A background rescan, a channel waiting
+  // out a failure, and a scan whose remaining roots are retries of earlier
+  // failures are all maintenance and must not hold the backlog cadence.
+  const actionable = (scan: Scan | undefined) =>
+    !scan ||
+    (!scan.done &&
+      !scan.background &&
+      scan.failures === 0 &&
+      (scan.pages === 0 ||
+        scan.cursor !== undefined ||
+        scan.roots.some((root) => !scan.failed.has(root))));
   let channelCursor = "";
   let existingCursor = "";
   let refreshAt = 0;
@@ -355,13 +383,15 @@ export function createDetachedProjectionReconciler(
       }
     }
     const keys = [...parents.keys()].toSorted();
-    if (!budget.allowDiscovery && budget.maxExistingRooms !== undefined) {
+    const summary = () => {
       const states = [...scans.values()];
+      const uncheckedRooms = roomIds.filter((roomId) => !existingOutcomes.has(roomId)).length;
       return {
         channels: parents.size,
-        pending:
-          keys.filter((candidate) => !scans.get(candidate)?.done).length +
-          roomIds.filter((roomId) => !existingOutcomes.has(roomId)).length,
+        pending: keys.filter((candidate) => !scans.get(candidate)?.done).length + uncheckedRooms,
+        /** The part of `pending` that is new work and may use the backlog cadence. */
+        actionable:
+          keys.filter((candidate) => actionable(scans.get(candidate))).length + uncheckedRooms,
         unavailable:
           unavailable +
           [...existingOutcomes.values()].filter((outcome) => outcome === "unavailable").length,
@@ -372,38 +402,53 @@ export function createDetachedProjectionReconciler(
         existing: states.reduce((sum, state) => sum + state.existing, 0),
         skipped: states.reduce((sum, state) => sum + state.skipped, 0),
       };
+    };
+    if (!budget.allowDiscovery && budget.maxExistingRooms !== undefined) {
+      return summary();
     }
     if (
       refreshAt &&
       Date.now() >= refreshAt &&
       keys.every((candidate) => scans.get(candidate)?.done)
     ) {
-      scans.clear();
+      // The periodic rescan is a safety net for history that live delivery
+      // missed. It re-reads every channel, so it is background work; only a
+      // root it actually creates promotes that channel back to the backlog.
+      for (const [candidate, scan] of scans) {
+        scans.set(candidate, newScan(true, scan.failed));
+      }
       refreshAt = 0;
+    }
+    for (const scan of scans.values()) {
+      if (
+        scan.done &&
+        !scan.cursor &&
+        [...scan.failed.values()].some((retry) => due(retry.retryAt))
+      ) {
+        scan.done = false;
+      }
     }
     const ordered = [
       ...keys.filter((key) => key > channelCursor),
       ...keys.filter((key) => key <= channelCursor),
-    ];
-    const key = ordered.find((candidate) => !scans.get(candidate)?.done);
+    ].filter((candidate) => {
+      const scan = scans.get(candidate);
+      return !scan?.done && due(scan?.retryAt);
+    });
+    const key = ordered.find((candidate) => !scans.get(candidate)?.background) ?? ordered[0];
     const parent = key ? parents.get(key) : undefined;
     if (key && parent) {
       channelCursor = key;
-      const state = scans.get(key) ?? {
-        roots: [],
-        failed: new Set<string>(),
-        pages: 0,
-        done: false,
-        created: 0,
-        existing: 0,
-        skipped: 0,
-      };
+      const state = scans.get(key) ?? newScan(false);
       scans.set(key, state);
       try {
         const scope = await scopeFor(parent.accountId, parent.channelId);
         if (!state.roots.length) {
           if (state.pages > 0 && !state.cursor) {
-            state.roots = [...state.failed].slice(0, RECONCILE_HISTORY_BATCH_SIZE);
+            state.roots = [...state.failed]
+              .filter(([, retry]) => due(retry.retryAt))
+              .map(([rootMessageId]) => rootMessageId)
+              .slice(0, RECONCILE_HISTORY_BATCH_SIZE);
           } else {
             if (state.failed.size >= 1000) {
               throw new Error(
@@ -416,7 +461,14 @@ export function createDetachedProjectionReconciler(
             state.roots = [...page.roots];
           }
         }
-        for (const rootMessageId of state.roots.slice(0, RECONCILE_HISTORY_BATCH_SIZE)) {
+        // Known and backed-off roots cost no network call, so they do not
+        // spend the one publish this pass may make.
+        let published = 0;
+        while (published < RECONCILE_HISTORY_BATCH_SIZE) {
+          const rootMessageId = state.roots[0];
+          if (rootMessageId === undefined) {
+            break;
+          }
           signal.throwIfAborted();
           const source: Source = {
             provider: "slack",
@@ -424,10 +476,13 @@ export function createDetachedProjectionReconciler(
             channelId: parent.channelId,
             rootMessageId,
           };
-          try {
-            if (knownRoots.has(identity(source))) {
-              state.existing++;
-            } else {
+          const retry = state.failed.get(rootMessageId);
+          if (knownRoots.has(identity(source))) {
+            state.existing++;
+            state.failed.delete(rootMessageId);
+          } else if (!retry || due(retry.retryAt)) {
+            published++;
+            try {
               await publish({
                 api,
                 ...connection,
@@ -439,48 +494,55 @@ export function createDetachedProjectionReconciler(
                 signal,
                 onResult: (status) => {
                   state[status]++;
+                  if (status === "created") {
+                    state.background = false;
+                  }
                 },
               });
+              state.failed.delete(rootMessageId);
+            } catch (error) {
+              if (signal.aborted) {
+                throw error;
+              }
+              const failures = (retry?.failures ?? 0) + 1;
+              state.failed.delete(rootMessageId);
+              state.failed.set(rootMessageId, {
+                failures,
+                retryAt: Date.now() + reconcileRetryDelay(failures),
+              });
+              state.error = safeError(error);
             }
-            state.failed.delete(rootMessageId);
-          } catch (error) {
-            state.failed.delete(rootMessageId);
-            state.failed.add(rootMessageId);
-            state.error = safeError(error);
           }
           state.roots.shift();
         }
-        state.done = !state.cursor && !state.roots.length && !state.failed.size;
+        // A root waiting out its backoff is reported through `error`; it does
+        // not keep the channel open, or every rescan would stall behind it.
+        state.done =
+          !state.cursor &&
+          !state.roots.length &&
+          ![...state.failed.values()].some((failed) => due(failed.retryAt));
         if (state.done) {
           state.completedAt = Date.now();
         }
         if (!state.failed.size) {
           state.error = undefined;
         }
+        state.failures = 0;
+        state.retryAt = undefined;
       } catch (error) {
         state.error = safeError(error);
+        // A stopped gateway generation is not a source failure.
+        if (!signal.aborted) {
+          state.failures++;
+          state.retryAt = Date.now() + reconcileRetryDelay(state.failures);
+        }
         api.logger.warn(`fi-user: detached discovery source=${key} error=${state.error}`);
       }
     }
-    const states = [...scans.values()];
     if (!refreshAt && keys.every((candidate) => scans.get(candidate)?.done)) {
       refreshAt = Date.now() + 300_000;
     }
-    return {
-      channels: parents.size,
-      pending:
-        keys.filter((candidate) => !scans.get(candidate)?.done).length +
-        roomIds.filter((roomId) => !existingOutcomes.has(roomId)).length,
-      unavailable:
-        unavailable +
-        [...existingOutcomes.values()].filter((outcome) => outcome === "unavailable").length,
-      error:
-        states.filter((state) => state.error).length +
-        [...existingOutcomes.values()].filter((outcome) => outcome === "error").length,
-      created: states.reduce((sum, state) => sum + state.created, 0),
-      existing: states.reduce((sum, state) => sum + state.existing, 0),
-      skipped: states.reduce((sum, state) => sum + state.skipped, 0),
-    };
+    return summary();
   };
   return {
     reconcile: run,
@@ -489,9 +551,11 @@ export function createDetachedProjectionReconciler(
       if (!channelId) {
         return;
       }
+      // Live parent activity is new work: restart the channel on the backlog
+      // cadence, keeping each failed root's backoff.
       for (const [key, scan] of scans) {
-        if (key.endsWith(`:${channelId}`) && scan.done) {
-          scans.delete(key);
+        if (key.endsWith(`:${channelId}`) && (scan.done || scan.background)) {
+          scans.set(key, newScan(false, scan.failed));
           refreshAt = 0;
         }
       }

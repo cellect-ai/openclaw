@@ -192,6 +192,72 @@ describe("Fi direct projection discovery", () => {
     ).toEqual(sessions);
     fetchMock.mockRestore();
   });
+  it("reports only never-reconciled DMs as backlog and drains a new DM before rotating", async () => {
+    const sessions = ["u001", "u002", "u003"].map(
+      (peer) => `agent:cellect-fi-admin:slack:direct:${peer}`,
+    );
+    mocks.list.mockReturnValue(sessions.map((key) => ({ sessionKey: key, entry: {} })));
+    mocks.entry.mockImplementation(({ sessionKey: key }: { sessionKey: string }) => ({
+      origin: { accountId: "configured-admin", nativeChannelId: `D${key.slice(-3)}` },
+    }));
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({ ok: true, json: async () => ({ status: "existing" }) } as Response);
+    const api = {
+      config: {
+        bindings: [
+          {
+            agentId: "cellect-fi-admin",
+            match: { channel: "slack", accountId: "configured-admin" },
+          },
+        ],
+      },
+      logger: { warn: vi.fn() },
+      runtime: {
+        channel: {
+          runtimeContexts: {
+            get: () => ({
+              botUserId: "U222",
+              readDirect: async (channelId: string, peerSenderId: string) => ({
+                directSource: { workspaceId: "T123", channelId, peerSenderId },
+                messages: [],
+              }),
+            }),
+          },
+        },
+      },
+    } as unknown as OpenClawPluginApi;
+    const seen = new Set<string>();
+    const reconciled = new Set<string>();
+    const run = () =>
+      reconcileSlackDirectProjections(
+        api,
+        { baseUrl: "https://fi.example", token: "test" },
+        [],
+        new AbortController().signal,
+        seen,
+        1,
+        undefined,
+        reconciled,
+      );
+    expect((await run()).pending).toBe(2);
+    expect((await run()).pending).toBe(1);
+    expect((await run()).pending).toBe(0);
+    // Rotation re-snapshots an already reconciled DM, which is not backlog.
+    expect((await run()).pending).toBe(0);
+    const added = "agent:cellect-fi-admin:slack:direct:u000";
+    mocks.list.mockReturnValue([added, ...sessions].map((key) => ({ sessionKey: key, entry: {} })));
+    expect((await run()).pending).toBe(0);
+    const order = fetchMock.mock.calls.map((call) => {
+      const body = call[1]?.body;
+      if (typeof body !== "string") {
+        throw new Error("Expected JSON request body");
+      }
+      return JSON.parse(body).sessionKey;
+    });
+    expect(order).toEqual([...sessions, sessions[0], added]);
+    fetchMock.mockRestore();
+  });
   it("discovers an eligible superadmin DM from its existing OpenClaw session", async () => {
     const mainSession = "agent:cellect-main:slack:direct:u111";
     mocks.list.mockImplementation(({ agentId }: { agentId: string }) =>

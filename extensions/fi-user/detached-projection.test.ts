@@ -2,6 +2,7 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ChannelProjectionParams } from "./channel-projection.js";
 import { createDetachedProjectionReconciler, planProjectionRoom } from "./detached-projection.js";
+import { reconcileRetryDelay } from "./reconciliation-batch.js";
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn() }));
 vi.mock("openclaw/plugin-sdk/session-store-runtime", () => ({
   listSessionKeys: (...args: unknown[]) =>
@@ -45,6 +46,7 @@ describe("native parent-session Slack history discovery", () => {
     return { api, sessionKey, readHistoryPage, readChannel, publish };
   }
   it("pages beyond one root batch without fabricating sessions or starving failed roots", async () => {
+    vi.useFakeTimers();
     const f = fixture();
     const roots = Array.from(
       { length: 12 },
@@ -67,17 +69,30 @@ describe("native parent-session Slack history discovery", () => {
     const signal = new AbortController().signal;
     expect(await reconcile(connection, [], signal, new Set())).toMatchObject({
       pending: 1,
+      actionable: 1,
       error: 1,
     });
-    for (let index = 0; index < 12; index++) {
+    for (let index = 0; index < 11; index++) {
       await reconcile(connection, [], signal, new Set());
     }
+    // The failed root waits out its backoff without holding the scan open.
+    expect(await reconcile(connection, [], signal, new Set())).toMatchObject({
+      pending: 0,
+      actionable: 0,
+      error: 1,
+      created: 12,
+    });
+    await reconcile(connection, [], signal, new Set());
+    expect(f.publish).toHaveBeenCalledTimes(13);
+    await vi.advanceTimersByTimeAsync(reconcileRetryDelay(1));
+    await reconcile(connection, [], signal, new Set());
     expect(await reconcile(connection, [], signal, new Set())).toMatchObject({
       pending: 0,
       error: 0,
-      created: 13,
+      created: 1,
     });
-    expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["older"]]);
+    expect(f.publish).toHaveBeenCalledTimes(14);
+    expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["older"], [undefined]]);
     for (const [params] of f.publish.mock.calls) {
       expect(params).toMatchObject({
         sessionKey: f.sessionKey,
@@ -260,5 +275,98 @@ describe("native parent-session Slack history discovery", () => {
       ).toMatchObject({ pending: 8 - index });
     }
     expect(f.publish).toHaveBeenCalledTimes(9);
+  });
+  describe("maintenance cadence", () => {
+    const connection = { baseUrl: "https://fi.example", token: "test" };
+    const known = (roots: string[]) => new Set(roots.map((root) => `T123:C123:${root}`));
+
+    it("reports a periodic rescan of known history as pending but not actionable", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const roots = ["1700000000.000001", "1700000000.000002", "1700000000.000003"];
+      f.readHistoryPage.mockResolvedValue({ roots, nextCursor: undefined });
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, known(roots), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      // Known roots cost no publish, so one pass reads and settles the page.
+      expect(await run()).toMatchObject({ pending: 0, actionable: 0, existing: 3 });
+      await vi.advanceTimersByTimeAsync(300_000);
+      f.readHistoryPage.mockResolvedValue({ roots, nextCursor: "older" });
+      expect(await run()).toMatchObject({ pending: 1, actionable: 0 });
+      expect(f.readHistoryPage).toHaveBeenCalledTimes(2);
+      expect(f.publish).not.toHaveBeenCalled();
+    });
+
+    it("promotes a rescan that finds unprojected history back to the backlog", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.readHistoryPage.mockResolvedValue({ roots: [], nextCursor: undefined });
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, new Set(), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      expect(await run()).toMatchObject({ pending: 0 });
+      await vi.advanceTimersByTimeAsync(300_000);
+      f.readHistoryPage.mockResolvedValue({
+        roots: ["1700000000.000001", "1700000000.000002"],
+        nextCursor: undefined,
+      });
+      expect(await run()).toMatchObject({ pending: 1, actionable: 1, created: 1 });
+      expect(await run()).toMatchObject({ pending: 0, actionable: 0, created: 2 });
+    });
+
+    it("backs off a failing root exponentially without holding its channel open", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const failing = "1700000000.000009";
+      f.readHistoryPage.mockResolvedValue({ roots: [failing], nextCursor: undefined });
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, new Set(), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      const attemptsAt: number[] = [];
+      const start = Date.now();
+      f.publish.mockImplementation(async () => {
+        attemptsAt.push(Date.now() - start);
+        throw new Error("Fi channel projection failed (503)");
+      });
+      expect(await run()).toMatchObject({ pending: 0, actionable: 0, error: 1 });
+      // Reconcile every ten seconds for four hours; the old loop retried the
+      // root on every pass.
+      for (let tick = 0; tick < (4 * 3600) / 10; tick++) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        expect((await run()).actionable).toBe(0);
+      }
+      const gaps = attemptsAt.slice(1).map((at, index) => at - (attemptsAt[index] ?? 0));
+      expect(gaps.map((gap) => gap / 60_000)).toEqual([5, 10, 20, 40, 60, 60]);
+    });
+
+    it("backs off a channel whose history cannot be read", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.readHistoryPage.mockRejectedValue(new Error("not_in_channel"));
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, new Set(), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      expect(await run()).toMatchObject({ pending: 1, actionable: 0, error: 1 });
+      for (let tick = 0; tick < 29; tick++) {
+        await vi.advanceTimersByTimeAsync(10_000);
+        await run();
+      }
+      expect(f.readHistoryPage).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(10_000);
+      await run();
+      expect(f.readHistoryPage).toHaveBeenCalledTimes(2);
+    });
   });
 });

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RECONCILE_BATCH_SIZE,
   RECONCILE_HISTORY_BATCH_SIZE,
+  reconcileRetryDelay,
   takePendingOrRotatingBatch,
   takeSweepBatch,
 } from "./reconciliation-batch.js";
@@ -37,5 +38,10 @@ describe("projection reconciliation batching", () => {
   it("uses a one-at-a-time budget for historical snapshots", () => {
     expect(RECONCILE_BATCH_SIZE).toBe(1);
     expect(RECONCILE_HISTORY_BATCH_SIZE).toBe(1);
+  });
+  it("backs failed sources off exponentially from five minutes to an hour", () => {
+    expect([1, 2, 3, 4, 5, 12].map((failures) => reconcileRetryDelay(failures) / 60_000)).toEqual([
+      5, 10, 20, 40, 60, 60,
+    ]);
   });
 });

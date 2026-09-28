@@ -22,6 +22,17 @@ export const RECONCILE_FULL_REFRESH_BUDGET = 1;
 export const RECONCILE_BACKLOG_DELAY_MS = 1_000;
 export const RECONCILE_IDLE_DELAY_MS = 60_000;
 
+// A source that failed is not new work. Retrying it on the backlog cadence
+// turned a handful of broken Slack roots into a permanent one-second loop
+// against Fi, Matrix and Slack, so each failure waits exponentially longer
+// (5 min doubling to 1 h) and is reported instead of keeping a scan open.
+const RECONCILE_RETRY_BASE_MS = 300_000;
+const RECONCILE_RETRY_MAX_MS = 3_600_000;
+
+export function reconcileRetryDelay(failures: number): number {
+  return Math.min(RECONCILE_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1), RECONCILE_RETRY_MAX_MS);
+}
+
 export type ProjectionMaintenanceLane = "channel" | "detached" | "direct";
 
 export function nextMaintenanceLane(lane: ProjectionMaintenanceLane): ProjectionMaintenanceLane {
