@@ -154,6 +154,7 @@ export function resolveDetachedRoomAccount(
 const RESCAN_MARGIN_SECONDS = 3600;
 const RESCAN_MAX_PAGES = 3;
 const RESCAN_MAX_FAILED_ROOTS = 1000;
+const FULL_RESCAN_INTERVAL_MS = 24 * 3600_000;
 
 /** Cursor state is only a bounded scheduler; durable source/room identity makes restart replay safe. */
 export function createDetachedProjectionReconciler(
@@ -182,6 +183,15 @@ export function createDetachedProjectionReconciler(
      * this; undefined reads the whole history (the first scan after start).
      */
     since?: number;
+    /** Stopped before reaching `since` (page cap or failure stop): its window is unread. */
+    truncated: boolean;
+    /**
+     * A rescan's page allowance. After a truncated scan the next one keeps
+     * the unread window and pages deeper, so it reaches what was skipped.
+     */
+    maxPages: number;
+    /** When the last full-depth scan of this channel began, once one has finished. */
+    fullScanAt?: number;
     completedAt?: number;
     created: number;
     existing: number;
@@ -193,28 +203,43 @@ export function createDetachedProjectionReconciler(
   // (less a margin), so one rescan of a long channel is a page or two rather
   // than hours of paging at the idle cadence. A scan that did not finish
   // hands its own window on, so nothing it had not reached is skipped.
-  const newScan = (background: boolean, previous?: Scan): Scan => ({
-    roots: [],
-    failed: previous?.failed ?? new Map(),
-    pages: 0,
-    done: false,
-    background,
-    failures: 0,
-    scanFailures: 0,
-    startedAt: Date.now(),
-    since: !previous
-      ? undefined
-      : previous.done
-        ? Math.floor(previous.startedAt / 1000) - RESCAN_MARGIN_SECONDS
-        : previous.since,
-    created: 0,
-    existing: 0,
-    skipped: 0,
-  });
+  const newScan = (background: boolean, previous?: Scan): Scan => {
+    // Shallow rescans cannot see an old thread that becomes a Claw conversation
+    // later, so a background rescan goes to full depth once a day.
+    const full =
+      !previous ||
+      (background && Date.now() - (previous.fullScanAt ?? 0) >= FULL_RESCAN_INTERVAL_MS);
+    return {
+      roots: [],
+      failed: previous?.failed ?? new Map(),
+      pages: 0,
+      done: false,
+      background,
+      failures: 0,
+      scanFailures: 0,
+      startedAt: Date.now(),
+      since: full
+        ? undefined
+        : previous.done && !previous.truncated
+          ? Math.floor(previous.startedAt / 1000) - RESCAN_MARGIN_SECONDS
+          : previous.since,
+      truncated: false,
+      maxPages:
+        previous?.truncated && !full ? previous.maxPages + RESCAN_MAX_PAGES : RESCAN_MAX_PAGES,
+      fullScanAt: previous?.fullScanAt,
+      created: 0,
+      existing: 0,
+      skipped: 0,
+    };
+  };
   const due = (retryAt: number | undefined) => retryAt === undefined || Date.now() >= retryAt;
   // A channel waiting out a read failure has nothing to do until then, so it
   // must not hold back the periodic rescan of every other channel.
   const settled = (scan: Scan | undefined) => Boolean(scan && (scan.done || !due(scan.retryAt)));
+  // Background scans (a daily full-depth rescan can page for hours) must not
+  // hold back other channels' refresh; unfinished initial scans still do.
+  const refreshable = (scan: Scan | undefined) =>
+    Boolean(scan && (scan.background || settled(scan)));
   // Only unread history is actionable. A background rescan, a channel waiting
   // out a failure, and a scan whose remaining roots are retries of earlier
   // failures are all maintenance and must not hold the backlog cadence.
@@ -437,7 +462,7 @@ export function createDetachedProjectionReconciler(
     if (
       refreshAt &&
       Date.now() >= refreshAt &&
-      keys.every((candidate) => settled(scans.get(candidate)))
+      keys.every((candidate) => refreshable(scans.get(candidate)))
     ) {
       // The periodic rescan is a safety net for history that live delivery
       // missed. It re-reads every channel, so it is background work; only a
@@ -485,11 +510,13 @@ export function createDetachedProjectionReconciler(
             state.cursor = page.nextCursor;
             state.roots = [...page.roots];
             const since = state.since;
-            if (
-              since !== undefined &&
-              (state.pages >= RESCAN_MAX_PAGES || page.roots.some((root) => Number(root) < since))
-            ) {
-              state.cursor = undefined;
+            if (since !== undefined && state.cursor) {
+              if (page.roots.some((root) => Number(root) < since)) {
+                state.cursor = undefined;
+              } else if (state.pages >= state.maxPages) {
+                state.cursor = undefined;
+                state.truncated = true;
+              }
             }
           }
         }
@@ -559,6 +586,7 @@ export function createDetachedProjectionReconciler(
           // failed roots keep their backoff and the next rescan starts clean.
           state.cursor = undefined;
           state.roots = [];
+          state.truncated = true;
           api.logger.warn(
             `fi-user: detached discovery source=${key} stopped after ${state.scanFailures} failed roots`,
           );
@@ -571,6 +599,9 @@ export function createDetachedProjectionReconciler(
           ![...state.failed.values()].some((failed) => due(failed.retryAt));
         if (state.done) {
           state.completedAt = Date.now();
+          if (state.since === undefined && !state.truncated) {
+            state.fullScanAt = state.startedAt;
+          }
         }
         if (!state.failed.size) {
           state.error = undefined;
@@ -587,7 +618,7 @@ export function createDetachedProjectionReconciler(
         api.logger.warn(`fi-user: detached discovery source=${key} error=${state.error}`);
       }
     }
-    if (!refreshAt && keys.every((candidate) => settled(scans.get(candidate)))) {
+    if (!refreshAt && keys.every((candidate) => refreshable(scans.get(candidate)))) {
       refreshAt = Date.now() + 300_000;
     }
     return summary();

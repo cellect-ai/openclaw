@@ -389,6 +389,78 @@ describe("native parent-session Slack history discovery", () => {
       expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["p2"], ["p3"]]);
     });
 
+    it("pages deeper after a truncated rescan until it reaches the unread window", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const now = Math.floor(Date.now() / 1000);
+      const cursors = ["p2", "p3", "p4", "p5", "p6", undefined];
+      const pages = new Map<string | undefined, { roots: string[]; nextCursor?: string }>(
+        [undefined, ...cursors.slice(0, -1)].map((cursor, index) => [
+          cursor,
+          {
+            // Five pages of recent history, then one old page.
+            roots: [index < 5 ? `${now}.00000${index}` : "1600000000.000001"],
+            nextCursor: cursors[index],
+          },
+        ]),
+      );
+      f.readHistoryPage.mockImplementation(async (cursor?: string) => pages.get(cursor));
+      const roots = [...pages.values()].flatMap((page) => page.roots);
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, known(roots), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      const scan = async () => {
+        f.readHistoryPage.mockClear();
+        for (let pass = 0; pass < 8; pass++) {
+          await run();
+        }
+        return f.readHistoryPage.mock.calls.length;
+      };
+      expect(await scan()).toBe(6);
+      await vi.advanceTimersByTimeAsync(300_000);
+      // Capped at three pages, short of the previous scan's window...
+      expect(await scan()).toBe(3);
+      await vi.advanceTimersByTimeAsync(300_000);
+      // ...so the next rescan keeps that window and pages deeper to reach it.
+      expect(await scan()).toBe(6);
+      await vi.advanceTimersByTimeAsync(300_000);
+      expect(await scan()).toBe(3);
+    });
+
+    it("rescans full depth once a day to find old threads that became Claw conversations", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const now = Math.floor(Date.now() / 1000);
+      const pages = new Map<string | undefined, { roots: string[]; nextCursor?: string }>([
+        [undefined, { roots: [`${now}.000001`], nextCursor: "p2" }],
+        ["p2", { roots: ["1600000000.000002"], nextCursor: "p3" }],
+        ["p3", { roots: ["1500000000.000003"], nextCursor: "p4" }],
+        ["p4", { roots: ["1400000000.000004"], nextCursor: undefined }],
+      ]);
+      f.readHistoryPage.mockImplementation(async (cursor?: string) => pages.get(cursor));
+      const roots = [...pages.values()].flatMap((page) => page.roots);
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const fullDepthAt: number[] = [];
+      const start = Date.now();
+      for (let minute = 0; minute <= 50 * 60; minute += 1) {
+        f.readHistoryPage.mockClear();
+        await reconcile(connection, [], new AbortController().signal, known(roots), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+        if (f.readHistoryPage.mock.calls.some(([cursor]) => cursor === "p4")) {
+          fullDepthAt.push(Math.round((Date.now() - start) / 3_600_000));
+        }
+        await vi.advanceTimersByTimeAsync(60_000);
+      }
+      // The first scan, then one full-depth rescan a day; the five-minute
+      // rescans in between stop at the second page.
+      expect(fullDepthAt).toEqual([0, 24, 48]);
+    });
+
     it("keeps rescanning other channels while one channel cannot be read", async () => {
       vi.useFakeTimers();
       const f = fixture();

@@ -19,7 +19,7 @@ export const RECONCILE_FULL_REFRESH_BUDGET = 1;
 // schedule the next pass promptly instead of sleeping a full minute between
 // items.  The network operation itself must settle before this delay starts,
 // so this cannot create concurrent Slack/Fi repair bursts.
-export const RECONCILE_BACKLOG_DELAY_MS = 1_000;
+const RECONCILE_BACKLOG_DELAY_MS = 1_000;
 export const RECONCILE_IDLE_DELAY_MS = 60_000;
 
 // A source that failed is not new work. Retrying it on the backlog cadence
@@ -45,8 +45,69 @@ export function directRetryDelay(failures: number): number {
 
 export type ProjectionMaintenanceLane = "channel" | "detached" | "direct";
 
-export function nextMaintenanceLane(lane: ProjectionMaintenanceLane): ProjectionMaintenanceLane {
+function nextMaintenanceLane(lane: ProjectionMaintenanceLane): ProjectionMaintenanceLane {
   return lane === "channel" ? "detached" : lane === "detached" ? "direct" : "channel";
+}
+
+/** One reconciler pass: a woken session in its own lane, or the rotation's lane. */
+export type ReconcilePass = {
+  lane: ProjectionMaintenanceLane;
+  sessionKey?: string;
+  attempts: number;
+};
+
+/**
+ * The reconciler's timing. Maintenance lanes rotate on their own schedule;
+ * woken sessions (live activity) are served one per pass ahead of it without
+ * moving the rotation or its schedule, so frequent activity cannot starve a
+ * lane.
+ */
+export function createReconcileSchedule() {
+  const woken = new Map<string, { lane: ProjectionMaintenanceLane; attempts: number }>();
+  let lane: ProjectionMaintenanceLane = "channel";
+  let rotationDueAt = 0;
+  return {
+    reset(firstDelayMs: number) {
+      woken.clear();
+      lane = "channel";
+      rotationDueAt = Date.now() + firstDelayMs;
+    },
+    wake(sessionKey: string, wokenLane: ProjectionMaintenanceLane) {
+      woken.set(sessionKey, { lane: wokenLane, attempts: 0 });
+    },
+    take(): ReconcilePass {
+      const next = woken.entries().next();
+      if (next.done) {
+        return { lane, attempts: 0 };
+      }
+      const [sessionKey, entry] = next.value;
+      woken.delete(sessionKey);
+      return { sessionKey, ...entry };
+    },
+    /**
+     * A woken pass that failed before serving its session gets up to three
+     * tries, so an inventory outage does not lose live activity. A newer wake
+     * for the same session supersedes it.
+     */
+    requeue(pass: ReconcilePass) {
+      if (pass.sessionKey && pass.attempts < 3 && !woken.has(pass.sessionKey)) {
+        woken.set(pass.sessionKey, { lane: pass.lane, attempts: pass.attempts + 1 });
+      }
+    },
+    /** Records a finished pass and returns the delay before the next one. */
+    finish(pass: ReconcilePass, backlog: boolean): number {
+      const now = Date.now();
+      const rotationDelay = backlog ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
+      if (pass.sessionKey) {
+        // A woken pass only pulls the rotation forward when it uncovered a backlog.
+        rotationDueAt = Math.min(rotationDueAt, now + rotationDelay);
+      } else {
+        lane = nextMaintenanceLane(lane);
+        rotationDueAt = now + rotationDelay;
+      }
+      return woken.size ? RECONCILE_BACKLOG_DELAY_MS : Math.max(0, rotationDueAt - now);
+    },
+  };
 }
 
 export function takeSweepBatch(

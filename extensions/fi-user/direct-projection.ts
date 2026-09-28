@@ -124,8 +124,58 @@ export async function recoverSlackDirectProjection(
 export type DirectProjectionBacklog = {
   /** Snapshotted successfully since start; only these rotate on the idle cadence. */
   reconciled: Set<string>;
-  failed: Map<string, { failures: number; retryAt: number }>;
+  /**
+   * `identity` marks a deterministic failure (no session, binding, account or
+   * DM channel): it is not retried until those inputs change or the DM wakes.
+   */
+  failed: Map<string, { failures: number; retryAt: number; identity?: string }>;
+  /** Last seen Slack socket connect time per account. */
+  connectedAt: Map<string, number>;
 };
+
+export function createDirectProjectionBacklog(): DirectProjectionBacklog {
+  return { reconciled: new Set(), failed: new Map(), connectedAt: new Map() };
+}
+
+/** Live activity in a DM makes it due now, whatever its earlier failures. */
+export function markDirectActive(backlog: DirectProjectionBacklog, sessionKey: string) {
+  backlog.reconciled.delete(sessionKey);
+  backlog.failed.delete(sessionKey);
+}
+
+/**
+ * Socket Mode drops DMs sent while disconnected. When a Slack account's socket
+ * reconnects, every DM is due again once, on the backlog cadence.
+ */
+export function noteSlackSocketReconnects(
+  api: OpenClawPluginApi,
+  bindings: ReadonlyArray<{ match: { accountId?: string } }>,
+  backlog: DirectProjectionBacklog,
+) {
+  for (const accountId of new Set(bindings.map((binding) => binding.match.accountId ?? ""))) {
+    const connectedAt = api.runtime.channel.runtimeContexts
+      .get<{ socketConnectedAt?: () => number | undefined }>({
+        channelId: "slack",
+        accountId,
+        capability: "thread-read-projection",
+      })
+      ?.socketConnectedAt?.();
+    const previous = backlog.connectedAt.get(accountId);
+    if (connectedAt !== undefined && connectedAt !== previous) {
+      backlog.connectedAt.set(accountId, connectedAt);
+      if (previous !== undefined) {
+        backlog.reconciled.clear();
+      }
+    }
+  }
+}
+
+/** The DM cannot be resolved from its session and bindings; retrying cannot help. */
+class DirectIdentityUnavailable extends Error {
+  constructor(readonly identity: string) {
+    super("Direct source identity unavailable");
+  }
+}
 
 export async function reconcileSlackDirectProjections(
   api: OpenClawPluginApi,
@@ -178,14 +228,50 @@ export async function reconcileSlackDirectProjections(
       }
     }
   }
-  // Due work: never snapshotted since start, or a failed snapshot whose
-  // backoff has expired. A failure waiting out its backoff is not due.
+  const resolveIdentity = (sessionKey: string) => {
+    const [, agentId, rawPeer] = DIRECT_SESSION.exec(sessionKey) ?? [];
+    if (!agentId || !rawPeer) {
+      return undefined;
+    }
+    const peerSenderId = rawPeer.toUpperCase();
+    const binding = bindings.find((candidate) => candidate.sessionKey === sessionKey);
+    const entry = getSessionEntry({ agentId, sessionKey, readConsistency: "latest" });
+    const origin = sessionDeliveryOrigin(entry);
+    const accountId = binding?.sourceAccountId ?? origin?.accountId;
+    const channelId = binding?.sourceAccountId
+      ? binding.externalSource?.channelId
+      : origin?.nativeChannelId;
+    const allowed = configured.some(
+      (candidate) =>
+        candidate.agentId === agentId &&
+        candidate.match.accountId === accountId &&
+        (!candidate.match.peer || candidate.match.peer.id.toUpperCase() === peerSenderId),
+    );
+    return {
+      agentId,
+      peerSenderId,
+      binding,
+      accountId,
+      channelId,
+      usable: Boolean(entry && allowed && accountId && channelId?.startsWith("D")),
+      fingerprint: JSON.stringify([Boolean(entry), accountId, channelId, allowed]),
+    };
+  };
+  // Due work: never snapshotted since start, a transient failure whose backoff
+  // has expired, or a deterministic failure whose inputs have since changed.
+  const retryDue = (sessionKey: string) => {
+    const failed = backlog?.failed.get(sessionKey);
+    if (!failed) {
+      return true;
+    }
+    return failed.identity !== undefined
+      ? resolveIdentity(sessionKey)?.fingerprint !== failed.identity
+      : Date.now() >= failed.retryAt;
+  };
   const due = () =>
     backlog
       ? sessionKeys.filter(
-          (sessionKey) =>
-            !backlog.reconciled.has(sessionKey) &&
-            Date.now() >= (backlog.failed.get(sessionKey)?.retryAt ?? 0),
+          (sessionKey) => !backlog.reconciled.has(sessionKey) && retryDue(sessionKey),
         )
       : [];
   const pending = due();
@@ -238,23 +324,12 @@ export async function reconcileSlackDirectProjections(
     if (!agentId || !rawPeer) {
       continue;
     }
-    const peerSenderId = rawPeer.toUpperCase();
     const binding = bindings.find((candidate) => candidate.sessionKey === sessionKey);
     try {
-      const entry = getSessionEntry({ agentId, sessionKey, readConsistency: "latest" });
-      const origin = sessionDeliveryOrigin(entry);
-      const accountId = binding?.sourceAccountId ?? origin?.accountId;
-      const channelId = binding?.sourceAccountId
-        ? binding.externalSource?.channelId
-        : origin?.nativeChannelId;
-      const allowed = configured.some(
-        (candidate) =>
-          candidate.agentId === agentId &&
-          candidate.match.accountId === accountId &&
-          (!candidate.match.peer || candidate.match.peer.id.toUpperCase() === peerSenderId),
-      );
-      if (!entry || !allowed || !accountId || !channelId?.startsWith("D")) {
-        throw new Error("Direct source identity unavailable");
+      const identity = resolveIdentity(sessionKey);
+      const { peerSenderId, accountId, channelId } = identity ?? {};
+      if (!identity?.usable || !peerSenderId || !accountId || !channelId) {
+        throw new DirectIdentityUnavailable(identity?.fingerprint ?? "");
       }
       const reader = api.runtime.channel.runtimeContexts.get<DirectReader>({
         channelId: "slack",
@@ -292,10 +367,12 @@ export async function reconcileSlackDirectProjections(
         // backoff rather than wait for the next rotation.
         const failures = (backlog.failed.get(sessionKey)?.failures ?? 0) + 1;
         backlog.reconciled.delete(sessionKey);
-        backlog.failed.set(sessionKey, {
-          failures,
-          retryAt: Date.now() + directRetryDelay(failures),
-        });
+        backlog.failed.set(
+          sessionKey,
+          error instanceof DirectIdentityUnavailable
+            ? { failures, retryAt: Number.POSITIVE_INFINITY, identity: error.identity }
+            : { failures, retryAt: Date.now() + directRetryDelay(failures) },
+        );
       }
       if (binding) {
         await post({

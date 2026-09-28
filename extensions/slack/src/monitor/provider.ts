@@ -37,7 +37,6 @@ import { resolveSlackChannelConfig } from "./channel-config.js";
 import { resolveSlackSlashCommandConfig } from "./commands.js";
 import { getRuntimeConfig, resolveOpenProviderRuntimeGroupPolicy } from "./config.runtime.js";
 import { createSlackMonitorContext, type SlackMonitorContext } from "./context.js";
-import { readSlackDirectIdentity, readSlackDirectSnapshot } from "./direct-snapshot.js";
 import {
   assertEnterpriseSlackBindingsAreWorkspaceQualified,
   assertEnterpriseSlackPolicyConfig,
@@ -62,6 +61,7 @@ import {
   hasSlackPresenceEventsEnabled,
   SLACK_PRESENCE_REQUEST_TIMEOUT_MS,
 } from "./presence-monitor.js";
+import { createSlackProjectionReader } from "./projection-reader.js";
 import {
   createSlackBoltApp,
   gracefulStopSlackApp,
@@ -82,7 +82,6 @@ import {
 import { resolveSlackMonitorPolicy } from "./runtime-policy.js";
 import { setSlackDefaultSendIdentity } from "./send.runtime.js";
 import { registerSlackMonitorSlashCommands } from "./slash.js";
-import { readSlackThreadSnapshot, readSlackProjectionChannel } from "./thread-snapshot.js";
 import type { MonitorSlackOpts } from "./types.js";
 
 let slackBoltInterop: SlackBoltResolvedExports | undefined;
@@ -660,19 +659,12 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         channelId: "slack",
         accountId: account.accountId,
         capability: "thread-read-projection",
-        context: {
+        context: createSlackProjectionReader({
+          client: readClient,
           workspaceId: identity.teamId,
           botUserId: ctx.botUserId,
-          readDirectIdentity: (channelId: string, peerSenderId: string) =>
-            readSlackDirectIdentity(readClient, identity.teamId, channelId, peerSenderId),
-          readDirect: (channelId: string, peerSenderId: string) =>
-            readSlackDirectSnapshot(readClient, identity.teamId, channelId, peerSenderId),
-          readChannel: (channelId: string, clawBotUserIds?: Iterable<string>) =>
-            readSlackProjectionChannel(readClient, identity.teamId, channelId, clawBotUserIds),
-          readThread: (channelId: string, rootMessageId: string) =>
-            readSlackThreadSnapshot(readClient, identity.teamId, channelId, rootMessageId),
           socketConnectedAt: () => socketConnectedAt,
-        },
+        }),
         abortSignal: opts.abortSignal,
       });
     }
