@@ -151,10 +151,16 @@ export function resolveDetachedRoomAccount(
   return { accountId, allowed: Boolean(entry && source && accountId && allowed) };
 }
 
+const RESCAN_MARGIN_SECONDS = 3600;
+const RESCAN_MAX_PAGES = 3;
+const RESCAN_MAX_FAILED_ROOTS = 1000;
+
 /** Cursor state is only a bounded scheduler; durable source/room identity makes restart replay safe. */
 export function createDetachedProjectionReconciler(
   api: OpenClawPluginApi,
   publish: (params: ChannelProjectionParams) => Promise<boolean>,
+  /** A publish error that no retry can repair, such as a deleted Slack thread. */
+  isTerminal: (error: unknown) => boolean = () => false,
 ) {
   type Scan = {
     cursor?: string;
@@ -168,6 +174,14 @@ export function createDetachedProjectionReconciler(
     /** Consecutive whole-channel failures and when the channel may be read again. */
     failures: number;
     retryAt?: number;
+    /** Roots that failed during this scan; bounds a scan against a systemic outage. */
+    scanFailures: number;
+    startedAt: number;
+    /**
+     * Unix seconds. A rescan stops paging once it reaches roots older than
+     * this; undefined reads the whole history (the first scan after start).
+     */
+    since?: number;
     completedAt?: number;
     created: number;
     existing: number;
@@ -175,18 +189,32 @@ export function createDetachedProjectionReconciler(
     error?: string;
   };
   const scans = new Map<string, Scan>();
-  const newScan = (background: boolean, failed: Scan["failed"] = new Map()): Scan => ({
+  // A rescan re-reads history only back to where the previous scan began
+  // (less a margin), so one rescan of a long channel is a page or two rather
+  // than hours of paging at the idle cadence. A scan that did not finish
+  // hands its own window on, so nothing it had not reached is skipped.
+  const newScan = (background: boolean, previous?: Scan): Scan => ({
     roots: [],
-    failed,
+    failed: previous?.failed ?? new Map(),
     pages: 0,
     done: false,
     background,
     failures: 0,
+    scanFailures: 0,
+    startedAt: Date.now(),
+    since: !previous
+      ? undefined
+      : previous.done
+        ? Math.floor(previous.startedAt / 1000) - RESCAN_MARGIN_SECONDS
+        : previous.since,
     created: 0,
     existing: 0,
     skipped: 0,
   });
   const due = (retryAt: number | undefined) => retryAt === undefined || Date.now() >= retryAt;
+  // A channel waiting out a read failure has nothing to do until then, so it
+  // must not hold back the periodic rescan of every other channel.
+  const settled = (scan: Scan | undefined) => Boolean(scan && (scan.done || !due(scan.retryAt)));
   // Only unread history is actionable. A background rescan, a channel waiting
   // out a failure, and a scan whose remaining roots are retries of earlier
   // failures are all maintenance and must not hold the backlog cadence.
@@ -409,13 +437,15 @@ export function createDetachedProjectionReconciler(
     if (
       refreshAt &&
       Date.now() >= refreshAt &&
-      keys.every((candidate) => scans.get(candidate)?.done)
+      keys.every((candidate) => settled(scans.get(candidate)))
     ) {
       // The periodic rescan is a safety net for history that live delivery
       // missed. It re-reads every channel, so it is background work; only a
       // root it actually creates promotes that channel back to the backlog.
       for (const [candidate, scan] of scans) {
-        scans.set(candidate, newScan(true, scan.failed));
+        if (scan.done) {
+          scans.set(candidate, newScan(true, scan));
+        }
       }
       refreshAt = 0;
     }
@@ -450,15 +480,17 @@ export function createDetachedProjectionReconciler(
               .map(([rootMessageId]) => rootMessageId)
               .slice(0, RECONCILE_HISTORY_BATCH_SIZE);
           } else {
-            if (state.failed.size >= 1000) {
-              throw new Error(
-                "Too many failed roots; resolve source failures before continuing discovery",
-              );
-            }
             const page = await scope.readHistoryPage(state.cursor);
             state.pages++;
             state.cursor = page.nextCursor;
             state.roots = [...page.roots];
+            const since = state.since;
+            if (
+              since !== undefined &&
+              (state.pages >= RESCAN_MAX_PAGES || page.roots.some((root) => Number(root) < since))
+            ) {
+              state.cursor = undefined;
+            }
           }
         }
         // Known and backed-off roots cost no network call, so they do not
@@ -504,16 +536,32 @@ export function createDetachedProjectionReconciler(
               if (signal.aborted) {
                 throw error;
               }
-              const failures = (retry?.failures ?? 0) + 1;
               state.failed.delete(rootMessageId);
-              state.failed.set(rootMessageId, {
-                failures,
-                retryAt: Date.now() + reconcileRetryDelay(failures),
-              });
-              state.error = safeError(error);
+              if (isTerminal(error)) {
+                // Deleted at the source: nothing to project, and nothing a
+                // retry can change. A rescan that finds it again re-probes it.
+                state.skipped++;
+              } else {
+                const failures = (retry?.failures ?? 0) + 1;
+                state.failed.set(rootMessageId, {
+                  failures,
+                  retryAt: Date.now() + reconcileRetryDelay(failures),
+                });
+                state.scanFailures++;
+                state.error = safeError(error);
+              }
             }
           }
           state.roots.shift();
+        }
+        if (state.scanFailures >= RESCAN_MAX_FAILED_ROOTS && state.cursor) {
+          // A systemic failure, not a bad root: stop paging this scan. Its
+          // failed roots keep their backoff and the next rescan starts clean.
+          state.cursor = undefined;
+          state.roots = [];
+          api.logger.warn(
+            `fi-user: detached discovery source=${key} stopped after ${state.scanFailures} failed roots`,
+          );
         }
         // A root waiting out its backoff is reported through `error`; it does
         // not keep the channel open, or every rescan would stall behind it.
@@ -539,13 +587,24 @@ export function createDetachedProjectionReconciler(
         api.logger.warn(`fi-user: detached discovery source=${key} error=${state.error}`);
       }
     }
-    if (!refreshAt && keys.every((candidate) => scans.get(candidate)?.done)) {
+    if (!refreshAt && keys.every((candidate) => settled(scans.get(candidate)))) {
       refreshAt = Date.now() + 300_000;
     }
     return summary();
   };
   return {
     reconcile: run,
+    /** A fresh service start retries every backed-off channel and root once. */
+    resetBackoff: () => {
+      for (const scan of scans.values()) {
+        scan.failures = 0;
+        scan.retryAt = undefined;
+        for (const retry of scan.failed.values()) {
+          retry.failures = 0;
+          retry.retryAt = 0;
+        }
+      }
+    },
     invalidate: (sessionKey: string) => {
       const channelId = PARENT.exec(sessionKey)?.[2]?.toUpperCase();
       if (!channelId) {
@@ -555,7 +614,7 @@ export function createDetachedProjectionReconciler(
       // cadence, keeping each failed root's backoff.
       for (const [key, scan] of scans) {
         if (key.endsWith(`:${channelId}`) && (scan.done || scan.background)) {
-          scans.set(key, newScan(false, scan.failed));
+          scans.set(key, newScan(false, scan));
           refreshAt = 0;
         }
       }

@@ -4,7 +4,11 @@ import {
   listSessionKeys,
   sessionDeliveryOrigin,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import { RECONCILE_HISTORY_BATCH_SIZE, takeSweepBatch } from "./reconciliation-batch.js";
+import {
+  directRetryDelay,
+  RECONCILE_HISTORY_BATCH_SIZE,
+  takeSweepBatch,
+} from "./reconciliation-batch.js";
 
 const DIRECT_SESSION =
   /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:direct:([uw][a-z0-9]+)$/i;
@@ -116,6 +120,13 @@ export async function recoverSlackDirectProjection(
 }
 
 /** Native direct sessions remain one conversation per agent/account/peer, not per message. */
+/** DM reconciliation state that outlives one pass. */
+export type DirectProjectionBacklog = {
+  /** Snapshotted successfully since start; only these rotate on the idle cadence. */
+  reconciled: Set<string>;
+  failed: Map<string, { failures: number; retryAt: number }>;
+};
+
 export async function reconcileSlackDirectProjections(
   api: OpenClawPluginApi,
   connection: { baseUrl: string; token: string },
@@ -129,8 +140,7 @@ export async function reconcileSlackDirectProjections(
   sweepSeen = new Set<string>(),
   limit = RECONCILE_HISTORY_BATCH_SIZE,
   prioritySessionKey?: string,
-  /** Sessions with an outcome since the gateway started; the rest are backlog. */
-  reconciled?: Set<string>,
+  backlog?: DirectProjectionBacklog,
 ) {
   const config = api.runtime.config?.current?.() ?? api.config;
   const configured = (config?.bindings ?? []).filter(
@@ -156,25 +166,44 @@ export async function reconcileSlackDirectProjections(
     sessions.add(prioritySessionKey);
   }
   const sessionKeys = [...sessions].toSorted();
-  if (reconciled) {
-    for (const sessionKey of reconciled) {
+  if (backlog) {
+    for (const sessionKey of backlog.reconciled) {
       if (!sessions.has(sessionKey)) {
-        reconciled.delete(sessionKey);
+        backlog.reconciled.delete(sessionKey);
+      }
+    }
+    for (const sessionKey of backlog.failed.keys()) {
+      if (!sessions.has(sessionKey)) {
+        backlog.failed.delete(sessionKey);
       }
     }
   }
-  const unreconciled = () =>
-    reconciled ? sessionKeys.filter((sessionKey) => !reconciled.has(sessionKey)) : [];
-  const backlog = unreconciled();
+  // Due work: never snapshotted since start, or a failed snapshot whose
+  // backoff has expired. A failure waiting out its backoff is not due.
+  const due = () =>
+    backlog
+      ? sessionKeys.filter(
+          (sessionKey) =>
+            !backlog.reconciled.has(sessionKey) &&
+            Date.now() >= (backlog.failed.get(sessionKey)?.retryAt ?? 0),
+        )
+      : [];
+  const pending = due();
   const scheduled =
     prioritySessionKey && sessions.has(prioritySessionKey)
       ? [prioritySessionKey]
-      : backlog.length
-        ? backlog.slice(0, limit)
-        : takeSweepBatch(sessionKeys, sweepSeen, limit);
+      : pending.length
+        ? pending.slice(0, limit)
+        : takeSweepBatch(
+            backlog
+              ? sessionKeys.filter((sessionKey) => backlog.reconciled.has(sessionKey))
+              : sessionKeys,
+            sweepSeen,
+            limit,
+          );
   const report = {
     scanned: sessions.size,
-    // Re-snapshotting a DM that already has an outcome is rotation, not
+    // Re-snapshotting a DM that was already snapshotted is rotation, not
     // backlog: counting it kept the reconciler on its one-second cadence
     // whenever more than one DM existed.
     pending: 0,
@@ -254,8 +283,20 @@ export async function reconcileSlackDirectProjections(
         },
       });
       report[status]++;
+      backlog?.reconciled.add(sessionKey);
+      backlog?.failed.delete(sessionKey);
     } catch (error) {
       report.error++;
+      if (backlog) {
+        // Its readers were just revoked, so it must heal on its own short
+        // backoff rather than wait for the next rotation.
+        const failures = (backlog.failed.get(sessionKey)?.failures ?? 0) + 1;
+        backlog.reconciled.delete(sessionKey);
+        backlog.failed.set(sessionKey, {
+          failures,
+          retryAt: Date.now() + directRetryDelay(failures),
+        });
+      }
       if (binding) {
         await post({
           reconcile: true,
@@ -273,8 +314,7 @@ export async function reconcileSlackDirectProjections(
         `fi-user: direct projection session=${sessionKey} failed (${error instanceof Error ? error.message.replace(/xox[baprs]-\S+/g, "[redacted]").slice(0, 150) : "unknown"})`,
       );
     }
-    reconciled?.add(sessionKey);
   }
-  report.pending = unreconciled().length;
+  report.pending = due().length;
   return report;
 }

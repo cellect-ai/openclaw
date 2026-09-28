@@ -9,7 +9,11 @@ import {
   verifyDetachedProjectionOrigin,
   type ProjectionInventory,
 } from "./detached-projection.js";
-import { isSlackDirectSessionKey, reconcileSlackDirectProjections } from "./direct-projection.js";
+import {
+  type DirectProjectionBacklog,
+  isSlackDirectSessionKey,
+  reconcileSlackDirectProjections,
+} from "./direct-projection.js";
 import { createProjectionDriftScheduler, runProjectionDriftPass } from "./projection-drift.js";
 import {
   nextMaintenanceLane,
@@ -307,8 +311,11 @@ export function registerSlackProjectionReconciler(
   let controller: AbortController | undefined;
   let stopped = true;
   let running = false;
-  let wakeRequested = false;
-  let prioritySessionKey: string | undefined;
+  // Live activity is served ahead of maintenance, one woken session per pass,
+  // without moving the lane rotation or its schedule: frequent bot activity
+  // must not starve the other lanes.
+  const woken = new Map<string, ProjectionMaintenanceLane>();
+  let rotationDueAt = 0;
   let maintenanceLane: ProjectionMaintenanceLane = "channel";
   let channelWorkKind: "acl" | "history" = "acl";
   let detachedWorkKind: "acl" | "history" = "acl";
@@ -316,7 +323,8 @@ export function registerSlackProjectionReconciler(
   let discoveryCursor = "";
   const bindingSweepSeen = new Set<string>();
   const directSweepSeen = new Set<string>();
-  const directReconciled = new Set<string>();
+  const directBacklog: DirectProjectionBacklog = { reconciled: new Set(), failed: new Map() };
+  const socketConnectedAt = new Map<string, number>();
   const outcomes = new Map<string, "created" | "existing" | "skipped" | "error">();
   const drift = createProjectionDriftScheduler();
   let driftReport = { rooms: 0, planned: 0, refreshed: 0, refreshFailed: 0, refreshDeclined: 0 };
@@ -343,7 +351,11 @@ export function registerSlackProjectionReconciler(
     existing: 0,
     skipped: 0,
   };
-  const reconcileDetached = createDetachedProjectionReconciler(api, projectSlackChannelThread);
+  const reconcileDetached = createDetachedProjectionReconciler(
+    api,
+    projectSlackChannelThread,
+    isMissingSlackThread,
+  );
   api.registerGatewayMethod(
     "fi.slackProjection.status",
     async ({ respond }) => {
@@ -362,6 +374,14 @@ export function registerSlackProjectionReconciler(
       return;
     }
     running = true;
+    // A woken session takes this pass in its own lane; otherwise the rotation
+    // runs. Only a rotation pass advances the rotation.
+    const next = woken.entries().next();
+    const prioritySessionKey = next.done ? undefined : next.value[0];
+    const lane = next.done ? maintenanceLane : next.value[1];
+    if (prioritySessionKey) {
+      woken.delete(prioritySessionKey);
+    }
     try {
       report = { ...report, complete: false };
       const { fullRefreshesPerTick, ...config } = connection();
@@ -505,7 +525,7 @@ export function registerSlackProjectionReconciler(
         ? bindings.find((binding) => binding.sessionKey === prioritySessionKey)
         : undefined;
       const bindingBatch =
-        maintenanceLane === "channel" && !priority
+        lane === "channel" && !priority
           ? takeSweepBatch(bindingSweepKeys, bindingSweepSeen, RECONCILE_BATCH_SIZE)
           : new Set<string>();
       const channelScopes = new Map<
@@ -520,7 +540,7 @@ export function registerSlackProjectionReconciler(
       // delivery is deliberately outside this scheduler; a wake only gives its
       // own session the next maintenance slot.
       const projects =
-        maintenanceLane !== "channel"
+        lane !== "channel"
           ? []
           : priority
             ? [priority]
@@ -543,9 +563,6 @@ export function registerSlackProjectionReconciler(
       }
       if (projects.length && !priority) {
         channelWorkKind = channelWorkKind === "acl" ? "history" : "acl";
-      }
-      if (priority && maintenanceLane === "channel") {
-        prioritySessionKey = undefined;
       }
       // A full-room ACL sweep exhausts Fi's shared provisioning credential before
       // live traffic can authenticate.  The selected item is the durable repair
@@ -665,7 +682,29 @@ export function registerSlackProjectionReconciler(
       const pending =
         [...candidates].filter((identity) => !outcomes.has(identity)).length +
         unavailableSessions.size;
-      if (maintenanceLane === "detached") {
+      if (lane === "direct") {
+        // Socket Mode drops DMs sent while disconnected. After a reconnect,
+        // every DM is re-snapshotted once on the backlog cadence.
+        for (const accountId of new Set(
+          configuredBindings.map((binding) => binding.match.accountId ?? ""),
+        )) {
+          const connectedAt = api.runtime.channel.runtimeContexts
+            .get<{ socketConnectedAt?: () => number | undefined }>({
+              channelId: "slack",
+              accountId,
+              capability: "thread-read-projection",
+            })
+            ?.socketConnectedAt?.();
+          const previous = socketConnectedAt.get(accountId);
+          if (connectedAt !== undefined && connectedAt !== previous) {
+            socketConnectedAt.set(accountId, connectedAt);
+            if (previous !== undefined) {
+              directBacklog.reconciled.clear();
+            }
+          }
+        }
+      }
+      if (lane === "detached") {
         detachedReport = await reconcileDetached.reconcile(
           { ...config, token: config.token },
           bindings,
@@ -676,9 +715,8 @@ export function registerSlackProjectionReconciler(
             : { maxExistingRooms: 0, allowDiscovery: true },
         );
         detachedWorkKind = detachedWorkKind === "acl" ? "history" : "acl";
-      } else if (maintenanceLane === "direct") {
+      } else if (lane === "direct") {
         const directPrioritySessionKey = prioritySessionKey;
-        prioritySessionKey = undefined;
         directReport = await reconcileSlackDirectProjections(
           api,
           { ...config, token: config.token },
@@ -687,7 +725,7 @@ export function registerSlackProjectionReconciler(
           directSweepSeen,
           RECONCILE_HISTORY_BATCH_SIZE,
           directPrioritySessionKey,
-          directReconciled,
+          directBacklog,
         );
       }
       // During a historical drain, passes run every second. Keep the expensive
@@ -718,7 +756,9 @@ export function registerSlackProjectionReconciler(
           })) ?? driftReport;
         lastDriftAt = Date.now();
       }
-      maintenanceLane = wakeRequested ? maintenanceLane : nextMaintenanceLane(maintenanceLane);
+      if (!prioritySessionKey) {
+        maintenanceLane = nextMaintenanceLane(maintenanceLane);
+      }
       report = {
         scanned: candidates.size,
         pending,
@@ -759,10 +799,18 @@ export function registerSlackProjectionReconciler(
           report.pending > report.unavailable ||
           report.historyDiscoveryActionable > 0 ||
           directReport.pending > 0;
-        const delay =
-          wakeRequested || actionablePending ? RECONCILE_BACKLOG_DELAY_MS : RECONCILE_IDLE_DELAY_MS;
+        const rotationDelay = actionablePending
+          ? RECONCILE_BACKLOG_DELAY_MS
+          : RECONCILE_IDLE_DELAY_MS;
+        // A woken pass keeps the rotation's schedule, only pulling it forward
+        // when it uncovered a backlog.
+        rotationDueAt = prioritySessionKey
+          ? Math.min(rotationDueAt, Date.now() + rotationDelay)
+          : Date.now() + rotationDelay;
+        const delay = woken.size
+          ? RECONCILE_BACKLOG_DELAY_MS
+          : Math.max(0, rotationDueAt - Date.now());
         timer = setTimeout(() => void reconcile(), delay);
-        wakeRequested = false;
         timer.unref();
       }
     }
@@ -777,15 +825,18 @@ export function registerSlackProjectionReconciler(
       // Timer/cursor state is deliberately transient. A fresh service start
       // begins at the channel lane so a durable room never waits behind a
       // stale detached/direct cursor from the prior gateway generation.
-      prioritySessionKey = undefined;
+      woken.clear();
       maintenanceLane = "channel";
       channelWorkKind = "acl";
       detachedWorkKind = "acl";
       lastDriftAt = 0;
       bindingSweepSeen.clear();
       directSweepSeen.clear();
-      directReconciled.clear();
+      directBacklog.reconciled.clear();
+      directBacklog.failed.clear();
+      reconcileDetached.resetBackoff();
       controller = new AbortController();
+      rotationDueAt = Date.now() + 5_000;
       timer = setTimeout(() => void reconcile(), 5_000);
       timer.unref();
     },
@@ -808,13 +859,17 @@ export function registerSlackProjectionReconciler(
       if (lane !== "direct") {
         reconcileDetached.invalidate(sessionKey);
       }
-      prioritySessionKey = sessionKey;
-      maintenanceLane = lane;
-      if (stopped) {
-        return;
+      if (lane === "direct") {
+        // Live DM activity makes the DM due now, so a DM woken while its
+        // snapshot was failing is retried even if a later wake takes this slot.
+        directBacklog.reconciled.delete(sessionKey);
+        const failed = directBacklog.failed.get(sessionKey);
+        if (failed) {
+          failed.retryAt = 0;
+        }
       }
-      if (running) {
-        wakeRequested = true;
+      woken.set(sessionKey, lane);
+      if (stopped || running) {
         return;
       }
       if (timer) {

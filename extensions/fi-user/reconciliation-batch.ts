@@ -29,8 +29,18 @@ export const RECONCILE_IDLE_DELAY_MS = 60_000;
 const RECONCILE_RETRY_BASE_MS = 300_000;
 const RECONCILE_RETRY_MAX_MS = 3_600_000;
 
-export function reconcileRetryDelay(failures: number): number {
-  return Math.min(RECONCILE_RETRY_BASE_MS * 2 ** Math.max(0, failures - 1), RECONCILE_RETRY_MAX_MS);
+export function reconcileRetryDelay(
+  failures: number,
+  baseMs = RECONCILE_RETRY_BASE_MS,
+  maxMs = RECONCILE_RETRY_MAX_MS,
+): number {
+  return Math.min(baseMs * 2 ** Math.max(0, failures - 1), maxMs);
+}
+
+// A DM whose snapshot failed has had its readers revoked, so it heals on a
+// much shorter backoff than a historical source: 30 s doubling to 5 min.
+export function directRetryDelay(failures: number): number {
+  return reconcileRetryDelay(failures, 30_000, 300_000);
 }
 
 export type ProjectionMaintenanceLane = "channel" | "detached" | "direct";

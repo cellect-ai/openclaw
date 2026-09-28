@@ -283,7 +283,8 @@ describe("native parent-session Slack history discovery", () => {
     it("reports a periodic rescan of known history as pending but not actionable", async () => {
       vi.useFakeTimers();
       const f = fixture();
-      const roots = ["1700000000.000001", "1700000000.000002", "1700000000.000003"];
+      const now = Math.floor(Date.now() / 1000);
+      const roots = [1, 2, 3].map((index) => `${now}.00000${index}`);
       f.readHistoryPage.mockResolvedValue({ roots, nextCursor: undefined });
       const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
       const run = () =>
@@ -346,6 +347,119 @@ describe("native parent-session Slack history discovery", () => {
       }
       const gaps = attemptsAt.slice(1).map((at, index) => at - (attemptsAt[index] ?? 0));
       expect(gaps.map((gap) => gap / 60_000)).toEqual([5, 10, 20, 40, 60, 60]);
+    });
+
+    it("rescans only recent history after the first full scan", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      const now = Math.floor(Date.now() / 1000);
+      const pages = new Map<string | undefined, { roots: string[]; nextCursor?: string }>([
+        [undefined, { roots: [`${now}.000001`], nextCursor: "p2" }],
+        ["p2", { roots: ["1600000000.000002"], nextCursor: "p3" }],
+        ["p3", { roots: ["1500000000.000003"], nextCursor: "p4" }],
+        ["p4", { roots: ["1400000000.000004"], nextCursor: undefined }],
+      ]);
+      f.readHistoryPage.mockImplementation(async (cursor?: string) => pages.get(cursor));
+      const roots = [...pages.values()].flatMap((page) => page.roots);
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, known(roots), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      for (let pass = 0; pass < 4; pass++) {
+        await run();
+      }
+      expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["p2"], ["p3"], ["p4"]]);
+      f.readHistoryPage.mockClear();
+      await vi.advanceTimersByTimeAsync(300_000);
+      for (let pass = 0; pass < 4; pass++) {
+        await run();
+      }
+      // The second page reaches roots older than the previous scan: stop there.
+      expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["p2"]]);
+      // Even a channel where everything is recent is capped at three pages.
+      pages.set("p2", { roots: [`${now}.000002`], nextCursor: "p3" });
+      pages.set("p3", { roots: [`${now}.000003`], nextCursor: "p4" });
+      f.readHistoryPage.mockClear();
+      await vi.advanceTimersByTimeAsync(300_000);
+      for (let pass = 0; pass < 5; pass++) {
+        await run();
+      }
+      expect(f.readHistoryPage.mock.calls).toEqual([[undefined], ["p2"], ["p3"]]);
+    });
+
+    it("keeps rescanning other channels while one channel cannot be read", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      mocks.list.mockReturnValue(
+        ["c0bad", "c123"].map((channel) => ({
+          sessionKey: `agent:cellect-fi-admin:slack:group:${channel}`,
+          entry: {},
+        })),
+      );
+      const now = Math.floor(Date.now() / 1000);
+      const good = vi.fn(async () => ({ roots: [`${now}.000001`], nextCursor: undefined }));
+      const bad = vi.fn(async () => {
+        throw new Error("not_in_channel");
+      });
+      f.readChannel.mockImplementation(async (channelId: string) => ({
+        workspaceId: "T123",
+        channelId,
+        memberSenderIds: ["U111"],
+        readHistoryPage: channelId === "C0BAD" ? bad : good,
+        readThread: vi.fn(),
+      }));
+      const { reconcile } = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        reconcile(connection, [], new AbortController().signal, known([`${now}.000001`]), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      for (let tick = 0; tick < 12 * 20; tick++) {
+        await run();
+        await vi.advanceTimersByTimeAsync(5_000);
+      }
+      // Twenty minutes: the good channel is rescanned every five minutes, and
+      // the unreadable one backs off (0, 5, 15 min) without holding it back.
+      expect(good.mock.calls.length).toBeGreaterThanOrEqual(4);
+      expect(bad).toHaveBeenCalledTimes(3);
+    });
+
+    it("treats a root deleted at the source as terminal", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.readHistoryPage.mockResolvedValue({ roots: ["1700000000.000001"], nextCursor: undefined });
+      f.publish.mockRejectedValue(new Error("thread_not_found"));
+      const { reconcile } = createDetachedProjectionReconciler(
+        f.api,
+        f.publish,
+        (error) => error instanceof Error && error.message === "thread_not_found",
+      );
+      expect(
+        await reconcile(connection, [], new AbortController().signal, new Set(), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        }),
+      ).toMatchObject({ pending: 0, error: 0, skipped: 1 });
+    });
+
+    it("retries backed-off channels and roots once after a service restart", async () => {
+      vi.useFakeTimers();
+      const f = fixture();
+      f.readHistoryPage.mockRejectedValue(new Error("ratelimited"));
+      const projection = createDetachedProjectionReconciler(f.api, f.publish);
+      const run = () =>
+        projection.reconcile(connection, [], new AbortController().signal, new Set(), {
+          maxExistingRooms: 0,
+          allowDiscovery: true,
+        });
+      await run();
+      await run();
+      expect(f.readHistoryPage).toHaveBeenCalledTimes(1);
+      projection.resetBackoff();
+      await run();
+      expect(f.readHistoryPage).toHaveBeenCalledTimes(2);
     });
 
     it("backs off a channel whose history cannot be read", async () => {

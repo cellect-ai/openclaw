@@ -316,6 +316,9 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   });
   const monitorContextRef: { current?: SlackMonitorContext } = {};
   let slackLivenessTimer: ReturnType<typeof setInterval> | undefined;
+  // Socket Mode drops what happens while disconnected. Projection readers use
+  // this to re-snapshot DMs after a reconnect instead of waiting for rotation.
+  let socketConnectedAt: number | undefined;
   const { app, receiver, socketModeLogger } = createSlackBoltApp({
     interop: await getSlackBoltInterop(),
     slackMode,
@@ -668,6 +671,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             readSlackProjectionChannel(readClient, identity.teamId, channelId, clawBotUserIds),
           readThread: (channelId: string, rootMessageId: string) =>
             readSlackThreadSnapshot(readClient, identity.teamId, channelId, rootMessageId),
+          socketConnectedAt: () => socketConnectedAt,
         },
         abortSignal: opts.abortSignal,
       });
@@ -797,6 +801,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             abortSignal: opts.abortSignal,
             onStarted: async () => {
               reconnectAttempts = 0;
+              socketConnectedAt = Date.now();
               await recoverSlackIdentity();
               if (livenessStore) {
                 // Read the previous mark before overwriting it, or the gap we

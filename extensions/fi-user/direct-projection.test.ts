@@ -228,7 +228,7 @@ describe("Fi direct projection discovery", () => {
       },
     } as unknown as OpenClawPluginApi;
     const seen = new Set<string>();
-    const reconciled = new Set<string>();
+    const backlog = { reconciled: new Set<string>(), failed: new Map() };
     const run = () =>
       reconcileSlackDirectProjections(
         api,
@@ -238,7 +238,7 @@ describe("Fi direct projection discovery", () => {
         seen,
         1,
         undefined,
-        reconciled,
+        backlog,
       );
     expect((await run()).pending).toBe(2);
     expect((await run()).pending).toBe(1);
@@ -257,6 +257,64 @@ describe("Fi direct projection discovery", () => {
     });
     expect(order).toEqual([...sessions, sessions[0], added]);
     fetchMock.mockRestore();
+  });
+  it("retries a failed DM on its own short backoff instead of marking it done", async () => {
+    vi.useFakeTimers();
+    const failing = "agent:cellect-fi-admin:slack:direct:u001";
+    const sessions = [failing, "agent:cellect-fi-admin:slack:direct:u002"];
+    mocks.list.mockReturnValue(sessions.map((key) => ({ sessionKey: key, entry: {} })));
+    mocks.entry.mockImplementation(({ sessionKey: key }: { sessionKey: string }) => ({
+      origin: { accountId: "configured-admin", nativeChannelId: `D${key.slice(-3)}` },
+    }));
+    let outage = true;
+    const readDirect = vi.fn(async (channelId: string, peerSenderId: string) => {
+      if (outage && channelId === "D001") {
+        throw new Error("Matrix unavailable");
+      }
+      return { directSource: { workspaceId: "T123", channelId, peerSenderId }, messages: [] };
+    });
+    const fetchMock = vi
+      .spyOn(globalThis, "fetch")
+      .mockResolvedValue({ ok: true, json: async () => ({ status: "existing" }) } as Response);
+    const api = {
+      config: {
+        bindings: [
+          {
+            agentId: "cellect-fi-admin",
+            match: { channel: "slack", accountId: "configured-admin" },
+          },
+        ],
+      },
+      logger: { warn: vi.fn() },
+      runtime: {
+        channel: { runtimeContexts: { get: () => ({ botUserId: "U222", readDirect }) } },
+      },
+    } as unknown as OpenClawPluginApi;
+    const backlog = { reconciled: new Set<string>(), failed: new Map() };
+    const run = () =>
+      reconcileSlackDirectProjections(
+        api,
+        { baseUrl: "https://fi.example", token: "test" },
+        sessions.map((key, index) => ({ sessionKey: key, roomId: `!room${index}` })),
+        new AbortController().signal,
+        new Set(),
+        1,
+        undefined,
+        backlog,
+      );
+    expect(await run()).toMatchObject({ error: 1, pending: 1 });
+    expect(backlog.reconciled.has(failing)).toBe(false);
+    expect(await run()).toMatchObject({ existing: 1, pending: 0 });
+    // Waiting out its backoff is not pending, and rotation leaves it alone.
+    expect(await run()).toMatchObject({ pending: 0 });
+    expect(readDirect.mock.calls.map(([channelId]) => channelId)).toEqual(["D001", "D002", "D002"]);
+    outage = false;
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await run()).toMatchObject({ existing: 1, pending: 0 });
+    expect(readDirect).toHaveBeenLastCalledWith("D001", "U001");
+    expect(backlog.reconciled.has(failing)).toBe(true);
+    fetchMock.mockRestore();
+    vi.useRealTimers();
   });
   it("discovers an eligible superadmin DM from its existing OpenClaw session", async () => {
     const mainSession = "agent:cellect-main:slack:direct:u111";

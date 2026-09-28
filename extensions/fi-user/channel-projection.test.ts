@@ -802,10 +802,13 @@ describe("Fi Slack channel publisher", () => {
           ],
         }),
       }));
-      const readDirect = vi.fn(async (channelId: string, peerSenderId: string) => ({
-        directSource: { workspaceId: "T123", channelId, peerSenderId },
-        messages: [],
-      }));
+      const slack = { connectedAt: 1, failingDirect: new Set<string>() };
+      const readDirect = vi.fn(async (channelId: string, peerSenderId: string) => {
+        if (slack.failingDirect.has(channelId)) {
+          throw new Error("Fi direct projection failed (503)");
+        }
+        return { directSource: { workspaceId: "T123", channelId, peerSenderId }, messages: [] };
+      });
       const discovered: string[] = [];
       const fetchMock = vi.fn(async (_url: string, init: { body: string }) => {
         const body = JSON.parse(init.body);
@@ -844,7 +847,13 @@ describe("Fi Slack channel publisher", () => {
               get: ({ channelId }: { channelId: string }) =>
                 channelId === "matrix"
                   ? { list: async () => bindings }
-                  : { workspaceId: "T123", botUserId: "U222", readChannel, readDirect },
+                  : {
+                      workspaceId: "T123",
+                      botUserId: "U222",
+                      readChannel,
+                      readDirect,
+                      socketConnectedAt: () => slack.connectedAt,
+                    },
             },
           },
         },
@@ -865,7 +874,21 @@ describe("Fi Slack channel publisher", () => {
         await vi.advanceTimersByTimeAsync(ms);
         return passes() - before;
       };
-      return { service, hooks, readHistoryPage, readDirect, discovered, passesDuring };
+      const wakeDirect = (peer: string) => {
+        const sessionKey = `agent:cellect-fi-admin:slack:direct:${peer}`;
+        const inbound = hooks.get("message_received")?.[0];
+        if (!inbound) {
+          throw new Error("Missing DM projection hook");
+        }
+        inbound(
+          { sessionKey } as never,
+          { channelId: "slack", accountId: "fi-admin", sessionKey } as never,
+        );
+      };
+      const snapshotted = (from = 0) =>
+        f.readDirect.mock.calls.slice(from).map(([channelId]) => channelId);
+      const f = { service, hooks, readHistoryPage, readDirect, discovered, passesDuring, slack };
+      return { ...f, wakeDirect, snapshotted };
     }
 
     it("stays on the idle cadence through periodic rescans of known history", async () => {
@@ -948,6 +971,61 @@ describe("Fi Slack channel publisher", () => {
       );
       await vi.advanceTimersByTimeAsync(1_000);
       expect(f.readDirect.mock.calls.slice(beforeWake)).toEqual([["DU002", "U002"]]);
+      f.service.stop();
+    });
+    it("heals a DM whose snapshot failed within minutes, not a full rotation", async () => {
+      vi.useFakeTimers();
+      const peers = ["u001", "u002", "u003", "u004", "u005", "u006"];
+      const f = cadenceFixture({ dms: peers });
+      f.slack.failingDirect.add("DU003");
+      f.service.start();
+      await vi.advanceTimersByTimeAsync(5_000 + 120_000 + 30_000);
+      expect(new Set(f.snapshotted())).toEqual(
+        new Set(peers.map((peer) => `D${peer.toUpperCase()}`)),
+      );
+      f.slack.failingDirect.clear();
+      const healStart = f.readDirect.mock.calls.length;
+      // A six-DM rotation at the idle cadence takes 18 minutes. The failed DM
+      // (its readers were revoked) comes back on its own 30 s backoff, picked
+      // up by the next direct-lane pass.
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(f.snapshotted(healStart)).toContain("DU003");
+      f.service.stop();
+    });
+
+    it("re-snapshots every DM once after the Slack socket reconnects", async () => {
+      vi.useFakeTimers();
+      const peers = ["u001", "u002", "u003", "u004", "u005", "u006"];
+      const f = cadenceFixture({ dms: peers });
+      f.service.start();
+      await vi.advanceTimersByTimeAsync(5_000 + 120_000 + 30_000);
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      const before = f.readDirect.mock.calls.length;
+      f.slack.connectedAt = 2;
+      await vi.advanceTimersByTimeAsync(4 * 60_000);
+      expect(new Set(f.snapshotted(before))).toEqual(
+        new Set(peers.map((peer) => `D${peer.toUpperCase()}`)),
+      );
+      // ...and then goes back to idle rotation.
+      expect(await f.passesDuring(10 * 60_000)).toBeLessThanOrEqual(11);
+      f.service.stop();
+    });
+
+    it("keeps the lane rotation running under frequent live DM wakes", async () => {
+      vi.useFakeTimers();
+      const roots = [root(1), root(2), root(3)];
+      const f = cadenceFixture({ history: roots, dms: ["u001"] });
+      f.service.start();
+      // A DM message every 20 s for ten minutes: each is served within a
+      // second, and the rotation still reaches the detached history lane.
+      for (let tick = 0; tick < 30; tick++) {
+        await vi.advanceTimersByTimeAsync(20_000);
+        const before = f.readDirect.mock.calls.length;
+        f.wakeDirect("u001");
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(f.readDirect.mock.calls.length).toBeGreaterThan(before);
+      }
+      expect(f.discovered).toEqual(roots);
       f.service.stop();
     });
   });
