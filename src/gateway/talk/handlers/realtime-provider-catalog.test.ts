@@ -42,4 +42,44 @@ describe("realtime provider catalog", () => {
     ]);
     expect(JSON.stringify(catalog)).not.toContain("secret reference");
   });
+
+  it("keeps healthy provider choices when reading another provider's raw config throws", () => {
+    const google = {
+      id: "google",
+      label: "Google Live Voice",
+      defaultModel: "gemini-live-test",
+      isConfigured: vi.fn(),
+      resolveConfig: vi.fn(),
+      createBridge: vi.fn(),
+      capabilities: { supportsToolCalls: true, transports: ["gateway-relay"] },
+    } as unknown as RealtimeVoiceProviderPlugin;
+    const openai = {
+      id: "openai",
+      label: "OpenAI Realtime",
+      isConfigured: vi.fn(),
+      resolveConfig: vi.fn(),
+      createBridge: vi.fn(),
+      capabilities: { supportsToolCalls: true },
+    } as unknown as RealtimeVoiceProviderPlugin;
+
+    const catalog = buildRealtimeProviderCatalog({
+      providers: [google, openai],
+      available: true,
+      resolveRawConfig: (provider) => {
+        if (provider.id === "openai") {
+          throw new Error("Unresolved secret reference");
+        }
+        return { apiKey: `${provider.id}-key` };
+      },
+      resolveProviderConfig: (_provider, rawConfig) => rawConfig,
+      resolveCapabilities: (provider) => provider.capabilities,
+      isConfigured: (provider) => provider.id === "google",
+    });
+
+    expect(catalog).toEqual([
+      expect.objectContaining({ id: "google", configured: true }),
+      expect.objectContaining({ id: "openai", configured: false }),
+    ]);
+    expect(JSON.stringify(catalog)).not.toContain("secret reference");
+  });
 });
