@@ -43,6 +43,25 @@ export function directRetryDelay(failures: number): number {
   return reconcileRetryDelay(failures, 30_000, 300_000);
 }
 
+/** Coalesce new hook failures during an outage; live events still project immediately. */
+export function createLiveChannelRetryGate() {
+  const failures = new Map<string, { count: number; nextAt: number }>();
+  return {
+    admit(sessionKey: string): boolean {
+      const at = Date.now();
+      const previous = failures.get(sessionKey);
+      if (previous && at < previous.nextAt) {
+        return false;
+      }
+      const count = (previous?.count ?? 0) + 1;
+      failures.set(sessionKey, { count, nextAt: at + reconcileRetryDelay(count, 30_000, 300_000) });
+      return true;
+    },
+    succeeded: (sessionKey: string) => failures.delete(sessionKey),
+    reset: () => failures.clear(),
+  };
+}
+
 export type ProjectionMaintenanceLane = "channel" | "detached" | "direct";
 
 function nextMaintenanceLane(lane: ProjectionMaintenanceLane): ProjectionMaintenanceLane {

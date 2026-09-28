@@ -33,6 +33,99 @@ describe("Fi Slack channel publisher", () => {
     discovery.list.mockReset().mockReturnValue([]);
     discovery.entry.mockReset();
   });
+  it.each(["recover", "persistent", "deleted"])(
+    "repairs a woken bound thread with bounded retries (%s), keeping ordinary sweeps membership-only",
+    async (failure) => {
+      vi.useFakeTimers();
+      const sessionKey = "agent:cellect-fi-admin:slack:channel:c123:thread:1700000000.000001";
+      discovery.entry.mockReturnValue({ accountId: "fi-admin" });
+      const snapshot = {
+        workspaceId: "T123",
+        channelId: "C123",
+        rootMessageId: "1700000000.000001",
+        memberSenderIds: ["U111"],
+        messages: [
+          { messageId: "1700000000.000002", senderId: "U111", content: "latest reply", bot: false },
+        ],
+      };
+      const readThread = vi.fn();
+      if (failure === "recover") {
+        readThread
+          .mockRejectedValueOnce(new Error("Slack snapshot deadline exceeded"))
+          .mockResolvedValue(snapshot);
+      } else {
+        readThread.mockRejectedValue(
+          new Error(
+            failure === "deleted" ? "thread_not_found" : "Slack snapshot deadline exceeded",
+          ),
+        );
+      }
+      const readChannel = vi.fn(async () => ({ ...snapshot, readThread }));
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue({ ok: true, json: async () => ({ status: "existing" }) });
+      vi.stubGlobal("fetch", fetchMock);
+      let service: { start: () => void; stop: () => void } | undefined;
+      const api = {
+        config: {
+          bindings: [
+            { agentId: "cellect-fi-admin", match: { channel: "slack", accountId: "fi-admin" } },
+          ],
+        },
+        logger: { warn: vi.fn(), info: vi.fn() },
+        registerGatewayMethod: vi.fn(),
+        registerService: (value: typeof service) => {
+          service = value;
+        },
+        runtime: {
+          channel: {
+            runtimeContexts: {
+              get: ({ channelId }: { channelId: string }) =>
+                channelId === "matrix"
+                  ? { list: async () => [{ sessionKey, roomId: "!room" }] }
+                  : { workspaceId: "T123", botUserId: "U222", readChannel, readThread },
+            },
+          },
+        },
+      } as unknown as OpenClawPluginApi;
+      const repair = registerSlackProjectionReconciler(api, () => ({
+        baseUrl: "https://fi.example",
+        token: "test-token",
+      }));
+      if (!service) {
+        throw new Error("Missing reconciler");
+      }
+      service.start();
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(readThread).not.toHaveBeenCalled();
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).not.toHaveProperty("snapshot");
+      fetchMock.mockClear();
+      repair.retryChannelProjection(sessionKey);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(readThread).toHaveBeenCalledTimes(1);
+      // A failed refresh never revokes readers or replaces history with an empty snapshot.
+      expect(fetchMock).not.toHaveBeenCalled();
+      if (failure !== "recover") {
+        for (let event = 0; event < 10; event++) {
+          repair.retryChannelProjection(sessionKey);
+          await vi.advanceTimersByTimeAsync(500);
+        }
+        service.stop();
+        expect(readThread).toHaveBeenCalledTimes(failure === "deleted" ? 1 : 4);
+        expect(fetchMock).not.toHaveBeenCalled();
+        return;
+      }
+      await vi.advanceTimersByTimeAsync(1000);
+      service.stop();
+      expect(readThread).toHaveBeenCalledTimes(2);
+      expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+        snapshot: {
+          complete: true,
+          messages: [{ messageId: "1700000000.000002", role: "user", content: "latest reply" }],
+        },
+      });
+    },
+  );
   it("recognizes only Slack's terminal missing-thread error across SDK wrappers", () => {
     expect(isMissingSlackThread(new Error("Slack API failed: thread_not_found"))).toBe(true);
     expect(isMissingSlackThread({ data: { error: "thread_not_found" } })).toBe(true);

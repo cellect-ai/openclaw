@@ -1,13 +1,46 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   RECONCILE_BATCH_SIZE,
   RECONCILE_HISTORY_BATCH_SIZE,
   reconcileRetryDelay,
+  createLiveChannelRetryGate,
   takePendingOrRotatingBatch,
   takeSweepBatch,
 } from "./reconciliation-batch.js";
 
 describe("projection reconciliation batching", () => {
+  it("backs off repeated live hook failures per thread and resets only on successful delivery", () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      const gate = createLiveChannelRetryGate();
+      expect(gate.admit("failed-thread")).toBe(true);
+      expect(gate.admit("other-thread")).toBe(true);
+      for (let event = 0; event < 29; event++) {
+        vi.advanceTimersByTime(1000);
+        expect(gate.admit("failed-thread")).toBe(false);
+      }
+      vi.advanceTimersByTime(1000);
+      expect(gate.admit("failed-thread")).toBe(true);
+      vi.advanceTimersByTime(30_000);
+      expect(gate.admit("failed-thread")).toBe(false);
+      vi.advanceTimersByTime(30_000);
+      expect(gate.admit("failed-thread")).toBe(true);
+      for (const delay of [120_000, 240_000, 300_000, 300_000]) {
+        vi.advanceTimersByTime(delay - 1);
+        expect(gate.admit("failed-thread")).toBe(false);
+        vi.advanceTimersByTime(1);
+        expect(gate.admit("failed-thread")).toBe(true);
+      }
+      gate.succeeded("failed-thread");
+      expect(gate.admit("failed-thread")).toBe(true);
+      expect(gate.admit("failed-thread")).toBe(false);
+      gate.reset();
+      expect(gate.admit("failed-thread")).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("finishes a sweep without repeating work before rotating", () => {
     const seen = new Set<string>();
     const keys = Array.from({ length: 12 }, (_, index) => `key-${String(index).padStart(2, "0")}`);

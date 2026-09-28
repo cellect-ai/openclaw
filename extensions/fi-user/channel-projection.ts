@@ -19,6 +19,7 @@ import {
 import { createProjectionDriftScheduler, runProjectionDriftPass } from "./projection-drift.js";
 import {
   createReconcileSchedule,
+  createLiveChannelRetryGate,
   type ProjectionMaintenanceLane,
   RECONCILE_BATCH_SIZE,
   RECONCILE_FULL_REFRESH_BUDGET,
@@ -313,6 +314,7 @@ export function registerSlackProjectionReconciler(
   let stopped = true;
   let running = false;
   const schedule = createReconcileSchedule();
+  const liveChannelRetry = createLiveChannelRetryGate();
   let channelWorkKind: "acl" | "history" = "acl";
   let detachedWorkKind: "acl" | "history" = "acl";
   let lastDriftAt = 0;
@@ -611,7 +613,9 @@ export function registerSlackProjectionReconciler(
             // The periodic repair path only needs to reconcile current
             // readers, so it must not re-read and re-upload an entire Slack
             // thread for every bound room (the drift pass refreshes drift).
-            membershipOnly: Boolean(roomId),
+            // A wake is a retry of live delivery, so repair its content too.
+            membershipOnly: Boolean(roomId) && !priority,
+            refresh: Boolean(priority),
             onResult: (status) => {
               if (identity) {
                 outcomes.set(identity, status);
@@ -619,7 +623,13 @@ export function registerSlackProjectionReconciler(
             },
             signal: AbortSignal.any([generation.signal, AbortSignal.timeout(90_000)]),
           });
+          if (priority) {
+            liveChannelRetry.succeeded(sessionKey);
+          }
         } catch (error) {
+          if (priority && !isMissingSlackThread(error)) {
+            schedule.requeue(pass);
+          }
           if (identity) {
             // A deleted Slack root is terminal for this durable source. Keep
             // the session available for explicit operator archival, but do
@@ -788,6 +798,7 @@ export function registerSlackProjectionReconciler(
       // begins at the channel lane so a durable room never waits behind a
       // stale detached/direct cursor from the prior gateway generation.
       schedule.reset(5_000);
+      liveChannelRetry.reset();
       channelWorkKind = "acl";
       detachedWorkKind = "acl";
       lastDriftAt = 0;
@@ -809,7 +820,7 @@ export function registerSlackProjectionReconciler(
       controller = undefined;
     },
   });
-  return {
+  const reconciler = {
     /** Slack or Matrix activity: plan the matching rooms ahead of the rotation. */
     noteActivity: (key: string | undefined) => drift.noteActivity(key),
     wake: (sessionKey: string, lane: ProjectionMaintenanceLane = "channel") => {
@@ -830,6 +841,15 @@ export function registerSlackProjectionReconciler(
       }
       timer = setTimeout(() => void reconcile(), 1_000);
       timer.unref();
+    },
+  };
+  return {
+    ...reconciler,
+    channelProjectionSucceeded: (sessionKey: string) => liveChannelRetry.succeeded(sessionKey),
+    retryChannelProjection: (sessionKey: string) => {
+      if (CHANNEL_SESSION.test(sessionKey) && liveChannelRetry.admit(sessionKey)) {
+        reconciler.wake(sessionKey);
+      }
     },
   };
 }

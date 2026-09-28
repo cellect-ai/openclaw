@@ -54,6 +54,7 @@ import {
   signOnBehalfOf,
   withOnBehalfOfEnv,
 } from "./on-behalf-of.js";
+import { projectionFailureKind } from "./projection-failure.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 
 const MAX_DRIVE_TEXT_CHARS = 200_000;
@@ -70,6 +71,10 @@ async function projectVerifiedSlackMessage(
   api: OpenClawPluginApi,
   event: SlackProjectionMessage,
   context: SlackProjectionContext,
+  projection: {
+    retryChannelProjection: (sessionKey: string) => void;
+    channelProjectionSucceeded: (sessionKey: string) => void;
+  },
 ): Promise<void> {
   const sessionKey = event.sessionKey ?? context.sessionKey;
   const senderId = (event.senderId ?? context.senderId ?? "").trim().toUpperCase();
@@ -89,7 +94,7 @@ async function projectVerifiedSlackMessage(
 
   try {
     if (context.accountId) {
-      await projectSlackChannelThread({
+      const projected = await projectSlackChannelThread({
         api,
         sessionKey,
         accountId: context.accountId,
@@ -97,9 +102,15 @@ async function projectVerifiedSlackMessage(
         baseUrl: config.baseUrl,
         token,
       });
+      if (projected) {
+        projection.channelProjectionSucceeded(sessionKey);
+      }
     }
-  } catch {
-    api.logger.warn("fi-user: Slack projection failed");
+  } catch (error) {
+    api.logger.warn(
+      `fi-user: Slack projection failed kind=${projectionFailureKind(error)} session=${sessionKey}`,
+    );
+    projection.retryChannelProjection(sessionKey);
   }
 }
 
@@ -518,7 +529,7 @@ export default definePluginEntry({
         api.logger.warn("fi-user: admin approval handling failed");
       });
       // Keep source-channel delivery independent of Fi/Matrix latency.
-      void projectVerifiedSlackMessage(api, event, context);
+      void projectVerifiedSlackMessage(api, event, context, slackProjection);
     });
     api.on("before_tool_call", (event, ctx) => {
       const config = configFromRuntime(api);

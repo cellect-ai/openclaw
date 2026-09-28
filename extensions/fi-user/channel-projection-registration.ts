@@ -5,6 +5,7 @@ import {
   registerSlackProjectionReconciler,
 } from "./channel-projection.js";
 import { isSlackDirectSessionKey, recoverSlackDirectProjection } from "./direct-projection.js";
+import { projectionFailureKind } from "./projection-failure.js";
 
 export { projectSlackChannelThread };
 
@@ -110,11 +111,23 @@ export function registerSlackChannelProjection(
       sessionKey,
       accountId: context.accountId,
       discover: true,
-    }).catch(() => {
-      api.logger.warn("fi-user: channel projection failed after Slack delivery");
-    });
+    })
+      .then((projected) => {
+        if (projected) {
+          reconciler.channelProjectionSucceeded(sessionKey);
+        }
+      })
+      .catch((error: unknown) => {
+        api.logger.warn(
+          `fi-user: channel projection failed after Slack delivery kind=${projectionFailureKind(error)} session=${sessionKey}`,
+        );
+        reconciler.retryChannelProjection(sessionKey);
+      });
   });
   return {
+    /** A failed immediate snapshot is live work, not periodic ACL maintenance. */
+    retryChannelProjection: reconciler.retryChannelProjection,
+    channelProjectionSucceeded: reconciler.channelProjectionSucceeded,
     /** Inbound Slack or Matrix activity: plan its projection rooms ahead of the rotation. */
     noteInboundActivity: (context: {
       channelId: string;
