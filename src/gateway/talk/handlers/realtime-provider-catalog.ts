@@ -22,7 +22,13 @@ export function buildRealtimeProviderCatalog(params: {
   ) => boolean;
 }) {
   return params.providers.map((provider) => {
-    const rawConfig = params.resolveRawConfig(provider);
+    // Config reads can themselves resolve SecretRefs (and throw when a provider's
+    // secret is unavailable in this runtime snapshot). Keep that failure scoped
+    // to the affected provider just like provider-specific normalization below.
+    const rawConfig = resolveCatalogValue(
+      () => params.resolveRawConfig(provider),
+      () => ({}),
+    );
     const defaultRawConfig = { ...rawConfig };
     delete defaultRawConfig.model;
     const providerState = params.available
