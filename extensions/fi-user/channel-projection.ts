@@ -441,6 +441,13 @@ export function registerSlackProjectionReconciler(
           if (sourceAgentId !== agentId || !channelId) {
             continue;
           }
+          const entry = getSessionEntry({ agentId, sessionKey, readConsistency: "latest" });
+          // The durable key index includes archived conversations. Archival is
+          // the operator's terminal retirement signal; probing those roots on
+          // every restart resurrects deleted Slack work into the repair queue.
+          if (entry?.archivedAt !== undefined) {
+            continue;
+          }
           const accountId = resolveAccount(agentId, channelId, sessionKey);
           if (!accountId) {
             unavailableSessions.add(sessionKey);

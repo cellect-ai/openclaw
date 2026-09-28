@@ -301,7 +301,9 @@ describe("Fi Slack channel publisher", () => {
   it("discovers unbound historical roots in bounded batches and deduplicates cross-agent roots", async () => {
     vi.useFakeTimers();
     const agents = ["cellect-fi-user", "cellect-fi-admin", "cellect-main"];
-    discovery.entry.mockReturnValue({});
+    discovery.entry.mockImplementation(({ sessionKey }: { sessionKey: string }) =>
+      sessionKey.endsWith(".000011") ? { archivedAt: 1 } : {},
+    );
     discovery.list.mockImplementation(({ agentId }: { agentId: string }) =>
       Array.from({ length: 12 }, (_, index) => ({
         sessionKey: `agent:${agentId}:slack:channel:c123:thread:1700000000.${String(index).padStart(6, "0")}`,
@@ -373,7 +375,10 @@ describe("Fi Slack channel publisher", () => {
     await vi.advanceTimersByTimeAsync(40_000);
     service.stop();
     const payloads = fetchMock.mock.calls.map((call) => JSON.parse(call[1].body));
-    expect(new Set(payloads.map((payload) => payload.source.rootMessageId)).size).toBe(12);
+    expect(new Set(payloads.map((payload) => payload.source.rootMessageId)).size).toBe(11);
+    expect(payloads.some((payload) => payload.source.rootMessageId.endsWith(".000011"))).toBe(
+      false,
+    );
     expect(payloads.every((payload) => payload.discover === true && !payload.reconcile)).toBe(true);
     expect(payloads.every((payload) => payload.source.memberSenderIds.includes("U333"))).toBe(true);
     expect(discovery.list).toHaveBeenCalledWith({ agentId: "cellect-fi-user" });
