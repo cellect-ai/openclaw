@@ -88,7 +88,11 @@ import {
   resolveSlackThreadStarter,
   type SlackThreadStarter,
 } from "../thread.js";
-import { noticeSlackUnansweredMention } from "../unanswered-mentions.js";
+import {
+  logSlackDroppedDirectMessage,
+  noticeSlackUnansweredMention,
+  noticeSlackUnreadableDirectMessage,
+} from "../unanswered-mentions.js";
 import { qualifySlackRoutePeerId } from "../workspace-routing.js";
 import {
   discardSlackPreflightMedia,
@@ -656,6 +660,18 @@ export async function prepareSlackMessage(params: {
       },
       "Slack inbound event rejected during preparation",
     );
+    // A dropped DM is invisible to everyone but its sender, who sees only
+    // silence, so every gate that ends one is named at warn level rather than
+    // left to an info record nobody greps.
+    if (normalizeSlackChannelType(message.channel_type, message.channel) === "im") {
+      logSlackDroppedDirectMessage({
+        accountId: account.accountId,
+        channelId: message.channel,
+        userId: message.user,
+        messageTs: message.ts,
+        reason,
+      });
+    }
     return null;
   };
   const slackClient = opts.eventScope?.client ?? ctx.app.client;
@@ -1412,6 +1428,22 @@ export async function prepareSlackMessage(params: {
   const inboundEventKind = isAmbientContextOnlyUser ? "room_event" : classifiedInboundEventKind;
   const resolvedMessageContent = await getMessageContent();
   if (!resolvedMessageContent) {
+    // Nothing rendered, so there is no turn to run. In a room that is silence
+    // among other traffic; in a DM the sender is left waiting on an answer that
+    // was never going to come, so tell them the message was unreadable.
+    if (isDirectMessage && message.user && !isBotMessage) {
+      if (
+        await noticeSlackUnreadableDirectMessage({
+          ctx,
+          channelId: message.channel,
+          userId: message.user,
+          ...(threadTs ? { threadTs } : {}),
+          ...(opts.eventScope ? { eventScope: opts.eventScope } : {}),
+        })
+      ) {
+        opts.onVisibleDrop?.();
+      }
+    }
     return drop("empty-content");
   }
   const { rawBody, effectiveDirectMedia, commandSourceText, mentionStripPatterns } =

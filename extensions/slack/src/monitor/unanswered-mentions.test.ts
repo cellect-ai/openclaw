@@ -12,13 +12,16 @@ vi.mock("openclaw/plugin-sdk/runtime-env", async (importOriginal) => {
 
 const {
   clearSlackPendingMentionsForTest,
+  logSlackDroppedDirectMessage,
   noticeSlackUnansweredMention,
+  noticeSlackUnreadableDirectMessage,
   resolveSlackPrincipalMention,
   trackSlackPrincipalMention,
 } = await import("./unanswered-mentions.js");
 
 function createCtx(unansweredMentions?: Record<string, unknown>) {
   const postEphemeral = vi.fn(async () => ({ ok: true }));
+  const postMessage = vi.fn(async (_args: Record<string, unknown>) => ({ ok: true }));
   const ctx = {
     accountId: "fi-admin",
     teamId: "T1",
@@ -27,11 +30,11 @@ function createCtx(unansweredMentions?: Record<string, unknown>) {
     cfg: {
       channels: { slack: unansweredMentions ? { unansweredMentions } : {} },
     } as OpenClawConfig,
-    app: { client: { chat: { postEphemeral } } },
+    app: { client: { chat: { postEphemeral, postMessage } } },
     runtime: { error: vi.fn() },
     resolveUserName: async () => ({ name: "cellect-fi-admin" }),
   } as unknown as SlackMonitorContext;
-  return { ctx, postEphemeral };
+  return { ctx, postEphemeral, postMessage };
 }
 
 describe("noticeSlackUnansweredMention", () => {
@@ -90,6 +93,62 @@ describe("noticeSlackUnansweredMention", () => {
     await expect(notice()).resolves.toBe(false);
     await expect(notice()).resolves.toBe(true);
     expect(postEphemeral).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("dropped direct messages", () => {
+  beforeEach(() => {
+    warn.mockClear();
+  });
+
+  it("names the gate that ended the DM, so a lost one is greppable", () => {
+    logSlackDroppedDirectMessage({
+      accountId: "fi-admin",
+      channelId: "D1",
+      userId: "U0GC",
+      messageTs: "1.0",
+      reason: "empty-content",
+    });
+
+    expect(warn).toHaveBeenCalledExactlyOnceWith(
+      "Dropped direct message account=fi-admin channel=D1 user=U0GC ts=1.0 reason=empty-content",
+    );
+  });
+
+  it("answers an unreadable DM once per sender and conversation", async () => {
+    const { ctx, postMessage } = createCtx();
+    const notice = (userId: string, channelId = "D1") =>
+      noticeSlackUnreadableDirectMessage({ ctx, channelId, userId });
+
+    await expect(notice("U0GC")).resolves.toBe(true);
+    await expect(notice("U0GC")).resolves.toBe(false);
+    await expect(notice("U0OTHER")).resolves.toBe(true);
+    await expect(notice("U0GC", "D2")).resolves.toBe(true);
+
+    expect(postMessage).toHaveBeenCalledTimes(3);
+    expect(postMessage.mock.calls[0]?.[0]).toMatchObject({
+      channel: "D1",
+      token: "xoxb-test",
+    });
+  });
+
+  it("stays quiet when notices are switched off", async () => {
+    const { ctx, postMessage } = createCtx({ notice: false });
+
+    await expect(
+      noticeSlackUnreadableDirectMessage({ ctx, channelId: "D1", userId: "U0GC" }),
+    ).resolves.toBe(false);
+    expect(postMessage).not.toHaveBeenCalled();
+  });
+
+  it("retries on the next DM when Slack rejects the reply", async () => {
+    const { ctx, postMessage } = createCtx();
+    postMessage.mockRejectedValueOnce(new Error("channel_not_found"));
+    const notice = () => noticeSlackUnreadableDirectMessage({ ctx, channelId: "D1", userId: "U1" });
+
+    await expect(notice()).resolves.toBe(false);
+    await expect(notice()).resolves.toBe(true);
+    expect(postMessage).toHaveBeenCalledTimes(2);
   });
 });
 

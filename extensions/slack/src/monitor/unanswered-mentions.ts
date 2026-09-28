@@ -13,6 +13,9 @@ export type SlackUnansweredMentionReason =
   | "sender-not-allowed"
   | "not-a-request-user";
 
+const UNREADABLE_DM_REPLY_TEXT =
+  "I couldn’t read that message — there was no text in it I could use. Could you send it as text, or add a line describing what you need?";
+
 const SLACK_CHANNEL_ACCESS_DOCS_URL =
   "https://docs.openclaw.ai/channels/slack#access-control-and-routing";
 const NOTICE_RATE_LIMIT_MS = 60 * 60 * 1_000;
@@ -113,6 +116,80 @@ export async function noticeSlackUnansweredMention(params: {
     limits.delete(limitKey);
     ctx.runtime.error?.(
       `slack ${reason === "channel-not-allowed" ? "allowlist denial" : "mention"} notice failed for channel ${channelId}: ${formatSlackError(error)}`,
+    );
+    return false;
+  }
+}
+
+/**
+ * Records a DM that produced no turn.
+ *
+ * A room mention that goes nowhere is at least visible to the room; a dropped
+ * DM is seen by nobody, so every path that ends one without a turn says so
+ * here, on the same greppable subsystem as the unanswered-mention receipts.
+ */
+export function logSlackDroppedDirectMessage(params: {
+  accountId: string;
+  channelId: string;
+  userId?: string;
+  messageTs?: string;
+  reason: string;
+}): void {
+  unansweredMentionLog().warn(
+    `Dropped direct message account=${params.accountId} channel=${params.channelId} user=${params.userId ?? "unknown"} ts=${params.messageTs ?? "unknown"} reason=${params.reason}`,
+  );
+}
+
+/**
+ * Tells a DM sender that their message could not be read, so a message with no
+ * usable text is answered rather than met with silence.
+ *
+ * At most one reply per sender and conversation per hour, on the same throttle
+ * as the mention notices: a sender who pastes five images in a row gets one
+ * answer, not five. Returns whether the sender was actually told.
+ */
+export async function noticeSlackUnreadableDirectMessage(params: {
+  ctx: SlackMonitorContext;
+  channelId: string;
+  userId: string;
+  threadTs?: string;
+  eventScope?: SlackEventScope;
+}): Promise<boolean> {
+  const { ctx, channelId, userId, eventScope } = params;
+  const config = resolveUnansweredMentionConfig(ctx);
+  if (config?.notice === false) {
+    return false;
+  }
+  let limits = noticeLimits.get(ctx);
+  if (!limits) {
+    limits = createDedupeCache({ ttlMs: NOTICE_RATE_LIMIT_MS, maxSize: 2_000 });
+    noticeLimits.set(ctx, limits);
+  }
+  const teamId = eventScope?.teamId ?? ctx.teamId;
+  const limitKey = `unreadable:${teamId}:${channelId}:${userId}`;
+  if (limits.check(limitKey)) {
+    return false;
+  }
+  try {
+    const chat = (eventScope?.client ?? ctx.app.client).chat;
+    // Bound rather than called inline, as in `client-delivery.ts`: this is
+    // Slack's `chat.postMessage`, which the window-postMessage lint rule
+    // otherwise claims is missing a target origin.
+    const postChatMessage = chat.postMessage.bind(chat);
+    // A real message, not an ephemeral one: the sender must still be able to
+    // see why they never got an answer after a reload.
+    await postChatMessage({
+      token: ctx.botToken,
+      channel: channelId,
+      text: UNREADABLE_DM_REPLY_TEXT,
+      ...(params.threadTs ? { thread_ts: params.threadTs } : {}),
+    });
+    return true;
+  } catch (error) {
+    // Let the next message retry: nothing reached the sender.
+    limits.delete(limitKey);
+    ctx.runtime.error?.(
+      `slack unreadable-dm notice failed for channel ${channelId}: ${formatSlackError(error)}`,
     );
     return false;
   }
