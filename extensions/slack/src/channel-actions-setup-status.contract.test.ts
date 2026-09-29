@@ -15,6 +15,7 @@ import { inspectSlackAccount } from "./account-inspect.js";
 const slackDefaultActions = [
   "send",
   "conversation-open",
+  "thread-reply",
   "react",
   "reactions",
   "read",

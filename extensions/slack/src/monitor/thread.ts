@@ -194,6 +194,84 @@ type SlackRepliesPageMessage = NonNullable<ConversationsRepliesResponse["message
 
 const SLACK_THREAD_HISTORY_MAX_PAGES = 3;
 
+function isSlackTimestampBefore(candidate: string | undefined, current: string): boolean {
+  const parse = (value: string | undefined): [seconds: bigint, fraction: string] | null => {
+    const match = value?.trim().match(/^(\d+)(?:\.(\d+))?$/u);
+    const seconds = match?.[1];
+    return seconds ? [BigInt(seconds), match[2] ?? ""] : null;
+  };
+  const candidateParts = parse(candidate);
+  const currentParts = parse(current);
+  if (!candidateParts || !currentParts) {
+    return false;
+  }
+  if (candidateParts[0] !== currentParts[0]) {
+    return candidateParts[0] < currentParts[0];
+  }
+  const fractionLength = Math.max(candidateParts[1].length, currentParts[1].length);
+  return (
+    candidateParts[1].padEnd(fractionLength, "0") < currentParts[1].padEnd(fractionLength, "0")
+  );
+}
+
+/**
+ * Checks whether an earlier human reply in a Slack thread matches an authority
+ * predicate. This is an admission check, so failures and overlong threads fail
+ * closed instead of inferring authority from model-visible transcript text.
+ */
+export async function hasSlackThreadReplyMatchingUser(params: {
+  channelId: string;
+  threadTs: string;
+  client: SlackWebClient;
+  currentMessageTs?: string;
+  matchesUser: (userId: string) => boolean;
+}): Promise<boolean> {
+  const fetchLimit = 200;
+  let cursor: string | undefined;
+  let pagesFetched = 0;
+
+  try {
+    do {
+      pagesFetched += 1;
+      const response = (await params.client.conversations.replies({
+        channel: params.channelId,
+        ts: params.threadTs,
+        limit: fetchLimit,
+        inclusive: true,
+        ...(cursor ? { cursor } : {}),
+      })) as SlackRepliesPage; // SAFETY: Slack replies are narrowed to optional fields read below.
+
+      for (const message of response.messages ?? []) {
+        const isEarlierMessage = params.currentMessageTs
+          ? isSlackTimestampBefore(message.ts, params.currentMessageTs)
+          : true;
+        if (
+          isEarlierMessage &&
+          typeof message.user === "string" &&
+          params.matchesUser(message.user)
+        ) {
+          return true;
+        }
+      }
+
+      const next = response.response_metadata?.next_cursor;
+      cursor = typeof next === "string" && next.trim().length > 0 ? next.trim() : undefined;
+    } while (cursor && pagesFetched < SLACK_THREAD_HISTORY_MAX_PAGES);
+
+    if (cursor) {
+      logVerbose(
+        `slack thread authority scan capped channel=${params.channelId} ts=${params.threadTs} pages=${SLACK_THREAD_HISTORY_MAX_PAGES}`,
+      );
+    }
+    return false;
+  } catch (err) {
+    logVerbose(
+      `slack thread authority scan failed channel=${params.channelId} ts=${params.threadTs}: ${formatErrorMessage(err)}`,
+    );
+    return false;
+  }
+}
+
 /**
  * Fetches the most recent messages in a Slack thread (excluding the current message).
  * Used to populate thread context when a new thread session starts.

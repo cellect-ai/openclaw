@@ -66,6 +66,7 @@ import { resolveSlackSenderAuthentication } from "./ingress.js";
 import { resolveSlackSessionEventRoutingContext } from "./message-handler/prepare-routing.js";
 import { escapeSlackMrkdwn } from "./mrkdwn.js";
 import { isSlackChannelAllowedByPolicy } from "./policy.js";
+import { resolveSlackRequestUserAllowed } from "./request-users.js";
 import {
   createSlackResponseUrlBudget,
   isSlackResponseAlreadyReportedError,
@@ -516,6 +517,19 @@ export function createSlackCommandHandler(params: {
             await respondEphemeral("This channel is not allowed.");
             return false;
           }
+        }
+        if (
+          !resolveSlackRequestUserAllowed({
+            requestUsers: channelConfig?.requestUsers,
+            teamId: eventScope?.teamId ?? ctx.teamId,
+            userId: command.user_id,
+          })
+        ) {
+          await respond({
+            text: "You may contribute context here, but only an authorized requester can start or administer agent work.",
+            response_type: "ephemeral",
+          });
+          return;
         }
       }
 

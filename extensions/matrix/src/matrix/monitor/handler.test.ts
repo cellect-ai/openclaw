@@ -23,6 +23,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY } from "../send/types.js";
+import { registerMatrixBlockStreamingConfigTests } from "./handler.block-streaming-config.test-support.js";
 import { registerMatrixPreviewDeliveryTests } from "./handler.preview-delivery.test-support.js";
 import {
   createMatrixHandlerTestHarness,
@@ -737,6 +738,7 @@ describe("matrix monitor handler pairing account scope", () => {
 
       await receiveText(handler, {
         eventId: "$native-plain-text-mention",
+        sender: "@sender:example.org",
         body,
         mentions: { user_ids: ["@bot:example.org"] },
       });
@@ -745,6 +747,10 @@ describe("matrix monitor handler pairing account scope", () => {
       expect(runPrepared.mock.calls[0]?.[0].ctxPayload).toMatchObject({
         AccountId: "ops",
         WasMentioned: true,
+        ChannelContext: {
+          sender: { id: "@sender:example.org" },
+          chat: { id: "!room:example.org", eventId: "$native-plain-text-mention" },
+        },
       });
       expect(getMemberDisplayName).not.toHaveBeenCalledWith(
         "!room:example.org",
@@ -2175,6 +2181,7 @@ describe("matrix monitor handler draft streaming", () => {
       );
       expect(draftOptions.msgtype).not.toBe("m.notice");
       expect(draftOptions.includeMentions).toBe(false);
+      expect(draftOptions.streamPhase).toBe("answer");
 
       await deliver(payload, { kind: "final" });
 
@@ -2770,4 +2777,7 @@ describe("matrix monitor handler draft streaming", () => {
   });
 });
 
+describe("matrix monitor handler block streaming config", () => {
+  registerMatrixBlockStreamingConfigTests();
+});
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

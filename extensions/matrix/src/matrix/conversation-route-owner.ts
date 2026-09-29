@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { findMatrixAccountEntry, hasImplicitMatrixAccountConfig } from "../account-selection.js";
 import { resolveMatrixInboundRoute } from "./monitor/route.js";
+import { isMatrixReadOnlyProjectionRoom } from "./thread-bindings-shared.js";
 
 export function resolveMatrixConversationRouteOwner(params: {
   cfg: OpenClawConfig;
@@ -29,6 +30,9 @@ export function resolveMatrixConversationRouteOwner(params: {
     (conversation.kind === "direct" ? "" : conversation.peerId.trim());
   if (!roomId) {
     return null;
+  }
+  if (isMatrixReadOnlyProjectionRoom(accountId, roomId)) {
+    return { kind: "unavailable" as const };
   }
   const isDirectMessage = conversation.kind === "direct";
   const result = resolveMatrixInboundRoute({

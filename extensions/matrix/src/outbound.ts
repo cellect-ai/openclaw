@@ -20,12 +20,14 @@ import {
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
+import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
 import { sendMessageMatrix, sendPollMatrix } from "./matrix/send.js";
 import type { MatrixExtraContentFields } from "./matrix/send/types.js";
 import { matrixPresentationCapabilities } from "./presentation-capabilities.js";
 
 const MATRIX_OPENCLAW_PRESENTATION_KEY = "com.openclaw.presentation" as const;
 const MATRIX_OPENCLAW_PRESENTATION_TYPE = "message.presentation" as const;
+const MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY = "com.openclaw.voice_transcript" as const;
 const MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT = "---";
 
 type MatrixChannelData = {
@@ -110,7 +112,22 @@ export function resolveMatrixExtraContent(
   payload: ReplyPayload,
 ): MatrixExtraContentFields | undefined {
   const presentation = resolveMatrixPresentationContent(payload);
-  return presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : undefined;
+  const raw = asOptionalRecord(resolveMatrixChannelData(payload).extraContent);
+  const voice = asOptionalRecord(raw?.[MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]);
+  const trustedVoice =
+    voice?.version === 1 &&
+    voice.type === "voice.transcript" &&
+    (voice.role === "user" || voice.role === "assistant") &&
+    typeof voice.id === "string"
+      ? voice
+      : undefined;
+  if (!presentation && !trustedVoice) {
+    return undefined;
+  }
+  return {
+    ...(presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : {}),
+    ...(trustedVoice ? { [MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]: trustedVoice } : {}),
+  };
 }
 
 function resolveMatrixDeliveryProgress(
@@ -213,6 +230,14 @@ export const matrixOutbound: ChannelOutboundAdapter = {
             assertDirectAdapterHandoff,
             onPlatformSendDispatch,
             extraContent: isFirst ? resolveMatrixExtraContent(payload) : undefined,
+            publication: resolveMatrixReplyPublication(
+              payload,
+              accountId ?? undefined,
+              undefined,
+              resolvedThreadId,
+              index,
+              index === urls.length - 1,
+            ),
             onDeliveryResult: resolveMatrixDeliveryProgress(onDeliveryResult),
           }),
         onResult: (result) => {
@@ -250,6 +275,12 @@ export const matrixOutbound: ChannelOutboundAdapter = {
       assertDirectAdapterHandoff,
       onPlatformSendDispatch,
       extraContent: resolveMatrixExtraContent(payload),
+      publication: resolveMatrixReplyPublication(
+        payload,
+        accountId ?? undefined,
+        undefined,
+        resolvedThreadId,
+      ),
       onDeliveryResult: resolveMatrixDeliveryProgress(onDeliveryResult),
     });
     return attachChannelToResult("matrix", toMatrixOutboundResult(result));
