@@ -10,6 +10,11 @@ export type RealtimeVoiceProviderId = string;
 
 export type RealtimeVoiceRole = "user" | "assistant";
 
+export type RealtimeVoiceTranscriptUpdate = {
+  itemId?: string;
+  textMode: "delta" | "snapshot";
+};
+
 export type RealtimeVoiceCloseReason = "completed" | "error";
 
 export type RealtimeVoiceAudioFormat =
@@ -196,7 +201,7 @@ export type RealtimeVoiceBridgeCallbacks = {
     role: RealtimeVoiceRole,
     text: string,
     isFinal: boolean,
-    metadata?: { textMode: "snapshot" },
+    update?: RealtimeVoiceTranscriptUpdate,
   ) => void;
   /** Synchronously admits native control; only consult permits task fallthrough. Respond is call-bound. */
   handleDelegationInput?: (
@@ -279,6 +284,7 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   vadThreshold?: number;
   silenceDurationMs?: number;
   prefixPaddingMs?: number;
+  language?: string;
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;

@@ -322,6 +322,23 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     const now = Date.UTC(2026, 7, 1, 12, 34, 56, 789);
     vi.setSystemTime(now);
     const result = await buildGoogleRealtimeVoiceProvider().createBrowserSession?.({
+
+  it("omits adaptive thinking budgets for Gemini 3.1 Live", async () => {
+    await createGoogleLiveBridge({ providerConfig: { thinkingBudget: -1 } }).connect();
+    expect(lastConnectParams().config).not.toHaveProperty("thinkingConfig");
+  });
+
+  it("applies the requested transcription language hint to Google Live sessions", async () => {
+    await createGoogleLiveBridge({ language: "en" }).connect();
+    expect(lastConnectParams().config.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
+  });
+
+  it("creates constrained browser sessions for Google Live Talk", async () => {
+    const provider = buildGoogleRealtimeVoiceProvider();
+
+    const sessionLocal = await provider.createBrowserSession?.({
       providerConfig: {
         apiKey: "gemini-key",
         model: "gemini-live-2.5-flash-preview",
@@ -332,6 +349,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
       },
       prefixPaddingMs: 250,
       silenceDurationMs: 650,
+      language: "en",
       instructions: "Speak briefly.",
       tools: [createRealtimeTool(CONSULT)],
     });
@@ -362,14 +380,188 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
             ],
           }),
         },
+      ],
+    });
+
+    expect(createTokenMock).toHaveBeenCalledTimes(1);
+    const tokenConfig = requireFirstMockArg(createTokenMock, "Google Live auth token config") as {
+      config?: {
+        liveConnectConstraints?: {
+          config?: {
+            realtimeInputConfig?: {
+              automaticActivityDetection?: {
+                prefixPaddingMs?: number;
+                silenceDurationMs?: number;
+              };
+            };
+            inputAudioTranscription?: { languageCodes?: string[] };
+            responseModalities?: string[];
+            speechConfig?: { voiceConfig?: { prebuiltVoiceConfig?: { voiceName?: string } } };
+            systemInstruction?: string;
+            temperature?: number;
+            tools?: Array<{
+              functionDeclarations?: Array<{
+                behavior?: string;
+                name?: string;
+                parameters?: unknown;
+                parametersJsonSchema?: unknown;
+              }>;
+            }>;
+          };
+          model?: string;
+        };
+        uses?: number;
+      };
+    };
+    const liveConstraints = tokenConfig.config?.liveConnectConstraints;
+    expect(tokenConfig.config?.uses).toBe(1);
+    expect(liveConstraints?.model).toBe("gemini-live-2.5-flash-preview");
+    expect(liveConstraints?.config?.responseModalities).toEqual(["AUDIO"]);
+    expect(liveConstraints?.config?.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
+    expect(liveConstraints?.config?.temperature).toBe(0.4);
+    expect(liveConstraints?.config?.systemInstruction).toBe("Speak briefly.");
+    expect(
+      liveConstraints?.config?.realtimeInputConfig?.automaticActivityDetection?.prefixPaddingMs,
+    ).toBe(250);
+    expect(
+      liveConstraints?.config?.realtimeInputConfig?.automaticActivityDetection?.silenceDurationMs,
+    ).toBe(650);
+    expect(liveConstraints?.config?.speechConfig?.voiceConfig?.prebuiltVoiceConfig?.voiceName).toBe(
+      "Puck",
+    );
+    const declaration = liveConstraints?.config?.tools?.[0]?.functionDeclarations?.[0];
+    expect(declaration?.name).toBe("openclaw_agent_consult");
+    expect(declaration?.behavior).toBe("NON_BLOCKING");
+    expect(declaration?.parameters).toEqual({
+      type: "object",
+      properties: {
+        question: { type: "string" },
       },
     });
-    expect(result).toMatchObject({
-      transport: "provider-websocket",
-      protocol: "google-live-bidi",
-      clientSecret: "auth_tokens/browser-session",
-      expiresAt: now + 60_000,
-      initialMessage: { setup: { model: "models/gemini-live-2.5-flash-preview" } },
+    expect(declaration?.parametersJsonSchema).toBeUndefined();
+    expect(sessionLocal?.provider).toBe("google");
+    expect(sessionLocal?.transport).toBe("provider-websocket");
+    const websocketSession = sessionLocal as {
+      audio: {
+        inputEncoding: string;
+        inputSampleRateHz: number;
+        outputEncoding: string;
+        outputSampleRateHz: number;
+      };
+      clientSecret: string;
+      initialMessage: {
+        setup: {
+          generationConfig: { responseModalities: string[] };
+          inputAudioTranscription?: { languageCodes?: string[] };
+          model: string;
+        };
+      };
+      protocol: string;
+      websocketUrl: string;
+    };
+    expect(websocketSession.protocol).toBe("google-live-bidi");
+    expect(websocketSession.clientSecret).toBe("auth_tokens/browser-session");
+    expect(websocketSession.websocketUrl).toBe(
+      "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained",
+    );
+    expect(websocketSession.audio.inputEncoding).toBe("pcm16");
+    expect(websocketSession.audio.inputSampleRateHz).toBe(16000);
+    expect(websocketSession.audio.outputEncoding).toBe("pcm16");
+    expect(websocketSession.audio.outputSampleRateHz).toBe(24000);
+    expect(websocketSession.initialMessage.setup.model).toBe(
+      "models/gemini-live-2.5-flash-preview",
+    );
+    expect(websocketSession.initialMessage.setup.generationConfig.responseModalities).toEqual([
+      "AUDIO",
+    ]);
+    expect(websocketSession.initialMessage.setup.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
+  });
+
+  it("returns browser expiry in the epoch milliseconds required by the Talk gateway", async () => {
+    vi.useFakeTimers();
+    const nowMs = Date.UTC(2026, 7, 1, 12, 34, 56, 789);
+    vi.setSystemTime(nowMs);
+    const provider = buildGoogleRealtimeVoiceProvider();
+
+    const sessionLocal = await provider.createBrowserSession?.({
+      providerConfig: { apiKey: "gemini-key" },
+    });
+
+    const tokenConfig = requireFirstMockArg(createTokenMock, "Google Live auth token config") as {
+      config?: {
+        expireTime?: string;
+        newSessionExpireTime?: string;
+      };
+    };
+    expect(tokenConfig.config?.expireTime).toBe(new Date(nowMs + 30 * 60 * 1000).toISOString());
+    expect(tokenConfig.config?.newSessionExpireTime).toBe(
+      new Date(nowMs + 60 * 1000).toISOString(),
+    );
+    expect(sessionLocal?.expiresAt).toBeGreaterThan(nowMs + 5_000);
+    vi.advanceTimersByTime(60_001);
+    expect(sessionLocal?.expiresAt).toBeLessThanOrEqual(Date.now() + 5_000);
+    expect(sessionLocal?.expiresAt).toBe(nowMs + 60 * 1000);
+  });
+
+  it("constrains default browser sessions to Gemini 3.1 capabilities", async () => {
+    const provider = buildGoogleRealtimeVoiceProvider();
+
+    const sessionLocal = await provider.createBrowserSession?.({
+      providerConfig: {
+        apiKey: "gemini-key",
+        enableAffectiveDialog: true,
+        thinkingLevel: "low",
+        thinkingBudget: 8_193,
+      },
+      tools: [createRealtimeTool("openclaw_agent_consult")],
+    });
+
+    const tokenConfig = requireFirstMockArg(createTokenMock, "Google Live auth token config") as {
+      config?: {
+        liveConnectConstraints?: {
+          config?: {
+            enableAffectiveDialog?: boolean;
+            thinkingConfig?: unknown;
+            tools?: Array<{
+              functionDeclarations?: Array<{ behavior?: string; name?: string }>;
+            }>;
+          };
+          model?: string;
+        };
+      };
+    };
+    const constraints = tokenConfig.config?.liveConnectConstraints;
+    expect(constraints?.model).toBe("gemini-3.1-flash-live-preview");
+    expect(constraints?.config?.thinkingConfig).toEqual({ thinkingLevel: "LOW" });
+    expect(constraints?.config).not.toHaveProperty("enableAffectiveDialog");
+    expect(constraints?.config?.tools?.[0]?.functionDeclarations?.[0]).toMatchObject({
+      name: "openclaw_agent_consult",
+    });
+    expect(constraints?.config?.tools?.[0]?.functionDeclarations?.[0]).not.toHaveProperty(
+      "behavior",
+    );
+    expect(sessionLocal?.model).toBe("gemini-3.1-flash-live-preview");
+  });
+
+  it("creates browser-token clients with a finite request timeout", async () => {
+    const provider = buildGoogleRealtimeVoiceProvider();
+    await provider.createBrowserSession?.({
+      providerConfig: { apiKey: "test" },
+    });
+
+    const clientConfig = requireFirstMockArg(createGoogleGenAIMock, "GoogleGenAI config") as {
+      httpOptions?: {
+        apiVersion?: string;
+        timeout?: number;
+      };
+    };
+    expect(clientConfig.httpOptions).toMatchObject({
+      apiVersion: "v1alpha",
+      timeout: 30_000,
     });
   });
 

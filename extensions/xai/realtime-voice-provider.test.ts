@@ -1,7 +1,18 @@
 import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { XAI_REALTIME_MAX_PENDING_PLAYBACK_MARKS } from "./realtime-voice-config.js";
-import { buildXaiRealtimeVoiceProvider } from "./realtime-voice-provider.js";
+import {
+  resolveInternalRealtimeVoiceBrowserSessionCapabilities,
+  resolveInternalRealtimeVoiceGatewayRelayCapabilities,
+} from "../../src/talk/provider-internal.js";
+import {
+  normalizeXaiRealtimeProviderConfig,
+  XAI_REALTIME_MAX_PENDING_PLAYBACK_MARKS,
+  XAI_REALTIME_VOICES,
+} from "./realtime-voice-config.js";
+import {
+  buildLiteLlmRealtimeVoiceProvider,
+  buildXaiRealtimeVoiceProvider,
+} from "./realtime-voice-provider.js";
 
 const { FakeWebSocket, isProviderAuthProfileConfiguredMock, resolveApiKeyForProviderMock } =
   await vi.hoisted(() => import("./realtime-voice-socket.test-support.js"));
@@ -536,6 +547,79 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
+  it("sends nested xAI session.update audio formats for g711 bridges", async () => {
+    vi.stubEnv("XAI_API_KEY", "xai-env"); // pragma: allowlist secret
+    const bridge = createTestBridge({
+      audioFormat: { encoding: "g711_ulaw", sampleRateHz: 8000, channels: 1 },
+      language: "en",
+    });
+
+    const { socket } = await startRealtimeBridge(bridge);
+    await bridge.close();
+
+    const session = requireSession(socket);
+    expect(session.audio).toEqual({
+      input: {
+        format: { type: "audio/pcmu" },
+        transcription: { model: "grok-transcribe", language_hint: "en" },
+      },
+      output: { format: { type: "audio/pcmu" } },
+    });
+  });
+
+  it("only forwards xAI VAD values accepted by the realtime API", async () => {
+    const cases = [
+      {
+        options: { vadThreshold: 1, silenceDurationMs: 10_001, prefixPaddingMs: -1 },
+        expected: { threshold: 0.85, silence_duration_ms: 500, prefix_padding_ms: 333 },
+      },
+      {
+        options: { vadThreshold: 0.9, silenceDurationMs: 10_000, prefixPaddingMs: 0 },
+        expected: { threshold: 0.9, silence_duration_ms: 10_000, prefix_padding_ms: 0 },
+      },
+    ];
+
+    for (const [index, { options, expected }] of cases.entries()) {
+      const bridge = createTestBridge({
+        providerConfig: {
+          apiKey: "xai-test", // pragma: allowlist secret
+          ...options,
+        },
+      });
+      const { socket } = await startRealtimeBridge(bridge, index);
+      await bridge.close();
+      expect(requireSession(socket).turn_detection).toEqual(expect.objectContaining(expected));
+    }
+  });
+
+  it("only forwards reasoning efforts accepted by the xAI Voice Agent API", async () => {
+    const provider = buildXaiRealtimeVoiceProvider();
+    const callbacks = { onAudio: vi.fn(), onClearAudio: vi.fn() };
+    resolveApiKeyForProviderMock.mockResolvedValue({ apiKey: "test" });
+
+    expect(() =>
+      provider.createBridge({
+        providerConfig: {
+          reasoningEffort: "low",
+        },
+        ...callbacks,
+      }),
+    ).toThrow('reasoningEffort must be "high" or "none"');
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    const bridge = provider.createBridge({
+      providerConfig: {
+        reasoningEffort: "none",
+      },
+      ...callbacks,
+    });
+
+    const { socket } = await startRealtimeBridge(bridge);
+    await bridge.close();
+
+    expect(requireSession(socket).reasoning).toEqual({ effort: "none" });
+  });
+
   it("forwards standard incremental input-transcription events", async () => {
     const onTranscript = vi.fn();
     const { socket } = await connect({ onTranscript });
@@ -759,6 +843,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     for (const event of invalidEvents) {
       socket.emitServer(event);
     }
+
     socket.emitServer(invalidEvents[0]);
     responseDone(socket);
     expect(onToolCall).not.toHaveBeenCalled();
@@ -794,6 +879,130 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       userMessageEvent("Continue."),
       { type: "response.create" },
     ]);
+  });
+
+  it("clears Gemini barge-in playback without sending unsupported truncate events", async () => {
+    const onAudio = vi.fn();
+    const onClearAudio = vi.fn();
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const bridge = provider.createBridge({
+      providerConfig: {
+        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "gemini-3.8-live",
+      },
+      onAudio,
+      onClearAudio,
+    });
+    const connecting = bridge.connect();
+    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = requireSocket();
+    socket.open();
+    socket.emitServer({ type: "session.updated" });
+    await connecting;
+
+    bridge.setMediaTimestamp(1000);
+    socket.emitServer({ type: "response.created", response: { id: "gemini-response" } });
+    socket.emitServer({
+      type: "response.output_audio.delta",
+      item_id: "gemini-audio-item",
+      delta: Buffer.alloc(1200).toString("base64"),
+    });
+    socket.emitServer({ type: "input_audio_buffer.speech_started" });
+
+    expect(onAudio).toHaveBeenCalledTimes(1);
+    expect(onClearAudio).toHaveBeenCalledWith("barge-in");
+    expect(parseSent(socket).some((event) => event.type === "conversation.item.truncate")).toBe(
+      false,
+    );
+    bridge.close();
+  });
+
+  it.each([
+    ["undefined", (): undefined => undefined],
+    [
+      "circular",
+      () => {
+        const result: { self?: unknown } = {};
+        result.self = result;
+        return result;
+      },
+    ],
+    ["omitted custom serialization", () => ({ toJSON: () => undefined })],
+  ] as const)(
+    "rejects %s realtime tool results before transport ownership changes",
+    async (_label, create) => {
+      const onError = vi.fn();
+      const bridge = createTestBridge({ onError, onToolCall: vi.fn() });
+      const socket = await openRealtimeBridge(bridge);
+      socket.emitServer({
+        type: "response.function_call_arguments.done",
+        item_id: "item_call_1",
+        name: "openclaw_agent_consult",
+        call_id: "call_1",
+        arguments: "{}",
+      });
+
+      expect(() => bridge.submitToolResult("call_1", create())).toThrow(/serializ/i);
+      expect(onError).not.toHaveBeenCalled();
+      expect(
+        parseSent(socket).filter((event) => event.type === "conversation.item.create"),
+      ).toEqual([]);
+
+      await bridge.submitToolResult("call_1", { recovered: true });
+
+      expect(parseSent(socket).slice(-2)).toEqual([
+        toolResultEvent("call_1", { recovered: true }),
+        { type: "response.create" },
+      ]);
+      await bridge.close();
+    },
+  );
+
+  it("preserves valid realtime tool results with one canonical serialization", async () => {
+    const bridge = createTestBridge({ onToolCall: vi.fn() });
+    const socket = await openRealtimeBridge(bridge);
+    const customSerialization = vi.fn((key: string) => ({ key }));
+    const values: unknown[] = [
+      null,
+      false,
+      0,
+      "",
+      "text",
+      [1],
+      { ok: true },
+      {
+        toJSON: customSerialization,
+      },
+    ];
+
+    for (const [index, result] of values.entries()) {
+      const callId = `call_${index}`;
+      socket.emitServer({
+        type: "response.function_call_arguments.done",
+        item_id: `item_${callId}`,
+        name: "openclaw_agent_consult",
+        call_id: callId,
+        arguments: "{}",
+      });
+      await bridge.submitToolResult(callId, result, { suppressResponse: true });
+    }
+
+    const outputs = parseSent(socket)
+      .filter((event) => event.type === "conversation.item.create")
+      .map((event) => (event.item as { output: string }).output);
+    expect(outputs).toEqual([
+      "null",
+      "false",
+      "0",
+      '""',
+      '"text"',
+      "[1]",
+      '{"ok":true}',
+      '{"key":""}',
+    ]);
+    expect(customSerialization).toHaveBeenCalledExactlyOnceWith("");
+    await bridge.close();
   });
 
   it("rejects an undefined tool result before transport ownership changes", async () => {
@@ -1358,6 +1567,223 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       ["user", "Check the sensor", true, { textMode: "snapshot" }],
     ]);
     vi.useRealTimers();
+  });
+});
+
+describe("buildLiteLlmRealtimeVoiceProvider", () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = [];
+    delete process.env.FI_USER_LITELLM_API_KEY;
+  });
+
+  afterEach(() => {
+    delete process.env.FI_USER_LITELLM_API_KEY;
+  });
+
+  it("advertises the two approved realtime aliases without changing the OpenAI default", () => {
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+
+    expect(provider.id).toBe("litellm");
+    expect(provider.models).toEqual(["grok-voice-think-fast-2.0", "gemini-3.8-live"]);
+    expect(provider.defaultModel).toBe("grok-voice-think-fast-2.0");
+    expect(provider.capabilities?.supportsSessionResumption).toBe(false);
+    expect(provider.capabilities?.transports).toEqual(["gateway-relay"]);
+  });
+
+  it.each([undefined, "grok-voice-think-fast-2.0", "gemini-3.8-live"])(
+    "offers both model voice catalogs regardless of configured model %s",
+    (model) => {
+      const provider = buildLiteLlmRealtimeVoiceProvider();
+      for (const resolve of [
+        resolveInternalRealtimeVoiceGatewayRelayCapabilities,
+        resolveInternalRealtimeVoiceBrowserSessionCapabilities,
+      ]) {
+        const voices = resolve({ provider, providerConfig: { model } })?.voicesByModel;
+        expect(voices?.["grok-voice-think-fast-2.0"]).toEqual(XAI_REALTIME_VOICES);
+        const googleVoices = voices?.["gemini-3.8-live"];
+        expect(googleVoices).toHaveLength(30);
+        expect(googleVoices).toEqual(expect.arrayContaining(["Kore", "Puck", "Aoede", "Sulafat"]));
+        for (const grokVoice of XAI_REALTIME_VOICES) {
+          expect(googleVoices).not.toContain(grokVoice);
+        }
+      }
+    },
+  );
+
+  it("is configured only when the Fi-scoped proxy key and fixed endpoint are present", () => {
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    expect(
+      provider.isConfigured({
+        providerConfig: { baseUrl: "http://192.168.5.139:4000/v1" },
+      }),
+    ).toBe(false);
+    process.env.FI_USER_LITELLM_API_KEY = "litellm-fi-test-key"; // pragma: allowlist secret
+    expect(
+      provider.isConfigured({
+        providerConfig: { baseUrl: "http://192.168.5.139:4000/v1" },
+      }),
+    ).toBe(true);
+    expect(
+      provider.isConfigured({
+        providerConfig: { baseUrl: "https://attacker.example/v1" },
+      }),
+    ).toBe(false);
+  });
+
+  it("keeps the inactive Fi-scoped key reference selectable without resolving it into config", () => {
+    process.env.FI_USER_LITELLM_API_KEY = "litellm-fi-test-key"; // pragma: allowlist secret
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const unresolvedRef = {
+      source: "env",
+      provider: "default",
+      id: "FI_USER_LITELLM_API_KEY",
+    } as never;
+    const config = normalizeXaiRealtimeProviderConfig(
+      {
+        apiKey: unresolvedRef,
+        baseUrl: "http://192.168.5.139:4000/v1",
+      } as never,
+      "litellm",
+    );
+
+    expect(config.apiKey).toBeUndefined();
+    expect(provider.isConfigured({ providerConfig: config } as never)).toBe(true);
+
+    const bridge = provider.createBridge({
+      providerConfig: {
+        apiKey: unresolvedRef,
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "grok-voice-think-fast-2.0",
+      },
+      onAudio: vi.fn(),
+      onClearAudio: vi.fn(),
+    });
+    const connecting = bridge.connect();
+    return waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1)).then(() => {
+      const socket = requireSocket();
+      socket.open();
+      socket.emitServer({ type: "session.updated" });
+      return connecting.then(() => {
+        const [, options] = socket.args as [string, { headers: Record<string, string> }];
+        expect(options.headers.Authorization).toBe("Bearer litellm-fi-test-key");
+        bridge.close();
+      });
+    });
+  });
+
+  it("accepts LiteLLM's session.created event as the Gemini setup acknowledgement", async () => {
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const onReady = vi.fn();
+    const bridge = provider.createBridge({
+      providerConfig: {
+        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "gemini-3.8-live",
+      },
+      onAudio: vi.fn(),
+      onClearAudio: vi.fn(),
+      onReady,
+    });
+    const connecting = bridge.connect();
+    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = requireSocket();
+    socket.open();
+    socket.emitServer({ type: "session.created", session: { model: "gemini-3.8-live" } });
+
+    await connecting;
+
+    expect(bridge.isConnected()).toBe(true);
+    expect(onReady).toHaveBeenCalledOnce();
+    bridge.close();
+  });
+
+  it.each([
+    { model: "grok-voice-think-fast-2.0", configuredVoice: undefined, voice: "eve" },
+    { model: "gemini-3.8-live", configuredVoice: undefined, voice: "Kore" },
+    { model: "gemini-3.8-live", configuredVoice: "Puck", voice: "Puck" },
+    { model: "gemini-3.8-live", configuredVoice: "Aoede", voice: "Aoede" },
+    { model: "gemini-3.8-live", configuredVoice: "sulafat", voice: "Sulafat" },
+    { model: "gemini-3.8-live", configuredVoice: "rex", voice: "Kore" },
+    { model: "grok-voice-think-fast-2.0", configuredVoice: "Gacrux", voice: "eve" },
+  ])(
+    "connects $model with $configuredVoice through the internal LiteLLM realtime endpoint",
+    async ({ model, configuredVoice, voice }) => {
+      const provider = buildLiteLlmRealtimeVoiceProvider();
+      const bridge = provider.createBridge({
+        providerConfig: {
+          apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+          baseUrl: "http://192.168.5.139:4000/v1",
+          model,
+          speakerVoice: configuredVoice,
+          reasoningEffort: "high",
+          sessionResumption: true,
+        },
+        onAudio: vi.fn(),
+        onClearAudio: vi.fn(),
+      });
+      const connecting = bridge.connect();
+      await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = requireSocket();
+      socket.open();
+      socket.emitServer({ type: "session.updated" });
+      await connecting;
+
+      const [url, options] = socket.args as [string, { headers: Record<string, string> }];
+      expect(url).toContain("ws://192.168.5.139:4000/v1/realtime?");
+      expect(url).toContain(`model=${model}`);
+      expect(options.headers.Authorization).toBe("Bearer litellm-fi-test-key");
+      expect(requireSession(socket)).toMatchObject({ voice, output_modalities: ["audio"] });
+      if (model === "gemini-3.8-live") {
+        expect(requireSession(socket)).toMatchObject({
+          audio: { output: { transcription: {} } },
+        });
+      }
+      expect(requireSession(socket)).not.toHaveProperty("reasoning");
+      expect(requireSession(socket)).not.toHaveProperty("resumption");
+      bridge.close();
+    },
+  );
+
+  it("rejects unapproved model IDs and proxy endpoints before opening a socket", () => {
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const create = (providerConfig: Record<string, string>) =>
+      provider.createBridge({
+        providerConfig,
+        onAudio: vi.fn(),
+        onClearAudio: vi.fn(),
+      });
+
+    expect(() =>
+      create({
+        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "unapproved-model",
+      }),
+    ).toThrow("Unsupported LiteLLM realtime voice model");
+    expect(() =>
+      create({
+        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+        baseUrl: "https://attacker.example/v1",
+        model: "gemini-3.8-live",
+      }),
+    ).toThrow("LiteLLM realtime baseUrl must be");
+    expect(FakeWebSocket.instances).toHaveLength(0);
+  });
+
+  it("rejects configurations that disable automatic server-VAD interruption", () => {
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+
+    expect(() =>
+      provider.createBridge({
+        providerConfig: {
+          apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+          baseUrl: "http://192.168.5.139:4000/v1",
+          interruptResponseOnInputAudio: false,
+        },
+        onAudio: vi.fn(),
+        onClearAudio: vi.fn(),
+      }),
+    ).toThrow("automatic server-VAD interruption handling");
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

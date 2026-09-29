@@ -35,7 +35,9 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
 
   private ws: WebSocket | null = null;
   private terminalError: Error | null = null;
-  private readonly lifecycle = new RealtimeVoiceSessionLifecycle("xAI");
+  private readonly lifecycle = new RealtimeVoiceSessionLifecycle(
+    this.config.providerLabel ?? "xAI realtime voice",
+  );
   private pendingToolResults: Array<{
     callId: string;
     result: unknown;
@@ -80,7 +82,9 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
         this.pendingUserMessages.push(text);
       } else {
         this.config.onError?.(
-          new Error("xAI realtime voice pending user message queue overflow during reconnect"),
+          new Error(
+            `${this.config.providerLabel ?? "xAI realtime voice"} pending user message queue overflow during reconnect`,
+          ),
         );
       }
       return;
@@ -112,7 +116,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       }
       if (this.pendingToolResults.length >= XAI_REALTIME_MAX_PENDING_TOOL_RESULTS) {
         const error = new Error(
-          "xAI realtime voice pending tool result queue overflow during reconnect",
+          `${this.config.providerLabel ?? "xAI realtime voice"} pending tool result queue overflow during reconnect`,
         );
         this.config.onError?.(error);
         throw error;
@@ -153,7 +157,8 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     const attempt = this.lifecycle.createConnectAttempt({
       connection,
       timeoutMs: XAI_REALTIME_CONNECT_TIMEOUT_MS,
-      timeoutError: () => new Error("xAI realtime voice connection timeout"),
+      timeoutError: () =>
+        new Error(`${this.config.providerLabel ?? "xAI realtime voice"} connection timeout`),
       onTimeout: () => activeWs?.terminate(),
       onAbort: (outcome) => {
         if (outcome !== "error" && activeWs && activeWs.readyState !== WebSocket.CLOSED) {
@@ -209,7 +214,16 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           preserveToolCallState:
             this.config.sessionResumption === true && this.conversationId !== null,
         });
-        this.captureEvent(url, { direction: "local", kind: "ws-open" });
+        // Finalization retains capture failures; observe Promises returned by the SDK view.
+        void captureHost
+          .captureWsEventAsync?.({
+            url,
+            direction: "local",
+            kind: "ws-open",
+            flowId: this.flowId,
+            meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
+          })
+          .catch(() => {});
         this.sendEvent(this.buildSessionUpdate());
       });
 
@@ -220,16 +234,33 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
         if (attempt.settled && !attempt.ready) {
           return;
         }
-        this.captureEvent(url, { direction: "inbound", kind: "ws-frame", payload: data });
+        void captureHost
+          .captureWsEventAsync?.({
+            url,
+            direction: "inbound",
+            kind: "ws-frame",
+            flowId: this.flowId,
+            payload: data,
+            meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
+          })
+          .catch(() => {});
         try {
           const event = JSON.parse(data.toString()) as XaiRealtimeEvent;
           if (event.type === "error" && !attempt.ready) {
-            rejectStartup(new Error(readXaiRealtimeErrorDetail(event.error)));
+            rejectStartup(
+              new Error(
+                readXaiRealtimeErrorDetail(
+                  event.error,
+                  this.config.providerLabel ?? "xAI realtime voice",
+                ),
+              ),
+            );
             return;
           }
           this.handleEvent(event, connection);
           if (
-            event.type === "session.updated" &&
+            (event.type === "session.updated" ||
+              (this.config.providerId === "litellm" && event.type === "session.created")) &&
             this.lifecycle.isCurrent(connection) &&
             this.lifecycle.isReady()
           ) {
@@ -252,11 +283,16 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
         if (!this.lifecycle.acceptsEvents(connection) || this.ws !== ws) {
           return;
         }
-        this.captureEvent(url, {
-          direction: "local",
-          kind: "error",
-          errorText: error instanceof Error ? error.message : String(error),
-        });
+        void captureHost
+          .captureWsEventAsync?.({
+            url,
+            direction: "local",
+            kind: "error",
+            flowId: this.flowId,
+            errorText: error instanceof Error ? error.message : String(error),
+            meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
+          })
+          .catch(() => {});
         if (!attempt.ready) {
           rejectStartup(toStringifiedError(error));
           return;
@@ -265,17 +301,23 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       });
 
       ws.on("close", (code, reasonBuffer) => {
-        this.captureEvent(url, {
-          direction: "local",
-          kind: "ws-close",
-          closeCode: typeof code === "number" ? code : undefined,
-          meta: {
-            reason:
-              Buffer.isBuffer(reasonBuffer) && reasonBuffer.length > 0
-                ? reasonBuffer.toString("utf8")
-                : undefined,
-          },
-        });
+        void captureHost
+          .captureWsEventAsync?.({
+            url,
+            direction: "local",
+            kind: "ws-close",
+            flowId: this.flowId,
+            closeCode: typeof code === "number" ? code : undefined,
+            meta: {
+              provider: this.config.providerId ?? "xai",
+              capability: "realtime-voice",
+              reason:
+                Buffer.isBuffer(reasonBuffer) && reasonBuffer.length > 0
+                  ? reasonBuffer.toString("utf8")
+                  : undefined,
+            },
+          })
+          .catch(() => {});
         if (!this.lifecycle.isCurrent(connection)) {
           return;
         }
@@ -295,7 +337,11 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           return;
         }
         if (!attempt.ready && !attempt.settled) {
-          attempt.reject(new Error("xAI realtime voice connection closed before ready"));
+          attempt.reject(
+            new Error(
+              `${this.config.providerLabel ?? "xAI realtime voice"} connection closed before ready`,
+            ),
+          );
           return;
         }
         void this.attemptReconnect("websocket-close", connection);
@@ -453,7 +499,16 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
         ? (event as { type: string }).type
         : "unknown";
     const payload = JSON.stringify(event);
-    this.captureEvent(this.connectionUrl, { direction: "outbound", kind: "ws-frame", payload });
+    void captureHost
+      .captureWsEventAsync?.({
+        url: this.connectionUrl,
+        direction: "outbound",
+        kind: "ws-frame",
+        flowId: this.flowId,
+        payload,
+        meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
+      })
+      .catch(() => {});
     ws.send(payload);
     // Observers report a sent frame, so nested control cannot overtake it.
     this.config.onEvent?.({ direction: "client", type, ...(detail ? { detail } : {}) });

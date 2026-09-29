@@ -903,6 +903,11 @@ export async function prepareSlackMessage(params: {
       }),
     );
   let preloadedDirectMedia: ReadonlyMap<SlackFile, SlackMediaResult> | undefined;
+  let messageContentPromise: ReturnType<typeof resolveMessageContent> | undefined;
+  const getMessageContent = () => {
+    messageContentPromise ??= resolveMessageContent(message, preloadedDirectMedia);
+    return messageContentPromise;
+  };
   const senderNameForAuth = await senderNameForAuthPromise;
 
   const allowTextCommands = shouldHandleTextCommands({

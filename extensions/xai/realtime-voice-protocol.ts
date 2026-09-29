@@ -160,7 +160,12 @@ export abstract class XaiRealtimeVoiceProtocol {
       if (cancelResponse) {
         this.sendEvent({ type: "response.cancel" }, `reason=${reason}`);
       }
-      for (const playbackItem of playbackItems) {
+      // Clear playback on every provider, but trim provider history after server-VAD
+      // barge-in only for protocols that accept OpenAI's truncate event. Gemini Live does not.
+      const truncateHistory =
+        reason !== "server-vad-barge-in" ||
+        this.config.supportsServerVadAssistantAudioTruncation !== false;
+      for (const playbackItem of truncateHistory ? playbackItems : []) {
         this.sendEvent(
           {
             type: "conversation.item.truncate",
@@ -186,11 +191,12 @@ export abstract class XaiRealtimeVoiceProtocol {
   protected buildSessionUpdate(): XaiRealtimeSessionUpdate {
     const cfg = this.config;
     const format = toOpenAICompatibleRealtimeAudioFormat(this.audioFormat);
+    const isGeminiLive = cfg.model?.startsWith("gemini-") === true;
     return {
       type: "session.update",
       session: {
         instructions: cfg.instructions,
-        voice: cfg.voice ?? "eve",
+        voice: cfg.voice ?? (isGeminiLive ? "Kore" : "eve"),
         output_modalities: ["audio"],
         turn_detection: {
           type: "server_vad",
@@ -201,12 +207,22 @@ export abstract class XaiRealtimeVoiceProtocol {
         audio: {
           input: {
             format,
-            transcription: { model: XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL },
+            transcription: {
+              model: XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
+              ...(cfg.language ? { language_hint: cfg.language } : {}),
+            },
           },
-          output: { format },
+          output: {
+            format,
+            ...(isGeminiLive ? { transcription: {} } : {}),
+          },
         },
-        ...(cfg.sessionResumption === true ? { resumption: { enabled: true } } : {}),
-        ...(cfg.reasoningEffort ? { reasoning: { effort: cfg.reasoningEffort } } : {}),
+        ...(!isGeminiLive && cfg.sessionResumption === true
+          ? { resumption: { enabled: true } }
+          : {}),
+        ...(!isGeminiLive && cfg.reasoningEffort
+          ? { reasoning: { effort: cfg.reasoningEffort } }
+          : {}),
         ...(cfg.tools?.length
           ? {
               tools: cfg.tools,

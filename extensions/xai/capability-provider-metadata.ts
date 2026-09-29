@@ -4,6 +4,7 @@ import {
   isProviderApiKeyConfigured,
 } from "openclaw/plugin-sdk/provider-auth";
 import {
+  createLiteLlmRealtimeVoiceProviderMetadata as createLiteLlmRealtimeVoiceProviderMetadataCore,
   createXaiVideoGenerationProviderMetadata as createXaiVideoGenerationProviderMetadataCore,
   createXaiRealtimeVoiceProviderMetadata as createXaiRealtimeVoiceProviderMetadataCore,
 } from "./capability-provider-metadata-factory.js";
@@ -15,6 +16,7 @@ export {
   XAI_SUPPORTED_IMAGE_ASPECT_RATIOS,
   XAI_VIDEO_ASPECT_RATIOS,
   XAI_VIDEO_DEFAULT_TIMEOUT_MS,
+  assertLiteLlmRealtimeVoiceRequestSupported,
   assertXaiRealtimeVoiceRequestSupported,
   createXaiImageGenerationProviderMetadata,
   createXaiMediaUnderstandingProviderMetadata,
@@ -25,6 +27,12 @@ export function createXaiVideoGenerationProviderMetadata() {
 }
 export function createXaiRealtimeVoiceProviderMetadata() {
   return createXaiRealtimeVoiceProviderMetadataCore({
+    isProviderAuthProfileConfigured,
+    resolveAgentDir,
+  });
+}
+export function createLiteLlmRealtimeVoiceProviderMetadata() {
+  return createLiteLlmRealtimeVoiceProviderMetadataCore({
     isProviderAuthProfileConfigured,
     resolveAgentDir,
   });

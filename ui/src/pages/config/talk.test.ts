@@ -2,11 +2,16 @@
 
 import type { TalkCatalogResult } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TalkSchema } from "../../../../src/config/zod-schema.root-support.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
 import { t } from "../../i18n/index.ts";
+import {
+  CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS,
+  createConfigCapabilityHarness,
+} from "../../lib/config/config-test-harness.ts";
 import {
   createIosNativeDeviceSettingsSnapshot,
   createNativeDeviceSettingsSnapshot,
@@ -84,6 +89,17 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
           transports: ["gateway-relay"],
           defaultModel: "grok-voice",
         },
+        {
+          id: "litellm",
+          label: "LiteLLM Realtime",
+          configured: true,
+          aliases: ["litellm-realtime"],
+          models: ["grok-voice-think-fast-2.0", "gemini-3.8-live"],
+          voices: [],
+          voicesByModel: { "grok-voice-think-fast-2.0": ["eve", "ara", "rex", "sal", "leo"] },
+          transports: ["gateway-relay"],
+          defaultModel: "grok-voice-think-fast-2.0",
+        },
       ],
     },
   } satisfies TalkCatalogResult;
@@ -155,6 +171,7 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
     gateway: {
       snapshot,
       connection: gatewayConnection,
+      connectionRevision: 0,
       subscribe: (listener: () => void) => {
         gatewayListeners.add(listener);
         return () => gatewayListeners.delete(listener);
@@ -170,6 +187,11 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
     page,
     request,
     runtimeConfig,
+    configForm,
+    updateGateway: (patch: Partial<ApplicationGatewaySnapshot>) => {
+      Object.assign(snapshot, patch);
+      gatewayListeners.forEach((notify) => notify());
+    },
     setConfigHash: (hash: string | null) => {
       runtimeConfig.state.configSnapshot.hash = hash;
       runtimeConfigListeners.forEach((notify) => notify());
@@ -225,7 +247,138 @@ async function selectProvider(providerId: string, options: TalkMutationHarnessOp
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("Talk provider autosave", () => {
+  it.each([false, true])(
+    "saves the selected credential-profile provider without replacing existing entries (existing: %s)",
+    async (existing) => {
+      const harness = createTalkMutationHarness();
+      harness.page.remove();
+      const initial = {
+        talk: {
+          realtime: {
+            provider: "litellm",
+            model: "gemini-3.8-live",
+            transport: "gateway-relay",
+            providers: {
+              litellm: { baseUrl: "https://proxy.example.test", model: "gemini-3.8-live" },
+              ...(existing ? { xai: { speakerVoice: "ara", model: "grok-voice" } } : {}),
+            },
+          },
+        },
+      };
+      let stored = initial;
+      const submissions: unknown[] = [];
+      const request = vi.fn(async (method: string, params?: unknown) => {
+        if (method === "talk.catalog") {
+          return harness.request(method, {});
+        }
+        if (method === "config.get") {
+          return {
+            config: stored,
+            raw: JSON.stringify(stored),
+            hash: "test-hash",
+            valid: true,
+            issues: [],
+          };
+        }
+        if (method === "config.set") {
+          const submitted = JSON.parse((params as { raw: string }).raw) as typeof initial;
+          submissions.push(submitted);
+          TalkSchema.parse(submitted.talk);
+          stored = submitted;
+          return { config: stored, hash: "saved-hash" };
+        }
+        return {};
+      });
+      const { runtimeConfig } = createConfigCapabilityHarness(
+        request as GatewayBrowserClient["request"],
+      );
+      try {
+        await runtimeConfig.ensureLoaded();
+        harness.page.context = { ...harness.page.context, runtimeConfig };
+        harness.page.configObject = runtimeConfig.state.configForm ?? {};
+        document.body.append(harness.page);
+        await harness.page.updateComplete;
+        await vi.waitFor(() => expect(harness.page.querySelector('[value="xai"]')).not.toBeNull());
+        vi.useFakeTimers();
+        const group = harness.page.querySelector<HTMLElement & { value: string }>(
+          "wa-radio-group",
+        )!;
+        group.value = "xai";
+        group.dispatchEvent(new Event("change"));
+        await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
+        expect(submissions).toHaveLength(1);
+        expect(runtimeConfig.state.configAutoSaveStatus).toBe("saved");
+        expect(stored.talk.realtime).toEqual({
+          provider: "xai",
+          transport: "gateway-relay",
+          providers: {
+            litellm: initial.talk.realtime.providers.litellm,
+            xai: existing ? { speakerVoice: "ara", model: "grok-voice" } : {},
+          },
+        });
+        harness.page.configObject = runtimeConfig.state.configForm ?? {};
+        await harness.page.updateComplete;
+        const auto = harness.page.querySelector<HTMLElement>('[value=""]');
+        expect(auto?.hasAttribute("disabled")).toBe(true);
+        auto?.click();
+        harness.page.changeProvider(null);
+        await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
+        expect(submissions).toHaveLength(1);
+        expect(runtimeConfig.state.configForm).toEqual(stored);
+      } finally {
+        harness.page.remove();
+        runtimeConfig.dispose();
+      }
+    },
+  );
+});
+
+describe("Talk speaker voice previews", () => {
+  it("previews the newly selected draft voice and shows provider failures without breaking the picker", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        resume = async () => {};
+        close = async () => {};
+      },
+    );
+    const harness = createTalkMutationHarness({
+      voicesByModel: { "gpt-realtime-2.1": ["marin", "spruce"] },
+    });
+    await vi.waitFor(() => expect(harness.request).toHaveBeenCalledWith("talk.catalog", {}));
+    await harness.page.updateComplete;
+    harness.runtimeConfig.patchForm.mockImplementation((_path: unknown, value: unknown) => {
+      Object.assign(harness.configForm.talk.realtime, { speakerVoice: value });
+    });
+    harness.request.mockImplementation(async (method) => {
+      throw new Error(`${method} unavailable`);
+    });
+    await vi.waitFor(() =>
+      expect(harness.page.querySelector('select[aria-label="Speaker voice"]')).not.toBeNull(),
+    );
+    const voice = harness.page.querySelector<HTMLSelectElement>(
+      'select[aria-label="Speaker voice"]',
+    );
+    expect(voice).not.toBeNull();
+    voice!.value = "spruce";
+    voice!.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(harness.request).toHaveBeenCalledWith(
+        "talk.voice.preview",
+        { provider: "openai", model: "gpt-realtime-2.1", voice: "spruce" },
+        { timeoutMs: 25_000 },
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(harness.page.textContent).toContain(t("talkPage.voice.previewError")),
+    );
+    expect(harness.page.querySelector('select[aria-label="Speaker voice"]')).not.toBeNull();
+  });
 });
 
 describe("Talk device and voice wake settings", () => {
@@ -670,6 +823,59 @@ describe("Talk device and voice wake settings", () => {
 });
 
 describe("TalkSettingsPage realtime transport mutation", () => {
+  it("keeps same-Gateway provider and model-specific voice choices visible through reconnect and refresh failure", async () => {
+    const harness = createTalkMutationHarness();
+    const { page, request, configForm, updateGateway } = harness;
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
+    await page.updateComplete;
+
+    const litellmForm = {
+      ...configForm,
+      talk: {
+        ...configForm.talk,
+        realtime: {
+          ...configForm.talk.realtime,
+          provider: "litellm",
+          model: "grok-voice-think-fast-2.0",
+        },
+      },
+    };
+    page.context.runtimeConfig.state.configForm = litellmForm;
+    page.configObject = litellmForm;
+    await page.updateComplete;
+
+    expect(page.querySelector("wa-radio-group")).not.toBeNull();
+    expect([...page.querySelectorAll("select option")].map((option) => option.value)).toEqual([
+      "",
+      "eve",
+      "ara",
+      "rex",
+      "sal",
+      "leo",
+    ]);
+
+    updateGateway({ phase: "reconnecting" });
+    await page.updateComplete;
+    expect(page.textContent).toContain(t("talkPage.status.staleHint"));
+    expect(
+      page.querySelector<HTMLElement & { disabled?: boolean }>("wa-radio-group")?.disabled,
+    ).toBe(true);
+    expect(page.querySelector("select")?.disabled).toBe(true);
+
+    request.mockRejectedValueOnce(new Error("temporary gateway refresh failure"));
+    page.context.gateway.connectionRevision += 1;
+    updateGateway({ phase: "connected" });
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
+    await page.updateComplete;
+    expect(page.querySelector("wa-radio-group")).not.toBeNull();
+    expect(page.querySelector("select")?.disabled).toBe(true);
+
+    window.dispatchEvent(new Event("focus"));
+    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(3));
+    await vi.waitFor(() => expect(page.textContent).not.toContain(t("talkPage.status.staleHint")));
+    expect(page.querySelector("select")?.disabled).toBe(false);
+  });
+
   it.each([
     ["allowlist-default", true],
     [undefined, false],

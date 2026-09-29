@@ -562,12 +562,20 @@ export async function consultRealtimeVoiceAgent(params: {
         agentDir,
         abortSignal,
       });
-      const result = await runPromise
-        .catch((error: unknown) => {
-          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-          throw error;
-        })
-        .finally(() => runRegistration?.cleanup?.());
+      let result: Awaited<typeof runPromise>;
+      try {
+        result = await runPromise;
+      } catch {
+        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        params.logger.warn("[talk] agent consult failed before producing a speakable result");
+        return {
+          text:
+            params.fallbackText ??
+            "I couldn't complete that check just now. Please ask me to try again.",
+        };
+      } finally {
+        runRegistration?.cleanup?.();
+      }
       assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
 
       if (result.meta?.yielded === true) {
@@ -592,7 +600,11 @@ export async function consultRealtimeVoiceAgent(params: {
         params.logger.warn(
           "[talk] agent consult produced no answer: agent returned no speakable text",
         );
-        return { text: params.fallbackText ?? "I need a moment to verify that before answering." };
+        return {
+          text:
+            params.fallbackText ??
+            "I couldn't complete that check just now. Please ask me to try again.",
+        };
       }
       return { text };
     });
