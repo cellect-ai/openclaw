@@ -74,6 +74,12 @@ describe("tool mutation helpers", () => {
     },
   );
 
+  it("classifies the delegated Fi GET-only API as replay-safe", () => {
+    const args = { path: "305-third/budget/text", query: { month: "2026-09" } };
+    expect(isMutatingToolCall("fi_user_api", args)).toBe(false);
+    expect(isReplaySafeToolCall("fi_user_api", args)).toBe(true);
+  });
+
   it.each([
     ["exec", "sed -n '1,220p' src/agents/tool-mutation.ts"],
     [
@@ -99,6 +105,36 @@ describe("tool mutation helpers", () => {
     expect(isMutatingToolCall(toolName, { command })).toBe(false);
     expect(buildToolMutationState(toolName, { command }).mutatingAction).toBe(false);
   });
+
+  it.each([
+    ["sandbox_exec", { command: "cat README.md" }, false, false],
+    ["sandbox_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+    ["gateway_exec", { command: "cat README.md" }, false, false],
+    ["gateway_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+    ["node_exec", { command: "cat README.md" }, false, false],
+    ["node_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+    ["sandbox_process", { action: "list" }, false, true],
+    ["sandbox_process", { action: "log", sessionId: "run-1" }, false, true],
+    ["sandbox_process", { action: "poll", sessionId: "run-1" }, false, false],
+    ["sandbox_process", { action: "write", sessionId: "run-1", data: "q" }, true, false],
+    ["sandbox_process", { action: "send-keys", sessionId: "run-1", keys: "q" }, true, false],
+    ["sandbox_process", { action: "submit", sessionId: "run-1" }, true, false],
+    ["sandbox_process", { action: "paste", sessionId: "run-1", text: "q" }, true, false],
+    ["sandbox_process", { action: "kill", sessionId: "run-1" }, true, false],
+    ["sandbox_process", { action: "clear", sessionId: "run-1" }, true, false],
+    ["sandbox_process", { action: "remove", sessionId: "run-1" }, true, false],
+    ["gateway_process", { action: "list" }, false, true],
+    ["gateway_process", { action: "log", sessionId: "run-1" }, false, true],
+    ["gateway_process", { action: "poll", sessionId: "run-1" }, false, false],
+    ["gateway_process", { action: "kill", sessionId: "run-1" }, true, false],
+  ] as const)(
+    "classifies OpenClaw execution alias %s with the underlying tool contract",
+    (toolName, args, mutatingAction, replaySafe) => {
+      expect(isMutatingToolCall(toolName, args)).toBe(mutatingAction);
+      expect(isReplaySafeToolCall(toolName, args)).toBe(replaySafe);
+      expect(buildToolMutationState(toolName, args)).toEqual({ mutatingAction, replaySafe });
+    },
+  );
 
   it.each([
     'psql -c "select 1"',
