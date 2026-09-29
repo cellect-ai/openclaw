@@ -4,6 +4,7 @@ import {
   listSessionKeys,
   sessionDeliveryOrigin,
 } from "openclaw/plugin-sdk/session-store-runtime";
+import { CHANNEL_SESSION } from "./channel-projection-session.js";
 import {
   createDetachedProjectionReconciler,
   verifyDetachedProjectionOrigin,
@@ -42,9 +43,8 @@ type SlackSnapshot = {
   }>;
 };
 
-const CHANNEL_SESSION =
-  /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:channel:([cg][a-z0-9]+):thread:(\d+\.\d+)$/i;
 const snapshotQueue = new KeyedAsyncQueue();
+
 type SlackThreadReader = {
   workspaceId: string;
   botUserId: string;

@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
+import { isSlackChannelThreadSessionKey } from "./channel-projection-session.js";
 import {
   projectSlackChannelThread,
   registerSlackProjectionReconciler,
@@ -37,6 +38,7 @@ export function registerSlackChannelProjection(
     "fi.slackProjection.sync",
     async ({ params, respond }) => {
       const { baseUrl, token } = connection();
+      let channelProjectionAttempted = false;
       try {
         if (token && typeof params?.sessionKey === "string" && params.directSource) {
           respond(
@@ -58,6 +60,7 @@ export function registerSlackChannelProjection(
         ) {
           throw new Error("Missing Slack projection parameters");
         }
+        channelProjectionAttempted = true;
         const projected = await projectSlackChannelThread({
           api,
           token,
@@ -71,6 +74,17 @@ export function registerSlackChannelProjection(
         }
         respond(true, { projected: true });
       } catch (error) {
+        // The caller still receives the immediate failure, but a transient
+        // snapshot failure must enter the bounded live retry path instead of
+        // waiting for the periodic reconciliation sweep. The reconciler only
+        // admits supported Slack channel-thread session keys.
+        if (
+          channelProjectionAttempted &&
+          typeof params?.sessionKey === "string" &&
+          isSlackChannelThreadSessionKey(params.sessionKey)
+        ) {
+          reconciler.retryChannelProjection(params.sessionKey);
+        }
         const message = error instanceof Error ? error.message : "Slack projection failed";
         respond(false, { error: message }, errorShape(ErrorCodes.UNAVAILABLE, message));
       }
