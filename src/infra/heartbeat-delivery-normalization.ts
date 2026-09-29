@@ -134,8 +134,11 @@ export function classifyHeartbeatAgentOutcome(params: {
     params.agentRun;
   const replyMetadata = replyPayload ? getReplyPayloadMetadata(replyPayload) : undefined;
   const hasExplicitFailure = Boolean(heartbeatTerminalToolFailure || agentRunFailed);
+  const hasLegacyNotifyFallback =
+    typeof replyPayload?.text === "string" && /\bnotify=false\b/i.test(replyPayload.text);
   const shouldSuppressSourceReply =
     params.suppressUnmarkedSourceReplies &&
+    !hasLegacyNotifyFallback &&
     !params.hasRelayableExecCompletion &&
     replyPayload &&
     replyPayload.isError !== true &&

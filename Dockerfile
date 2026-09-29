@@ -259,6 +259,15 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
       ca-certificates curl git hostname libgomp1 lsof openssh-client openssl procps python3 tini && \
     update-ca-certificates
 
+# The Cellect runtime entrypoint hydrates role-scoped secrets through Infisical
+# before starting OpenClaw. Keep this operator/runtime dependency in the image;
+# it is not supplied by the host or Compose overlay.
+ARG INFISICAL_CLI_VERSION=0.43.58
+RUN curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash && \
+    apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
+
 # Keep npm as an operator-facing capability while replacing the base image's
 # bundled CLI dependency tree with the current release. The published package
 # omits its dev tools, so hide their metadata during the script-free refresh.

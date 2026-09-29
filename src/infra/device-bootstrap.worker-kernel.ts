@@ -367,6 +367,7 @@ function redeemDeviceBootstrapTokenProfile(
       ...resolveBootstrapProfileScopesForRole(params.role, params.scopes, issuedProfile.purpose),
     ],
     purpose: issuedProfile.purpose,
+    allowedAgentIds: issuedProfile.allowedAgentIds,
   });
   const nextPendingProfile =
     pendingProfile &&

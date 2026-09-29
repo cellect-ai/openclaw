@@ -246,9 +246,19 @@ async function routeReplyOperation(
     accountId,
   }).responsePrefix;
   const transformReplyPayload = createChannelReplyTransform({ messaging, cfg, accountId });
+  // Routed continuations still answer the original requester, so {sender.mention}
+  // resolves from the channel's own mention format rather than leaking literally.
+  const senderMention =
+    params.responsePrefixContext?.senderMention ??
+    (params.requesterSenderId
+      ? messaging?.formatSenderMention?.({ senderId: params.requesterSenderId, to })
+      : undefined);
   const normalization = normalizeReplyPayloadOutcome(payload, {
     responsePrefix,
-    responsePrefixContext: params.responsePrefixContext,
+    responsePrefixContext: {
+      ...params.responsePrefixContext,
+      ...(senderMention !== undefined ? { senderMention } : {}),
+    },
     transformReplyPayload,
   });
   if (normalization.kind === "suppress") {

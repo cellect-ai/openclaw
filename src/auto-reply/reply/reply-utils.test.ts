@@ -824,6 +824,18 @@ describe("resolveResponsePrefixTemplate", () => {
         expected: "[OpenClaw]",
       },
       {
+        name: "sender.mention",
+        template: "{sender.mention}",
+        values: { senderMention: "<@U123>" },
+        expected: "<@U123>",
+      },
+      {
+        name: "empty sender mention",
+        template: "{sender.mention}",
+        values: { senderMention: "" },
+        expected: "",
+      },
+      {
         name: "case-insensitive variables",
         template: "[{MODEL} | {ThinkingLevel}]",
         values: { model: "gpt-5.4", thinkingLevel: "low" },

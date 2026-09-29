@@ -9,6 +9,7 @@ import { supportsThreadBindingSpawn } from "../../channels/conversation-resoluti
 import { resolveThreadBindingSpawnPolicy } from "../../channels/thread-bindings-policy.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { MediaFact } from "../../media/media-facts.js";
 import { resolveSnakeCaseParamKey } from "../../param-key.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
@@ -343,6 +344,8 @@ export function createSessionsSpawnTool(
     swarmCollector?: boolean;
     /** Backend-derived parent incarnation; never sourced from model arguments. */
     expectedParentSessionId?: string;
+    /** Media attached to the requester's current turn; never sourced from model arguments. */
+    parentTurnMedia?: readonly MediaFact[];
     signal?: AbortSignal;
   } & VisibleSessionsSpawnDeps &
     SpawnedToolContext,
@@ -700,6 +703,7 @@ export function createSessionsSpawnTool(
               inheritedToolAllowlist: opts?.inheritedToolAllowlist,
               inheritedToolDenylist: opts?.inheritedToolDenylist,
               requesterRunId: opts?.requesterRunId,
+              parentTurnMedia: opts?.parentTurnMedia,
               sandboxed: opts?.sandboxed,
               assertActive,
               onSpawnEffectsStart,

@@ -347,6 +347,11 @@ export async function appendAssistantMirrorMessageByIdentity(
   params: SessionTranscriptAssistantMirrorAppendParams,
 ): Promise<SessionTranscriptMirrorAppendResult> {
   params.signal?.throwIfAborted();
+  // Internal delivery states (a final suppressed as a stale foreground reply)
+  // are not channel text and are never written as assistant messages.
+  if ((params.deliveryMirror?.kind as string | undefined) === "channel-final-suppressed") {
+    return { ok: false, reason: "internal delivery state" };
+  }
   const text = resolveMirroredTranscriptText({
     ...(params.mediaUrls !== undefined ? { mediaUrls: params.mediaUrls } : {}),
     ...(params.text !== undefined ? { text: params.text } : {}),
@@ -566,9 +571,6 @@ function createAssistantMirrorMessage(params: {
             kind: params.deliveryMirror.kind,
             ...(params.deliveryMirror.sourceMessageId !== undefined
               ? { sourceMessageId: params.deliveryMirror.sourceMessageId }
-              : {}),
-            ...(params.deliveryMirror.kind === "channel-final-suppressed"
-              ? { reason: params.deliveryMirror.reason }
               : {}),
           },
         }

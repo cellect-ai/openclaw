@@ -633,6 +633,12 @@ export type ChannelMessagingAdapter = {
     accountId?: string | null;
   }) => ReplyPayload | null;
   hasStructuredReplyPayload?: (params: { payload: ReplyPayload }) => boolean;
+  /**
+   * Channel-native mention of the original requester, for `{sender.mention}`
+   * on replies routed outside the inbound turn. Return "" where the channel's
+   * own inbound replies would not mention the sender (for example a DM).
+   */
+  formatSenderMention?: (params: { senderId: string; to: string }) => string;
   targetResolver?: {
     looksLikeId?: (raw: string, normalized?: string) => boolean;
     hint?: string;

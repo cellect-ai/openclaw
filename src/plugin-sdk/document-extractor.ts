@@ -1,6 +1,7 @@
 /**
- * Public SDK type surface for document extractor plugins.
+ * Public SDK surface for document extractor plugins and bundled consumers.
  */
+export { extractDocumentContent } from "../media/document-extractors.runtime.js";
 export type {
   DocumentExtractedImage,
   DocumentExtractionRequest,

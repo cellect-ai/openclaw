@@ -104,6 +104,16 @@ async function runMainCronCase(
         contextKey: "cron:late-arrival",
       });
     }
+    if (!options.heartbeatResponse && options.mixedExec && ctx.InternalTurnSource === "cron") {
+      // Cellect: response-tool heartbeats deliver only tool-marked finals, so the cron
+      // reminder reports through the heartbeat response tool.
+      return createHeartbeatToolResponsePayload({
+        outcome: "needs_attention",
+        notify: true,
+        summary: "Handled the reminder",
+        notificationText: "Handled the reminder",
+      });
+    }
     return (
       options.heartbeatResponse ?? {
         text: ctx.InternalTurnSource === "exec" ? "Command completed" : "Handled the reminder",

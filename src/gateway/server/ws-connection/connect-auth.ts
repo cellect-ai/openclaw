@@ -8,13 +8,18 @@ import {
   getBoundDeviceBootstrapContext,
   verifyDeviceBootstrapToken,
 } from "../../../infra/device-bootstrap.js";
+import { normalizeDevicePublicKeyBase64Url } from "../../../infra/device-identity.js";
 import { verifyDeviceToken } from "../../../infra/device-pairing-tokens.js";
+import { getPairedDevice } from "../../../infra/device-pairing.js";
 import {
   CLOUD_WORKER_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   deviceBootstrapProfilesEqual,
   type DeviceBootstrapProfile,
 } from "../../../shared/device-bootstrap-profile.js";
-import { AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET } from "../../auth-rate-limit.js";
+import {
+  AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
+  buildRateLimitIdentityKey,
+} from "../../auth-rate-limit.js";
 import type { GatewayAuthResult } from "../../auth.js";
 import { withSerializedCredentialFallbackAttempt } from "../../rate-limit-attempt-serialization.js";
 import { formatForLog } from "../../ws-log.js";
@@ -30,7 +35,10 @@ import {
 } from "./connect-admission.js";
 import { emitGatewayAuthSecurityEvent } from "./connect-auth-security.js";
 import { isControlUiOperatorBootstrapProfile } from "./connect-device-metadata.js";
-import { verifyGatewayConnectDeviceProof } from "./connect-device-proof.js";
+import {
+  checkGatewayConnectDeviceProof,
+  verifyGatewayConnectDeviceProof,
+} from "./connect-device-proof.js";
 import {
   evaluateMissingDeviceIdentity,
   isTrustedProxyControlUiOperatorAuth,
@@ -70,6 +78,37 @@ export async function authenticateGatewayConnect(
     ip: context.browserRateLimitClientIp,
     run: async () => await authenticateGatewayConnectCore(context),
   });
+}
+
+/**
+ * Limiter key for a remote connect that proves possession of a paired device's
+ * key. Failures are otherwise keyed on the attributed client (the forwarded
+ * client IP behind a trusted proxy, the socket peer otherwise), so an anonymous
+ * client failing from a shared proxy egress or NAT address would lock out every
+ * device behind it. Unpaired or unproven devices stay on the client bucket, so
+ * minting fresh keypairs cannot buy fresh buckets.
+ */
+async function resolvePairedDeviceRateLimitSubject(
+  context: GatewayConnectPhaseContext,
+  params: {
+    device: GatewayConnectPhaseContext["connectParams"]["device"];
+    role: Parameters<typeof checkGatewayConnectDeviceProof>[1]["role"];
+    scopes: string[];
+  },
+): Promise<string | undefined> {
+  const { device, role, scopes } = params;
+  if (!device || !context.authRateLimiter || context.isLocalClient) {
+    return undefined;
+  }
+  const proof = checkGatewayConnectDeviceProof(context, { device, role, scopes });
+  if (!proof.ok) {
+    return undefined;
+  }
+  const paired = await getPairedDevice(device.id);
+  if (!paired || normalizeDevicePublicKeyBase64Url(paired.publicKey) !== proof.devicePublicKey) {
+    return undefined;
+  }
+  return buildRateLimitIdentityKey("device", device.id);
 }
 
 async function authenticateGatewayConnectCore(
@@ -138,6 +177,12 @@ async function authenticateGatewayConnectCore(
   if (hasRawHandshakeCredentials) {
     advanceHandshakePhase("auth_credentials_received");
   }
+  const deviceRateLimitSubject = await resolvePairedDeviceRateLimitSubject(context, {
+    device,
+    role,
+    scopes,
+  });
+  const rateLimitSubject = deviceRateLimitSubject ?? browserRateLimitClientIp;
   const connectAuthState = await resolveConnectAuthState({
     resolvedAuth,
     connectAuth: connectParams.auth,
@@ -146,7 +191,8 @@ async function authenticateGatewayConnectCore(
     trustedProxies,
     allowRealIpFallback,
     rateLimiter: authRateLimiter,
-    clientIp: browserRateLimitClientIp,
+    clientIp: rateLimitSubject,
+    rateLimitSubject: deviceRateLimitSubject,
   });
   const {
     sharedAuthOk,
@@ -163,7 +209,7 @@ async function authenticateGatewayConnectCore(
     }
     rejectedPendingSharedAuthFailure = false;
     await authRateLimiter?.recordFailureAndDelay(
-      browserRateLimitClientIp,
+      rateLimitSubject,
       AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
     );
   };
@@ -379,7 +425,7 @@ async function authenticateGatewayConnectCore(
     scopes,
     requireBootstrapToken: startupBootstrapConnect,
     rateLimiter: authRateLimiter,
-    clientIp: browserRateLimitClientIp,
+    clientIp: rateLimitSubject,
     async verifyBootstrapToken({
       deviceId,
       publicKey,
@@ -481,9 +527,9 @@ async function authenticateGatewayConnectCore(
     : undefined;
   // A host-issued Control UI handoff creates a durable browser token. Bind both
   // the bootstrap session and that token to the current shared-auth generation.
-  const controlUiBootstrapSharedGatewaySessionGeneration =
+  const browserBootstrapSharedGatewaySessionGeneration =
     authMethod === "bootstrap-token" &&
-    isControlUi &&
+    (isControlUi || isWebchat) &&
     role === "operator" &&
     isControlUiOperatorBootstrapProfile({
       profile: issuedBootstrapProfile,
@@ -494,11 +540,11 @@ async function authenticateGatewayConnectCore(
   const sessionUsesSharedGatewayAuth =
     usesSharedGatewayAuth ||
     deviceTokenSharedGatewaySessionGeneration !== undefined ||
-    controlUiBootstrapSharedGatewaySessionGeneration !== undefined;
+    browserBootstrapSharedGatewaySessionGeneration !== undefined;
   const sessionSharedGatewaySessionGeneration =
     sharedGatewaySessionGeneration ??
     deviceTokenSharedGatewaySessionGeneration ??
-    controlUiBootstrapSharedGatewaySessionGeneration;
+    browserBootstrapSharedGatewaySessionGeneration;
   if (sessionUsesSharedGatewayAuth) {
     const requiredSharedGatewaySessionGeneration = getRequiredSharedGatewaySessionGeneration?.();
     if (

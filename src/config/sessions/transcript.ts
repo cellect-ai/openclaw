@@ -89,16 +89,13 @@ export type SessionTranscriptAppendResult =
     };
 
 export type SessionTranscriptUpdateMode = "inline" | "file-only" | "none";
-export type SessionTranscriptDeliveryMirror =
-  | {
-      kind: "channel-final";
-      sourceMessageId?: string;
-    }
-  | {
-      kind: "channel-final-suppressed";
-      reason: "stale-foreground";
-      sourceMessageId?: string;
-    };
+// Delivery states that are not channel text (for example a final suppressed as
+// a stale foreground reply) are never written as assistant messages. Historical
+// "channel-final-suppressed" rows are still recognized below so replay skips them.
+export type SessionTranscriptDeliveryMirror = {
+  kind: "channel-final";
+  sourceMessageId?: string;
+};
 
 type InternalSessionTranscriptDeliveryMirror =
   | SessionTranscriptDeliveryMirror
@@ -407,6 +404,9 @@ export async function appendAssistantMessageToSessionTranscript(params: {
   const sessionKey = params.sessionKey.trim();
   if (!sessionKey) {
     return { ok: false, reason: "missing sessionKey" };
+  }
+  if ((params.deliveryMirror?.kind as string | undefined) === "channel-final-suppressed") {
+    return { ok: false, reason: "internal delivery state" };
   }
 
   const mirrorText = params.content

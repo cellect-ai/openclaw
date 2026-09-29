@@ -6851,6 +6851,11 @@ describe("google-meet plugin", () => {
     expect(agentRequest.thinkLevel).toBe("high");
     expect(agentRequest.toolsAllow).toStrictEqual([
       "read",
+      "fi_user_api",
+      "sessions_history",
+      "sessions_search",
+      "tavily_search",
+      "tavily_extract",
       "web_search",
       "web_fetch",
       "x_search",

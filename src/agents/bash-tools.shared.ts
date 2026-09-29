@@ -28,6 +28,11 @@ export type BashSandboxConfig = {
   workdirRoots?: readonly string[];
   /** Approved read-only skill mounts that may be selected as an exec workdir. */
   readOnlyWorkspaceSkillMounts?: readonly BashSandboxWorkdirMount[];
+  /**
+   * Configured sandbox bind mounts (and the agent workspace mount) that may be
+   * selected as an exec workdir by their container path.
+   */
+  bindMounts?: readonly BashSandboxWorkdirMount[];
   env?: Record<string, string>;
   buildExecSpec?: (params: {
     command: string;

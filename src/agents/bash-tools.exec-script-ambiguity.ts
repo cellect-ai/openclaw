@@ -299,7 +299,7 @@ function analyzeInterpreterHeuristicsFromUnquoted(raw: string): {
   return { hasPython, hasNode, hasComplexSyntax, hasProcessSubstitution, hasScriptHint };
 }
 
-function extractShellWrappedCommandPayload(
+export function extractShellWrappedCommandPayload(
   executable: string | undefined,
   args: string[],
 ): string | null {

@@ -13,6 +13,7 @@ import {
 } from "./deliver.queue-integration.test-support.js";
 import { OUTBOUND_DELIVERY_QUEUE_NAME } from "./delivery-queue-media-staging.js";
 import type { DeliverFn } from "./delivery-queue-recovery.js";
+import { loadCompletedDeliveryReceipt } from "./delivery-queue-storage.js";
 import { installDeliveryQueueTmpDirHooks } from "./delivery-queue.test-helpers.js";
 
 let deliverOutboundPayloads: typeof import("./deliver.js").deliverOutboundPayloads;
@@ -91,6 +92,11 @@ describe("exact Matrix delivery queue reconciliation", () => {
       expect(
         getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, deliveryIntentId, tmpDir),
       ).toBe("completed");
+      await expect(loadCompletedDeliveryReceipt(deliveryIntentId, tmpDir)).resolves.toEqual({
+        platformMessageId: messageId,
+      });
+      await expect(deliverOutboundPayloads(params)).resolves.toEqual([]);
+      expect(sendText).toHaveBeenCalledOnce();
 
       const recoveryDeliver = vi.fn<DeliverFn>(async () => []);
       await drainMatrixReconnect({ deliver: recoveryDeliver, stateDir: tmpDir });

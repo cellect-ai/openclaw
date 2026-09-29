@@ -5,6 +5,10 @@ import path from "node:path";
 import type { ExecAsk, ExecHost, ExecSecurity } from "../infra/exec-approvals.js";
 import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import { shouldFailClosedInterpreterPreflight } from "./bash-tools.exec-script-ambiguity.js";
+import {
+  resolveKnownInterpreterScriptTargets,
+  type ResolvedInterpreterScriptTarget,
+} from "./bash-tools.exec-script-chain.js";
 import { extractScriptTargetFromCommand } from "./bash-tools.exec-script-target.js";
 
 const SKIPPABLE_SCRIPT_PREFLIGHT_FS_ERROR_CODES = new Set([
@@ -201,7 +205,23 @@ async function readLiteralTildePreflightScript(params: {
 export async function validateScriptFileForShellBleed(params: {
   command: string;
   workdir: string;
+  /**
+   * Resolve compound commands (chains, heredocs, `sh -c` payloads) and
+   * validate every interpreter script they run instead of refusing them.
+   * Commands whose interpreter programs cannot all be identified still fail
+   * closed. Used for sandboxed exec.
+   */
+  resolveCompoundCommands?: boolean;
 }): Promise<void> {
+  if (params.resolveCompoundCommands) {
+    const targets = resolveKnownInterpreterScriptTargets(params.command);
+    if (targets) {
+      for (const resolvedTarget of targets) {
+        await validateScriptTargetFiles({ target: resolvedTarget, workdir: params.workdir });
+      }
+      return;
+    }
+  }
   const target = extractScriptTargetFromCommand(params.command);
   if (!target) {
     const {
@@ -228,7 +248,14 @@ export async function validateScriptFileForShellBleed(params: {
     }
     return;
   }
+  await validateScriptTargetFiles({ target, workdir: params.workdir });
+}
 
+async function validateScriptTargetFiles(params: {
+  target: ResolvedInterpreterScriptTarget;
+  workdir: string;
+}): Promise<void> {
+  const { target } = params;
   // Dollar-prefixed identifiers and NODE labels are valid JavaScript. Leave source
   // diagnostics to Node while preserving the complex-command policy above.
   if (target.kind === "node") {

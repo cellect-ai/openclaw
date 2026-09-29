@@ -7,8 +7,10 @@ import {
 import {
   loadDeliveryQueueEntryInDatabase,
   type DeliveryQueueReadMode,
+  type UpsertDeliveryQueueEntryParams,
 } from "./delivery-queue-sqlite-bound.js";
 import {
+  completeDeliveryQueueEntryInDatabase,
   countPendingDeliveryQueueEntriesInDatabase,
   deleteDeliveryQueueEntryInDatabase,
   getDeliveryQueueEntryOwnersInDatabase,
@@ -17,6 +19,7 @@ import {
   reserveDeliveryQueueEntryAttemptInDatabase,
   terminalizePendingDeliveryQueueEntryInDatabase,
   updateDeliveryQueueEntryInDatabase,
+  upsertDeliveryQueueEntryInDatabase,
   type DeliveryQueueStoredStatus,
   type ReserveDeliveryQueueAttemptResult,
   type TerminalizePendingDeliveryQueueEntryParams,
@@ -81,6 +84,31 @@ export function loadDeliveryQueueEntries(
   context?: DeliveryQueueStateContext,
 ): DeliveryQueueEntryState[] {
   return loadDeliveryQueueEntriesInDatabase(openStateDatabase(stateDir, context), queueName, mode);
+}
+
+/** Insert or replace one queue-owned entry (conversation lifecycle custody). */
+export function upsertDeliveryQueueEntry(
+  params: UpsertDeliveryQueueEntryParams,
+  context?: DeliveryQueueStateContext,
+): boolean {
+  const { stateDir, ...entryParams } = params;
+  return upsertDeliveryQueueEntryInDatabase(entryParams, openStateDatabase(stateDir, context));
+}
+
+/** Complete a pending entry, honoring its declared completion retention. */
+export function completeDeliveryQueueEntry(
+  queueName: string,
+  id: string,
+  stateDir?: string,
+  completionReceipt?: Readonly<{ platformMessageId: string }>,
+  context?: DeliveryQueueStateContext,
+): void {
+  completeDeliveryQueueEntryInDatabase(
+    openStateDatabase(stateDir, context),
+    queueName,
+    id,
+    completionReceipt,
+  );
 }
 
 /** Delete a pending delivery queue entry after successful delivery. */

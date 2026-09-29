@@ -6,11 +6,24 @@ import type { ChannelPairingAdapter } from "../channels/plugins/pairing.types.js
 // channels use channel ids but keep a narrower alias for readability.
 export type PairingChannel = ChannelId;
 
+/**
+ * Status as it is persisted. `expired` is deliberately absent: it is a function
+ * of `createdAt` and the pending TTL, so ageing a request never needs a write.
+ */
+export type PairingRequestStoredStatus = "pending" | "approved" | "dismissed";
+
+/** Status an operator sees, including the derived `expired`. */
+export type PairingRequestStatus = PairingRequestStoredStatus | "expired";
+
 export type PairingRequestRecord = {
   id: string;
   code: string;
   createdAt: string;
   lastSeenAt: string;
+  /** Records outlive their pending window; only `pending` ones can be approved. */
+  status: PairingRequestStoredStatus;
+  /** Set when an operator approved or dismissed the request. */
+  resolvedAt?: string;
   meta?: Record<string, string>;
 };
 

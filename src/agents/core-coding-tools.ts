@@ -35,6 +35,14 @@ import { createReadTool } from "./sessions/tools/read.js";
 import { resolveToolResultBudget } from "./tool-result-limits.js";
 import { getAgentWorkspaceAccess, WorkspaceAccessUnavailableError } from "./workspace-access.js";
 
+function sandboxWorkdirBindMounts(
+  sandbox: SandboxContext,
+): Array<{ containerPath: string; hostPath: string }> {
+  return buildSandboxFsMounts(sandbox)
+    .filter((mount) => mount.source === "bind" || mount.source === "agent")
+    .map((mount) => ({ containerPath: mount.containerRoot, hostPath: mount.hostRoot }));
+}
+
 function resolveSkillReadRoots(skills?: SkillSnapshot["resolvedSkills"]): string[] | undefined {
   const roots = new Set<string>();
   for (const skill of skills ?? []) {
@@ -419,6 +427,7 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
               ),
               workdirRoots: sandbox.backend?.workdirRoots,
               readOnlyWorkspaceSkillMounts,
+              bindMounts: sandboxWorkdirBindMounts(sandbox),
               env: sandbox.backend?.env ?? sandbox.docker.env,
               buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),
               finalizeExec: sandbox.backend?.finalizeExec?.bind(sandbox.backend),

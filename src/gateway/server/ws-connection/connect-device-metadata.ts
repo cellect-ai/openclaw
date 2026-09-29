@@ -7,6 +7,7 @@ import { hasEffectivePairedDeviceRole, type PairedDevice } from "../../../infra/
 import {
   BOOTSTRAP_HANDOFF_OPERATOR_SCOPES,
   CONTROL_UI_OWNER_BOOTSTRAP_PROFILE,
+  WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   deviceBootstrapProfilesEqual,
   isMobilePairingSetupBootstrapProfile,
   isNodePairingSetupBootstrapProfile,
@@ -102,6 +103,21 @@ export function isControlUiOperatorBootstrapProfile(params: {
   const { profile, requestedScopes } = params;
   if (isControlUiOwnerBootstrapProfile(params)) {
     return true;
+  }
+  if (
+    profile?.purpose === "webchat" &&
+    profile.roles.length === 1 &&
+    profile.roles[0] === "operator" &&
+    deviceBootstrapProfilesEqual(
+      { roles: profile.roles, scopes: profile.scopes, purpose: profile.purpose },
+      WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+    )
+  ) {
+    return roleScopesAllow({
+      role: "operator",
+      requestedScopes,
+      allowedScopes: profile.scopes,
+    });
   }
   if (!profile || profile.purpose !== "control-ui") {
     return false;

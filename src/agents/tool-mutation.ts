@@ -70,6 +70,8 @@ const REPLAY_SAFE_TOOL_NAMES = new Set([
   "sessions_history",
   "sessions_list",
   "sessions_search",
+  "tavily_search",
+  "tavily_extract",
   "tool_describe",
   "tool_search",
   "web_fetch",
@@ -163,6 +165,63 @@ function tokenizeSimpleShellCommand(command: string): string[] | undefined {
   return tokens.length > 0 ? tokens : undefined;
 }
 
+function splitReadOnlyAndChain(command: string): string[] | undefined {
+  const commands: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (char === "\\") {
+      return undefined;
+    }
+    if (quote) {
+      if (char === quote) {
+        quote = undefined;
+      }
+      current += char;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "&") {
+      if (command[index + 1] !== "&") {
+        return undefined;
+      }
+      const segment = current.trim();
+      if (!segment) {
+        return undefined;
+      }
+      commands.push(segment);
+      current = "";
+      index += 1;
+      continue;
+    }
+    if (
+      char === ";" ||
+      char === "|" ||
+      char === "<" ||
+      char === ">" ||
+      char === "\n" ||
+      char === "\r"
+    ) {
+      return undefined;
+    }
+    current += char;
+  }
+  if (quote) {
+    return undefined;
+  }
+  const finalCommand = current.trim();
+  if (!finalCommand) {
+    return undefined;
+  }
+  commands.push(finalCommand);
+  return commands;
+}
+
 function isReadOnlySedCommand(tokens: readonly string[]): boolean {
   const args = tokens.slice(1);
   if (args.some((token) => token === "--in-place" || token.startsWith("--in-place="))) {
@@ -238,10 +297,7 @@ function isReadOnlyGhCommand(tokens: readonly string[]): boolean {
   return false;
 }
 
-function isPlainReadOnlyShellCommand(command: string | undefined): boolean {
-  if (!command) {
-    return false;
-  }
+function isPlainReadOnlySimpleShellCommand(command: string): boolean {
   const tokens = tokenizeSimpleShellCommand(command);
   if (!tokens) {
     return false;
@@ -260,6 +316,14 @@ function isPlainReadOnlyShellCommand(command: string | undefined): boolean {
     return isReadOnlyGhCommand(tokens);
   }
   return false;
+}
+
+function isPlainReadOnlyShellCommand(command: string | undefined): boolean {
+  if (!command) {
+    return false;
+  }
+  const commands = splitReadOnlyAndChain(command);
+  return commands !== undefined && commands.every(isPlainReadOnlySimpleShellCommand);
 }
 
 export function isMutatingToolCall(toolName: string, args: unknown): boolean {

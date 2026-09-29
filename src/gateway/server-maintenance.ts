@@ -27,6 +27,8 @@ import { pruneOrphanedDeliveryQueueMedia } from "../infra/outbound/delivery-queu
 import { generateSecureInt } from "../infra/secure-random.js";
 import { checkTelemetryUpdate } from "../infra/telemetry.js";
 import { cleanOldMedia, pruneOutboundMedia, prunePlaybackTranscodeCache } from "../media/store.js";
+import { registerPairingOwnerRequestNotifications } from "../pairing/pairing-owner-notify.js";
+import { startPairingStalenessSweep } from "../pairing/pairing-staleness.js";
 import {
   getGatewayRestartDrainSignal,
   isGatewayWorkAdmissionClosed,
@@ -333,6 +335,20 @@ export function startGatewayMaintenanceTimers(params: {
 
   const skillUsageCleanup = registerSkillUsageTracking();
 
+  // An unanswered DM access request must get louder over time, not quieter.
+  // It warns on the pairing subsystem logger, where the request itself is logged.
+  const stopPairingStalenessSweep = restartDrainSignal.aborted
+    ? () => {}
+    : startPairingStalenessSweep({ getConfig: params.getRuntimeConfig });
+
+  // The log line above does not depend on anyone tailing it; this pushes the
+  // same "someone is waiting" notice to the resolved human operator directly
+  // (see pairing-owner-notify.ts), so a request is discoverable without
+  // hunting for the log or running the CLI speculatively.
+  const stopPairingOwnerRequestNotifications = restartDrainSignal.aborted
+    ? () => {}
+    : registerPairingOwnerRequestNotifications({ getConfig: params.getRuntimeConfig });
+
   // dedupe cache cleanup
   const dedupeCleanup = setInterval(() => {
     const AGENT_RUN_SEQ_MAX = 10_000;
@@ -617,6 +633,8 @@ export function startGatewayMaintenanceTimers(params: {
       clearInterval(healthInterval);
       clearInterval(dedupeCleanup);
       clearInterval(worktreeCleanup);
+      stopPairingStalenessSweep();
+      stopPairingOwnerRequestNotifications();
       periodicTasksStopPromise = Promise.allSettled([
         // Retire producers first, then let admitted callbacks and their cleanup
         // finish before closing their scope or aborting its cancellation signal.

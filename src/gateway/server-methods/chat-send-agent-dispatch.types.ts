@@ -1,3 +1,4 @@
+import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
 import type { ReplyMessageInjectionAttempt } from "../../auto-reply/reply/reply-run-registry.js";
 import type { PrepareAssistantTranscriptMessage } from "../../config/sessions/transcript-assistant-delivery.js";
 import type { SkillWorkshopProposalRevisionConstraint } from "../../skills/workshop/types.js";
@@ -27,6 +28,7 @@ export type StartChatDispatchParams = {
   toolsAllow?: string[];
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   skillWorkshopProposalRevision?: SkillWorkshopProposalRevisionConstraint;
+  sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   skillLibraryAuthoring?: import("../../skills/library/authoring.js").SkillLibraryAuthoringCapability;
   cronCreatorAuthority: ReturnType<ChatSendExternalAuthorityAdmission["resolve"]>;
   assertDashboardReadCurrent?: () => void;

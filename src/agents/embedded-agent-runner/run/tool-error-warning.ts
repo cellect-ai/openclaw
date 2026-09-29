@@ -17,6 +17,30 @@ function formatWarningToolLabel(
   return detail ? `${label}: ${detail}` : label;
 }
 
+/**
+ * What the reader should do next.
+ *
+ * Without it a turn that dies on a tool ends at a bare "⚠️ <Tool> failed" — the
+ * banner an external contractor was shown in a shared Slack channel. The tool
+ * name means nothing to them, and the line never says whether anything was
+ * written or what to do about it. The provider's own error text stays out of
+ * this: it is already in the logs, and `/verbose full` is how an operator asks
+ * for it.
+ */
+const TOOL_FAILURE_RECOVERY_HINT =
+  "I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.";
+
+function withRecoveryHint(text: string, includeDetails: boolean): string {
+  // A verbose run already carries the raw detail an operator asked for; the
+  // hint is for the reader who was given nothing to act on.
+  if (includeDetails) {
+    return text;
+  }
+  // Branches differ on whether they already close the sentence.
+  const separator = /[.!?]$/u.test(text) ? " " : ". ";
+  return `${text}${separator}${TOOL_FAILURE_RECOVERY_HINT}`;
+}
+
 function formatToolErrorWarningText(params: {
   lastToolError: ToolErrorSummary;
   includeDetails: boolean;
@@ -32,7 +56,10 @@ function formatToolErrorWarningText(params: {
       : "";
     const errorSuffix =
       params.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : ".";
-    return `⚠️ ${toolLabel} timed out after ${terminalDiagnostic.timeoutMs / 1000}s${partialSuffix}${errorSuffix}`;
+    return withRecoveryHint(
+      `⚠️ ${toolLabel} timed out after ${terminalDiagnostic.timeoutMs / 1000}s${partialSuffix}${errorSuffix}`,
+      params.includeDetails,
+    );
   }
   if (terminalDiagnostic?.kind === "process") {
     const toolLabel = formatWarningToolLabel(
@@ -50,7 +77,10 @@ function formatToolErrorWarningText(params: {
             : "timed out";
     const errorSuffix =
       params.includeDetails && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
-    return `⚠️ ${toolLabel} failed (${reason})${errorSuffix}.`;
+    return withRecoveryHint(
+      `⚠️ ${toolLabel} failed (${reason})${errorSuffix}.`,
+      params.includeDetails,
+    );
   }
 
   const includeError =
@@ -65,9 +95,12 @@ function formatToolErrorWarningText(params: {
       : formatConciseExecExitSuffix(params.lastToolError.error);
     const errorSuffix =
       includeError && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
-    return subject
-      ? `⚠️ ${toolLabel} ${failureVerb}: ${subject}${conciseExitSuffix}${errorSuffix}`
-      : `⚠️ ${toolLabel} ${failureVerb}${conciseExitSuffix}${errorSuffix}`;
+    return withRecoveryHint(
+      subject
+        ? `⚠️ ${toolLabel} ${failureVerb}: ${subject}${conciseExitSuffix}${errorSuffix}`
+        : `⚠️ ${toolLabel} ${failureVerb}${conciseExitSuffix}${errorSuffix}`,
+      params.includeDetails,
+    );
   }
 
   const toolSummary = formatWarningToolLabel(
@@ -77,7 +110,7 @@ function formatToolErrorWarningText(params: {
   );
   const errorSuffix =
     includeError && params.lastToolError.error ? `: ${params.lastToolError.error}` : "";
-  return `⚠️ ${toolSummary} ${failureVerb}${errorSuffix}`;
+  return withRecoveryHint(`⚠️ ${toolSummary} ${failureVerb}${errorSuffix}`, params.includeDetails);
 }
 
 function formatExecLikeFailureSubject(meta: string | undefined, markdown: boolean): string {

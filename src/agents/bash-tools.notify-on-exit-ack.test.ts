@@ -78,6 +78,21 @@ it("keeps selected-agent global completions scoped to their owner", async () => 
   expect(peekSystemEventEntries("agent:main:global")).toEqual([]);
 });
 
+it("binds a completion to the agent run that started the command", async () => {
+  const process = await startDeferredNotifyRun({
+    spawn: supervisorSpawnMock,
+    sessionKey: QUEUE_KEY,
+    originRunId: "run-origin",
+  });
+  await process.finish();
+
+  expect(peekSystemEventEntries(QUEUE_KEY)[0]?.origin).toEqual({
+    runId: "run-origin",
+    sessionKey: QUEUE_KEY,
+    outcome: "success",
+  });
+});
+
 it("isolates identical completions across exact full-slug reuse", async () => {
   const first = await startNotifyRun();
   await first.finish();

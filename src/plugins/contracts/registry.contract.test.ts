@@ -135,7 +135,11 @@ describe("plugin contract registry", () => {
     ["tts-local-cli", "speechProviderIds", ["tts-local-cli", "cli"]],
     ["volcengine", "speechProviderIds", ["volcengine", "bytedance", "doubao"]],
     ["xiaomi", "speechProviderIds", ["xiaomi", "mimo"]],
-    ["xai", "realtimeVoiceProviderIds", ["xai", "grok-voice", "xai-realtime-voice"]],
+    [
+      "xai",
+      "realtimeVoiceProviderIds",
+      ["xai", "grok-voice", "xai-realtime-voice", "litellm", "litellm-realtime"],
+    ],
   ] as const)("declares canonical-first %s %s aliases", (pluginId, contract, providerIds) => {
     expect(
       pluginRegistrationContractRegistry.find((entry) => entry.pluginId === pluginId)?.[contract],

@@ -674,6 +674,10 @@ export type PluginHookReplyUsageState = {
 };
 
 export type PluginHookReplyPayloadSendingEvent = {
+  /** Host-minted logical payload identity, persisted with prepared channel content. */
+  publicationId?: string;
+  /** Original immutable source publication time; not logical identity. */
+  publishedAtMs?: number;
   payload: PluginHookReplyPayload;
   kind: ReplyDispatchKind;
   channel?: string;

@@ -10,9 +10,7 @@ import * as transcriptEvents from "../../sessions/transcript-events.js";
 import type { InternalSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import {
   CRON_DIRECT_DELIVERY_CONTEXT_KIND,
-  OPENCLAW_DELIVERY_MIRROR_MODEL,
   OPENCLAW_TRANSCRIPT_ARTIFACT_API,
-  OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
 } from "../../shared/transcript-only-openclaw-assistant.js";
 import { closeOpenClawAgentDatabasesForTest } from "../../state/openclaw-agent-db.js";
 import { deleteTestEnvValue, setTestEnvValue } from "../../test-utils/env.js";
@@ -882,73 +880,28 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     }
   });
 
-  it("idempotently appends suppressed channel finals by key while preserving source ids", async () => {
+  it("never writes an internal suppressed-final delivery state as an assistant message", async () => {
     await writeTranscriptStore();
 
-    const text = "Channel final suppressed before delivery: stale foreground";
-    const first = await appendAssistantMessageToSessionTranscript({
+    const result = await appendAssistantMessageToSessionTranscript({
       sessionKey,
-      text,
+      text: "Channel final suppressed before delivery: stale foreground",
       storePath: fixture.storePath(),
       idempotencyKey: "channel-final-suppressed:message-1:0",
       deliveryMirror: {
         kind: "channel-final-suppressed",
         reason: "stale-foreground",
         sourceMessageId: "message-1",
-      },
-    });
-    const replay = await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text,
-      storePath: fixture.storePath(),
-      idempotencyKey: "channel-final-suppressed:message-1:0",
-      deliveryMirror: {
-        kind: "channel-final-suppressed",
-        reason: "stale-foreground",
-        sourceMessageId: "message-1",
-      },
-    });
-    const nextTurn = await appendAssistantMessageToSessionTranscript({
-      sessionKey,
-      text,
-      storePath: fixture.storePath(),
-      idempotencyKey: "channel-final-suppressed:message-2:0",
-      deliveryMirror: {
-        kind: "channel-final-suppressed",
-        reason: "stale-foreground",
-        sourceMessageId: "message-2",
-      },
+      } as never,
     });
 
-    expect(first.ok).toBe(true);
-    expect(replay.ok).toBe(true);
-    expect(nextTurn.ok).toBe(true);
-    if (first.ok && replay.ok && nextTurn.ok) {
-      expect(replay.messageId).toBe(first.messageId);
-      expect(nextTurn.messageId).not.toBe(first.messageId);
-      const events = await loadTranscriptEvents(createFixtureTranscriptScope());
-      const mirrors = events
-        .map((event) => (event as { message?: Record<string, unknown> }).message)
-        .filter((message): message is Record<string, unknown> =>
-          Boolean(message?.openclawDeliveryMirror),
-        );
-      expect(mirrors).toHaveLength(2);
-      expect(mirrors[0]).toMatchObject({
-        api: OPENCLAW_TRANSCRIPT_ARTIFACT_API,
-        provider: OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
-        model: OPENCLAW_DELIVERY_MIRROR_MODEL,
-        openclawDeliveryMirror: {
-          kind: "channel-final-suppressed",
-          reason: "stale-foreground",
-          sourceMessageId: "message-1",
-        },
-      });
-      expect(mirrors[1]?.openclawDeliveryMirror).toEqual({
-        kind: "channel-final-suppressed",
-        reason: "stale-foreground",
-        sourceMessageId: "message-2",
-      });
-    }
+    expect(result).toEqual({ ok: false, reason: "internal delivery state" });
+    const events = await loadTranscriptEvents(createFixtureTranscriptScope());
+    expect(
+      events.some(
+        (event) => (event as { message?: { role?: string } }).message?.role === "assistant",
+      ),
+    ).toBe(false);
   });
 
   it("does not dedupe delivery mirrors against an older assistant after a user turn", async () => {

@@ -573,6 +573,16 @@ export const loadPendingDelivery = async (
     context,
   ) as QueuedDelivery | null;
 
+/** Read the provider receipt retained for a stable delivery intent. */
+export const loadCompletedDeliveryReceipt = async (
+  id: string,
+  stateDir?: string,
+  context?: DeliveryQueueStateContext,
+): Promise<Readonly<{ platformMessageId: string }> | null> => {
+  const entry = loadDeliveryQueueEntry(OUTBOUND_DELIVERY_QUEUE_NAME, id, stateDir, "all", context);
+  return entry?.completionReceipt ?? null;
+};
+
 /** Failed settlement retains owner metadata, but is never eligible for sending. */
 export async function loadUnfinishedDeliveries(
   stateDir?: string,

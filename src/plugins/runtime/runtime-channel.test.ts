@@ -1,6 +1,8 @@
 // Runtime channel tests cover channel plugin runtime send, reply, and capability behavior.
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
+import { createPluginRuntimeStore } from "../../plugin-sdk/runtime-store.js";
+import { PluginInstance } from "../plugin-instance.js";
 import { createRuntimeChannel } from "./runtime-channel.js";
 
 const dispatchRoutedChannelTurn = vi.hoisted(() => vi.fn(async () => ({ status: "handled" })));
@@ -55,6 +57,51 @@ describe("inbound dispatch", () => {
 });
 
 describe("runtimeContexts", () => {
+  it("retains owner scopes for context methods and watcher callbacks across plugins", async () => {
+    const channel = createRuntimeChannel();
+    const owner = new PluginInstance("runtime-context-owner-test");
+    const watcher = new PluginInstance("runtime-context-watcher-test");
+    const ownerRuntime = createPluginRuntimeStore<{ name: string }>({
+      pluginId: "runtime-context-owner-test",
+      errorMessage: "owner runtime not initialized",
+    });
+    const watcherRuntime = createPluginRuntimeStore<{ name: string }>({
+      pluginId: "runtime-context-watcher-test",
+      errorMessage: "watcher runtime not initialized",
+    });
+    const observed: string[] = [];
+    const key = {
+      channelId: "matrix",
+      capability: "session-read-projections",
+    };
+
+    try {
+      owner.wrap(() => ownerRuntime.setRuntime({ name: "matrix" }))();
+      watcher.wrap(() => watcherRuntime.setRuntime({ name: "fi-user" }))();
+      watcher.wrap(() =>
+        channel.runtimeContexts.watch({
+          ...key,
+          onEvent: () => observed.push(watcherRuntime.getRuntime().name),
+        }),
+      )();
+
+      owner.wrap(() =>
+        channel.runtimeContexts.register({
+          ...key,
+          context: {
+            ownerName: () => ownerRuntime.getRuntime().name,
+          },
+        }),
+      )();
+
+      const context = channel.runtimeContexts.get<{ ownerName: () => string }>(key);
+      expect(watcher.wrap(() => context?.ownerName())()).toBe("matrix");
+      expect(observed).toEqual(["fi-user"]);
+    } finally {
+      await Promise.all([owner.dispose(), watcher.dispose()]);
+    }
+  });
+
   it("registers, resolves, watches, and unregisters contexts", () => {
     const channel = createRuntimeChannel();
     const onEvent = vi.fn();

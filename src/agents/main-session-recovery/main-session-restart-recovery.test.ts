@@ -1839,6 +1839,8 @@ describe("main-session-restart-recovery", () => {
             channel: "discord",
             sessionKey: "agent:main:discord:direct:123",
             runId: recoveryRunId,
+            publicationId: expect.any(String),
+            publishedAtMs: expect.any(Number),
             usageState: undefined,
           },
           {

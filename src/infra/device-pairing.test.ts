@@ -2118,6 +2118,37 @@ describe("device pairing tokens", () => {
     ).resolves.toBeNull();
   });
 
+  test("persists the webchat agent ceiling on the reconnecting operator token", async () => {
+    const baseDir = await makeDevicePairingDir();
+    const profile = {
+      roles: ["operator"],
+      scopes: ["operator.read", "operator.talk", "operator.write"],
+      purpose: "control-ui" as const,
+      allowedAgentIds: ["fi-user"],
+    };
+    const pending = await requestDevicePairing(
+      {
+        deviceId: "webchat-ceiling-device",
+        publicKey: "webchat-ceiling-public-key",
+        role: "operator",
+        scopes: profile.scopes,
+      },
+      baseDir,
+    );
+    await approveBootstrapDevicePairing(pending.request.requestId, profile, baseDir);
+
+    const paired = await getPairedDevice("webchat-ceiling-device", baseDir);
+    expect(paired?.tokens?.operator?.allowedAgentIds).toEqual(["fi-user"]);
+    await expect(
+      ensureDeviceToken({
+        deviceId: "webchat-ceiling-device",
+        role: "operator",
+        scopes: profile.scopes,
+        baseDir,
+      }),
+    ).resolves.toMatchObject({ allowedAgentIds: ["fi-user"] });
+  });
+
   test("verifies token and rejects mismatches", async () => {
     const { baseDir, token } = await setupOperatorToken(["operator.read"]);
 

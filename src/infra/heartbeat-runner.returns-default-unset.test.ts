@@ -30,6 +30,14 @@ import { typedCases } from "../test-utils/typed-cases.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { type HeartbeatDeps, runHeartbeatOnce } from "./heartbeat-runner.js";
+
+// These cases cover plain delivery defaults. 2026.9.6 routes the default model through
+// the Codex harness, which selects the heartbeat response tool; Cellect keeps unmarked
+// finals private there, so pin the plain (non-response-tool) heartbeat path.
+vi.mock("./heartbeat-runner-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./heartbeat-runner-config.js")>()),
+  shouldUseHeartbeatResponseToolPrompt: () => false,
+}));
 import {
   heartbeatTestConfig,
   readSessionStoreForTest,
@@ -1035,6 +1043,39 @@ describe("runHeartbeatOnce", () => {
       lastHeartbeatSentAt: 2,
     });
     expect(store[isolatedSessionKey]?.lastHeartbeatText).toBeUndefined();
+  });
+
+  it("does not prepend the heartbeat explainer to an exec completion", async () => {
+    const tmpDir = await createCaseDir("hb-exec-no-preamble");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: { defaults: { workspace: tmpDir, heartbeat: { every: "5m" } } },
+      commands: { ownerAllowFrom: ["+15555550166"] },
+      channels: { whatsapp: { allowFrom: ["+15555550166"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await seedWhatsAppSession(storePath, sessionKey);
+    enqueueSystemEvent("exec finished: verification completed", {
+      sessionKey,
+      contextKey: "exec:verification",
+    });
+    const replySpy = vi.fn().mockResolvedValue({ text: "Final verification completed" });
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    await runHeartbeatOnce({
+      cfg,
+      source: "exec-event",
+      intent: "event",
+      reason: "exec-event",
+      sessionKey,
+      deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+    });
+
+    expectWhatsAppSendCall(sendWhatsApp, 0, {
+      to: "+15555550166",
+      text: "Final verification completed",
+    });
   });
 
   it("uses per-agent heartbeat overrides and session keys", async () => {

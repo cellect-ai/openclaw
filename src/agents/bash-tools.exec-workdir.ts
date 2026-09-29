@@ -94,6 +94,10 @@ function mapContainerWorkdirToHost(params: {
             containerRoot: normalizeContainerPath(params.sandbox.containerWorkdir),
           },
         ]),
+    ...(params.sandbox.bindMounts ?? []).map((mount) => ({
+      hostRoot: path.resolve(mount.hostPath),
+      containerRoot: normalizeContainerPath(mount.containerPath),
+    })),
   ]
     .filter((mapping) => mapping.containerRoot !== ".")
     .toSorted((left, right) => right.containerRoot.length - left.containerRoot.length);
@@ -333,6 +337,17 @@ async function resolveBackendValidatedSandboxWorkdir(params: {
   return null;
 }
 
+function isConfiguredBindMountRoot(
+  sandbox: BashSandboxConfig,
+  mapping: ContainerHostWorkdirMapping,
+): boolean {
+  return (sandbox.bindMounts ?? []).some(
+    (mount) =>
+      path.resolve(mount.hostPath) === mapping.hostRoot &&
+      normalizeContainerPath(mount.containerPath) === mapping.containerRoot,
+  );
+}
+
 async function resolveHostValidatedSandboxWorkdir(params: {
   workdir: string;
   sandbox: BashSandboxConfig;
@@ -342,6 +357,20 @@ async function resolveHostValidatedSandboxWorkdir(params: {
     sandbox: params.sandbox,
     includeReadOnlySkillMounts: true,
   });
+  if (mappedHostWorkdir && !resolveExistingHostWorkdir(mappedHostWorkdir.hostRoot)) {
+    // A configured bind whose host source is not visible from this process (for
+    // example a gateway running in its own container) cannot be proved here.
+    // The path is lexically inside the configured mount, so hand it to the
+    // container as-is; the container runtime rejects it if it does not exist.
+    const workspaceHostCwd = resolveExistingHostWorkdir(params.sandbox.workspaceDir);
+    return workspaceHostCwd && isConfiguredBindMountRoot(params.sandbox, mappedHostWorkdir)
+      ? {
+          hostCwd: workspaceHostCwd,
+          containerCwd: normalizeContainerPath(params.workdir),
+          scriptPreflightCwd: null,
+        }
+      : null;
+  }
   const candidateWorkdir = mappedHostWorkdir?.hostPath ?? params.workdir;
   const candidateRoot = mappedHostWorkdir?.hostRoot ?? params.sandbox.workspaceDir;
   const containerRoot = mappedHostWorkdir?.containerRoot ?? params.sandbox.containerWorkdir;

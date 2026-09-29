@@ -397,6 +397,10 @@ export type PluginRuntimeCore = {
       listSessionEntries: (
         params?: RuntimeSessionStoreListParams,
       ) => RuntimeSessionStoreEntrySummary[];
+      /** Lists durable keys without parsing per-session entry JSON. */
+      listSessionKeys: (
+        params?: Partial<Omit<RuntimeSessionStoreReadParams, "sessionKey">>,
+      ) => Promise<string[]>;
       patchSessionEntry: (
         params: RuntimeSessionStoreEntryPatchParams,
       ) => Promise<RuntimeSessionEntry | null>;
@@ -499,6 +503,7 @@ export type PluginRuntimeCore = {
     ) => Promise<import("../../web-search/runtime-types.js").RunWebSearchResult>;
   };
   events: {
+    registerConversationLifecycleTransport: typeof import("../../infra/conversation-lifecycle.js").registerConversationLifecycleTransport;
     onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
     onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
   };

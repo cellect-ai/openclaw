@@ -576,6 +576,7 @@ export function createOpenClawCodingToolsInternal(
             sandboxFsBridge,
             sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
             stagedMediaPaths: options?.stagedMediaPaths,
+            currentTurnMedia: options?.currentTurnMedia,
             sandboxWorkspaceMediaReadAllowed,
             fsPolicy,
             workspaceDir: workspaceRoot,

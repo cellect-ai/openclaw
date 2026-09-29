@@ -16,6 +16,8 @@ import type {
   SessionDeliveryWorkerOperations,
 } from "./session-delivery-queue.worker-contract.js";
 
+export { resolveSessionDeliveryId } from "./session-delivery-queue.records.js";
+
 function executeSessionDelivery<Key extends keyof SessionDeliveryWorkerOperations>(
   context: OpenClawStateWorkerContext,
   command: { type: Key; input: SessionDeliveryWorkerOperations[Key]["input"] },

@@ -2108,6 +2108,50 @@ describe("message tool secret scoping", () => {
     expect(input?.toolContext?.replyToMode).toBe("all");
   });
 
+  it("defaults to the session's channel route when the host passes no current channel", async () => {
+    mockSendResult({ channel: "slack", to: "channel:c1" });
+
+    const input = await executeSend({
+      action: { message: "hi" },
+      toolOptions: {
+        config: {
+          channels: {
+            slack: {
+              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            },
+          },
+        } as never,
+        agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+      },
+    });
+
+    expect(input?.toolContext?.currentChannelProvider).toBe("slack");
+    expect(input?.toolContext?.currentChannelId).toBe("c1");
+    expect(input?.toolContext?.currentThreadTs).toBe("1710000000.9999");
+  });
+
+  it("keeps an explicit current channel instead of the session route", async () => {
+    mockSendResult({ channel: "slack", to: "channel:c9" });
+
+    const input = await executeSend({
+      action: { message: "hi" },
+      toolOptions: {
+        config: {
+          channels: {
+            slack: {
+              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            },
+          },
+        } as never,
+        currentChannelProvider: "slack",
+        currentChannelId: "c9",
+        agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+      },
+    });
+
+    expect(input?.toolContext?.currentChannelId).toBe("c9");
+  });
+
   it("scopes command-time secret resolution to the selected channel/account", async () => {
     mockSendResult({ channel: "discord", to: "discord:123" });
     mocks.getRuntimeConfig.mockReturnValue({

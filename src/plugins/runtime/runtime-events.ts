@@ -1,5 +1,6 @@
 // Runtime event helpers bridge core agent events into plugin runtime hooks.
 import { onAgentEvent } from "../../infra/agent-events.js";
+import { registerConversationLifecycleTransport } from "../../infra/conversation-lifecycle.js";
 import { onSessionTranscriptUpdate } from "../../sessions/transcript-events.js";
 import type { PluginRuntime } from "./types.js";
 
@@ -7,6 +8,7 @@ import type { PluginRuntime } from "./types.js";
 export function createRuntimeEvents(): PluginRuntime["events"] {
   return {
     onAgentEvent,
+    registerConversationLifecycleTransport,
     onSessionTranscriptUpdate,
   };
 }

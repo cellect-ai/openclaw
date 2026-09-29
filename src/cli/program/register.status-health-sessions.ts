@@ -214,6 +214,41 @@ async function runWithVerboseAndTimeout(
 
 /** Register status/health plus persistent session/task inspection command groups. */
 export function registerStatusHealthSessionsCommands(program: Command) {
+  const threadCmd = program
+    .command("thread")
+    .description("Inspect or resume one Slack thread by permalink")
+    .option("--json", "Output JSON instead of text", false);
+
+  threadCmd
+    .command("status <permalink>")
+    .description("Show the owning session, task state, last tool, and error")
+    .option("--json", "Output JSON instead of text", false)
+    .action(async (permalink: string, opts, command) => {
+      const parentOpts = command.parent?.opts() as { json?: boolean } | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { threadStatusCommand } = await import("../../commands/thread.js");
+        await threadStatusCommand(
+          { permalink, json: Boolean(opts.json || parentOpts?.json) },
+          defaultRuntime,
+        );
+      });
+    });
+
+  threadCmd
+    .command("resume <permalink>")
+    .description("Queue one idempotent continuation after a terminal failure")
+    .option("--json", "Output JSON instead of text", false)
+    .action(async (permalink: string, opts, command) => {
+      const parentOpts = command.parent?.opts() as { json?: boolean } | undefined;
+      await runCommandWithRuntime(defaultRuntime, async () => {
+        const { threadResumeCommand } = await import("../../commands/thread.js");
+        await threadResumeCommand(
+          { permalink, json: Boolean(opts.json || parentOpts?.json) },
+          defaultRuntime,
+        );
+      });
+    });
+
   program
     .command("status")
     .description("Show channel health and recent session recipients")

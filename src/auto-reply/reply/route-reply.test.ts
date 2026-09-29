@@ -55,6 +55,7 @@ const slackMessaging: ChannelMessagingAdapter = {
     }
     return Array.isArray(blocks) && blocks.length > 0;
   },
+  formatSenderMention: ({ senderId, to }) => (to.startsWith("user:") ? "" : `<@${senderId}>`),
 };
 
 const slackThreading: ChannelThreadingAdapter = {
@@ -745,6 +746,39 @@ describe("routeReply", () => {
       cfg,
     });
     expect(lastDeliveryPayload().text).toBe("[anthropic/claude-opus-4-6 think:high] hi");
+  });
+
+  it("mentions the original requester on a routed continuation", async () => {
+    const cfg = {
+      channels: { slack: { responsePrefix: "{sender.mention}" } },
+    } as unknown as OpenClawConfig;
+    await routeTestReply({
+      payload: { text: "I meant responsibility boundaries." },
+      channel: "slack",
+      to: "channel:C123",
+      requesterSenderId: "U123",
+      cfg,
+    });
+    expect(lastDeliveryPayload().text).toBe("<@U123> I meant responsibility boundaries.");
+  });
+
+  it.each<[string, { to: string; requesterSenderId?: string; prefix?: string }]>([
+    ["no requester", { to: "channel:C123" }],
+    ["a direct message", { to: "user:U123", requesterSenderId: "U123" }],
+    ["an unknown model", { to: "channel:C123", prefix: "[{model}]" }],
+  ])("never sends a literal template token with %s", async (_name, params) => {
+    const cfg = {
+      channels: { slack: { responsePrefix: params.prefix ?? "{sender.mention}" } },
+    } as unknown as OpenClawConfig;
+    await routeTestReply({
+      payload: { text: "Received." },
+      channel: "slack",
+      to: params.to,
+      ...(params.requesterSenderId ? { requesterSenderId: params.requesterSenderId } : {}),
+      cfg,
+    });
+    expect(lastDeliveryPayload().text).toBe("Received.");
+    expect(lastDeliveryPayload().text).not.toMatch(/\{[a-zA-Z][a-zA-Z0-9.]*\}/u);
   });
 
   it("does not bypass the empty-reply guard for invalid Slack blocks", async () => {

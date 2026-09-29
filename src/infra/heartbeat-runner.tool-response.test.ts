@@ -542,8 +542,7 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
 
   it.each([
     {
-      name: "global message-tool reply policy",
-      visibleReplies: "message_tool" as const,
+      name: "forced heartbeat response tool policy",
       target: "telegram" as const,
       chatType: "direct" as const,
     },

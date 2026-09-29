@@ -118,9 +118,16 @@ export function ackDeliveryInDatabase(
           OUTBOUND_DELIVERY_QUEUE_NAME,
           id,
           current,
+          Date.now(),
+          options?.completionReceipt,
         );
       } else {
-        completeDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id);
+        completeDeliveryQueueEntryInDatabase(
+          database,
+          OUTBOUND_DELIVERY_QUEUE_NAME,
+          id,
+          options?.completionReceipt,
+        );
       }
     } else {
       deleteDeliveryQueueEntryInDatabase(database, OUTBOUND_DELIVERY_QUEUE_NAME, id);

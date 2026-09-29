@@ -121,7 +121,7 @@ Primary reference: [Configuration reference - Slack](/gateway/config-channels#sl
 - compatibility toggle: `dangerouslyAllowNameMatching` (break-glass, keep off unless needed)
 - channel access: `groupPolicy`, `channels.*`, `channels.*.users`, `channels.*.requireMention`, `implicitMentions.*`
 - group introductions: `joinIntro`, `accounts.*.joinIntro` (default: `true`)
-- threading/history: `replyToMode`, `replyToModeByChatType`, `thread.*`, `historyLimit`, `dmHistoryLimit`, `dms.*.historyLimit`
+- threading/history: `replyToMode`, `replyToModeByChatType`, `thread.*`, `threadOwnership.preferredAccounts` (opt-in persisted single-owner selection for shared-channel bot threads), `historyLimit`, `dmHistoryLimit`, `dms.*.historyLimit`
 - presence wakes: `presenceEvents.mode`, `presenceEvents.prompt`, `channels.*.presenceEvents.*` (`off|auto|on`, default `off`)
 - delivery: `textChunkLimit`, `streaming.chunkMode`, `mediaMaxMb`, `streaming`, `streaming.nativeTransport`, `streaming.preview.toolProgress`
 - unfurls: `unfurlLinks` (default: `false`), `unfurlMedia` for `chat.postMessage` link/media preview control. Set `unfurlLinks: true` to opt back into link previews

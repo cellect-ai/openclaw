@@ -24,6 +24,12 @@ const ChannelPairingRequestSchema = closedObject({
   createdAt: NonEmptyString,
   lastSeenAt: NonEmptyString,
   expiresAt: NonEmptyString,
+  /** Only `pending` requests appear in `requests`; the rest are history. */
+  status: Type.String({ enum: ["pending", "expired", "approved", "dismissed"] }),
+  /** Set when an operator approved or dismissed the request. */
+  resolvedAt: Type.Optional(NonEmptyString),
+  /** A pending request left unanswered past the staleness window. */
+  stale: Type.Boolean(),
   notifySupported: Type.Boolean(),
 });
 
@@ -35,11 +41,19 @@ export const ChannelsPairingListParamsSchema = closedObject({
 
 export const ChannelsPairingListResultSchema = closedObject({
   accounts: Type.Array(ChannelPairingAccountSchema),
+  /** Requests that can still be approved. */
   requests: Type.Array(ChannelPairingRequestSchema),
+  /**
+   * Retained requests that can no longer be approved: expired, approved or
+   * dismissed. An unanswered request stays visible here instead of vanishing.
+   */
+  history: Type.Array(ChannelPairingRequestSchema),
   commandOwnerConfigured: Type.Boolean(),
   limits: closedObject({
     pendingPerAccount: Type.Integer({ minimum: 0 }),
+    historyPerAccount: Type.Integer({ minimum: 0 }),
     ttlMs: Type.Integer({ minimum: 0 }),
+    staleAfterMs: Type.Integer({ minimum: 0 }),
   }),
 });
 

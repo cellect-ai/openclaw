@@ -214,27 +214,25 @@ describe("channel-final transcript mirrors", () => {
     },
   );
 
-  it("strips source correlation from a caller-supplied suppressed-final marker", async () => {
+  it("refuses a caller-supplied suppressed-final marker as an internal delivery state", async () => {
+    // Cellect: a suppressed final is not channel text and is never written as an
+    // assistant message; historical rows are still recognized on replay.
     const request = {
       ...delivery("suppressed-delivery"),
       deliveryMirror: {
         kind: "channel-final-suppressed",
         reason: "stale-foreground",
         sourceMessageId: "suppressed-delivery",
-        sourceAssistantMessageId: "caller-forged-answer",
       },
-    } satisfies SessionTranscriptAssistantMirrorAppendParams & {
-      deliveryMirror: { kind: "channel-final-suppressed"; sourceAssistantMessageId: string };
-    };
+    } as unknown as SessionTranscriptAssistantMirrorAppendParams;
+    const before = rows();
 
-    await appendAssistantMirrorMessageByIdentity(request);
-
-    const message = (await entries()).at(-1)?.message;
-    expect(message).toMatchObject({
-      idempotencyKey: "suppressed-delivery",
-      openclawDeliveryMirror: { kind: "channel-final-suppressed", reason: "stale-foreground" },
+    await expect(appendAssistantMirrorMessageByIdentity(request)).resolves.toEqual({
+      ok: false,
+      reason: "internal delivery state",
     });
-    expect(message).not.toHaveProperty("openclawDeliveryMirror.sourceAssistantMessageId");
+
+    expect(rows()).toEqual(before);
   });
 
   it("preserves a fieldless mirror when replay follows a newly matching assistant", async () => {

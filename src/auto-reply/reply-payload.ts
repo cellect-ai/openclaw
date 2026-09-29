@@ -13,6 +13,7 @@ import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { ReplyPayload, ReplyPayloadTtsSupplement } from "../shared/reply-payload.types.js";
 import type { BlockReplySource } from "./reply/block-reply-source.types.js";
+import { copyReplyPublication } from "./reply-publication.js";
 
 export type {
   ReplyMediaAttachment,
@@ -454,6 +455,7 @@ export function isReplyPayloadNonTerminalToolErrorWarning(payload: object): bool
 
 /** Copies internal payload metadata when cloning or transforming payload objects. */
 export function copyReplyPayloadMetadata<T extends object>(source: object, payload: T): T {
+  copyReplyPublication(source, payload);
   const metadata = getReplyPayloadMetadata(source);
   return metadata ? setReplyPayloadMetadata(payload, metadata) : payload;
 }

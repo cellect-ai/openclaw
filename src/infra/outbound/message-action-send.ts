@@ -9,7 +9,10 @@ import {
   type ReplyMediaAttachment,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
-import { resolveResponsePrefixTemplate } from "../../auto-reply/reply/response-prefix-template.js";
+import {
+  resolveResponsePrefixTemplate,
+  UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN,
+} from "../../auto-reply/reply/response-prefix-template.js";
 import { normalizeOutboundLocation } from "../../channels/location.js";
 import type { ChannelId, ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -360,10 +363,6 @@ export async function buildMessagePayload(params: {
   };
 }
 
-// Detects leftover `{variable}` placeholders after prefix interpolation. Non-global so
-// `.test()` stays stateless; mirrors the variable shape in response-prefix-template.ts.
-const UNRESOLVED_PREFIX_VAR_PATTERN = /\{[a-zA-Z][a-zA-Z0-9.]*\}/;
-
 export async function executeMessageSend(ctx: ResolvedActionContext): Promise<MessageActionResult> {
   const {
     cfg,
@@ -406,7 +405,7 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     { identityName: normalizeOptionalString(resolveAgentIdentity(cfg, agentId ?? "")?.name) },
   );
   const prefixHasUnresolvedVar =
-    responsePrefix !== undefined && UNRESOLVED_PREFIX_VAR_PATTERN.test(responsePrefix);
+    responsePrefix !== undefined && UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(responsePrefix);
   if (
     responsePrefix &&
     !prefixHasUnresolvedVar &&

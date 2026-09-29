@@ -1,5 +1,6 @@
 // Outbound payload planning normalizes reply payloads into sendable text,
 // media, presentation, interactive, and mirror projections.
+import { copyReplyPublication } from "../../auto-reply/reply-publication.js";
 import {
   applyReplyPayloadTargetPolicy,
   copyReplyPayloadMetadata,
@@ -216,6 +217,7 @@ function normalizeRawOutboundPayload(
       audioAsVoice: Boolean(payload.audioAsVoice || parsed.audioAsVoice),
     }),
   );
+  copyReplyPublication(payload, normalizedPayload);
   return suppressedText && !hasReplyPayloadContent(normalizedPayload) ? null : normalizedPayload;
 }
 
@@ -243,6 +245,7 @@ function createStructuredOutboundPayloadPlanEntry(
       ...(attachments ? { attachments } : {}),
     }),
   );
+  copyReplyPublication(payload, normalizedPayload);
   if (!isRenderablePayload(normalizedPayload)) {
     return null;
   }
@@ -334,6 +337,8 @@ export function projectOutboundPayloadPlanForOutbound(
       ...(payload.location ? { location: payload.location } : {}),
       ...(payload.isStatusNotice === true ? { isStatusNotice: true } : {}),
     });
+    const normalizedPayload = normalizedPayloads.at(-1);
+    if (normalizedPayload) copyReplyPublication(payload, normalizedPayload);
   }
   return normalizedPayloads;
 }

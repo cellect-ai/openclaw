@@ -81,6 +81,11 @@ type AuthorizeGatewayConnectParams = {
   rateLimiter?: AuthRateLimiter;
   /** Client IP used for rate-limit tracking. Falls back to proxy-aware request IP resolution. */
   clientIp?: string;
+  /**
+   * Verified limiter identity that replaces the attributed client IP, e.g. a
+   * paired device whose signature was already checked for this connect.
+   */
+  rateLimitSubject?: string;
   /** Optional limiter scope; defaults to shared-secret auth scope. */
   rateLimitScope?: string;
   /** Let an owner with credential fallbacks record the shared-secret failure after all fallbacks fail. */
@@ -130,9 +135,10 @@ function resolveGatewayAuthRequestContext(
     authSurface,
     limiter: params.rateLimiter,
     subject:
-      attributed && !localDirect
+      params.rateLimitSubject ??
+      (attributed && !localDirect
         ? attributed.rateLimit.subject.key
-        : (params.clientIp ?? attributed?.rateLimit.subject.key ?? fallbackIp),
+        : (params.clientIp ?? attributed?.rateLimit.subject.key ?? fallbackIp)),
     rateLimitScope: params.rateLimitScope ?? AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
     localDirect,
     resetOnSuccess: attributed?.rateLimit.resetOnSuccess ?? true,

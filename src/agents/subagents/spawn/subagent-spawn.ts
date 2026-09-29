@@ -24,7 +24,7 @@ import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context
 import { cleanupMaterializedSubagentAttachments } from "../subagent-attachment-cleanup.js";
 import { activateSwarmRun, holdQueuedSwarmRun } from "../swarm/swarm-scheduler.js";
 import { readParentExecutionIdentity } from "./execution-identity-spawn-context.js";
-import { materializeSubagentAttachments } from "./subagent-attachments.js";
+import { materializeSubagentSpawnAttachments } from "./subagent-parent-attachments.js";
 import { resolveSubagentChildPlan } from "./subagent-spawn-child-plan.js";
 import {
   bindSubagentSpawnCleanup,
@@ -283,12 +283,42 @@ export async function spawnSubagentDirect(
         : expectsCompletionMessage
           ? "announce"
           : "quiet";
+    let retainOnSessionKeep = false;
+    let attachmentsReceipt: SpawnSubagentResult["attachments"];
+    let attachmentId: string | undefined;
+
+    const materializedAttachments = await materializeSubagentSpawnAttachments({
+      assertActive,
+      config: cfg,
+      childSessionKey,
+      targetAgentId,
+      sandboxed: childRuntimeSandboxed,
+      attachments: params.attachments,
+      mountPathHint: params.attachMountPath,
+      parentTurnMedia: ctx.parentTurnMedia,
+    });
+    if (materializedAttachments && materializedAttachments.status !== "ok") {
+      await cleanupCreatedSession(threadBindingReady);
+      return {
+        status: materializedAttachments.status,
+        error: materializedAttachments.error,
+      };
+    }
+    if (materializedAttachments?.status === "ok") {
+      retainOnSessionKeep = materializedAttachments.retainOnSessionKeep;
+      attachmentsReceipt = materializedAttachments.receipt;
+      attachmentId = materializedAttachments.attachmentId;
+    }
+    // Forwarded parent-turn files are listed at the end of the child's task.
+    const parentAttachmentsSuffix =
+      materializedAttachments?.status === "ok" ? materializedAttachments.taskSuffix : undefined;
+
     const envelope = buildSubagentSpawnEnvelope({
       completionMode,
       completionTarget: params.completionTarget,
       soleCollectorChild: soleImplicitMember,
       spawnMode,
-      task,
+      task: parentAttachmentsSuffix ? `${task}\n\n${parentAttachmentsSuffix}` : task,
       requesterSessionKey,
       requesterOrigin: childSessionOrigin,
       childSessionKey,
@@ -308,30 +338,7 @@ export async function spawnSubagentDirect(
       childSystemPrompt = `${childSystemPrompt}\n\nCall structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.`;
     }
 
-    let retainOnSessionKeep = false;
-    let attachmentsReceipt: SpawnSubagentResult["attachments"];
-    let attachmentId: string | undefined;
-
-    const materializedAttachments = await materializeSubagentAttachments({
-      assertActive,
-      config: cfg,
-      childSessionKey,
-      targetAgentId,
-      sandboxed: childRuntimeSandboxed,
-      attachments: params.attachments,
-      mountPathHint: params.attachMountPath,
-    });
-    if (materializedAttachments && materializedAttachments.status !== "ok") {
-      await cleanupCreatedSession(threadBindingReady);
-      return {
-        status: materializedAttachments.status,
-        error: materializedAttachments.error,
-      };
-    }
-    if (materializedAttachments?.status === "ok") {
-      retainOnSessionKeep = materializedAttachments.retainOnSessionKeep;
-      attachmentsReceipt = materializedAttachments.receipt;
-      attachmentId = materializedAttachments.attachmentId;
+    if (materializedAttachments?.status === "ok" && materializedAttachments.systemPromptSuffix) {
       childSystemPrompt = `${childSystemPrompt}\n\n${materializedAttachments.systemPromptSuffix}`;
     }
 

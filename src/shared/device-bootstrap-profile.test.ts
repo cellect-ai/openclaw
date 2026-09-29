@@ -9,6 +9,7 @@ import {
   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
   VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+  WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   isMobilePairingSetupBootstrapProfile,
   isNodePairingSetupBootstrapProfile,
   isVoiceNodePairingSetupBootstrapProfile,
@@ -118,6 +119,18 @@ describe("device bootstrap profile", () => {
       scopes: ["operator.admin", "operator.read", "operator.write"],
       purpose: "mobile-full",
     });
+  });
+
+  test("allows Talk only for the closed webchat bootstrap purpose", () => {
+    expect(
+      normalizeDeviceBootstrapHandoffProfile({
+        ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes, "operator.admin"],
+      }),
+    ).toEqual(WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE);
+    expect(
+      resolveBootstrapProfileScopesForRole("operator", ["operator.read", "operator.talk"]),
+    ).toEqual(["operator.read"]);
   });
 
   test("drops unknown bootstrap purpose codes", () => {

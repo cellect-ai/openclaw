@@ -193,6 +193,7 @@ const VoiceIdString = Type.String({ pattern: "^[A-Za-z0-9_-]{1,128}$" });
 
 /** Creates a browser-facing Talk client session. */
 export const TalkClientCreateParamsSchema = closedObject({
+  binding: Type.Optional(NonEmptyString),
   sessionKey: Type.Optional(NonEmptyString),
   voiceSessionId: Type.Optional(VoiceIdString),
   voiceChangeId: Type.Optional(NonEmptyString),
@@ -202,6 +203,7 @@ export const TalkClientCreateParamsSchema = closedObject({
   vadThreshold: Type.Optional(Type.Number()),
   silenceDurationMs: Type.Optional(Type.Integer({ minimum: 1 })),
   prefixPaddingMs: Type.Optional(Type.Integer({ minimum: 0 })),
+  language: Type.Optional(NonEmptyString),
   reasoningEffort: Type.Optional(Type.String()),
   mode: Type.Optional(TalkModeSchema),
   transport: Type.Optional(TalkTransportSchema),
@@ -217,11 +219,13 @@ export const TalkClientCreateParamsSchema = closedObject({
       { uniqueItems: true },
     ),
   ),
+  /** Bounded, app-supplied metadata for the provider's initial realtime session. */
+  sessionCapsule: Type.Optional(Type.String({ minLength: 1, maxLength: 6000 })),
 });
 
 /** Tool-call request from a browser/client session back into the agent runtime. */
 export const TalkClientToolCallParamsSchema = closedObject({
-  sessionKey: NonEmptyString,
+  sessionKey: Type.Optional(NonEmptyString),
   voiceSessionId: Type.Optional(VoiceIdString),
   callId: NonEmptyString,
   name: NonEmptyString,
@@ -292,6 +296,7 @@ export const TalkAgentControlResultSchema = closedObject({
 
 /** Creates a gateway-managed Talk session for realtime, transcription, or relay use. */
 export const TalkSessionCreateParamsSchema = closedObject({
+  binding: Type.Optional(NonEmptyString),
   sessionKey: Type.Optional(Type.String()),
   voiceChangeId: Type.Optional(NonEmptyString),
   capabilities: Type.Optional(Type.Array(Type.Literal("voice-selection"), { uniqueItems: true })),
@@ -307,6 +312,8 @@ export const TalkSessionCreateParamsSchema = closedObject({
   mode: Type.Optional(TalkModeSchema),
   transport: Type.Optional(TalkTransportSchema),
   brain: Type.Optional(TalkBrainSchema),
+  /** Bounded, app-supplied metadata for the provider's initial realtime session. */
+  sessionCapsule: Type.Optional(Type.String({ minLength: 1, maxLength: 6000 })),
   ttlMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 3600000 })),
 });
 
@@ -458,10 +465,12 @@ export const TalkSessionOkResultSchema = closedObject({
 const BrowserRealtimeWebRtcSdpSessionSchema = closedObject({
   provider: NonEmptyString,
   transport: Type.Literal("webrtc"),
+  sessionKey: Type.Optional(NonEmptyString),
   voiceSessionId: NonEmptyString,
   clientSecret: NonEmptyString,
   offerUrl: Type.Optional(Type.String()),
   offerHeaders: Type.Optional(Type.Record(Type.String(), Type.String())),
+  offerResponseMaxBytes: Type.Optional(Type.Integer({ minimum: 1 })),
   model: Type.Optional(Type.String()),
   voice: Type.Optional(Type.String()),
   expiresAt: Type.Optional(Type.Number()),
@@ -472,6 +481,7 @@ const BrowserRealtimeWebRtcSdpSessionSchema = closedObject({
 const BrowserRealtimeJsonPcmWebSocketSessionSchema = closedObject({
   provider: NonEmptyString,
   transport: Type.Literal("provider-websocket"),
+  sessionKey: Type.Optional(NonEmptyString),
   voiceSessionId: NonEmptyString,
   protocol: NonEmptyString,
   clientSecret: NonEmptyString,

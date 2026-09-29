@@ -132,9 +132,11 @@ type FailureRecorderArgsUnchanged = RequireTrue<Equal<Parameters<FailureRecorder
   stateDir?: string,
   expectedPlatformSendAttemptId?: string | null,
 ]>>;
+// Cellect: completionReceipt is an additive optional field carried by stable producers.
 type AckOptionsUnchanged = RequireTrue<Equal<NonNullable<Parameters<QueueOwner["ack"]>[0]>, {
   retainSpoolArtifacts?: boolean;
   suppressCompletionReceipt?: boolean;
+  completionReceipt?: Readonly<{ platformMessageId: string }>;
   expectedPlatformSendAttemptId?: string | null;
 }>>;
 

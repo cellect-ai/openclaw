@@ -50,6 +50,8 @@ export type GatewayClient = {
   clientIp?: string;
   /** Client id verified against the server-approved device pairing record. */
   pairedClientId?: string;
+  /** Durable server-attested agent ceiling from a webchat device credential. */
+  allowedAgentIds?: string[];
   authenticatedUserId?: string;
   /** Verified Tailscale provider identity; generic proxy identities must not infer this. */
   authenticatedUserIsTailscaleProvider?: boolean;

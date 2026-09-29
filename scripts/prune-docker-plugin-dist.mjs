@@ -205,6 +205,8 @@ function pruneNodeModulesForOmittedPlugins(repoRoot, bundledPluginDir, omittedPl
 // ship loadable-looking but be rejected by dependency diagnostics at runtime.
 function linkRetainedPluginDependencies(repoRoot, bundledPluginDir, retainedPluginIds) {
   const unreachable = [];
+  const sharedDistDependencyTargets = new Map();
+  const sharedDistNodeModules = path.join(repoRoot, "dist", "node_modules");
   for (const pluginId of [...retainedPluginIds].toSorted((left, right) =>
     left.localeCompare(right),
   )) {
@@ -224,6 +226,58 @@ function linkRetainedPluginDependencies(repoRoot, bundledPluginDir, retainedPlug
       ) {
         unreachable.push(`${pluginId}: ${packageName}`);
       }
+    }
+
+    // Bundled plugin entry points can import shared chunks from /app/dist rather
+    // than from dist/extensions/<id>. A dependency linked only beneath the
+    // plugin root is then invisible to Node's importer-relative resolution.
+    // Add dependencies missing from the host runtime to dist/node_modules, but
+    // preserve packages the shared chunks can already resolve from the host.
+    // Fail closed if selected plugins need different versions of a missing dep.
+    const optionalDependencies = new Set(Object.keys(packageJson?.optionalDependencies ?? {}));
+    const sharedRuntimeDependencies = collectRuntimeDependencyNames(packageJson);
+    for (const packageName of sharedRuntimeDependencies) {
+      const packageDir = resolveNodeModulePackageDir(pluginDir, packageName);
+      if (!packageDir) {
+        if (!optionalDependencies.has(packageName)) {
+          unreachable.push(`${pluginId}: ${packageName} (shared dist chunk)`);
+        }
+        continue;
+      }
+
+      const canonical = fs.realpathSync(packageDir);
+      const previous = sharedDistDependencyTargets.get(packageName);
+      if (previous && previous !== canonical) {
+        unreachable.push(
+          `${pluginId}: ${packageName} has conflicting versions in selected plugins`,
+        );
+        continue;
+      }
+      if (previous) {
+        continue;
+      }
+
+      if (resolveNodeModulePackageDir(path.join(repoRoot, "dist"), packageName)) {
+        continue;
+      }
+
+      sharedDistDependencyTargets.set(packageName, canonical);
+
+      const target = path.join(sharedDistNodeModules, ...packageName.split("/"));
+      fs.mkdirSync(path.dirname(target), { recursive: true });
+      if (fs.existsSync(target)) {
+        if (fs.realpathSync(target) !== canonical) {
+          unreachable.push(
+            `${pluginId}: ${packageName} conflicts with an existing shared dist dependency`,
+          );
+        }
+        continue;
+      }
+      fs.symlinkSync(
+        process.platform === "win32" ? canonical : path.relative(path.dirname(target), canonical),
+        target,
+        "junction",
+      );
     }
   }
   if (unreachable.length > 0) {

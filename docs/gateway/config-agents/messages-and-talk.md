@@ -45,13 +45,14 @@ Resolution (most specific wins): account → channel → global. `""` disables a
 
 **Template variables:**
 
-| Variable          | Description            | Example                     |
-| ----------------- | ---------------------- | --------------------------- |
-| `{model}`         | Short model name       | `claude-opus-4-6`           |
-| `{modelFull}`     | Full model identifier  | `anthropic/claude-opus-4-6` |
-| `{provider}`      | Provider name          | `anthropic`                 |
-| `{thinkingLevel}` | Current thinking level | `high`, `low`, `off`        |
-| `{identity.name}` | Agent identity name    | (same as `"auto"`)          |
+| Variable           | Description                                     | Example                     |
+| ------------------ | ----------------------------------------------- | --------------------------- |
+| `{model}`          | Short model name                                | `claude-opus-4-6`           |
+| `{modelFull}`      | Full model identifier                           | `anthropic/claude-opus-4-6` |
+| `{provider}`       | Provider name                                   | `anthropic`                 |
+| `{thinkingLevel}`  | Current thinking level                          | `high`, `low`, `off`        |
+| `{identity.name}`  | Agent identity name                             | (same as `"auto"`)          |
+| `{sender.mention}` | Inbound sender's native mention, when supported | `<@U123>`                   |
 
 Variables are case-insensitive. `{think}` is an alias for `{thinkingLevel}`.
 

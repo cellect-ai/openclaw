@@ -1,5 +1,6 @@
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
+import type { WebchatCompletionDeliveryState } from "./webchat-completion-delivery.js";
 
 export type ChatAbortControllerEntry = {
   controller: AbortController;
@@ -17,6 +18,7 @@ export type ChatAbortControllerEntry = {
   expiresAtMs: number;
   ownerConnId?: string;
   ownerDeviceId?: string;
+  webchatCompletionDelivery?: WebchatCompletionDeliveryState;
   providerId?: string;
   authProviderId?: string;
   abortStopReason?: string;

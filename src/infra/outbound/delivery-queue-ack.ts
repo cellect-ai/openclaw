@@ -60,6 +60,11 @@ export async function ackDelivery(
     ? {
         retainSpoolArtifacts: options.retainSpoolArtifacts,
         suppressCompletionReceipt: options.suppressCompletionReceipt,
+        ...(options.completionReceipt
+          ? {
+              completionReceipt: { platformMessageId: options.completionReceipt.platformMessageId },
+            }
+          : {}),
         ...("expectedPlatformSendAttemptId" in options
           ? { expectedPlatformSendAttemptId: options.expectedPlatformSendAttemptId }
           : {}),

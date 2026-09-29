@@ -436,7 +436,19 @@ describe("Browser Talk consult input custody", () => {
     {
       name: "read-only Talk operator",
       scopes: ["operator.read", "operator.talk"],
-      tools: ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
+      tools: [
+        "read",
+        "fi_user_api",
+        "sessions_history",
+        "sessions_search",
+        "tavily_search",
+        "tavily_extract",
+        "web_search",
+        "web_fetch",
+        "x_search",
+        "memory_search",
+        "memory_get",
+      ],
     },
   ])(
     "keeps $name consult scaffolding out of chat and later context but in the raw archive",

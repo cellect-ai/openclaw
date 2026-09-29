@@ -13,6 +13,7 @@ import {
 import type { ExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import { recordRuntimeActionDecision } from "../audit/runtime-action-decision.js";
 import { finalizeGroupThreadToolReply } from "../auto-reply/group-thread-context.js";
+import { copyReplyPublication } from "../auto-reply/reply-publication.js";
 import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { projectModelContextMessages } from "../shared/model-context-message.js";
@@ -1470,10 +1471,15 @@ export function createHookRunner(
     runReplyDispatch: bindClaimingHook("reply_dispatch"),
     runReplyPayloadSending: bindModifyingHook("reply_payload_sending", {
       // Handlers see the latest payload without inheriting host-only media trust.
-      eventForHandler: (event, result) => ({
-        ...event,
-        payload: toPluginReplyPayload(result?.payload ?? event.payload),
-      }),
+      eventForHandler: (event, result) => {
+        const isolatedEvent = {
+          ...event,
+          payload: toPluginReplyPayload(result?.payload ?? event.payload),
+        };
+        // Publication custody is non-enumerable and must survive handler isolation.
+        copyReplyPublication(event, isolatedEvent);
+        return isolatedEvent;
+      },
       mergeResults: (acc, next, _registration, event) => ({
         payload:
           next.payload === undefined

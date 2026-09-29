@@ -606,6 +606,11 @@ defineDiscordVoiceTests(
       const commandArgs = lastAgentCommandArgs();
       expect(commandArgs.toolsAllow).toEqual([
         "read",
+        "fi_user_api",
+        "sessions_history",
+        "sessions_search",
+        "tavily_search",
+        "tavily_extract",
         "web_search",
         "web_fetch",
         "x_search",
@@ -714,6 +719,11 @@ defineDiscordVoiceTests(
       expect(commandArgs.senderIsOwner).toBe(false);
       expect(commandArgs.toolsAllow).toEqual([
         "read",
+        "fi_user_api",
+        "sessions_history",
+        "sessions_search",
+        "tavily_search",
+        "tavily_extract",
         "web_search",
         "web_fetch",
         "x_search",
@@ -753,6 +763,11 @@ defineDiscordVoiceTests(
       expect(commandArgs.senderIsOwner).toBe(false);
       expect(commandArgs.toolsAllow).toEqual([
         "read",
+        "fi_user_api",
+        "sessions_history",
+        "sessions_search",
+        "tavily_search",
+        "tavily_extract",
         "web_search",
         "web_fetch",
         "x_search",

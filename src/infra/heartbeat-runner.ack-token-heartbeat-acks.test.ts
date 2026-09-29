@@ -21,6 +21,14 @@ import {
 } from "./heartbeat-runner.test-utils.js";
 import { enqueueSystemEvent, peekSystemEvents } from "./system-events.js";
 
+// These cases cover plain delivery. 2026.9.6 routes the default model through the
+// Codex harness, which selects the heartbeat response tool; Cellect keeps unmarked
+// finals private there, so pin the plain (non-response-tool) heartbeat path.
+vi.mock("./heartbeat-runner-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./heartbeat-runner-config.js")>()),
+  shouldUseHeartbeatResponseToolPrompt: () => false,
+}));
+
 installHeartbeatRunnerTestRuntime();
 
 describe("runHeartbeatOnce ack handling", () => {

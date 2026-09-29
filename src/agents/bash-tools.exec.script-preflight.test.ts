@@ -706,3 +706,97 @@ describe("exec interpreter heuristics ReDoS guard", () => {
     expect(elapsed).toBeLessThan(5000);
   });
 });
+
+describeNonWin("sandbox exec script preflight for compound commands", () => {
+  const createSandboxPreflightTool = (workspaceDir: string) =>
+    createExecTool({
+      host: "sandbox",
+      security: "full",
+      ask: "on-miss",
+      allowBackground: false,
+      sandbox: {
+        containerName: "sandbox-preflight-test",
+        workspaceDir,
+        containerWorkdir: "/workspace",
+        buildExecSpec: async () => ({ argv: ["true"], env: {}, stdinMode: "pipe-closed" }),
+      },
+    });
+
+  async function withScripts(run: (workspaceDir: string) => Promise<void>) {
+    await withTempDir("openclaw-exec-sandbox-preflight-", async (tmp) => {
+      await fs.mkdir(path.join(tmp, "scripts"));
+      await fs.writeFile(path.join(tmp, "good.py"), "print('ok')\n", "utf-8");
+      await fs.writeFile(path.join(tmp, "scripts", "good.js"), "console.log('ok');\n", "utf-8");
+      await fs.writeFile(path.join(tmp, "bad.py"), "payload = $DM_JSON\n", "utf-8");
+      await fs.writeFile(path.join(tmp, "scripts", "bad.py"), "payload = $DM_JSON\n", "utf-8");
+      await run(tmp);
+    });
+  }
+
+  it.each([
+    ["an && chain with a known interpreter script", "python3 good.py && libreoffice --version"],
+    ["a chain whose interpreter runs after other commands", "ls && python3 good.py"],
+    ["a ; chain of interpreters", "python3 good.py; node scripts/good.js"],
+    ["a quoted python heredoc", "python3 - <<'PY'\nimport os\nprint(os.environ['HOME'])\nPY"],
+    [
+      "a node heredoc followed by another command",
+      "node <<'NODE'\nconsole.log(1)\nNODE\necho done",
+    ],
+    [
+      "a script written by heredoc and then run",
+      "cat > gen.py <<'EOF'\nprint(1)\nEOF\npython3 gen.py",
+    ],
+    ["a sh -c payload with a script", "bash -lc 'set -e\ncd scripts\nnode good.js'"],
+    ["inline code in a command substitution", 'K=$(python3 -c "print(1)") && python3 good.py'],
+  ])("allows %s", async (_name, command) => {
+    await withScripts(async (workspaceDir) => {
+      const result = await createSandboxPreflightTool(workspaceDir).execute("call-sandbox-ok", {
+        command,
+      });
+      const text = result.content.find((c) => c.type === "text")?.text ?? "";
+      expect(text).not.toMatch(/exec preflight:/);
+      expect((result.details as { status?: string }).status).toBe("completed");
+    });
+  });
+
+  it.each([
+    ["the second script of an && chain", "python3 good.py && python3 bad.py"],
+    ["a script run after cd", "cd scripts && python3 bad.py"],
+    ["a script inside a sh -c payload", "bash -c 'echo start; python3 bad.py'"],
+    ["a script inside a shell heredoc", "bash <<'SH'\npython3 bad.py\nSH"],
+    ["a script inside control flow", "if true; then python3 bad.py; fi"],
+    ["a script inside a command substitution", "echo $(python3 bad.py)"],
+  ])("validates %s", async (_name, command) => {
+    await withScripts(async (workspaceDir) => {
+      await expect(
+        createSandboxPreflightTool(workspaceDir).execute("call-sandbox-bad", { command }),
+      ).rejects.toThrow(/exec preflight: detected likely shell variable injection \(\$DM_JSON\)/);
+    });
+  });
+
+  it.each([
+    ["piped program source", "ls && cat bad.py | python3"],
+    ["program read from a file redirect", "ls && python3 < bad.py"],
+    ["process substitution", "python3 <(cat bad.py)"],
+    ["a dynamic script path", 'S=bad.py; python3 "$S" && python3 good.py'],
+    [
+      "an interpreter hidden behind find -exec",
+      "find . -name '*.py' -exec python3 {} \\; && python3 good.py",
+    ],
+    ["a shell reading its program from a pipe", "cat run.sh | bash && python3 good.py"],
+  ])("still fails closed for %s", async (_name, command) => {
+    await withScripts(async (workspaceDir) => {
+      await expect(
+        createSandboxPreflightTool(workspaceDir).execute("call-sandbox-ambiguous", { command }),
+      ).rejects.toThrow(/exec preflight: complex interpreter invocation detected/);
+    });
+  });
+
+  it("keeps failing closed for compound commands on non-sandbox hosts", async () => {
+    await withScripts(async (workspaceDir) => {
+      await expect(
+        runExecPreflight({ command: "ls && python3 good.py", workdir: workspaceDir }),
+      ).rejects.toThrow(/exec preflight: complex interpreter invocation detected/);
+    });
+  });
+});

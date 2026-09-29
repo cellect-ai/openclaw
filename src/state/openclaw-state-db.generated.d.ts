@@ -236,6 +236,8 @@ export interface ChannelPairingRequests {
   last_seen_at: string;
   meta_json: string | null;
   request_id: string;
+  resolved_at: string | null;
+  status: string | null;
 }
 
 export interface ClawCronRefs {

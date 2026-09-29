@@ -410,6 +410,7 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
             resolveStorePath: session.resolveStorePath,
             getSessionEntry: session.getSessionEntry,
             listSessionEntries: session.listSessionEntries,
+            listSessionKeys: session.listSessionKeys,
             createSessionEntry: async (params) => {
               const { assertOwnedHarness, assertReservedSessionKeyOwned } =
                 await loadSessionOwnership();
