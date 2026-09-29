@@ -37,6 +37,8 @@ const PROCESS_MUTATING_ACTIONS = new Set([
 ]);
 
 const PROCESS_REPLAY_SAFE_ACTIONS = new Set(["list", "log"]);
+const EXEC_TOOL_ALIASES = new Set(["sandbox_exec", "gateway_exec", "node_exec"]);
+const PROCESS_TOOL_ALIASES = new Set(["sandbox_process", "gateway_process"]);
 
 const MESSAGE_READ_ONLY_ACTIONS = new Set([
   "reactions",
@@ -59,6 +61,7 @@ const REPLAY_SAFE_TOOL_NAMES = new Set([
   "agents_list",
   "conversations_list",
   "find",
+  "fi_user_api",
   "get_goal",
   "glob",
   "grep",
@@ -113,6 +116,14 @@ type ToolMutationState = {
 function normalizeActionName(value: unknown): string | undefined {
   const normalized = normalizeOptionalLowercaseString(value)?.replace(/[\s-]+/g, "_");
   return normalized || undefined;
+}
+
+function normalizeMutationToolName(toolName: string): string {
+  const normalized = normalizeLowercaseStringOrEmpty(toolName);
+  if (EXEC_TOOL_ALIASES.has(normalized)) {
+    return "exec";
+  }
+  return PROCESS_TOOL_ALIASES.has(normalized) ? "process" : normalized;
 }
 
 function readShellCommand(record: Record<string, unknown> | undefined): string | undefined {
@@ -319,7 +330,7 @@ function isReadOnlyShellTokens(tokens: readonly string[]): boolean {
 
 
 export function isMutatingToolCall(toolName: string, args: unknown): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(toolName);
+  const normalized = normalizeMutationToolName(toolName);
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
 
@@ -381,7 +392,7 @@ export function isMutatingToolCall(toolName: string, args: unknown): boolean {
 
 /** Return true only for tool calls whose structured contract proves replay safety. */
 export function isReplaySafeToolCall(toolName: string, args: unknown): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(toolName);
+  const normalized = normalizeMutationToolName(toolName);
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
   if (REPLAY_SAFE_TOOL_NAMES.has(normalized)) {
