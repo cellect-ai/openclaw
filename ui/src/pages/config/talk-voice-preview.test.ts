@@ -56,7 +56,7 @@ describe("Talk voice preview lifecycle", () => {
     const request = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(latest.promise);
     const client = { request } as unknown as GatewayBrowserClient;
     preview.play(client, target);
-    expect(PreviewAudioContext.instances[0].resume).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances[0]?.resume).toHaveBeenCalledOnce();
     await vi.waitFor(() => expect(request).toHaveBeenCalledOnce());
     preview.play(client, { ...target, voice: "voice-two" });
     preview.play(client, { ...target, voice: "voice-three" });
@@ -68,13 +68,13 @@ describe("Talk voice preview lifecycle", () => {
       { ...target, voice: "voice-three" },
       { timeoutMs: 25_000 },
     );
-    expect(PreviewAudioContext.instances[0].sources).toHaveLength(0);
+    expect(PreviewAudioContext.instances[0]?.sources).toHaveLength(0);
     latest.resolve(clip);
     await vi.waitFor(() => expect(preview.state).toBe("playing"));
-    expect(PreviewAudioContext.instances[0].sources[0].start).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances[0]?.sources[0]?.start).toHaveBeenCalledOnce();
     preview.stop();
-    expect(PreviewAudioContext.instances[0].sources[0].stop).toHaveBeenCalledOnce();
-    expect(PreviewAudioContext.instances[0].close).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances[0]?.sources[0]?.stop).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances[0]?.close).toHaveBeenCalledOnce();
   });
 
   it("revokes a pending result on navigation without playing or retaining audio", async () => {
@@ -88,8 +88,8 @@ describe("Talk voice preview lifecycle", () => {
     await Promise.resolve();
     await Promise.resolve();
     expect(preview.state).toBe("idle");
-    expect(PreviewAudioContext.instances[0].sources).toHaveLength(0);
-    expect(PreviewAudioContext.instances[0].close).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances[0]?.sources).toHaveLength(0);
+    expect(PreviewAudioContext.instances[0]?.close).toHaveBeenCalledOnce();
   });
 
   it.each(["provider", "playback"])(
