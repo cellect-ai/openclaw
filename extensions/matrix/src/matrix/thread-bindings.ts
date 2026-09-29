@@ -16,6 +16,7 @@ import { getMatrixRuntime } from "../runtime.js";
 import { claimCurrentTokenStorageState, resolveMatrixStateFilePath } from "./client/storage.js";
 import type { MatrixAuth } from "./client/types.js";
 import { assertMatrixSupportedStateFile } from "./retired-state.js";
+import { parseProjectionBindingMetadata } from "./projection-source.js";
 import type { MatrixClient } from "./sdk.js";
 import { sendMessageMatrix } from "./send.js";
 import { resolveMatrixSqliteStateEnv, resolveMatrixSqliteStateKey } from "./sqlite-state.js";
@@ -38,6 +39,12 @@ const THREAD_BINDINGS_NAMESPACE = "thread-bindings";
 const THREAD_BINDINGS_MAX_ENTRIES = 10_000;
 const THREAD_BINDINGS_SWEEP_INTERVAL_MS = 60_000;
 const TOUCH_PERSIST_DELAY_MS = 30_000;
+
+function normalizeBindingTimeoutOverride(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : undefined;
+}
 
 function createThreadBindingStore(params: { env?: NodeJS.ProcessEnv; stateDir?: string }) {
   return getMatrixRuntime().state.openKeyedStore<MatrixThreadBindingRecord>({
@@ -90,6 +97,7 @@ function normalizeBindingRecord(
     agentId: normalizeOptionalString(record.agentId) || undefined,
     label: normalizeOptionalString(record.label) || undefined,
     boundBy: normalizeOptionalString(record.boundBy) || undefined,
+    ...parseProjectionBindingMetadata(record),
     boundAt,
     lastActivityAt: Math.max(lastActivityAt, boundAt),
     idleTimeoutMs: resolveOptionalIntegerOption(record.idleTimeoutMs, { min: 0 }),
@@ -141,6 +149,9 @@ function buildMatrixBindingIntroText(params: {
   metadata?: Record<string, unknown>;
   targetSessionKey: string;
 }): string {
+  if (params.metadata?.introText === false) {
+    return "";
+  }
   const introText = normalizeOptionalString(params.metadata?.introText);
   if (introText) {
     return introText;
@@ -183,6 +194,12 @@ async function sendFarewellMessage(params: {
   defaultMaxAgeMs: number;
   reason?: string;
 }): Promise<void> {
+  if (
+    params.reason === "projection-history-rebased" &&
+    params.record.boundBy === "session-projection-read-only"
+  ) {
+    return;
+  }
   const roomId = params.record.parentConversationId ?? params.record.conversationId;
   const idleTimeoutMs =
     typeof params.record.idleTimeoutMs === "number"
@@ -484,10 +501,12 @@ export async function createMatrixThreadBindingManager(params: {
           resolveSessionAgentIdStrict({ config: params.cfg, sessionKey: targetSessionKey }),
         label: normalizeOptionalString(input.metadata?.label) || undefined,
         boundBy: normalizeOptionalString(input.metadata?.boundBy) || "system",
+        ...parseProjectionBindingMetadata(input.metadata),
         boundAt: now,
         lastActivityAt: now,
-        idleTimeoutMs: defaults.idleTimeoutMs,
-        maxAgeMs: defaults.maxAgeMs,
+        idleTimeoutMs:
+          normalizeBindingTimeoutOverride(input.metadata?.idleTimeoutMs) ?? defaults.idleTimeoutMs,
+        maxAgeMs: normalizeBindingTimeoutOverride(input.metadata?.maxAgeMs) ?? defaults.maxAgeMs,
       };
       setBindingRecord(record);
       await persist();

@@ -1,6 +1,6 @@
 import type { WebClient } from "@slack/web-api";
 import { describe, expect, it, vi } from "vitest";
-import { readSlackMessages } from "./actions.js";
+import { readSlackMessages, resolveSlackConversationName } from "./actions.js";
 
 const createSlackLookupClientMock = vi.hoisted(() => vi.fn());
 vi.mock("./client.js", () => ({
@@ -35,6 +35,50 @@ function threadClient() {
 }
 
 describe("Slack read actions", () => {
+  it("resolves the current Slack conversation name without caching failures", async () => {
+    const client = createClient();
+    client.conversations.info
+      .mockRejectedValueOnce(new Error("temporary_failure"))
+      .mockResolvedValueOnce({ channel: { name: "  allowed-channel  " } });
+
+    await expect(
+      resolveSlackConversationName("C1", { client, token: "xoxp-reader" }),
+    ).rejects.toThrow("temporary_failure");
+    await expect(
+      resolveSlackConversationName("C1", { client, token: "xoxp-reader" }),
+    ).resolves.toBe("allowed-channel");
+    expect(client.conversations.info).toHaveBeenNthCalledWith(1, { channel: "C1" });
+    expect(client.conversations.info).toHaveBeenNthCalledWith(2, { channel: "C1" });
+  });
+
+  it("uses conversations.replies and preserves the parent message", async () => {
+    const client = createClient();
+    client.conversations.replies.mockResolvedValueOnce({
+      messages: [{ ts: "171234.567" }, { ts: "171234.890" }, { ts: "171235.000" }],
+      has_more: true,
+    });
+
+    const result = await readSlackMessages("C1", {
+      client,
+      threadId: "171234.567",
+      token: "xoxb-test",
+    });
+
+    expect(client.conversations.replies).toHaveBeenCalledWith({
+      channel: "C1",
+      ts: "171234.567",
+      limit: undefined,
+      latest: undefined,
+      oldest: "171234.567",
+    });
+    expect(client.conversations.history).not.toHaveBeenCalled();
+    expect(result.messages.map((message) => message.ts)).toEqual([
+      "171234.567",
+      "171234.890",
+      "171235.000",
+    ]);
+  });
+
   it("excludes the parent before applying the thread page limit", async () => {
     const client = threadClient();
     await expect(
@@ -145,6 +189,11 @@ describe("Slack read actions", () => {
       latest: "2.000001",
       oldest: "1.000001",
     });
+
+    expect(result.messages.map((message) => message.text)).toEqual([
+      "parent",
+      "Thread data\nName\nExample A",
+    ]);
   });
 
   it("filters an exact channel message and suppresses pagination", async () => {

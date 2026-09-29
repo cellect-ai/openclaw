@@ -29,6 +29,7 @@ import {
 } from "./message-handler/debounce-key.js";
 import type { PreparedSlackMessage, SlackMessageSourceOptions } from "./message-handler/types.js";
 import { createSlackThreadTsResolver } from "./thread-resolution.js";
+import { logSlackDroppedDirectMessage } from "./unanswered-mentions.js";
 
 const loadSlackMessagePipeline = createLazyRuntimeModule(
   () => import("./message-handler/pipeline.runtime.js"),
@@ -219,6 +220,23 @@ export function createSlackMessageHandler(params: {
                 };
                 const last = latestSurviving;
                 if (!last) {
+                  // Every entry in this flush was already claimed, so another
+                  // owner is answering it. Harmless, but it ends a message with
+                  // no turn of its own, and a DM that ends that way must never
+                  // be indistinguishable from one that was simply lost.
+                  const dropped = entries.at(-1)?.message;
+                  ctx.runtime.log?.(
+                    `slack inbound flush produced no dispatchable message account=${ctx.accountId} channel=${dropped?.channel ?? "unknown"} ts=${dropped?.ts ?? "unknown"} entries=${entries.length} reason=dispatch-claimed-elsewhere`,
+                  );
+                  if (dropped?.channel && dropped.channel_type === "im") {
+                    logSlackDroppedDirectMessage({
+                      accountId: ctx.accountId,
+                      channelId: dropped.channel,
+                      userId: dropped.user,
+                      messageTs: dropped.ts,
+                      reason: "dispatch-claimed-elsewhere",
+                    });
+                  }
                   releaseClaims();
                   return;
                 }

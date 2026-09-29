@@ -2348,6 +2348,82 @@ describe("MatrixClient event bridge", () => {
     expect(invites).toEqual(["!room:example.org"]);
   });
 
+  it("emits room.invite when SDK emits Room event with invite membership", async () => {
+    const client = createSdkClient();
+    const invites: string[] = [];
+    client.on("room.invite", (roomId) => {
+      invites.push(roomId);
+    });
+
+    await client.start();
+
+    matrixJsClient.emit("Room", {
+      roomId: "!invite:example.org",
+      getMyMembership: () => "invite",
+    });
+
+    expect(invites).toEqual(["!invite:example.org"]);
+  });
+
+  it("waits for a ready sync state before resolving startup", async () => {
+    let releaseSyncReady: (() => void) | undefined;
+    matrixJsClient.startClient = vi.fn(async () => {
+      await new Promise<void>((resolve) => {
+        releaseSyncReady = () => {
+          matrixJsClient.emit("sync", "PREPARED", null, undefined);
+          resolve();
+        };
+      });
+    });
+
+    const client = createSdkClient();
+    let resolved = false;
+    const startPromise = client.start().then(() => {
+      resolved = true;
+    });
+
+    await vi.waitFor(() => {
+      if (!releaseSyncReady) {
+        throw new Error("expected Matrix sync ready release callback");
+      }
+    });
+    expect(resolved).toBe(false);
+
+    const release = releaseSyncReady;
+    if (!release) {
+      throw new Error("expected Matrix sync ready release callback");
+    }
+    release();
+    await startPromise;
+
+    expect(resolved).toBe(true);
+  });
+
+  it("does not start Matrix RTC membership scans for a headless messaging client", async () => {
+    const startMatrixRtc = vi.fn();
+    const stopMatrixRtc = vi.fn();
+    Object.assign(matrixJsClient, {
+      startMatrixRTC: startMatrixRtc,
+      matrixRTC: { stop: stopMatrixRtc },
+    });
+    matrixJsClient.on("sync", startMatrixRtc);
+    matrixJsClient.startClient = vi.fn(async () => {
+      const rtcCallback = (
+        matrixJsClient as unknown as { startMatrixRTC: (...args: unknown[]) => void }
+      ).startMatrixRTC;
+      matrixJsClient.on("sync", rtcCallback);
+      queueMicrotask(() => {
+        matrixJsClient.emit("sync", "PREPARED", null, undefined);
+      });
+    });
+
+    const client = new MatrixClient("https://matrix.example.org", "token");
+    await client.start();
+
+    expect(stopMatrixRtc).toHaveBeenCalledOnce();
+    expect(startMatrixRtc).not.toHaveBeenCalled();
+  });
+
   it("rejects startup when sync reports an unexpected error before ready", async () => {
     matrixJsClient.startClient = vi.fn(async () => {
       const timer = setTimeout(() => {

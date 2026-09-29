@@ -64,6 +64,8 @@ import {
 import { resolveSlackSenderAuthentication } from "./ingress.js";
 import { resolveSlackSessionEventRoutingContext } from "./message-handler/prepare-routing.js";
 import { escapeSlackMrkdwn } from "./mrkdwn.js";
+import { isSlackChannelAllowedByPolicy } from "./policy.js";
+import { resolveSlackRequestUserAllowed } from "./request-users.js";
 import {
   createSlackResponseUrlBudget,
   SlackResponseAlreadyReportedError,
@@ -483,6 +485,41 @@ export function createSlackCommandHandler(params: {
           defaultRequireMention: ctx.defaultRequireMention,
           allowNameMatching: ctx.allowNameMatching,
         });
+        if (ctx.useAccessGroups) {
+          const channelAllowlistConfigured = (ctx.channelsConfigKeys?.length ?? 0) > 0;
+          const channelAllowed = channelConfig?.allowed !== false;
+          if (
+            !isSlackChannelAllowedByPolicy({
+              groupPolicy: ctx.groupPolicy,
+              channelAllowlistConfigured,
+              channelAllowed,
+            })
+          ) {
+            await respondEphemeral("This channel is not allowed.");
+            return false;
+          }
+          // When groupPolicy is "open", only block channels that are EXPLICITLY denied
+          // (i.e., have a matching config entry with allow:false). Channels not in the
+          // config (matchSource undefined) should be allowed under open policy.
+          const hasExplicitConfig = Boolean(channelConfig?.matchSource);
+          if (!channelAllowed && (ctx.groupPolicy !== "open" || hasExplicitConfig)) {
+            await respondEphemeral("This channel is not allowed.");
+            return false;
+          }
+        }
+        if (
+          !resolveSlackRequestUserAllowed({
+            requestUsers: channelConfig?.requestUsers,
+            teamId: eventScope?.teamId ?? ctx.teamId,
+            userId: command.user_id,
+          })
+        ) {
+          await respond({
+            text: "You may contribute context here, but only an authorized requester can start or administer agent work.",
+            response_type: "ephemeral",
+          });
+          return;
+        }
       }
 
       const sender = await ctx.resolveUserName(command.user_id, eventScope);

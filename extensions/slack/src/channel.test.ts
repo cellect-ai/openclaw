@@ -162,6 +162,11 @@ describe("slackPlugin actions", () => {
     expect(prepareSendPayload({ ctx, to: "channel:C999", payload } as never)).toBe(payload);
   });
 
+  it("prefers session lookup for announce target routing", () => {
+    expect(slackPlugin.meta.preferSessionLookupForAnnounceTarget).toBe(true);
+  });
+
+
   it("uses configured defaultAccount for pairing approval notifications", async () => {
     const cfg = slackConfig({
       defaultAccount: "work",
@@ -228,6 +233,19 @@ describe("slackPlugin actions", () => {
     ).toBe(true);
   });
 
+  it("formats {sender.mention} for routed room replies but not DMs", () => {
+    const formatSenderMention = slackPlugin.messaging?.formatSenderMention;
+    if (!formatSenderMention) {
+      throw new Error("slack messaging.formatSenderMention unavailable");
+    }
+
+    expect(formatSenderMention({ senderId: "u123", to: "channel:C123" })).toBe("<@U123>");
+    expect(formatSenderMention({ senderId: "U123", to: "C123" })).toBe("<@U123>");
+    expect(formatSenderMention({ senderId: "U123", to: "user:U123" })).toBe("");
+    expect(formatSenderMention({ senderId: "U123", to: "channel:D123" })).toBe("");
+    expect(formatSenderMention({ senderId: "not-a-user", to: "channel:C123" })).toBe("");
+  });
+
   it("forwards read threadId to Slack action handler", async () => {
     handleSlackActionMock.mockResolvedValueOnce({ messages: [], hasMore: false });
     const handleAction = slackPlugin.actions!.handleAction!;
@@ -252,6 +270,47 @@ describe("slackPlugin actions", () => {
     });
     expect(requireMockCallArgValue(handleSlackActionMock, 0, 1)).toEqual({});
     expect(requireMockCallArgValue(handleSlackActionMock, 0, 2)).toBeUndefined();
+  });
+
+  it("forwards media access through the bundled Slack action invoke path", async () => {
+    handleSlackActionMock.mockResolvedValueOnce({ ok: true });
+    const handleAction = slackPlugin.actions!.handleAction!;
+    const mediaLocalRoots = ["/tmp/workspace-agent"];
+    const mediaReadFile = vi.fn(async () => Buffer.from("file"));
+
+    await handleAction({
+      action: "upload-file",
+      channel: "slack",
+      accountId: "default",
+      cfg: {},
+      params: {
+        to: "channel:C123",
+        filePath: "/tmp/workspace-agent/renders/file.wav",
+        initialComment: "render",
+      },
+      mediaLocalRoots,
+      mediaReadFile,
+      mediaAccess: { workspaceDir: "/tmp/workspace-agent" },
+      toolContext: {
+        currentChannelId: "C123",
+        replyToMode: "all",
+      },
+    } as never);
+
+    expectRecordFields(requireMockCallArg(handleSlackActionMock, 0, 0), "Slack action", {
+      action: "uploadFile",
+      to: "channel:C123",
+      filePath: "/tmp/workspace-agent/renders/file.wav",
+      initialComment: "render",
+    });
+    expect(requireMockCallArgValue(handleSlackActionMock, 0, 1)).toEqual({});
+    expectRecordFields(requireMockCallArg(handleSlackActionMock, 0, 2), "Slack action context", {
+      currentChannelId: "C123",
+      replyToMode: "all",
+      mediaLocalRoots,
+      mediaReadFile,
+      mediaWorkspaceDir: "/tmp/workspace-agent",
+    });
   });
 
   it.each([

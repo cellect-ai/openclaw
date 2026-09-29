@@ -39,7 +39,7 @@ Legend:
 | E2EE room events         | `m.room.encrypted`                                                                                 | in/out/tools | encrypted event hydration, decrypt, encrypted media send                 | `src/matrix/monitor/types.ts`, `src/matrix/sdk.ts`, `docs/channels/matrix.md`                                              |
 | Encrypted media previews | `file`, `thumbnail_file`                                                                           | out          | encrypted thumbnails for encrypted image events                          | `src/matrix/send/media.ts`, `docs/channels/matrix.md`                                                                      |
 | Device verification      | `m.key.verification.*`, `m.key.verification.request`                                               | in/tools     | request/ready/start/SAS/done/cancel notices and CLI flows                | `src/matrix/monitor/verification-utils.ts`, `src/matrix/monitor/events.test.ts`, `docs/channels/matrix.md`                 |
-| Streaming/live markers   | `org.matrix.msc4357.live`                                                                          | out          | live draft/edit markers for partial streaming                            | `src/matrix/send/types.ts`, `src/matrix/send.ts`, `src/matrix/draft-stream.ts`                                             |
+| Streaming/live markers   | `org.matrix.msc4357.live`, `com.openclaw.stream_phase`                                             | out          | live draft/edit markers plus explicit `progress` / `answer` semantics    | `src/matrix/send/types.ts`, `src/matrix/send.ts`, `src/matrix/draft-stream.ts`                                             |
 
 ## Explicit MSCs In Use
 

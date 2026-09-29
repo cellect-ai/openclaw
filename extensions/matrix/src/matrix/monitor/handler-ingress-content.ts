@@ -6,6 +6,12 @@ import { buildInboundHistoryFromEntries } from "openclaw/plugin-sdk/reply-histor
 import { isMatrixMediaSizeLimitError } from "../media-errors.js";
 import { isLikelyBareFilename } from "../media-text.js";
 import { fetchMatrixPollSnapshot, type MatrixPollSnapshot } from "../poll-summary.js";
+import {
+  authorizeProjectionReply,
+  getSourceAuthorizedProjection,
+  sendProjectionReplyRejection,
+} from "../projection-reply-authorization.js";
+import { isMatrixReadOnlyProjectionRoom } from "../thread-bindings-shared.js";
 import { resolveMatrixMonitorCommandAccess } from "./access-state.js";
 import type { createMatrixEventContextResolver } from "./event-context.js";
 import {
@@ -100,7 +106,23 @@ export async function resolveMatrixIngressContent(config: {
     effectiveGroupAllowFrom,
     effectiveRoomUsers,
   } = access;
-  const { resolveMessageIngress } = accessState;
+  const { messageIngress, resolveMessageIngress } = accessState;
+  if (isMatrixReadOnlyProjectionRoom(accountId, roomId)) {
+    await commitInboundEventIfClaimedAndDiscardReserved();
+    return undefined;
+  }
+  const sourceAuthorization = await authorizeProjectionReply({ core, accountId, roomId, senderId });
+  if (sourceAuthorization !== "allowed") {
+    await sendProjectionReplyRejection({
+      client,
+      roomId,
+      messageId,
+      threadRootId: getSourceAuthorizedProjection(accountId, roomId)?.conversationId,
+      reason: sourceAuthorization,
+    });
+    await commitInboundEventIfClaimedAndDiscardReserved();
+    return undefined;
+  }
   let content = accessContent;
   let pollSnapshotPromise: Promise<MatrixPollSnapshot | null> | null = null;
   const getPollSnapshot = async (): Promise<MatrixPollSnapshot | null> => {

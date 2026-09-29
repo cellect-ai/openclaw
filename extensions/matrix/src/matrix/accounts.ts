@@ -215,7 +215,13 @@ export function resolveMatrixAccount(params: {
     prepared.hasHomeserver && !prepared.hasConfiguredAuth
       ? loadMatrixCredentials(params.env ?? process.env, prepared.account.accountId)
       : null;
-  return { ...prepared.account, configured: isMatrixAccountConfigured(prepared, stored) };
+  return {
+    ...prepared.account,
+    configured: isMatrixAccountConfigured(prepared, stored),
+    // Token-only auth learns the MXID through whoami and persists it at login.
+    // Project that identity only while the stored homeserver and token still match.
+    userId: resolveMatrixAccountUserId(prepared.authView, stored) ?? undefined,
+  };
 }
 
 export async function resolveMatrixAccountAsync(params: {
@@ -231,7 +237,13 @@ export async function resolveMatrixAccountAsync(params: {
           prepared.account.accountId,
         )
       : null;
-  return { ...prepared.account, configured: isMatrixAccountConfigured(prepared, stored) };
+  return {
+    ...prepared.account,
+    configured: isMatrixAccountConfigured(prepared, stored),
+    // Token-only auth learns the MXID through whoami and persists it at login.
+    // Project that identity only while the stored homeserver and token still match.
+    userId: resolveMatrixAccountUserId(prepared.authView, stored) ?? undefined,
+  };
 }
 
 export { resolveMatrixAccountConfig } from "./account-config.js";

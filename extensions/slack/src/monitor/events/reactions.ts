@@ -8,6 +8,12 @@ import type { SlackMonitorContext } from "../context.js";
 import type { SlackEventScope } from "../event-scope.js";
 import type { SlackReactionEvent } from "../types.js";
 import {
+  logSlackReactionTriggerDecision,
+  normalizeSlackReactionName,
+  resolveSlackReactionTrigger,
+  runSlackReactionTrigger,
+} from "./reaction-triggers.js";
+import {
   authorizeAndResolveSlackSystemEventContext,
   resolveSlackListenerEventScope,
 } from "./system-event-context.js";
@@ -49,6 +55,7 @@ export function registerSlackReactionEvents(params: {
   const resolveUserName = (userId: string, eventScope?: SlackEventScope) =>
     eventScope ? ctx.resolveUserName(userId, eventScope) : ctx.resolveUserName(userId);
 
+
   for (const action of ["added", "removed"] as const) {
     ctx.app.event(
       `reaction_${action}`,
@@ -65,8 +72,30 @@ export function registerSlackReactionEvents(params: {
         try {
           const runtimeContext = await params.ctx.readRuntimeContext();
           const item = event.item;
+          // One INFO line per reaction this account receives; identifiers only, never message text.
+          ctx.runtime.log?.(
+            `slack reaction ${action} account=${ctx.accountId} emoji=${event.reaction ?? "-"} channel=${item?.channel ?? "-"} actor=${event.user ?? "-"} ts=${item?.ts ?? "-"}`,
+          );
           if (!item || item.type !== "message") {
             return;
+          }
+          // Trigger emojis fire on any message, independent of reactionNotifications.
+          if (action === "added") {
+            const trigger = resolveSlackReactionTrigger(ctx, event.reaction);
+            if (trigger) {
+              trackEvent?.();
+              await runSlackReactionTrigger({ ctx, event, trigger, eventScope });
+            } else {
+              logSlackReactionTriggerDecision({
+                ctx,
+                emoji: normalizeSlackReactionName(event.reaction),
+                channelId: item.channel,
+                actorId: event.user,
+                messageTs: item.ts,
+                decision: "skipped",
+                reason: "not-a-trigger-emoji",
+              });
+            }
           }
           if (runtimeContext.reactionMode === "off") {
             return;

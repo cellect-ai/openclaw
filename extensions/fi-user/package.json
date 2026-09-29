@@ -1,0 +1,9 @@
+{
+  "name": "@openclaw/fi-user",
+  "version": "2026.8.1",
+  "description": "Requester-bound Cellect Fi user operations",
+  "type": "module",
+  "dependencies": { "typebox": "1.3.30" },
+  "devDependencies": { "@openclaw/plugin-sdk": "workspace:*" },
+  "openclaw": { "extensions": ["./index.ts"] }
+}

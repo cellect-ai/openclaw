@@ -207,6 +207,7 @@ describe("Slack message tools", () => {
       "react",
       "reactions",
       "conversation-open",
+      "thread-reply",
       "read",
       "edit",
       "delete",
@@ -261,6 +262,7 @@ describe("Slack message tools", () => {
     ).not.toContain("upload-file");
   });
 
+
   it("exposes message actions for a configured user-identity account", () => {
     const cfg = {
       channels: {
@@ -277,6 +279,7 @@ describe("Slack message tools", () => {
       "react",
       "reactions",
       "conversation-open",
+      "thread-reply",
       "read",
       "edit",
       "delete",
@@ -334,6 +337,7 @@ describe("Slack message tools", () => {
       "react",
       "reactions",
       "conversation-open",
+      "thread-reply",
       "read",
       "edit",
       "delete",

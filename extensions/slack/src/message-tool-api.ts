@@ -16,6 +16,42 @@ function createSlackFileActionSchema(): Record<string, TSchema> {
           'Slack file id, starting with "F" (for example F0B0LTT8M36). Required for action="download-file". Read it from inbound Slack file metadata at event.files[].id. This is not the Slack message timestamp/messageId.',
       }),
     ),
+    fileIds: Type.Optional(
+      Type.Array(Type.String(), {
+        minItems: 1,
+        maxItems: 20,
+        description:
+          'Slack file ids to download and stage in one bounded action. Use this for a thread with several attachments instead of calling action="download-file" once per file.',
+      }),
+    ),
+    allThreadFiles: Type.Optional(
+      Type.Boolean({
+        description:
+          "Read the bounded Slack thread and stage every attached file in one action. Requires threadId and cannot be combined with fileId/fileIds.",
+      }),
+    ),
+  };
+}
+
+function createSlackPermalinkSchema(): Record<string, TSchema> {
+  return {
+    permalink: Type.Optional(
+      Type.String({
+        description:
+          'Slack permalink pasted by the requester, e.g. https://<workspace>.slack.com/archives/<conversation>/p<ts> (message) or .../files/<user>/<file>/<name> (file). For action="read" it selects that conversation and message; for action="download-file" it selects the file, or the files attached to the linked message. Allowed when the requester is a member of the linked conversation and this Slack app can see it.',
+      }),
+    ),
+  };
+}
+
+function createSlackOriginalFileSchema(): Record<string, TSchema> {
+  return {
+    original: Type.Optional(
+      Type.Boolean({
+        description:
+          'For action="download-file": return only the staged original file (path, size, contentType) without an inline image preview. Downloads always stage Slack\'s original upload; the inline preview may be resized.',
+      }),
+    ),
   };
 }
 
@@ -110,7 +146,7 @@ export function describeSlackMessageTool({
     });
   }
   for (const [action, createProperties] of [
-    ["download-file", createSlackFileActionSchema],
+    ["download-file", () => ({ ...createSlackFileActionSchema(), ...createSlackOriginalFileSchema() })],
     ["send", createSlackSendActionSchema],
     ["upload-file", createSlackTopLevelActionSchema],
     ["react", () => createSlackReactionEmojiSchema(actions.includes("emoji-list"))],
@@ -121,6 +157,22 @@ export function describeSlackMessageTool({
         actions: action === "react" ? ["react", "reactions"] : [action],
       });
     }
+  }
+  if (actions.includes("read")) {
+    // A permalink only names the conversation to read, like `target`, so it must not
+    // make read current-channel-only: cross-channel (for example scheduled) reads stay
+    // available, and Slack still gates the read on the requester's membership.
+    schema.push({
+      properties: createSlackPermalinkSchema(),
+      actions: ["read"],
+      visibility: "all-configured",
+    });
+  }
+  if (actions.includes("download-file")) {
+    schema.push({
+      properties: createSlackPermalinkSchema(),
+      actions: ["download-file"],
+    });
   }
   const messageIdActions = SLACK_MESSAGE_ID_ACTIONS.filter((action) => actions.includes(action));
   if (messageIdActions.length > 0) {

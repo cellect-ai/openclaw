@@ -54,16 +54,30 @@ const SlackChannelSchema = buildGroupEntrySchema(
     allowBots: buildChannelAllowBotsSchema({ allowMentions: true }),
     botLoopProtection: ChannelBotLoopProtectionSchema.optional(),
     users: z.array(z.union([z.string(), z.number()])).optional(),
+    requestUsers: z.array(z.union([z.string(), z.number()])).optional(),
     presenceEvents: SlackPresenceEventsSchema.optional(),
   },
   { omit: ["allowFrom"] },
 );
+
+const SlackReactionTriggerSchema = z
+  .object({
+    prompt: z.string().trim().min(1).max(SLACK_PRESENCE_EVENT_PROMPT_MAX_CHARS),
+    requestUsers: z.array(z.union([z.string(), z.number()])).optional(),
+  })
+  .strict();
 
 const SlackThreadSchema = z
   .object({
     historyScope: z.enum(["thread", "channel"]).optional(),
     inheritParent: z.boolean().optional(),
     initialHistoryLimit: z.number().int().min(0).optional(),
+  })
+  .strict();
+
+const SlackThreadOwnershipSchema = z
+  .object({
+    preferredAccounts: z.array(z.string().min(1)).min(1),
   })
   .strict();
 
@@ -94,6 +108,20 @@ const SlackAccountSchema = z
   .object({
     ...accountShape,
     joinIntro: z.boolean().optional(),
+    unansweredMentions: z
+      .object({
+        notice: z.boolean().optional(),
+        contact: z.string().trim().max(500).optional(),
+        alertAfterMinutes: z.number().int().min(0).optional(),
+        recoverMissed: z.boolean().optional(),
+        recoverWithinMinutes: z.number().int().min(0).optional(),
+      })
+      .strict()
+      .optional(),
+    paymentDetailWarning: z.boolean().optional(),
+    reactionTriggers: z
+      .record(z.string().regex(/^[a-z0-9_+'-]+$/u), SlackReactionTriggerSchema)
+      .optional(),
     postAs: SlackIdentitySchema.optional(),
     mode: z.enum(["socket", "http", "relay"]).optional(),
     relay: SlackRelaySchema.optional(),
@@ -134,6 +162,7 @@ const SlackAccountSchema = z
       })
       .strict()
       .optional(),
+    memberInfoScope: z.enum(["requester", "workspace"]).optional(),
     slashCommand: z
       .object({
         enabled: z.boolean().optional(),
@@ -201,6 +230,7 @@ export const SlackConfigSchema = SlackAccountSchema.safeExtend({
   webhookPath: z.string().optional().default("/slack/events"),
   accounts: z.record(z.string(), SlackAccountSchema.optional()).optional(),
   defaultAccount: z.string().optional(),
+  threadOwnership: SlackThreadOwnershipSchema.optional(),
 }).superRefine((value, ctx) => {
   if (value.enabled === false) {
     return;

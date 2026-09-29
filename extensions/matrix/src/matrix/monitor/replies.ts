@@ -12,6 +12,7 @@ import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coer
 import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixExtraContent } from "../../outbound.js";
 import { getMatrixRuntime } from "../../runtime.js";
+import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import { sendMessageMatrix } from "../send.js";
 import type { MatrixSendResult } from "../send/types.js";
@@ -169,7 +170,41 @@ export async function deliverMatrixReplies(params: {
           accountId: params.accountId,
           extraContent: index === 0 ? extraContent : undefined,
           onDeliveryResult,
+          publication: resolveMatrixReplyPublication(
+            reply,
+            params.accountId,
+            params.roomId,
+            params.threadId,
+          ),
         });
+        continue;
+      }
+
+      let first = true;
+      for (const [index, mediaUrl] of mediaUrls.entries()) {
+        const caption = first ? rawText : "";
+        await sendMessageMatrix(params.roomId, caption, {
+          client: params.client,
+          cfg: params.cfg,
+          mediaUrl,
+          mediaLocalRoots: params.mediaLocalRoots,
+          replyToId: replyToIdForReply,
+          fallbackReplyToId,
+          threadId: params.threadId,
+          audioAsVoice: reply.audioAsVoice,
+          accountId: params.accountId,
+          extraContent: first ? extraContent : undefined,
+          onDeliveryResult,
+          publication: resolveMatrixReplyPublication(
+            reply,
+            params.accountId,
+            params.roomId,
+            params.threadId,
+            index,
+            index === mediaUrls.length - 1,
+          ),
+        });
+        first = false;
       }
     }
   } catch (error: unknown) {

@@ -24,7 +24,7 @@ import {
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { buildSlackEditTextPayload } from "./edit-text.js";
 import { normalizeSlackOutboundText } from "./format.js";
-import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
+import { assertSlackFileWithinDownloadCap, SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
 import { hasSlackMessageTableBlock, resolveSlackMessageText } from "./monitor/block-text.js";
 import { resolveSlackMedia } from "./monitor/media.js";
 import type { SlackMediaResult } from "./monitor/media.js";
@@ -203,7 +203,7 @@ function normalizeSlackReadTimestamp(
   return formatEpochSeconds(parsed);
 }
 
-async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write" = "read") {
+export async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write" = "read") {
   if (opts.client && !opts.assertDirectAdapterHandoff) {
     return opts.client;
   }
@@ -468,6 +468,15 @@ export async function openSlackConversation(userIds: unknown, opts: SlackActionC
   return await openSlackConversationWithClient(client, input);
 }
 
+export async function resolveSlackConversationName(
+  channelId: string,
+  opts: SlackActionClientOpts = {},
+): Promise<string | undefined> {
+  const client = await getClient(opts, "read");
+  const info = await client.conversations.info({ channel: channelId });
+  return info.channel?.name?.trim() || undefined;
+}
+
 export async function readSlackMessages(
   channelId: string,
   opts: SlackActionClientOpts & {
@@ -509,12 +518,11 @@ export async function readSlackMessages(
             : opts.threadId,
       })
     : await client.conversations.history(query);
+  // Preserve the parent message so a bounded thread read always contains
+  // the instruction that started the conversation. Exact reply lookups
+  // remain exact and do not add unrelated context.
   const messages = ((result.messages ?? []) as SlackMessageSummary[])
-    .filter((message) =>
-      exactMessageId
-        ? message.ts === exactMessageId
-        : !opts.threadId || message.ts !== opts.threadId,
-    )
+    .filter((message) => (exactMessageId ? message.ts === exactMessageId : true))
     .map(renderSlackReadMessageText);
   return {
     messages,
@@ -637,6 +645,7 @@ export async function downloadSlackFile(
   if (!isFileAllowed(file)) {
     return null;
   }
+  assertSlackFileWithinDownloadCap(fileId, (file as { size?: number }).size, opts.maxBytes);
 
   const results = await resolveSlackMedia({
     files: [

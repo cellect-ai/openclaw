@@ -1,5 +1,9 @@
 // Slack tests cover dm auth plugin behavior.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  PAIRING_REPLY_INTERVAL_MS,
+  resetPairingReplyThrottle,
+} from "openclaw/plugin-sdk/channel-pairing";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackMonitorContext } from "./context.js";
 import { authorizeSlackDirectMessage } from "./dm-auth.js";
 
@@ -36,10 +40,16 @@ function makeParams(
 
 describe("authorizeSlackDirectMessage", () => {
   beforeEach(() => {
+    resetPairingReplyThrottle();
     upsertChannelPairingRequestMock.mockReset().mockResolvedValue({
       code: "ABCDEFGH",
       created: true,
     });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    resetPairingReplyThrottle();
   });
 
   it("allows open DM policy when effective allowFrom includes wildcard", async () => {
@@ -138,5 +148,46 @@ describe("authorizeSlackDirectMessage", () => {
     expect(first.sendPairingReply).toHaveBeenCalledTimes(1);
     expect(second.sendPairingReply).toHaveBeenCalledTimes(1);
     expect(pendingCodes.size).toBe(2);
+  });
+
+  it("skips pairing entirely for an already approved sender", async () => {
+    const params = makeParams("pairing");
+    params.allowFromLower = ["u123"];
+    params.ctx.installationIdentity = { kind: "workspace", teamId: "T11111111" };
+    params.eventScope = { teamId: "T11111111", client: {} as never };
+
+    await expect(authorizeSlackDirectMessage(params)).resolves.toBe(true);
+
+    expect(upsertChannelPairingRequestMock).not.toHaveBeenCalled();
+    expect(params.sendPairingReply).not.toHaveBeenCalled();
+    expect(params.onUnauthorized).not.toHaveBeenCalled();
+  });
+
+  it("reminds an unapproved repeat sender instead of dropping the DM silently", async () => {
+    vi.useFakeTimers();
+    const startMs = Date.UTC(2026, 0, 1);
+    vi.setSystemTime(startMs);
+    upsertChannelPairingRequestMock.mockReset().mockResolvedValue({
+      code: "ABCDEFGH",
+      created: false,
+    });
+    const params = makeParams("pairing");
+    params.eventScope = { teamId: "T11111111", client: {} as never };
+
+    await expect(authorizeSlackDirectMessage(params)).resolves.toBe(false);
+
+    const sendPairingReply = params.sendPairingReply as ReturnType<typeof vi.fn>;
+    expect(sendPairingReply).toHaveBeenCalledTimes(1);
+    expect(sendPairingReply.mock.calls[0]?.[0]).toContain("still waiting for approval");
+    expect(params.log).toHaveBeenCalledWith(expect.stringContaining("slack pairing reminder"));
+
+    // A second DM inside the interval must not repeat the reminder.
+    vi.setSystemTime(startMs + 60_000);
+    await expect(authorizeSlackDirectMessage(params)).resolves.toBe(false);
+    expect(sendPairingReply).toHaveBeenCalledTimes(1);
+
+    vi.setSystemTime(startMs + PAIRING_REPLY_INTERVAL_MS + 1);
+    await expect(authorizeSlackDirectMessage(params)).resolves.toBe(false);
+    expect(sendPairingReply).toHaveBeenCalledTimes(2);
   });
 });

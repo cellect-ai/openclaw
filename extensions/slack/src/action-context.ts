@@ -36,4 +36,6 @@ export type SlackActionContext = Pick<
   assertDirectAdapterHandoff?: ChannelMessageActionContext["assertDirectAdapterHandoff"];
   /** Slack-private ordered delivery plan prepared after presentation normalization. */
   preparedMessages?: readonly SlackReplyDeliveryMessage[];
+  /** Trusted agent workspace used to stage downloaded files for sandbox access. */
+  mediaWorkspaceDir?: string;
 };

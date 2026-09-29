@@ -2,6 +2,7 @@
 import { describe, expect, it } from "vitest";
 import {
   chunkSlackMrkdwnText,
+  formatSlackUserMention,
   markdownToSlackMrkdwnChunks,
   normalizeSlackOutboundText,
 } from "./format.js";
@@ -264,6 +265,15 @@ describe("normalizeSlackOutboundText", () => {
     expect(markdownToSlackMrkdwnChunks("**重要**。", 100)).toEqual(["重要。"]);
     expect(markdownToSlackMrkdwnChunks("___重要___。", 100)).toEqual(["重要。"]);
     expect(markdownToSlackMrkdwnChunks("€**important**€", 100)).toEqual(["€important€"]);
+  });
+});
+
+describe("formatSlackUserMention", () => {
+  it("formats stable Slack user IDs and rejects unsafe values", () => {
+    expect(formatSlackUserMention("u123abc")).toBe("<@U123ABC>");
+    expect(formatSlackUserMention("W123ABC")).toBe("<@W123ABC>");
+    expect(formatSlackUserMention("U123> <!channel")).toBe("");
+    expect(formatSlackUserMention(undefined)).toBe("");
   });
 });
 
