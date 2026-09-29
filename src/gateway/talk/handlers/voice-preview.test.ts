@@ -33,7 +33,9 @@ describe("sessionless realtime voice previews", () => {
   let bridge: RealtimeVoiceBridge;
   let client: GatewayClient;
   let current: boolean;
-  let createBridge: ReturnType<typeof vi.fn>;
+  let createBridge: ReturnType<
+    typeof vi.fn<(req: RealtimeVoiceBridgeCreateRequest) => RealtimeVoiceBridge>
+  >;
   const pending: Promise<unknown>[] = [];
   const pcm = Buffer.from([32, 0, 64, 0]);
 
