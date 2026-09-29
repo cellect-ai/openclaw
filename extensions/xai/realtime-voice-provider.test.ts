@@ -2559,28 +2559,25 @@ describe("buildLiteLlmRealtimeVoiceProvider", () => {
     expect(provider.capabilities?.transports).toEqual(["gateway-relay"]);
   });
 
-  it("offers model-specific voices only for the LiteLLM Grok voice model", () => {
-    const provider = buildLiteLlmRealtimeVoiceProvider();
-
-    expect(
-      resolveInternalRealtimeVoiceGatewayRelayCapabilities({
-        provider,
-        providerConfig: { model: "grok-voice-think-fast-2.0" },
-      })?.voicesByModel,
-    ).toEqual({ "grok-voice-think-fast-2.0": XAI_REALTIME_VOICES });
-    expect(
-      resolveInternalRealtimeVoiceBrowserSessionCapabilities({
-        provider,
-        providerConfig: { model: "grok-voice-think-fast-2.0" },
-      })?.voicesByModel,
-    ).toEqual({ "grok-voice-think-fast-2.0": XAI_REALTIME_VOICES });
-    expect(
-      resolveInternalRealtimeVoiceGatewayRelayCapabilities({
-        provider,
-        providerConfig: { model: "gemini-3.8-live" },
-      })?.voicesByModel,
-    ).toBeUndefined();
-  });
+  it.each([undefined, "grok-voice-think-fast-2.0", "gemini-3.8-live"])(
+    "offers both model voice catalogs regardless of configured model %s",
+    (model) => {
+      const provider = buildLiteLlmRealtimeVoiceProvider();
+      for (const resolve of [
+        resolveInternalRealtimeVoiceGatewayRelayCapabilities,
+        resolveInternalRealtimeVoiceBrowserSessionCapabilities,
+      ]) {
+        const voices = resolve({ provider, providerConfig: { model } })?.voicesByModel;
+        expect(voices?.["grok-voice-think-fast-2.0"]).toEqual(XAI_REALTIME_VOICES);
+        const googleVoices = voices?.["gemini-3.8-live"];
+        expect(googleVoices).toHaveLength(30);
+        expect(googleVoices).toEqual(expect.arrayContaining(["Kore", "Puck", "Aoede", "Sulafat"]));
+        for (const grokVoice of XAI_REALTIME_VOICES) {
+          expect(googleVoices).not.toContain(grokVoice);
+        }
+      }
+    },
+  );
 
   it("is configured only when the Fi-scoped proxy key and fixed endpoint are present", () => {
     const provider = buildLiteLlmRealtimeVoiceProvider();
@@ -2670,42 +2667,51 @@ describe("buildLiteLlmRealtimeVoiceProvider", () => {
   });
 
   it.each([
-    { model: "grok-voice-think-fast-2.0", voice: "eve" },
-    { model: "gemini-3.8-live", voice: "Kore" },
-  ])("connects $model through the internal LiteLLM realtime endpoint", async ({ model, voice }) => {
-    const provider = buildLiteLlmRealtimeVoiceProvider();
-    const bridge = provider.createBridge({
-      providerConfig: {
-        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
-        baseUrl: "http://192.168.5.139:4000/v1",
-        model,
-        reasoningEffort: "high",
-        sessionResumption: true,
-      },
-      onAudio: vi.fn(),
-      onClearAudio: vi.fn(),
-    });
-    const connecting = bridge.connect();
-    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
-    const socket = requireSocket();
-    socket.open();
-    socket.emitServer({ type: "session.updated" });
-    await connecting;
-
-    const [url, options] = socket.args as [string, { headers: Record<string, string> }];
-    expect(url).toContain("ws://192.168.5.139:4000/v1/realtime?");
-    expect(url).toContain(`model=${model}`);
-    expect(options.headers.Authorization).toBe("Bearer litellm-fi-test-key");
-    expect(requireSession(socket)).toMatchObject({ voice, output_modalities: ["audio"] });
-    if (model === "gemini-3.8-live") {
-      expect(requireSession(socket)).toMatchObject({
-        audio: { output: { transcription: {} } },
+    { model: "grok-voice-think-fast-2.0", configuredVoice: undefined, voice: "eve" },
+    { model: "gemini-3.8-live", configuredVoice: undefined, voice: "Kore" },
+    { model: "gemini-3.8-live", configuredVoice: "Puck", voice: "Puck" },
+    { model: "gemini-3.8-live", configuredVoice: "Aoede", voice: "Aoede" },
+    { model: "gemini-3.8-live", configuredVoice: "sulafat", voice: "Sulafat" },
+    { model: "gemini-3.8-live", configuredVoice: "rex", voice: "Kore" },
+    { model: "grok-voice-think-fast-2.0", configuredVoice: "Gacrux", voice: "eve" },
+  ])(
+    "connects $model with $configuredVoice through the internal LiteLLM realtime endpoint",
+    async ({ model, configuredVoice, voice }) => {
+      const provider = buildLiteLlmRealtimeVoiceProvider();
+      const bridge = provider.createBridge({
+        providerConfig: {
+          apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+          baseUrl: "http://192.168.5.139:4000/v1",
+          model,
+          speakerVoice: configuredVoice,
+          reasoningEffort: "high",
+          sessionResumption: true,
+        },
+        onAudio: vi.fn(),
+        onClearAudio: vi.fn(),
       });
-    }
-    expect(requireSession(socket)).not.toHaveProperty("reasoning");
-    expect(requireSession(socket)).not.toHaveProperty("resumption");
-    bridge.close();
-  });
+      const connecting = bridge.connect();
+      await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+      const socket = requireSocket();
+      socket.open();
+      socket.emitServer({ type: "session.updated" });
+      await connecting;
+
+      const [url, options] = socket.args as [string, { headers: Record<string, string> }];
+      expect(url).toContain("ws://192.168.5.139:4000/v1/realtime?");
+      expect(url).toContain(`model=${model}`);
+      expect(options.headers.Authorization).toBe("Bearer litellm-fi-test-key");
+      expect(requireSession(socket)).toMatchObject({ voice, output_modalities: ["audio"] });
+      if (model === "gemini-3.8-live") {
+        expect(requireSession(socket)).toMatchObject({
+          audio: { output: { transcription: {} } },
+        });
+      }
+      expect(requireSession(socket)).not.toHaveProperty("reasoning");
+      expect(requireSession(socket)).not.toHaveProperty("resumption");
+      bridge.close();
+    },
+  );
 
   it("rejects unapproved model IDs and proxy endpoints before opening a socket", () => {
     const provider = buildLiteLlmRealtimeVoiceProvider();

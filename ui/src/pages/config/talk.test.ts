@@ -242,7 +242,51 @@ async function selectProvider(providerId: string, options: TalkMutationHarnessOp
 afterEach(() => {
   document.body.replaceChildren();
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("Talk speaker voice previews", () => {
+  it("previews the newly selected draft voice and shows provider failures without breaking the picker", async () => {
+    vi.stubGlobal(
+      "AudioContext",
+      class {
+        resume = async () => {};
+        close = async () => {};
+      },
+    );
+    const harness = createTalkMutationHarness({
+      voicesByModel: { "gpt-realtime-2.1": ["marin", "spruce"] },
+    });
+    await vi.waitFor(() => expect(harness.request).toHaveBeenCalledWith("talk.catalog", {}));
+    await harness.page.updateComplete;
+    harness.runtimeConfig.patchForm.mockImplementation((_path: unknown, value: unknown) => {
+      Object.assign(harness.configForm.talk.realtime, { speakerVoice: value });
+    });
+    harness.request.mockImplementation(async (method) => {
+      throw new Error(`${method} unavailable`);
+    });
+    await vi.waitFor(() =>
+      expect(harness.page.querySelector('select[aria-label="Speaker voice"]')).not.toBeNull(),
+    );
+    const voice = harness.page.querySelector<HTMLSelectElement>(
+      'select[aria-label="Speaker voice"]',
+    );
+    expect(voice).not.toBeNull();
+    voice!.value = "spruce";
+    voice!.dispatchEvent(new Event("change", { bubbles: true }));
+    await vi.waitFor(() =>
+      expect(harness.request).toHaveBeenCalledWith(
+        "talk.voice.preview",
+        { provider: "openai", model: "gpt-realtime-2.1", voice: "spruce" },
+        { timeoutMs: 25_000 },
+      ),
+    );
+    await vi.waitFor(() =>
+      expect(harness.page.textContent).toContain(t("talkPage.voice.previewError")),
+    );
+    expect(harness.page.querySelector('select[aria-label="Speaker voice"]')).not.toBeNull();
+  });
 });
 
 describe("Talk device and voice wake settings", () => {

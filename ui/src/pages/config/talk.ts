@@ -4,6 +4,7 @@
 // same config draft, so both stay in sync without narrowing the schema.
 import { html, nothing, type TemplateResult } from "lit";
 import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
+import { icons } from "../../components/icons.ts";
 import { renderModelPicker } from "../../components/model-picker.ts";
 import {
   renderSettingsRow,
@@ -20,6 +21,7 @@ import {
   type VoiceWakeEditorState,
 } from "./talk-device.ts";
 import { isTalkGptLiveModel, type TalkRealtimeSelection } from "./talk-schema.ts";
+import type { TalkVoicePreviewState } from "./talk-voice-preview.ts";
 
 /** One realtime provider row from talk.catalog, reduced to what the pickers use. */
 export type TalkRealtimeProviderOption = {
@@ -63,6 +65,7 @@ type TalkViewProps = {
   onProviderChange: (providerId: string | null) => void;
   onModelChange: (model: string | null) => void;
   onVoiceChange: (voice: string | null) => void;
+  voicePreview?: { state: TalkVoicePreviewState; onPlay: () => void };
   /** Embedded schema editor for the full `talk` section. */
   editor: TemplateResult;
 };
@@ -321,12 +324,44 @@ function renderGptLiveRow(props: TalkViewProps) {
   });
 }
 
+function renderVoicePreviewRow(props: TalkViewProps) {
+  if (!props.voicePreview) {
+    return nothing;
+  }
+  const provider = selectedTalkProviderOption(props.catalog, props.selection);
+  const state = props.voicePreview.state;
+  return renderSettingsRow({
+    title: t("talkPage.voice.preview"),
+    description: html`<span role=${state === "error" ? "alert" : "status"} aria-live="polite"
+      >${t(
+        `talkPage.voice.preview${state === "loading" ? "Loading" : state === "playing" ? "Playing" : state === "error" ? "Error" : "Hint"}`,
+      )}</span
+    >`,
+    control: html`<button
+      type="button"
+      class="btn btn--icon"
+      aria-label=${t("talkPage.voice.preview")}
+      title=${t("talkPage.voice.preview")}
+      ?disabled=${talkPickersDisabled(props) || !provider?.configured || state === "loading"}
+      @click=${props.voicePreview.onPlay}
+    >
+      ${icons.play}
+    </button>`,
+  });
+}
+
 export function renderTalk(props: TalkViewProps) {
   return html`
     <section class="talk-page">
       <div class="settings-page">
         ${renderDeviceTalk(props.nativeDeviceSettings)}
-        ${props.voiceWake ? renderVoiceWakeEditor(props.voiceWake.state, props.voiceWake.onInput, props.voiceWake.onRetry) : nothing}
+        ${props.voiceWake
+          ? renderVoiceWakeEditor(
+              props.voiceWake.state,
+              props.voiceWake.onInput,
+              props.voiceWake.onRetry,
+            )
+          : nothing}
         ${renderSettingsSection(
           {
             title: t("talkPage.voiceSection.title"),
@@ -334,7 +369,7 @@ export function renderTalk(props: TalkViewProps) {
           },
           html`
             ${renderStatusRow(props)} ${renderProviderRow(props)} ${renderModelRow(props)}
-            ${renderVoiceRow(props)} ${renderGptLiveRow(props)}
+            ${renderVoiceRow(props)} ${renderVoicePreviewRow(props)} ${renderGptLiveRow(props)}
           `,
         )}
       </div>

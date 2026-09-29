@@ -410,6 +410,7 @@ export const validateWizardStatusParams = compile(S.WizardStatusParamsSchema);
 export const validateTalkModeParams = compile(S.TalkModeParamsSchema);
 export const validateTalkCatalogParams = compile(S.TalkCatalogParamsSchema);
 export const validateTalkVoiceGetParams = compile(S.TalkVoiceGetParamsSchema);
+export const validateTalkVoicePreviewParams = compile(S.TalkVoicePreviewParamsSchema);
 export const validateTalkVoiceSetParams = compile(S.TalkVoiceSetParamsSchema);
 export const validateTalkVoiceCompleteParams = compile(S.TalkVoiceCompleteParamsSchema);
 export const validateTalkVoiceChangeEvent = compile(S.TalkVoiceChangeEventSchema);

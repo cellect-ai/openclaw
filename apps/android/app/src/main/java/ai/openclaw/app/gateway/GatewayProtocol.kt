@@ -977,6 +977,7 @@ enum class GatewayMethod(
   UsersLinkChannelIdentity("users.linkChannelIdentity"),
   UsersUnlinkChannelIdentity("users.unlinkChannelIdentity"),
   UsersListChannelIdentities("users.listChannelIdentities"),
+  TalkVoicePreview("talk.voice.preview"),
 }
 
 enum class GatewayEvent(

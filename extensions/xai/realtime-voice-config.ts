@@ -140,6 +140,41 @@ export const XAI_REALTIME_VOICES = [
   "leo",
 ] as const satisfies readonly XaiRealtimeVoice[];
 
+// Native-audio Live uses Google's prebuilt TTS voices, with case-sensitive names.
+// https://ai.google.dev/gemini-api/docs/speech-generation#voice-options
+export const GOOGLE_REALTIME_VOICES = [
+  "Zephyr",
+  "Puck",
+  "Charon",
+  "Kore",
+  "Fenrir",
+  "Leda",
+  "Orus",
+  "Aoede",
+  "Callirrhoe",
+  "Autonoe",
+  "Enceladus",
+  "Iapetus",
+  "Umbriel",
+  "Algieba",
+  "Despina",
+  "Erinome",
+  "Algenib",
+  "Rasalgethi",
+  "Laomedeia",
+  "Achernar",
+  "Alnilam",
+  "Schedar",
+  "Gacrux",
+  "Pulcherrima",
+  "Achird",
+  "Zubenelgenubi",
+  "Vindemiatrix",
+  "Sadachbia",
+  "Sadaltager",
+  "Sulafat",
+] as const;
+
 export function serializeXaiRealtimeToolResult(result: unknown): string {
   const message = "xAI realtime voice tool result is not JSON-serializable";
   try {

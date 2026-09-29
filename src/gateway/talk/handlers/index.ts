@@ -90,6 +90,7 @@ import { resolveCatalogProviderSelection } from "./catalog-selection.js";
 import { talkClientHandlers } from "./client.js";
 import { buildRealtimeProviderCatalog } from "./realtime-provider-catalog.js";
 import { talkSessionHandlers } from "./session.js";
+import { talkVoicePreviewHandlers } from "./voice-preview.js";
 import { talkVoiceHandlers } from "./voice.js";
 
 type TalkSpeakReason =
@@ -761,6 +762,7 @@ function stripUnresolvedSecretApiKeyFromRecord(
 /** Gateway request handlers for Talk config, catalog, sessions, and speech. */
 export const talkHandlers: GatewayRequestHandlers = {
   ...talkVoiceHandlers,
+  ...talkVoicePreviewHandlers,
   "talk.binding.resolve": async ({ params, respond, context }) => {
     try {
       const roomId = normalizeOptionalString(params.roomId);

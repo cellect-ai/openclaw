@@ -651,21 +651,23 @@ describe("xai provider plugin", () => {
     expect(realtimeVoiceProvider.aliases).toContain("grok-voice");
     expect(realtimeVoiceProvider.capabilities?.transports).toEqual(["gateway-relay"]);
     const litellmProvider = requireEntry(captured.realtimeVoiceProviders, "litellm");
-    expect(litellmProvider.label).toBe("LiteLLM Realtime");
+    expect(litellmProvider.label).toBe("LiteLLM Realtime (Grok / Google)");
     expect(litellmProvider.models).toEqual(["grok-voice-think-fast-2.0", "gemini-3.8-live"]);
     expect(litellmProvider.capabilities?.transports).toEqual(["gateway-relay"]);
-    expect(
-      resolveInternalRealtimeVoiceGatewayRelayCapabilities({
-        provider: litellmProvider,
-        providerConfig: { model: "grok-voice-think-fast-2.0" },
-      })?.voicesByModel,
-    ).toEqual({ "grok-voice-think-fast-2.0": ["eve", "ara", "rex", "sal", "leo"] });
-    expect(
-      resolveInternalRealtimeVoiceGatewayRelayCapabilities({
-        provider: litellmProvider,
-        providerConfig: { model: "gemini-3.8-live" },
-      })?.voicesByModel,
-    ).toBeUndefined();
+    const voicesByModel = resolveInternalRealtimeVoiceGatewayRelayCapabilities({
+      provider: litellmProvider,
+      providerConfig: { model: "grok-voice-think-fast-2.0" },
+    })?.voicesByModel;
+    expect(voicesByModel?.["grok-voice-think-fast-2.0"]).toEqual([
+      "eve",
+      "ara",
+      "rex",
+      "sal",
+      "leo",
+    ]);
+    expect(voicesByModel?.["gemini-3.8-live"]).toEqual(
+      expect.arrayContaining(["Kore", "Puck", "Sulafat"]),
+    );
   });
 
   it("forwards exact caller cancellation through the registered lazy X search factory", async () => {
