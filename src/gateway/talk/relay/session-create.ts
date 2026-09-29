@@ -18,6 +18,7 @@ import { markTalkVoiceSessionReady } from "../voice-selection.js";
 import { bindTalkRealtimeRelayAgentConsult } from "./agent-consult.js";
 import {
   buildAlreadyDeliveredToolResult,
+  isRealtimeCheckingBackchannel,
   scheduleForcedAgentConsult,
   submitForcedConsultProviderResult,
   submitRealtimeAgentConsultWorkingResponse,
@@ -105,6 +106,7 @@ export function createTalkRealtimeRelaySession(
     });
   let currentOutputItemId: string | undefined;
   let playbackTurnId: string | undefined;
+  const pendingTranscriptQuestions = new Map<string, string>();
   let ready = false;
   let continuityResetActive = false;
   let failureEmitted = false;
@@ -439,6 +441,14 @@ export function createTalkRealtimeRelaySession(
       if (role === "assistant" && outputOwnership.suppressingOutput) {
         return;
       }
+      if (!relay.closing && role === "user" && text.trim()) {
+        // A new utterance supersedes any backchannel recovery candidate from
+        // the previous turn. Some providers emit only a final transcript, so
+        // clear stale recovery state on either transcript shape. This also
+        // cancels a scheduled consult that has not yet been admitted.
+        pendingTranscriptQuestions.clear();
+        relay.harness.forcedConsults.clearPending();
+      }
       if (!relay.closing && role === "user" && !final) {
         confirmationReadiness.observeUserTranscript(text, false);
       }
@@ -473,7 +483,7 @@ export function createTalkRealtimeRelaySession(
           final,
         },
       );
-      if (params.controlSource === "transcript" && role === "user" && final && text.trim()) {
+      if (role === "user" && final && text.trim()) {
         const question = text.trim();
         if (relay.harness.isLikelyAssistantEchoTranscript(question)) {
           return;
@@ -483,7 +493,32 @@ export function createTalkRealtimeRelaySession(
         }
         if (params.forceAgentConsultOnFinalTranscript === true) {
           scheduleForcedAgentConsult(relay, question);
+        } else {
+          pendingTranscriptQuestions.set(turnId, question);
+          while (pendingTranscriptQuestions.size > 12) {
+            const oldestTurnId = pendingTranscriptQuestions.keys().next().value;
+            if (oldestTurnId === undefined) {
+              break;
+            }
+            pendingTranscriptQuestions.delete(oldestTurnId);
+          }
         }
+      }
+      if (
+        role === "assistant" &&
+        final &&
+        params.forceAgentConsultOnFinalTranscript !== true &&
+        isRealtimeCheckingBackchannel(text)
+      ) {
+        const question = pendingTranscriptQuestions.get(outputTurnId);
+        pendingTranscriptQuestions.delete(outputTurnId);
+        if (question && !relay.harness.forcedConsults.findRecent(question)) {
+          scheduleForcedAgentConsult(relay, question, "checking-backchannel");
+        }
+      } else if (role === "assistant" && final && outputTurnId) {
+        // A complete provider answer is terminal for its transcript turn; do not
+        // let a later response reuse stale user text as the subject of a check.
+        pendingTranscriptQuestions.delete(outputTurnId);
       }
     },
     onToolCall: (toolCall) => {
@@ -502,6 +537,7 @@ export function createTalkRealtimeRelaySession(
       }
       let shouldSubmitWorkingResult = false;
       if (toolCall.name === REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME) {
+        pendingTranscriptQuestions.delete(outputTurnId);
         const forcedConsult = relay.harness.forcedConsults.recordNativeConsult(
           toolCall.args,
           providerCallId,
