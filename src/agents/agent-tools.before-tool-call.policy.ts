@@ -55,6 +55,7 @@ import {
 } from "./code-mode-control-tools.js";
 import { admitSingleToolCallLoop } from "./tool-loop-admission.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
+import { isCurrentSourcePlainMessageReply } from "./tools/current-source-message-reply.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 const BEFORE_TOOL_CALL_HOOK_FAILURE_REASON =
@@ -102,7 +103,26 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
     toolCallId: args.toolCallId,
     toolName: normalizeToolPolicyName(args.toolName || "tool"),
     toolParams: args.params,
+    isCurrentSourceMessageSend: isCurrentSourceMessageSendForTurn(
+      args.toolName,
+      args.params,
+      args.ctx,
+    ),
     ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
+  });
+}
+
+/** Only exempt a plain message reply routed to the exact conversation that initiated the voice turn. */
+function isCurrentSourceMessageSendForTurn(
+  toolName: string,
+  toolParams: unknown,
+  ctx: HookContext | undefined,
+): boolean {
+  return isCurrentSourcePlainMessageReply({
+    toolName: normalizeToolPolicyName(toolName || "tool"),
+    toolParams,
+    currentChannelProvider: ctx?.turnSourceChannel,
+    currentChannelId: ctx?.turnSourceTo,
   });
 }
 
@@ -199,6 +219,11 @@ export async function runBeforeToolCallHook(args: {
           toolCallId: args.toolCallId,
           toolName,
           toolParams: normalizedParams,
+          isCurrentSourceMessageSend: isCurrentSourceMessageSendForTurn(
+            toolName,
+            normalizedParams,
+            args.ctx,
+          ),
           ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
         });
     if (!voiceConfirmation.allowed) {

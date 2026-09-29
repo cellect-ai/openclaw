@@ -49,6 +49,12 @@ export type SlackChannelConfig = {
   botLoopProtection?: ChannelBotLoopProtectionConfig;
   /** Allowlist of users that can invoke the bot in this channel. */
   users?: Array<string | number>;
+  /**
+   * Restrict which admitted channel users may create agent requests or use
+   * interactive command surfaces. Omit to preserve normal behavior; an empty
+   * list makes every admitted sender context-only.
+   */
+  requestUsers?: Array<string | number>;
   /** Optional skill filter for this channel. */
   skills?: string[];
   /** Optional system prompt for this channel. */
@@ -111,6 +117,27 @@ export type SlackThreadConfig = {
   initialHistoryLimit?: number;
 };
 
+/**
+ * Coordinates unmentioned channel-thread follow-ups when more than one Slack
+ * account receives the same workspace event. The first eligible account owns
+ * the thread; preferred accounts win when they have both participated.
+ */
+export type SlackThreadOwnershipConfig = {
+  /** Account IDs in descending preference order for already-participating bots. */
+  preferredAccounts: string[];
+};
+
+/**
+ * A trusted, operator-written prompt that an allowed user can fire by adding
+ * the configured emoji to any Slack message in a channel the bot is in.
+ */
+export type SlackReactionTriggerConfig = {
+  /** Fixed prompt; OpenClaw appends the message's channel, ts, file ids and permalink. */
+  prompt: string;
+  /** Users allowed to fire this trigger. Defaults to the channel's requestUsers. */
+  requestUsers?: Array<string | number>;
+};
+
 export type SlackRelayConfig = {
   /** Full relay websocket URL, including the route path. */
   url?: string;
@@ -133,6 +160,28 @@ export type SlackAccountConfig = Omit<
   ChannelReactionConfig<SlackReactionNotificationMode, never, string, true> & {
     /** Post a room-specific introduction when joining a group. Default: true. */
     joinIntro?: boolean;
+    /** Explicit mentions the bot will not act on (channel not allowed, sender not allowed or not a requester). */
+    unansweredMentions?: {
+      /** Send the requester one ephemeral notice per channel per hour. Default: true. */
+      notice?: boolean;
+      /** Who can help, appended to the notice (e.g. "Ask @alex for access."). */
+      contact?: string;
+      /** Log admitted explicit mentions with no reply after this many minutes; 0 disables. Default: 10. */
+      alertAfterMinutes?: number;
+      /**
+       * Replay mentions that arrived while the socket was disconnected. Socket
+       * Mode delivers nothing that happened while the app was away and Slack
+       * never redelivers it, so without this a mention posted during a restart
+       * is lost silently. Default: true.
+       */
+      recoverMissed?: boolean;
+      /** How far back a reconnect will look for missed mentions; 0 disables. Default: 720. */
+      recoverWithinMinutes?: number;
+    };
+    /** Reply once, in thread, when a channel message appears to contain bank details. Default: false. */
+    paymentDetailWarning?: boolean;
+    /** Emoji name (without colons) -> agent turn started in the reacted message's thread. */
+    reactionTriggers?: Record<string, SlackReactionTriggerConfig>;
     /** @deprecated Doctor-only legacy input. */
     identity?: "bot" | "user";
     /** @deprecated Doctor-only legacy input. */
@@ -180,6 +229,11 @@ export type SlackAccountConfig = Omit<
     /** Poll Slack presence and wake the routed agent on away-to-active transitions. Default: off. */
     presenceEvents?: SlackPresenceEventsConfig;
     actions?: SlackActionConfig;
+    /**
+     * Who delegated member-info lookups may resolve: only the current requester
+     * ("requester", default) or any member of the account's workspace ("workspace").
+     */
+    memberInfoScope?: "requester" | "workspace";
     slashCommand?: SlackSlashCommandConfig;
     dm?: SlackDmConfig;
     channels?: Record<string, SlackChannelConfig>;
@@ -192,4 +246,6 @@ export type SlackConfig = {
   accounts?: Record<string, SlackAccountConfig>;
   /** Optional default account id when multiple accounts are configured. */
   defaultAccount?: string;
+  /** Optional cross-account owner policy for unmentioned channel-thread follow-ups. */
+  threadOwnership?: SlackThreadOwnershipConfig;
 } & SlackAccountConfig;

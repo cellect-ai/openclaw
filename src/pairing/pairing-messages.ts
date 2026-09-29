@@ -26,3 +26,29 @@ export function buildPairingReply(params: {
     "```",
   ].join("\n");
 }
+
+// Reminder sent when an unapproved sender writes again while their pairing
+// request is still pending. Deliberately worded differently from the first-time
+// challenge so a repeat sender can tell nothing new is required from them.
+export function buildPairingReminderReply(params: {
+  channel: PairingChannel;
+  idLine: string;
+  code: string;
+}): string {
+  const { channel, idLine, code } = params;
+  const approveCommand = formatCliCommand(`openclaw pairing approve ${channel} ${code}`);
+  return [
+    "OpenClaw: your access request is still waiting for approval.",
+    "",
+    idLine,
+    "Pairing code:",
+    "```",
+    code,
+    "```",
+    "",
+    "Nothing more is needed from you. The bot owner approves with:",
+    "```",
+    approveCommand,
+    "```",
+  ].join("\n");
+}

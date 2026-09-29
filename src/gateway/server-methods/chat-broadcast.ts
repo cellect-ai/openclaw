@@ -3,6 +3,7 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
 import { projectChatDisplayMessage } from "../chat-display-projection.js";
+import { publishChatTerminal } from "../chat-terminal-observer.js";
 import { capLiveAssistantText } from "../live-chat-projector.js";
 import type { GatewayBroadcastOpts } from "../server-broadcast-types.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -153,6 +154,9 @@ function broadcastChatFrame(
     ...frame,
   };
   const group = params.context.chatRunState?.runs.get(params.runId)?.liveTextGroup?.signal;
+  if (payload.state !== "delta") {
+    publishChatTerminal(payload);
+  }
   const delivery: GatewayBroadcastOpts["liveText"] =
     liveText ??
     (group

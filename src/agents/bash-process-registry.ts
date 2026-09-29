@@ -66,6 +66,8 @@ export interface ProcessSession {
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  /** Agent run that started the process; binds the exit notification to that run. */
+  originRunId?: string;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   exitNotified?: boolean;

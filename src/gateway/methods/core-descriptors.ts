@@ -366,6 +366,9 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["chat.metadata", "chat", "operator.read", "<=2026.7", { startup: true }],
   ["chat.message.get", "chat", "operator.read", "<=2026.7", { startup: true }],
   ["chat.abort", "chat-abort", "operator.write", "<=2026.7"],
+  ["chat.handoff.arm", "chat", "operator.write", "2026.9"],
+  ["chat.handoff.seen", "chat", "operator.write", "2026.9"],
+  ["conversation.continue", "chat", "operator.admin", "2026.9"],
   ["chat.send", "chat-send", "operator.write", "<=2026.7", { startup: true }],
   // Operator terminal: admin-only PTY surface. Appended to the advertised block
   // so existing advertised method indices stay stable for older clients.
@@ -381,6 +384,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["assistant.media.get", null, "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.get", "sessions-read", "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.resolve", "sessions-read", "operator.read", "<=2026.7", { advertise: false }],
+  ["talk.binding.resolve", "talk", "operator.admin", "2026.9", { advertise: false }],
   ["sessions.usage", "usage", "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.usage.timeseries", "usage", "operator.read", "<=2026.7", { advertise: false }],
   ["sessions.usage.logs", "usage", "operator.read", "<=2026.7", { advertise: false }],
@@ -760,4 +764,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["users.merge", "users", "operator.admin", "2026.9"],
   ["gateway.stop.request", "restart", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["diagnostics.heapSnapshot", "diagnostics", "operator.admin", "2026.9"],
+  ["talk.voice.preview", "talk", "operator.write", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

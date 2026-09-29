@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { validateSessionsDescribeParams } from "../../../packages/gateway-protocol/src/index.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { withReadySessionRows } from "../session-row-prepared-read.js";
@@ -14,6 +15,7 @@ import {
 import { readRecentSessionMessagesWithStatsAsync } from "../session-transcript-readers.js";
 import { createVisibleActiveSessionRunProjector } from "./session-active-runs.js";
 import { requireSessionKey } from "./sessions-shared.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -55,6 +57,19 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           return;
         }
         const query = { key, agentId: requestedAgent.agentId };
+        if (
+          !isWebchatSessionAllowed({ cfg: read.state.cfg, client, sessionKey: key }) ||
+          isUnauthorizedRawMatrixBrowserSession({
+            cfg: read.state.cfg,
+            clientInfo: client?.connect?.client,
+            pairedClientId: client?.pairedClientId,
+            sessionKey: key,
+            authorizedByBinding: false,
+          })
+        ) {
+          respond(true, { session: null });
+          return;
+        }
         const presentation = prepareProjectedSessionPresentation(
           read,
           client,
@@ -144,6 +159,20 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       maxLines: limit * 20 + 20,
       allowResetArchiveFallback: true,
     };
+    const cfg = context.getRuntimeConfig();
+    if (
+      !isWebchatSessionAllowed({ cfg, client, sessionKey: selected.key }) ||
+      isUnauthorizedRawMatrixBrowserSession({
+        cfg,
+        clientInfo: client?.connect?.client,
+        pairedClientId: client?.pairedClientId,
+        sessionKey: selected.key,
+        authorizedByBinding: false,
+      })
+    ) {
+      respond(true, { messages: [] }, undefined);
+      return;
+    }
     const messages =
       selected.entry.incognito || isIncognitoSessionKey(selected.key)
         ? (await readRecentSessionMessagesWithStatsAsync(target, limits)).messages
@@ -160,6 +189,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
         ? read.describe({ key, agentId: requested.agentId }, selected)
         : undefined;
       const policyConfig = read.state.policyConfig;
+      const currentCfg = context.getRuntimeConfig();
       const boundaryFilter = hasOperatorBoundary(client, policyConfig)
         ? createSessionListEntryFilter({ client, cfg: policyConfig })
         : undefined;
@@ -169,7 +199,15 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
         current.key !== selected.key ||
         current.storeTarget.storePath !== selected.storeTarget.storePath ||
         current.entry.sessionId !== target.sessionId ||
-        boundaryFilter?.(current.key, current.entry) === false
+        boundaryFilter?.(current.key, current.entry) === false ||
+        !isWebchatSessionAllowed({ cfg: currentCfg, client, sessionKey: current.key }) ||
+        isUnauthorizedRawMatrixBrowserSession({
+          cfg: currentCfg,
+          clientInfo: client?.connect?.client,
+          pairedClientId: client?.pairedClientId,
+          sessionKey: current.key,
+          authorizedByBinding: false,
+        })
       ) {
         respond(true, { messages: [] }, undefined);
         return;

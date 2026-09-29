@@ -654,6 +654,8 @@ describe("resolveResponsePrefixTemplate", () => {
         },
         "[OpenClaw] anthropic/claude-opus-4-6 (think:high)",
       ],
+      ["{sender.mention}", { senderMention: "<@U123>" }, "<@U123>"],
+      ["{sender.mention}", { senderMention: "" }, ""],
     ]);
   });
 

@@ -815,6 +815,10 @@ CREATE INDEX IF NOT EXISTS idx_managed_outgoing_images_agent_message
   ON managed_outgoing_image_records(session_key, agent_id, message_id, attachment_id)
   WHERE message_id IS NOT NULL;
 
+-- Requests are retained after they stop being pending so an operator can still
+-- see who asked, when, and how it ended. `status` is NULL on rows written
+-- before retention shipped, which reads as 'pending'. Expiry is derived from
+-- `created_at`, never stored, so no sweep has to rewrite rows to age them.
 CREATE TABLE IF NOT EXISTS channel_pairing_requests (
   channel_key TEXT NOT NULL,
   account_id TEXT NOT NULL,
@@ -823,6 +827,8 @@ CREATE TABLE IF NOT EXISTS channel_pairing_requests (
   created_at TEXT NOT NULL,
   last_seen_at TEXT NOT NULL,
   meta_json TEXT,
+  status TEXT,
+  resolved_at TEXT,
   PRIMARY KEY (channel_key, account_id, request_id)
 ) STRICT;
 

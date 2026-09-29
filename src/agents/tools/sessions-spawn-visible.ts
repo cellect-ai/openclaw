@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Value } from "typebox/value";
@@ -18,6 +19,7 @@ import { resolveWorkspacePathContainment } from "../../gateway/server-methods/wo
 import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import { resolveWorkerPlacementDestination } from "../../gateway/worker-environments/placement-destination.js";
 import { isPathInside } from "../../infra/path-guards.js";
+import type { MediaFact } from "../../media/media-facts.js";
 import {
   getCanonicalGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
@@ -26,7 +28,12 @@ import { isValidAgentId, normalizeAgentId } from "../../routing/session-key.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
-import { listAgentIds, resolveAgentConfig, resolveSessionAgentId } from "../agent-scope.js";
+import {
+  listAgentIds,
+  resolveAgentConfig,
+  resolveAgentWorkspaceDir,
+  resolveSessionAgentId,
+} from "../agent-scope.js";
 import { reserveChildAdmissionSlot } from "../child-admission.js";
 import { resolveAgentIdentity } from "../identity.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
@@ -37,6 +44,10 @@ import {
 } from "../subagents/registry/subagent-registry.js";
 import { deleteSubagentSessionForCleanup } from "../subagents/registry/subagent-session-cleanup.js";
 import { getSubagentDepthFromSessionStore } from "../subagents/spawn/subagent-depth.js";
+import {
+  stageParentTurnAttachmentsInWorkspace,
+  type StagedParentTurnAttachments,
+} from "../subagents/spawn/subagent-parent-attachments.js";
 import { terminateAcceptedCollectorRun } from "../subagents/spawn/subagent-spawn-cleanup.js";
 import {
   callNativeSubagentGateway,
@@ -87,6 +98,8 @@ type VisibleSessionsSpawnOptions = VisibleSessionsSpawnDeps &
     sandboxed?: boolean;
     config?: OpenClawConfig;
     requesterAgentIdOverride?: string;
+    /** Media attached to the requester's current turn; forwarded into the child workspace. */
+    parentTurnMedia?: readonly MediaFact[];
   };
 
 function summarizeSessionsSpawnError(error: unknown): string {
@@ -385,6 +398,8 @@ export async function maybeSpawnVisibleSession(params: {
   }
   // Successful admission reserves a child before Gateway work can start.
   params.options?.onSpawnEffectsStart?.();
+  let parentAttachments: StagedParentTurnAttachments | null = null;
+  let keepParentAttachments = false;
   try {
     const gatewayCall = params.options?.callGateway ?? callInProcessGatewayTool;
     const createGatewayCall: InProcessGatewayCaller =
@@ -421,8 +436,18 @@ export async function maybeSpawnVisibleSession(params: {
       placement?: SessionsDispatchResult["placement"];
       initialTaskStatus?: "unknown" | "not-sent";
     };
+    // The child sees only its task; copy the requester turn's own attachments
+    // into the child workspace and list them in that task. A cloud placement
+    // runs elsewhere and cannot read files staged on this host.
+    parentAttachments = placement
+      ? null
+      : await stageParentTurnAttachmentsInWorkspace({
+          media: params.options?.parentTurnMedia,
+          workspaceDir:
+            spawnedCwd ?? spawnedWorkspaceCwd ?? resolveAgentWorkspaceDir(cfg, targetAgentId),
+        });
     const taskMessage = buildSubagentTaskMessage({
-      task: params.task,
+      task: parentAttachments ? `${params.task}\n\n${parentAttachments.taskSuffix}` : params.task,
       spawnMode: "session",
       childDepth: callerDepth + 1,
       maxSpawnDepth: maxDepth,
@@ -643,6 +668,7 @@ export async function maybeSpawnVisibleSession(params: {
       sessionKey: childSessionKey,
       storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
     });
+    keepParentAttachments = true;
     const ownerLabel = normalizeOptionalString(resolveAgentIdentity(cfg, requesterAgentId)?.name);
     const sessionUrl = resolveControlUiSessionUrl(cfg, {
       sessionKey: childSessionKey,
@@ -670,5 +696,8 @@ export async function maybeSpawnVisibleSession(params: {
     };
   } finally {
     reservation.release();
+    if (parentAttachments && !keepParentAttachments) {
+      await fs.rm(parentAttachments.absDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }

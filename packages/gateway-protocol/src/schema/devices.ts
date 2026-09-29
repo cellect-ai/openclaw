@@ -196,13 +196,23 @@ const SetupCodeQrDataUrlSchema = Type.String({
  * (enforced by the core method descriptor's method-scope policy, not the handler)
  * and is not advertised. `bootstrapProfile: "limited"` omits operator.admin;
  * `bootstrapProfile: "node"` narrows the handoff to a node role with no operator
- * scopes for companion devices such as watchOS.
+ * scopes for companion devices such as watchOS. `bootstrapProfile: "webchat"`
+ * issues a non-admin browser grant for an authenticated embedding application.
  */
 export const DevicePairSetupCodeParamsSchema = closedObject({
   publicUrl: Type.Optional(NonEmptyString),
   preferRemoteUrl: Type.Optional(Type.Boolean()),
   includeQr: Type.Optional(Type.Boolean()),
-  bootstrapProfile: Type.Optional(Type.String({ enum: ["limited", "node", "voice-node"] })),
+  bootstrapProfile: Type.Optional(
+    Type.String({ enum: ["limited", "node", "voice-node", "webchat"] }),
+  ),
+  allowedAgentIds: Type.Optional(
+    Type.Array(Type.String({ minLength: 1, maxLength: 128 }), {
+      minItems: 1,
+      maxItems: 32,
+      uniqueItems: true,
+    }),
+  ),
   joinUrl: Type.Optional(Type.Literal(true)),
 });
 

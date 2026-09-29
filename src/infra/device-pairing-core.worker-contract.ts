@@ -95,6 +95,7 @@ export type DevicePairingCoreWorkerOperations = {
       deviceId: string;
       role: string;
       scopes: string[];
+      allowedAgentIds?: string[];
       issuer?: DeviceAuthToken["issuer"];
       nowMs: number;
     };

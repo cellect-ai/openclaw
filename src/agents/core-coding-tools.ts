@@ -46,6 +46,13 @@ const processAction: AgentToolActionDescriptor = Object.freeze({
   family: "tool",
   operation: "process",
 });
+function sandboxWorkdirBindMounts(
+  sandbox: SandboxContext,
+): Array<{ containerPath: string; hostPath: string }> {
+  return buildSandboxFsMounts(sandbox)
+    .filter((mount) => mount.source === "bind" || mount.source === "agent")
+    .map((mount) => ({ containerPath: mount.containerRoot, hostPath: mount.hostRoot }));
+}
 
 function resolveSkillReadRoots(skills?: SkillSnapshot["resolvedSkills"]): string[] | undefined {
   const roots = new Set<string>();
@@ -421,6 +428,7 @@ export function createCoreCodingTools(options: CoreCodingToolsOptions): AnyAgent
               ),
               workdirRoots: sandbox.backend?.workdirRoots,
               readOnlyWorkspaceSkillMounts,
+              bindMounts: sandboxWorkdirBindMounts(sandbox),
               env: sandbox.backend?.env ?? sandbox.docker.env,
               prepareProcessCleanup: sandbox.backend?.prepareProcessCleanup?.bind(sandbox.backend),
               buildExecSpec: sandbox.backend?.buildExecSpec.bind(sandbox.backend),

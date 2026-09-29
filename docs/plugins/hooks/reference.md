@@ -297,3 +297,8 @@ channel-scoped `senderId`, pairing `code`, and channel metadata. Treat the
 pairing code as a live single-use approval credential and deliver it only to a
 trusted operator sink. Treat `metadata` as untrusted sender-supplied identity
 text. The hook does not include the inbound message body or media.
+
+This hook adds a destination; it is not what makes a request visible. The
+Gateway always logs a warning naming the channel, account and sender when a
+request arrives, and repeats it while the request goes unanswered, whether or
+not any plugin subscribes. See [Pairing](/channels/pairing).

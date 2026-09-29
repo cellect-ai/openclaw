@@ -33,6 +33,18 @@ import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage
 export type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
 export { getAgentRunContextOwnerStatus } from "./agent-run-registry-state.js";
 export type { ProjectedAgentRunIndex } from "./agent-run-registry.types.js";
+/** Trusted projection custody runs synchronously before admission is returned. */
+export function registerAgentRunAdmissionHandler(handler: (runId: string) => void): () => void {
+  const handlers = (getAgentRunRegistryState().admissionHandlers ??= new Set());
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+  };
+}
+
+function persistAgentRunAdmission(runId: string): void {
+  for (const handler of getAgentRunRegistryState().admissionHandlers ?? []) handler(runId);
+}
 
 const delegatedAuthorityFailures = new WeakMap<AgentRunDelegatedAuthority, { cause: unknown }>();
 
@@ -134,6 +146,7 @@ export function registerAgentRunContext(
   if (!existing) {
     storeRunContext(runId, { ...context, lifecycleGeneration });
     bumpAgentRunIndexVersion(context);
+    persistAgentRunAdmission(runId);
     return;
   }
   if (
@@ -185,6 +198,7 @@ export function registerAgentRunContext(
   if (runIndexInputBefore !== projectedAgentRunInputKey(existing)) {
     bumpAgentRunIndexVersion(existing, previous);
   }
+  persistAgentRunAdmission(runId);
 }
 
 /** Claims a run id for a newly admitted execution, replacing stale ownership. */
@@ -269,6 +283,7 @@ export function claimAgentRunContext(
   state.sequenceResetHandler?.(runId);
   clearAgentRunUsage(runId);
   bumpAgentRunIndexVersion(context, existing);
+  persistAgentRunAdmission(runId);
   return claimId;
 }
 
@@ -750,6 +765,7 @@ export function resetAgentRunRegistryForTest(): void {
   state.contexts.clear();
   state.owners.clear();
   state.queuedRunContextLeases = undefined;
+  state.admissionHandlers?.clear();
   if (hadRunContexts) {
     bumpAgentRunIndexVersion();
   }

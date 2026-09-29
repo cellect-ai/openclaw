@@ -3663,17 +3663,20 @@ public struct ChannelsPairingListParams: Codable, Sendable {
 public struct ChannelsPairingListResult: Codable, Sendable {
     public let accounts: [[String: AnyCodable]]
     public let requests: [[String: AnyCodable]]
+    public let history: [[String: AnyCodable]]
     public let commandownerconfigured: Bool
     public let limits: [String: AnyCodable]
 
     public init(
         accounts: [[String: AnyCodable]],
         requests: [[String: AnyCodable]],
+        history: [[String: AnyCodable]],
         commandownerconfigured: Bool,
         limits: [String: AnyCodable])
     {
         self.accounts = accounts
         self.requests = requests
+        self.history = history
         self.commandownerconfigured = commandownerconfigured
         self.limits = limits
     }
@@ -3681,6 +3684,7 @@ public struct ChannelsPairingListResult: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case accounts
         case requests
+        case history
         case commandownerconfigured = "commandOwnerConfigured"
         case limits
     }
@@ -4040,6 +4044,38 @@ public struct ChatFinalEvent: Codable, Sendable {
     }
 }
 
+public struct ChatHandoffArmParams: Codable, Sendable {
+    public let runid: String
+
+    public init(
+        runid: String)
+    {
+        self.runid = runid
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+    }
+}
+
+public struct ChatHandoffSeenParams: Codable, Sendable {
+    public let runid: String?
+    public let sessionkey: String
+
+    public init(
+        runid: String? = nil,
+        sessionkey: String)
+    {
+        self.runid = runid
+        self.sessionkey = sessionkey
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case runid = "runId"
+        case sessionkey = "sessionKey"
+    }
+}
+
 public struct ChatHistoryActivity: Codable, Sendable {
     public let messageid: String
     public let items: [AgentActivityItem]
@@ -4301,6 +4337,7 @@ public struct ChatSendParams: Codable, Sendable {
     public let expectedsessionroutingcontract: String?
     public let expectedpermissionmode: AnyCodable?
     public let expectedtooloverrides: AnyCodable?
+    public let completiondeliveryclaim: String?
     public let idempotencykey: String
 
     public init(
@@ -4331,6 +4368,7 @@ public struct ChatSendParams: Codable, Sendable {
         expectedsessionroutingcontract: String? = nil,
         expectedpermissionmode: AnyCodable? = nil,
         expectedtooloverrides: AnyCodable? = nil,
+        completiondeliveryclaim: String? = nil,
         idempotencykey: String)
     {
         self.sessionkey = sessionkey
@@ -4360,6 +4398,7 @@ public struct ChatSendParams: Codable, Sendable {
         self.expectedsessionroutingcontract = expectedsessionroutingcontract
         self.expectedpermissionmode = expectedpermissionmode
         self.expectedtooloverrides = expectedtooloverrides
+        self.completiondeliveryclaim = completiondeliveryclaim
         self.idempotencykey = idempotencykey
     }
 
@@ -4390,6 +4429,7 @@ public struct ChatSendParams: Codable, Sendable {
         expectedsessionroutingcontract: String? = nil,
         expectedpermissionmode: AnyCodable? = nil,
         expectedtooloverrides: AnyCodable? = nil,
+        completiondeliveryclaim: String? = nil,
         idempotencykey: String)
     {
         self.init(
@@ -4420,6 +4460,7 @@ public struct ChatSendParams: Codable, Sendable {
             expectedsessionroutingcontract: expectedsessionroutingcontract,
             expectedpermissionmode: expectedpermissionmode,
             expectedtooloverrides: expectedtooloverrides,
+            completiondeliveryclaim: completiondeliveryclaim,
             idempotencykey: idempotencykey)
     }
 
@@ -4451,6 +4492,7 @@ public struct ChatSendParams: Codable, Sendable {
         case expectedsessionroutingcontract = "expectedSessionRoutingContract"
         case expectedpermissionmode = "expectedPermissionMode"
         case expectedtooloverrides = "expectedToolOverrides"
+        case completiondeliveryclaim = "completionDeliveryClaim"
         case idempotencykey = "idempotencyKey"
     }
 }
@@ -5033,6 +5075,24 @@ public struct ControlUiPluginWidgetKind: Codable, Sendable {
         case pluginid = "pluginId"
         case kind
         case label
+    }
+}
+
+public struct ConversationContinueParams: Codable, Sendable {
+    public let source: [String: AnyCodable]
+    public let destinationclaim: String
+
+    public init(
+        source: [String: AnyCodable],
+        destinationclaim: String)
+    {
+        self.source = source
+        self.destinationclaim = destinationclaim
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case source
+        case destinationclaim = "destinationClaim"
     }
 }
 
@@ -6461,6 +6521,7 @@ public struct DevicePairSetupCodeParams: Codable, Sendable {
     public let preferremoteurl: Bool?
     public let includeqr: Bool?
     public let bootstrapprofile: String?
+    public let allowedagentids: [String]?
     public let joinurl: Bool?
 
     public init(
@@ -6468,12 +6529,14 @@ public struct DevicePairSetupCodeParams: Codable, Sendable {
         preferremoteurl: Bool? = nil,
         includeqr: Bool? = nil,
         bootstrapprofile: String? = nil,
+        allowedagentids: [String]? = nil,
         joinurl: Bool? = nil)
     {
         self.publicurl = publicurl
         self.preferremoteurl = preferremoteurl
         self.includeqr = includeqr
         self.bootstrapprofile = bootstrapprofile
+        self.allowedagentids = allowedagentids
         self.joinurl = joinurl
     }
 
@@ -6482,6 +6545,7 @@ public struct DevicePairSetupCodeParams: Codable, Sendable {
         case preferremoteurl = "preferRemoteUrl"
         case includeqr = "includeQr"
         case bootstrapprofile = "bootstrapProfile"
+        case allowedagentids = "allowedAgentIds"
         case joinurl = "joinUrl"
     }
 }
@@ -21261,6 +21325,7 @@ public struct TalkClientCloseParams: Codable, Sendable {
 }
 
 public struct TalkClientCreateParams: Codable, Sendable {
+    public let binding: String?
     public let sessionkey: String?
     public let voicesessionid: String?
     public let voicechangeid: String?
@@ -21270,13 +21335,16 @@ public struct TalkClientCreateParams: Codable, Sendable {
     public let vadthreshold: Double?
     public let silencedurationms: Int?
     public let prefixpaddingms: Int?
+    public let language: String?
     public let reasoningeffort: String?
     public let mode: AnyCodable?
     public let transport: AnyCodable?
     public let brain: AnyCodable?
     public let capabilities: [AnyCodable]?
+    public let sessioncapsule: String?
 
     public init(
+        binding: String? = nil,
         sessionkey: String? = nil,
         voicesessionid: String? = nil,
         voicechangeid: String? = nil,
@@ -21286,12 +21354,15 @@ public struct TalkClientCreateParams: Codable, Sendable {
         vadthreshold: Double? = nil,
         silencedurationms: Int? = nil,
         prefixpaddingms: Int? = nil,
+        language: String? = nil,
         reasoningeffort: String? = nil,
         mode: AnyCodable? = nil,
         transport: AnyCodable? = nil,
         brain: AnyCodable? = nil,
-        capabilities: [AnyCodable]? = nil)
+        capabilities: [AnyCodable]? = nil,
+        sessioncapsule: String? = nil)
     {
+        self.binding = binding
         self.sessionkey = sessionkey
         self.voicesessionid = voicesessionid
         self.voicechangeid = voicechangeid
@@ -21301,14 +21372,17 @@ public struct TalkClientCreateParams: Codable, Sendable {
         self.vadthreshold = vadthreshold
         self.silencedurationms = silencedurationms
         self.prefixpaddingms = prefixpaddingms
+        self.language = language
         self.reasoningeffort = reasoningeffort
         self.mode = mode
         self.transport = transport
         self.brain = brain
         self.capabilities = capabilities
+        self.sessioncapsule = sessioncapsule
     }
 
     private enum CodingKeys: String, CodingKey {
+        case binding
         case sessionkey = "sessionKey"
         case voicesessionid = "voiceSessionId"
         case voicechangeid = "voiceChangeId"
@@ -21318,11 +21392,13 @@ public struct TalkClientCreateParams: Codable, Sendable {
         case vadthreshold = "vadThreshold"
         case silencedurationms = "silenceDurationMs"
         case prefixpaddingms = "prefixPaddingMs"
+        case language
         case reasoningeffort = "reasoningEffort"
         case mode
         case transport
         case brain
         case capabilities
+        case sessioncapsule = "sessionCapsule"
     }
 }
 
@@ -21359,7 +21435,7 @@ public struct TalkClientSteerParams: Codable, Sendable {
 }
 
 public struct TalkClientToolCallParams: Codable, Sendable {
-    public let sessionkey: String
+    public let sessionkey: String?
     public let voicesessionid: String?
     public let callid: String
     public let name: String
@@ -21367,7 +21443,7 @@ public struct TalkClientToolCallParams: Codable, Sendable {
     public let relaysessionid: String?
 
     public init(
-        sessionkey: String,
+        sessionkey: String? = nil,
         voicesessionid: String? = nil,
         callid: String,
         name: String,
@@ -21662,6 +21738,7 @@ public struct TalkSessionCloseParams: Codable, Sendable {
 }
 
 public struct TalkSessionCreateParams: Codable, Sendable {
+    public let binding: String?
     public let sessionkey: String?
     public let voicechangeid: String?
     public let capabilities: [String]?
@@ -21677,9 +21754,11 @@ public struct TalkSessionCreateParams: Codable, Sendable {
     public let mode: AnyCodable?
     public let transport: AnyCodable?
     public let brain: AnyCodable?
+    public let sessioncapsule: String?
     public let ttlms: Int?
 
     public init(
+        binding: String? = nil,
         sessionkey: String? = nil,
         voicechangeid: String? = nil,
         capabilities: [String]? = nil,
@@ -21695,8 +21774,10 @@ public struct TalkSessionCreateParams: Codable, Sendable {
         mode: AnyCodable? = nil,
         transport: AnyCodable? = nil,
         brain: AnyCodable? = nil,
+        sessioncapsule: String? = nil,
         ttlms: Int? = nil)
     {
+        self.binding = binding
         self.sessionkey = sessionkey
         self.voicechangeid = voicechangeid
         self.capabilities = capabilities
@@ -21712,10 +21793,12 @@ public struct TalkSessionCreateParams: Codable, Sendable {
         self.mode = mode
         self.transport = transport
         self.brain = brain
+        self.sessioncapsule = sessioncapsule
         self.ttlms = ttlms
     }
 
     private enum CodingKeys: String, CodingKey {
+        case binding
         case sessionkey = "sessionKey"
         case voicechangeid = "voiceChangeId"
         case capabilities
@@ -21731,6 +21814,7 @@ public struct TalkSessionCreateParams: Codable, Sendable {
         case mode
         case transport
         case brain
+        case sessioncapsule = "sessionCapsule"
         case ttlms = "ttlMs"
     }
 }
@@ -22038,6 +22122,52 @@ public struct TalkVoiceGetParams: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case sessionkey = "sessionKey"
         case voicesessionid = "voiceSessionId"
+    }
+}
+
+public struct TalkVoicePreviewParams: Codable, Sendable {
+    public let provider: String
+    public let model: String?
+    public let voice: AnyCodable?
+
+    public init(
+        provider: String,
+        model: String? = nil,
+        voice: AnyCodable? = nil)
+    {
+        self.provider = provider
+        self.model = model
+        self.voice = voice
+    }
+}
+
+public struct TalkVoicePreviewResult: Codable, Sendable {
+    public let provider: String
+    public let model: String?
+    public let voice: String?
+    public let audiobase64: String
+    public let sampleratehz: Double
+
+    public init(
+        provider: String,
+        model: String? = nil,
+        voice: String? = nil,
+        audiobase64: String,
+        sampleratehz: Double)
+    {
+        self.provider = provider
+        self.model = model
+        self.voice = voice
+        self.audiobase64 = audiobase64
+        self.sampleratehz = sampleratehz
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case provider
+        case model
+        case voice
+        case audiobase64 = "audioBase64"
+        case sampleratehz = "sampleRateHz"
     }
 }
 
@@ -30757,10 +30887,12 @@ public enum SystemAgentSetupVerifyResult: Codable, Sendable {
 public struct TalkClientCreateResultWebrtc: Codable, Sendable {
     public let provider: String
     public let transport: String
+    public let sessionkey: String?
     public let voicesessionid: String
     public let clientsecret: String
     public let offerurl: String?
     public let offerheaders: [String: AnyCodable]?
+    public let offerresponsemaxbytes: Int?
     public let model: String?
     public let voice: String?
     public let expiresat: Double?
@@ -30768,10 +30900,12 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
 
     public init(
         provider: String,
+        sessionkey: String? = nil,
         voicesessionid: String,
         clientsecret: String,
         offerurl: String? = nil,
         offerheaders: [String: AnyCodable]? = nil,
+        offerresponsemaxbytes: Int? = nil,
         model: String? = nil,
         voice: String? = nil,
         expiresat: Double? = nil,
@@ -30780,10 +30914,12 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
     {
         self.provider = provider
         self.transport = "webrtc"
+        self.sessionkey = sessionkey
         self.voicesessionid = voicesessionid
         self.clientsecret = clientsecret
         self.offerurl = offerurl
         self.offerheaders = offerheaders
+        self.offerresponsemaxbytes = offerresponsemaxbytes
         self.model = model
         self.voice = voice
         self.expiresat = expiresat
@@ -30793,10 +30929,12 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case provider
         case transport
+        case sessionkey = "sessionKey"
         case voicesessionid = "voiceSessionId"
         case clientsecret = "clientSecret"
         case offerurl = "offerUrl"
         case offerheaders = "offerHeaders"
+        case offerresponsemaxbytes = "offerResponseMaxBytes"
         case model
         case voice
         case expiresat = "expiresAt"
@@ -30807,7 +30945,7 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
         let rawContainer = try decoder.container(keyedBy: GatewayAnyCodingKey.self)
         let unexpectedKeys = rawContainer.allKeys
             .map(\.stringValue)
-            .filter { !Set(["provider", "transport", "voiceSessionId", "clientSecret", "offerUrl", "offerHeaders", "model", "voice", "expiresAt", "clientControl"]).contains($0) }
+            .filter { !Set(["provider", "transport", "sessionKey", "voiceSessionId", "clientSecret", "offerUrl", "offerHeaders", "offerResponseMaxBytes", "model", "voice", "expiresAt", "clientControl"]).contains($0) }
         if !unexpectedKeys.isEmpty {
             throw DecodingError.dataCorrupted(
                 .init(
@@ -30827,10 +30965,12 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
             )
         }
         self.transport = "webrtc"
+        self.sessionkey = try container.decodeIfPresent(String.self, forKey: .sessionkey)
         self.voicesessionid = try container.decode(String.self, forKey: .voicesessionid)
         self.clientsecret = try container.decode(String.self, forKey: .clientsecret)
         self.offerurl = try container.decodeIfPresent(String.self, forKey: .offerurl)
         self.offerheaders = try container.decodeIfPresent([String: AnyCodable].self, forKey: .offerheaders)
+        self.offerresponsemaxbytes = try container.decodeIfPresent(Int.self, forKey: .offerresponsemaxbytes)
         self.model = try container.decodeIfPresent(String.self, forKey: .model)
         self.voice = try container.decodeIfPresent(String.self, forKey: .voice)
         self.expiresat = try container.decodeIfPresent(Double.self, forKey: .expiresat)
@@ -30841,10 +30981,12 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(provider, forKey: .provider)
         try container.encode("webrtc", forKey: .transport)
+        try container.encodeIfPresent(sessionkey, forKey: .sessionkey)
         try container.encode(voicesessionid, forKey: .voicesessionid)
         try container.encode(clientsecret, forKey: .clientsecret)
         try container.encodeIfPresent(offerurl, forKey: .offerurl)
         try container.encodeIfPresent(offerheaders, forKey: .offerheaders)
+        try container.encodeIfPresent(offerresponsemaxbytes, forKey: .offerresponsemaxbytes)
         try container.encodeIfPresent(model, forKey: .model)
         try container.encodeIfPresent(voice, forKey: .voice)
         try container.encodeIfPresent(expiresat, forKey: .expiresat)
@@ -30855,6 +30997,7 @@ public struct TalkClientCreateResultWebrtc: Codable, Sendable {
 public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
     public let provider: String
     public let transport: String
+    public let sessionkey: String?
     public let voicesessionid: String
     public let _protocol: String
     public let clientsecret: String
@@ -30867,6 +31010,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
 
     public init(
         provider: String,
+        sessionkey: String? = nil,
         voicesessionid: String,
         _protocol: String,
         clientsecret: String,
@@ -30880,6 +31024,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
     {
         self.provider = provider
         self.transport = "provider-websocket"
+        self.sessionkey = sessionkey
         self.voicesessionid = voicesessionid
         self._protocol = _protocol
         self.clientsecret = clientsecret
@@ -30894,6 +31039,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
     private enum CodingKeys: String, CodingKey {
         case provider
         case transport
+        case sessionkey = "sessionKey"
         case voicesessionid = "voiceSessionId"
         case _protocol = "protocol"
         case clientsecret = "clientSecret"
@@ -30909,7 +31055,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
         let rawContainer = try decoder.container(keyedBy: GatewayAnyCodingKey.self)
         let unexpectedKeys = rawContainer.allKeys
             .map(\.stringValue)
-            .filter { !Set(["provider", "transport", "voiceSessionId", "protocol", "clientSecret", "websocketUrl", "audio", "initialMessage", "model", "voice", "expiresAt"]).contains($0) }
+            .filter { !Set(["provider", "transport", "sessionKey", "voiceSessionId", "protocol", "clientSecret", "websocketUrl", "audio", "initialMessage", "model", "voice", "expiresAt"]).contains($0) }
         if !unexpectedKeys.isEmpty {
             throw DecodingError.dataCorrupted(
                 .init(
@@ -30929,6 +31075,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
             )
         }
         self.transport = "provider-websocket"
+        self.sessionkey = try container.decodeIfPresent(String.self, forKey: .sessionkey)
         self.voicesessionid = try container.decode(String.self, forKey: .voicesessionid)
         self._protocol = try container.decode(String.self, forKey: ._protocol)
         self.clientsecret = try container.decode(String.self, forKey: .clientsecret)
@@ -30944,6 +31091,7 @@ public struct TalkClientCreateResultProviderWebsocket: Codable, Sendable {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(provider, forKey: .provider)
         try container.encode("provider-websocket", forKey: .transport)
+        try container.encodeIfPresent(sessionkey, forKey: .sessionkey)
         try container.encode(voicesessionid, forKey: .voicesessionid)
         try container.encode(_protocol, forKey: ._protocol)
         try container.encode(clientsecret, forKey: .clientsecret)

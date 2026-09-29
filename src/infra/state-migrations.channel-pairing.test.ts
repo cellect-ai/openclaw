@@ -96,7 +96,16 @@ describe("legacy channel pairing state migration", () => {
     expect(fs.readdirSync(state.sourceDir)).toEqual([]);
     expect(readChannelPairingStateSnapshot("telegram", state.env)).toEqual({
       version: 1,
-      requests: [request],
+      requests: [
+        {
+          id: "pending-user",
+          code: "PAIRME12",
+          createdAt,
+          lastSeenAt: createdAt,
+          status: "pending",
+          meta: { accountId: "alerts" },
+        },
+      ],
       allowFrom: { default: ["1001"], alerts: ["1002"], ops_bot: ["1003"] },
     });
     expect(
@@ -131,7 +140,20 @@ describe("legacy channel pairing state migration", () => {
     fs.writeFileSync(path.join(state.sourceDir, "custom-channel-pairing.json"), "{broken\n");
     writeChannelPairingStateSnapshot(
       "custom-channel",
-      { version: 1, requests: [request], allowFrom: { primary: ["kept"] } },
+      {
+        version: 1,
+        requests: [
+          {
+            id: "existing",
+            code: "EXISTING",
+            createdAt,
+            lastSeenAt: createdAt,
+            status: "pending",
+            meta: { accountId: "primary" },
+          },
+        ],
+        allowFrom: { primary: ["kept"] },
+      },
       state.env,
     );
     expect(state.migrate().warnings).toEqual([
@@ -140,7 +162,16 @@ describe("legacy channel pairing state migration", () => {
     expect(fs.readdirSync(state.sourceDir)).toEqual(["custom-channel-pairing.json"]);
     expect(readChannelPairingStateSnapshot("custom-channel", state.env)).toEqual({
       version: 1,
-      requests: [request],
+      requests: [
+        {
+          id: "existing",
+          code: "EXISTING",
+          createdAt,
+          lastSeenAt: createdAt,
+          status: "pending",
+          meta: { accountId: "primary" },
+        },
+      ],
       allowFrom: { primary: ["kept", "imported"] },
     });
   });

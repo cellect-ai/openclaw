@@ -294,6 +294,44 @@ describe("runHeartbeatOnce heartbeat response tool", () => {
   });
 
   it.each([
+    {
+      name: "forced heartbeat response tool policy",
+      target: "telegram" as const,
+      chatType: "direct" as const,
+    },
+    {
+      name: "group-specific message-tool reply policy",
+      groupVisibleReplies: "message_tool" as const,
+      target: "last" as const,
+      chatType: "group" as const,
+    },
+  ])("keeps a heartbeat's unmarked final private under $name", async (policy) => {
+    await withHeartbeat(
+      async ({ replySpy, run, sendTelegram }) => {
+        replySpy.mockResolvedValue({
+          text: "Private heartbeat reasoning with HEARTBEAT_OK inside the sentence.",
+        });
+        expect((await run()).status).toBe("ran");
+        const call = replySpy.mock.calls[0];
+        expect(call?.[1]).toMatchObject({ sourceReplyDeliveryMode: "message_tool_only" });
+        expect(sendTelegram).not.toHaveBeenCalled();
+        expect(getLastHeartbeatEvent()).toMatchObject({
+          status: "ok-token",
+          channel: "telegram",
+          silent: true,
+        });
+      },
+      {
+        target: policy.target,
+        session: { chatType: policy.chatType },
+        ...("groupVisibleReplies" in policy
+          ? { messages: { groupChat: { visibleReplies: policy.groupVisibleReplies } } }
+          : {}),
+      },
+    );
+  });
+
+  it.each([
     { name: "marker-only notify=false", text: "notify=false\r\n", showOk: true },
     {
       name: "stream-error placeholders",

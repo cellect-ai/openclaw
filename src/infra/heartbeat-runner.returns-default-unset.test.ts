@@ -27,6 +27,14 @@ import {
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import { getLastHeartbeatEvent, resetHeartbeatEventsForTest } from "./heartbeat-events.js";
 import { type HeartbeatDeps, runHeartbeatOnce } from "./heartbeat-runner.js";
+
+// These cases cover plain delivery defaults. 2026.9.6 routes the default model through
+// the Codex harness, which selects the heartbeat response tool; Cellect keeps unmarked
+// finals private there, so pin the plain (non-response-tool) heartbeat path.
+vi.mock("./heartbeat-runner-config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./heartbeat-runner-config.js")>()),
+  shouldUseHeartbeatResponseToolPrompt: () => false,
+}));
 import {
   heartbeatTestConfig,
   readSessionStoreForTest,
@@ -819,6 +827,99 @@ describe("runHeartbeatOnce", () => {
     });
     expect(store[isolatedSessionKey]?.lastHeartbeatText).toBeUndefined();
   });
+
+  it("does not prepend the heartbeat explainer to an exec completion", async () => {
+    const tmpDir = await createCaseDir("hb-exec-no-preamble");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const cfg: OpenClawConfig = {
+      agents: { defaults: { workspace: tmpDir, heartbeat: { every: "5m" } } },
+      commands: { ownerAllowFrom: ["+15555550166"] },
+      channels: { whatsapp: { allowFrom: ["+15555550166"] } },
+      session: { store: storePath },
+    };
+    const sessionKey = resolveMainSessionKey(cfg);
+    await seedWhatsAppSession(storePath, sessionKey);
+    enqueueSystemEvent("exec finished: verification completed", {
+      sessionKey,
+      contextKey: "exec:verification",
+    });
+    const replySpy = vi.fn().mockResolvedValue({ text: "Final verification completed" });
+    const sendWhatsApp = vi.fn().mockResolvedValue({ messageId: "m1", toJid: "jid" });
+
+    await runHeartbeatOnce({
+      cfg,
+      source: "exec-event",
+      intent: "event",
+      reason: "exec-event",
+      sessionKey,
+      deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+    });
+
+    expectWhatsAppSendCall(sendWhatsApp, 0, {
+      to: "+15555550166",
+      text: "Final verification completed",
+    });
+  });
+
+  it("uses per-agent heartbeat overrides and session keys", async () => {
+    const tmpDir = await createCaseDir("hb-agent-overrides");
+    const storePath = path.join(tmpDir, "sessions.json");
+    const replySpy = vi.fn();
+    try {
+      const cfg: OpenClawConfig = {
+        agents: {
+          defaults: {
+            heartbeat: { every: "30m", prompt: "Default prompt" },
+          },
+          list: [
+            { id: "main", default: true },
+            {
+              id: "ops",
+              workspace: tmpDir,
+              heartbeat: { every: "5m", target: "whatsapp", prompt: "Ops check" },
+            },
+          ],
+        },
+        channels: { whatsapp: { allowFrom: ["*"] } },
+        session: { store: storePath },
+      };
+      const sessionKey = resolveAgentMainSessionKey({ cfg, agentId: "ops" });
+
+      await seedWhatsAppSession(storePath, sessionKey);
+      replySpy.mockResolvedValue([{ text: "Final alert" }]);
+      const sendWhatsApp = createWhatsAppSendMock();
+      await runHeartbeatOnce({
+        cfg,
+        agentId: "ops",
+        deps: createHeartbeatDeps(sendWhatsApp, { getReplyFromConfig: replySpy }),
+      });
+      expect(sendWhatsApp).toHaveBeenCalledTimes(1);
+      expectWhatsAppSendCall(sendWhatsApp, 0, {
+        to: "120363401234567890@g.us",
+        text: "Final alert",
+      });
+      expectReplyCall(
+        replySpy,
+        0,
+        {
+          Body: /Ops check[\s\S]*Current time: /,
+          SessionKey: sessionKey,
+          From: "120363401234567890@g.us",
+          To: "120363401234567890@g.us",
+          OriginatingChannel: "whatsapp",
+          OriginatingTo: "120363401234567890@g.us",
+          ChatType: "group",
+          InternalTurnSource: "heartbeat",
+          Provider: undefined,
+        },
+        { isHeartbeat: true },
+        cfg,
+      );
+    } finally {
+      replySpy.mockReset();
+    }
+  });
+
 
   it.each(["config", "forced"] as const)("routes to the %s session override", async (via) => {
     const caseDir = "hb-session-override";

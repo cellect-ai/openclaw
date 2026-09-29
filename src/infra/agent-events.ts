@@ -100,6 +100,7 @@ type AgentEventState = {
   nextListenerId: number;
   listenerRevision: number;
   auditListeners: Set<(evt: AgentEventPayload) => void>;
+  persistenceHandlers?: Set<(evt: AgentEventRuntimePayload) => void>;
   lifecycleRotationHandlers?: Map<string, (lifecycleGeneration: string) => void>;
 };
 
@@ -539,6 +540,7 @@ function dispatchAgentEvent(
   if (!enriched) {
     return false;
   }
+  persistAgentEvent(enriched);
   notifyListeners(iterateAgentEventListeners(state, enriched), enriched);
   return true;
 }
@@ -587,7 +589,23 @@ export function emitAgentEventForRunContext(
 ) {
   dispatchAgentEvent(event, undefined, context);
 }
+// Unlike observational listeners, custody failures must propagate before any
+// client observes a lifecycle transition that cannot survive a process crash.
+function persistAgentEvent(event: AgentEventRuntimePayload): void {
+  for (const handler of getAgentEventState().persistenceHandlers ?? []) {
+    handler(event);
+  }
+}
 
+export function registerAgentEventPersistenceHandler(
+  handler: (event: AgentEventRuntimePayload) => void,
+): () => void {
+  const handlers = (getAgentEventState().persistenceHandlers ??= new Set());
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+  };
+}
 /** Emits run metadata only to the Gateway-owned durable audit projection. */
 export function emitAgentAuditEvent(event: Omit<AgentEventPayload, "seq" | "ts">) {
   const state = getAgentEventState();
@@ -662,6 +680,7 @@ export function resetAgentEventsForTest(options?: { preserveListeners?: boolean 
     }
     state.runListeners.clear();
     state.auditListeners.clear();
+    state.persistenceHandlers?.clear();
     // Do not reuse IDs: an active dispatch resumes strictly after its last yield.
     state.listenerRevision++;
   }

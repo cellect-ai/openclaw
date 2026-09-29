@@ -766,6 +766,9 @@ enum class GatewayMethod(
   ChatMetadata("chat.metadata"),
   ChatMessageGet("chat.message.get"),
   ChatAbort("chat.abort"),
+  ChatHandoffArm("chat.handoff.arm"),
+  ChatHandoffSeen("chat.handoff.seen"),
+  ConversationContinue("conversation.continue"),
   ChatSend("chat.send"),
   TerminalOpen("terminal.open"),
   TerminalInput("terminal.input"),
@@ -777,6 +780,7 @@ enum class GatewayMethod(
   AssistantMediaGet("assistant.media.get"),
   SessionsGet("sessions.get"),
   SessionsResolve("sessions.resolve"),
+  TalkBindingResolve("talk.binding.resolve"),
   SessionsUsage("sessions.usage"),
   SessionsUsageTimeseries("sessions.usage.timeseries"),
   SessionsUsageLogs("sessions.usage.logs"),
@@ -978,6 +982,7 @@ enum class GatewayMethod(
   UsersMerge("users.merge"),
   GatewayStopRequest("gateway.stop.request"),
   DiagnosticsHeapSnapshot("diagnostics.heapSnapshot"),
+  TalkVoicePreview("talk.voice.preview"),
 }
 
 enum class GatewayEvent(

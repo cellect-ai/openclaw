@@ -611,6 +611,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
             sessionPermissionPolicy: options?.sessionPermissionPolicy,
             inheritedToolAllowlist: options?.inheritedToolAllowlist,
             inheritedToolDenylist: options?.inheritedToolDenylist,
+            parentTurnMedia: options?.currentTurnMedia,
           }),
         ]
       : []),

@@ -18,10 +18,7 @@ import { intersectOperatorScopes } from "../../../shared/operator-scope-compat.j
 import { recordRemoteNodeInfo, refreshRemoteNodeBins } from "../../../skills/runtime/remote.js";
 import { classifyTailscaleLogin } from "../../../state/user-profiles-tailscale-login.js";
 import { adoptTailscaleProfileAvatar } from "../../../state/user-profiles.js";
-import {
-  isBrowserCopilotClient,
-  isEphemeralGatewayClient,
-} from "../../../utils/message-channel.js";
+import { isEphemeralGatewayClient } from "../../../utils/message-channel.js";
 import { resolveRuntimeServiceBuildId, resolveRuntimeServiceVersion } from "../../../version.js";
 import { verifyAgentRuntimeIdentityToken } from "../../agent-runtime-identity-token.js";
 import { buildAuthenticatedPresenceUser } from "../../authenticated-presence-user.js";
@@ -125,6 +122,7 @@ export async function attachAuthenticatedGatewayConnect(
     pairingLocality,
     sessionUsesSharedGatewayAuth,
     sessionSharedGatewaySessionGeneration,
+    pairedClientId,
   } = state;
   if (!(await prepareGatewayNodeConnect(context, state))) {
     return;
@@ -398,9 +396,8 @@ export async function attachAuthenticatedGatewayConnect(
     connectionKind: "gateway",
     ...(!usesLegacyNodeProtocol && pluginSurfaceBaseUrl ? { pluginSurfaceBaseUrl } : {}),
     isDeviceTokenAuth: authMethod === "device-token",
-    pairedClientId: isBrowserCopilotClient(connectParams.client)
-      ? connectParams.client.id
-      : undefined,
+    pairedClientId,
+    ...(deviceToken?.allowedAgentIds ? { allowedAgentIds: deviceToken.allowedAgentIds } : {}),
     usesSharedGatewayAuth: sessionUsesSharedGatewayAuth,
     sharedGatewaySessionGeneration: sessionSharedGatewaySessionGeneration,
     authPolicy: state.authPolicy,

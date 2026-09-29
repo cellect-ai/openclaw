@@ -25,6 +25,7 @@ import { isQueuedChatTurnForSession } from "../chat-queued-turns.js";
 import { resolveClaudeCliBindingSessionId } from "../cli-session-history.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { SerializedJsonArray } from "../serialized-json.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { getMaxChatHistoryMessagesBytes } from "../server-constants.js";
 import { buildGatewaySessionSnapshot } from "../session-event-payload.js";
 import { resolveSessionHistoryUnavailableMessage } from "../session-history-error.js";
@@ -34,6 +35,7 @@ import { prepareProjectedSessionPresentation } from "../session-row-presentation
 import { resolveGatewayModelThinkingProfile } from "../session-utils-model.js";
 import { buildGatewaySessionRow } from "../session-utils-row.js";
 import { getSessionDefaults, resolveSessionModelRef } from "../session-utils.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { prepareSessionWorkspaceIcon } from "../workspace-icon-http.js";
 import {
   boundInFlightRunSnapshotForChatHistory,
@@ -128,6 +130,23 @@ export async function handleChatHistoryRequest({
   try {
     const { selectedSession, entry, queries, readCurrentSharing, rowProjection } = selection;
     const { cfg, agentId: sessionAgentId, storePath, canonicalKey } = selectedSession;
+    if (
+      !isWebchatSessionAllowed({ cfg, client, sessionKey: canonicalKey }) ||
+      isUnauthorizedRawMatrixBrowserSession({
+        cfg,
+        clientInfo: client?.connect?.client,
+        pairedClientId: client?.pairedClientId,
+        sessionKey: canonicalKey,
+        authorizedByBinding: false,
+      })
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.FORBIDDEN, "Matrix conversation access requires the owning app"),
+      );
+      return;
+    }
     const readTranscriptOwner = async () => {
       if (!requestedSessionId) {
         return true;

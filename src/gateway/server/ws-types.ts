@@ -41,6 +41,8 @@ export type GatewayWsClient = PluginNodeCapabilityClient & {
   isDeviceTokenAuth?: boolean;
   /** Client id verified against the server-approved device pairing record. */
   pairedClientId?: string;
+  /** Durable server-attested agent ceiling from a webchat device credential. */
+  allowedAgentIds?: string[];
   usesSharedGatewayAuth: boolean;
   sharedGatewaySessionGeneration?: string;
   authPolicy?: GatewayAuthPolicy;

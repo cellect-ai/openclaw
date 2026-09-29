@@ -330,7 +330,29 @@ export const ChatSendParamsSchema = closedObject({
   expectedSessionRoutingContract: Type.Optional(NonEmptyString),
   expectedPermissionMode: Type.Optional(Type.Union([SessionPermissionModeSchema, Type.Null()])),
   expectedToolOverrides: Type.Optional(Type.Union([SessionToolOverridesSchema, Type.Null()])),
+  completionDeliveryClaim: Type.Optional(Type.String({ minLength: 1, maxLength: 4096 })),
   idempotencyKey: NonEmptyString,
+});
+
+/** Arms an already-authorized completion route when the initiating WebChat is no longer visible. */
+export const ChatHandoffArmParamsSchema = closedObject({
+  runId: NonEmptyString,
+});
+
+/** Marks a completed WebChat answer visible on the initiating device. */
+export const ChatHandoffSeenParamsSchema = closedObject({
+  runId: Type.Optional(NonEmptyString),
+  sessionKey: NonEmptyString,
+});
+
+export const ConversationContinueParamsSchema = closedObject({
+  source: closedObject({
+    channel: Type.Literal("matrix"),
+    roomId: NonEmptyString,
+    threadRootEventId: NonEmptyString,
+    agentMxid: NonEmptyString,
+  }),
+  destinationClaim: Type.String({ minLength: 1, maxLength: 4096 }),
 });
 
 /** Cancels the active or named run for a chat session. */

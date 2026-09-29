@@ -1550,11 +1550,11 @@ describe("deliverOutboundPayloads", () => {
         result: expect.objectContaining({ messageId: "message-adapter-1" }),
       }),
     );
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
-      "mock-queue-id",
-      expectedQueueStateDir,
-      undefined,
-    );
+    expect(commitParams?.kind).toBe("text");
+    expect(commitParams?.result?.messageId).toBe("message-adapter-1");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id", expectedQueueStateDir, {
+      completionReceipt: { platformMessageId: "message-adapter-1" },
+    });
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
