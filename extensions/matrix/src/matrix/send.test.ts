@@ -53,7 +53,7 @@ import {
 } from "./send.test-support.js";
 import {
   MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY,
-  MATRIX_OPENCLAW_STREAM_PHASE_KEY,
+  MATRIX_STREAM_PHASE_CONTENT_KEY,
 } from "./send/types.js";
 
 const loadOutboundMediaFromUrlMock = vi.hoisted(() => vi.fn());
@@ -1413,7 +1413,7 @@ describe("sendSingleTextMessageMatrix", () => {
 
     const content = sentContent(sendMessage);
     expect(content["org.matrix.msc4357.live"]).toEqual({});
-    expect(content[MATRIX_OPENCLAW_STREAM_PHASE_KEY]).toBe("progress");
+    expect(content[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
   });
 
   beforeEach(() => {
@@ -1710,8 +1710,8 @@ describe("editMessageMatrix mentions", () => {
     });
 
     const content = sentContent(sendMessage);
-    expect(content[MATRIX_OPENCLAW_STREAM_PHASE_KEY]).toBe("progress");
-    expect(newContent(content)[MATRIX_OPENCLAW_STREAM_PHASE_KEY]).toBe("progress");
+    expect(content[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
+    expect(newContent(content)[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
   });
 
   beforeEach(() => {

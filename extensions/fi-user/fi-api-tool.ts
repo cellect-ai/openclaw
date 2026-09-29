@@ -9,7 +9,7 @@ import { delegatedFetch, exchange, readFiResponse } from "./fi-delegation.js";
 
 /**
  * Read endpoints fi-user may call, relative to `/api/<requester org>/`. This
- * mirrors Fi's own delegation allowlist (`OPENCLAW_USER_DELEGATION_READ_ROUTES`)
+ * mirrors Fi's own delegation allowlist (`src/lib/openclaw/user-delegation.ts`)
  * so a request Fi would refuse is refused here first, with a clearer message.
  * Each Fi handler still enforces the requester's own project and app grants.
  */

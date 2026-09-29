@@ -28,8 +28,8 @@ type CwdState = { known: true; dir: string } | { known: false };
 type ResolveContext = { cwd: CwdState; depth: number };
 
 const MAX_NESTING_DEPTH = 6;
-const HEREDOC_MARKER_PREFIX = "__OPENCLAW_HEREDOC_";
-const SUBSTITUTION_PLACEHOLDER = "$__OPENCLAW_SUBSTITUTION__";
+const HEREDOC_MARKER_PREFIX = "__openclaw_heredoc_";
+const SUBSTITUTION_PLACEHOLDER = "$__openclaw_substitution__";
 const PYTHON_EXECUTABLE_RE = /^python(?:3(?:\.\d+)?)?$/u;
 const SHELL_EXECUTABLE_RE = /^(?:bash|dash|ksh|sh|zsh)$/u;
 const LEADING_KEYWORDS = new Set([
@@ -81,7 +81,7 @@ function isWordStart(out: string): boolean {
 }
 
 /**
- * Removes heredoc bodies and comments, leaving `<<__OPENCLAW_HEREDOC_n__`
+ * Removes heredoc bodies and comments, leaving `<<__openclaw_heredoc_n__`
  * markers so each command segment can find the heredoc feeding it.
  */
 function extractHeredocs(raw: string): { text: string; heredocs: Heredoc[] } | null {
