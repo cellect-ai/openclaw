@@ -355,6 +355,10 @@ export function createTalkRealtimeRelaySession(
         return;
       }
       if (event.type === "response.created") {
+        if (outputOwnership.takeSuperseded()) {
+          currentOutputItemId = undefined;
+          clearPlayback("barge-in");
+        }
         // Response admission owns work status; asynchronous input transcripts do not.
         const turnId = outputOwnership.resolve(false, "response-created");
         if (turnId) {
@@ -474,7 +478,7 @@ export function createTalkRealtimeRelaySession(
         confirmationReadiness.observeUserTranscript(text, false);
       }
       const previousTranscriptSeq = relay.voiceTranscriptSeq;
-      if (final && !enqueueRelayVoiceTranscript(relay, role, text)) {
+      if (final && !enqueueRelayVoiceTranscript(relay, role, text, update)) {
         return;
       }
       const transcriptIdentity =
