@@ -238,6 +238,73 @@ describe("planProjectionReconcile", () => {
   });
 });
 
+describe("publication equivalence", () => {
+  const bot: SourceProjectionMessage = {
+    messageId: "1700000000.000002",
+    senderId: "UBOT",
+    role: "assistant",
+    displayName: "cellect-fi",
+    content: "Done\n📎 [a.xlsx](https://ws.slack.com/files/UREADER1/F123/a.xlsx)",
+  };
+  const render = (message: SourceProjectionMessage) =>
+    `**Slack · ${message.displayName}**\n${message.content}`;
+  const published = (message: SourceProjectionMessage, hashOf = message) => ({
+    body: render(message),
+    [SOURCE_CONTENT_REVISION_KEY]: { contentHash: sourceMessageContentHash(hashOf) },
+    [key]: {
+      version: 2,
+      origin: {
+        provider: "slack",
+        messageId: message.messageId,
+        actorId: message.senderId,
+        displayName: message.displayName,
+      },
+      role: message.role,
+      publicationRevision: 1,
+      partIndex: 0,
+      partCount: 1,
+      complete: true,
+    },
+  });
+  const withRender = { publishable: true, render };
+
+  it("does not edit a copy that already shows what would be published (agentId-only hash drift)", () => {
+    const desired = { ...bot, agentId: "cellect-fi-user" };
+    const recorded = history([own("$a", published(bot))]);
+    expect(planProjectionReconcile(recorded, snapshotOf(desired), withRender)).toEqual([
+      expect.objectContaining({ kind: "unchanged", revision: 1, finalEventId: "$a" }),
+    ]);
+    // Without a renderer the hash alone decides, as before.
+    expect(planProjectionReconcile(recorded, snapshotOf(desired), bound)).toEqual([
+      { kind: "edit", messageId: bot.messageId, eventId: "$a", revision: 2 },
+    ]);
+  });
+
+  it("ignores the viewer segment of a Slack file permalink", () => {
+    const reread = {
+      ...bot,
+      content: bot.content.replace("/files/UREADER1/", "/files/UREADER2/"),
+    };
+    const recorded = history([own("$a", published(bot))]);
+    expect(planProjectionReconcile(recorded, snapshotOf(reread), withRender)).toEqual([
+      expect.objectContaining({ kind: "unchanged", finalEventId: "$a" }),
+    ]);
+  });
+
+  it("still edits when the visible text, author name or role changes", () => {
+    const recorded = history([own("$a", published(bot))]);
+    for (const changed of [
+      { ...bot, content: "Done, with a correction" },
+      { ...bot, displayName: "Fi Assistant" },
+      { ...bot, role: "user" as const },
+    ]) {
+      expect(planProjectionReconcile(recorded, snapshotOf(changed), withRender)).toEqual([
+        { kind: "edit", messageId: bot.messageId, eventId: "$a", revision: 2 },
+      ]);
+    }
+  });
+});
+
 describe("v1 continuation chunks", () => {
   // v1 split a long Slack message into back-to-back events and marked only
   // the first; the reconciler later edited that first event into the complete

@@ -27,6 +27,7 @@ import {
   type ProjectionAction,
   type ProjectionHistory,
   type SourceProjectionMessage,
+  sourceMessageBody,
   type SourceProjectionSnapshot,
 } from "./session-projection-plan.js";
 import { sourceProjectionAdapter } from "./source-projection-adapter.js";
@@ -49,30 +50,6 @@ export const MATRIX_SESSION_PROJECTION_CONTENT_KEY = MATRIX_PROJECTION_CONTENT_K
 const EDIT_READ_CONCURRENCY = 16;
 const PROJECTION_DECRYPT_BATCH_SIZE = 4;
 const RECONCILE_DEADLINE_MS = 45_000;
-
-export function projectionText(params: {
-  channel: string;
-  role: "user" | "assistant";
-  text: string;
-  senderId?: string;
-  agentId?: string;
-  displayName?: string;
-}): string {
-  const author = params.displayName || params.agentId || params.senderId;
-  const speaker = author
-    ? author
-        .replace(/[\\`*_[\]<>]/g, "")
-        .replace(/\s+/g, " ")
-        .slice(0, 100)
-    : params.role === "user"
-      ? "User"
-      : "Assistant";
-  const source =
-    params.channel === "webchat"
-      ? "OpenClaw"
-      : `${params.channel.slice(0, 1).toUpperCase()}${params.channel.slice(1)}`;
-  return `**${source} · ${speaker}**\n${params.text}`;
-}
 
 function hasAsciiControl(value: string): boolean {
   return Array.from(value).some((character) => {
@@ -405,14 +382,7 @@ export async function applyProjectionPlan(params: {
     const extraContent = {
       [SOURCE_CONTENT_REVISION_KEY]: { contentHash },
     };
-    const body = projectionText({
-      channel: provider,
-      role: message.role,
-      text: message.content || "[Message has no text]",
-      senderId: message.senderId,
-      agentId: message.agentId,
-      displayName: message.displayName,
-    });
+    const body = sourceMessageBody(provider, message);
     let acceptedMessageId: string;
     if (action.kind === "edit") {
       // The plan chose an in-place edit because the binding could publish;
@@ -550,6 +520,7 @@ export async function reconcileMatrixProjectionSnapshot(params: {
           resolveProjectionBinding(params.accountId, params.roomId, params.threadId),
         ),
         retireThreadId: params.retireThreadId,
+        render: (message) => sourceMessageBody(provider, message),
       });
       const applied: RegistryAction[] = [];
       const registry = sourceRegistryConfig();
@@ -668,6 +639,7 @@ export async function planMatrixProjectionRoom(params: {
       const binding = resolveProjectionBinding(accountId, roomId, threadRootEventId);
       const actions = planProjectionReconcile(history, snapshot, {
         publishable: bindingPublishes(binding),
+        render: (message) => sourceMessageBody(provider, message),
       });
       const mapping = projectionMapping(history);
       const identity =
