@@ -1,0 +1,47 @@
+{
+  "id": "fi-user",
+  "activation": { "onStartup": true },
+  "enabledByDefault": false,
+  "name": "Fi User Delegation",
+  "description": "Requester-bound Fi, Gmail, Google Drive, data-room, e-sign and admin-request tools for the Cellect Fi agent, plus requester attribution for Cellect Fi Admin shell work.",
+  "contracts": {
+    "tools": [
+      "fi_user_api",
+      "fi_user_gmail",
+      "fi_user_gdrive",
+      "fi_user_dataroom",
+      "fi_user_deliver_file",
+      "fi_user_esign",
+      "fi_user_budget_import",
+      "request_admin_action"
+    ]
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "baseUrl": { "type": "string", "minLength": 1 },
+      "brokerTokenEnv": { "type": "string", "minLength": 1 },
+      "matrixTenantOrgId": { "type": "string", "minLength": 1 },
+      "matrixEnvironments": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["baseUrl", "brokerTokenEnv"],
+          "properties": {
+            "baseUrl": { "type": "string", "minLength": 1 },
+            "brokerTokenEnv": { "type": "string", "minLength": 1 }
+          }
+        }
+      },
+      "gamBinary": { "type": "string", "minLength": 1 },
+      "gamConfigDir": { "type": "string", "minLength": 1 },
+      "sharedInboxMailbox": { "type": "string", "minLength": 3 },
+      "adminApprovers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+      "adminPrincipals": { "type": "array", "items": { "type": "string", "minLength": 1 } },
+      "adminAgentId": { "type": "string", "minLength": 1 },
+      "projectionFullRefreshesPerTick": { "type": "integer", "minimum": 0 }
+    }
+  }
+}

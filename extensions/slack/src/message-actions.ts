@@ -33,7 +33,7 @@ export function listSlackMessageActions(
   const actions: ChannelMessageActionName[] = ["send"];
   for (const [gate, enabledActions] of [
     ["reactions", ["react", "reactions"]],
-    ["messages", ["conversation-open", "read", "edit", "delete", "download-file", "upload-file"]],
+    ["messages", ["conversation-open", "thread-reply", "read", "edit", "delete", "download-file", "upload-file"]],
     ["pins", ["pin", "unpin", "list-pins"]],
     ["memberInfo", ["member-info"]],
     ["emojiList", ["emoji-list"]],
@@ -51,6 +51,7 @@ export function extractSlackToolSend(args: Record<string, unknown>): ChannelTool
     action !== "sendMessage" &&
     action !== "uploadFile" &&
     action !== "send" &&
+    action !== "thread-reply" &&
     action !== "upload-file"
   ) {
     return null;
@@ -64,7 +65,7 @@ export function extractSlackToolSend(args: Record<string, unknown>): ChannelTool
   const replyTo =
     typeof args.replyTo === "string" ? normalizeSlackThreadTsCandidate(args.replyTo) : undefined;
   const threadTs =
-    action === "send"
+    action === "send" || action === "thread-reply"
       ? resolveSlackThreadTsValue({ replyToId: replyTo, threadId: extracted.threadId })
       : action === "upload-file"
         ? (normalizeSlackThreadTsCandidate(extracted.threadId) ?? replyTo)

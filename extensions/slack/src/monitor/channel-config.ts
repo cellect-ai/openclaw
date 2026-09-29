@@ -9,7 +9,9 @@ import { mergePairLoopGuardConfig } from "openclaw/plugin-sdk/pair-loop-guard-ru
 import { buildSlackChannelIdCandidates, buildSlackChannelPolicyScope } from "../group-policy.js";
 import { normalizeSlackSlug, resolveSlackUserAllowListForTeam } from "./allow-list.js";
 
-type SlackChannelConfigEntry = Omit<SlackChannelConfig, "tools" | "toolsBySender">;
+type SlackChannelConfigEntry = Omit<SlackChannelConfig, "tools" | "toolsBySender"> & {
+  requestUsers?: Array<string | number>;
+};
 
 export type SlackChannelConfigResolved = Omit<
   SlackChannelConfigEntry,
@@ -101,6 +103,15 @@ export function resolveSlackChannelConfig(params: {
     // ingress treats differently scoped values as non-matching.
     preserveUnmatchedScopedEntries: true,
   });
+  const configuredRequestUsers = firstDefined(resolved.requestUsers, fallback?.requestUsers);
+  const requestUsers =
+    configuredRequestUsers === undefined
+      ? undefined
+      : resolveSlackUserAllowListForTeam({
+          allowList: configuredRequestUsers,
+          teamId: params.teamId,
+          preserveUnmatchedScopedEntries: true,
+        });
   const skills = firstDefined(resolved.skills, fallback?.skills);
   const systemPrompt = firstDefined(resolved.systemPrompt, fallback?.systemPrompt);
   const presenceEvents = firstDefined(resolved.presenceEvents, fallback?.presenceEvents);
@@ -113,6 +124,7 @@ export function resolveSlackChannelConfig(params: {
     allowBots,
     botLoopProtection,
     users: users.length > 0 ? users : undefined,
+    requestUsers,
     skills,
     systemPrompt,
     presenceEvents,

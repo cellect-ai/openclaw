@@ -919,6 +919,207 @@ describe("handleSlackMessageAction", () => {
     expectForwardedCfg(invoke, cfg);
   });
 
+  it("reads the conversation and message named by a pasted Slack permalink", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "read",
+        cfg: {},
+        params: {
+          to: "C_CURRENT",
+          permalink:
+            "https://cellect.slack.com/archives/D0AB12CD3/p1789143892594259?thread_ts=1789143800.000100&cid=D0AB12CD3",
+        },
+      } as never,
+      invoke: invoke as never,
+      includeReadThreadId: true,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "readMessages",
+      channelId: "D0AB12CD3",
+      messageId: "1789143892.594259",
+      threadId: "1789143800.000100",
+    });
+  });
+
+  it("points a file permalink passed to read at download-file", async () => {
+    const invoke = createInvokeSpy();
+
+    await expect(
+      handleSlackMessageAction({
+        providerId: "slack",
+        ctx: {
+          action: "read",
+          cfg: {},
+          params: {
+            permalink: "https://cellect.slack.com/files/U0AD36FDHFC/F0BU7FTCM60/phase_i.pdf",
+          },
+        } as never,
+        invoke: invoke as never,
+      }),
+    ).rejects.toThrow('use action="download-file"');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("maps a file permalink to a share-resolved original download", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "download-file",
+        cfg: slackConfig(),
+        params: {
+          permalink: "https://cellect.slack.com/files/U0AD36FDHFC/F0BU7FTCM60/phase_i.pdf",
+          original: true,
+        },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "downloadFile",
+      fileId: "F0BU7FTCM60",
+      fromPermalink: true,
+      original: true,
+    });
+    expect(firstAction(invoke).channelId).toBeUndefined();
+  });
+
+  it("maps a message permalink to that message's attachments", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "download-file",
+        cfg: slackConfig(),
+        params: { permalink: "https://cellect.slack.com/archives/C0AB12CD3/p1789143892594259" },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "downloadFile",
+      channelId: "C0AB12CD3",
+      messageId: "1789143892.594259",
+    });
+    expect(firstAction(invoke).fileId).toBeUndefined();
+  });
+
+  it("routes thread-reply through send with the named parent thread", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "thread-reply",
+        cfg: slackConfig(),
+        params: { to: "C1", threadId: "1712345678.000100", message: "done" },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "sendMessage",
+      to: "C1",
+      content: "done",
+      threadTs: "1712345678.000100",
+    });
+  });
+
+  it("defaults thread-reply to the current Slack thread", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "thread-reply",
+        cfg: slackConfig(),
+        params: { to: "C1", message: "done" },
+        toolContext: { currentChannelProvider: "slack", currentThreadTs: "1712345678.000200" },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "sendMessage",
+      threadTs: "1712345678.000200",
+    });
+  });
+
+  it("rejects thread-reply without any thread to reply in", async () => {
+    const invoke = createInvokeSpy();
+
+    await expect(
+      handleSlackMessageAction({
+        providerId: "slack",
+        ctx: {
+          action: "thread-reply",
+          cfg: slackConfig(),
+          params: { to: "C1", message: "done" },
+        } as never,
+        invoke: invoke as never,
+      }),
+    ).rejects.toThrow("Slack thread-reply requires threadId");
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("explains why Slack search is unavailable instead of a generic unsupported error", async () => {
+    const invoke = createInvokeSpy();
+
+    await expect(
+      handleSlackMessageAction({
+        providerId: "slack",
+        ctx: { action: "search", cfg: slackConfig(), params: { query: "title" } } as never,
+        invoke: invoke as never,
+      }),
+    ).rejects.toThrow(/search\.messages API requires a user token/);
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it("maps a bounded fileIds batch to one internal download action", async () => {
+    const invoke = createInvokeSpy();
+
+    await handleSlackMessageAction({
+      providerId: "slack",
+      ctx: {
+        action: "download-file",
+        cfg: slackConfig(),
+        params: {
+          channelId: "C1",
+          fileIds: ["F1", "F2", "F1"],
+          threadId: "111.222",
+        },
+      } as never,
+      invoke: invoke as never,
+    });
+
+    expect(firstAction(invoke)).toMatchObject({
+      action: "downloadFile",
+      fileIds: ["F1", "F2"],
+      channelId: "C1",
+      threadId: "111.222",
+    });
+  });
+
+  it("rejects ambiguous single and batch file ids", async () => {
+    await expect(
+      handleSlackMessageAction({
+        providerId: "slack",
+        ctx: {
+          action: "download-file",
+          cfg: slackConfig(),
+          params: { channelId: "C1", fileId: "F1", fileIds: ["F2"] },
+        } as never,
+        invoke: createInvokeSpy() as never,
+      }),
+    ).rejects.toThrow("exactly one of fileId, fileIds, or allThreadFiles");
+  });
+
   it("forwards tool context for current-channel download-file actions", async () => {
     const invoke = createInvokeSpy();
     const cfg = slackConfig();

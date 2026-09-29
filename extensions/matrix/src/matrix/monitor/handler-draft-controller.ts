@@ -86,7 +86,7 @@ export async function createMatrixDraftController(params: {
       if (!draftStream) {
         return false;
       }
-      draftStream.update(previewText);
+      draftStream.update(previewText, "progress");
       if (options?.flush) {
         await draftStream.flush();
       }
@@ -141,7 +141,7 @@ export async function createMatrixDraftController(params: {
     )?.endOffset;
     const blockText = latestDraftFullText.slice(currentDraftBlockOffset, nextDraftBoundaryOffset);
     if (blockText) {
-      draftStream?.update(blockText);
+      draftStream?.update(blockText, "answer");
     }
   };
 

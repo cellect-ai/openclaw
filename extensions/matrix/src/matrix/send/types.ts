@@ -38,6 +38,10 @@ export const EventType = {
 } as const;
 
 export const MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY = "com.openclaw.finalized_preview" as const;
+export const MATRIX_STREAM_PHASE_CONTENT_KEY = "com.openclaw.stream_phase" as const;
+
+/** Semantic phase of a Matrix draft, independent of whether it is still live. */
+export type MatrixStreamPhase = "progress" | "answer";
 
 export type MatrixDirectAccountData = Record<string, string[]>;
 
@@ -113,6 +117,8 @@ export type MatrixSendOpts = {
   signal?: AbortSignal;
   /** Additional Matrix event content fields to merge into the first sent event. */
   extraContent?: MatrixExtraContentFields;
+  /** Plugin-owned capability; public/model-authored extraContent cannot mint provenance. */
+  publication?: import("../projection-publication.js").MatrixPublication;
   /** Send audio as voice message instead of audio file. Defaults to false. */
   audioAsVoice?: boolean;
   /** Persist each concrete platform send before any later event can fail. */

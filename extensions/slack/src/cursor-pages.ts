@@ -16,6 +16,19 @@ export const fetchSlackChannelListPage = (client: WebClient, cursor?: string) =>
     cursor,
   });
 
+/**
+ * The bot's open direct-message conversations. Listed separately from rooms
+ * because Slack reports an `im` with neither `is_member` nor a name, so the two
+ * shapes cannot share one filter.
+ */
+export const fetchSlackDirectListPage = (client: WebClient, cursor?: string) =>
+  client.conversations.list({
+    types: "im",
+    exclude_archived: true,
+    limit: 1000,
+    cursor,
+  });
+
 export async function collectSlackCursorPages<
   TItem,
   TResponse extends SlackCursorResponse,

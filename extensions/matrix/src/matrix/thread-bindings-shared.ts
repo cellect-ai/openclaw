@@ -3,6 +3,8 @@ import type {
   SessionBindingRecord,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { resolveThreadBindingLifecycle } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
+import { getOptionalMatrixRuntime } from "../runtime.js";
+import type { ProjectionExternalSource } from "./projection-source.js";
 
 type MatrixThreadBindingTargetKind = "subagent" | "acp";
 
@@ -15,6 +17,16 @@ export type MatrixThreadBindingRecord = {
   agentId?: string;
   label?: string;
   boundBy?: string;
+  externalSource?: ProjectionExternalSource;
+  sourceReplyAuthorization?: string;
+  sourceAccountId?: string;
+  sourceActorId?: string;
+  environment?: string;
+  projectedConversationId?: string;
+  sourceSnapshotDigest?: string;
+  sourceSnapshotReconciledAtMs?: number;
+  /** Last source-registry writer generation issued for this room. */
+  registryGeneration?: number;
   boundAt: number;
   lastActivityAt: number;
   idleTimeoutMs?: number;
@@ -51,6 +63,20 @@ type MatrixThreadBindingManagerCacheEntry = {
 
 const MANAGERS_BY_ACCOUNT_ID = new Map<string, MatrixThreadBindingManagerCacheEntry>();
 const BINDINGS_BY_ACCOUNT_CONVERSATION = new Map<string, MatrixThreadBindingRecord>();
+
+export function isMatrixReadOnlyProjectionRoom(accountId: string, roomId: string): boolean {
+  const protocol = getOptionalMatrixRuntime()?.channel?.runtimeContexts?.get<{ protocol: string }>({
+    channelId: "matrix",
+    capability: "source-session-authorization",
+  })?.protocol;
+  return [...BINDINGS_BY_ACCOUNT_CONVERSATION.values()].some(
+    (record) =>
+      record.accountId === accountId &&
+      record.boundBy === "session-projection-read-only" &&
+      (!record.sourceReplyAuthorization || record.sourceReplyAuthorization !== protocol) &&
+      (record.parentConversationId === roomId || record.conversationId === roomId),
+  );
+}
 
 export function resolveBindingKey(params: {
   accountId: string;
@@ -97,6 +123,15 @@ export function toSessionBindingRecord(
       agentId: record.agentId,
       label: record.label,
       boundBy: record.boundBy,
+      externalSource: record.externalSource,
+      sourceReplyAuthorization: record.sourceReplyAuthorization,
+      sourceAccountId: record.sourceAccountId,
+      sourceActorId: record.sourceActorId,
+      environment: record.environment,
+      projectedConversationId: record.projectedConversationId,
+      sourceSnapshotDigest: record.sourceSnapshotDigest,
+      sourceSnapshotReconciledAtMs: record.sourceSnapshotReconciledAtMs,
+      registryGeneration: record.registryGeneration,
       lastActivityAt: record.lastActivityAt,
       idleTimeoutMs,
       maxAgeMs,
@@ -106,6 +141,23 @@ export function toSessionBindingRecord(
 
 export function setBindingRecord(record: MatrixThreadBindingRecord): void {
   BINDINGS_BY_ACCOUNT_CONVERSATION.set(resolveBindingKey(record), record);
+}
+
+/**
+ * Records the room's last source-registry writer generation on its binding.
+ * Persisted batched with activity touches, leaving activity unchanged; the
+ * generation is a hybrid clock, so a write lost to a crash is never reissued lower.
+ */
+export function setMatrixBindingRegistryGeneration(bindingId: string, generation: number): void {
+  const record = BINDINGS_BY_ACCOUNT_CONVERSATION.get(bindingId);
+  if (!record || !Number.isSafeInteger(generation) || generation <= 0) {
+    return;
+  }
+  setBindingRecord({
+    ...record,
+    registryGeneration: Math.max(record.registryGeneration ?? 0, generation),
+  });
+  getMatrixThreadBindingManager(record.accountId)?.touchBinding(bindingId, record.lastActivityAt);
 }
 
 export function removeBindingRecord(

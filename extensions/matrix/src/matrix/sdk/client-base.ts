@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
+  ClientEvent,
   Filter,
   createClient as createMatrixJsClient,
   type IFilterDefinition,
@@ -44,6 +45,27 @@ import type { MatrixVerificationSummary } from "./verification-manager.js";
 type MatrixCryptoRuntime = typeof import("./crypto-runtime.js");
 
 const MATRIX_ENCRYPTED_STARTUP_TIMEOUT_MS = 60_000;
+
+type HeadlessMatrixRtcControl = {
+  matrixRTC?: { stop: () => void };
+  startMatrixRTC?: (...args: unknown[]) => void;
+};
+
+function disableHeadlessMatrixRtc(client: MatrixJsClient): void {
+  const rtcControl = client as unknown as HeadlessMatrixRtcControl;
+  // matrix-js-sdk starts its RTC membership manager after initial sync even
+  // when VoIP is disabled. OpenClaw's Matrix plugin is a headless messaging
+  // client; voice uses the gateway Talk relay, so walking RTC state for every
+  // joined room only blocks the gateway event loop.
+  if (typeof rtcControl.startMatrixRTC === "function") {
+    client.off(ClientEvent.Sync, rtcControl.startMatrixRTC);
+    // startClient() registers this callback again, so removing the constructor
+    // listener alone is not sufficient. Replace the SDK-private callback before
+    // startup so the later registration is inert as well.
+    rtcControl.startMatrixRTC = () => {};
+  }
+  rtcControl.matrixRTC?.stop();
+}
 
 let loadedMatrixCryptoRuntime: MatrixCryptoRuntime | null = null;
 
@@ -242,6 +264,7 @@ export abstract class MatrixClientBase {
         VerificationMethod.Reciprocate,
       ],
     });
+    disableHeadlessMatrixRtc(this.client);
     // SDK mappers and relations also call this method. Crypto retries belong to
     // the client generation, while their callers retain their own read authority.
     const decryptEventIfNeeded = this.client.decryptEventIfNeeded.bind(this.client);

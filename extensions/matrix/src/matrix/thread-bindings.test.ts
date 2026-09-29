@@ -100,7 +100,7 @@ describe("matrix thread bindings", () => {
     targetSessionKey?: string;
     conversationId?: string;
     parentConversationId?: string;
-    metadata?: { introText?: string };
+    metadata?: { introText?: string | false };
   }) {
     return getSessionBindingService().bind({
       targetSessionKey: params?.targetSessionKey ?? "agent:ops:subagent:child",
@@ -226,6 +226,8 @@ describe("matrix thread bindings", () => {
       placement: "child",
       metadata: {
         introText: "intro root",
+        idleTimeoutMs: 0,
+        maxAgeMs: 0,
       },
     });
 
@@ -240,6 +242,16 @@ describe("matrix thread bindings", () => {
       conversationId: "$root",
       parentConversationId: "!room:example",
     });
+    expect(binding.expiresAt).toBeUndefined();
+    expect(binding.metadata).toMatchObject({ idleTimeoutMs: 0, maxAgeMs: 0 });
+  });
+
+  it("persists a pre-created native root without publishing a second introduction", async () => {
+    await createBindingManager();
+    const binding = await bindCurrentThread({ metadata: { introText: false } });
+    expect(binding.conversation.conversationId).toBe("$thread");
+    expect(sendMessageMatrixMock).not.toHaveBeenCalled();
+    expect((await readPersistedBindings(await resolveBindingsFilePath())).bindings).toHaveLength(1);
   });
 
   it("posts intro messages inside existing Matrix threads for current placement", async () => {
@@ -332,41 +344,119 @@ describe("matrix thread bindings", () => {
     }
   });
 
-  it("sends threaded farewell messages when bindings are unbound", async () => {
-    await createBindingManager({
-      idleTimeoutMs: 1_000,
-      maxAgeMs: 0,
-    });
+  it.each([false, true])(
+    "persists provider-neutral source identity and authorization across restart (authorized=%s)",
+    async (authorized) => {
+      await createBindingManager({ idleTimeoutMs: 0, maxAgeMs: 0 });
+      const externalSource = {
+        provider: "slack",
+        workspaceId: "T123",
+        channelId: "C123",
+        rootMessageId: "1700000000.000001",
+      };
+      const sourceSnapshotDigest = "a".repeat(64);
+      const sourceSnapshotReconciledAtMs = 1_700_000_000_000;
+      const sourceActorId = "fi-user-123";
+      const binding = await getSessionBindingService().bind({
+        targetSessionKey: "agent:ops:slack:channel:c123",
+        targetKind: "session",
+        conversation: {
+          channel: "matrix",
+          accountId: "ops",
+          conversationId: "$source",
+          parentConversationId: "!source:example",
+        },
+        placement: "current",
+        metadata: {
+          boundBy: "session-projection-read-only",
+          externalSource,
+          sourceSnapshotDigest,
+          sourceSnapshotReconciledAtMs,
+          sourceActorId,
+          ...(authorized
+            ? { sourceReplyAuthorization: "fi-v1", sourceAccountId: "slack-source" }
+            : {}),
+        },
+      });
+      expect(binding.metadata?.externalSource).toEqual(externalSource);
+      expect(binding.metadata).toMatchObject({
+        sourceSnapshotDigest,
+        sourceSnapshotReconciledAtMs,
+        sourceActorId,
+      });
+      expect(await readPersistedBindings(await resolveBindingsFilePath())).toMatchObject({
+        bindings: [
+          expect.objectContaining({
+            externalSource,
+            sourceSnapshotDigest,
+            sourceSnapshotReconciledAtMs,
+            sourceActorId,
+            ...(authorized
+              ? { sourceReplyAuthorization: "fi-v1", sourceAccountId: "slack-source" }
+              : {}),
+          }),
+        ],
+      });
+      await resetThreadBindingAdapters();
+      const restarted = await createBindingManager({ idleTimeoutMs: 0, maxAgeMs: 0 });
+      expect(restarted.listBindings()).toEqual([
+        expect.objectContaining({
+          externalSource,
+          sourceSnapshotDigest,
+          sourceSnapshotReconciledAtMs,
+          sourceActorId,
+          ...(authorized
+            ? { sourceReplyAuthorization: "fi-v1", sourceAccountId: "slack-source" }
+            : {}),
+        }),
+      ]);
+    },
+  );
 
-    const binding = await getSessionBindingService().bind({
-      targetSessionKey: "agent:ops:subagent:child",
-      targetKind: "subagent",
-      conversation: {
-        channel: "matrix",
-        accountId: "ops",
-        conversationId: "$thread",
-        parentConversationId: "!room:example",
-      },
-      placement: "current",
-      metadata: {
-        introText: "intro thread",
-      },
-    });
+  it.each([false, true])(
+    "handles farewell suppression for rebased projections (%s)",
+    async (rebased) => {
+      await createBindingManager({
+        idleTimeoutMs: 1_000,
+        maxAgeMs: 0,
+      });
 
-    sendMessageMatrixMock.mockClear();
-    await getSessionBindingService().unbind({
-      bindingId: binding.bindingId,
-      reason: "idle-expired",
-    });
+      const binding = await getSessionBindingService().bind({
+        targetSessionKey: "agent:ops:subagent:child",
+        targetKind: "subagent",
+        conversation: {
+          channel: "matrix",
+          accountId: "ops",
+          conversationId: "$thread",
+          parentConversationId: "!room:example",
+        },
+        placement: "current",
+        metadata: {
+          introText: "intro thread",
+          ...(rebased ? { boundBy: "session-projection-read-only" } : {}),
+        },
+      });
 
-    const [to, message, options] = latestSendMessageCall();
-    const sendOptions = options as { cfg?: unknown; accountId?: string; threadId?: string };
-    expect(to).toBe("room:!room:example");
-    expect(message).toContain("Conversation binding expired");
-    expect(sendOptions.cfg).toEqual({});
-    expect(sendOptions.accountId).toBe("ops");
-    expect(sendOptions.threadId).toBe("$thread");
-  });
+      sendMessageMatrixMock.mockClear();
+      await getSessionBindingService().unbind({
+        bindingId: binding.bindingId,
+        reason: rebased ? "projection-history-rebased" : "idle-expired",
+      });
+
+      if (rebased) {
+        expect(sendMessageMatrixMock).not.toHaveBeenCalled();
+        return;
+      }
+
+      const [to, message, options] = latestSendMessageCall();
+      const sendOptions = options as { cfg?: unknown; accountId?: string; threadId?: string };
+      expect(to).toBe("room:!room:example");
+      expect(message).toContain("Conversation binding expired");
+      expect(sendOptions.cfg).toEqual({});
+      expect(sendOptions.accountId).toBe("ops");
+      expect(sendOptions.threadId).toBe("$thread");
+    },
+  );
 
   it("does not reload persisted bindings after the Matrix access token changes while deviceId is unknown", async () => {
     const initialAuth = {

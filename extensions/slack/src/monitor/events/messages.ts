@@ -18,6 +18,7 @@ import type { SlackMonitorContext } from "../context.js";
 import { resolveSlackListenerEventScope, type SlackEventScope } from "../event-scope.js";
 import { resolveSlackIngressTurnLifecycle, resolveSlackSenderAuthentication } from "../ingress.js";
 import type { SlackMessageHandler } from "../message-handler.js";
+import { maybeWarnSlackPaymentDetails } from "../payment-detail-warning.js";
 import type { SlackMessageChangedEvent } from "../types.js";
 import { resolveSlackMessageSubtypeHandler } from "./message-subtype-handlers.js";
 import { authorizeAndResolveSlackSystemEventContext } from "./system-event-context.js";
@@ -276,6 +277,8 @@ export function registerSlackMessageEvents(params: {
 
       const inbound = assistantChangedInbound ?? message;
       noteConversationMessage(inbound, eventScope);
+      // Independent of mention gating: every channel message is screened, off the reply path.
+      void maybeWarnSlackPaymentDetails({ ctx, message: inbound, eventScope });
       await handleSlackMessage(inbound, {
         source: "message",
         // Assistant metadata identifies an asserted sender, not Slack's event actor.
