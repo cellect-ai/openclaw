@@ -25,6 +25,7 @@ vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentConten
 import { adminActionSessions } from "./admin-action.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
+import { registerFiUserMatrixEnvironmentTests } from "./tools.matrix-environment.test-support.js";
 
 type ToolFactory = (context: OpenClawPluginToolContext) => AnyAgentTool | AnyAgentTool[] | null;
 type Hook = (event: never, context: never) => unknown;
@@ -133,7 +134,7 @@ function context(overrides: Partial<OpenClawPluginToolContext> = {}) {
 }
 
 type Route = (url: URL, init: RequestInit) => Response | Promise<Response> | undefined;
-let routes: Route[] = [];
+const routes: Route[] = [];
 const calls: Array<{ url: string; init: RequestInit }> = [];
 
 function json(body: unknown, status = 200) {
@@ -167,7 +168,7 @@ beforeEach(() => {
     "FI_THREADS_ENV_BY_ACCOUNT",
     JSON.stringify({ "fi-user": "prod", "fi-user-dev": "dev" }),
   );
-  routes = [];
+  routes.length = 0;
   calls.length = 0;
   vi.stubGlobal(
     "fetch",
@@ -231,110 +232,16 @@ describe("fi_user_api", () => {
     });
   });
 
-  it.each([
-    { accountId: "fi-user", origin: "https://fi.example.test", broker: BROKER },
-    { accountId: "fi-user-dev", origin: "https://dev-fi.example.test", broker: "dev-broker-token" },
-  ])(
-    "uses the $accountId environment for Matrix delegation and subsequent API calls",
-    async ({ accountId, origin, broker }) => {
-      routes.push((url) =>
-        url.pathname === "/api/shape/documents/search" ? json({ results: [] }) : undefined,
-      );
-      await plugin()
-        .tool(
-          "fi_user_api",
-          context({
-            messageChannel: "matrix",
-            agentAccountId: accountId,
-            requesterSenderId: "@member:threads.example",
-            sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
-          }),
-        )
-        .execute("c2", { path: "/api/shape/documents/search", query: { q: "title commitment" } });
-      expect(delegationBody()).toEqual({
-        requesterMatrixUserId: "@member:threads.example",
-        agentId: "cellect-fi-user",
-      });
-      const delegationCall = calls.find((call) =>
-        call.url.endsWith("/api/openclaw-user-delegation"),
-      );
-      expect(delegationCall?.url).toBe(`${origin}/api/openclaw-user-delegation`);
-      expect(authorization(delegationCall!.init)).toBe(`Bearer ${broker}`);
-      expect(
-        calls.some(
-          (entry) => entry.url === `${origin}/api/shape/documents/search?q=title+commitment`,
-        ),
-      ).toBe(true);
-    },
-  );
-
-  it.each([
-    { label: "missing account", accountId: undefined, delivery: undefined },
-    { label: "unknown account", accountId: "unknown", delivery: undefined },
-    {
-      label: "conflicting route",
-      accountId: "fi-user-dev",
-      delivery: { channel: "matrix", accountId: "fi-user" },
-    },
-    {
-      label: "wrong fallback channel",
-      accountId: undefined,
-      delivery: { channel: "slack", accountId: "fi-user" },
-    },
-  ])("refuses Matrix $label before delegation", async ({ accountId, delivery }) => {
-    await expect(
-      plugin()
-        .tool(
-          "fi_user_api",
-          context({
-            messageChannel: "matrix",
-            requesterSenderId: "@member:threads.example",
-            agentAccountId: accountId,
-            deliveryContext: delivery,
-          }),
-        )
-        .execute("bad", { path: "/api/shape/documents/search" }),
-    ).rejects.toThrow(/Matrix.*(environment|route)/);
-    expect(calls).toEqual([]);
+  registerFiUserMatrixEnvironmentTests({
+    BROKER,
+    authorization,
+    calls,
+    context,
+    delegationBody,
+    json,
+    plugin,
+    routes,
   });
-
-  it("uses a trusted Matrix delivery account when the requester account is absent", async () => {
-    routes.push((url) =>
-      url.pathname === "/api/shape/documents/search" ? json({ results: [] }) : undefined,
-    );
-    await plugin()
-      .tool(
-        "fi_user_api",
-        context({
-          messageChannel: "matrix",
-          requesterSenderId: "@member:threads.example",
-          agentAccountId: undefined,
-          deliveryContext: { channel: "matrix", accountId: "fi-user-dev" },
-        }),
-      )
-      .execute("fallback", { path: "/api/shape/documents/search" });
-    expect(calls.every((call) => call.url.startsWith("https://dev-fi.example.test/"))).toBe(true);
-  });
-
-  it.each(["invalid-json", JSON.stringify({ "fi-user-dev": "unconfigured" })])(
-    "does not use prod for an unusable Matrix environment map",
-    async (map) => {
-      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", map);
-      await expect(
-        plugin()
-          .tool(
-            "fi_user_api",
-            context({
-              messageChannel: "matrix",
-              requesterSenderId: "@member:threads.example",
-              agentAccountId: "fi-user-dev",
-            }),
-          )
-          .execute("unconfigured", { path: "/api/shape/documents/search" }),
-      ).rejects.toThrow("Matrix account environment is not configured");
-      expect(calls).toEqual([]);
-    },
-  );
 
   it("works on webchat with the Fi-signed context credential of that chat", async () => {
     const sessionKey = "agent:cellect-fi-user:webchat:member";

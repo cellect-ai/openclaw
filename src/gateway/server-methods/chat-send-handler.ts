@@ -758,6 +758,5 @@ export async function handleTrustedInternalChatSend(
   await handleChatSendWithOptions(options, onAdmissionOwned, undefined, {
     ...inputOptions,
     trustedSystemInput: true,
-    talkRelayAdmission: inputOptions?.talkRelayAdmission,
   });
 }

@@ -25,6 +25,7 @@ import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY } from "../send/types.js";
+import { registerMatrixBlockStreamingConfigTests } from "./handler.block-streaming-config.test-support.js";
 import { registerMatrixPreviewDeliveryTests } from "./handler.preview-delivery.test-support.js";
 import { registerMatrixProgressCompletionTests } from "./handler.progress-completion.test-support.js";
 import {
@@ -4747,59 +4748,6 @@ describe("matrix monitor handler draft streaming", () => {
 });
 
 describe("matrix monitor handler block streaming config", () => {
-  it.each<{
-    name: string;
-    streaming: "off" | "partial" | "quiet";
-    blockStreamingEnabled?: boolean;
-    disableBlockStreaming: boolean;
-  }>([
-    {
-      name: "keeps final-only delivery when draft streaming is off by default",
-      streaming: "off",
-      disableBlockStreaming: true,
-    },
-    {
-      name: "keeps block streaming disabled when partial previews are on and block streaming is off",
-      streaming: "partial",
-      disableBlockStreaming: true,
-    },
-    {
-      name: "keeps block streaming disabled when quiet previews are on and block streaming is off",
-      streaming: "quiet",
-      disableBlockStreaming: true,
-    },
-    {
-      name: "allows shared block streaming when partial previews and block streaming are both enabled",
-      streaming: "partial",
-      blockStreamingEnabled: true,
-      disableBlockStreaming: false,
-    },
-    {
-      name: "uses shared block streaming when explicitly enabled for Matrix",
-      streaming: "off",
-      blockStreamingEnabled: true,
-      disableBlockStreaming: false,
-    },
-  ])("$name", async ({ streaming, blockStreamingEnabled, disableBlockStreaming }) => {
-    let capturedDisableBlockStreaming: boolean | undefined;
-
-    const { handler } = createMatrixHandlerTestHarness({
-      streaming,
-      ...(blockStreamingEnabled === undefined ? {} : { blockStreamingEnabled }),
-      dispatchInboundMessage: vi.fn(
-        async (args: { replyOptions?: { disableBlockStreaming?: boolean } }) => {
-          capturedDisableBlockStreaming = args.replyOptions?.disableBlockStreaming;
-          return { queuedFinal: false, counts: { final: 0, block: 0, tool: 0 } };
-        },
-      ) as never,
-    });
-
-    await handler(
-      "!room:example.org",
-      createMatrixTextMessageEvent({ eventId: "$msg1", body: "hello" }),
-    );
-
-    expect(capturedDisableBlockStreaming).toBe(disableBlockStreaming);
-  });
+  registerMatrixBlockStreamingConfigTests();
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
