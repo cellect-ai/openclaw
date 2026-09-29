@@ -9,8 +9,18 @@ const voiceSessionMocks = vi.hoisted(() => ({
   closeRelayVoiceSessionRecord: vi.fn(),
   createOrResumeClientVoiceSession: vi.fn(),
 }));
+const projectionMocks = vi.hoisted(() => ({
+  extractDeliveryInfo: vi.fn(),
+  deliverOutboundPayloads: vi.fn(),
+}));
 
 vi.mock("../../../talk/client-voice-session.js", () => voiceSessionMocks);
+vi.mock("../../../config/sessions/delivery-info.js", () => ({
+  extractDeliveryInfo: projectionMocks.extractDeliveryInfo,
+}));
+vi.mock("../../../infra/outbound/deliver.js", () => ({
+  deliverOutboundPayloads: projectionMocks.deliverOutboundPayloads,
+}));
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -58,6 +68,38 @@ describe("realtime relay voice transcript persistence", () => {
     voiceSessionMocks.appendRelayVoiceTranscript.mockReset();
     voiceSessionMocks.closeRelayVoiceSessionRecord.mockReset().mockResolvedValue(undefined);
     voiceSessionMocks.createOrResumeClientVoiceSession.mockReset();
+    projectionMocks.extractDeliveryInfo
+      .mockReset()
+      .mockReturnValue({ deliveryContext: undefined, threadId: undefined });
+    projectionMocks.deliverOutboundPayloads.mockReset().mockResolvedValue([]);
+  });
+
+  it("projects a final once through the session-owned Matrix bot route", async () => {
+    projectionMocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "slack", to: "channel:C123", accountId: "shape" },
+      threadId: "123.456",
+    });
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+    expect(enqueueRelayVoiceTranscript(session, "user", "Run the report")).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledOnce();
+    expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        channel: "matrix",
+        to: "room:!owned:example.org",
+        accountId: "shape",
+        threadId: "$root",
+        deliveryIntentId: "voice:relay-voice-bounded:1",
+        payloads: [expect.objectContaining({ text: "Run the report" })],
+      }),
+    );
   });
 
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {

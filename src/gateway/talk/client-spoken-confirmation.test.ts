@@ -500,7 +500,8 @@ describe("native Talk spoken confirmation handoff", () => {
     const h = await createHarness();
     h.speak("Create a helper session");
     await h.run();
-    h.speak("yes");
+    // Cellect binds a confirmed follow-up to the active challenge on the ordinary path
+    // too (11825a95d46), so only an unaffirmed challenge shows the argument is ignored.
     h.owner.control.onToolCall?.({
       callId: "ordinary-consult",
       itemId: "ordinary-consult-item",

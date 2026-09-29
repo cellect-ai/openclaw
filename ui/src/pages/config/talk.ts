@@ -4,6 +4,7 @@
 // same config draft, so both stay in sync without narrowing the schema.
 import { html, nothing, type TemplateResult } from "lit";
 import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
+import { icons } from "../../components/icons.ts";
 import { renderModelPicker } from "../../components/model-picker.ts";
 import {
   renderSettingsRow,
@@ -20,6 +21,7 @@ import {
   type VoiceWakeEditorState,
 } from "./talk-device.ts";
 import { isTalkGptLiveModel, type TalkRealtimeSelection } from "./talk-schema.ts";
+import type { TalkVoicePreviewState } from "./talk-voice-preview.ts";
 
 /** One realtime provider row from talk.catalog, reduced to what the pickers use. */
 export type TalkRealtimeProviderOption = {
@@ -43,12 +45,14 @@ export type TalkRealtimeProviderOption = {
  */
 export type TalkCatalogState =
   | { kind: "loading" }
-  | { kind: "unavailable" }
+  | { kind: "unavailable"; reason: "disconnected" | "request-failed" }
   | {
       kind: "ready";
       ready: boolean;
       activeProvider: string | null;
       providers: readonly TalkRealtimeProviderOption[];
+      /** Last successful catalog retained while a same-Gateway refresh recovers. */
+      stale?: boolean;
     };
 
 type TalkViewProps = {
@@ -61,6 +65,7 @@ type TalkViewProps = {
   onProviderChange: (providerId: string | null) => void;
   onModelChange: (model: string | null) => void;
   onVoiceChange: (voice: string | null) => void;
+  voicePreview?: { state: TalkVoicePreviewState; onPlay: () => void };
   /** Embedded schema editor for the full `talk` section. */
   editor: TemplateResult;
 };
@@ -145,8 +150,18 @@ function renderStatusRow(props: TalkViewProps) {
   if (catalog.kind === "unavailable") {
     return renderSettingsRow({
       title: t("talkPage.status.title"),
-      description: t("talkPage.status.unavailableHint"),
+      description:
+        catalog.reason === "disconnected"
+          ? t("talkPage.status.disconnectedHint")
+          : t("talkPage.status.requestFailedHint"),
       control: renderSettingsStatus({ kind: "muted", label: t("talkPage.status.unavailable") }),
+    });
+  }
+  if (catalog.stale) {
+    return renderSettingsRow({
+      title: t("talkPage.status.title"),
+      description: t("talkPage.status.staleHint"),
+      control: renderSettingsStatus({ kind: "warn", label: t("talkPage.status.stale") }),
     });
   }
   return renderSettingsRow({
@@ -174,9 +189,12 @@ function renderProviderRow(props: TalkViewProps) {
   // A configured provider missing from the catalog (for example a disabled
   // plugin) must stay visible as itself, not silently render as Auto.
   const unknownConfigured = props.selection.provider && !selected ? props.selection.provider : null;
+  const autoUnavailable = Object.keys(props.selection.providerEntries).length > 1;
   return renderSettingsRow({
     title: t("talkPage.provider.title"),
-    description: t("talkPage.provider.description"),
+    description: t(
+      autoUnavailable ? "talkPage.provider.explicitRequired" : "talkPage.provider.description",
+    ),
     stacked: true,
     control: renderSettingsSegmented({
       value: selected?.id ?? unknownConfigured ?? TALK_PICKER_UNSET,
@@ -186,9 +204,13 @@ function renderProviderRow(props: TalkViewProps) {
           label: provider.label,
         })),
         ...(unknownConfigured ? [{ value: unknownConfigured, label: unknownConfigured }] : []),
-        { value: TALK_PICKER_UNSET, label: t("talkPage.provider.auto") },
+        {
+          value: TALK_PICKER_UNSET,
+          label: t("talkPage.provider.auto"),
+          disabled: autoUnavailable,
+        },
       ],
-      disabled: props.configBusy,
+      disabled: talkPickersDisabled(props),
       ariaLabel: t("talkPage.provider.title"),
       onChange: (value) => props.onProviderChange(value || null),
     }),
@@ -228,7 +250,7 @@ function renderModelRow(props: TalkViewProps) {
       label: t("talkPage.model.title"),
       value: model ?? TALK_PICKER_UNSET,
       options: options.map(({ value, label }) => ({ value, label, provider: provider.id })),
-      disabled: props.configBusy,
+      disabled: talkPickersDisabled(props),
       onChange: (value) => props.onModelChange(value || null),
     }),
   });
@@ -278,9 +300,13 @@ function renderVoiceRow(props: TalkViewProps) {
       : t("talkPage.voice.description"),
     value: voice ?? TALK_PICKER_UNSET,
     options,
-    disabled: props.configBusy,
+    disabled: talkPickersDisabled(props),
     onChange: (value) => props.onVoiceChange(value || null),
   });
+}
+
+function talkPickersDisabled(props: TalkViewProps): boolean {
+  return props.configBusy || (props.catalog.kind === "ready" && props.catalog.stale === true);
 }
 
 /**
@@ -305,12 +331,44 @@ function renderGptLiveRow(props: TalkViewProps) {
   });
 }
 
+function renderVoicePreviewRow(props: TalkViewProps) {
+  if (!props.voicePreview) {
+    return nothing;
+  }
+  const provider = selectedTalkProviderOption(props.catalog, props.selection);
+  const state = props.voicePreview.state;
+  return renderSettingsRow({
+    title: t("talkPage.voice.preview"),
+    description: html`<span role=${state === "error" ? "alert" : "status"} aria-live="polite"
+      >${t(
+        `talkPage.voice.preview${state === "loading" ? "Loading" : state === "playing" ? "Playing" : state === "error" ? "Error" : "Hint"}`,
+      )}</span
+    >`,
+    control: html`<button
+      type="button"
+      class="btn btn--icon"
+      aria-label=${t("talkPage.voice.preview")}
+      title=${t("talkPage.voice.preview")}
+      ?disabled=${talkPickersDisabled(props) || !provider?.configured || state === "loading"}
+      @click=${props.voicePreview.onPlay}
+    >
+      ${icons.play}
+    </button>`,
+  });
+}
+
 export function renderTalk(props: TalkViewProps) {
   return html`
     <section class="talk-page">
       <div class="settings-page">
         ${renderDeviceTalk(props.nativeDeviceSettings)}
-        ${props.voiceWake ? renderVoiceWakeEditor(props.voiceWake.state, props.voiceWake.onInput, props.voiceWake.onRetry) : nothing}
+        ${props.voiceWake
+          ? renderVoiceWakeEditor(
+              props.voiceWake.state,
+              props.voiceWake.onInput,
+              props.voiceWake.onRetry,
+            )
+          : nothing}
         ${renderSettingsSection(
           {
             title: t("talkPage.voiceSection.title"),
@@ -318,7 +376,7 @@ export function renderTalk(props: TalkViewProps) {
           },
           html`
             ${renderStatusRow(props)} ${renderProviderRow(props)} ${renderModelRow(props)}
-            ${renderVoiceRow(props)} ${renderGptLiveRow(props)}
+            ${renderVoiceRow(props)} ${renderVoicePreviewRow(props)} ${renderGptLiveRow(props)}
           `,
         )}
       </div>

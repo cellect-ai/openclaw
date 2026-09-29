@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  authorizeCurrentClientVoiceConfirmation,
   authorizeClientVoiceConfirmation as authorizeClientVoiceConfirmationForTest,
   authorizeObservedClientVoiceConfirmation,
   bindAuthorizedClientVoiceConfirmation,
@@ -218,19 +219,42 @@ describe("client voice confirmation", () => {
     },
   );
 
-  it.each(["ls -la", "grep -n TODO README.md"])(
-    "does not require confirmation for a classified read-only shell command: %s",
-    (command) => {
-      expect(
-        checkClientVoiceToolConfirmationPolicy({
-          voiceSessionId: "voice-1",
-          runId: "voice-run",
-          toolName: "exec",
-          toolParams: { command },
-        }),
-      ).toEqual({ allowed: true });
-    },
-  );
+  it.each([
+    "ls -la",
+    "grep -n TODO README.md",
+    "cat package.json && rg -n 'test' package.json",
+    "sed -n '1,80p' README.md && sed -n '1,80p' CONTRIBUTING.md",
+  ])("does not require confirmation for a classified read-only shell command: %s", (command) => {
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "voice-run",
+        toolName: "exec",
+        toolParams: { command },
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it("does not request confirmation for a caller-validated current-source message reply", () => {
+    const toolParams = { action: "send", message: "The read-only lookup is complete." };
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "voice-run",
+        toolName: "message",
+        toolParams,
+        isCurrentSourceMessageSend: true,
+      }),
+    ).toEqual({ allowed: true });
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "voice-run",
+        toolName: "message",
+        toolParams,
+      }).allowed,
+    ).toBe(false);
+  });
 
   it("requires confirmation before delegating work outside the voice-bound run", () => {
     expect(
@@ -331,6 +355,69 @@ describe("client voice confirmation", () => {
     expect(() =>
       authorizeClientVoiceConfirmation({ voiceSessionId: "voice-1", confirmationId, now: 104 }),
     ).toThrow("missing, expired, or belongs to another action");
+  });
+
+  it("carries the latest exact challenge into a confirmed follow-up when the provider omits its id", () => {
+    const toolParams = { action: "send", message: "The requested update." };
+    const confirmationId = block({ voiceSessionId: "voice-1", toolParams, now: 100 });
+    noteClientVoiceConfirmationUtterance({
+      voiceSessionId: "voice-1",
+      text: "yes",
+      timestamp: 101,
+    });
+
+    const grant = authorizeCurrentClientVoiceConfirmation({
+      agentId: "main",
+      voiceSessionId: "voice-1",
+      now: 102,
+    });
+
+    expect(grant).toMatchObject({ confirmationId });
+    if (!grant) {
+      throw new Error("expected the pending challenge to carry forward");
+    }
+    expect(bindAuthorizedClientVoiceConfirmation({ grant, runId: "run-followup", now: 103 })).toBe(
+      true,
+    );
+    expect(
+      consumeClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "run-followup",
+        toolName: "message",
+        toolParams,
+        now: 104,
+      }),
+    ).toEqual({ allowed: true });
+    expect(
+      consumeClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "run-followup",
+        toolName: "message",
+        toolParams: { action: "send", message: "A different action." },
+        now: 105,
+      }).allowed,
+    ).toBe(false);
+  });
+
+  it("does not carry a pending challenge when the latest utterance is not an exact affirmation", () => {
+    block({ voiceSessionId: "voice-1", toolParams: { action: "send", message: "A" }, now: 100 });
+    noteClientVoiceConfirmationUtterance({
+      voiceSessionId: "voice-1",
+      text: "yes, but check the balance first",
+      timestamp: 101,
+    });
+
+    expect(
+      authorizeCurrentClientVoiceConfirmation({
+        agentId: "main",
+        voiceSessionId: "voice-1",
+        now: 102,
+      }),
+    ).toBeUndefined();
+    expect(snapshotClientVoiceConfirmationStateForTest()).toMatchObject({
+      pendingChallenges: 1,
+      approvedGrants: 0,
+    });
   });
 
   it.each(["supersession", "refusal", "close", "expiry"] as const)(

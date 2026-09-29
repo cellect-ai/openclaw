@@ -144,13 +144,19 @@ export abstract class OpenAIRealtimeEvents extends OpenAIRealtimeProtocol {
       case "conversation.input_transcript.delta":
       case "conversation.item.input_audio_transcription.delta":
         if (event.delta) {
-          this.config.onTranscript?.("user", event.delta, false);
+          this.config.onTranscript?.("user", event.delta, false, {
+            ...(event.item_id ? { itemId: event.item_id } : {}),
+            textMode: "delta",
+          });
         }
         return;
 
       case "conversation.item.input_audio_transcription.completed":
         if (event.transcript) {
-          this.config.onTranscript?.("user", event.transcript, true);
+          this.config.onTranscript?.("user", event.transcript, true, {
+            ...(event.item_id ? { itemId: event.item_id } : {}),
+            textMode: "snapshot",
+          });
         }
         return;
 

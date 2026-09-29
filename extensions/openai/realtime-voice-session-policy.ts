@@ -90,7 +90,7 @@ export const OPENAI_REALTIME_MODELS = [
   "gpt-realtime-2",
   ...OPENAI_GPT_LIVE_MODELS,
 ] as const;
-export const OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+export const OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
 export const OPENAI_REALTIME_CAPABILITIES: RealtimeVoiceProviderCapabilities & {
   voicesByModel: Record<string, readonly string[]>;
 } = {
@@ -431,7 +431,8 @@ export function buildOpenAIRealtimeGaSessionPolicy(params: {
         noise_reduction: params.noiseReduction,
         transcription: {
           model: OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
-          ...(params.language ? { language: params.language } : {}),
+          delay: "low",
+          ...(params.language ? { languages: [params.language] } : {}),
         },
         turn_detection: buildOpenAIRealtimeTurnDetectionConfig({
           autoRespondToAudio: params.autoRespondToAudio,

@@ -76,6 +76,8 @@ import { respondUnavailable } from "../../server-methods/response.js";
 import { inferSpeechMimeType } from "../../server-methods/speech-mime.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
+import { mintTalkBindingCapability } from "../../talk-binding-capability.js";
+import { resolveMatrixTalkBinding } from "../../talk-matrix-binding.js";
 import { formatForLog } from "../../ws-log.js";
 import {
   buildTalkRealtimeConfig,
@@ -84,8 +86,11 @@ import {
   listTalkTranscriptionProviders,
   resolveConfiguredRealtimeTranscriptionProvider,
 } from "../session-config.js";
+import { resolveCatalogProviderSelection } from "./catalog-selection.js";
 import { talkClientHandlers } from "./client.js";
+import { buildRealtimeProviderCatalog } from "./realtime-provider-catalog.js";
 import { talkSessionHandlers } from "./session.js";
+import { talkVoicePreviewHandlers } from "./voice-preview.js";
 import { talkVoiceHandlers } from "./voice.js";
 
 type TalkSpeakReason =
@@ -99,25 +104,6 @@ type TalkSpeakErrorDetails = {
   reason: TalkSpeakReason;
   fallbackEligible: boolean;
 };
-
-function resolveCatalogProviderSelection(
-  configuredProvider: string | undefined,
-  resolveAutomaticProvider: () => string,
-): { activeProvider?: string; ready: boolean } {
-  // Provider priority belongs to the runtime resolver; catalog consumers must not infer it from row order.
-  try {
-    const resolvedProvider = resolveAutomaticProvider();
-    return {
-      activeProvider: resolvedProvider,
-      ready: true,
-    };
-  } catch {
-    return {
-      ...(configuredProvider ? { activeProvider: configuredProvider } : {}),
-      ready: false,
-    };
-  }
-}
 
 function canReadTalkSecrets(client: { connect?: { scopes?: string[] } } | null): boolean {
   const scopes = Array.isArray(client?.connect?.scopes) ? client.connect.scopes : [];
@@ -285,6 +271,11 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
       ? { autoRespondToAudio: realtimeConfig.consultRouting !== "force-agent-consult" }
       : {}),
   } as const;
+  const realtimeProviderReadinessContext = {
+    cfg: config,
+    agentId: realtimeAgentId,
+    surface: realtimeSurface,
+  } as const;
   // Mirror talk.client.create's resolution inputs (agent scope + top-level model
   // override) so catalog readiness matches what session creation will actually do;
   // diverging here previously reported GPT-Live over OAuth as unconfigured.
@@ -399,114 +390,35 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
     realtime: {
       ready: realtimeSelection.ready,
       ...(activeRealtimeProvider ? { activeProvider: activeRealtimeProvider } : {}),
-      providers: listRealtimeVoiceProviders(config, realtimeProviderIds).map((provider) => {
-        const available = isSecretOwnerAvailable("capability", "talk:realtime");
-        const rawConfig = resolveProviderRawConfig({
-          providerConfigs: realtimeConfig.providers ?? {},
-          providerId: provider.id,
-          providerAliases: provider.aliases,
-          configuredProviderId:
-            provider.id === activeRealtimeProvider ? realtimeConfig.provider : undefined,
-        });
-        // Top-level talk.realtime.model overrides provider-level config, matching
-        // talk.client.create's providerConfigOverrides precedence at session time.
-        const model = provider.id === activeRealtimeProvider ? realtimeModel : realtimeConfig.model;
-        const rawConfigWithModel = model ? { ...rawConfig, model } : rawConfig;
-        const defaultRawConfig = { ...rawConfig };
-        delete defaultRawConfig.model;
-        const defaultProviderConfig = available
-          ? (provider.resolveConfig?.({ ...realtimeResolveContext, rawConfig: defaultRawConfig }) ??
-            defaultRawConfig)
-          : defaultRawConfig;
-        const providerConfig = available
-          ? rawConfigWithModel.model === undefined
-            ? defaultProviderConfig
-            : (provider.resolveConfig?.({
-                ...realtimeResolveContext,
-                rawConfig: rawConfigWithModel,
-              }) ?? rawConfigWithModel)
-          : rawConfigWithModel;
-        const capabilities: ReturnType<typeof resolveRealtimeVoiceProviderCapabilities> = available
-          ? resolveRealtimeVoiceProviderCapabilities({
-              provider,
-              providerConfig,
-              cfg: config,
-              agentId: realtimeAgentId,
-              surface: realtimeSurface,
-            })
-          : provider.capabilities;
-        const entry: Record<string, unknown> = {
-          id: provider.id,
-          label: provider.label,
-          configured:
-            available &&
-            configuredOrFalse(() =>
-              isRealtimeVoiceProviderConfigured({
-                provider,
-                cfg: config,
-                providerConfig,
-                agentId: realtimeAgentId,
-                surface: realtimeSurface,
-              }),
-            ),
-          modes: ["realtime"],
-          brains:
-            capabilities?.supportsToolCalls === false && capabilities.handlesAgentConsult !== true
-              ? ["none"]
-              : ["agent-consult"],
-          supportsBrowserSession: Boolean(
-            capabilities?.supportsBrowserSession ?? provider.createBrowserSession,
-          ),
-        };
-        const defaultModel =
-          normalizeOptionalString(defaultProviderConfig.model) ?? provider.defaultModel;
-        if (defaultModel) {
-          entry.defaultModel = defaultModel;
-        }
-        if (provider.models?.length) {
-          entry.models = [...provider.models];
-        }
-        if (provider.voices) {
-          entry.voices = [...provider.voices];
-        }
-        if (capabilities?.voices) {
-          entry.activeVoices = [...capabilities.voices];
-        }
-        if (capabilities?.voiceSelectionPolicy) {
-          entry.activeVoiceSelectionPolicy = capabilities.voiceSelectionPolicy;
-        }
-        if (capabilities?.voicesByModel) {
-          entry.voicesByModel = capabilities.voicesByModel;
-        }
-        if (provider.aliases?.length) {
-          entry.aliases = [...provider.aliases];
-        }
-        if (capabilities?.transports) {
-          entry.transports = [...capabilities.transports];
-        }
-        if (capabilities?.inputAudioFormats) {
-          entry.inputAudioFormats = capabilities.inputAudioFormats.map((format) => ({
-            ...format,
-          }));
-        }
-        if (capabilities?.outputAudioFormats) {
-          entry.outputAudioFormats = capabilities.outputAudioFormats.map((format) => ({
-            ...format,
-          }));
-        }
-        if (capabilities?.supportsBargeIn !== undefined) {
-          entry.supportsBargeIn = capabilities.supportsBargeIn;
-        }
-        if (capabilities?.supportsToolCalls !== undefined) {
-          entry.supportsToolCalls = capabilities.supportsToolCalls;
-        }
-        if (capabilities?.supportsVideoFrames !== undefined) {
-          entry.supportsVideoFrames = capabilities.supportsVideoFrames;
-        }
-        if (capabilities?.supportsSessionResumption !== undefined) {
-          entry.supportsSessionResumption = capabilities.supportsSessionResumption;
-        }
-        return entry;
+      providers: buildRealtimeProviderCatalog({
+        providers: listRealtimeVoiceProviders(config, realtimeProviderIds),
+        available: isSecretOwnerAvailable("capability", "talk:realtime"),
+        resolveRawConfig: (provider) => {
+          const rawConfig = resolveProviderRawConfig({
+            providerConfigs: realtimeConfig.providers ?? {},
+            providerId: provider.id,
+            providerAliases: provider.aliases,
+            configuredProviderId:
+              provider.id === activeRealtimeProvider ? realtimeConfig.provider : undefined,
+          });
+          const model =
+            provider.id === activeRealtimeProvider ? realtimeModel : realtimeConfig.model;
+          return model ? { ...rawConfig, model } : rawConfig;
+        },
+        resolveProviderConfig: (provider, rawConfig) =>
+          provider.resolveConfig?.({ ...realtimeResolveContext, rawConfig }) ?? rawConfig,
+        resolveCapabilities: (provider, providerConfig) =>
+          resolveRealtimeVoiceProviderCapabilities({
+            provider,
+            providerConfig,
+            ...realtimeProviderReadinessContext,
+          }),
+        isConfigured: (provider, providerConfig) =>
+          isRealtimeVoiceProviderConfigured({
+            provider,
+            providerConfig,
+            ...realtimeProviderReadinessContext,
+          }),
       }),
     },
   };
@@ -850,6 +762,48 @@ function stripUnresolvedSecretApiKeyFromRecord(
 /** Gateway request handlers for Talk config, catalog, sessions, and speech. */
 export const talkHandlers: GatewayRequestHandlers = {
   ...talkVoiceHandlers,
+  ...talkVoicePreviewHandlers,
+  "talk.binding.resolve": async ({ params, respond, context }) => {
+    try {
+      const roomId = normalizeOptionalString(params.roomId);
+      const threadRootEventId = normalizeOptionalString(params.threadRootEventId);
+      const agentMxid = normalizeOptionalString(params.agentMxid);
+      if (!roomId || !threadRootEventId || !agentMxid) {
+        throw new Error("Matrix Talk binding requires roomId, threadRootEventId, and agentMxid");
+      }
+      const resolved = await resolveMatrixTalkBinding({
+        cfg: context.getRuntimeConfig(),
+        roomId,
+        threadRootEventId,
+        agentMxid,
+      });
+      const speakerMxid = normalizeOptionalString(params.speakerMxid);
+      if (!speakerMxid?.startsWith("@")) {
+        throw new Error("Matrix Talk speaker is required");
+      }
+      respond(
+        true,
+        {
+          binding: mintTalkBindingCapability({
+            ...resolved,
+            roomId,
+            threadRootEventId,
+            speakerMxid,
+          }),
+        },
+        undefined,
+      );
+    } catch (error) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          error instanceof Error ? error.message : "Matrix Talk binding failed",
+        ),
+      );
+    }
+  },
   ...talkSessionHandlers,
   ...talkClientHandlers,
   "talk.catalog": async ({ params, respond, context }) => {

@@ -21,8 +21,15 @@ export function stableToolFingerprint(toolName: string, params: unknown): string
     .digest("hex");
 }
 
-export function requiresHighImpactVoiceConfirmation(toolName: string, params: unknown): boolean {
+export function requiresHighImpactVoiceConfirmation(
+  toolName: string,
+  params: unknown,
+  isCurrentSourceMessageSend = false,
+): boolean {
   const normalizedTool = toolName.trim().toLowerCase();
+  if (normalizedTool === "message" && isCurrentSourceMessageSend) {
+    return false;
+  }
   if (!buildToolMutationState(normalizedTool, params).mutatingAction) {
     return false;
   }

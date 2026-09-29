@@ -36,7 +36,9 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
 
   private ws: WebSocket | null = null;
   private terminalError: Error | null = null;
-  private readonly lifecycle = new RealtimeVoiceSessionLifecycle("xAI");
+  private readonly lifecycle = new RealtimeVoiceSessionLifecycle(
+    this.config.providerLabel ?? "xAI realtime voice",
+  );
   private pendingToolResults: Array<{
     callId: string;
     result: unknown;
@@ -81,7 +83,9 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
         this.pendingUserMessages.push(text);
       } else {
         this.config.onError?.(
-          new Error("xAI realtime voice pending user message queue overflow during reconnect"),
+          new Error(
+            `${this.config.providerLabel ?? "xAI realtime voice"} pending user message queue overflow during reconnect`,
+          ),
         );
       }
       return;
@@ -113,7 +117,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       }
       if (this.pendingToolResults.length >= XAI_REALTIME_MAX_PENDING_TOOL_RESULTS) {
         const error = new Error(
-          "xAI realtime voice pending tool result queue overflow during reconnect",
+          `${this.config.providerLabel ?? "xAI realtime voice"} pending tool result queue overflow during reconnect`,
         );
         this.config.onError?.(error);
         throw error;
@@ -154,7 +158,8 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     const attempt = this.lifecycle.createConnectAttempt({
       connection,
       timeoutMs: XAI_REALTIME_CONNECT_TIMEOUT_MS,
-      timeoutError: () => new Error("xAI realtime voice connection timeout"),
+      timeoutError: () =>
+        new Error(`${this.config.providerLabel ?? "xAI realtime voice"} connection timeout`),
       onTimeout: () => activeWs?.terminate(),
       onAbort: (outcome) => {
         if (outcome !== "error" && activeWs && activeWs.readyState !== WebSocket.CLOSED) {
@@ -213,7 +218,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           direction: "local",
           kind: "ws-open",
           flowId: this.flowId,
-          meta: { provider: "xai", capability: "realtime-voice" },
+          meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
         });
         this.sendEvent(this.buildSessionUpdate());
       });
@@ -231,17 +236,25 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           kind: "ws-frame",
           flowId: this.flowId,
           payload: data,
-          meta: { provider: "xai", capability: "realtime-voice" },
+          meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
         });
         try {
           const event = JSON.parse(data.toString()) as XaiRealtimeEvent;
           if (event.type === "error" && !attempt.ready) {
-            rejectStartup(new Error(readXaiRealtimeErrorDetail(event.error)));
+            rejectStartup(
+              new Error(
+                readXaiRealtimeErrorDetail(
+                  event.error,
+                  this.config.providerLabel ?? "xAI realtime voice",
+                ),
+              ),
+            );
             return;
           }
           this.handleEvent(event, connection);
           if (
-            event.type === "session.updated" &&
+            (event.type === "session.updated" ||
+              (this.config.providerId === "litellm" && event.type === "session.created")) &&
             this.lifecycle.isCurrent(connection) &&
             this.lifecycle.isReady()
           ) {
@@ -270,7 +283,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           kind: "error",
           flowId: this.flowId,
           errorText: error instanceof Error ? error.message : String(error),
-          meta: { provider: "xai", capability: "realtime-voice" },
+          meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
         });
         if (!attempt.ready) {
           rejectStartup(toStringifiedError(error));
@@ -287,7 +300,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           flowId: this.flowId,
           closeCode: typeof code === "number" ? code : undefined,
           meta: {
-            provider: "xai",
+            provider: this.config.providerId ?? "xai",
             capability: "realtime-voice",
             reason:
               Buffer.isBuffer(reasonBuffer) && reasonBuffer.length > 0
@@ -314,7 +327,11 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
           return;
         }
         if (!attempt.ready && !attempt.settled) {
-          attempt.reject(new Error("xAI realtime voice connection closed before ready"));
+          attempt.reject(
+            new Error(
+              `${this.config.providerLabel ?? "xAI realtime voice"} connection closed before ready`,
+            ),
+          );
           return;
         }
         void this.attemptReconnect("websocket-close", connection);
@@ -478,7 +495,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       kind: "ws-frame",
       flowId: this.flowId,
       payload,
-      meta: { provider: "xai", capability: "realtime-voice" },
+      meta: { provider: this.config.providerId ?? "xai", capability: "realtime-voice" },
     });
     ws.send(payload);
     // Observers report a sent frame, so nested control cannot overtake it.

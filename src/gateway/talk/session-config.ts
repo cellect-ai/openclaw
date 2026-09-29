@@ -23,6 +23,7 @@ import type {
   RealtimeVoiceBrowserSession,
   RealtimeVoiceProviderConfig,
 } from "../../talk/provider-types.js";
+import { buildRealtimeTalkSessionContextInstructions } from "../../talk/session-context.js";
 import type { TalkBrain, TalkEvent, TalkMode, TalkTransport } from "../../talk/talk-events.js";
 import {
   getVoiceProviderConfig,
@@ -373,22 +374,37 @@ export function resolveConfiguredRealtimeTranscriptionProvider(params: {
 }
 
 const DEFAULT_REALTIME_INSTRUCTIONS = [
-  "You are OpenClaw's realtime voice interface. Keep spoken replies concise.",
+  "You are the user's configured OpenClaw agent speaking through Talk. Keep your configured agent identity; do not identify as ChatGPT or a different service. Keep spoken replies concise.",
   `If the user asks for code, repository state, files, current OpenClaw context, tool-backed actions, or deeper reasoning, call ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} and then summarize the result naturally.`,
   `Do not claim you cannot use tools, perform actions, or reach OpenClaw unless ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} returns that failure.`,
-  `When ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} is in progress, speak one brief acknowledgement such as "Let me check that for you", then wait for the final OpenClaw result before answering with the actual result.`,
+  `When ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} is in progress, speak at most one brief acknowledgement such as "Let me check that for you", then deliver exactly one final OpenClaw result or a clear failure; do not go silent after acknowledging or imply work remains active when it does not.`,
   `If OpenClaw is already working through ${REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME} and the user asks in any language for progress, cancellation, a redirect/change, or a follow-up, call ${REALTIME_VOICE_AGENT_CONTROL_TOOL_NAME} with the semantic mode.`,
   "For greetings and casual chatter while OpenClaw is working, answer naturally and do not redirect the active work.",
 ].join(" ");
 
-export function buildRealtimeInstructions(configuredInstructions?: string): string {
+export function buildRealtimeInstructions(
+  configuredInstructions?: string,
+  sessionCapsule?: string,
+  options?: { providerHandlesAgentConsult?: boolean },
+): string {
   const extra = normalizeOptionalString(configuredInstructions);
-  if (!extra) {
-    return DEFAULT_REALTIME_INSTRUCTIONS;
+  const contextInstructions = buildRealtimeTalkSessionContextInstructions(sessionCapsule);
+  if (options?.providerHandlesAgentConsult) {
+    // Native delegation providers own a different control contract (no
+    // openclaw_agent_consult function tool). Give them only their operator and
+    // bounded context instructions; their provider adapter supplies its own
+    // delegation-specific system prompt.
+    return [extra, contextInstructions].filter(Boolean).join("\n\n");
   }
-  // Keep the tool-use contract first, then append operator customization so
-  // provider sessions preserve the same control-tool behavior.
-  return `${DEFAULT_REALTIME_INSTRUCTIONS}\n\nAdditional realtime instructions:\n${extra}`;
+  const instructions = !extra
+    ? DEFAULT_REALTIME_INSTRUCTIONS
+    : `${DEFAULT_REALTIME_INSTRUCTIONS}\n\nAdditional realtime instructions:\n${extra}`;
+  if (!contextInstructions) {
+    return instructions;
+  }
+  // Keep the tool-use contract first, then append caller-provided context as
+  // bounded, untrusted data so it cannot impersonate instructions.
+  return `${instructions}\n\n${contextInstructions}`;
 }
 
 type RealtimeVoiceLaunchOptions = {

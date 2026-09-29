@@ -14,6 +14,7 @@ import {
   createCodeExecutionToolDefinition,
 } from "./code-execution-tool-shared.js";
 import {
+  createLazyLiteLlmRealtimeVoiceProvider,
   createLazyXaiRealtimeTranscriptionProvider,
   createLazyXaiRealtimeVoiceProvider,
   createLazyXaiSpeechProvider,
@@ -334,6 +335,7 @@ export default defineSingleProviderPluginEntry({
     api.registerSpeechProvider(createLazyXaiSpeechProvider);
     api.registerRealtimeTranscriptionProvider(createLazyXaiRealtimeTranscriptionProvider);
     api.registerRealtimeVoiceProvider(createLazyXaiRealtimeVoiceProvider);
+    api.registerRealtimeVoiceProvider(createLazyLiteLlmRealtimeVoiceProvider);
     api.registerTool((ctx) => createLazyCodeExecutionTool(ctx), { name: "code_execution" });
     api.registerTool((ctx) => createLazyXSearchTool(ctx), { name: "x_search" });
   },

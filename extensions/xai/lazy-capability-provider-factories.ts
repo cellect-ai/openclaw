@@ -15,6 +15,7 @@ import type {
 } from "openclaw/plugin-sdk/speech";
 import type { VideoGenerationProvider } from "openclaw/plugin-sdk/video-generation";
 import {
+  createLiteLlmRealtimeVoiceProviderMetadata,
   createXaiImageGenerationProviderMetadata,
   createXaiMediaUnderstandingProviderMetadata,
   createXaiRealtimeTranscriptionProviderMetadata,
@@ -22,7 +23,11 @@ import {
   createXaiVideoGenerationProviderMetadata,
   normalizeXaiRealtimeTranscriptionProviderConfig,
 } from "./capability-provider-metadata-factory.js";
-import { createLazyXaiRealtimeVoiceBridge } from "./realtime-voice-lazy.js";
+import { attachLiteLlmRealtimeVoiceCapabilities } from "./realtime-voice-capabilities.js";
+import {
+  createLazyLiteLlmRealtimeVoiceBridge,
+  createLazyXaiRealtimeVoiceBridge,
+} from "./realtime-voice-lazy.js";
 import { createXaiSpeechProviderMetadata } from "./speech-provider-metadata-factory.js";
 
 const MAX_LAZY_REALTIME_TRANSCRIPTION_AUDIO_BYTES = 2 * 1024 * 1024;
@@ -274,4 +279,16 @@ export function createLazyXaiRealtimeVoiceProvider(
     ...createXaiRealtimeVoiceProviderMetadata(context),
     createBridge: createLazyXaiRealtimeVoiceBridge,
   };
+}
+
+export function createLazyLiteLlmRealtimeVoiceProvider(
+  context: Pick<
+    PluginCapabilityCatalogContext,
+    "isProviderAuthProfileConfigured" | "resolveAgentDir"
+  >,
+): RealtimeVoiceProviderPlugin {
+  return attachLiteLlmRealtimeVoiceCapabilities({
+    ...createLiteLlmRealtimeVoiceProviderMetadata(context),
+    createBridge: createLazyLiteLlmRealtimeVoiceBridge,
+  });
 }

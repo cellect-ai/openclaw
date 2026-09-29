@@ -52,6 +52,13 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     }
     switch (event.type) {
       case "session.created":
+        // LiteLLM currently normalizes Gemini Live's setupComplete response to
+        // session.created even when it acknowledges our session.update. Treat
+        // that event as setup-complete only for the proxy adapter; native xAI
+        // sessions still wait for the explicit session.updated event.
+        if (this.config.providerId === "litellm") {
+          this.onSessionUpdated(connection);
+        }
         return;
       case "conversation.created": {
         const conversationId = normalizeOptionalString(event.conversation?.id);
@@ -90,7 +97,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         const canonicalAudio = canonicalizeBase64(audioDelta);
         if (!canonicalAudio) {
           throw new XaiRealtimeMalformedAudioError(
-            "xAI realtime voice stream returned malformed base64 audio data",
+            `${this.config.providerLabel ?? "xAI realtime voice"} stream returned malformed base64 audio data`,
           );
         }
         const audio = Buffer.from(canonicalAudio, "base64");
@@ -151,14 +158,21 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       }
       case "conversation.item.input_audio_transcription.failed":
         this.inputTranscriptReplacements.delete(this.inputTranscriptKey(event));
-        this.config.onError?.(new Error(readXaiRealtimeErrorDetail(event.error)));
+        this.config.onError?.(
+          new Error(
+            readXaiRealtimeErrorDetail(
+              event.error,
+              this.config.providerLabel ?? "xAI realtime voice",
+            ),
+          ),
+        );
         return;
       case "response.done": {
         const output = Array.isArray(event.response?.output)
           ? event.response.output.filter(isRecord)
           : [];
         const outcome = normalizeRealtimeVoiceResponseOutcome({
-          providerLabel: "xAI realtime voice",
+          providerLabel: this.config.providerLabel ?? "xAI realtime voice",
           response: event.response,
           responseId: event.response_id,
         });
@@ -230,7 +244,12 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         if (callbackError) {
           throw callbackError instanceof Error
             ? callbackError
-            : new Error("xAI realtime response callback failed", { cause: callbackError });
+            : new Error(
+                `${this.config.providerLabel ?? "xAI realtime voice"} response callback failed`,
+                {
+                  cause: callbackError,
+                },
+              );
         }
         return;
       }
@@ -339,7 +358,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   }
 
   private handleErrorEvent(error: unknown): void {
-    const detail = readXaiRealtimeErrorDetail(error);
+    const detail = readXaiRealtimeErrorDetail(
+      error,
+      this.config.providerLabel ?? "xAI realtime voice",
+    );
     if (detail.startsWith(XAI_REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX)) {
       this.responseActive = true;
       this.responseCreateInFlight = false;
@@ -360,7 +382,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       event.type === "error" ||
       event.type === "conversation.item.input_audio_transcription.failed"
     ) {
-      return readXaiRealtimeErrorDetail(event.error);
+      return readXaiRealtimeErrorDetail(
+        event.error,
+        this.config.providerLabel ?? "xAI realtime voice",
+      );
     }
     if (event.type !== "response.done") {
       return undefined;

@@ -6,6 +6,7 @@ export {
   cancelTalkRealtimeRelayTurn,
   ensureTalkRealtimeRelayVoiceSession,
   flushTalkRealtimeRelayVoiceWrites,
+  prepareTalkRealtimeRelayAgentRunRegistration,
   registerTalkRealtimeRelayAgentRun,
   sendTalkRealtimeRelayAudio,
   steerTalkRealtimeRelayAgentRun,

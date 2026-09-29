@@ -9,6 +9,11 @@ export type RealtimeVoiceProviderId = string;
 
 export type RealtimeVoiceRole = "user" | "assistant";
 
+export type RealtimeVoiceTranscriptUpdate = {
+  itemId?: string;
+  textMode: "delta" | "snapshot";
+};
+
 export type RealtimeVoiceCloseReason = "completed" | "error";
 
 export type RealtimeVoiceAudioFormat =
@@ -190,7 +195,12 @@ export type RealtimeVoiceBridgeCallbacks = {
   onClearAudio: (reason?: RealtimeVoiceAudioClearReason) => void;
   /** Scoped acknowledgments are valid only for the provider connection that emitted the mark. */
   onMark?: (markName: string, acknowledge?: () => void) => void;
-  onTranscript?: (role: RealtimeVoiceRole, text: string, isFinal: boolean) => void;
+  onTranscript?: (
+    role: RealtimeVoiceRole,
+    text: string,
+    isFinal: boolean,
+    update?: RealtimeVoiceTranscriptUpdate,
+  ) => void;
   /** Synchronously admits native control; only consult permits task fallthrough. Respond is call-bound. */
   handleDelegationInput?: (
     text: string,
@@ -272,6 +282,7 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   vadThreshold?: number;
   silenceDurationMs?: number;
   prefixPaddingMs?: number;
+  language?: string;
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;

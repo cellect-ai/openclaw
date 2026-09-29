@@ -321,7 +321,7 @@ describe("OpenAI realtime voice bridge connection", () => {
     expectRecordFields(inputAudio, "session audio input", {
       format: { type: "audio/pcmu" },
       noise_reduction: null,
-      transcription: { model: "gpt-4o-mini-transcribe", language: "de" },
+      transcription: { model: "gpt-live-transcribe", languages: ["de"], delay: "low" },
     });
     expect(requireNestedRecord(session, ["audio", "output"])).toEqual({
       format: { type: "audio/pcmu" },

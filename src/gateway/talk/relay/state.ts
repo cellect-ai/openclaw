@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
@@ -7,11 +7,13 @@ import type { createClientVoiceConfirmationReadiness } from "../../../talk/clien
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
   RealtimeVoiceBrowserAudioContract,
+  RealtimeVoiceCloseDisposition,
   RealtimeVoiceAudioClearReason,
   RealtimeVoiceAgentConsultRunner,
   RealtimeVoiceProviderConfig,
   RealtimeVoiceTool,
   RealtimeVoiceToolResultOptions,
+  RealtimeVoiceTranscriptUpdate,
 } from "../../../talk/provider-types.js";
 import type { RealtimeVoiceSessionHarness } from "../../../talk/realtime-session-harness.js";
 import type { RealtimeVoiceBridgeSession } from "../../../talk/session-runtime.js";
@@ -27,6 +29,29 @@ const MAX_RELAY_SESSIONS_PER_CONN = 2;
 const MAX_RELAY_SESSIONS_GLOBAL = 64;
 const RELAY_EVENT = "talk.event";
 export const RELAY_TRANSCRIPT_ECHO_LOOKBACK_MS = 12_000;
+const RELAY_DIAGNOSTIC_PROVIDER_EVENTS = new Set([
+  "input_audio_buffer.speech_started",
+  "input_audio_buffer.speech_stopped",
+  "response.cancel",
+  "response.cancelled",
+  "response.created",
+  "response.create",
+  "response.done",
+]);
+const RELAY_DIAGNOSTIC_RESPONSE_STATUSES = new Set([
+  "completed",
+  "cancelled",
+  "failed",
+  "incomplete",
+]);
+
+type RelayOutputOwnershipFailureSite =
+  | "response-created"
+  | "audio"
+  | "clear"
+  | "mark"
+  | "assistant-transcript"
+  | "tool-call";
 
 export const noFallbackRelayOutputFlush = () => {};
 
@@ -34,6 +59,7 @@ export type TalkRealtimeRelayEventPayload =
   | { relaySessionId: string; type: "ready" }
   | { relaySessionId: string; type: "responseStarted"; turnId: string }
   | { relaySessionId: string; type: "inputAudio"; byteLength: number }
+  | { relaySessionId: string; type: "inputAudioStart"; itemId: string }
   | {
       relaySessionId: string;
       type: "audio";
@@ -44,13 +70,13 @@ export type TalkRealtimeRelayEventPayload =
   | { relaySessionId: string; type: "audioDone"; itemId?: string; responseId?: string }
   | { relaySessionId: string; type: "clear"; reason?: RealtimeVoiceAudioClearReason }
   | { relaySessionId: string; type: "mark"; markName: string }
-  | {
+  | ({
       relaySessionId: string;
       type: "transcript";
       role: "user" | "assistant";
       text: string;
       final: boolean;
-    }
+    } & Partial<RealtimeVoiceTranscriptUpdate>)
   | {
       relaySessionId: string;
       type: "toolCall";
@@ -99,11 +125,20 @@ export class TalkRealtimeRelayOutputOwnership {
   responseId?: string;
   drain?: { promise: Promise<void>; resolve: () => void };
   private cancelledTerminal?: { responseId?: string };
+  // OpenAI and xAI deliver completed function calls from the terminal response
+  // callback after onResponseDone. Keep that response's turn available for the
+  // synchronous tool callback, but fence it as soon as a replacement response
+  // is created.
+  private terminalToolTurnId?: string;
+  private readonly diagnosticSalt = randomUUID();
+  private readonly diagnosticStartedAtMs = Date.now();
+  private readonly recentProviderEvents: Array<Record<string, unknown>> = [];
+  private lastProviderEvent?: Record<string, unknown>;
 
   constructor(
     private readonly activeTurnId: () => string | undefined,
     private readonly ensureTurn: () => string,
-    private readonly fail: (message: string) => void,
+    private readonly fail: (message: string, diagnostics?: Record<string, unknown>) => void,
   ) {}
 
   get discarding(): boolean {
@@ -118,6 +153,78 @@ export class TalkRealtimeRelayOutputOwnership {
     return this.phase === "cancelling" || this.discarding;
   }
 
+  private hashDiagnosticId(value: string | undefined): string | undefined {
+    const normalized = value?.trim();
+    if (!normalized) {
+      return undefined;
+    }
+    return createHash("sha256")
+      .update(`${this.diagnosticSalt}:${normalized}`)
+      .digest("hex")
+      .slice(0, 10);
+  }
+
+  private recordProviderEvent(event: {
+    direction: string;
+    type: string;
+    responseId?: string;
+    itemId?: string;
+    status?: string;
+    callback?: "onResponseDone";
+  }): void {
+    const response = this.hashDiagnosticId(event.responseId);
+    const item = this.hashDiagnosticId(event.itemId);
+    const ownerResponse = this.hashDiagnosticId(this.responseId);
+    const ownerTurn = this.hashDiagnosticId(this.turnId);
+    const activeTurn = this.hashDiagnosticId(this.activeTurnId());
+    const eventType = /^[a-z][a-z0-9_.-]{0,63}$/.test(event.type) ? event.type : "unknown";
+    const status =
+      event.status && RELAY_DIAGNOSTIC_RESPONSE_STATUSES.has(event.status)
+        ? event.status
+        : undefined;
+    const summary = {
+      offsetMs: Math.max(0, Date.now() - this.diagnosticStartedAtMs),
+      direction:
+        event.direction === "server" || event.direction === "client" ? event.direction : "unknown",
+      type: eventType,
+      ...(event.callback ? { callback: event.callback } : {}),
+      ...(status ? { status } : {}),
+      ...(response ? { response } : {}),
+      ...(item ? { item } : {}),
+      ownerPhase: this.phase,
+      ownerMode: this.mode,
+      ...(ownerResponse ? { ownerResponse } : {}),
+      ...(ownerTurn ? { ownerTurn } : {}),
+      ...(activeTurn ? { activeTurn } : {}),
+    };
+    this.lastProviderEvent = summary;
+    if (!RELAY_DIAGNOSTIC_PROVIDER_EVENTS.has(event.type) && !event.callback) {
+      return;
+    }
+    this.recentProviderEvents.push(summary);
+    if (this.recentProviderEvents.length > 24) {
+      this.recentProviderEvents.shift();
+    }
+  }
+
+  private diagnosticSnapshot(
+    failureSite: RelayOutputOwnershipFailureSite,
+  ): Record<string, unknown> {
+    const ownerResponse = this.hashDiagnosticId(this.responseId);
+    const ownerTurn = this.hashDiagnosticId(this.turnId);
+    const activeTurn = this.hashDiagnosticId(this.activeTurnId());
+    return {
+      failureSite,
+      ownerPhase: this.phase,
+      ownerMode: this.mode,
+      ...(ownerResponse ? { ownerResponse } : {}),
+      ...(ownerTurn ? { ownerTurn } : {}),
+      ...(activeTurn ? { activeTurn } : {}),
+      ...(this.lastProviderEvent ? { lastProviderEvent: this.lastProviderEvent } : {}),
+      recentProviderEvents: [...this.recentProviderEvents],
+    };
+  }
+
   responseCreated(responseId: string | undefined): boolean {
     const normalizedResponseId = responseId?.trim();
     if (this.discarding) {
@@ -128,6 +235,7 @@ export class TalkRealtimeRelayOutputOwnership {
     }
     if (this.phase === "unowned") {
       this.cancelledTerminal = undefined;
+      this.terminalToolTurnId = undefined;
       Object.assign(this, {
         mode: normalizedResponseId ? ("exact-response" as const) : ("turn-bound" as const),
         phase: "owned" as const,
@@ -144,11 +252,14 @@ export class TalkRealtimeRelayOutputOwnership {
     ) {
       return true;
     }
-    this.fail("Realtime provider output has no live response owner.");
+    this.fail(
+      "Realtime provider output has no live response owner.",
+      this.diagnosticSnapshot("response-created"),
+    );
     return false;
   }
 
-  resolve(claim: boolean): string | undefined {
+  resolve(claim: boolean, failureSite: RelayOutputOwnershipFailureSite): string | undefined {
     if (this.discarding) {
       return undefined;
     }
@@ -166,12 +277,40 @@ export class TalkRealtimeRelayOutputOwnership {
     const turnId =
       this.phase === "owned" && this.turnId === activeTurnId ? activeTurnId : undefined;
     if (!turnId && (claim || this.phase === "owned")) {
-      this.fail("Realtime provider output has no live response owner.");
+      this.fail(
+        "Realtime provider output has no live response owner.",
+        this.diagnosticSnapshot(failureSite),
+      );
     }
     return turnId;
   }
 
-  finish(responseId: string | undefined, cancellationEvent = false) {
+  resolveToolCall(): string | undefined {
+    if (this.suppressingOutput) {
+      return undefined;
+    }
+    const activeTurnId = this.activeTurnId();
+    if (this.phase === "owned") {
+      return this.resolve(true, "tool-call");
+    }
+    if (activeTurnId && this.mode === "turn-bound") {
+      return this.resolve(true, "tool-call");
+    }
+    if (this.terminalToolTurnId && (!activeTurnId || activeTurnId === this.terminalToolTurnId)) {
+      return this.terminalToolTurnId;
+    }
+    this.fail(
+      "Realtime provider output has no live response owner.",
+      this.diagnosticSnapshot("tool-call"),
+    );
+    return undefined;
+  }
+
+  clearTerminalToolOwner(): void {
+    this.terminalToolTurnId = undefined;
+  }
+
+  finish(responseId: string | undefined, cancellationEvent = false, allowTerminalTools = false) {
     const cancelled = this.suppressingOutput;
     if (
       (cancellationEvent && !cancelled) ||
@@ -180,6 +319,7 @@ export class TalkRealtimeRelayOutputOwnership {
     ) {
       return "ignore";
     }
+    this.terminalToolTurnId = allowTerminalTools && !cancelled ? this.turnId : undefined;
     this.drain?.resolve();
     Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
     return cancelled ? "cancelled" : "completed";
@@ -198,6 +338,7 @@ export class TalkRealtimeRelayOutputOwnership {
   resetContinuity(): void {
     this.outputGeneration += 1;
     this.cancelledTerminal = undefined;
+    this.terminalToolTurnId = undefined;
     this.drain?.resolve();
     Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
   }
@@ -209,6 +350,9 @@ export class TalkRealtimeRelayOutputOwnership {
         provider.createBridge({
           ...request,
           onEvent: (event) => {
+            if (event.direction === "server" || RELAY_DIAGNOSTIC_PROVIDER_EVENTS.has(event.type)) {
+              this.recordProviderEvent(event);
+            }
             if (event.direction === "server") {
               if (event.type === "response.done" || event.type === "response.cancelled") {
                 if (
@@ -230,6 +374,13 @@ export class TalkRealtimeRelayOutputOwnership {
             request.onEvent?.(event);
           },
           onResponseDone: (outcome) => {
+            this.recordProviderEvent({
+              direction: "server",
+              type: "response.done",
+              responseId: outcome.responseId,
+              status: outcome.status,
+              callback: "onResponseDone",
+            });
             // The Talk turn is already cancelled. Settle its provider owner before the
             // harness rejects that terminal or mistakes it for a successor input turn.
             if (this.suppressingOutput) {
@@ -260,11 +411,15 @@ export type RelaySession = {
   capabilities?: InternalRealtimeVoiceProviderCapabilities;
   outputOwnership: TalkRealtimeRelayOutputOwnership;
   sessionTarget: PreparedTalkSessionTarget;
+  speakerMxid?: string;
+  closeDisposition?: RealtimeVoiceCloseDisposition;
+  matrixRoute?: { channel: "matrix"; roomId: string; threadRootEventId: string; accountId: string };
   expiresAtMs: number;
   cleanupTimer: ReturnType<typeof setTimeout>;
   activeAgentRuns: Map<string, string>;
   provider: string;
   activeAgentToolCalls: Map<string, string>;
+  agentToolCallTerminalSubscriptions?: Map<string, () => void>;
   toolCalls: RelayToolCallLedger;
   providerToolCallIds: Map<string, string>;
   relayToolCallIdsByProviderId: Map<string, string>;
@@ -307,7 +462,10 @@ export type CreateTalkRealtimeRelaySessionParams = {
   sessionTarget: PreparedTalkSessionTarget;
   voice?: string;
   language?: string;
+  sessionCapsule?: string;
   forceAgentConsultOnFinalTranscript?: boolean;
+  speakerMxid?: string;
+  matrixRoute?: { channel: "matrix"; roomId: string; threadRootEventId: string; accountId: string };
 };
 
 export type TalkRealtimeRelaySessionResult = {
@@ -323,6 +481,15 @@ export type TalkRealtimeRelaySessionResult = {
 export const relaySessions = new Map<string, RelaySession>();
 // Closing relays reject new work but retain bounded final transcripts until
 // provider finalization and durable close settle. Session limits count both sets.
+
+/** Resolve browser capabilities only against their live connection-owned relay. */
+export function resolveOwnedTalkRealtimeRelaySession(
+  relaySessionId: string,
+  connId: string | undefined,
+): RelaySession | undefined {
+  const relay = relaySessions.get(relaySessionId);
+  return connId && relay?.connId === connId && relay.expiresAtMs >= Date.now() ? relay : undefined;
+}
 export const drainingRelaySessions = new Set<RelaySession>();
 
 export function assertRelaySessionCapacity(connId: string): void {

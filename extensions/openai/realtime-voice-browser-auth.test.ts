@@ -287,7 +287,7 @@ describe("OpenAI realtime voice browser authentication", () => {
         create_response: true,
         interrupt_response: true,
       },
-      transcription: { model: "gpt-4o-mini-transcribe" },
+      transcription: { model: "gpt-live-transcribe", delay: "low" },
     });
     expect(requireNestedRecord(bodySession, ["audio", "output"])).toEqual({ voice: "marin" });
     expect(bodySession).not.toHaveProperty("temperature");

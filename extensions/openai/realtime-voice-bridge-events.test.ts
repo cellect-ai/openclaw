@@ -621,6 +621,29 @@ describe("OpenAI realtime voice bridge events", () => {
     ]);
   });
 
+  it("preserves input item identity and exact live transcription delta semantics", async () => {
+    const onTranscript = vi.fn();
+    const socket = await connectReadyBridge(createNativeBridge({ onTranscript }));
+    for (const delta of ["trans", "cription", " works"]) {
+      emitServerEvent(socket, {
+        type: "conversation.item.input_audio_transcription.delta",
+        item_id: "input-1",
+        delta,
+      });
+    }
+    emitServerEvent(socket, {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "input-1",
+      transcript: "Transcription works.",
+    });
+    expect(onTranscript.mock.calls).toEqual([
+      ["user", "trans", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", "cription", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", " works", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", "Transcription works.", true, { itemId: "input-1", textMode: "snapshot" }],
+    ]);
+  });
+
   it.each([
     ["invalid alphabet", "not-base64!"],
     ["non-canonical pad bits", "ZE=="],
@@ -679,8 +702,10 @@ describe("OpenAI realtime voice bridge events", () => {
       text: "final assistant text",
     });
 
-    expect(onAudio).toHaveBeenCalledWith(audio, undefined);
-    expect(onTranscript).toHaveBeenCalledWith("user", "partial user", false);
+    expect(onAudio).toHaveBeenCalledWith(audio);
+    expect(onTranscript).toHaveBeenCalledWith("user", "partial user", false, {
+      textMode: "delta",
+    });
     expect(onTranscript).toHaveBeenCalledWith("assistant", "partial assistant", false);
     expect(onTranscript).toHaveBeenCalledWith("assistant", "final assistant text", true);
   });
