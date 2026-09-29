@@ -61,7 +61,7 @@ export function registerMatrixSessionProjection(api: OpenClawPluginApi): void {
       stopSourceReceipts?.();
       const { startMatrixSourceResultReceipts } =
         await import("./src/matrix/projection-source-result.js");
-      stopSourceReceipts = startMatrixSourceResultReceipts();
+      stopSourceReceipts = startMatrixSourceResultReceipts(api.runtime);
     },
     stop() {
       lifecycle?.stop();
