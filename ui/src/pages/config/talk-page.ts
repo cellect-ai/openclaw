@@ -402,10 +402,15 @@ class TalkSettingsPage extends OpenClawLightDomElement {
     if (this.mutationDisabled) {
       return;
     }
+    const selection = this.liveSelection();
+    // The shared config schema requires an explicit choice for multiple
+    // provider entries. Keep the current valid draft if Auto is unavailable.
+    if (providerId === null && Object.keys(selection.providerEntries).length > 1) {
+      return;
+    }
     this.voicePreview.stop();
     this.modelDefaultResetIntent = null;
     const runtimeConfig = this.context.runtimeConfig;
-    const selection = this.liveSelection();
     for (const key of ["model", "speakerVoice", "speakerVoiceId"]) {
       runtimeConfig.removeFormValue(["talk", "realtime", key]);
     }
@@ -432,6 +437,15 @@ class TalkSettingsPage extends OpenClawLightDomElement {
         talkProviderRejectsTransport(option?.transports, configuredTransport));
     if (rejectsTransport) {
       runtimeConfig.removeFormValue(["talk", "realtime", "transport"]);
+    }
+    // Credential-profile providers can be ready without a config entry. When
+    // a map already exists, its explicit selector must name an owned key.
+    // An empty entry leaves credentials and defaults with their provider owner.
+    if (
+      Object.keys(selection.providerEntries).length > 0 &&
+      !Object.hasOwn(selection.providerEntries, providerId)
+    ) {
+      runtimeConfig.patchForm(["talk", "realtime", "providers", providerId], {});
     }
     runtimeConfig.patchForm(["talk", "realtime", "provider"], providerId);
     // A relay-only provider (no client-owned transport) needs the transport

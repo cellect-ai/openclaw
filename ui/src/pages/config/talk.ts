@@ -189,9 +189,12 @@ function renderProviderRow(props: TalkViewProps) {
   // A configured provider missing from the catalog (for example a disabled
   // plugin) must stay visible as itself, not silently render as Auto.
   const unknownConfigured = props.selection.provider && !selected ? props.selection.provider : null;
+  const autoUnavailable = Object.keys(props.selection.providerEntries).length > 1;
   return renderSettingsRow({
     title: t("talkPage.provider.title"),
-    description: t("talkPage.provider.description"),
+    description: t(
+      autoUnavailable ? "talkPage.provider.explicitRequired" : "talkPage.provider.description",
+    ),
     stacked: true,
     control: renderSettingsSegmented({
       value: selected?.id ?? unknownConfigured ?? TALK_PICKER_UNSET,
@@ -201,7 +204,11 @@ function renderProviderRow(props: TalkViewProps) {
           label: provider.label,
         })),
         ...(unknownConfigured ? [{ value: unknownConfigured, label: unknownConfigured }] : []),
-        { value: TALK_PICKER_UNSET, label: t("talkPage.provider.auto") },
+        {
+          value: TALK_PICKER_UNSET,
+          label: t("talkPage.provider.auto"),
+          disabled: autoUnavailable,
+        },
       ],
       disabled: talkPickersDisabled(props),
       ariaLabel: t("talkPage.provider.title"),

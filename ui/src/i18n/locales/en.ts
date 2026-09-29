@@ -2523,6 +2523,8 @@ export const en: TranslationMap & {
     provider: {
       title: "Provider",
       description: "Auto picks the first provider with working credentials.",
+      explicitRequired:
+        "Choose a provider. Auto is unavailable when multiple provider entries are configured.",
       auto: "Auto",
     },
     model: {

@@ -2,11 +2,16 @@
 
 import type { TalkCatalogResult } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { TalkSchema } from "../../../../src/config/zod-schema.root-support.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../app/context.ts";
 import type { NativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
 import { t } from "../../i18n/index.ts";
+import {
+  CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS,
+  createConfigCapabilityHarness,
+} from "../../lib/config/config-test-harness.ts";
 import {
   createIosNativeDeviceSettingsSnapshot,
   createNativeDeviceSettingsSnapshot,
@@ -244,6 +249,93 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   vi.useRealTimers();
+});
+
+describe("Talk provider autosave", () => {
+  it.each([false, true])(
+    "saves the selected credential-profile provider without replacing existing entries (existing: %s)",
+    async (existing) => {
+      const harness = createTalkMutationHarness();
+      harness.page.remove();
+      const initial = {
+        talk: {
+          realtime: {
+            provider: "litellm",
+            model: "gemini-3.8-live",
+            transport: "gateway-relay",
+            providers: {
+              litellm: { baseUrl: "https://proxy.example.test", model: "gemini-3.8-live" },
+              ...(existing ? { xai: { speakerVoice: "ara", model: "grok-voice" } } : {}),
+            },
+          },
+        },
+      };
+      let stored = initial;
+      const submissions: unknown[] = [];
+      const request = vi.fn(async (method: string, params?: unknown) => {
+        if (method === "talk.catalog") {
+          return harness.request(method, {});
+        }
+        if (method === "config.get") {
+          return {
+            config: stored,
+            raw: JSON.stringify(stored),
+            hash: "test-hash",
+            valid: true,
+            issues: [],
+          };
+        }
+        if (method === "config.set") {
+          const submitted = JSON.parse((params as { raw: string }).raw) as typeof initial;
+          submissions.push(submitted);
+          TalkSchema.parse(submitted.talk);
+          stored = submitted;
+          return { config: stored, hash: "saved-hash" };
+        }
+        return {};
+      });
+      const { runtimeConfig } = createConfigCapabilityHarness(
+        request as GatewayBrowserClient["request"],
+      );
+      try {
+        await runtimeConfig.ensureLoaded();
+        harness.page.context = { ...harness.page.context, runtimeConfig };
+        harness.page.configObject = runtimeConfig.state.configForm ?? {};
+        document.body.append(harness.page);
+        await harness.page.updateComplete;
+        await vi.waitFor(() => expect(harness.page.querySelector('[value="xai"]')).not.toBeNull());
+        vi.useFakeTimers();
+        const group = harness.page.querySelector<HTMLElement & { value: string }>(
+          "wa-radio-group",
+        )!;
+        group.value = "xai";
+        group.dispatchEvent(new Event("change"));
+        await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
+        expect(submissions).toHaveLength(1);
+        expect(runtimeConfig.state.configAutoSaveStatus).toBe("saved");
+        expect(stored.talk.realtime).toEqual({
+          provider: "xai",
+          transport: "gateway-relay",
+          providers: {
+            litellm: initial.talk.realtime.providers.litellm,
+            xai: existing ? { speakerVoice: "ara", model: "grok-voice" } : {},
+          },
+        });
+        harness.page.configObject = runtimeConfig.state.configForm ?? {};
+        await harness.page.updateComplete;
+        const auto = harness.page.querySelector<HTMLElement>('[value=""]');
+        expect(auto?.hasAttribute("disabled")).toBe(true);
+        auto?.click();
+        harness.page.changeProvider(null);
+        await vi.advanceTimersByTimeAsync(CONFIG_FORM_AUTO_SAVE_DEBOUNCE_MS);
+        expect(submissions).toHaveLength(1);
+        expect(runtimeConfig.state.configForm).toEqual(stored);
+      } finally {
+        harness.page.remove();
+        runtimeConfig.dispose();
+      }
+    },
+  );
 });
 
 describe("Talk speaker voice previews", () => {

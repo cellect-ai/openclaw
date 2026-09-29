@@ -662,22 +662,36 @@ export function discardConfigFormValue(state: RuntimeConfigState, path: Array<st
     return false;
   }
   let current = cloneConfigObject(state.configForm);
-  const previous = path.reduce<unknown>(
-    (value, segment) =>
-      Array.isArray(value) && typeof segment === "number"
-        ? value[segment]
-        : isRecord(value) && typeof segment === "string"
+  const readPath = (config: unknown, nodePath: Array<string | number>) =>
+    nodePath.reduce<unknown>(
+      (value, segment) =>
+        Array.isArray(value) && typeof segment === "number"
           ? value[segment]
-          : undefined,
-    original,
-  );
+          : isRecord(value) && typeof segment === "string"
+            ? value[segment]
+            : undefined,
+      config,
+    );
+  const previous = readPath(original, path);
   if (previous === undefined) {
     removePathValue(current, path);
+    // Cancellation owns removal of containers created by the canceled edit.
+    // Submission preserves explicitly authored empty objects elsewhere.
+    for (let length = path.length - 1; length > 0; length -= 1) {
+      const ancestorPath = path.slice(0, length);
+      const ancestor = readPath(current, ancestorPath);
+      if (
+        readPath(original, ancestorPath) !== undefined ||
+        !isRecord(ancestor) ||
+        Object.keys(ancestor).length > 0
+      ) {
+        break;
+      }
+      removePathValue(current, ancestorPath);
+    }
   } else {
     setPathValue(current, path, cloneConfigObject(previous));
   }
-  // Restore absence with the submission owner's existing empty-container rules;
-  // otherwise Cancel alone leaves a dirty draft and schedules a redundant write.
   current = sanitizeRedactedFormForSubmit(current, original, original);
   if (configFormContentConflicts(original, current, canonical)) {
     state.configAutoSaveStatus = "conflict";
