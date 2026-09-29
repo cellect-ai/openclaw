@@ -130,6 +130,7 @@ export class TalkRealtimeRelayOutputOwnership {
   // synchronous tool callback, but fence it as soon as a replacement response
   // is created.
   private terminalToolTurnId?: string;
+  private superseded = false;
   private readonly diagnosticSalt = randomUUID();
   private readonly diagnosticStartedAtMs = Date.now();
   private readonly recentProviderEvents: Array<Record<string, unknown>> = [];
@@ -252,6 +253,19 @@ export class TalkRealtimeRelayOutputOwnership {
     ) {
       return true;
     }
+    // Grok and LiteLLM open the next response without a terminal event for the
+    // one still owned. Keep the call and let that response take over. A response
+    // that arrives while cancellation is unconfirmed stays fatal.
+    if (
+      this.phase === "owned" &&
+      normalizedResponseId &&
+      normalizedResponseId !== this.responseId
+    ) {
+      this.superseded = true;
+      this.terminalToolTurnId = undefined;
+      this.responseId = normalizedResponseId;
+      return true;
+    }
     this.fail(
       "Realtime provider output has no live response owner.",
       this.diagnosticSnapshot("response-created"),
@@ -304,6 +318,12 @@ export class TalkRealtimeRelayOutputOwnership {
       this.diagnosticSnapshot("tool-call"),
     );
     return undefined;
+  }
+
+  takeSuperseded(): boolean {
+    const superseded = this.superseded;
+    this.superseded = false;
+    return superseded;
   }
 
   clearTerminalToolOwner(): void {
@@ -439,6 +459,12 @@ export type RelaySession = {
   voiceTranscriptQueue: BoundedSerialQueue;
   confirmationReadiness: ReturnType<typeof createClientVoiceConfirmationReadiness>;
   voiceSessionClose?: Promise<void>;
+  voiceUtterance?: {
+    role: "user" | "assistant";
+    key: string;
+    text: string;
+    eventId?: string;
+  };
   closing?: { reason: "completed" | "error"; completion?: Promise<void> };
   failSession: (message: string) => void;
 };

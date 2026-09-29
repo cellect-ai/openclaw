@@ -1,6 +1,9 @@
 import { extractDeliveryInfo } from "../../../config/sessions/delivery-info.js";
 import { formatErrorMessage } from "../../../infra/errors.js";
-import { deliverOutboundPayloads } from "../../../infra/outbound/deliver.js";
+import {
+  deliverOutboundPayloads,
+  type OutboundDeliveryResult,
+} from "../../../infra/outbound/deliver.js";
 import {
   appendRelayVoiceTranscript,
   closeRelayVoiceSessionRecord,
@@ -12,6 +15,26 @@ import {
 } from "../../../talk/voice-transcript.js";
 import { drainingRelaySessions, type RelaySession } from "./state.js";
 
+export type RelayVoiceTranscriptUpdate = {
+  itemId?: string;
+  textMode?: "delta" | "snapshot";
+};
+
+function sameSpokenUtterance(previous: string, next: string): boolean {
+  if (previous.length < 2 || next.length < 2) {
+    return false;
+  }
+  if (previous === next || next.startsWith(previous) || previous.startsWith(next)) {
+    return true;
+  }
+  const limit = Math.min(previous.length, next.length);
+  let shared = 0;
+  while (shared < limit && previous[shared] === next[shared]) {
+    shared += 1;
+  }
+  return shared >= 8 && shared * 10 >= limit * 7;
+}
+
 const RELAY_TRANSCRIPT_RETRY_DELAYS_MS = [0, 500, 2_000] as const;
 
 async function projectRelayTranscriptToOwningMatrix(params: {
@@ -20,7 +43,11 @@ async function projectRelayTranscriptToOwningMatrix(params: {
   entryId: string;
   role: "user" | "assistant";
   text: string;
-}): Promise<void> {
+  utteranceKey: string;
+  projectionId: string;
+  deliveryIntentId: string;
+  editEventId?: string;
+}): Promise<OutboundDeliveryResult[]> {
   const cfg = params.session.voiceConfig ?? params.session.context.getRuntimeConfig();
   const stored = extractDeliveryInfo(params.sessionKey, { cfg });
   const deliveryContext = params.session.matrixRoute
@@ -33,10 +60,11 @@ async function projectRelayTranscriptToOwningMatrix(params: {
     : stored.deliveryContext;
   const threadId = params.session.matrixRoute?.threadRootEventId ?? stored.threadId;
   if (deliveryContext?.channel?.toLowerCase() !== "matrix" || !deliveryContext.to) {
-    return;
+    return [];
   }
-  const projectionId = `voice:${params.session.id}:${params.entryId}`;
-  await deliverOutboundPayloads({
+  const projectionId = params.projectionId;
+  const editEventId = params.editEventId;
+  const results = await deliverOutboundPayloads({
     cfg,
     channel: "matrix",
     to: deliveryContext.to,
@@ -47,6 +75,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
         text: params.text,
         channelData: {
           matrix: {
+            ...(editEventId ? { editEventId } : {}),
             extraContent: {
               "com.openclaw.voice_transcript": {
                 version: 1,
@@ -62,9 +91,28 @@ async function projectRelayTranscriptToOwningMatrix(params: {
         },
       },
     ],
-    deliveryIntentId: projectionId,
+    deliveryIntentId: params.deliveryIntentId,
     queuePolicy: "required",
   });
+  if (!editEventId) {
+    const messageId = results.find(
+      (result) => result.messageId && result.messageId !== "unknown",
+    )?.messageId;
+    params.session.voiceUtterance = {
+      role: params.role,
+      key: params.utteranceKey,
+      text: params.text,
+      ...(messageId ? { eventId: messageId } : {}),
+    };
+    return results;
+  }
+  params.session.voiceUtterance = {
+    role: params.role,
+    key: params.utteranceKey,
+    text: params.text,
+    eventId: editEventId,
+  };
+  return results;
 }
 
 function logRelayVoiceFailure(session: RelaySession, message: string, error: unknown): void {
@@ -96,6 +144,7 @@ export function enqueueRelayVoiceTranscript(
   session: RelaySession,
   role: "user" | "assistant",
   text: string,
+  update?: RelayVoiceTranscriptUpdate,
 ): boolean {
   const observed =
     role === "user" && !session.closing
@@ -133,13 +182,28 @@ export function enqueueRelayVoiceTranscript(
             confirmation: observed?.confirmation ?? null,
             ...(session.voiceConfig ? { config: session.voiceConfig } : {}),
           });
-          await projectRelayTranscriptToOwningMatrix({
-            session,
-            sessionKey,
-            entryId,
-            role,
-            text: normalizedText,
-          });
+          const open = session.voiceUtterance;
+          const itemKey = update?.itemId?.trim() ? `item:${update.itemId.trim()}` : undefined;
+          const revises =
+            open?.role === role &&
+            ((itemKey !== undefined && open.key === itemKey) ||
+              sameSpokenUtterance(open.text, normalizedText));
+          const editEventId = revises ? open?.eventId : undefined;
+          const utteranceKey = revises && open ? open.key : (itemKey ?? entryId);
+          const projectionId = `voice:${session.id}:${utteranceKey}`;
+          if (!(editEventId && open?.text === normalizedText)) {
+            await projectRelayTranscriptToOwningMatrix({
+              session,
+              sessionKey,
+              entryId,
+              role,
+              text: normalizedText,
+              utteranceKey,
+              projectionId,
+              deliveryIntentId: editEventId ? `${projectionId}:${entryId}` : projectionId,
+              ...(editEventId ? { editEventId } : {}),
+            });
+          }
           return;
         } catch (error) {
           lastError = error;

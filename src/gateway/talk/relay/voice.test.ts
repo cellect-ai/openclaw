@@ -102,6 +102,44 @@ describe("realtime relay voice transcript persistence", () => {
     );
   });
 
+  it("edits one Matrix message when a later final revises the same utterance", async () => {
+    projectionMocks.deliverOutboundPayloads.mockResolvedValue([
+      { channel: "matrix", messageId: "$spoken" },
+    ]);
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+
+    expect(
+      enqueueRelayVoiceTranscript(session, "user", "How long is it", {
+        itemId: "item-1",
+        textMode: "snapshot",
+      }),
+    ).toBe(true);
+    expect(
+      enqueueRelayVoiceTranscript(session, "user", "How long is a typical", {
+        itemId: "item-2",
+        textMode: "snapshot",
+      }),
+    ).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledTimes(2);
+    const first = projectionMocks.deliverOutboundPayloads.mock.calls[0]?.[0] as {
+      payloads: Array<{ channelData?: { matrix?: { editEventId?: string } } }>;
+    };
+    const second = projectionMocks.deliverOutboundPayloads.mock.calls[1]?.[0] as {
+      payloads: Array<{ channelData?: { matrix?: { editEventId?: string } }; text?: string }>;
+    };
+    expect(first.payloads[0]?.channelData?.matrix?.editEventId).toBeUndefined();
+    expect(second.payloads[0]?.channelData?.matrix?.editEventId).toBe("$spoken");
+    expect(second.payloads[0]?.text).toBe("How long is a typical");
+  });
+
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {
     const firstAppend = deferred();
     voiceSessionMocks.appendRelayVoiceTranscript.mockImplementation(
