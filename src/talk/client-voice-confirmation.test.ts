@@ -206,17 +206,20 @@ describe("client voice confirmation", () => {
     ["exec", "git clean -fdx"],
     ["bash", "mv a b"],
     ["exec", "sed -n '-e$w /tmp/out' 1p"],
+    ["sandbox_exec", "git clean -fdx"],
+    ["gateway_exec", "git clean -fdx"],
+    ["node_exec", "git clean -fdx"],
   ])(
     "requires confirmation for an unlisted destructive shell command: %s %s",
     (toolName, command) => {
       expect(
-        checkClientVoiceToolConfirmationPolicy({
+        block({
           voiceSessionId: "voice-1",
           runId: "voice-run",
           toolName,
           toolParams: { command },
-        }).allowed,
-      ).toBe(false);
+        }),
+      ).toBeTruthy();
     },
   );
 
@@ -235,6 +238,51 @@ describe("client voice confirmation", () => {
       }),
     ).toEqual({ allowed: true });
   });
+
+  it.each(["sandbox_process", "gateway_process"])(
+    "requires confirmation for a mutating process action through %s",
+    (toolName) => {
+      expect(
+        block({
+          voiceSessionId: "voice-1",
+          runId: "voice-run",
+          toolName,
+          toolParams: { action: "kill", sessionId: "run-1" },
+        }),
+      ).toBeTruthy();
+    },
+  );
+
+  it.each(["sandbox_exec", "gateway_exec", "node_exec"])(
+    "does not require confirmation for a read-only shell command through %s",
+    (toolName) => {
+      expect(
+        checkClientVoiceToolConfirmationPolicy({
+          voiceSessionId: "voice-1",
+          runId: "voice-run",
+          toolName,
+          toolParams: { command: "cat README.md" },
+        }),
+      ).toEqual({ allowed: true });
+    },
+  );
+
+  it.each(["fi_user_api", "web_search", "tavily_search", "web_fetch"])(
+    "does not require confirmation for the read-only %s tool",
+    (toolName) => {
+      expect(
+        checkClientVoiceToolConfirmationPolicy({
+          voiceSessionId: "voice-1",
+          runId: "voice-run",
+          toolName,
+          toolParams:
+            toolName === "fi_user_api"
+              ? { path: "305-third/financing/text" }
+              : { query: "current project status" },
+        }),
+      ).toEqual({ allowed: true });
+    },
+  );
 
   it("does not request confirmation for a caller-validated current-source message reply", () => {
     const toolParams = { action: "send", message: "The read-only lookup is complete." };

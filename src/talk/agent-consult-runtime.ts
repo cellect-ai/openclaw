@@ -46,6 +46,8 @@ export type RealtimeVoiceAgentConsultResult = { text: string; yielded?: true };
 const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
 const REALTIME_VOICE_YIELD_ACK_FALLBACK =
   "I started that work and will share the result when it is ready.";
+const REALTIME_VOICE_TIMEOUT_FALLBACK =
+  'That check timed out before I got a result. Say "retry" and I will resume the request.';
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -335,24 +337,26 @@ async function resolveRealtimeVoiceAgentConsultSessionEntry(params: {
   throw new Error("realtime voice agent consult session could not be initialized");
 }
 
-function assertRealtimeVoiceConsultNotInterrupted(
-  abortSignal: AbortSignal,
-  meta?: EmbeddedAgentRunMeta,
-): void {
+function resolveRealtimeVoiceConsultInterruption(params: {
+  abortSignal: AbortSignal;
+  fallbackText?: string;
+  logger: Pick<RuntimeLogger, "warn">;
+  meta?: EmbeddedAgentRunMeta;
+}): RealtimeVoiceAgentConsultResult | undefined {
   const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({
     phase: "end",
-    data: meta,
-    abortSignal,
+    data: params.meta,
+    abortSignal: params.abortSignal,
   });
   const classification = classifyAgentRunTerminalOutcome(outcome);
-  // Preserve the run owner's interruption before projecting partial or empty text
-  // into speech. A timeout must remain a failure, not a silent cancellation.
   if (classification === "cancellation") {
     throw new DOMException("Realtime voice agent consult cancelled", "AbortError");
   }
   if (classification === "timeout") {
-    throw new DOMException("Realtime voice agent consult timed out", "TimeoutError");
+    params.logger.warn("[talk] agent consult timed out before producing a speakable result");
+    return { text: params.fallbackText ?? REALTIME_VOICE_TIMEOUT_FALLBACK };
   }
+  return undefined;
 }
 
 /**
@@ -519,6 +523,7 @@ export async function consultRealtimeVoiceAgent(params: {
         prompt: buildRealtimeVoiceAgentConsultPrompt({
           args: params.args,
           transcript: params.transcript,
+          agentId,
           surface: params.surface,
           userLabel: params.userLabel,
           assistantLabel: params.assistantLabel,
@@ -546,7 +551,14 @@ export async function consultRealtimeVoiceAgent(params: {
       try {
         result = await runPromise;
       } catch {
-        assertRealtimeVoiceConsultNotInterrupted(abortSignal);
+        const interruption = resolveRealtimeVoiceConsultInterruption({
+          abortSignal,
+          fallbackText: params.fallbackText,
+          logger: params.logger,
+        });
+        if (interruption) {
+          return interruption;
+        }
         params.logger.warn("[talk] agent consult failed before producing a speakable result");
         return {
           text:
@@ -556,7 +568,15 @@ export async function consultRealtimeVoiceAgent(params: {
       } finally {
         runRegistration?.cleanup?.();
       }
-      assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
+      const interruption = resolveRealtimeVoiceConsultInterruption({
+        abortSignal,
+        fallbackText: params.fallbackText,
+        logger: params.logger,
+        meta: result.meta,
+      });
+      if (interruption) {
+        return interruption;
+      }
 
       if (result.meta?.yielded === true) {
         const acknowledgment =
