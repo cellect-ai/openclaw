@@ -717,4 +717,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["users.linkChannelIdentity", "users", "operator.admin", "2026.9"],
   ["users.unlinkChannelIdentity", "users", "operator.admin", "2026.9"],
   ["users.listChannelIdentities", "users", "operator.admin", "2026.9"],
+  ["talk.voice.preview", "talk", "operator.write", "2026.9"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

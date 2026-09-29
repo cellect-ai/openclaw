@@ -384,6 +384,8 @@ export {
   WizardStatusResultSchema,
   TalkEventSchema,
   TalkVoiceGetParamsSchema,
+  TalkVoicePreviewParamsSchema,
+  TalkVoicePreviewResultSchema,
   TalkVoiceSetParamsSchema,
   TalkVoiceSelectionSchema,
   TalkVoiceSetResultSchema,

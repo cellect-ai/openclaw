@@ -312,7 +312,7 @@ export function createLiteLlmRealtimeVoiceProviderMetadata(
   return {
     ...xai,
     id: "litellm",
-    label: "LiteLLM Realtime",
+    label: "LiteLLM Realtime (Grok / Google)",
     aliases: ["litellm-realtime"],
     defaultModel: LITELLM_REALTIME_VOICE_MODELS[0],
     models: LITELLM_REALTIME_VOICE_MODELS,

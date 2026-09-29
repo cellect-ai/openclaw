@@ -20,6 +20,20 @@ const selection = {
 };
 
 export const TalkVoiceGetParamsSchema = closedObject(target);
+export const TalkVoicePreviewParamsSchema = closedObject({
+  provider: Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" }),
+  model: Type.Optional(Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" })),
+  voice: Type.Optional(
+    Type.Union([Type.Null(), Type.String({ minLength: 1, maxLength: 200, pattern: "\\S" })]),
+  ),
+});
+export const TalkVoicePreviewResultSchema = closedObject({
+  provider: NonEmptyString,
+  model: Type.Optional(NonEmptyString),
+  voice: Type.Optional(NonEmptyString),
+  audioBase64: Type.String({ minLength: 1, maxLength: 640000 }),
+  sampleRateHz: Type.Literal(24000),
+});
 export const TalkVoiceSetParamsSchema = closedObject({ ...target, voice: NonEmptyString });
 export const TalkVoiceSelectionSchema = closedObject(selection);
 export const TalkVoiceSetResultSchema = closedObject({
@@ -41,6 +55,8 @@ export const TalkVoiceChangeEventSchema = closedObject({
 });
 
 export type TalkVoiceGetParams = Static<typeof TalkVoiceGetParamsSchema>;
+export type TalkVoicePreviewParams = Static<typeof TalkVoicePreviewParamsSchema>;
+export type TalkVoicePreviewResult = Static<typeof TalkVoicePreviewResultSchema>;
 export type TalkVoiceSetParams = Static<typeof TalkVoiceSetParamsSchema>;
 export type TalkVoiceSelection = Static<typeof TalkVoiceSelectionSchema>;
 export type TalkVoiceSetResult = Static<typeof TalkVoiceSetResultSchema>;

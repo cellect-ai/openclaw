@@ -10,6 +10,7 @@ import { resolveXaiRealtimeApiKey } from "./realtime-voice-auth.runtime.js";
 import { XaiRealtimeVoiceBridge } from "./realtime-voice-bridge.js";
 import { attachLiteLlmRealtimeVoiceCapabilities } from "./realtime-voice-capabilities.js";
 import {
+  GOOGLE_REALTIME_VOICES,
   LITELLM_REALTIME_BASE_URL,
   LITELLM_REALTIME_VOICE_MODELS,
   XAI_REALTIME_VOICES,
@@ -38,13 +39,6 @@ const GENERIC_REALTIME_VOICES = new Set([
   "sage",
   "shimmer",
   "verse",
-  "aoede",
-  "charon",
-  "fenrir",
-  "leda",
-  "orus",
-  "puck",
-  "zephyr",
 ]);
 
 function resolveLiteLlmVoice(model: string, configuredVoice?: string): string {
@@ -54,10 +48,14 @@ function resolveLiteLlmVoice(model: string, configuredVoice?: string): string {
     return isGeminiLive ? "Kore" : "eve";
   }
   const normalized = voice.toLowerCase();
+  const googleVoice = GOOGLE_REALTIME_VOICES.find((name) => name.toLowerCase() === normalized);
+  if (isGeminiLive && googleVoice) {
+    return googleVoice;
+  }
   const conflictsWithSelectedModel = isGeminiLive
     ? XAI_REALTIME_VOICES.includes(normalized as (typeof XAI_REALTIME_VOICES)[number]) ||
       GENERIC_REALTIME_VOICES.has(normalized)
-    : GENERIC_REALTIME_VOICES.has(normalized) || ["kore"].includes(normalized);
+    : GENERIC_REALTIME_VOICES.has(normalized) || googleVoice !== undefined;
   if (conflictsWithSelectedModel) {
     return isGeminiLive ? "Kore" : "eve";
   }

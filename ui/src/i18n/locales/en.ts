@@ -2538,6 +2538,11 @@ export const en: TranslationMap & {
       unsupported: "unsupported",
       unsupportedDefault:
         "This saved voice is unavailable for the selected route. Provider default will be used.",
+      preview: "Preview voice",
+      previewHint: "Changing the speaker voice plays a short sample from the selected model.",
+      previewLoading: "Preparing voice preview…",
+      previewPlaying: "Playing voice preview…",
+      previewError: "Voice preview is unavailable. Try playing the sample again.",
     },
     gptLive: {
       title: "GPT-Live",
