@@ -208,7 +208,15 @@ function normalizeLegacyPairingRequest(value: unknown): PairingRequest | null {
           .filter(([, entry]) => Boolean(entry)),
       )
     : undefined;
-  return { id, code, createdAt, lastSeenAt, ...(meta && Object.keys(meta).length ? { meta } : {}) };
+  // Legacy JSON predates retention; every imported request was a pending one.
+  return {
+    id,
+    code,
+    createdAt,
+    lastSeenAt,
+    status: "pending",
+    ...(meta && Object.keys(meta).length ? { meta } : {}),
+  };
 }
 
 function readLegacyPairingRequests(filePath: string): PairingRequest[] | null {

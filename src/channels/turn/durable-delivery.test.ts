@@ -53,6 +53,9 @@ type SendDurableMessageBatchRequest = {
   gatewayClientScopes?: readonly string[];
   runId?: string;
   executionIdentityToken?: unknown;
+  deliveryIntentId?: string;
+  reusePendingDeliveryIntent?: boolean;
+  completionRetention?: unknown;
 };
 
 type DeliverySupportRequest = {
@@ -254,6 +257,11 @@ describe("durable inbound reply delivery", () => {
   });
 
   it("uses required durability when a caller explicitly requires unknown-send reconciliation", async () => {
+    const completionRetention = {
+      idPrefix: "webchat-completion-outbound:v1:",
+      maxAgeMs: 60_000,
+      maxEntries: 10,
+    } as const;
     await deliverInboundReplyWithMessageSendContextCore({
       cfg: {},
       channel: "telegram",
@@ -264,6 +272,9 @@ describe("durable inbound reply delivery", () => {
         text: true,
         reconcileUnknownSend: true,
       },
+      deliveryIntentId: "webchat-completion-outbound:v1:delivery-1",
+      reusePendingDeliveryIntent: true,
+      completionRetention,
       ctxPayload: ctxPayload({
         OriginatingTo: "chat-1",
       }),
@@ -277,6 +288,11 @@ describe("durable inbound reply delivery", () => {
     expect(mocks.sendDurableMessageBatch).toHaveBeenCalledTimes(1);
     expect(latestSendDurableMessageBatchRequest().durability).toBe("required");
     expect(latestSendDurableMessageBatchRequest().requireUnknownSendReconciliation).toBe(true);
+    expect(latestSendDurableMessageBatchRequest()).toMatchObject({
+      deliveryIntentId: "webchat-completion-outbound:v1:delivery-1",
+      reusePendingDeliveryIntent: true,
+      completionRetention,
+    });
   });
 
   it("reports durable partial send failures as failed delivery", async () => {

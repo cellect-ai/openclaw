@@ -1,3 +1,4 @@
+import type { MediaFact } from "../../../media/media-facts.js";
 import type { FastMode } from "../../../shared/fast-mode.js";
 import type { SpawnedToolContext } from "../../spawned-context.js";
 import type {
@@ -58,6 +59,8 @@ export type SpawnSubagentContext = SpawnedToolContext & {
   currentMessageId?: string | number;
   requesterAgentIdOverride?: string;
   requesterRunId?: string;
+  /** Media attached to the requester's current turn; forwarded to the child. */
+  parentTurnMedia?: readonly MediaFact[];
   /** Private invocation fence, consumed only before registration transfers ownership. */
   assertActive?: () => void;
 };

@@ -36,7 +36,8 @@ import {
 } from "../sessions/session-key-utils.js";
 import { resolveAssistantEventPhase } from "../shared/chat-message-content.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
-import { resolveAssistantTextInput } from "./agent-event-assistant-text.js";
+import { mergeAssistantText, resolveAssistantTextInput } from "./agent-event-assistant-text.js";
+import { hasChatTerminalObserver, publishChatTerminal } from "./chat-terminal-observer.js";
 import {
   appendChatCanvasBlocks,
   appendChatCanvasBlocksToMessage,
@@ -569,9 +570,10 @@ export function createAgentEventHandler({
       sessionKey &&
       (isControlUiVisible ||
         (projectSessionMessages &&
-          deliverySessionKeys.some(
-            (deliverySessionKey) => sessionMessageSubscribers.get(deliverySessionKey).size > 0,
-          )))
+          (hasChatTerminalObserver(clientRunId, sessionKey) ||
+            deliverySessionKeys.some(
+              (deliverySessionKey) => sessionMessageSubscribers.get(deliverySessionKey).size > 0,
+            ))))
     ) {
       if (!isAborted) {
         // peek() (chatLink) and this shift() run in one synchronous frame, so
@@ -1111,6 +1113,7 @@ export function createAgentEventHandler({
       }
       sendLivePayload("chat", sessionKey, payload, opts);
       chatRunState.clearRun(clientRunId);
+      publishChatTerminal(payload);
       return;
     }
     const errorDetail = projectChatErrorDetail(opts?.errorObservation);
@@ -1129,6 +1132,7 @@ export function createAgentEventHandler({
     };
     sendLivePayload("chat", sessionKey, payload, opts);
     chatRunState.clearRun(clientRunId);
+    publishChatTerminal(payload);
   };
 
   const sendAgentPayload = (
@@ -1653,7 +1657,12 @@ export function createAgentEventHandler({
       }
     }
 
-    if ((isControlUiVisible || hasSessionMessageSubscribers) && sessionKey) {
+    if (
+      sessionKey &&
+      (isControlUiVisible ||
+        hasSessionMessageSubscribers ||
+        (projectSessionMessages && hasChatTerminalObserver(clientRunId, sessionKey)))
+    ) {
       if (
         isToolEvent &&
         evt.data.phase === "result" &&

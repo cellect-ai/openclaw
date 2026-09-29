@@ -45,7 +45,10 @@ const pairingIdLabels: Record<string, string> = {
   discord: "discordUserId",
 };
 
-vi.mock("../pairing/pairing-store.js", () => ({
+// Only the store access is mocked; the status/staleness helpers are pure and
+// the CLI's rendering of them is exactly what these tests check.
+vi.mock("../pairing/pairing-store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../pairing/pairing-store.js")>()),
   listChannelPairingRequests: mocks.listChannelPairingRequests,
   approveChannelPairingCode: mocks.approveChannelPairingCode,
 }));
@@ -79,6 +82,7 @@ describe("pairing cli", () => {
         code: "ABCDEFGH",
         createdAt: "2026-01-08T00:00:00Z",
         lastSeenAt: "2026-01-08T00:00:00Z",
+        status: "pending" as const,
       },
     });
     notifyPairingApproved.mockClear();
@@ -125,6 +129,7 @@ describe("pairing cli", () => {
         code: "ABCDEFGH",
         createdAt: "2026-01-08T00:00:00Z",
         lastSeenAt: "2026-01-08T00:00:00Z",
+        status: "pending" as const,
       },
     });
   }
@@ -144,6 +149,7 @@ describe("pairing cli", () => {
         code: "ABC123",
         createdAt: "2026-01-08T00:00:00Z",
         lastSeenAt: "2026-01-08T00:00:00Z",
+        status: "pending" as const,
         meta: { username: "peter" },
       },
     ]);
@@ -167,6 +173,7 @@ describe("pairing cli", () => {
         code: "ABC123",
         createdAt: "2026-01-08T00:00:00Z",
         lastSeenAt: "2026-01-08T00:00:00Z",
+        status: "pending" as const,
         meta: { senderId: "U123", teamId: "T123" },
       },
     ]);

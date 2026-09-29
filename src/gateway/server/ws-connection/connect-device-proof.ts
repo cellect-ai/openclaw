@@ -13,6 +13,56 @@ import type { GatewayConnectPhaseContext } from "./message-handler-types.js";
 
 const DEVICE_SIGNATURE_SKEW_MS = 2 * 60 * 1000;
 
+type ConnectDevice = NonNullable<GatewayConnectPhaseContext["connectParams"]["device"]>;
+
+export type GatewayConnectDeviceProofCheck =
+  | { ok: true; devicePublicKey: string; deviceAuthPayloadVersion: "v2" | "v3" }
+  | { ok: false; reason: string; message: string };
+
+/**
+ * Side-effect-free device proof check: the id derives from the public key, the
+ * signature is fresh, bound to this connection's nonce, and valid for the
+ * requested client, role, scopes and presented token.
+ */
+export function checkGatewayConnectDeviceProof(
+  context: GatewayConnectPhaseContext,
+  params: { device: ConnectDevice; role: GatewayRole; scopes: string[] },
+): GatewayConnectDeviceProofCheck {
+  const { device, role, scopes } = params;
+  const { connectParams } = context;
+  const derivedId = deriveDeviceIdFromPublicKey(device.publicKey);
+  if (!derivedId || derivedId !== device.id) {
+    return { ok: false, reason: "device-id-mismatch", message: "device identity mismatch" };
+  }
+  const signedAt = device.signedAt;
+  if (typeof signedAt !== "number" || Math.abs(Date.now() - signedAt) > DEVICE_SIGNATURE_SKEW_MS) {
+    return { ok: false, reason: "device-signature-stale", message: "device signature expired" };
+  }
+  const providedNonce = typeof device.nonce === "string" ? device.nonce.trim() : "";
+  if (!providedNonce) {
+    return { ok: false, reason: "device-nonce-missing", message: "device nonce required" };
+  }
+  if (providedNonce !== context.handler.connectNonce) {
+    return { ok: false, reason: "device-nonce-mismatch", message: "device nonce mismatch" };
+  }
+  const payloadVersion = resolveDeviceSignaturePayloadVersion({
+    device,
+    connectParams,
+    role,
+    scopes,
+    signedAtMs: signedAt,
+    nonce: providedNonce,
+  });
+  if (!payloadVersion) {
+    return { ok: false, reason: "device-signature", message: "device signature invalid" };
+  }
+  const devicePublicKey = normalizeDevicePublicKeyBase64Url(device.publicKey);
+  if (!devicePublicKey) {
+    return { ok: false, reason: "device-public-key", message: "device public key invalid" };
+  }
+  return { ok: true, devicePublicKey, deviceAuthPayloadVersion: payloadVersion };
+}
+
 export function verifyGatewayConnectDeviceProof(
   context: GatewayConnectPhaseContext,
   params: {
@@ -31,71 +81,42 @@ export function verifyGatewayConnectDeviceProof(
   }
   const { frame, connectParams } = context;
   const { send, close, setHandshakeState, setCloseCause } = context.handler;
-  const rejectDeviceAuthInvalid = (reason: string, message: string) => {
-    emitGatewayAuthSecurityEvent({
-      action: "gateway.auth.failed",
-      outcome: "denied",
-      severity: "medium",
-      authMode: resolvedAuth.mode,
-      authMethod,
-      authProvided: "device-signature",
-      role,
-      scopes,
-      clientMode: connectParams.client.mode,
-      deviceId: device.id,
-      reason,
-    });
-    setHandshakeState("failed");
-    setCloseCause("device-auth-invalid", {
-      reason,
-      client: connectParams.client.id,
-      deviceId: device.id,
-    });
-    send({
-      type: "res",
-      id: frame.id,
-      ok: false,
-      error: errorShape(ErrorCodes.INVALID_REQUEST, message, {
-        details: { code: resolveDeviceAuthConnectErrorDetailCode(reason), reason },
-      }),
-    });
-    close(1008, message);
-  };
-  const derivedId = deriveDeviceIdFromPublicKey(device.publicKey);
-  if (!derivedId || derivedId !== device.id) {
-    rejectDeviceAuthInvalid("device-id-mismatch", "device identity mismatch");
-    return { ok: false };
+  const proof = checkGatewayConnectDeviceProof(context, { device, role, scopes });
+  if (proof.ok) {
+    return {
+      ok: true,
+      devicePublicKey: proof.devicePublicKey,
+      deviceAuthPayloadVersion: proof.deviceAuthPayloadVersion,
+    };
   }
-  const signedAt = device.signedAt;
-  if (typeof signedAt !== "number" || Math.abs(Date.now() - signedAt) > DEVICE_SIGNATURE_SKEW_MS) {
-    rejectDeviceAuthInvalid("device-signature-stale", "device signature expired");
-    return { ok: false };
-  }
-  const providedNonce = typeof device.nonce === "string" ? device.nonce.trim() : "";
-  if (!providedNonce) {
-    rejectDeviceAuthInvalid("device-nonce-missing", "device nonce required");
-    return { ok: false };
-  }
-  if (providedNonce !== context.handler.connectNonce) {
-    rejectDeviceAuthInvalid("device-nonce-mismatch", "device nonce mismatch");
-    return { ok: false };
-  }
-  const payloadVersion = resolveDeviceSignaturePayloadVersion({
-    device,
-    connectParams,
+  const { reason, message } = proof;
+  emitGatewayAuthSecurityEvent({
+    action: "gateway.auth.failed",
+    outcome: "denied",
+    severity: "medium",
+    authMode: resolvedAuth.mode,
+    authMethod,
+    authProvided: "device-signature",
     role,
     scopes,
-    signedAtMs: signedAt,
-    nonce: providedNonce,
+    clientMode: connectParams.client.mode,
+    deviceId: device.id,
+    reason,
   });
-  if (!payloadVersion) {
-    rejectDeviceAuthInvalid("device-signature", "device signature invalid");
-    return { ok: false };
-  }
-  const devicePublicKey = normalizeDevicePublicKeyBase64Url(device.publicKey);
-  if (!devicePublicKey) {
-    rejectDeviceAuthInvalid("device-public-key", "device public key invalid");
-    return { ok: false };
-  }
-  return { ok: true, devicePublicKey, deviceAuthPayloadVersion: payloadVersion };
+  setHandshakeState("failed");
+  setCloseCause("device-auth-invalid", {
+    reason,
+    client: connectParams.client.id,
+    deviceId: device.id,
+  });
+  send({
+    type: "res",
+    id: frame.id,
+    ok: false,
+    error: errorShape(ErrorCodes.INVALID_REQUEST, message, {
+      details: { code: resolveDeviceAuthConnectErrorDetailCode(reason), reason },
+    }),
+  });
+  close(1008, message);
+  return { ok: false };
 }

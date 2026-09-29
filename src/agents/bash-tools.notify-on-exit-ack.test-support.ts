@@ -14,6 +14,7 @@ export async function startDeferredNotifyRun(params: {
   sessionKey: string;
   agentId?: string;
   notifyDeliveryContext?: DeliveryContext;
+  originRunId?: string;
 }) {
   const exit = createDeferredCore<Awaited<ReturnType<ManagedRun["wait"]>>>();
   const activity = { resultSettled: false, lastOutputAtMs: Date.now() };
@@ -39,6 +40,7 @@ export async function startDeferredNotifyRun(params: {
     sessionKey: params.sessionKey,
     agentId: params.agentId,
     notifyDeliveryContext: params.notifyDeliveryContext,
+    originRunId: params.originRunId,
     timeoutSec: null,
   });
   markBackgrounded(run.session);

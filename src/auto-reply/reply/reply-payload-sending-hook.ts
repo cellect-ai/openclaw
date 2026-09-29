@@ -6,6 +6,7 @@ import type {
 } from "../../plugins/hook-types.js";
 import { copyReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../reply-payload.js";
+import { bindReplyPublication } from "../reply-publication.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 
 /** Runs plugin hooks that may rewrite or cancel an outbound reply payload. */
@@ -25,17 +26,20 @@ export async function runReplyPayloadSendingHook(
     return params.payload;
   }
 
-  const result = await hookRunner.runReplyPayloadSending(
-    {
-      payload: params.payload,
-      kind: params.kind,
-      channel: params.channel,
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      usageState: params.usageState,
-    },
-    params.context,
-  );
+  const event = {
+    payload: params.payload,
+    kind: params.kind,
+    channel: params.channel,
+    sessionKey: params.sessionKey,
+    runId: params.runId,
+    usageState: params.usageState,
+  };
+  const publication = bindReplyPublication(event, params);
+  const publishedEvent = Object.assign(event, {
+    publicationId: publication.publicationId,
+    publishedAtMs: publication.publishedAtMs,
+  });
+  const result = await hookRunner.runReplyPayloadSending(publishedEvent, params.context);
 
   if (result?.cancel) {
     return null;

@@ -1,6 +1,7 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { ProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import {
   respondChatSendAdmissionError,
@@ -35,6 +36,7 @@ export async function prepareAndAdmitChatSend(
   >,
   onAdmissionOwned?: () => Promise<boolean>,
   options?: {
+    talkRelayAdmission?: TalkRelayConsultAdmission;
     trustedSystemInput?: boolean;
     goalResume?: SessionGoalOperation & { action: "resume" };
     providerReviewAcknowledgment?: ProviderReviewAcknowledgment;
@@ -74,6 +76,7 @@ export async function prepareAndAdmitChatSend(
     request: normalizedRequest.value,
     context,
     client,
+    talkRelayAdmission: options?.talkRelayAdmission,
   });
   if (!loadedSession.ok) {
     respond(
@@ -124,6 +127,7 @@ export async function prepareAndAdmitChatSend(
     respondChatSendAdmissionError(error, respond);
     return undefined;
   }
+  const talkRelayAdmission = options?.talkRelayAdmission;
   let admitted: Awaited<ReturnType<typeof admitChatSend>> | undefined;
   try {
     const nativeRestriction = await prepareChatSendNativeRuntimeRestriction({
@@ -132,6 +136,14 @@ export async function prepareAndAdmitChatSend(
       client,
       context,
       assertCurrent,
+    assertDelegatedAdmission: talkRelayAdmission
+      ? () =>
+          talkRelayAdmission.assertCurrent(
+            session.sessionKey,
+            client?.connId,
+            normalizedRequest.value.explicitOrigin,
+          )
+      : undefined,
     });
     if (nativeRestriction) {
       respond(false, undefined, nativeRestriction);

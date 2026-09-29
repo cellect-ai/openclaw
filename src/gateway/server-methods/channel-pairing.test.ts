@@ -23,15 +23,22 @@ vi.mock("../../commands/doctor-command-owner.js", () => ({
 vi.mock("../../pairing/command-owner.js", () => ({
   bootstrapCommandOwnerFromPairing: mocks.bootstrapOwner,
 }));
-vi.mock("../../pairing/pairing-store.js", () => ({
+// Store access is mocked; the retention helpers are pure and their output is
+// part of what these handlers are expected to publish.
+vi.mock("../../pairing/pairing-store.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../pairing/pairing-store.js")>()),
   approveChannelPairingRequest: mocks.approve,
-  CHANNEL_PAIRING_PENDING_MAX: 3,
-  CHANNEL_PAIRING_PENDING_TTL_MS: 3_600_000,
   dismissChannelPairingRequest: mocks.dismiss,
   listChannelPairingRequests: mocks.listRequests,
   resolveChannelPairingRequestId: vi.fn(() => "opaque-request-id"),
 }));
 
+import {
+  CHANNEL_PAIRING_HISTORY_MAX,
+  CHANNEL_PAIRING_PENDING_MAX,
+  CHANNEL_PAIRING_PENDING_TTL_MS,
+  CHANNEL_PAIRING_STALE_AFTER_MS,
+} from "../../pairing/pairing-store.js";
 import { channelPairingHandlers } from "./channel-pairing.js";
 
 const notifyApproval = vi.fn(async () => undefined);
@@ -94,6 +101,9 @@ describe("channel DM pairing gateway handlers", () => {
   it.each(["sync", "async"] as const)(
     "lists only pairing-policy accounts with %s hooks without exposing the human code",
     async (hooks) => {
+      // Status and staleness are relative to now, so pin it against the fixture.
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-07-20T10:10:00.000Z"));
       if (hooks === "async") {
         const refuseSync = () => {
           throw new Error("legacy operational hook used");
@@ -116,6 +126,7 @@ describe("channel DM pairing gateway handlers", () => {
           code: "SECRET12",
           createdAt: "2026-07-20T10:00:00.000Z",
           lastSeenAt: "2026-07-20T10:05:00.000Z",
+          status: "pending",
           meta: { accountId: "personal", name: "Alice", senderId: "+15551234567" },
         },
       ]);
@@ -148,18 +159,57 @@ describe("channel DM pairing gateway handlers", () => {
               metadata: { name: "Alice" },
               createdAt: "2026-07-20T10:00:00.000Z",
               lastSeenAt: "2026-07-20T10:05:00.000Z",
-              expiresAt: "2026-07-20T11:00:00.000Z",
+              expiresAt: "2026-07-27T10:00:00.000Z",
+              status: "pending",
+              stale: false,
               notifySupported: true,
             },
           ],
+          history: [],
           commandOwnerConfigured: false,
-          limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+          limits: {
+            pendingPerAccount: CHANNEL_PAIRING_PENDING_MAX,
+            historyPerAccount: CHANNEL_PAIRING_HISTORY_MAX,
+            ttlMs: CHANNEL_PAIRING_PENDING_TTL_MS,
+            staleAfterMs: CHANNEL_PAIRING_STALE_AFTER_MS,
+          },
         },
         undefined,
       );
       expect(JSON.stringify(respond.mock.calls)).not.toContain("SECRET12");
+      vi.useRealTimers();
     },
   );
+
+  it("lists an expired request as history rather than dropping it", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-20T10:00:00.000Z"));
+    mocks.listRequests.mockResolvedValue([
+      {
+        id: "workspace:personal:user:+15551234567",
+        code: "SECRET12",
+        createdAt: "2026-07-20T10:00:00.000Z",
+        lastSeenAt: "2026-07-20T10:05:00.000Z",
+        status: "pending",
+        meta: { accountId: "personal", senderId: "+15551234567" },
+      },
+    ]);
+
+    const respond = await invoke("channels.pairing.list", {});
+
+    const result = respond.mock.calls[0]?.[1] as {
+      requests: unknown[];
+      history: Array<{ status: string; senderId: string }>;
+    };
+    // An approver must never be handed an unapprovable row as pending.
+    expect(result.requests).toEqual([]);
+    expect(result.history).toHaveLength(1);
+    expect(result.history[0]?.status).toBe("expired");
+    expect(result.history[0]?.senderId).toBe("+15551234567");
+    expect(JSON.stringify(respond.mock.calls)).not.toContain("SECRET12");
+    vi.useRealTimers();
+  });
+
 
   it("approves access even when the optional notification fails", async () => {
     mocks.approve.mockResolvedValue({
@@ -169,6 +219,7 @@ describe("channel DM pairing gateway handlers", () => {
         code: "SECRET12",
         createdAt: "2026-07-20T10:00:00.000Z",
         lastSeenAt: "2026-07-20T10:00:00.000Z",
+        status: "pending",
         meta: { accountId: "personal", senderId: "+15551234567" },
       },
     });

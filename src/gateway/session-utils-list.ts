@@ -15,6 +15,7 @@ import { SESSIONS_LIST_OWNER_LIMIT } from "../shared/session-list-limits.js";
 import { runSynchronousWork, type SynchronousWork } from "../shared/synchronous-work.js";
 import { resolveAssistantIdentity } from "./assistant-identity.js";
 import { prepareOperatorModelPresentation } from "./operator-model-presentation.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "./matrix-browser-session-authorization.js";
 import { gatewayClientSessionCreator } from "./server-methods/gateway-client-identity.js";
 import { createVisibleActiveSessionRunProjector } from "./server-methods/session-active-runs.js";
 import { resolveGatewayModelSelectionPolicy } from "./server-methods/session-model-selection-policy.js";
@@ -37,6 +38,7 @@ import type { SessionRowProjection } from "./session-row-projection.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import type { GatewaySessionRow, SessionsListResult } from "./session-utils.types.js";
+import { isWebchatSessionAllowed } from "./webchat-agent-authorization.js";
 
 type SessionEntrySelection = Omit<SessionListFilteredEntries, "ownerEntries"> & {
   ownerCount: number;
@@ -444,6 +446,14 @@ export function prepareProjectedSessionList(params: {
       const row = getTarget(key);
       const visible = Boolean(
         row &&
+        isWebchatSessionAllowed({ cfg: prepared.cfg, client, sessionKey: row.key }) &&
+        !isUnauthorizedRawMatrixBrowserSession({
+          cfg: prepared.cfg,
+          clientInfo: client?.connect?.client,
+          pairedClientId: client?.pairedClientId,
+          sessionKey: row.key,
+          authorizedByBinding: false,
+        }) &&
         (client === undefined || (presentation.sharing.entryFilter?.(row.key, entry) ?? true)),
       );
       return (

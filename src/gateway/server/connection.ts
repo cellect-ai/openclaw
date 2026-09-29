@@ -30,6 +30,7 @@ import type { GatewayConnectionWork } from "../server-connection-work.js";
 import { MAX_BUFFERED_BYTES, WEBSOCKET_OPEN_READY_STATE } from "../server-constants.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../server-methods/types.js";
 import { cleanupTalkConnection } from "../talk/session-registry.js";
+import { armWebchatCompletionDeliveriesForConnection } from "../webchat-completion-delivery.js";
 import type { WebSocketHeartbeatDiagnostics } from "../websocket-keepalive.js";
 import { formatForLog, logWs } from "../ws-log.js";
 import { refreshClientPresence } from "./client-presence.js";
@@ -440,6 +441,12 @@ export function attachGatewayConnection(params: AttachGatewayConnectionParams) {
     }
     if (connectionKind === "gateway") {
       const context = buildRequestContext();
+      if (client && isWebchatClient(client.connect.client)) {
+        armWebchatCompletionDeliveriesForConnection({
+          chatAbortControllers: context.chatAbortControllers,
+          connId,
+        });
+      }
       cleanupTalkConnection(connId, logGateway);
       context.unsubscribeAllSessionEvents(connId);
       // Detach or kill owned PTY shells; detached sessions remain reattachable until reaped.

@@ -19,9 +19,11 @@ import {
   resolveGlobalAwareNodeChatDeliveryKeys,
   sendGlobalAwareNodeChatPayload,
 } from "./chat-broadcast.js";
+import { handleChatHandoffArm, handleChatHandoffSeen } from "./chat-handoff-handler.js";
 import { chatHistoryHandlers } from "./chat-history-handler.js";
 import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
 import { appendAssistantTranscriptMessage } from "./chat-transcript-persistence.js";
+import { handleConversationContinue } from "./conversation-continue-handler.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -50,6 +52,9 @@ export const chatHandlers: GatewayRequestHandlers = {
     // older clients stop asking, while current clients read the tool call title.
     respond(true, { titles: {}, disabled: true });
   },
+  "chat.handoff.arm": handleChatHandoffArm,
+  "chat.handoff.seen": handleChatHandoffSeen,
+  "conversation.continue": handleConversationContinue,
   "chat.inject": async ({ params, respond, context }) => {
     if (!assertValidParams(params, validateChatInjectParams, "chat.inject", respond)) {
       return;

@@ -126,6 +126,8 @@ export async function resolveConnectAuthState(params: {
   allowRealIpFallback: boolean;
   rateLimiter?: AuthRateLimiter;
   clientIp?: string;
+  /** Verified device limiter key; replaces the attributed client IP when set. */
+  rateLimitSubject?: string;
 }): Promise<ConnectAuthState> {
   const sharedConnectAuth = resolveSharedConnectAuth(params.connectAuth);
   const sharedAuthProvided = Boolean(sharedConnectAuth);
@@ -145,6 +147,7 @@ export async function resolveConnectAuthState(params: {
     allowRealIpFallback: params.allowRealIpFallback,
     rateLimiter: sharedAuthProvided ? params.rateLimiter : undefined,
     clientIp: params.clientIp,
+    rateLimitSubject: params.rateLimitSubject,
     rateLimitScope: AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
     deferRateLimitFailure,
   });

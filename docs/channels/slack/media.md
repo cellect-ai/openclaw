@@ -29,7 +29,7 @@ In a channel with `requireMention: true`, a captionless audio clip can satisfy t
 
     Downloads use bounded idle and total timeouts. If Slack file retrieval stalls or fails, OpenClaw keeps processing the message and falls back to the file placeholder.
 
-    Runtime inbound size cap defaults to `20MB` unless overridden by `channels.slack.mediaMaxMb`.
+    Runtime inbound size cap defaults to `100MB` unless overridden by `channels.slack.mediaMaxMb`. Files stream to disk, so the cap bounds transfer and disk use rather than memory.
 
   </Accordion>
 
@@ -85,7 +85,7 @@ its own newly created file while preserving preexisting or replaced files.
 | Media type                     | Source               | Current behavior                                                                  | Notes                                                                     |
 | ------------------------------ | -------------------- | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Slack audio clips              | Slack file URL       | Downloaded and routed through shared audio transcription                          | Requires `files:read` and a working `tools.media.audio` model or CLI      |
-| JPEG / PNG / GIF / WebP images | Slack file URL       | Downloaded and attached to the turn for vision-capable handling                   | Per-file cap: `channels.slack.mediaMaxMb` (default 20 MB)                 |
+| JPEG / PNG / GIF / WebP images | Slack file URL       | Downloaded and attached to the turn for vision-capable handling                   | Per-file cap: `channels.slack.mediaMaxMb` (default 100 MB)                |
 | PDF files                      | Slack file URL       | Downloaded and exposed as file context for tools such as `download-file` or `pdf` | Slack inbound does not convert PDFs into image-vision input automatically |
 | Other files                    | Slack file URL       | Downloaded when possible and exposed as file context                              | Binary files are not treated as image input                               |
 | Thread replies                 | Thread starter files | Root-message files can be hydrated as context when the reply has no direct media  | File-only starters use an attachment placeholder                          |
@@ -123,7 +123,7 @@ When a single Slack message contains multiple file attachments:
 
 ### Size, download, and model limits
 
-- **Size cap**: Default 20 MB per file. Configurable via `channels.slack.mediaMaxMb`.
+- **Size cap**: Default 100 MB per file (inbound attachments and `download-file`). Configurable via `channels.slack.mediaMaxMb`; a file above the cap is reported with its size and the cap.
 - **Audio transcription cap**: the selected audio-capable `tools.media.models[]` entry's `maxBytes` also applies when the downloaded file is sent to a transcription provider or CLI.
 - **Download failures**: Files that Slack cannot serve, expired URLs, inaccessible files, oversize files, and Slack auth/login HTML responses are skipped instead of being reported as unsupported formats.
 - **Vision model**: Image analysis uses the active reply model when it supports vision, or the image model configured at `agents.defaults.imageModel`.

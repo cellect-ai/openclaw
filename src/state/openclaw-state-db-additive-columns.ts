@@ -48,6 +48,8 @@ const lazyColumns = [
   ["cron_jobs", "grant_definition_revision", "TEXT"],
   ["cron_jobs", "grant_definition_generation", "INTEGER"],
   ["cron_jobs", "grant_definition_updated_at", "INTEGER"],
+  ["channel_pairing_requests", "status", "TEXT"],
+  ["channel_pairing_requests", "resolved_at", "TEXT"],
 ] as const satisfies readonly LazyColumn[];
 
 function lazyColumnDefinitions(firstUseOnly?: boolean) {

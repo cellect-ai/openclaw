@@ -102,7 +102,12 @@ export function buildCronEventPrompt(
 
 export function buildExecEventPrompt(
   pendingEvents: string[],
-  opts?: { deliverToUser?: boolean; useHeartbeatResponseTool?: boolean },
+  opts?: {
+    deliverToUser?: boolean;
+    useHeartbeatResponseTool?: boolean;
+    /** Every completion comes from a run that already delivered its final reply. */
+    followsDeliveredFinal?: boolean;
+  },
 ): string {
   const deliverToUser = opts?.deliverToUser ?? true;
   const useHeartbeatResponseTool = opts?.useHeartbeatResponseTool ?? false;
@@ -124,6 +129,17 @@ export function buildExecEventPrompt(
     return (
       "An async command completion event was triggered, but user delivery is disabled for this run. " +
       `${completionInstruction} Do not mention, summarize, or reuse command output.`
+    );
+  }
+  if (opts?.followsDeliveredFinal) {
+    const silentInstruction = useHeartbeatResponseTool
+      ? HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS
+      : `reply ${SILENT_REPLY_TOKEN} only`;
+    return (
+      "An async command you ran earlier has completed after you already gave the user your final answer for that request. The completion details are:\n\n" +
+      eventText +
+      "\n\n" +
+      `Post only if this result changes the answer you gave (for example, a step you reported as done actually failed); then say briefly what changed. Otherwise ${silentInstruction}. Do not re-summarize the earlier answer or report routine or superseded steps.`
     );
   }
   if (hasMissingOutputFailure) {

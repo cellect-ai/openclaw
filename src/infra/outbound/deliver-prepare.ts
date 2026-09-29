@@ -344,6 +344,7 @@ async function prepareOutboundPlan(
       continue;
     }
     const compactPayload = compactPreparedPayload(preparedPayload);
+    copyReplyPayloadMetadata(payload, compactPayload);
     entries.push({
       sourceIndex,
       status: "accepted",

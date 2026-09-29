@@ -10,6 +10,7 @@ import type { DeviceBootstrapProfile } from "../../../shared/device-bootstrap-pr
 import { roleScopesAllow } from "../../../shared/operator-scope-compat.js";
 import {
   isMobileNodeBootstrapConnect,
+  isControlUiOperatorBootstrapProfile,
   isSetupCodeHandoffBootstrapClient,
   pairedDeviceAllowsBootstrapOperator,
   resolvePairedAccessScopes,
@@ -116,14 +117,15 @@ export async function authorizeExistingGatewayDevice(params: {
   const retryBootstrapHandoffProfile =
     authMethod === "bootstrap-token" &&
     bootstrapTokenCandidate &&
-    isMobileNodeBootstrapConnect({
+    (isMobileNodeBootstrapConnect({
       role,
       scopes,
       isControlUi,
       isBrowserOperatorUi,
       isWebchat,
       clientMode: connectParams.client.mode,
-    }) &&
+    }) ||
+      (role === "operator" && (isControlUi || isWebchat))) &&
     device
       ? await getBoundDeviceBootstrapProfile({
           token: bootstrapTokenCandidate,
@@ -133,10 +135,15 @@ export async function authorizeExistingGatewayDevice(params: {
       : null;
   if (
     retryBootstrapHandoffProfile &&
-    isSetupCodeHandoffBootstrapClient({
+    (isSetupCodeHandoffBootstrapClient({
       profile: retryBootstrapHandoffProfile,
       client: connectParams.client,
-    })
+    }) ||
+      ((isControlUi || isWebchat) &&
+        isControlUiOperatorBootstrapProfile({
+          profile: retryBootstrapHandoffProfile,
+          requestedScopes: scopes,
+        })))
   ) {
     const retryBootstrapOperatorScopes = resolveBootstrapProfileScopesForRole(
       "operator",

@@ -154,6 +154,7 @@ describe("command-registry", () => {
     expect(names).toContain("triage");
     expect(names).toContain("status");
     expect(names).not.toContain("tasks");
+    expect(names).toContain("thread");
     expect(names.length).toBeGreaterThan(1);
   });
 
@@ -188,7 +189,7 @@ describe("command-registry", () => {
   it("can eagerly register the status/session command group repeatedly for completion", async () => {
     const program = createProgram();
 
-    for (const name of ["status", "health", "sessions"]) {
+    for (const name of ["thread", "status", "health", "sessions"]) {
       await expect(registerCoreCliByName(program, testProgramContext, name)).resolves.toBe(true);
     }
 

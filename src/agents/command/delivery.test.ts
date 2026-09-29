@@ -543,6 +543,33 @@ describe("deliverAgentCommandResult payload normalization", () => {
     expectTextPayload(delivered.payloads[0], "[openai/gpt-5.4] Ready.");
   });
 
+  it("omits response prefixes whose sender context is unavailable during recovery", async () => {
+    const delivered = await deliverAgentCommandResult({
+      cfg: {
+        channels: { slack: { responsePrefix: "{sender.mention}" } },
+      } as OpenClawConfig,
+      deps: {} as CliDeps,
+      runtime: { log: vi.fn() } as never,
+      opts: { message: "test", channel: "slack" } as AgentCommandOpts,
+      outboundSession: undefined,
+      sessionEntry: undefined,
+      payloads: [{ text: "Completed." }],
+      result: createResult({
+        meta: {
+          durationMs: 1,
+          agentMeta: {
+            sessionId: "session-1",
+            provider: "openai",
+            model: "gpt-5.4",
+          },
+        },
+      }),
+    });
+
+    expect(delivered.payloads).toHaveLength(1);
+    expectTextPayload(delivered.payloads[0], "Completed.");
+  });
+
   it("normalizes reply-media paths before outbound delivery", async () => {
     const normalizerFn = vi.fn(async (payload: ReplyPayload): Promise<ReplyPayload> => ({
       ...payload,

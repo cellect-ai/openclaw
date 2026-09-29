@@ -618,6 +618,9 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
         listSessionEntries: vi.fn<PluginRuntime["agent"]["session"]["listSessionEntries"]>(
           () => [],
         ),
+        listSessionKeys: vi.fn<PluginRuntime["agent"]["session"]["listSessionKeys"]>(
+          async () => [],
+        ),
         patchSessionEntry: vi
           .fn<PluginRuntime["agent"]["session"]["patchSessionEntry"]>()
           .mockResolvedValue(null),
@@ -890,6 +893,12 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
       },
     },
     events: {
+      registerConversationLifecycleTransport: vi.fn(() => ({
+        flush: async () => {},
+        stop: () => {},
+        resolveRun: () => undefined,
+        noteResult: () => {},
+      })),
       onAgentEvent: vi.fn<PluginRuntime["events"]["onAgentEvent"]>(() => () => {}),
       onSessionTranscriptUpdate: vi.fn<PluginRuntime["events"]["onSessionTranscriptUpdate"]>(
         () => () => {},

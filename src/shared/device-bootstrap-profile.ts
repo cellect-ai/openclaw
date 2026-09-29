@@ -4,6 +4,7 @@ import { normalizeDeviceAuthRole, normalizeDeviceAuthScopes } from "./device-aut
 export type DeviceBootstrapPurpose =
   | "control-ui"
   | "control-ui-owner"
+  | "webchat"
   | "mobile-full"
   | "voice-node"
   | "cloud-worker";
@@ -13,6 +14,7 @@ export type DeviceBootstrapProfile = {
   roles: string[];
   scopes: string[];
   purpose?: DeviceBootstrapPurpose;
+  allowedAgentIds?: string[];
 };
 
 /** Caller-provided bootstrap profile before role/scope normalization and bounding. */
@@ -20,6 +22,7 @@ export type DeviceBootstrapProfileInput = {
   roles?: readonly string[];
   scopes?: readonly string[];
   purpose?: DeviceBootstrapPurpose;
+  allowedAgentIds?: readonly string[];
 };
 
 export type PairingSetupAccess = "full" | "limited" | "node";
@@ -34,6 +37,13 @@ export const BOOTSTRAP_HANDOFF_OPERATOR_SCOPES = [
 ] as const;
 
 const BOOTSTRAP_HANDOFF_OPERATOR_SCOPE_SET = new Set<string>(BOOTSTRAP_HANDOFF_OPERATOR_SCOPES);
+
+/** Embedded webchat scopes, including Talk without widening native setup profiles. */
+const WEBCHAT_BOOTSTRAP_OPERATOR_SCOPE_SET = new Set<string>([
+  "operator.read",
+  "operator.talk",
+  "operator.write",
+]);
 
 /** Full browser-owner scopes allowed only by the host-issued Control UI profile. */
 export const CONTROL_UI_OWNER_BOOTSTRAP_OPERATOR_SCOPES = [
@@ -66,6 +76,13 @@ export const PAIRING_SETUP_BOOTSTRAP_PROFILE: DeviceBootstrapProfile = {
   // only start it after persisting this bounded operator token.
   roles: ["node", "operator"],
   scopes: [...BOOTSTRAP_HANDOFF_OPERATOR_SCOPES],
+};
+
+/** Embedded webchat bootstrap: conversation access and Talk, without gateway administration. */
+export const WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE: DeviceBootstrapProfile = {
+  roles: ["operator"],
+  scopes: ["operator.read", "operator.talk", "operator.write"],
+  purpose: "webchat",
 };
 
 /** Full browser-owner profile issued only by dashboard and graphical onboarding. */
@@ -114,7 +131,9 @@ export function deviceBootstrapProfilesEqual(
     profile.roles.length === expected.roles.length &&
     profile.scopes.length === expected.scopes.length &&
     profile.roles.every((role, index) => role === expected.roles[index]) &&
-    profile.scopes.every((scope, index) => scope === expected.scopes[index])
+    profile.scopes.every((scope, index) => scope === expected.scopes[index]) &&
+    (profile.allowedAgentIds?.length ?? 0) === (expected.allowedAgentIds?.length ?? 0) &&
+    (profile.allowedAgentIds ?? []).every((id, index) => id === expected.allowedAgentIds?.[index])
   );
 }
 
@@ -169,11 +188,13 @@ export function resolveBootstrapProfileScopesForRole(
     const allowedScopes =
       purpose === "control-ui-owner"
         ? CONTROL_UI_OWNER_BOOTSTRAP_OPERATOR_SCOPE_SET
-        : purpose === "mobile-full"
-          ? MOBILE_FULL_ACCESS_OPERATOR_SCOPE_SET
-          : purpose === "voice-node"
-            ? VOICE_NODE_OPERATOR_SCOPE_SET
-            : BOOTSTRAP_HANDOFF_OPERATOR_SCOPE_SET;
+        : purpose === "webchat"
+          ? WEBCHAT_BOOTSTRAP_OPERATOR_SCOPE_SET
+          : purpose === "mobile-full"
+            ? MOBILE_FULL_ACCESS_OPERATOR_SCOPE_SET
+            : purpose === "voice-node"
+              ? VOICE_NODE_OPERATOR_SCOPE_SET
+              : BOOTSTRAP_HANDOFF_OPERATOR_SCOPE_SET;
     return normalizedScopes.filter((scope) => allowedScopes.has(scope));
   }
   return [];
@@ -218,6 +239,7 @@ export function normalizeDeviceBootstrapHandoffProfile(
     roles: profile.roles,
     scopes: resolveBootstrapProfileScopesForRoles(profile.roles, profile.scopes, profile.purpose),
     ...(profile.purpose ? { purpose: profile.purpose } : {}),
+    ...(profile.allowedAgentIds ? { allowedAgentIds: profile.allowedAgentIds } : {}),
   };
 }
 
@@ -242,6 +264,7 @@ export function normalizeDeviceBootstrapProfile(
   const purpose =
     input?.purpose === "control-ui" ||
     input?.purpose === "control-ui-owner" ||
+    input?.purpose === "webchat" ||
     input?.purpose === "mobile-full" ||
     input?.purpose === "voice-node" ||
     input?.purpose === "cloud-worker"
@@ -251,5 +274,12 @@ export function normalizeDeviceBootstrapProfile(
     roles: normalizeBootstrapRoles(input?.roles),
     scopes: normalizeDeviceAuthScopes(input?.scopes ? [...input.scopes] : []),
     ...(purpose ? { purpose } : {}),
+    ...(input?.allowedAgentIds
+      ? {
+          allowedAgentIds: [
+            ...new Set(input.allowedAgentIds.map((id) => id.trim()).filter(Boolean)),
+          ].toSorted(),
+        }
+      : {}),
   };
 }

@@ -31,6 +31,7 @@ import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
 import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -41,6 +42,9 @@ import {
 } from "../session-utils.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
 import { hasGatewayAdminScope } from "./chat-origin-routing.js";
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
+import { hasGatewayAdminScope, resolveChatSendActiveScopeKey } from "./chat-origin-routing.js";
 import { createRestartSafeChatRequest } from "./chat-restart-recovery.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { roundedChatSendTimingMs } from "./chat-server-timing.js";
@@ -177,6 +181,7 @@ export function prepareChatSendSession(params: {
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
+  talkRelayAdmission?: TalkRelayConsultAdmission;
 }) {
   const loaded = loadChatSendSessionContext(params);
   if (!loaded.ok) {
@@ -185,7 +190,27 @@ export function prepareChatSendSession(params: {
   const loadedValue = loaded.value;
   const { request, client } = params;
   const { p, explicitOrigin, normalizedAttachments, turnKind, rawMessage } = request;
-  const { cfg, agentId, sessionKey, entry, legacyKey } = loadedValue;
+  const { cfg, agentId, sessionKey, entry, legacyKey, selectedAgent } = loadedValue;
+  try {
+    params.talkRelayAdmission?.assertCurrent(sessionKey, client?.connId, explicitOrigin);
+  } catch (error) {
+    return { ok: false as const, error: String(error) };
+  }
+  if (
+    !isWebchatSessionAllowed({ cfg, client, sessionKey }) ||
+    isUnauthorizedRawMatrixBrowserSession({
+      cfg,
+      clientInfo: request.clientInfo,
+      pairedClientId: client?.pairedClientId,
+      sessionKey,
+      authorizedByBinding: params.talkRelayAdmission !== undefined,
+    })
+  ) {
+    return {
+      ok: false as const,
+      error: "Matrix conversations require an authorized conversation binding",
+    };
+  }
   if (isIncognitoSessionKey(sessionKey) && !entry) {
     return { ok: false as const, error: `Incognito session "${sessionKey}" was not found.` };
   }

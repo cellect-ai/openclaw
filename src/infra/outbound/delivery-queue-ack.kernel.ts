@@ -116,9 +116,21 @@ export function ackDeliveryInDatabase(
       : [];
     if (current?.completionRetention && options?.suppressCompletionReceipt !== true) {
       if (options && "expectedPlatformSendAttemptId" in options) {
-        completeLoadedDeliveryQueueEntryInDatabase(database, queueName, id, current);
+        completeLoadedDeliveryQueueEntryInDatabase(
+          database,
+          queueName,
+          id,
+          current,
+          Date.now(),
+          options?.completionReceipt,
+        );
       } else {
-        completeDeliveryQueueEntryInDatabase(database, queueName, id);
+        completeDeliveryQueueEntryInDatabase(
+          database,
+          queueName,
+          id,
+          options?.completionReceipt,
+        );
       }
     } else {
       deleteDeliveryQueueEntryInDatabase(database, queueName, id);

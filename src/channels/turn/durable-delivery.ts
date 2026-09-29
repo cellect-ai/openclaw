@@ -6,6 +6,7 @@ import {
   isReplyPayloadTargetSuppressed,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
+import { isReplyPublicationReceiptRequired } from "../../auto-reply/reply-publication.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { normalizeDeliverableOutboundChannel } from "../../infra/outbound/channel-resolution.js";
@@ -33,7 +34,16 @@ import type { ChannelDeliveryInfo, ChannelDeliveryResult } from "./types.js";
 /** Options controlling durable final delivery for inbound channel replies. */
 export type DurableInboundReplyDeliveryOptions = Pick<
   DeliverOutboundPayloadsParams,
-  "deps" | "formatting" | "identity" | "mediaAccess" | "replyToMode" | "silent" | "threadId"
+  | "completionRetention"
+  | "deliveryIntentId"
+  | "deps"
+  | "formatting"
+  | "identity"
+  | "mediaAccess"
+  | "replyToMode"
+  | "reusePendingDeliveryIntent"
+  | "silent"
+  | "threadId"
 > & {
   to?: string | null;
   replyToId?: string | null;
@@ -236,7 +246,10 @@ async function deliverAdmittedInboundReply(
       silent: params.silent,
     });
   const durability =
-    requiredCapabilities.reconcileUnknownSend === true ? "required" : "best_effort";
+    requiredCapabilities.reconcileUnknownSend === true ||
+    isReplyPublicationReceiptRequired(params.payload)
+      ? "required"
+      : "best_effort";
 
   let support: Awaited<ReturnType<typeof resolveOutboundDurableFinalDeliverySupport>>;
   try {
@@ -293,6 +306,9 @@ async function deliverAdmittedInboundReply(
     deps: params.deps,
     mediaAccess: params.mediaAccess,
     silent: params.silent,
+    deliveryIntentId: params.deliveryIntentId,
+    reusePendingDeliveryIntent: params.reusePendingDeliveryIntent,
+    completionRetention: params.completionRetention,
     durability,
     ...(requiredCapabilities.reconcileUnknownSend === true
       ? { requireUnknownSendReconciliation: true }

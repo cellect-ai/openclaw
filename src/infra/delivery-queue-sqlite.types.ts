@@ -94,6 +94,8 @@ export type DeliveryQueueEntryState = {
   /** Durable delivery-call count reserved before invoking the provider path. */
   attemptCount?: number;
   completionRetention?: DeliveryQueueCompletionRetention;
+  /** Minimal provider identity retained only for a producer that must finish downstream work. */
+  completionReceipt?: Readonly<{ platformMessageId: string }>;
   /** Failure-only ownership fence; successful acknowledgement ignores this field. */
   retainOnFailure?: true;
   acknowledgedAt?: number;
@@ -122,7 +124,7 @@ export function hasLiveDeliveryQueueClaim(
 
 /** Strip a terminal queue row to the producer policy needed for admission. */
 export function projectDeliveryQueueTerminalEntry(
-  entry: Pick<DeliveryQueueEntryState, "id" | "retryCount">,
+  entry: Pick<DeliveryQueueEntryState, "id" | "retryCount" | "completionReceipt">,
   terminalAt: number,
   terminal: "completed" | "failed",
   completionRetention?: DeliveryQueueCompletionRetention,
@@ -141,6 +143,7 @@ export function projectDeliveryQueueTerminalEntry(
     retryCount,
     ...(terminal === "completed" ? { acknowledgedAt: terminalAt } : { failedAt: terminalAt }),
     ...(completionRetention ? { completionRetention } : {}),
+    ...(entry.completionReceipt ? { completionReceipt: entry.completionReceipt } : {}),
     ...(recoveryState ? { recoveryState } : {}),
   };
 }

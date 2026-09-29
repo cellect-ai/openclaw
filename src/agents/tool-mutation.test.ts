@@ -19,12 +19,19 @@ describe("tool mutation helpers", () => {
   );
   it("treats session_status as mutating only when model override is provided", () => {
     expect(isMutatingToolCall("session_status", { sessionKey: "agent:main:main" })).toBe(false);
+    expect(isReplaySafeToolCall("session_status", { sessionKey: "agent:main:main" })).toBe(true);
     expect(
       isMutatingToolCall("session_status", {
         sessionKey: "agent:main:main",
         model: "openai/gpt-4o",
       }),
     ).toBe(true);
+    expect(
+      isReplaySafeToolCall("session_status", {
+        sessionKey: "agent:main:main",
+        model: "openai/gpt-4o",
+      }),
+    ).toBe(false);
   });
 
   it("classifies portal list as replay-safe and portal mutations as mutating", () => {
@@ -59,8 +66,20 @@ describe("tool mutation helpers", () => {
     ).toEqual({ mutatingAction: true, replaySafe: false });
   });
 
+  it.each(["tavily_search", "tavily_extract"])(
+    "classifies %s as read-only and replay-safe",
+    (tool) => {
+      expect(isMutatingToolCall(tool, { query: "public records" })).toBe(false);
+      expect(isReplaySafeToolCall(tool, { query: "public records" })).toBe(true);
+    },
+  );
+
   it.each([
     ["exec", "sed -n '1,220p' src/agents/tool-mutation.ts"],
+    [
+      "exec",
+      "sed -n '1,120p' src/agents/tool-mutation.ts && sed -n '1,80p' src/talk/session-context.ts",
+    ],
     ["bash", "cat package.json"],
     [
       "bash",
@@ -68,6 +87,8 @@ describe("tool mutation helpers", () => {
     ],
     ["bash", "rg --files src | wc -l"],
     ["bash", "find . -name '*.md' -type f"],
+    ["bash", "cat package.json && rg -n 'test' package.json"],
+    ["bash", "rg foo src | wc -l"],
     ["exec", "rg -n tool-mutation src/agents"],
     ["exec", "rg -n 'token|8123|http|secret' notes.md"],
     ["exec", 'rg -n "foo|bar" notes.md'],
@@ -77,6 +98,29 @@ describe("tool mutation helpers", () => {
   ])("treats read-only shell command as non-mutating: %s %s", (toolName, command) => {
     expect(isMutatingToolCall(toolName, { command })).toBe(false);
     expect(buildToolMutationState(toolName, { command }).mutatingAction).toBe(false);
+  });
+
+  it.each([
+    'psql -c "select 1"',
+    "psql -f /workspace/query.sql",
+    'psql -c "select pg_sleep(1)"',
+    'psql -c "select pg_catalog.pg_terminate_backend(123)"',
+    'psql -c "select id from public.projects for share"',
+    'psql -c "with removed as (delete from public.projects returning id) select 1"',
+    "psql -c \"select 1; update public.projects set name='changed'\"",
+    'psql -c "select 1" && touch /tmp/voice-confirmation',
+    "cat package.json && touch /tmp/voice-confirmation",
+  ])("keeps unclassified shell commands mutating: %s", (command) => {
+    expect(isMutatingToolCall("exec", { command })).toBe(true);
+  });
+
+  it("keeps fi-psql SELECTs confirmation-gated until the wrapper has a read-only DB role", () => {
+    const command = 'fi-psql -v ON_ERROR_STOP=1 -Atc "select 1"';
+
+    // fi-psql currently forwards to the general DATABASE_URL, which also permits
+    // writes. A SELECT-shaped command is not proof that the session is read-only.
+    expect(isMutatingToolCall("exec", { command })).toBe(true);
+    expect(isReplaySafeToolCall("exec", { command })).toBe(false);
   });
 
   it.each([
@@ -92,6 +136,9 @@ describe("tool mutation helpers", () => {
     ["exec", "rg 'literal'$(touch /tmp/out) notes.md"],
     ["exec", "rg 'literal'; touch /tmp/out"],
     ["exec", "rg '--pre=touch' notes.md"],
+    ["bash", "cat package.json || echo fallback"],
+    ["bash", "cat package.json &"],
+    ["bash", "cat package.json &&"],
     ["bash", "rg --pre touch pattern file"],
     ["bash", "rg --pre=touch pattern file"],
     ["bash", "rg --hostname-bin /tmp/helper pattern file"],

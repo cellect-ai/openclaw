@@ -16,9 +16,25 @@ import {
   resolveAllowFromAccountId,
   safeChannelKey,
 } from "./pairing-store-keys.js";
-import type { PairingChannel, PairingRequestRecord } from "./pairing-store.types.js";
+import type {
+  PairingChannel,
+  PairingRequestRecord,
+  PairingRequestStoredStatus,
+} from "./pairing-store.types.js";
 
 type PairingRequest = PairingRequestRecord;
+
+const STORED_PAIRING_STATUSES: readonly PairingRequestStoredStatus[] = [
+  "pending",
+  "approved",
+  "dismissed",
+];
+
+/** Rows written before retention shipped carry no status; they were pending. */
+function normalizePairingRequestStatus(value: unknown): PairingRequestStoredStatus {
+  const normalized = normalizeOptionalString(value)?.toLowerCase();
+  return STORED_PAIRING_STATUSES.find((status) => status === normalized) ?? "pending";
+}
 
 type PairingDatabase = Pick<
   OpenClawStateKyselyDatabase,
@@ -64,7 +80,18 @@ function normalizePersistedPairingRequest(value: unknown): PairingRequest | unde
     return undefined;
   }
   const meta = normalizePersistedPairingMeta(value.meta);
-  return { id, code, createdAt, lastSeenAt, ...(meta ? { meta } : {}) };
+  const status = normalizePairingRequestStatus(value.status);
+  // A resolution timestamp only means something once the request left `pending`.
+  const resolvedAt = status === "pending" ? undefined : normalizeOptionalString(value.resolvedAt);
+  return {
+    id,
+    code,
+    createdAt,
+    lastSeenAt,
+    status,
+    ...(resolvedAt ? { resolvedAt } : {}),
+    ...(meta ? { meta } : {}),
+  };
 }
 
 export function resolvePairingRequestAccountId(entry: PairingRequest): string {
@@ -123,6 +150,8 @@ export function readChannelPairingStateFromDatabase(
       code: row.code,
       createdAt: row.created_at,
       lastSeenAt: row.last_seen_at,
+      status: row.status,
+      resolvedAt: row.resolved_at,
       meta,
     });
     return request ? [request] : [];
@@ -170,6 +199,8 @@ export function writeChannelPairingStateToDatabase(
         created_at: normalized.createdAt,
         last_seen_at: normalized.lastSeenAt,
         meta_json: normalized.meta ? JSON.stringify(normalized.meta) : null,
+        status: normalized.status,
+        resolved_at: normalized.resolvedAt ?? null,
       }),
     );
   }

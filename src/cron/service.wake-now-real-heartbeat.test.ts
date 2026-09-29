@@ -93,6 +93,7 @@ async function runMainCronCase(
     disableBeforeRun?: boolean;
     transientSession?: boolean;
     mixedExec?: boolean;
+    heartbeatResponse?: ReturnType<typeof createHeartbeatToolResponsePayload>;
   } = {},
   exercise?: (fixture: MainCronFixture) => Promise<void>,
 ) {
@@ -107,13 +108,27 @@ async function runMainCronCase(
         contextKey: "cron:late-arrival",
       });
     }
+    if (!options.heartbeatResponse && options.mixedExec && ctx.InternalTurnSource === "cron") {
+      // Cellect: response-tool heartbeats deliver only tool-marked finals, so the cron
+      // reminder reports through the heartbeat response tool.
+      return createHeartbeatToolResponsePayload({
+        outcome: "needs_attention",
+        notify: true,
+        summary: "Handled the reminder",
+        notificationText: "Handled the reminder",
+      });
+    }
     return options.transientSession
       ? createHeartbeatToolResponsePayload({
           outcome: "progress",
           notify: false,
           summary: "Transient heartbeat completed",
         })
-      : { text: ctx.InternalTurnSource === "exec" ? "Command completed" : "Handled the reminder" };
+      : (
+        options.heartbeatResponse ?? {
+          text: ctx.InternalTurnSource === "exec" ? "Command completed" : "Handled the reminder",
+        }
+      );
   });
   const sendTelegram = vi.fn().mockResolvedValue({ messageId: "m1", chatId: "155462274" });
   const requestHeartbeat = vi.fn();

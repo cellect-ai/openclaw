@@ -249,6 +249,32 @@ describe("plugin runtime command execution", () => {
       },
     },
     {
+      name: "exposes runtime.agent host helpers",
+      assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
+        expect(runtime.agent.defaults).toEqual({
+          model: DEFAULT_MODEL,
+          provider: DEFAULT_PROVIDER,
+        });
+        expectFunctionKeys(runtime.agent as Record<string, unknown>, [
+          "runCommandFromIngress",
+          "runEmbeddedAgent",
+          "normalizeThinkingLevel",
+          "resolveThinkingPolicy",
+          "resolveAgentDir",
+        ]);
+        expectFunctionKeys(runtime.agent.session as Record<string, unknown>, [
+          "createSessionEntry",
+          "getSessionEntry",
+          "listSessionEntries",
+          "listSessionKeys",
+          "patchSessionEntry",
+          "upsertSessionEntry",
+          "runWithWorkAdmission",
+          "updateSessionStoreEntry",
+        ]);
+      },
+    },
+    {
       name: "exposes runtime.llm completion and provider-service acquisition",
       assert: (runtime: ReturnType<typeof createPluginRuntime>) => {
         expectFunctionKeys(runtime.llm as Record<string, unknown>, [

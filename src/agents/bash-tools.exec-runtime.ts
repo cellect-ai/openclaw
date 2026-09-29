@@ -316,6 +316,18 @@ function maybeNotifyOnExit(session: ProcessSession, status: "completed" | "faile
     sessionKey: eventSessionKey,
     contextKey: `exec:${session.id}`,
     deliveryContext: session.notifyDeliveryContext,
+    ...(session.originRunId
+      ? {
+          origin: {
+            runId: session.originRunId,
+            sessionKey,
+            outcome:
+              status === "completed" && session.exitCode === 0
+                ? ("success" as const)
+                : ("failure" as const),
+          },
+        }
+      : {}),
   };
   const remove = enqueueSystemEventWithReceipt(
     eventText,
@@ -572,6 +584,8 @@ export async function runExecProcess({
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  /** Agent run that started this command; binds its completion to that run. */
+  originRunId?: string;
   timeoutSec: number | null;
   /** Whether exec may return a supervised session for later continuation. */
   processContinuationAvailable?: boolean;
@@ -611,6 +625,7 @@ export async function runExecProcess({
     agentId: opts.agentId,
     eventRouting: opts.eventRouting,
     notifyDeliveryContext: normalizeDeliveryContext(opts.notifyDeliveryContext),
+    originRunId: opts.originRunId,
     notifyOnExit: opts.notifyOnExit,
     notifyOnExitEmptySuccess: opts.notifyOnExitEmptySuccess === true,
     exitNotified: false,
@@ -766,18 +781,25 @@ export async function runExecProcess({
       appendOutput(session, "stderr", `\n${detail}\n`);
       finalOutcome.aggregated = session.aggregated.trim();
     } finally {
-      finalOutcome = await settleExecProcessExit({
-        session,
-        outcome: finalOutcome,
-        onSettledBeforeNotify,
-        notifyOnExit: maybeNotifyOnExit,
-        failureOutcome: (error) =>
-          buildExecRuntimeErrorOutcome({
-            error,
-            aggregated: session.aggregated.trim(),
-            durationMs: Date.now() - startedAt,
-          }),
-      });
+      // Finalization can release remote process/session resources. Keep the
+      // background-work blocker until that owner transition has settled.
+      session.finalizing = false;
+      try {
+        finalOutcome = await settleExecProcessExit({
+          session,
+          outcome: finalOutcome,
+          onSettledBeforeNotify,
+          notifyOnExit: maybeNotifyOnExit,
+          failureOutcome: (error) =>
+            buildExecRuntimeErrorOutcome({
+              error,
+              aggregated: session.aggregated.trim(),
+              durationMs: Date.now() - startedAt,
+            }),
+        });
+      } finally {
+        delete session.originRunId;
+      }
     }
     return finalOutcome;
   };

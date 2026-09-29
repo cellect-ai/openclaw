@@ -1,8 +1,5 @@
-import { randomUUID } from "node:crypto";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
-import { createDefaultDeps } from "../../cli/deps.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import type { CronJob } from "../../cron/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -11,6 +8,7 @@ import {
 } from "../../plugin-sdk/persistent-dedupe.js";
 import { normalizeAccountId } from "../../routing/account-id.js";
 import { resolveChannelAccountEntry } from "../../routing/account-lookup.js";
+import { runChannelAnnouncedAgentTurn } from "../announced-agent-turn.js";
 import { buildChannelJoinIntroPrompt, type ChannelJoinedRoomContext } from "./join-intro-prompt.js";
 
 export type { ChannelJoinedRoomContext } from "./join-intro-prompt.js";
@@ -147,45 +145,22 @@ export async function reportChannelRoomJoin(
         context,
         inviterLabel: params.inviterLabel,
       });
-      const nowMs = Date.now();
-      const job: CronJob = {
-        id: randomUUID(),
-        agentId: params.route.agentId,
-        name: "Channel room join introduction",
-        enabled: true,
-        createdAtMs: nowMs,
-        updatedAtMs: nowMs,
-        schedule: { kind: "at", at: new Date(nowMs).toISOString() },
-        sessionTarget: "isolated",
-        wakeMode: "now",
-        payload: {
-          kind: "agentTurn",
-          message,
-          timeoutSeconds: CHANNEL_JOIN_INTRO_TIMEOUT_SECONDS,
-          externalContentSource: "webhook",
-          // Untrusted room evidence can never authorize tools; cron owns message delivery.
-          toolsAllow: [],
-        },
-        delivery: {
-          mode: "announce",
-          channel: params.channel,
-          to: params.deliverTo,
-          ...(params.threadId !== undefined ? { threadId: params.threadId } : {}),
-          ...(params.accountId !== undefined ? { accountId: params.accountId } : {}),
-        },
-        state: { nextRunAtMs: nowMs },
-      };
-      const { runCronIsolatedAgentTurn } = await import("../../cron/isolated-agent.js");
-      const result = await runCronIsolatedAgentTurn({
+      const result = await runChannelAnnouncedAgentTurn({
         cfg: params.cfg,
-        deps: createDefaultDeps(),
-        job,
+        channel: params.channel,
+        accountId: params.accountId,
+        deliverTo: params.deliverTo,
+        threadId: params.threadId,
+        route: params.route,
+        name: "Channel room join introduction",
         message,
-        sessionKey: params.route.sessionKey,
-        agentId: params.route.agentId,
+        timeoutSeconds: CHANNEL_JOIN_INTRO_TIMEOUT_SECONDS,
+        externalContentSource: "webhook",
+        // Untrusted room evidence can never authorize tools; cron owns message delivery.
+        toolsAllow: [],
       });
-      if (result.status !== "ok" || result.delivered !== true) {
-        const reason = result.deliveryError ?? result.error ?? "introduction was not delivered";
+      if (!result.delivered) {
+        const reason = result.reason ?? "introduction was not delivered";
         dedupe.release(dedupeKey, { error: new ChannelJoinIntroRetryableError(reason) });
         return logChannelJoinIntroOutcome(params, { kind: "failed", reason });
       }
