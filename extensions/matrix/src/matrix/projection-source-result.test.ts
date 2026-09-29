@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { resetPluginBlobStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getMatrixRuntime } from "../runtime.js";
 import { installMatrixTestRuntime } from "../test-runtime.js";
@@ -63,7 +64,7 @@ beforeEach(() => {
   });
   m.publication.mockReturnValue({});
   m.subscribe.mockImplementation(() => vi.fn());
-  stop = startMatrixSourceResultReceipts();
+  stop = startMatrixSourceResultReceipts(getMatrixRuntime());
 });
 afterEach(() => {
   stop?.();
@@ -117,6 +118,20 @@ describe("durable exact source-result rendezvous", () => {
       bindingId: "binding",
       resultEventId: "$snapshot",
     });
+  });
+  it("accepts a Slack receipt outside the Matrix plugin invocation after source delivery", async () => {
+    await prepareMatrixSourceResult({});
+    const runtime = getMatrixRuntime();
+    const slot = createPluginRuntimeStore({
+      pluginId: "matrix",
+      errorMessage: "Matrix runtime not initialized",
+    });
+    slot.clearRuntime();
+    try {
+      await expect(listener()(host, receipt)).resolves.toBeUndefined();
+    } finally {
+      slot.setRuntime(runtime);
+    }
   });
   it("replays reference custody after restart without resolving a live run or reading prose", async () => {
     await prepareMatrixSourceResult({});
