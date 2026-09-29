@@ -5,6 +5,7 @@ import {
   resolveReplyPublication,
   requireReplyPublicationReceipt,
 } from "openclaw/plugin-sdk/reply-runtime";
+import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { getMatrixRuntime } from "../runtime.js";
 import {
   resolveMatrixProjectionRun,
@@ -26,8 +27,8 @@ type Reference = {
   sourceConversationId: string;
   sourceMessageId?: string;
 };
-function store() {
-  return getMatrixRuntime().state.openBlobStore<Record<string, never>>({
+function store(runtime: Pick<PluginRuntime, "state"> = getMatrixRuntime()) {
+  return runtime.state.openBlobStore<Record<string, never>>({
     namespace: "projection-source-results-v2",
     maxEntries: 10_000,
     maxBytesPerEntry: 4096,
@@ -110,11 +111,13 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
     }
   }
 }
-export function startMatrixSourceResultReceipts() {
+export function startMatrixSourceResultReceipts(runtime: Pick<PluginRuntime, "state">) {
   return registerReplyPublicationReceiptListener(async (host, receipt) => {
     if (host.kind !== "final" || receipt.channel !== "slack") return;
     let matched = false;
-    const storage = store();
+    // Slack receipts arrive outside Matrix's plugin invocation scope. Keep the
+    // exact Matrix instance's state capability captured at registration.
+    const storage = store(runtime);
     for (const entry of await storage.entries()) {
       if (!entry.key.startsWith(`pending-${host.publicationId}-`)) continue;
       const stored = await storage.lookup(entry.key);
