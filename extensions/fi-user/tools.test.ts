@@ -23,6 +23,7 @@ vi.mock("node:util", async (importOriginal) => ({
 vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentContent: vi.fn() }));
 
 import { adminActionSessions } from "./admin-action.js";
+import { fiUserApiPath } from "./fi-api-tool.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
 import { registerFiUserMatrixEnvironmentTests } from "./tools.matrix-environment.test-support.js";
@@ -215,6 +216,21 @@ function authorization(init: RequestInit) {
 }
 
 describe("fi_user_api", () => {
+  it.each([
+    "fi-view/context",
+    "305-third/budget/text",
+    "companies/opco/pnl/text",
+    "companies/opco/balance-sheet/text",
+    "companies/opco/cash-flow-statement/text",
+    "apps/accounts-payable/cash-needs/text",
+    "apps/accounts-payable/vendor-portals/text",
+    "apps/accounts-payable/vendor-portals/room-1/text",
+    "audit/text",
+    "debt/project-305-third:Loan-1/statement/text",
+  ])("accepts the registered screen read route %s", (path) => {
+    expect(fiUserApiPath("shape", path)).toBe(`/api/shape/${path}`);
+  });
+
   it("reads a reviewed Fi text route with the requester's delegation token", async () => {
     routes.push((url) =>
       url.pathname === "/api/shape/305-third/budget/text" ? new Response("budget text") : undefined,
@@ -243,6 +259,290 @@ describe("fi_user_api", () => {
     routes,
   });
 
+  it("resolves missing Matrix screen context through authorized navigation search", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/nav/search"
+        ? json({
+            items: [
+              { type: "project", label: "236 Montgomery", href: "/shape/projects/236-montgomery" },
+            ],
+          })
+        : undefined,
+    );
+    const result = await plugin()
+      .tool(
+        "fi_user_api",
+        context({
+          messageChannel: "matrix",
+          requesterSenderId: "@member:threads.example",
+          sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
+        }),
+      )
+      .execute("c2-nav", { path: "nav/search", query: { q: "236 Montgomery" } });
+
+    expect(result.details).toMatchObject({
+      status: 200,
+      path: "/api/shape/nav/search",
+      result: { items: [{ label: "236 Montgomery" }] },
+    });
+    expect(
+      calls.some((entry) => entry.url.endsWith("/api/shape/nav/search?q=236+Montgomery")),
+    ).toBe(true);
+    expect(delegationBody()).toEqual({
+      requesterMatrixUserId: "@member:threads.example",
+      agentId: "cellect-fi-user",
+    });
+  });
+
+  it("reads the current registered Matrix screen through its delegated text endpoint", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({
+            view: { id: "project.budget", title: "Budget" },
+            route: { path: "/fi/shape/projects/305-third/budget?asOf=2026-09-01" },
+            actions: [
+              {
+                id: "copy_text",
+                method: "GET",
+                label: "Copy text context",
+                href: "/fi/api/shape/305-third/budget/text?asOf=2026-09-01",
+              },
+            ],
+          })
+        : undefined,
+    );
+    routes.push((url) =>
+      url.pathname === "/api/shape/305-third/budget/text"
+        ? new Response("Budget view for 305 Third as of 2026-09-01")
+        : undefined,
+    );
+
+    const result = await plugin()
+      .tool(
+        "fi_user_api",
+        context({
+          messageChannel: "matrix",
+          requesterSenderId: "@member:threads.example",
+          sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
+        }),
+      )
+      .execute("c2-screen", {
+        path: "fi-view/context",
+        query: { path: "/fi/shape/projects/305-third/budget?asOf=2026-09-01" },
+      });
+
+    expect(result.details).toMatchObject({
+      status: 200,
+      path: "/api/shape/fi-view/context",
+      result: {
+        context: {
+          view: { id: "project.budget" },
+          route: { path: "/fi/shape/projects/305-third/budget?asOf=2026-09-01" },
+          actions: [{ id: "copy_text", method: "GET" }],
+        },
+        text: {
+          status: "ready",
+          content: "Budget view for 305 Third as of 2026-09-01",
+        },
+      },
+    });
+    expect(JSON.stringify(result.details)).not.toContain("/fi/api/shape/");
+    expect(calls.map((call) => new URL(call.url).pathname)).toContain(
+      "/api/shape/305-third/budget/text",
+    );
+    const textCall = calls.find((call) => call.url.includes("/budget/text"));
+    expect(new URL(textCall!.url).searchParams.get("asOf")).toBe("2026-09-01");
+    expect(authorization(textCall!.init)).toBe("Bearer delegated-token");
+    expect(delegationBody()).toEqual({
+      requesterMatrixUserId: "@member:threads.example",
+      agentId: "cellect-fi-user",
+    });
+  });
+
+  it("follows the exact vendor-statement detail action generated by Fi", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({
+            view: { id: "app:accounts-payable", title: "Accounts Payable" },
+            route: { path: "/fi/shape/apps/accounts-payable/vendor-portals/room-1" },
+            actions: [
+              {
+                id: "copy_text",
+                method: "GET",
+                href: "/fi/api/shape/apps/accounts-payable/vendor-portals/room-1/text",
+              },
+            ],
+          })
+        : undefined,
+    );
+    routes.push((url, init) =>
+      url.pathname === "/api/shape/apps/accounts-payable/vendor-portals/room-1/text" &&
+      init.method === "GET"
+        ? new Response("Vendor statement: ACME\nInvoice INV-10; amount $100.00")
+        : undefined,
+    );
+
+    const result = await plugin()
+      .tool("fi_user_api", context())
+      .execute("c-ap-vendor-screen", {
+        path: "fi-view/context",
+        query: { path: "/fi/shape/apps/accounts-payable/vendor-portals/room-1" },
+      });
+
+    expect(result.details).toMatchObject({
+      result: {
+        context: { view: { id: "app:accounts-payable" } },
+        text: {
+          status: "ready",
+          content: "Vendor statement: ACME\nInvoice INV-10; amount $100.00",
+        },
+      },
+    });
+    const detailRead = calls.find((call) =>
+      new URL(call.url).pathname.endsWith("/vendor-portals/room-1/text"),
+    );
+    expect(detailRead).toBeDefined();
+    expect(authorization(detailRead!.init)).toBe("Bearer delegated-token");
+  });
+
+  it("does not follow a current-screen text action outside the delegated tenant read routes", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({ actions: [{ id: "copy_text", method: "GET", href: "https://evil.test/steal" }] })
+        : undefined,
+    );
+    const result = await plugin()
+      .tool("fi_user_api", context())
+      .execute("c2-screen-denied", {
+        path: "fi-view/context",
+        query: { path: "/fi/shape/projects/305-third/budget" },
+      });
+
+    expect(result.details).toMatchObject({
+      result: {
+        context: { actions: [{ id: "copy_text", method: "GET" }] },
+        text: { status: "not_available" },
+      },
+    });
+    expect(calls.some((call) => call.url.includes("evil.test"))).toBe(false);
+  });
+
+  it("strips Fi action URLs and context YAML after following the authorized screen text action", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({
+            view: { id: "company.pnl", title: "Company P&L" },
+            route: { path: "/fi/shape/companies/opco/pnl?period=2026-Q3" },
+            actions: [
+              {
+                id: "copy_text",
+                method: "GET",
+                href: "/fi/api/shape/companies/opco/pnl/text?period=2026-Q3",
+              },
+            ],
+            structuredContext: {
+              actions: [
+                { id: "copy_text", href: "/fi/api/shape/companies/opco/pnl/text?period=2026-Q3" },
+              ],
+            },
+            contextYaml: "actions:\n  - href: /fi/api/shape/companies/opco/pnl/text",
+          })
+        : undefined,
+    );
+    routes.push((url) =>
+      url.pathname === "/api/shape/companies/opco/pnl/text"
+        ? new Response("Company P&L for Q3", { headers: { "content-type": "text/plain" } })
+        : undefined,
+    );
+
+    const result = await plugin()
+      .tool(
+        "fi_user_api",
+        context({
+          messageChannel: "matrix",
+          requesterSenderId: "@member:threads.example",
+          sessionKey: "agent:cellect-fi-user:matrix:room:!abc",
+        }),
+      )
+      .execute("c2-company-screen", {
+        path: "/api/shape/fi-view/context",
+        query: { path: "/fi/shape/companies/opco/pnl?period=2026-Q3" },
+      });
+
+    expect(result.details).toMatchObject({
+      result: {
+        context: {
+          view: { id: "company.pnl" },
+          actions: [{ id: "copy_text", method: "GET" }],
+          structuredContext: { actions: [{ id: "copy_text" }] },
+        },
+        text: { status: "ready", content: "Company P&L for Q3", truncated: false },
+      },
+    });
+    const serialized = JSON.stringify(result.details);
+    expect(serialized).not.toContain("contextYaml");
+    expect(serialized).not.toContain("/fi/api/shape/companies/opco/pnl/text");
+    const textCall = calls.find((call) => call.url.includes("/companies/opco/pnl/text"));
+    expect(textCall).toBeDefined();
+    expect(new URL(textCall!.url).searchParams.get("period")).toBe("2026-Q3");
+    expect(authorization(textCall!.init)).toBe("Bearer delegated-token");
+  });
+
+  it.each([
+    ["cross-org", "/fi/api/other/305-third/budget/text"],
+    ["unreviewed route", "/fi/api/shape/apps/accounts-payable/intakes/secret/file"],
+    ["external origin", "https://evil.test/fi/api/shape/305-third/budget/text"],
+  ])("does not follow a %s copy-text action", async (_label, href) => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({ actions: [{ id: "copy_text", method: "GET", href }] })
+        : undefined,
+    );
+    const result = await plugin()
+      .tool("fi_user_api", context())
+      .execute("c2-screen-boundary", {
+        path: "fi-view/context",
+        query: { path: "/fi/shape/projects/305-third/budget" },
+      });
+
+    expect(result.details).toMatchObject({ result: { text: { status: "not_available" } } });
+    expect(
+      calls.some((call) => call.url.includes("/budget/text") || call.url.includes("evil.test")),
+    ).toBe(false);
+  });
+
+  it("bounds current screen text to 32,000 characters", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/fi-view/context"
+        ? json({
+            actions: [
+              { id: "copy_text", method: "GET", href: "/fi/api/shape/305-third/budget/text" },
+            ],
+          })
+        : undefined,
+    );
+    routes.push((url) =>
+      url.pathname === "/api/shape/305-third/budget/text"
+        ? new Response("x".repeat(32_010))
+        : undefined,
+    );
+    const result = await plugin()
+      .tool("fi_user_api", context())
+      .execute("c2-screen-large", {
+        path: "fi-view/context",
+        query: { path: "/fi/shape/projects/305-third/budget" },
+      });
+
+    expect(result.details).toMatchObject({
+      result: {
+        text: { status: "ready", truncated: true, sourceChars: 32_010, includedChars: 32_000 },
+      },
+    });
+    expect(JSON.stringify(result.details)).toContain(
+      "Fi screen text truncated after 32,000 characters",
+    );
+  });
+
   it("works on webchat with the Fi-signed context credential of that chat", async () => {
     const sessionKey = "agent:cellect-fi-user:webchat:member";
     rememberWebchatContext(
@@ -268,10 +568,15 @@ describe("fi_user_api", () => {
     "305-third/budget",
     "datarooms/room-1/members",
     "305-third/rooms-search",
+    "nav/search/extra",
+    "nav",
+    "fi-view/context/extra",
     "api/other/305-third/budget/text",
     "305-third/../x/budget/text",
     "305-third/budget/text?x=1",
-    "companies/c-1/pnl/text",
+    "companies/c-1/valuation/text",
+    "apps/accounts-payable/vendor-portals/room-1/text/extra",
+    "apps/accounts-payable/vendor-portals/room-1/renew",
   ])("refuses %s before calling Fi", async (requested) => {
     await expect(
       plugin().tool("fi_user_api", context()).execute("c4", { path: requested }),
