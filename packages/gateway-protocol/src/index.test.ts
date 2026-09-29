@@ -178,6 +178,36 @@ describe("Talk request policy", () => {
     );
   });
 
+  it("accepts provider, model, voice, mode, transport, and brain overrides", () => {
+    expectAccepted(validateTalkClientCreateParams, [
+      {
+        sessionKey: "agent:main:main",
+        provider: "openai",
+        model: "gpt-realtime-2",
+        voice: "alloy",
+        language: "en",
+        mode: "realtime",
+        transport: "webrtc",
+        brain: "agent-consult",
+        capabilities: ["camera-frame", "gateway-control-v1"],
+        binding: "signed-fi-binding",
+        sessionCapsule: "Fi session metadata\n- Screen: project overview",
+      },
+    ]);
+  });
+
+  it("bounds the app-supplied realtime session capsule", () => {
+    expectRejected(validateTalkClientCreateParams, [
+      { sessionKey: "agent:main:main", sessionCapsule: "x".repeat(6001) },
+    ]);
+  });
+
+  it("rejects unknown browser capabilities", () => {
+    expectRejected(validateTalkClientCreateParams, [
+      { sessionKey: "agent:main:main", capabilities: ["screen-frame"] },
+    ]);
+  });
+
   it("rejects request-time instruction overrides for Talk session creation", () => {
     const request = { sessionKey: "agent:main:main" };
     expect(validateTalkSessionCreateParams(request)).toBe(true);
@@ -190,6 +220,29 @@ describe("Talk request policy", () => {
     expect(formatValidationErrors(validateTalkSessionCreateParams.errors)).toContain(
       "unexpected property 'instructionsOverride'",
     );
+  });
+
+  it("accepts session-scoped provider, model, and voice selection", () => {
+    expectAccepted(validateTalkSessionCreateParams, [
+      {
+        sessionKey: "agent:main:main",
+        spawnedBy: "agent:main:parent",
+        provider: "openai",
+        model: "gpt-realtime-2",
+        voice: "alloy",
+        language: "de",
+        mode: "realtime",
+        transport: "managed-room",
+        brain: "agent-consult",
+        sessionCapsule: "Fi session metadata\n- Project: Example",
+      },
+    ]);
+  });
+
+  it("bounds the app-supplied realtime session capsule", () => {
+    expectRejected(validateTalkSessionCreateParams, [
+      { sessionKey: "agent:main:main", sessionCapsule: "x".repeat(6001) },
+    ]);
   });
 
   it("accepts only the Gateway-owned control descriptor", () => {
@@ -206,6 +259,30 @@ describe("Talk request policy", () => {
     expect(validateTalkClientCreateResult({ ...result, clientControl: { owner: "client" } })).toBe(
       false,
     );
+  });
+
+  it("accepts only the Gateway-owned control descriptor with session binding", () => {
+    expectAccepted(validateTalkClientCreateResult, [
+      {
+        provider: "openai",
+        transport: "webrtc",
+        sessionKey: "agent:main:matrix:room:thread",
+        voiceSessionId: "voice-1",
+        clientSecret: "single-use-token",
+        offerUrl: "/plugins/openai/realtime/calls",
+        offerResponseMaxBytes: 262_144,
+        clientControl: { owner: "gateway" },
+      },
+    ]);
+    expectRejected(validateTalkClientCreateResult, [
+      {
+        provider: "openai",
+        transport: "webrtc",
+        voiceSessionId: "voice-1",
+        clientSecret: "provider-secret",
+        clientControl: { owner: "client" },
+      },
+    ]);
   });
 });
 

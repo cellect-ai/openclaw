@@ -190,10 +190,11 @@ export async function resolvePairingApprovalPlan(
     isWebchat,
     clientMode: connectParams.client.mode,
   });
+  const isSetupCodeBrowserOperatorConnect = role === "operator" && (isControlUi || isWebchat);
   const allowBoundBootstrapProfileLookup =
     ((reason === "not-paired" && !existingPairedDevice) ||
       (reason === "scope-upgrade" && Boolean(existingPairedDevice))) &&
-    (isSetupCodeMobileNodeConnect || (isControlUi && role === "operator"));
+    (isSetupCodeMobileNodeConnect || isSetupCodeBrowserOperatorConnect);
   const boundBootstrapProfile =
     authMethod === "bootstrap-token" && bootstrapTokenCandidate && allowBoundBootstrapProfileLookup
       ? await getBoundDeviceBootstrapProfile({

@@ -11,6 +11,8 @@ import { PreparedModelRuntimePublicationSupersededError } from "../../agents/pre
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { readUserProfileAliasRevision } from "../../state/user-profile-events.js";
 import type { UserModelAccountSelection } from "../model-account-authority.js";
+import { readGatewayAccessRevision } from "../gateway-access-revision.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect.js";
 import { prepareOperatorModelPresentation } from "../operator-model-presentation.js";
 import { readOperatorRolePolicyRevision } from "../operator-role-policy.js";
@@ -21,6 +23,7 @@ import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { hasSessionReadAccessChanged, hiddenSessionNotFound } from "../session-sharing-policy.js";
 import { createSessionListEntryFilter } from "../session-sharing.js";
 import { retainGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { resolveAgentIdOrRespondError } from "./agent-id-shared.js";
 import {
   chatMetadataSessionFields,
@@ -97,6 +100,31 @@ export async function resolveChatMetadataReadParams(
         throw new SessionMutationAuthorizationChangedError(hiddenSessionNotFound(sessionKey));
       }
     };
+    const accessRevision = readGatewayAccessRevision();
+    if (
+      !isWebchatSessionAllowed({ cfg: session.cfg, client, sessionKey: session.canonicalKey }) ||
+      isUnauthorizedRawMatrixBrowserSession({
+        cfg: session.cfg,
+        clientInfo: client?.connect?.client,
+        pairedClientId: client?.pairedClientId,
+        sessionKey: session.canonicalKey,
+        authorizedByBinding: false,
+      })
+    ) {
+      session.release();
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.FORBIDDEN, "Matrix conversation access requires the owning app"),
+      );
+      return undefined;
+    }
+    const isCurrent = () =>
+      !signal?.aborted &&
+      readGatewayAccessRevision() === accessRevision &&
+      client?.authenticatedUserProfile?.profileId === profileInput &&
+      client?.authenticatedUserId === userInput &&
+      session.isCurrent();
     try {
       assertVisible();
       return {

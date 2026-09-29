@@ -84,6 +84,7 @@ import {
   recordUpdateRunNoticeSkipped,
   resolveUpdateRunNoticeTarget,
 } from "./update-run-notice-target.js";
+import { deliverQueuedWebchatCompletionFallback } from "./webchat-completion-delivery-send.js";
 
 const log = createSubsystemLogger("gateway/restart-sentinel");
 const RESTART_CONTINUATION_BUSY_RETRY_DELAY_MS = process.env.VITEST ? 1 : 6_000;
@@ -108,14 +109,16 @@ function enqueueRestartSentinelWake(
 ) {
   const message = entry.kind === "systemEvent" ? entry.text : entry.message;
   const deliveryContext =
-    entry.kind === "agentTurn" && entry.route
-      ? {
-          channel: entry.route.channel,
-          to: entry.route.to,
-          ...(entry.route.accountId ? { accountId: entry.route.accountId } : {}),
-          ...(entry.route.threadId ? { threadId: entry.route.threadId } : {}),
-        }
-      : entry.deliveryContext;
+    entry.kind === "completionFallback"
+      ? undefined
+      : entry.kind === "agentTurn" && entry.route
+        ? {
+            channel: entry.route.channel,
+            to: entry.route.to,
+            ...(entry.route.accountId ? { accountId: entry.route.accountId } : {}),
+            ...(entry.route.threadId ? { threadId: entry.route.threadId } : {}),
+          }
+        : entry.deliveryContext;
   const eventOptions = {
     sessionKey,
     // Recovered work keeps its ordinary turn budget when delivered by heartbeat.
@@ -132,6 +135,7 @@ function enqueueRestartSentinelWake(
   });
 }
 
+
 export async function deliverQueuedSessionDelivery(params: {
   deps: CliDeps;
   entry: QueuedSessionDelivery;
@@ -147,6 +151,14 @@ export async function deliverQueuedSessionDelivery(params: {
       entry: queuedEntry,
       runtimeContextFragments: queuedEntry.runtimeContextFragments,
       canonicalKey: queuedEntry.requesterBinding.sessionKey,
+    });
+    return;
+  }
+  if (queuedEntry.kind === "completionFallback") {
+    await deliverQueuedWebchatCompletionFallback({
+      cfg: getRuntimeConfig(),
+      entry: queuedEntry,
+      log,
     });
     return;
   }

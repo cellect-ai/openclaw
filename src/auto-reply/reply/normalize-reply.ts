@@ -27,6 +27,7 @@ import type {
 import {
   resolveResponsePrefixTemplate,
   type ResponsePrefixContext,
+  UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN,
 } from "./response-prefix-template.js";
 
 export type { NormalizeReplySkipReason } from "./normalize-reply-skip-reason.js";
@@ -166,9 +167,16 @@ export function normalizeReplyPayloadOutcome(
     text = enrichedPayload.text;
   }
 
-  const effectivePrefix = opts.responsePrefixContext
-    ? resolveResponsePrefixTemplate(opts.responsePrefix, opts.responsePrefixContext)
-    : opts.responsePrefix;
+  // A prefix whose variables cannot all be resolved on this path (for example
+  // {sender.mention} on a routed continuation) is omitted, never sent literally.
+  const resolvedPrefix = resolveResponsePrefixTemplate(
+    opts.responsePrefix,
+    opts.responsePrefixContext ?? {},
+  );
+  const effectivePrefix =
+    resolvedPrefix && UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(resolvedPrefix)
+      ? undefined
+      : resolvedPrefix;
 
   if (
     effectivePrefix &&

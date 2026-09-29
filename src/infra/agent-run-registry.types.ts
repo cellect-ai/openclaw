@@ -74,6 +74,7 @@ export type AgentRunContextOwnership = {
 };
 
 export type AgentRunRegistryState = {
+  admissionHandlers?: Set<(runId: string) => void>;
   contexts: Map<string, AgentRunContext>;
   owners: Map<string, AgentRunContextOwnership>;
   queuedRunContextLeases?: WeakMap<AgentRunContext, number>;

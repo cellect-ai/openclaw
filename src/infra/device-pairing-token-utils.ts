@@ -14,6 +14,7 @@ export type DeviceAuthTokenSummary = Pick<
 export function createDeviceAuthToken(params: {
   role: string;
   scopes: string[];
+  allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
   existing?: DeviceAuthToken;
   preserveExistingIssuer?: boolean;
@@ -24,6 +25,7 @@ export function createDeviceAuthToken(params: {
     token: generatePairingToken(),
     role: params.role,
     scopes: params.scopes,
+    allowedAgentIds: params.allowedAgentIds ?? params.existing?.allowedAgentIds,
     issuer: params.issuer ?? (params.preserveExistingIssuer ? params.existing?.issuer : undefined),
     createdAtMs: params.existing?.createdAtMs ?? params.now,
     rotatedAtMs: params.rotatedAtMs,

@@ -1,3 +1,4 @@
+import { copyReplyPublication } from "../../auto-reply/reply-publication.js";
 import {
   applyReplyPayloadTargetPolicy,
   addReplyPayloadMediaFailures,
@@ -208,6 +209,7 @@ function normalizeRawOutboundPayload(
     ...(parsed.mediaFailures ?? []),
     ...(strippedParsed === parsed ? [] : (strippedParsed.mediaFailures ?? [])),
   ]);
+  copyReplyPublication(payload, normalizedPayload);
   return suppressedText && !hasReplyPayloadContent(normalizedPayload) ? null : normalizedPayload;
 }
 
@@ -229,6 +231,7 @@ function createStructuredOutboundPayloadPlanEntry(
       ...(attachments ? { attachments } : {}),
     }),
   );
+  copyReplyPublication(payload, normalizedPayload);
   if (!isRenderablePayload(normalizedPayload)) {
     return null;
   }
@@ -320,6 +323,8 @@ export function projectOutboundPayloadPlanForOutbound(
       ...(payload.location ? { location: payload.location } : {}),
       ...(payload.isStatusNotice === true ? { isStatusNotice: true } : {}),
     });
+    const normalizedPayload = normalizedPayloads.at(-1);
+    if (normalizedPayload) copyReplyPublication(payload, normalizedPayload);
   }
   return normalizedPayloads;
 }

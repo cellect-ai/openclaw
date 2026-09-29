@@ -32,6 +32,7 @@ export type {
   RealtimeVoiceResponseError,
   RealtimeVoiceResponseOutcome,
   RealtimeVoiceRole,
+  RealtimeVoiceTranscriptUpdate,
   RealtimeVoiceTool,
   RealtimeVoiceToolCallEvent,
   RealtimeVoiceToolResultOptions,

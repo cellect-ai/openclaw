@@ -497,6 +497,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
           config: sessionConfig,
           requesterAgentIdOverride: sessionAgentId,
           requesterRunId: options?.runId,
+          parentTurnMedia: options?.currentTurnMedia,
           workspaceDir: spawnWorkspaceDir,
         })
       : null,

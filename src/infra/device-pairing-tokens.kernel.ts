@@ -1,3 +1,4 @@
+import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import { resolveMissingRequestedScope, roleScopesAllow } from "../shared/operator-scope-compat.js";
 import type {
@@ -143,6 +144,7 @@ export function ensureDeviceTokenInWorker(params: {
   deviceId: string;
   role: string;
   scopes: string[];
+  allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
   nowMs: number;
   baseDir?: string;
@@ -153,6 +155,9 @@ export function ensureDeviceTokenInWorker(params: {
     (paired) => {
       requestDevicePairingMutationAdmission({ kind: "pairing-token-issuance" });
       const requestedScopes = normalizeDeviceAuthScopes(params.scopes);
+      const requestedAllowedAgentIds = params.allowedAgentIds
+        ? normalizeSortedUniqueTrimmedStringList(params.allowedAgentIds)
+        : undefined;
       const context = resolveDeviceTokenUpdateContext({
         device: paired,
         role: params.role,
@@ -167,6 +172,7 @@ export function ensureDeviceTokenInWorker(params: {
         !scopesWithinApprovedDeviceBaseline({
           role,
           scopes: requestedScopes,
+        ...(requestedAllowedAgentIds ? { allowedAgentIds: requestedAllowedAgentIds } : {}),
           approvedScopes,
         })
       ) {
@@ -179,8 +185,13 @@ export function ensureDeviceTokenInWorker(params: {
           approvedScopes,
         });
         const issuerAllowsReuse = deviceTokenIssuerMatches(existing, params.issuer);
+        const agentCeilingAllowsReuse =
+          requestedAllowedAgentIds === undefined ||
+          JSON.stringify(normalizeSortedUniqueTrimmedStringList(existing.allowedAgentIds ?? [])) ===
+            JSON.stringify(requestedAllowedAgentIds);
         if (
           existingWithinApproved &&
+          agentCeilingAllowsReuse &&
           issuerAllowsReuse &&
           roleScopesAllow({ role, requestedScopes, allowedScopes: existing.scopes })
         ) {
@@ -191,6 +202,7 @@ export function ensureDeviceTokenInWorker(params: {
       const next = createDeviceAuthToken({
         role,
         scopes: requestedScopes,
+        ...(requestedAllowedAgentIds ? { allowedAgentIds: requestedAllowedAgentIds } : {}),
         issuer: params.issuer,
         existing,
         now,

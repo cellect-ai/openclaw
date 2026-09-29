@@ -178,6 +178,23 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `execApprovals.target`: `"dm"` (default), `"channel"`, or `"both"`.
 - `execApprovals.agentFilter` / `execApprovals.sessionFilter`: optional agent/session allowlists for delivery.
 
+## Mirror an existing session into Matrix
+
+An operator can add a Matrix view to an existing session without copying its transcript or creating another agent session:
+
+```bash
+openclaw gateway call matrix.sessionProjection.create --params '{
+  "targetSessionKey": "agent:main:slack:channel:C123:thread:1700000000.000001",
+  "roomId": "!room:example.org",
+  "accountId": "default",
+  "label": "Slack support thread"
+}'
+```
+
+The Matrix account must already be running and joined to the target room. The method creates one durable child thread, binds it to the existing canonical session, and is idempotent for the same session, account, and room. Subsequent non-Matrix user messages and final assistant answers appear in that thread; progress, reasoning, status notices, and tool output are not mirrored. Matrix replies route to the canonical session through the normal conversation binding and are not reflected back as duplicate events.
+
+The method does not replay prior transcript. A trusted product bridge may include the single source message that triggered the request so the new thread has a visible starting point. It requires `operator.admin`, returns `threadRootEventId`, and does not infer a destination room: the caller must choose a room the user is authorized to read and pass its exact, case-sensitive Matrix room ID.
+
 ## Related
 
 - [Channels Overview](/channels) - all supported channels

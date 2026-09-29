@@ -5,10 +5,16 @@ import type {
   ChannelRuntimeContextRegistry,
 } from "../../channels/plugins/channel-runtime-surface.types.js";
 import { createSubsystemLogger } from "../../logging.js";
+import { wrapCurrentPluginInstance } from "../plugin-instance-scope.js";
 
 type StoredRuntimeContext = {
   token: symbol;
   context: unknown;
+  normalizedKey: {
+    channelId: string;
+    accountId?: string;
+    capability: string;
+  };
 };
 
 const log = createSubsystemLogger("plugins/runtime-channel");
@@ -99,7 +105,11 @@ export function createChannelRuntimeContextRegistry(): ChannelRuntimeContextRegi
       }
       runtimeContexts.set(normalized.mapKey, {
         token,
-        context: params.context,
+        // Context methods are consumed by other plugins. Preserve the
+        // registering plugin's instance scope so plugin-scoped runtime slots
+        // resolve to their owner rather than the caller.
+        context: wrapCurrentPluginInstance(params.context),
+        normalizedKey: normalized.normalizedKey,
       });
       if (disposed) {
         return { dispose };
@@ -107,7 +117,7 @@ export function createChannelRuntimeContextRegistry(): ChannelRuntimeContextRegi
       emitRuntimeContextEvent({
         type: "registered",
         key: normalized.normalizedKey,
-        context: params.context,
+        context: runtimeContexts.get(normalized.mapKey)?.context,
       });
       return { dispose };
     },
@@ -125,7 +135,9 @@ export function createChannelRuntimeContextRegistry(): ChannelRuntimeContextRegi
           ...(params.accountId != null ? { accountId: params.accountId.trim() } : {}),
           ...(params.capability?.trim() ? { capability: params.capability.trim() } : {}),
         },
-        onEvent: params.onEvent,
+        // Watchers are also called across plugin boundaries; keep their
+        // invocation in the registering plugin's instance scope.
+        onEvent: wrapCurrentPluginInstance(params.onEvent),
       };
       runtimeContextWatchers.add(watcher);
       return () => {

@@ -197,6 +197,7 @@ function sanitizeRedactedValue(params: {
   const originalFormRecord = isRecord(params.originalFormValue) ? params.originalFormValue : null;
   const originalRawRecord = isRecord(params.originalRawValue) ? params.originalRawValue : null;
   const next: Record<string, unknown> = {};
+  let omittedChild = false;
   for (const [key, item] of Object.entries(params.value)) {
     const originalFormValue =
       originalFormRecord != null && Object.hasOwn(originalFormRecord, key)
@@ -213,10 +214,20 @@ function sanitizeRedactedValue(params: {
     });
     if (sanitized !== OMIT_VALUE) {
       next[key] = sanitized;
+    } else {
+      omittedChild = true;
+    }
     }
   }
 
-  if (params.canOmit && Object.keys(next).length === 0 && !params.originalRawPathExists) {
+  // Prune parents made empty by omitted redactions, not explicitly authored
+  // empty entries: an empty provider object is meaningful configuration.
+  if (
+    params.canOmit &&
+    omittedChild &&
+    Object.keys(next).length === 0 &&
+    !params.originalRawPathExists
+  ) {
     return OMIT_VALUE;
   }
   return next;

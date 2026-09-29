@@ -10,6 +10,7 @@ import {
   ConnectErrorDetailCodes,
   onceMessage,
   openWs,
+  originForPort,
   restoreGatewayToken,
   rpcReq,
   TEST_OPERATOR_CLIENT,
@@ -17,6 +18,143 @@ import {
 } from "./server.auth.test-helpers.js";
 
 export function registerControlUiBootstrapLifecycleSuite(): void {
+  test("webchat bootstrap silently pairs and returns a reconnecting device token", async () => {
+    const { issueDevicePairSetupBootstrapToken } = await import("../infra/device-bootstrap.js");
+    const { getPairedDevice } = await import("../infra/device-pairing.js");
+    const { WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE } =
+      await import("../shared/device-bootstrap-profile.js");
+    const { server, port, prevToken } = await startProxiedControlUiServer("secret");
+    const { identityPath, identity } = await createOperatorIdentityFixture(
+      "openclaw-webchat-bootstrap-",
+    );
+    const client = {
+      id: "webchat-ui",
+      version: "1.0.0",
+      platform: "web",
+      mode: "webchat",
+    };
+
+    try {
+      const issued = await issueDevicePairSetupBootstrapToken({
+        profile: {
+          ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+          allowedAgentIds: ["cellect-fi-user"],
+        },
+      });
+      const ws = await openWs(port, { origin: originForPort(port) });
+      const connected = await connectReq(ws, {
+        skipDefaultAuth: true,
+        bootstrapToken: issued.token,
+        role: "operator",
+        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes],
+        client,
+        deviceIdentityPath: identityPath,
+      });
+      expect(connected.error).toBeUndefined();
+      expect(connected.ok).toBe(true);
+      const deviceToken = (connected.payload as { auth?: { deviceToken?: unknown } } | undefined)
+        ?.auth?.deviceToken;
+      expect(deviceToken).toEqual(expect.any(String));
+      const paired = await getPairedDevice(identity.deviceId);
+      expect(paired?.tokens?.operator?.allowedAgentIds).toEqual(["cellect-fi-user"]);
+      expect(paired?.tokens?.operator?.token).toBe(deviceToken);
+      expect(paired?.tokens?.operator?.issuer).toEqual({
+        kind: "shared-gateway-auth",
+        generation: expect.any(String),
+      });
+      ws.close();
+
+      const wsReconnect = await openWs(port, { origin: originForPort(port) });
+      const reconnected = await connectReq(wsReconnect, {
+        skipDefaultAuth: true,
+        deviceToken: deviceToken as string,
+        role: "operator",
+        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes],
+        client,
+        deviceIdentityPath: identityPath,
+      });
+      expect(reconnected.error).toBeUndefined();
+      expect(reconnected.ok).toBe(true);
+      wsReconnect.close();
+    } finally {
+      await server.close();
+      restoreGatewayToken(prevToken);
+    }
+  });
+
+  test("webchat bootstrap retry succeeds after server-side pairing approval", async () => {
+    const { issueDevicePairSetupBootstrapToken, verifyDeviceBootstrapToken } =
+      await import("../infra/device-bootstrap.js");
+    const { publicKeyRawBase64UrlFromPem } = await import("../infra/device-identity.js");
+    const { approveDevicePairing } = await import("../infra/device-pairing-approval.js");
+    const { getPairedDevice, requestDevicePairing } = await import("../infra/device-pairing.js");
+    const { WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE } =
+      await import("../shared/device-bootstrap-profile.js");
+    const { server, port, prevToken } = await startProxiedControlUiServer("secret");
+    const { identityPath, identity } = await createOperatorIdentityFixture(
+      "openclaw-webchat-bootstrap-retry-",
+    );
+    const client = {
+      id: "webchat-ui",
+      version: "1.0.0",
+      platform: "web",
+      mode: "webchat",
+    };
+    const scopes = [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes];
+    const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
+
+    try {
+      const issued = await issueDevicePairSetupBootstrapToken({
+        profile: {
+          ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+          allowedAgentIds: ["cellect-fi-user"],
+        },
+      });
+      expect(
+        await verifyDeviceBootstrapToken({
+          token: issued.token,
+          deviceId: identity.deviceId,
+          publicKey,
+          role: "operator",
+          scopes,
+        }),
+      ).toEqual({ ok: true });
+      const pending = await requestDevicePairing({
+        deviceId: identity.deviceId,
+        publicKey,
+        role: "operator",
+        scopes,
+        clientId: client.id,
+        clientMode: client.mode,
+        platform: client.platform,
+      });
+      await approveDevicePairing(pending.request.requestId, {
+        callerScopes: ["operator.admin"],
+      });
+
+      const ws = await openWs(port, { origin: originForPort(port) });
+      const connected = await connectReq(ws, {
+        skipDefaultAuth: true,
+        bootstrapToken: issued.token,
+        role: "operator",
+        scopes,
+        client,
+        deviceIdentityPath: identityPath,
+      });
+      expect(connected.error).toBeUndefined();
+      expect(connected.ok).toBe(true);
+      expect(
+        (connected.payload as { auth?: { deviceToken?: unknown } } | undefined)?.auth?.deviceToken,
+      ).toEqual(expect.any(String));
+      const paired = await getPairedDevice(identity.deviceId);
+      expect(paired?.tokens?.operator?.allowedAgentIds).toEqual(["cellect-fi-user"]);
+      ws.close();
+    } finally {
+      await server.close();
+      restoreGatewayToken(prevToken);
+    }
+  });
+
   test("qr bootstrap retry keeps full operator handoff after paired approval", async () => {
     const { issueDevicePairSetupBootstrapToken, verifyDeviceBootstrapToken } =
       await import("../infra/device-bootstrap.js");

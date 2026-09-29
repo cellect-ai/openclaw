@@ -14,7 +14,7 @@ Which Slack events OpenClaw observes, and what it does with them.
 
 - Message edits/deletes are mapped into system events.
 - Thread broadcasts ("Also send to channel" thread replies) are processed as normal user messages.
-- Reaction add/remove events are mapped into system events.
+- Reaction add/remove events are mapped into system events (see `reactionNotifications`). Configured [reaction triggers](#reaction-triggers) start an agent turn instead.
 - Member join/leave, channel created/renamed, and pin add/remove events are mapped into system events.
 - When the bot itself joins an allowed channel, it posts one introduction grounded in the channel name, purpose or topic, and available recent messages. Introductions are enabled by default, never run in direct messages, and can be disabled with `channels.slack.joinIntro: false` or overridden per account with `channels.slack.accounts.<accountId>.joinIntro`. See [group join introductions](/channels#group-join-introductions) for the history limits, once-per-room behavior, and untrusted-content handling.
 - Optional presence polling can map an observed human participant's `away` to `active` transition into the participant's most recently active eligible Slack session. The default is off.
@@ -63,3 +63,29 @@ The event includes `observed_away_at_ms`, `observed_active_at_ms`, and `observed
 `presenceEvents.prompt` replaces the default greeting guidance after the event facts. The account-level value applies by default, and `channels.<channel-id>.presenceEvents.prompt` can override it for one channel. The custom value is included verbatim and is limited to 20,000 characters, matching the default per-file `AGENTS.md` bootstrap limit. Set it to an empty string to omit event-specific guidance and let workspace instructions such as `AGENTS.md` decide how to handle the event. The presence facts are always included.
 
 The bot token needs `users:read`, which is already included in the recommended manifest. Enterprise Grid org-wide installs create a workspace-scoped polling client only after an authorized event identifies that workspace; presence state, cooldowns, and delivery targets remain partitioned by workspace.
+
+### Reaction triggers
+
+`channels.slack.reactionTriggers` maps an emoji name (without colons) to a trusted, operator-written prompt. When an allowed request user adds that reaction to any message in a channel the bot is in (not only the bot's own messages), OpenClaw starts one isolated agent turn in the reacted message's thread and posts the reply there. It is off by default: nothing fires until a trigger is configured.
+
+```json5
+{
+  channels: {
+    slack: {
+      reactionTriggers: {
+        inbox_tray: {
+          prompt: "File this message's attachments into the project's data room, then reply with where each file went.",
+          // Optional; defaults to the channel's requestUsers.
+          requestUsers: ["U0123456789"],
+        },
+      },
+    },
+  },
+}
+```
+
+- OpenClaw appends the message's channel, `ts`, thread `ts`, file ids and permalink to the prompt. The reacted message's text is not included; the agent reads the message and its files with its normal tools.
+- Only users listed in the trigger's `requestUsers`, or in the channel's `requestUsers`, can fire it. With neither list set, the trigger is ignored in that channel. The reactor must also pass the channel's normal sender policy (`channels.<id>.users`), and the channel must be allowed. Triggers never fire in direct messages or for the bot's own reactions.
+- Each message and emoji runs at most once per day per account while the gateway is running, so reconnect replays, skin-tone variants and a second reactor do not start another run.
+- Triggers work regardless of `reactionNotifications`; that setting only controls the passive reaction system events. The bot needs `reactions:read` and the `reaction_added` event subscription, plus `channels:history` (and `groups:history` for private channels) to read the reacted message.
+- Account entries at `channels.slack.accounts.<id>.reactionTriggers` replace the channel-wide map for that account.

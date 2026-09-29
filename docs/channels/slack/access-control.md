@@ -49,7 +49,7 @@ Available action groups in current Slack tooling:
 | memberInfo | enabled |
 | emojiList  | enabled |
 
-Current Slack message actions include `send`, `conversation-open`, `upload-file`, `download-file`, `read`, `edit`, `delete`, `pin`, `unpin`, `list-pins`, `member-info`, and `emoji-list`. `download-file` accepts Slack file IDs shown in inbound file placeholders and returns image previews for images or local file metadata for other file types.
+Current Slack message actions include `send`, `thread-reply`, `conversation-open`, `upload-file`, `download-file`, `read`, `edit`, `delete`, `pin`, `unpin`, `list-pins`, `member-info`, and `emoji-list`. `download-file` accepts Slack file IDs shown in inbound file placeholders and stages Slack's original upload; images also get an inline preview, which may be resized (pass `original: true` to skip it). `read` and `download-file` accept a pasted Slack `permalink`: a conversation outside the read policy is readable only when the requester is a member of it and the Slack app can see it. `member-info` is limited to the current requester unless the account sets `memberInfoScope: "workspace"`. `search` is not available for Slack because `search.messages` needs a user token.
 
 Interactive message actions retain their caller authority through target and permission lookups and recheck it before each Slack request. If that authority closes, remaining requests stop while an already accepted mutation keeps its result.
 
@@ -205,6 +205,7 @@ restart the Slack monitor. The Gateway remains running.
     - `ignoreOtherMentions`
     - `replyToMode` (`off|first|all|batched`; overrides account/chat-type reply mode for this channel)
     - `users` (allowlist)
+    - `requestUsers` (optional requester allowlist within admitted `users`)
     - `allowBots`
     - `skills`
     - `systemPrompt`
@@ -245,6 +246,24 @@ restart the Slack monitor. The Gateway remains running.
 
     `allowBots` controls incoming turns, not context visibility. A human request can still include accessible bot-authored room history and thread context when `allowBots: false`; the configured `contextVisibility` and sender allowlist rules still apply.
 
+    `requestUsers` separates collaboration from request authority. When omitted, admitted channel users keep normal behavior. When configured, only listed stable Slack user IDs (or `"*"`) may create user requests, run slash commands, or use interactive action surfaces. Other users still admitted by `users` contribute `room_event` context, even when they mention the bot or send control/abort text. An empty list makes every admitted user context-only. This setting is restrictive only: it never admits a sender excluded by `users` or the surrounding channel policy.
+
+    When someone explicitly mentions the bot where it will not act, OpenClaw tells them once, with a Slack ephemeral message only they can see: when the channel is not in the channel allowlist (with `groupPolicy: "allowlist"`), when the sender is not in the channel's `users`, and when a context-only sender outside `requestUsers` mentions it outside a delegated thread. Each account sends at most one notice per user and channel per hour, and sends nothing if Slack rejects the ephemeral message. Every such mention is also logged as `Unanswered mention ... reason=<channel-not-allowed|sender-not-allowed|not-a-request-user>` for alerting. Admitted explicit mentions that still have no delivered reply after `alertAfterMinutes` are logged the same way with `reason=no-reply-after-<N>m`.
+
+    ```json5
+    {
+      channels: {
+        slack: {
+          unansweredMentions: {
+            notice: true, // default
+            contact: "Ask Alex (@alex) for access.", // replaces the generic "Ask the OpenClaw owner" line
+            alertAfterMinutes: 10, // default; 0 disables the no-reply log
+          },
+        },
+      },
+    }
+    ```
+
     Accepted bot-authored Slack messages use shared [bot loop protection](/channels/bot-loop-protection). Configure `channels.defaults.botLoopProtection` for the default budget, then override with `channels.slack.botLoopProtection` or `channels.slack.channels.<id>.botLoopProtection` when a workspace or channel needs a different limit.
 
   </Tab>
@@ -275,3 +294,13 @@ To bring the app into a group DM, use one of these Slack-supported paths:
 Provide 1-8 distinct member IDs, excluding the calling account. One recipient opens a 1:1 DM (requiring `im:write`); multiple recipients open or reuse a group DM with that exact audience. The result contains `channelId` and a routable `target`. Send the message with `action: "send"` and that exact `target`.
 
 Use `accountId` to select a configured Slack account and `teamId` for an explicit workspace. The current workspace is inherited only for the same originating account; detached Enterprise operations require `teamId`. Opening is controlled by the `messages` action gate. It does not change DM/read policy, grant history access, or send a message by itself.
+
+### Payment-detail warning
+
+Vendor bank and wire details pasted into a channel are a common payment-fraud vector. With `channels.slack.paymentDetailWarning: true` (default `false`), OpenClaw screens every human message in an allowed channel or private channel, whether or not it mentions the bot, and replies once in its thread asking people not to share payment instructions in Slack and to use the verified payment-instructions process instead.
+
+- Detection is deterministic; no model runs, and the warning never quotes the numbers it found.
+- It fires on any of: a 9-digit number with a valid ABA checksum near "routing", "ABA" or "RTN"; a 6 to 17 digit number near "account", "acct" or "a/c" in a message that also mentions banking (bank, wire, ACH, routing, checking, savings, beneficiary, SWIFT, IBAN); an IBAN with a valid check digit; or a SWIFT/BIC code near "SWIFT" or "BIC".
+- Message text, attachment text, and file titles and previews are screened; image contents are not.
+- Each message gets at most one warning, even when several OpenClaw Slack accounts share the channel. Direct messages, bot messages and edits are not screened.
+- Account entries at `channels.slack.accounts.<id>.paymentDetailWarning` override the channel-wide value.

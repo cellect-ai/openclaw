@@ -99,6 +99,7 @@ const declaredDependencies = {
   msteams: ["@microsoft/teams.apps"],
   whatsapp: ["audio-decode", "baileys"],
 };
+const sharedDistRequire = createRequire("/app/dist/shared-plugin-runtime-probe.mjs");
 for (const [pluginId, dependencies] of Object.entries(declaredDependencies)) {
   const packageJson = readJson(`/app/dist/extensions/${pluginId}/package.json`);
   const require = createRequire(`/app/dist/extensions/${pluginId}/package.json`);
@@ -107,7 +108,10 @@ for (const [pluginId, dependencies] of Object.entries(declaredDependencies)) {
       typeof packageJson.dependencies?.[dependency] === "string",
       `${pluginId} package metadata omitted ${dependency}`,
     );
-    assertFile(require.resolve(dependency));
+    const pluginResolved = require.resolve(dependency);
+    const sharedDistResolved = sharedDistRequire.resolve(dependency);
+    assertFile(pluginResolved);
+    assertFile(sharedDistResolved);
   }
 }
 

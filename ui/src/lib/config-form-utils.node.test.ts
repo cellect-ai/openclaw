@@ -77,6 +77,13 @@ describe("hintForPath", () => {
 });
 
 describe("sanitizeRedactedFormForSubmit", () => {
+  it("preserves newly authored empty entries alongside existing provider configuration", () => {
+    const original = { talk: { realtime: { providers: { litellm: { model: "test-model" } } } } };
+    const form = {
+      talk: { realtime: { providers: { ...original.talk.realtime.providers, xai: {} } } },
+    };
+    expect(sanitizeRedactedFormForSubmit(form, original, original)).toEqual(form);
+  });
   it("drops loaded redacted placeholders for paths missing from original raw config", () => {
     const form = {
       gateway: {

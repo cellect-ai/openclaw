@@ -94,6 +94,21 @@ function resolvePluginRouteOwner(
   }
 }
 
+/** Resolves the server-loaded channel plugin's current owner for an exact conversation address. */
+export function resolveLoadedPluginConversationRouteOwner(params: {
+  config: OpenClawConfig;
+  conversation: ConversationRouteCandidate;
+}): { agentId?: string } | { unavailable: true } | undefined {
+  const owner = resolvePluginRouteOwner(params.config, params.conversation);
+  if (!owner) {
+    return undefined;
+  }
+  if (owner.kind === "unavailable") {
+    return { unavailable: true };
+  }
+  return { agentId: owner.agentId };
+}
+
 function resolveConfiguredRouteOwner(
   config: OpenClawConfig,
   conversation: ConversationRouteCandidate,

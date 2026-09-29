@@ -1,4 +1,9 @@
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
+import {
+  preparedReplyPublication,
+  copyReplyPublication,
+  type ReplyPublication,
+} from "../../auto-reply/reply-publication.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type {
   OutboundPayloadDeliveryOutcome,
@@ -15,6 +20,7 @@ type PreparedOutboundAcceptedEntry = {
   replyHookChanged: boolean;
   messageHookChanged: boolean;
   preparedMediaCount: number;
+  publication?: ReplyPublication;
 };
 
 type PreparedOutboundSuppressedEntry = {
@@ -103,6 +109,11 @@ export function projectPreparedOutboundBatchForStorage(
   return {
     ...batch,
     entries: batch.entries.map((entry) => {
+      if (entry.status === "accepted") {
+        const publication = preparedReplyPublication(entry.payload);
+        const { publication: _claimed, ...accepted } = entry;
+        return { ...accepted, ...(publication ? { publication } : {}) };
+      }
       if (entry.status !== "suppressed" || !entry.hookEffect) {
         return entry;
       }
@@ -127,6 +138,7 @@ export function mapPreparedOutboundAcceptedPayloads(
       if (!payload) {
         throw new Error("Prepared outbound payload map lost an accepted entry");
       }
+      copyReplyPublication(entry.payload, payload);
       return { ...entry, payload };
     }),
   };

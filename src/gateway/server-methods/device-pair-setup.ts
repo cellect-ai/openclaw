@@ -14,10 +14,12 @@ import {
   resolvePairingSetupFromConfig,
 } from "../../pairing/setup-code.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import {
   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
   VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+  WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
 } from "../../shared/device-bootstrap-profile.js";
 import { isLoopbackHost } from "../net.js";
 import { respondUnavailableOnThrow } from "./response.js";
@@ -73,8 +75,30 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
         );
         return;
       }
+      if (params.allowedAgentIds !== undefined && params.bootstrapProfile !== "webchat") {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "allowedAgentIds requires bootstrapProfile=webchat.",
+          ),
+        );
+        return;
+      }
+      if (params.bootstrapProfile === "webchat" && !params.allowedAgentIds) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.INVALID_REQUEST, "webchat bootstrap requires allowedAgentIds."),
+        );
+        return;
+      }
       const config = context.getRuntimeConfig();
       const requestPublicUrl = params.publicUrl;
+      const allowedAgentIds = params.allowedAgentIds
+        ? [...new Set(params.allowedAgentIds.map((id) => normalizeAgentId(id)))].toSorted()
+        : undefined;
       const resolved = await resolvePairingSetupFromConfig(config, {
         env: process.env,
         publicUrl: requestPublicUrl,
@@ -88,7 +112,12 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
                   ? NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE
                   : params.bootstrapProfile === "voice-node"
                     ? VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE
-                    : PAIRING_SETUP_BOOTSTRAP_PROFILE,
+                    : params.bootstrapProfile === "webchat"
+                      ? {
+                          ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+                          allowedAgentIds,
+                        }
+                      : PAIRING_SETUP_BOOTSTRAP_PROFILE,
             }
           : {}),
         // Lets Tailscale serve/funnel URLs resolve, mirroring the `openclaw qr` CLI.

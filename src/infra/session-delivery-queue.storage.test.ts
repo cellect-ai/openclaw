@@ -97,6 +97,34 @@ describe("session-delivery queue storage", () => {
     });
   });
 
+  it("persists a delayed completion fallback with its original session binding", async () => {
+    await withSessionDeliveryQueue(async (_stateDir, queueContext) => {
+      const queued = await enqueueClaimedSessionDelivery(
+        {
+          kind: "completionFallback",
+          sessionKey: "agent:cellect-fi-admin:device:abc",
+          sessionId: "session-1",
+          runId: "run-1",
+          agentId: "cellect-fi-admin",
+          route: { channel: "slack", to: "user:U123", accountId: "fi-admin" },
+          text: "The answer",
+          ownerDeviceId: "device-abc",
+          idempotencyKey: "webchat-completion:agent:cellect-fi-admin:device:abc:run-1",
+        },
+        60_000,
+        queueContext,
+      );
+
+      expect(await loadPendingSessionDelivery(queued.id, queueContext)).toMatchObject({
+        kind: "completionFallback",
+        sessionKey: "agent:cellect-fi-admin:device:abc",
+        runId: "run-1",
+        route: { channel: "slack", to: "user:U123", accountId: "fi-admin" },
+        availableAt: expect.any(Number),
+      });
+    });
+  });
+
   it("reports a dead-letter conflict instead of claiming it as pending", async () => {
     await withSessionDeliveryQueue(async (_stateDir, queueContext) => {
       const payload = {

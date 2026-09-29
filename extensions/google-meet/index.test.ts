@@ -3444,6 +3444,268 @@ describe("google-meet plugin", () => {
     ).toThrow("Unsupported telephony TTS output format");
   });
 
+  it("pipes Chrome command-pair audio through the realtime provider", async () => {
+    const { bridge, provider, requireRequest, sendAudio } = createTestMeetVoiceProvider({
+      defaultModel: "gpt-realtime-2",
+      handleBargeIn: vi.fn(),
+      triggerGreeting: vi.fn(),
+    });
+    const inputStdout = new PassThrough();
+    const outputStdinWrites: Buffer[] = [];
+    const replacementOutputStdinWrites: Buffer[] = [];
+    const outputStdin = new Writable({
+      write(chunk, _encoding, done) {
+        outputStdinWrites.push(Buffer.from(chunk));
+        done();
+      },
+    });
+    const replacementOutputStdin = new Writable({
+      write(chunk, _encoding, done) {
+        replacementOutputStdinWrites.push(Buffer.from(chunk));
+        done();
+      },
+    });
+    const inputProcess = testBridgeProcess({ stdout: inputStdout, stdin: null });
+    const outputProcess = testBridgeProcess({ stdin: outputStdin, stdout: null });
+    const replacementOutputProcess = testBridgeProcess({
+      stdin: replacementOutputStdin,
+      stdout: null,
+    });
+    const spawnMock = vi
+      .fn()
+      .mockReturnValueOnce(outputProcess)
+      .mockReturnValueOnce(inputProcess)
+      .mockReturnValueOnce(replacementOutputProcess);
+    const fullConfig = { models: { providers: {} } } as never;
+    const sessionStore: Record<string, unknown> = {};
+    const runtime = {
+      agent: {
+        resolveAgentDir: vi.fn(() => "/tmp/agent"),
+        resolveAgentWorkspaceDir: vi.fn(() => "/tmp/workspace"),
+        ensureAgentWorkspace: vi.fn(async () => {}),
+        session: createMockSessionRuntime(sessionStore),
+        runEmbeddedAgent: vi.fn(async (_request: unknown) => ({
+          payloads: [{ text: "Use the Portugal launch data." }],
+          meta: {},
+        })),
+        resolveAgentTimeoutMs: vi.fn(() => 1000),
+      },
+    };
+
+    const handle = await startTestLocalRealtimeAudioBridge({
+      config: resolveGoogleMeetConfig({
+        realtime: { strategy: "bidi", provider: "openai", model: "gpt-realtime", agentId: "jay" },
+      }),
+      fullConfig,
+      runtime: runtime as never,
+      meetingSessionId: "meet-1",
+      inputCommand: ["capture-meet"],
+      outputCommand: ["play-meet"],
+      logger: noopLogger,
+      providers: [provider],
+      spawn: spawnMock,
+    });
+    const callbacks = requireRequest();
+
+    expect(noopLogger.info).toHaveBeenCalledWith(
+      "[google-meet] realtime voice bridge starting: strategy=bidi provider=openai model=gpt-realtime audioFormat=pcm16-24khz",
+    );
+    expect(callbacks.cfg).toBe(fullConfig);
+    inputStdout.write(Buffer.from([1, 2, 3]));
+    callbacks.onAudio(Buffer.from([4, 5]));
+    await vi.waitFor(() => {
+      expect(outputStdinWrites).toEqual([Buffer.from([4, 5])]);
+    });
+    callbacks.onMark?.("mark-1");
+    callbacks.onClearAudio();
+    await vi.waitFor(() => {
+      expect(outputProcess.kill).toHaveBeenCalledWith("SIGKILL");
+    });
+    callbacks.onReady?.();
+    callbacks.onTranscript?.("assistant", "How can I help you?", true);
+    callbacks.onTranscript?.("user", "Please summarize the launch.", true);
+    callbacks.onEvent?.({ direction: "client", type: "response.create" });
+    callbacks.onEvent?.({
+      direction: "server",
+      type: "response.done",
+      detail: "status=completed",
+    });
+    callbacks.onAudio(Buffer.from([6, 7]));
+    callbacks.onToolCall?.({
+      itemId: "item-1",
+      callId: "tool-call-1",
+      name: "openclaw_agent_consult",
+      args: { question: "What should I say about launch timing?" },
+    });
+    expect(bridge.submitToolResult).toHaveBeenCalled();
+    const firstToolResultCall = mockCall(bridge.submitToolResult);
+    expect(firstToolResultCall[0]).toBe("tool-call-1");
+    expect(firstToolResultCall[2]).toStrictEqual({ willContinue: true });
+    const progressPayload = requireRecord(firstToolResultCall[1], "tool progress payload");
+    expect(progressPayload.status).toBe("working");
+    expect(progressPayload.tool).toBe("openclaw_agent_consult");
+
+    expect(spawnMock).toHaveBeenNthCalledWith(1, "play-meet", [], {
+      stdio: ["pipe", "ignore", "pipe"],
+    });
+    expect(spawnMock).toHaveBeenNthCalledWith(2, "capture-meet", [], {
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    expect(sendAudio).toHaveBeenCalledWith(Buffer.from([1, 2, 3]));
+    await vi.waitFor(() => {
+      expect(replacementOutputStdinWrites).toEqual([Buffer.from([6, 7])]);
+    });
+    outputProcess.emit("error", new Error("stale output process failed after clear"));
+    outputStdin.emit("error", new Error("stale output pipe closed after clear"));
+    outputProcess.stderr.emit("error", new Error("stale output stderr closed after clear"));
+    expect(bridge.close).not.toHaveBeenCalled();
+    expect(bridge.acknowledgeMark).toHaveBeenCalled();
+    expect(bridge.triggerGreeting).not.toHaveBeenCalled();
+    handle.speak("Say exactly: hello from the meeting.");
+    expect(bridge.triggerGreeting).toHaveBeenLastCalledWith("Say exactly: hello from the meeting.");
+    const health = handle.getHealth();
+    expect(health.providerConnected).toBe(true);
+    expect(health.realtimeReady).toBe(true);
+    expect(health.audioInputActive).toBe(true);
+    expect(health.audioOutputActive).toBe(true);
+    expect(health.lastInputBytes).toBe(3);
+    expect(health.lastOutputBytes).toBe(4);
+    expect(health.realtimeTranscriptLines).toBe(2);
+    expect(health.lastRealtimeTranscriptRole).toBe("user");
+    expect(health.lastRealtimeTranscriptText).toBe("Please summarize the launch.");
+    expect(health.lastRealtimeEventType).toBe("server:response.done");
+    expect(health.lastRealtimeEventDetail).toBe("status=completed");
+    expect(health.clearCount).toBe(1);
+    expect(health.recentRealtimeTranscript).toHaveLength(2);
+    expect(health.recentRealtimeTranscript?.[0]?.role).toBe("assistant");
+    expect(health.recentRealtimeTranscript?.[0]?.text).toBe("How can I help you?");
+    expect(health.recentRealtimeTranscript?.[1]?.role).toBe("user");
+    expect(health.recentRealtimeTranscript?.[1]?.text).toBe("Please summarize the launch.");
+    expect(health.recentRealtimeEvents).toHaveLength(2);
+    expect(health.recentRealtimeEvents?.[0]?.direction).toBe("client");
+    expect(health.recentRealtimeEvents?.[0]?.type).toBe("response.create");
+    expect(health.recentRealtimeEvents?.[1]?.direction).toBe("server");
+    expect(health.recentRealtimeEvents?.[1]?.type).toBe("response.done");
+    expect(health.recentRealtimeEvents?.[1]?.detail).toBe("status=completed");
+    expect(callbacks.audioFormat).toStrictEqual({
+      encoding: "pcm16",
+      sampleRateHz: 24000,
+      channels: 1,
+    });
+    expect(callbacks.autoRespondToAudio).toBe(true);
+    expect(callbacks.tools?.map((tool) => tool.name)).toContain("openclaw_agent_consult");
+    await vi.waitFor(() => {
+      expect(bridge.submitToolResult).toHaveBeenLastCalledWith(
+        "tool-call-1",
+        {
+          text: "Use the Portugal launch data.",
+        },
+        undefined,
+      );
+    });
+    const talkEventTypes = handle.getHealth().recentTalkEvents?.map((event) => event.type) ?? [];
+    for (const type of [
+      "session.started",
+      "session.ready",
+      "input.audio.delta",
+      "output.audio.delta",
+      "output.audio.done",
+      "transcript.done",
+      "output.text.done",
+      "tool.call",
+      "tool.progress",
+      "tool.result",
+      "turn.ended",
+    ]) {
+      expect(talkEventTypes).toContain(type);
+    }
+    expect(runtime.agent.runEmbeddedAgent).toHaveBeenCalledTimes(1);
+    const agentRequest = requireRecord(
+      mockCallArg(runtime.agent.runEmbeddedAgent, 0),
+      "embedded agent request",
+    );
+    expect(agentRequest.messageProvider).toBe("google-meet");
+    expect(agentRequest.agentId).toBe("jay");
+    expect(agentRequest.spawnedBy).toBe("agent:jay:main");
+    expect(agentRequest.sessionKey).toBe("agent:jay:subagent:google-meet:meet-1");
+    expect(agentRequest.sandboxSessionKey).toBe("agent:jay:subagent:google-meet:meet-1");
+    expect(agentRequest.thinkLevel).toBe("high");
+    expect(agentRequest.toolsAllow).toStrictEqual([
+      "read",
+      "fi_user_api",
+      "sessions_history",
+      "sessions_search",
+      "tavily_search",
+      "tavily_extract",
+      "web_search",
+      "web_fetch",
+      "x_search",
+      "memory_search",
+      "memory_get",
+    ]);
+    expect(sessionStore).toHaveProperty("agent:jay:subagent:google-meet:meet-1");
+
+    await handle.stop();
+    expect(bridge.close).toHaveBeenCalled();
+    expect(inputProcess.kill).toHaveBeenCalledWith("SIGTERM");
+    expect(replacementOutputProcess.kill).toHaveBeenCalledWith("SIGTERM");
+  });
+
+  it("stops the Chrome realtime audio bridge when child stdout errors", async () => {
+    const providerClosed = createDeferred<void>();
+    const { bridge, provider, requireRequest } = createTestMeetVoiceProvider({
+      handleBargeIn: vi.fn(),
+      triggerGreeting: vi.fn(),
+    });
+    bridge.close.mockReturnValue(providerClosed.promise);
+    const inputStdout = new PassThrough();
+    const outputProcess = testBridgeProcess({
+      stdin: new Writable({
+        write(_chunk, _encoding, done) {
+          done();
+        },
+      }),
+      stdout: null,
+    });
+    const inputProcess = testBridgeProcess({ stdin: null, stdout: inputStdout });
+    const spawnMock = vi.fn().mockReturnValueOnce(outputProcess).mockReturnValueOnce(inputProcess);
+
+    const handle = await startTestLocalRealtimeAudioBridge({
+      config: resolveGoogleMeetConfig({
+        realtime: { strategy: "bidi", provider: "openai", model: "gpt-realtime" },
+      }),
+      fullConfig: { models: { providers: {} } } as never,
+      runtime: {} as never,
+      meetingSessionId: "meet-1",
+      inputCommand: ["capture-meet"],
+      outputCommand: ["play-meet"],
+      logger: noopLogger,
+      providers: [provider],
+      spawn: spawnMock,
+    });
+
+    try {
+      expect(() => inputStdout.emit("error", new Error("EPIPE"))).not.toThrow();
+      expect(noopLogger.warn).toHaveBeenCalledWith(
+        "[google-meet] audio input command stdout failed: EPIPE",
+      );
+      expect(inputProcess.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+      expect(outputProcess.kill).toHaveBeenCalledExactlyOnceWith("SIGTERM");
+      expect(handle.getHealth().bridgeClosed).toBe(false);
+      inputStdout.emit("data", Buffer.from([1, 2]));
+      expect(bridge.sendAudio).not.toHaveBeenCalled();
+      await Promise.resolve();
+      expect(bridge.close).toHaveBeenCalledOnce();
+      requireRequest().onTranscript?.("assistant", "Final received words.", true);
+      expect(handle.getHealth().lastRealtimeTranscriptText).toBe("Final received words.");
+      expect(handle.getHealth().bridgeClosed).toBe(false);
+    } finally {
+      providerClosed.resolve();
+      await handle.stop();
+    }
+    expect(handle.getHealth().bridgeClosed).toBe(true);
+  });
+
   it("defaults Chrome command-pair realtime to agent-driven talk-back", async () => {
     vi.useFakeTimers();
     try {

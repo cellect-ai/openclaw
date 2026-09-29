@@ -4,13 +4,17 @@ import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import {
   loadDeliveryQueueEntryInDatabase,
   type DeliveryQueueReadMode,
+  type UpsertDeliveryQueueEntryParams,
 } from "./delivery-queue-sqlite-bound.js";
 import {
+  completeDeliveryQueueEntryInDatabase,
   countPendingDeliveryQueueEntriesInDatabase,
   getDeliveryQueueEntryOwnersInDatabase,
   loadDeliveryQueueEntriesInDatabase,
   prepareDeliveryQueueTerminalEntry,
   terminalizePendingDeliveryQueueEntryInDatabase,
+  updateDeliveryQueueEntryInDatabase,
+  upsertDeliveryQueueEntryInDatabase,
   type DeliveryQueueStoredStatus,
   type TerminalizePendingDeliveryQueueEntryParams,
   type TerminalizePendingDeliveryQueueEntryResult,
@@ -74,6 +78,77 @@ export function loadDeliveryQueueEntries(
   context?: DeliveryQueueStateContext,
 ): DeliveryQueueEntryState[] {
   return loadDeliveryQueueEntriesInDatabase(openStateDatabase(stateDir, context), queueName, mode);
+}
+
+/** Insert or replace one queue-owned entry (conversation lifecycle custody). */
+export function upsertDeliveryQueueEntry(
+  params: UpsertDeliveryQueueEntryParams,
+  context?: DeliveryQueueStateContext,
+): boolean {
+  const { stateDir, ...entryParams } = params;
+  return upsertDeliveryQueueEntryInDatabase(entryParams, openStateDatabase(stateDir, context));
+}
+
+/** Complete a pending entry, honoring its declared completion retention. */
+export function completeDeliveryQueueEntry(
+  queueName: string,
+  id: string,
+  stateDir?: string,
+  completionReceipt?: Readonly<{ platformMessageId: string }>,
+  context?: DeliveryQueueStateContext,
+): void {
+  completeDeliveryQueueEntryInDatabase(
+    openStateDatabase(stateDir, context),
+    queueName,
+    id,
+    completionReceipt,
+  );
+}
+
+/** Delete a pending delivery queue entry after successful delivery. */
+export function deleteDeliveryQueueEntry(
+  queueName: string,
+  id: string,
+  stateDir?: string,
+  context?: DeliveryQueueStateContext,
+): void {
+  deleteDeliveryQueueEntryInDatabase(openStateDatabase(stateDir, context), queueName, id);
+}
+
+/** Load, transform, and persist a pending delivery queue entry. */
+export function updateDeliveryQueueEntry(
+  queueName: string,
+  id: string,
+  stateDir: string | undefined,
+  update: (entry: DeliveryQueueEntryState) => DeliveryQueueEntryState,
+  context?: DeliveryQueueStateContext,
+): void {
+  updateDeliveryQueueEntryInDatabase(openStateDatabase(stateDir, context), queueName, id, update);
+}
+
+/** Atomically reserve one provider-delivery call before executing it. */
+export function reserveDeliveryQueueEntryAttempt(
+  params: {
+    queueName: string;
+    id: string;
+    maxAttempts: number;
+    stateDir?: string;
+    expectedPlatformSendAttemptId?: string;
+  },
+  context?: DeliveryQueueStateContext,
+): ReserveDeliveryQueueAttemptResult {
+  if (!Number.isInteger(params.maxAttempts) || params.maxAttempts <= 0) {
+    throw new Error(`Invalid delivery attempt budget: ${params.maxAttempts}`);
+  }
+  return runOpenClawStateWriteTransaction(
+    (database) => reserveDeliveryQueueEntryAttemptInDatabase(database, params),
+    {
+      env: resolveDeliveryQueueStateEnv(params.stateDir, context),
+    },
+    {
+      operationLabel: `reserve ${params.queueName} delivery attempt`,
+    },
+  );
 }
 
 /** Count dead-lettered entries per queue namespace for coarse health reporting. */

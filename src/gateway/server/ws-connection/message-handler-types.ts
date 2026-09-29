@@ -170,6 +170,8 @@ export type AuthenticatedGatewayConnect = {
 };
 
 export type DeviceAuthorizedGatewayConnect = AuthenticatedGatewayConnect & {
+  /** Client id loaded from the approved device record, never from the current claim. */
+  pairedClientId?: string;
   deviceToken: DeviceAuthToken | null;
   bootstrapDeviceTokens: Array<{
     deviceToken: string;

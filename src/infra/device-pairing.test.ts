@@ -1075,6 +1075,56 @@ describe("device pairing tokens", () => {
     ).resolves.toBeNull();
   });
 
+  test("persists the webchat agent ceiling on the reconnecting operator token", async () => {
+    const baseDir = await makeDevicePairingDir();
+    const profile = {
+      roles: ["operator"],
+      scopes: ["operator.read", "operator.talk", "operator.write"],
+      purpose: "control-ui" as const,
+      allowedAgentIds: ["fi-user"],
+    };
+    const pending = await requestDevicePairing(
+      {
+        deviceId: "webchat-ceiling-device",
+        publicKey: "webchat-ceiling-public-key",
+        role: "operator",
+        scopes: profile.scopes,
+      },
+      baseDir,
+    );
+    await approveBootstrapDevicePairing(pending.request.requestId, profile, baseDir);
+
+    const paired = await getPairedDevice("webchat-ceiling-device", baseDir);
+    expect(paired?.tokens?.operator?.allowedAgentIds).toEqual(["fi-user"]);
+    await expect(
+      ensureDeviceToken({
+        deviceId: "webchat-ceiling-device",
+        role: "operator",
+        scopes: profile.scopes,
+        baseDir,
+      }),
+    ).resolves.toMatchObject({ allowedAgentIds: ["fi-user"] });
+  });
+
+  test("verifies token and rejects mismatches", async () => {
+    const { baseDir, token } = await setupOperatorToken(["operator.read"]);
+
+    const ok = await verifyOperatorToken({
+      baseDir,
+      token,
+      scopes: ["operator.read"],
+    });
+    expect(ok.ok).toBe(true);
+
+    const mismatch = await verifyOperatorToken({
+      baseDir,
+      token: "x".repeat(token.length),
+      scopes: ["operator.read"],
+    });
+    expect(mismatch.ok).toBe(false);
+    expect(mismatch.reason).toBe("token-mismatch");
+  });
+
   test("rejects persisted tokens whose scopes exceed the approved scope baseline", async () => {
     const token = await setupOperatorToken(["operator.read"]);
     await setOperatorScopes(baseDir, ["operator.admin"]);

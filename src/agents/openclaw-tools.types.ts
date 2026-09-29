@@ -4,6 +4,7 @@ import type { ConversationReadInvocationOrigin } from "../channels/plugins/conve
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
 import type { MemoryAudience } from "../plugins/memory-provider-types.js";
+import type { MediaFact } from "../media/media-facts.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
 import type { AgentRunClientContext, AgentRunMessageContext } from "./command/shared-types.js";
@@ -41,6 +42,8 @@ export type OpenClawSharedToolsOptions = {
   nativeChannelId?: string;
   /** Producer-authored bare upload handles mapped to exact sandbox paths. */
   stagedMediaPaths?: ReadonlyMap<string, string>;
+  /** Media attached to the current inbound turn (forwarded to spawned subagents). */
+  currentTurnMedia?: readonly MediaFact[];
   /** Durable store key when it differs from the sandbox/policy session key. */
   runSessionKey?: string;
   /** Ephemeral session UUID — regenerated on /new and /reset. */

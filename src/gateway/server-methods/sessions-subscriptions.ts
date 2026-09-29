@@ -7,12 +7,14 @@ import {
   validateSessionsViewerPresenceSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { canReviewOperatorApproval } from "../operator-approval-authorization.js";
 import { APPROVALS_SCOPE } from "../operator-scopes.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { sessionObserverScopeKey } from "../session-observer-model.js";
 import { resolveRequestedSessionStoreTarget } from "../session-store-key.js";
 import { resolveSessionSubscriptionKey } from "../session-subscription-keys.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { canAccessApprovalSession } from "./approval-record-lookup.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
 import { retainSessionScopedRead } from "./session-scoped-read.js";
@@ -127,6 +129,23 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         return;
       }
       const { agentId: requestedAgentId, sessionKey: canonicalKey } = requestedAgent.value;
+      if (
+        !isWebchatSessionAllowed({ cfg, client, sessionKey: canonicalKey }) ||
+        isUnauthorizedRawMatrixBrowserSession({
+          cfg,
+          clientInfo: client?.connect?.client,
+          pairedClientId: client?.pairedClientId,
+          sessionKey: canonicalKey,
+          authorizedByBinding: false,
+        })
+      ) {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.FORBIDDEN, "Matrix conversation access requires the owning app"),
+        );
+        return;
+      }
       const subscriptionKey = resolveSessionSubscriptionKey(canonicalKey, requestedAgentId);
       let read: ReturnType<typeof retainSessionScopedRead>;
       let prepared: PreparedSessionApprovalReplay | undefined;

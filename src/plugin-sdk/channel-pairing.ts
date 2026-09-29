@@ -8,6 +8,10 @@ export {
   createTextPairingAdapter,
 } from "../channels/plugins/pairing-adapters.js";
 export {
+  PAIRING_REPLY_INTERVAL_MS,
+  resetPairingReplyThrottle,
+} from "../pairing/pairing-challenge.js";
+export {
   readChannelAllowFromStore,
   readChannelAllowFromStoreSync,
 } from "../pairing/pairing-store.js";

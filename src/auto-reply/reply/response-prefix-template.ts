@@ -12,10 +12,14 @@ export type ResponsePrefixContext = {
   thinkingLevel?: string;
   /** Agent identity name */
   identityName?: string;
+  /** Channel-native mention for the inbound sender (for example, `<@U123>` on Slack). */
+  senderMention?: string;
 };
 
 // Regex pattern for template variables: {variableName} or {variable.name}
 const TEMPLATE_VAR_PATTERN = /\{([a-zA-Z][a-zA-Z0-9.]*)\}/g;
+/** Matches a template variable left in a resolved prefix; such a prefix must not be sent. */
+export const UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN = /\{[a-zA-Z][a-zA-Z0-9.]*\}/;
 
 /** Variable names are case-insensitive; unresolved placeholders remain literal. */
 export function resolveResponsePrefixTemplate(
@@ -42,6 +46,9 @@ export function resolveResponsePrefixTemplate(
       case "identity.name":
       case "identityname":
         return context.identityName ?? match;
+      case "sender.mention":
+      case "sendermention":
+        return context.senderMention ?? match;
       default:
         return match;
     }

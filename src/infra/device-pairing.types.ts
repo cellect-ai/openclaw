@@ -34,6 +34,8 @@ export type DeviceAuthToken = {
   token: string;
   role: string;
   scopes: string[];
+  /** Server-attested ceiling for webchat devices; absent for unrestricted legacy devices. */
+  allowedAgentIds?: string[];
   issuer?: {
     kind: "shared-gateway-auth";
     generation: string;

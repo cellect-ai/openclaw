@@ -3,6 +3,7 @@ export type AckDeliveryOptions = {
   retainSpoolArtifacts?: boolean;
   /** An intentionally suppressed pre-send batch must not become a success receipt. */
   suppressCompletionReceipt?: boolean;
+  completionReceipt?: Readonly<{ platformMessageId: string }>;
   /** Prevent an older provider attempt from settling a replacement owner. */
   expectedPlatformSendAttemptId?: string | null;
 };

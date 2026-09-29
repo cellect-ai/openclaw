@@ -20,7 +20,7 @@ import {
   resolveConversationAccessAllowed,
   resolvePromptInjectionAllowed,
 } from "./hook-policy-decisions.js";
-import { getPluginInstance } from "./plugin-instance-scope.js";
+import { getPluginInstance, wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
 import {
   resolveTypedHookTimeoutMs,
   type PluginRegistryState,
@@ -435,7 +435,10 @@ export function createToolHookRegistrars(state: PluginRegistryState) {
       pluginId: record.id,
       ...(opts?.registrationId ? { registrationId: opts.registrationId } : {}),
       hookName,
-      handler,
+      // Typed hooks are invoked later by host-owned lifecycle paths. Retain the
+      // exact plugin instance so named runtime stores and replacement fencing
+      // still work outside the registration call's AsyncLocalStorage scope.
+      handler: wrapCurrentPluginInstance(handler),
       ...(matcher ? { matcher } : {}),
       priority: opts?.priority,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),

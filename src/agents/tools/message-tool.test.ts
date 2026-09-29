@@ -1541,6 +1541,117 @@ describe("message tool secret scoping", () => {
     expect(Array.from(secretResolveCall.targetIds ?? [])).toEqual(["channels.slack.botToken"]);
   });
 
+  it("carries session-key thread suffixes into inferred channel context", async () => {
+    mockSendResult({ channel: "slack", to: "channel:c1" });
+
+    const input = await executeSend({
+      action: { message: "hi" },
+      toolOptions: {
+        config: {
+          channels: {
+            slack: {
+              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            },
+          },
+        } as never,
+        sourceReplyDeliveryMode: "message_tool_only",
+        currentChannelProvider: "webchat",
+        agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+      },
+    });
+
+    expect(input?.toolContext?.currentChannelProvider).toBe("slack");
+    expect(input?.toolContext?.currentChannelId).toBe("c1");
+    expect(input?.toolContext?.currentThreadTs).toBe("1710000000.9999");
+    expect(input?.toolContext?.replyToMode).toBe("all");
+  });
+
+  it("defaults to the session's channel route when the host passes no current channel", async () => {
+    mockSendResult({ channel: "slack", to: "channel:c1" });
+
+    const input = await executeSend({
+      action: { message: "hi" },
+      toolOptions: {
+        config: {
+          channels: {
+            slack: {
+              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            },
+          },
+        } as never,
+        agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+      },
+    });
+
+    expect(input?.toolContext?.currentChannelProvider).toBe("slack");
+    expect(input?.toolContext?.currentChannelId).toBe("c1");
+    expect(input?.toolContext?.currentThreadTs).toBe("1710000000.9999");
+  });
+
+  it("keeps an explicit current channel instead of the session route", async () => {
+    mockSendResult({ channel: "slack", to: "channel:c9" });
+
+    const input = await executeSend({
+      action: { message: "hi" },
+      toolOptions: {
+        config: {
+          channels: {
+            slack: {
+              botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+            },
+          },
+        } as never,
+        currentChannelProvider: "slack",
+        currentChannelId: "c9",
+        agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+      },
+    });
+
+    expect(input?.toolContext?.currentChannelId).toBe("c9");
+  });
+
+  it("scopes command-time secret resolution to the selected channel/account", async () => {
+    mockSendResult({ channel: "discord", to: "discord:123" });
+    mocks.getRuntimeConfig.mockReturnValue({
+      channels: {
+        discord: {
+          token: { source: "env", provider: "default", id: "DISCORD_TOKEN" },
+          accounts: {
+            ops: { token: { source: "env", provider: "default", id: "DISCORD_OPS_TOKEN" } },
+            chat: { token: { source: "env", provider: "default", id: "DISCORD_CHAT_TOKEN" } },
+          },
+        },
+        slack: {
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+        },
+      },
+    });
+
+    const tool = createMessageTool({
+      currentChannelProvider: "discord",
+      agentAccountId: "ops",
+      getRuntimeConfig: mocks.getRuntimeConfig as never,
+      getScopedChannelsCommandSecretTargets: mocks.getScopedChannelsCommandSecretTargets as never,
+      resolveCommandSecretRefsViaGateway: mocks.resolveCommandSecretRefsViaGateway as never,
+      runMessageAction: mocks.runMessageAction as never,
+    });
+
+    await tool.execute("1", {
+      action: "send",
+      target: "channel:123",
+      message: "hi",
+    });
+
+    const secretResolveCall = latestSecretResolveCall();
+    expect(secretResolveCall.targetIds).toBeInstanceOf(Set);
+    expect(
+      [...(secretResolveCall.targetIds ?? [])].every((id) => id.startsWith("channels.discord.")),
+    ).toBe(true);
+    expect(secretResolveCall.allowedPaths).toEqual(
+      new Set(["channels.discord.token", "channels.discord.accounts.ops.token"]),
+    );
+  });
+
   it.each([
     { name: "malformed", accountId: "!!!", error: "Invalid account ID" },
     { name: "unknown", accountId: "missing", error: "Unknown account" },

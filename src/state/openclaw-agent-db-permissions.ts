@@ -4,8 +4,8 @@ import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import type { OpenClawAgentDatabaseOptions } from "./openclaw-agent-db-contract.js";
 import { resolveOpenClawAgentSqlitePath } from "./openclaw-agent-db.paths.js";
 
-const OPENCLAW_AGENT_DB_DIR_MODE = 0o700;
-const OPENCLAW_AGENT_DB_FILE_MODE = 0o600;
+const AGENT_DB_DIR_MODE = 0o700;
+const AGENT_DB_FILE_MODE = 0o600;
 
 function ensureMode(target: string, mode: number): void {
   // Recheck each time: modes may drift, but reapplying them also writes filesystem metadata.
@@ -25,14 +25,14 @@ export function ensureOpenClawAgentDatabasePermissions(
   });
   const isDefaultAgentDatabase = path.resolve(pathname) === path.resolve(defaultPath);
   const dirExisted = existsSync(dir);
-  mkdirSync(dir, { recursive: true, mode: OPENCLAW_AGENT_DB_DIR_MODE });
+  mkdirSync(dir, { recursive: true, mode: AGENT_DB_DIR_MODE });
   // Default agent state is private by contract; custom pre-existing dirs keep caller ownership.
   if (isDefaultAgentDatabase || !dirExisted) {
-    ensureMode(dir, OPENCLAW_AGENT_DB_DIR_MODE);
+    ensureMode(dir, AGENT_DB_DIR_MODE);
   }
   for (const candidate of resolveSqliteDatabaseFilePaths(pathname)) {
     try {
-      ensureMode(candidate, OPENCLAW_AGENT_DB_FILE_MODE);
+      ensureMode(candidate, AGENT_DB_FILE_MODE);
     } catch (error) {
       // WAL/SHM/journal sidecars are transient: SQLite removes them at
       // checkpoint/close, so a concurrent worker can race this sweep. A

@@ -25,6 +25,7 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { errorShapeFromError } from "../error-shape.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { registerSerializedJsonArray } from "../serialized-json.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
@@ -52,6 +53,7 @@ import {
   type SessionsPreviewResult,
 } from "../session-utils.js";
 import { withPreparedSessionResolve } from "../sessions-resolve.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { gatewayClientSessionCreator } from "./gateway-client-identity.js";
 import { withSessionListDiagnostics } from "./sessions-list-diagnostics.js";
 import { sessionMaintenanceHandlers } from "./sessions-maintenance.js";
@@ -119,6 +121,20 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         sessionKey: string,
         prepared?: ReturnType<typeof prepareSessionSharingTargets>[number],
       ) => {
+        if (!isWebchatSessionAllowed({ cfg, client, sessionKey })) {
+          return false;
+        }
+        if (
+          isUnauthorizedRawMatrixBrowserSession({
+            cfg,
+            clientInfo: client?.connect?.client,
+            pairedClientId: client?.pairedClientId,
+            sessionKey,
+            authorizedByBinding: false,
+          })
+        ) {
+          return false;
+        }
         if (
           isIncognitoSessionKey(sessionKey) &&
           !canAccessIncognitoSession({ cfg, client: client ?? null, sessionKey, agentId })
@@ -373,6 +389,14 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
             ? createSessionListEntryFilter({ client, cfg: policyConfig })
             : undefined;
           return current?.entry.sessionId &&
+            isWebchatSessionAllowed({ cfg, client, sessionKey: current.key }) &&
+            !isUnauthorizedRawMatrixBrowserSession({
+              cfg,
+              clientInfo: client?.connect?.client,
+              pairedClientId: client?.pairedClientId,
+              sessionKey: current.key,
+              authorizedByBinding: false,
+            }) &&
             visibilityFilter?.(current.key, current.entry) !== false
             ? current
             : undefined;

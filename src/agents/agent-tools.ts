@@ -448,6 +448,8 @@ export function createOpenClawCodingToolsInternal(
             sandboxContainerWorkdir: sandbox?.containerWorkdir,
             sandboxFsBridge,
             sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
+            stagedMediaPaths: options?.stagedMediaPaths,
+            currentTurnMedia: options?.currentTurnMedia,
             sandboxWorkspaceMediaReadAllowed,
             spawnWorkspaceDir: capabilityProfile.workspace.spawnWorkspaceRoot,
             // Sandboxes execute against copied roots, but accepted suggestions create host

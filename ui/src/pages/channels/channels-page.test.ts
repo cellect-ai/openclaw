@@ -56,8 +56,14 @@ function createGateway(): TestGateway {
         ? {
             accounts: [],
             requests: [],
+            history: [],
             commandOwnerConfigured: true,
-            limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+            limits: {
+              pendingPerAccount: 3,
+              historyPerAccount: 25,
+              ttlMs: 7 * 24 * 60 * 60_000,
+              staleAfterMs: 24 * 60 * 60_000,
+            },
           }
         : method === "channels.status"
           ? {
@@ -687,8 +693,14 @@ describe("ChannelsPage lifecycle", () => {
     source.channels.state.pairingSnapshot = {
       accounts: [],
       requests: [],
+      history: [],
       commandOwnerConfigured: true,
-      limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+      limits: {
+        pendingPerAccount: 3,
+        historyPerAccount: 25,
+        ttlMs: 7 * 24 * 60 * 60_000,
+        staleAfterMs: 24 * 60 * 60_000,
+      },
     };
     const refreshPairing = vi.spyOn(source.channels, "refreshPairing").mockResolvedValue();
     const page = document.createElement("openclaw-channels-page") as PairingTestPage;
@@ -742,8 +754,14 @@ describe("ChannelsPage lifecycle", () => {
     source.channels.state.pairingSnapshot = {
       accounts: [],
       requests: [],
+      history: [],
       commandOwnerConfigured: true,
-      limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+      limits: {
+        pendingPerAccount: 3,
+        historyPerAccount: 25,
+        ttlMs: 7 * 24 * 60 * 60_000,
+        staleAfterMs: 24 * 60 * 60_000,
+      },
     };
     Object.assign(source.runtimeConfig.state, {
       configSnapshot: { config, hash: "test", raw: JSON.stringify(config) },

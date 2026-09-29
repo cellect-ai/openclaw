@@ -71,6 +71,8 @@ const REPLAY_SAFE_TOOL_NAMES = new Set([
   "sessions_history",
   "sessions_list",
   "sessions_search",
+  "tavily_search",
+  "tavily_extract",
   "tool_describe",
   "tool_search",
   "web_fetch",
@@ -187,6 +189,7 @@ function tokenizeReadOnlyShellCommands(command: string): string[][] | undefined 
   commands.push(tokens);
   return commands;
 }
+
 
 function isReadOnlySedCommand(tokens: readonly string[]): boolean {
   const args = tokens.slice(1);
@@ -313,6 +316,7 @@ function isReadOnlyShellTokens(tokens: readonly string[]): boolean {
   }
   return false;
 }
+
 
 export function isMutatingToolCall(toolName: string, args: unknown): boolean {
   const normalized = normalizeLowercaseStringOrEmpty(toolName);

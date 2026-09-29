@@ -217,6 +217,7 @@ async function prepareHeartbeatDispatchReply(
     useHeartbeatFailureCopy: prepared.useHeartbeatFailureCopy,
     hasRelayableExecCompletion: prepared.hasRelayableExecCompletion,
     suppressUnmarkedSourceReplies:
+      prepared.usesHeartbeatResponseTool ||
       resolveSourceReplyDeliveryMode({
         cfg,
         ctx: { ChatType: delivery.chatType, Provider: delivery.channel },
@@ -496,7 +497,10 @@ async function prepareHeartbeatDispatchReply(
   // Receipt identity uses the producer answer, not transport prefix decoration.
   policy.publicationSourceText = outcome.replyPayload?.text;
   const deliveryText =
-    !failed && delivery.implicitDefaultRoute && stateEntry?.lastHeartbeatSentAt === undefined
+    !failed &&
+    delivery.implicitDefaultRoute &&
+    stateEntry?.lastHeartbeatSentAt === undefined &&
+    (wakeSource === undefined || wakeSource === "interval")
       ? `${FIRST_HEARTBEAT_ALERT_PREAMBLE}\n${text}`
       : text;
   const payload = copyReplyPayloadMetadata(selected ?? {}, {

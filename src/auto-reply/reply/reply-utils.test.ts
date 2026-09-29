@@ -320,6 +320,11 @@ describe("resolveResponsePrefixTemplate", () => {
     ).toBe("gpt-5.4 openai/gpt-5.4 openai high/high OpenClaw/OpenClaw");
   });
 
+  it("resolves {sender.mention} from senderMention context", () => {
+    expect(resolveResponsePrefixTemplate("{sender.mention}", { senderMention: "<@U123>" })).toBe("<@U123>");
+    expect(resolveResponsePrefixTemplate("{sender.mention}", { senderMention: "" })).toBe("");
+  });
+
   it("preserves unresolved/unknown placeholders and handles static inputs", () => {
     expect(resolveResponsePrefixTemplate("{model}", {})).toBe("{model}");
     for (const [template, expected] of [

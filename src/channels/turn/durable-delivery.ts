@@ -5,11 +5,13 @@ import {
   isReplyPayloadTargetSuppressed,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
+import { isReplyPublicationReceiptRequired } from "../../auto-reply/reply-publication.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isProvenDeliveryNotSentError } from "../../infra/delivery-recovery.shared.js";
 import { normalizeDeliverableOutboundChannel } from "../../infra/outbound/channel-resolution.js";
 import {
+  type DeliverOutboundPayloadsParams,
   type DurableFinalDeliveryRequirement,
   type OutboundDeliveryIntent,
   resolveOutboundDurableFinalDeliverySupport,
@@ -33,10 +35,14 @@ import type {
   ChannelTurnDurableDeliveryOptions,
 } from "./types.js";
 
-export type DurableInboundReplyDeliveryOptions = ChannelTurnDurableDeliveryOptions & {
-  /** Optional: validate the admitted sender and pin its resolved credential before a registry handoff. */
-  prepareRuntimeHandoff?: (cfg: OpenClawConfig) => OpenClawConfig;
-};
+export type DurableInboundReplyDeliveryOptions = ChannelTurnDurableDeliveryOptions &
+  Pick<
+    DeliverOutboundPayloadsParams,
+    "completionRetention" | "deliveryIntentId" | "reusePendingDeliveryIntent"
+  > & {
+    /** Optional: validate the admitted sender and pin its resolved credential before a registry handoff. */
+    prepareRuntimeHandoff?: (cfg: OpenClawConfig) => OpenClawConfig;
+  };
 
 export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptions & {
   cfg: OpenClawConfig;
@@ -219,7 +225,10 @@ async function deliverAdmittedInboundReply(
       silent: params.silent,
     });
   const durability =
-    requiredCapabilities.reconcileUnknownSend === true ? "required" : "best_effort";
+    requiredCapabilities.reconcileUnknownSend === true ||
+    isReplyPublicationReceiptRequired(params.payload)
+      ? "required"
+      : "best_effort";
 
   const support = await resolveOutboundDurableFinalDeliverySupport({
     cfg: params.cfg,
@@ -271,6 +280,9 @@ async function deliverAdmittedInboundReply(
     deps: params.deps,
     mediaAccess: params.mediaAccess,
     silent: params.silent,
+    deliveryIntentId: params.deliveryIntentId,
+    reusePendingDeliveryIntent: params.reusePendingDeliveryIntent,
+    completionRetention: params.completionRetention,
     durability,
     ...(requiredCapabilities.reconcileUnknownSend === true
       ? { requireUnknownSendReconciliation: true }

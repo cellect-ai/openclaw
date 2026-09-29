@@ -19,6 +19,7 @@ import * as session from "../../config/sessions/lifecycle.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
   deleteSessionEntryLifecycle,
+  listSessionEntryKeysReadOnly as listAccessorSessionEntryKeysReadOnly,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
   loadSessionEntryReadOnly,
@@ -93,6 +94,16 @@ const listSessionEntries: RuntimeSession["listSessionEntries"] = (params = {}) =
     ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
   });
 };
+
+async function listSessionKeys(
+  params: Partial<Omit<RuntimeSessionStoreReadParams, "sessionKey">> = {},
+): Promise<string[]> {
+  return await listAccessorSessionEntryKeysReadOnly({
+    ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
+    ...(params.env !== undefined ? { env: params.env } : {}),
+    ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+  });
+}
 
 const patchSessionEntry: RuntimeSession["patchSessionEntry"] = async (params) => {
   return await patchAccessorSessionEntry(toSessionAccessScope(params), params.update, {
@@ -686,6 +697,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
     createSessionEntry,
     getSessionEntry,
     listSessionEntries,
+    listSessionKeys,
     patchSessionEntry,
     upsertSessionEntry,
     runWithWorkAdmission: runWithSessionWorkAdmission,

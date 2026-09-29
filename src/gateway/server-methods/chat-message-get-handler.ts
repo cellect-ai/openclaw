@@ -16,6 +16,7 @@ import {
 } from "../chat-display-projection.js";
 import { resolveCurrentUserProfileDisplay } from "../current-user-profile-display.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { MAX_PAYLOAD_BYTES } from "../server-constants.js";
 import { readChatHistoryMessageId } from "../session-history-tail.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -26,6 +27,7 @@ import {
   readSessionMessageByIdAsync,
 } from "../session-transcript-readers.js";
 import { loadGatewaySessionEntryReadOnly } from "../session-utils.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { readChatHistoryPage } from "./chat-history-pages.js";
 import { projectPendingInputMessage } from "./chat-pending-inputs.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -107,6 +109,23 @@ export const chatMessageGetHandlers: GatewayRequestHandlers = {
     const requestedAgentId = requestedAgent.agentId;
     const session = loadGatewaySessionEntryReadOnly(sessionKey, { agentId: requestedAgentId }, cfg);
     const { agentId: sessionAgentId, storePath, entry, canonicalKey } = session;
+    if (
+      !isWebchatSessionAllowed({ cfg, client, sessionKey: canonicalKey }) ||
+      isUnauthorizedRawMatrixBrowserSession({
+        cfg,
+        clientInfo: client?.connect?.client,
+        pairedClientId: client?.pairedClientId,
+        sessionKey: canonicalKey,
+        authorizedByBinding: false,
+      })
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.FORBIDDEN, "Matrix conversation access requires the owning app"),
+      );
+      return;
+    }
     const sessionId = entry?.sessionId;
     if (!sessionId) {
       respond(true, { ok: false, unavailableReason: "not_found" });
