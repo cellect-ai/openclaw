@@ -507,6 +507,7 @@ export function createTalkRealtimeRelaySession(
       if (
         role === "assistant" &&
         final &&
+        outputTurnId &&
         params.forceAgentConsultOnFinalTranscript !== true &&
         isRealtimeCheckingBackchannel(text)
       ) {
