@@ -131,8 +131,20 @@ export function createTalkRealtimeRelaySession(
   const outputOwnership = new TalkRealtimeRelayOutputOwnership(
     () => harness.talk.activeTurnId,
     () => harness.ensureTurn(),
-    (message) => {
+    (message, diagnostics) => {
       const relay = getActiveRelay();
+      if (diagnostics) {
+        const providerModel =
+          typeof params.providerConfig.model === "string"
+            ? params.providerConfig.model
+            : params.model;
+        // Diagnostics must never break the failure path itself.
+        params.context.logGateway?.warn(
+          `talk relay provider event ownership failure: provider=${params.provider.id}${
+            providerModel ? ` model=${providerModel}` : ""
+          } diagnostics=${JSON.stringify(diagnostics)}`,
+        );
+      }
       relay?.failSession(message);
       if (!relay) {
         constructionTerminal.current ??= { kind: "error", error: new Error(message) };
@@ -155,6 +167,7 @@ export function createTalkRealtimeRelaySession(
     authority: params.consultAuthority,
     getVoiceSessionId: () => relaySessionId,
     initialItems: params.initialItems ?? [],
+    sessionCapsule: params.sessionCapsule,
     runIdPrefix: "talk-realtime-relay-consult",
     surface: "a gateway-relay Talk session",
     registerRun: ({ runId }) => {
@@ -246,7 +259,7 @@ export function createTalkRealtimeRelaySession(
         if (!getActiveRelay() || outputOwnership.suppressingOutput) {
           return;
         }
-        const outputTurnId = outputOwnership.resolve(true);
+        const outputTurnId = outputOwnership.resolve(true, "audio");
         if (!outputTurnId) {
           return;
         }
@@ -274,7 +287,7 @@ export function createTalkRealtimeRelaySession(
         if (!relay) {
           return;
         }
-        const outputTurnId = outputOwnership.resolve(false);
+        const outputTurnId = outputOwnership.resolve(false, "mark");
         if (!outputTurnId) {
           if (outputOwnership.phase !== "owned") {
             bridgeRef.current?.acknowledgeMark(markName);
@@ -323,7 +336,7 @@ export function createTalkRealtimeRelaySession(
       }
       if (event.type === "response.created") {
         // Response admission owns work status; asynchronous input transcripts do not.
-        const turnId = outputOwnership.resolve(false);
+        const turnId = outputOwnership.resolve(false, "response-created");
         if (turnId) {
           emit({ relaySessionId, type: "responseStarted", turnId });
         }
@@ -331,6 +344,13 @@ export function createTalkRealtimeRelaySession(
       }
       if (event.type === "session.created") {
         continuityResetActive = false;
+      }
+      if (event.type === "input_audio_buffer.speech_started" && event.itemId) {
+        broadcastToOwner(params.context, params.connId, {
+          relaySessionId,
+          type: "inputAudioStart",
+          itemId: event.itemId,
+        });
       }
       if (
         (event.type === "response.done" || event.type === "response.cancelled") &&
@@ -366,7 +386,7 @@ export function createTalkRealtimeRelaySession(
         return;
       }
       const responseId = outcome.responseId ?? outputOwnership.responseId;
-      const disposition = outputOwnership.finish(responseId);
+      const disposition = outputOwnership.finish(responseId, false, outcome.status === "completed");
       if (disposition === "ignore") {
         return;
       }
@@ -402,7 +422,7 @@ export function createTalkRealtimeRelaySession(
         });
       }
     },
-    onTranscript: (role, text, final, metadata) => {
+    onTranscript: (role, text, final, update) => {
       const relay = getActiveRelay() ?? (relayRef.current?.closing ? relayRef.current : undefined);
       if (!relay || relay.voiceSessionClose) {
         return;
@@ -429,14 +449,15 @@ export function createTalkRealtimeRelaySession(
         role,
         text,
         final,
-        ...metadata,
+        ...update,
         ...transcriptIdentity,
       };
       if (relay.closing) {
         emit(transcriptEvent);
         return;
       }
-      const outputTurnId = role === "assistant" ? outputOwnership.resolve(true) : undefined;
+      const outputTurnId =
+        role === "assistant" ? outputOwnership.resolve(true, "assistant-transcript") : undefined;
       if (role === "assistant" && !outputTurnId) {
         return;
       }
@@ -469,7 +490,7 @@ export function createTalkRealtimeRelaySession(
       if (!relay || outputOwnership.suppressingOutput) {
         return;
       }
-      const outputTurnId = outputOwnership.resolve(true);
+      const outputTurnId = outputOwnership.resolveToolCall();
       if (!outputTurnId) {
         return;
       }
@@ -634,6 +655,8 @@ export function createTalkRealtimeRelaySession(
     capabilities: params.capabilities,
     outputOwnership,
     sessionTarget: params.sessionTarget,
+    ...(params.speakerMxid ? { speakerMxid: params.speakerMxid } : {}),
+    ...(params.matrixRoute ? { matrixRoute: params.matrixRoute } : {}),
     expiresAtMs,
     cleanupTimer: setTimeout(() => {
       const active = relaySessions.get(relaySessionId);

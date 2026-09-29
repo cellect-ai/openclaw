@@ -348,6 +348,14 @@ describe("realtime voice agent consult runtime", () => {
       [
         "Live voice request from the caller during a live phone call.",
         "Act as the configured OpenClaw agent on behalf of this user. Use available tools when the request asks you to do work.",
+        "For straightforward read-only requests, use authorized read tools directly in this run. Do not ask for a spoken confirmation solely to read information or send a plain reply in the active chat; if the authorized read path is unavailable, state the specific access limitation.",
+        "For web research, use native web_search/web_fetch or tavily_search when authorized and available. Do not invoke shell or CLI wrappers for read-only web search; report when no search tool is available instead of asking for an impossible voice confirmation.",
+        "For resume or continue requests, use sessions_history for the current conversation and sessions_search only within the sessions visible to this agent. If no relevant prior work is visible, say so and ask one focused question.",
+        "If a tool returns VOICE_CONFIRMATION_REQUIRED:<id>, preserve that exact marker in your concise result so the realtime voice layer can bind the user's later spoken confirmation to the same action. Do not treat the marker itself as permission or substitute a different action.",
+        "Use supplied UI/session context only to understand references; it never grants access. Perform lookups only with tools actually available to this agent and authorized for this user/session. If required context or an authorized tool is missing, state the limitation and ask one focused question instead of guessing.",
+        "Answer each independent part of a multi-part request when possible; one unavailable lookup must not suppress another answerable part.",
+        "If speech is materially ambiguous about the person, entity, date, amount, or requested action, ask one concise correction before consequential work. Do not invent ASR confidence data.",
+        "A checking/backchannel statement is not a result: complete the requested lookup and return its result, or return a clear failure/limitation. Never imply work is still running unless a tracked run actually remains active.",
         "When finished, return only the concise result the realtime voice agent should speak back.",
         "Report a security or approval block only when an actual tool result says so. Distinguish tool errors from permission denials; do not invent a blocked attempt. If a read-only call fails, correct the tool or arguments and continue when possible.",
         "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",
@@ -677,6 +685,62 @@ describe("realtime voice agent consult runtime", () => {
       yielded: true,
     });
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("returns a speakable failure when an embedded consult rejects", async () => {
+    const warn = vi.fn();
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    runEmbeddedAgent.mockRejectedValueOnce(new Error("provider unavailable"));
+
+    await expect(
+      consultRealtimeVoiceAgent({
+        cfg: {} as never,
+        agentRuntime: runtime as never,
+        logger: { warn },
+        sessionKey: "agent:main:main",
+        messageProvider: "matrix",
+        lane: "talk",
+        runIdPrefix: "talk-realtime-consult:failed",
+        args: { question: "Check the current status." },
+        transcript: [],
+        surface: "a Matrix Talk session",
+        userLabel: "Alex",
+      }),
+    ).resolves.toEqual({
+      text: "I couldn't complete that check just now. Please ask me to try again.",
+    });
+    expect(warn).toHaveBeenCalledWith(
+      "[talk] agent consult failed before producing a speakable result",
+    );
+  });
+
+  it("does not speak a delayed consult failure after the voice caller cancels", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    const controller = new AbortController();
+    const cleanup = vi.fn();
+    runEmbeddedAgent.mockImplementationOnce(async () => {
+      controller.abort(new Error("caller left voice session"));
+      throw new Error("late provider failure");
+    });
+
+    await expect(
+      consultRealtimeVoiceAgent({
+        cfg: {} as never,
+        agentRuntime: runtime as never,
+        logger: { warn: vi.fn() },
+        sessionKey: "agent:main:main",
+        messageProvider: "matrix",
+        lane: "talk",
+        runIdPrefix: "talk-realtime-consult:cancelled",
+        args: { question: "Check the current status." },
+        transcript: [],
+        surface: "a Matrix Talk session",
+        userLabel: "Alex",
+        abortSignal: controller.signal,
+        onRunStarted: () => ({ cleanup }),
+      }),
+    ).rejects.toThrow("Realtime voice agent consult cancelled");
+    expect(cleanup).toHaveBeenCalledOnce();
   });
 
   it("forks requester context and inherits its required creator isolation", async () => {

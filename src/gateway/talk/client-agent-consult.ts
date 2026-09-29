@@ -14,6 +14,7 @@ import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   GatewayDrainingError,
   runOutsideGatewayRootWorkAdmission,
+  runWithGatewayIndependentRootWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
 import {
@@ -29,6 +30,7 @@ import {
 import { parseRealtimeVoiceAgentConsultArgs } from "../../talk/agent-consult-tool.js";
 import { controlRealtimeVoiceAgentRun } from "../../talk/agent-run-control.js";
 import {
+  authorizeCurrentClientVoiceConfirmation,
   authorizeClientVoiceConfirmation,
   authorizeObservedClientVoiceConfirmation,
   bindAuthorizedClientVoiceConfirmation,
@@ -38,6 +40,7 @@ import {
   assertClientVoiceSessionOpen,
   registerClientVoiceConsultRun,
 } from "../../talk/client-voice-session.js";
+import { buildRealtimeTalkSessionContextInstructions } from "../../talk/session-context.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
 import type {
@@ -112,33 +115,41 @@ function createTalkClientAgentRuntime(params: {
       // Provider-owned work can outlive or replace its audio transport. Unlike
       // chat-backed Talk, it has no independent Chat terminal delivery; hiding
       // its final transcript would lose the answer when no spoken replacement arrives.
-      return await execution.runEmbeddedAgent({
-        ...runParams,
-        extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
-          .filter(Boolean)
-          .join("\n\n"),
-        preparedRunAdmission,
-        // Speech is mirrored separately. Keep generated input in current-turn custody,
-        // but never display it or replay it as a later user request.
-        userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
-          input: {
-            text: runParams.prompt,
-            display: false,
-            excludeFromContext: true,
-            idempotencyKey: buildRunUserTurnIdempotencyKey(runParams.runId),
-          },
-          target: {
-            agentId,
-            sessionId,
-            sessionKey,
-            storePath,
-            expectedSessionId: sessionId,
-            sessionEntry: undefined,
-            config: params.config,
-            cwd: runParams.workspaceDir,
-          },
-        }),
-      });
+      // Provider callbacks outlive the talk.client.create RPC that installed them.
+      // Their AsyncLocalStorage chain can therefore still point at the RPC's
+      // already-released root lease, which makes healthy subordinate work look as
+      // though the gateway is draining. Re-enter process admission for each
+      // delayed consult while retaining the normal restart/suspension fence.
+      return await runWithGatewayIndependentRootWorkAdmission(
+        async () =>
+          await execution.runEmbeddedAgent({
+            ...runParams,
+            extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
+              .filter(Boolean)
+              .join("\n\n"),
+            preparedRunAdmission,
+            // Speech is mirrored separately. Keep generated input in current-turn custody,
+            // but never display it or replay it as a later user request.
+            userTurnTranscriptRecorder: createUserTurnTranscriptRecorder({
+              input: {
+                text: runParams.prompt,
+                display: false,
+                excludeFromContext: true,
+                idempotencyKey: buildRunUserTurnIdempotencyKey(runParams.runId),
+              },
+              target: {
+                agentId,
+                sessionId,
+                sessionKey,
+                storePath,
+                expectedSessionId: sessionId,
+                sessionEntry: undefined,
+                config: params.config,
+                cwd: runParams.workspaceDir,
+              },
+            }),
+          }),
+      );
     } finally {
       runParams.abortSignal?.removeEventListener("abort", close);
       close();
@@ -198,6 +209,7 @@ export function createTalkClientAgentConsultRunner(params: {
   authority?: TalkAgentConsultAuthority;
   getVoiceSessionId: () => string | undefined;
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
+  sessionCapsule?: string;
   runIdPrefix?: string;
   surface?: string;
   registerRun?: (params: { runId: string }) => void;
@@ -285,7 +297,7 @@ export function createTalkClientAgentConsultRunner(params: {
         })
       : source === "native-delegation"
         ? authorizeObservedClientVoiceConfirmation({ agentId, voiceSessionId })
-        : undefined;
+        : authorizeCurrentClientVoiceConfirmation({ agentId, voiceSessionId });
     let confirmationRetryContext: string | undefined;
     const getAdditionalSystemPrompt = () => confirmationRetryContext;
     const runtime = owner
@@ -321,6 +333,12 @@ export function createTalkClientAgentConsultRunner(params: {
           runIdPrefix: params.runIdPrefix ?? "talk-realtime-consult",
           args: parsedArgs,
           transcript: params.initialItems,
+          extraSystemPrompt: [
+            "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+            buildRealtimeTalkSessionContextInstructions(params.sessionCapsule),
+          ]
+            .filter(Boolean)
+            .join("\n\n"),
           surface: params.surface ?? "a browser Talk session",
           userLabel: "User",
           questionSourceLabel: "user",

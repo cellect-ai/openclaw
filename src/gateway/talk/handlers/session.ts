@@ -20,6 +20,7 @@ import { controlRealtimeVoiceAgentRun } from "../../../talk/agent-run-control.js
 import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session.js";
 import { projectInternalRealtimeVoicePublicConfig } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../../matrix-browser-session-authorization.js";
 import { resolveSandboxedSessionCreation } from "../../operator-role-policy.js";
 import { ADMIN_SCOPE } from "../../operator-scopes.js";
 import { resolveOperatorSessionCreation } from "../../server-methods/session-creation-provenance.js";
@@ -28,6 +29,8 @@ import { defineValidatedGatewayHandler } from "../../server-methods/validation.j
 import { getSessionRowProjection } from "../../session-row-projection-access.js";
 import { SessionMutationAuthorizationChangedError } from "../../session-sharing.js";
 import { withPreparedSessionResolve } from "../../sessions-resolve.js";
+import { consumeTalkBindingCapability } from "../../talk-binding-capability.js";
+import { isWebchatSessionAllowed } from "../../webchat-agent-authorization.js";
 import { formatForLog } from "../../ws-log.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
@@ -63,7 +66,7 @@ import {
   rememberUnifiedTalkSession,
   requireUnifiedTalkSessionConn,
 } from "../session-registry.js";
-import { requirePreparedTalkSessionTarget } from "../session-target.js";
+import { prepareTalkSessionTarget, requirePreparedTalkSessionTarget } from "../session-target.js";
 import {
   createTalkTranscriptionRelaySession,
   sendTalkTranscriptionRelayAudio,
@@ -278,6 +281,17 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
               }
             : params;
           const runtimeConfig = context.getRuntimeConfig();
+          const binding = normalizeOptionalString(params.binding);
+          if (binding && normalizeOptionalString(params.sessionKey)) {
+            return respondInvalidRequest(
+              respond,
+              "Talk binding and sessionKey are mutually exclusive",
+            );
+          }
+          const bound = binding ? consumeTalkBindingCapability(binding) : undefined;
+          if (binding && !bound) {
+            return respondInvalidRequest(respond, "Talk binding is invalid or expired");
+          }
           const realtimeConfig = buildTalkRealtimeConfig(
             runtimeConfig,
             requested.provider,
@@ -287,9 +301,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             requested,
             defaults: realtimeConfig,
           });
-          const target = requirePreparedTalkSessionTarget(
-            sessionMutationAuthorization?.talkSessionTarget,
-          );
+          const target = bound
+            ? prepareTalkSessionTarget(runtimeConfig, bound.sessionKey)
+            : requirePreparedTalkSessionTarget(sessionMutationAuthorization?.talkSessionTarget);
           replacement?.assertCurrent(target);
           const { agentId } = target;
           const assertCommitAllowed = () => {
@@ -298,6 +312,25 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             replacement?.assertCurrent(target);
           };
           assertCommitAllowed();
+          if (
+            isUnauthorizedRawMatrixBrowserSession({
+              cfg: runtimeConfig,
+              clientInfo: client?.connect?.client,
+              pairedClientId: client?.pairedClientId,
+              sessionKey: target.canonicalKey,
+              authorizedByBinding: Boolean(bound),
+            }) ||
+            !isWebchatSessionAllowed({
+              cfg: runtimeConfig,
+              client,
+              sessionKey: target.canonicalKey,
+            })
+          ) {
+            return respondInvalidRequest(
+              respond,
+              "Matrix Talk sessions require an authorized binding",
+            );
+          }
           assertSecretOwnerAvailable("capability", "talk:realtime");
           const resolution = resolveConfiguredRealtimeVoiceProvider({
             configuredProviderId: realtimeConfig.provider,
@@ -348,9 +381,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             });
             replacement?.assertCurrent(target);
           };
-          const initialItems = replacement
-            ? await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent)
-            : [];
+          const initialItems = await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent);
           assertEnsuredTargetCurrent();
           const model =
             normalizeOptionalString(relayLaunch.providerConfig.model) ??
@@ -375,10 +406,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             initialItems,
             voiceSelectionVoices: voices,
             instructions:
-              (controlSource === "delegation"
-                ? (providerInstructions ?? "")
-                : buildRealtimeInstructions(providerInstructions)) +
-              buildTalkRealtimeHistoryInstructions(initialItems),
+              buildRealtimeInstructions(providerInstructions, params.sessionCapsule, {
+                providerHandlesAgentConsult: controlSource === "delegation",
+              }) + buildTalkRealtimeHistoryInstructions(initialItems),
             tools:
               controlSource === "delegation"
                 ? []
@@ -386,8 +416,18 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             model: launchOptions.model,
             sessionTarget: target,
             voice: launchOptions.voice,
-            language: normalizeOptionalLowercaseString(params.language),
+            language: normalizeOptionalLowercaseString(params.language) ?? "en",
+            sessionCapsule: params.sessionCapsule,
             forceAgentConsultOnFinalTranscript: relayLaunch.forceAgentConsultOnFinalTranscript,
+            speakerMxid: bound?.speakerMxid,
+            matrixRoute: bound
+              ? {
+                  channel: "matrix",
+                  roomId: bound.roomId,
+                  threadRootEventId: bound.threadRootEventId,
+                  accountId: bound.accountId,
+                }
+              : undefined,
           });
           rememberUnifiedTalkSession(session.relaySessionId, {
             kind: "realtime-relay",

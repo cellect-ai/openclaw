@@ -26,6 +26,8 @@ import type {
 } from "openclaw/plugin-sdk/video-generation";
 import { XAI_DEFAULT_IMAGE_MODEL, XAI_IMAGE_MODELS } from "./model-definitions.js";
 import {
+  LITELLM_REALTIME_BASE_URL,
+  LITELLM_REALTIME_VOICE_MODELS,
   XAI_REALTIME_DEFAULT_MODEL,
   XAI_REALTIME_VOICES,
   normalizeXaiRealtimeProviderConfig,
@@ -297,6 +299,50 @@ export function assertXaiRealtimeVoiceRequestSupported(
   }
   if ((req.interruptResponseOnInputAudio ?? config.interruptResponseOnInputAudio) === false) {
     throw new Error("xAI realtime voice requires automatic server-VAD interruption handling");
+  }
+}
+
+export function createLiteLlmRealtimeVoiceProviderMetadata(
+  context: Pick<
+    PluginCapabilityCatalogContext,
+    "isProviderAuthProfileConfigured" | "resolveAgentDir"
+  >,
+) {
+  const { voices: _voices, ...xai } = createXaiRealtimeVoiceProviderMetadata(context);
+  return {
+    ...xai,
+    id: "litellm",
+    label: "LiteLLM Realtime (Grok / Google)",
+    aliases: ["litellm-realtime"],
+    defaultModel: LITELLM_REALTIME_VOICE_MODELS[0],
+    models: LITELLM_REALTIME_VOICE_MODELS,
+    autoSelectOrder: 50,
+    capabilities: {
+      ...xai.capabilities,
+      supportsSessionResumption: false,
+    },
+    resolveConfig: ({ rawConfig }) => normalizeXaiRealtimeProviderConfig(rawConfig, "litellm"),
+    isConfigured: ({ providerConfig }) => {
+      const config = normalizeXaiRealtimeProviderConfig(providerConfig, "litellm");
+      return Boolean(
+        (config.apiKey || normalizeOptionalString(process.env.FI_USER_LITELLM_API_KEY)) &&
+        config.baseUrl === LITELLM_REALTIME_BASE_URL,
+      );
+    },
+  } satisfies Omit<RealtimeVoiceProviderPlugin, "createBridge" | "createBrowserSession">;
+}
+
+export function assertLiteLlmRealtimeVoiceRequestSupported(
+  req: RealtimeVoiceBridgeCreateRequest,
+  configuredInterruptResponseOnInputAudio?: boolean,
+): void {
+  if (req.autoRespondToAudio === false) {
+    throw new Error(
+      'LiteLLM realtime voice requires automatic server-VAD responses; use consultRouting: "provider-direct"',
+    );
+  }
+  if ((req.interruptResponseOnInputAudio ?? configuredInterruptResponseOnInputAudio) === false) {
+    throw new Error("LiteLLM realtime voice requires automatic server-VAD interruption handling");
   }
 }
 
