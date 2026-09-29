@@ -702,7 +702,7 @@ describe("OpenAI realtime voice bridge events", () => {
       text: "final assistant text",
     });
 
-    expect(onAudio).toHaveBeenCalledWith(audio);
+    expect(onAudio).toHaveBeenCalledWith(audio, undefined);
     expect(onTranscript).toHaveBeenCalledWith("user", "partial user", false, {
       textMode: "delta",
     });
@@ -736,6 +736,22 @@ describe("OpenAI realtime voice bridge events", () => {
       direction: "client",
       type: "conversation.item.truncate",
       detail: "reason=barge-in audioEndMs=300",
+    });
+  });
+
+  it("forwards provider-originated response.cancelled with its response owner", async () => {
+    const onEvent = vi.fn();
+    const bridge = createNativeBridge({ onEvent });
+    const socket = await connectReadyBridge(bridge);
+
+    emitServerEvent(socket, { type: "response.created", response: { id: "resp_1" } });
+    emitServerEvent(socket, { type: "response.cancelled", response_id: "resp_1" });
+
+    expect(onEvent).toHaveBeenCalledWith({
+      direction: "server",
+      type: "response.cancelled",
+      detail: "cancelled",
+      responseId: "resp_1",
     });
   });
 

@@ -258,6 +258,7 @@ describe("OpenAI realtime voice browser authentication", () => {
     const session = await provider.createBrowserSession({
       providerConfig: { apiKey: "test-api-key-test" },
       instructions: "Be concise.",
+      language: "en",
       voice: " Marin ",
     });
 
@@ -287,7 +288,11 @@ describe("OpenAI realtime voice browser authentication", () => {
         create_response: true,
         interrupt_response: true,
       },
-      transcription: { model: "gpt-live-transcribe", delay: "low" },
+      transcription: {
+        model: "gpt-live-transcribe",
+        delay: "low",
+        languages: ["en"],
+      },
     });
     expect(requireNestedRecord(bodySession, ["audio", "output"])).toEqual({ voice: "marin" });
     expect(bodySession).not.toHaveProperty("temperature");

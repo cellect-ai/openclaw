@@ -402,6 +402,14 @@ export function buildOpenAIRealtimeTurnDetectionConfig(params: {
   };
 }
 
+export function buildOpenAIRealtimeInputTranscriptionConfig(language?: string) {
+  return {
+    model: OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
+    delay: "low" as const,
+    ...(language ? { languages: [language] } : {}),
+  };
+}
+
 export function buildOpenAIRealtimeGaSessionPolicy(params: {
   audioFormat?: RealtimeVoiceAudioFormat;
   autoRespondToAudio?: boolean;
@@ -429,11 +437,7 @@ export function buildOpenAIRealtimeGaSessionPolicy(params: {
       input: {
         format,
         noise_reduction: params.noiseReduction,
-        transcription: {
-          model: OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
-          delay: "low",
-          ...(params.language ? { languages: [params.language] } : {}),
-        },
+        transcription: buildOpenAIRealtimeInputTranscriptionConfig(params.language),
         turn_detection: buildOpenAIRealtimeTurnDetectionConfig({
           autoRespondToAudio: params.autoRespondToAudio,
           includeInterruptResponse: true,
