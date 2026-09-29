@@ -21,7 +21,7 @@ import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
-import { sendMessageMatrix, sendPollMatrix } from "./matrix/send.js";
+import { editMessageMatrix, sendMessageMatrix, sendPollMatrix } from "./matrix/send.js";
 import type { MatrixExtraContentFields } from "./matrix/send/types.js";
 import { matrixPresentationCapabilities } from "./presentation-capabilities.js";
 
@@ -31,8 +31,14 @@ const MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY = "com.openclaw.voice_transcript" as c
 const MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT = "---";
 
 type MatrixChannelData = {
+  editEventId?: string;
   extraContent?: MatrixExtraContentFields;
 };
+
+function resolveMatrixEditEventId(payload: ReplyPayload): string | undefined {
+  const editEventId = resolveMatrixChannelData(payload).editEventId?.trim();
+  return editEventId || undefined;
+}
 
 function toMatrixOutboundResult<T extends { roomId: string }>(result: T) {
   const { roomId, ...delivery } = result;
@@ -207,6 +213,30 @@ export const matrixOutbound: ChannelOutboundAdapter = {
     });
     const urls = resolveSendableOutboundReplyParts(payload).mediaUrls;
     const payloadText = resolveMatrixPayloadText(payload);
+    const editEventId = resolveMatrixEditEventId(payload);
+    if (editEventId && urls.length === 0) {
+      const eventId = await editMessageMatrix(to, editEventId, payloadText, {
+        cfg,
+        threadId: resolvedThreadId,
+        accountId: accountId ?? undefined,
+        extraContent: resolveMatrixExtraContent(payload),
+      });
+      const roomId = to.replace(/^room:/i, "");
+      return attachChannelToResult(
+        "matrix",
+        toMatrixOutboundResult({
+          messageId: eventId || editEventId,
+          roomId,
+          primaryMessageId: editEventId,
+          content: payloadText,
+          receipt: createMessageReceiptFromOutboundResults({
+            kind: "text",
+            ...(resolvedThreadId ? { threadId: resolvedThreadId } : {}),
+            results: [{ channel: "matrix", messageId: editEventId, roomId }],
+          }),
+        }),
+      );
+    }
     if (urls.length > 0) {
       const sentResults: Awaited<ReturnType<typeof sendMessageMatrix>>[] = [];
       const lastResult = await sendPayloadMediaSequence({
