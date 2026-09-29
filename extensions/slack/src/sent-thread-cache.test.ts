@@ -14,6 +14,7 @@ import { withOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { setSlackRuntime } from "./runtime.js";
 import {
+  claimSlackThreadOwner,
   clearSlackThreadFailureNotice,
   clearSlackThreadParticipationCache,
   hasSlackThreadFailureNotice,
@@ -53,6 +54,158 @@ describe("slack sent-thread-cache", () => {
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001", "T1")).toBe(true);
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001", "T2")).toBe(false);
     expect(hasSlackThreadParticipation("A1", "C123", "1700000000.000001")).toBe(false);
+  });
+
+  it("keeps one cross-account owner for an implicit thread continuation", async () => {
+    const first = await claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-admin", "fi-user"],
+    });
+    const second = await claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-user"],
+    });
+
+    expect(first).toBe("fi-admin");
+    expect(second).toBe("fi-admin");
+  });
+
+  it("lets an explicit bot mention transfer a shared thread owner", async () => {
+    await claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-admin"],
+    });
+    const transferred = await claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-user"],
+      force: true,
+    });
+    const next = await claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-admin"],
+    });
+
+    expect(transferred).toBe("fi-user");
+    expect(next).toBe("fi-user");
+  });
+
+  it("serializes interleaved claims so a stale read never wins after a transfer", async () => {
+    const persistedRecords = new Map<string, { accountId: string; claimedAt: number }>();
+    let releaseLookup: (() => void) | undefined;
+    const lookupGate = new Promise<void>((resolve) => {
+      releaseLookup = resolve;
+    });
+    const openKeyedStore = vi.fn(() => ({
+      register: vi.fn(async (key: string, value: { accountId: string; claimedAt: number }) => {
+        persistedRecords.set(key, value);
+      }),
+      registerIfAbsent: vi.fn(
+        async (key: string, value: { accountId: string; claimedAt: number }) => {
+          if (persistedRecords.has(key)) {
+            return false;
+          }
+          persistedRecords.set(key, value);
+          return true;
+        },
+      ),
+      update: vi.fn(async (key: string, next: (current: unknown) => unknown) => {
+        persistedRecords.set(key, next(persistedRecords.get(key)) as never);
+        return true;
+      }),
+      lookup: vi.fn(async (key: string) => {
+        await lookupGate;
+        return persistedRecords.get(key);
+      }),
+      consume: vi.fn(),
+      delete: vi.fn(),
+      entries: vi.fn(),
+      clear: vi.fn(),
+    }));
+    setSlackRuntime({
+      state: { openKeyedStore },
+      logging: { getChildLogger: () => ({ warn: vi.fn() }) },
+    } as never);
+    persistedRecords.set("C123:1700000000.000001", { accountId: "fi-admin", claimedAt: 1 });
+
+    // The implicit claim starts first and blocks in its store read; the
+    // explicit transfer must not interleave with that read-then-decide.
+    const implicit = claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-admin"],
+    });
+    const transfer = claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-user"],
+      force: true,
+    });
+    const after = claimSlackThreadOwner({
+      channelId: "C123",
+      threadTs: "1700000000.000001",
+      candidateAccountIds: ["fi-admin"],
+    });
+    releaseLookup?.();
+
+    await expect(Promise.all([implicit, transfer, after])).resolves.toEqual([
+      "fi-admin",
+      "fi-user",
+      "fi-user",
+    ]);
+    expect(persistedRecords.get("C123:1700000000.000001")?.accountId).toBe("fi-user");
+  });
+
+  it("restores a shared thread owner after the in-memory cache is cleared", async () => {
+    const persistedRecords = new Map<string, { accountId: string; claimedAt: number }>();
+    const openKeyedStore = vi.fn(() => ({
+      register: vi.fn(async (key: string, value: { accountId: string; claimedAt: number }) => {
+        persistedRecords.set(key, value);
+      }),
+      registerIfAbsent: vi.fn(
+        async (key: string, value: { accountId: string; claimedAt: number }) => {
+          if (persistedRecords.has(key)) {
+            return false;
+          }
+          persistedRecords.set(key, value);
+          return true;
+        },
+      ),
+      lookup: vi.fn(async (key: string) => persistedRecords.get(key)),
+      consume: vi.fn(),
+      delete: vi.fn(),
+      entries: vi.fn(),
+      clear: vi.fn(),
+    }));
+    setSlackRuntime({
+      state: { openKeyedStore },
+      logging: { getChildLogger: () => ({ warn: vi.fn() }) },
+    } as never);
+
+    await expect(
+      claimSlackThreadOwner({
+        channelId: "C123",
+        threadTs: "1700000000.000001",
+        candidateAccountIds: ["fi-admin"],
+      }),
+    ).resolves.toBe("fi-admin");
+    clearSlackThreadParticipationCache();
+
+    await expect(
+      claimSlackThreadOwner({
+        channelId: "C123",
+        threadTs: "1700000000.000001",
+        candidateAccountIds: ["fi-user"],
+      }),
+    ).resolves.toBe("fi-admin");
+    expect(openKeyedStore).toHaveBeenCalledWith({
+      namespace: "slack.thread-owner",
+      maxEntries: 1000,
+    });
   });
 
   it("announces a repeated thread failure only once until its message changes", () => {

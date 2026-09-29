@@ -11,6 +11,12 @@ import {
 } from "./delivery-plan.js";
 import { loadOutboundMediaFromUrl } from "./outbound-media-runtime.js";
 import { buildPollStartContent, M_POLL_START } from "./poll-types.js";
+import {
+  MATRIX_PROJECTION_CONTENT_KEY,
+  matrixPublicationContent,
+  noteMatrixPublicationAccepted,
+  type MatrixPublication,
+} from "./projection-publication.js";
 import { buildMatrixReactionContent } from "./reaction-common.js";
 import { buildMatrixMessageRelation, resolveMatrixReplyToEventId } from "./relations.js";
 import type { MatrixClient, MatrixRawEvent } from "./sdk.js";
@@ -37,6 +43,7 @@ import {
   uploadMediaWithEncryption,
 } from "./send/media.js";
 import { createMatrixSendReceipt, type MatrixReceiptEvent } from "./send/receipt.js";
+import { applyMatrixStreamPhase } from "./send/stream-phase.js";
 import { normalizeThreadId, resolveMatrixRoomId } from "./send/targets.js";
 import {
   EventType,
@@ -47,6 +54,7 @@ import {
   type MatrixOutboundContent,
   type MatrixSendOpts,
   type MatrixSendResult,
+  type MatrixStreamPhase,
   type MatrixTextMsgType,
 } from "./send/types.js";
 
@@ -111,7 +119,8 @@ function withMatrixExtraContentFields<T extends Record<string, unknown>>(
   if (!extraContent) {
     return content;
   }
-  return { ...content, ...extraContent };
+  const { [MATRIX_PROJECTION_CONTENT_KEY]: _forged, ...ordinary } = extraContent;
+  return { ...content, ...ordinary };
 }
 
 async function resolvePreviousEditMentions(params: {
@@ -283,12 +292,31 @@ export async function sendMessageMatrix(
             prepareContent(content, "text");
           }
         }
+        if (opts.publication)
+          events.forEach((event, index) => {
+            (event.content as Record<string, unknown>)[MATRIX_PROJECTION_CONTENT_KEY] =
+              matrixPublicationContent(opts.publication!, roomId, index, events.length);
+            if (
+              index === events.length - 1 &&
+              opts.publication!.finalResult &&
+              opts.publication!.runId &&
+              opts.publication!.generation
+            )
+              event.projectionFinalResult = {
+                runId: opts.publication!.runId!,
+                generation: opts.publication!.generation!,
+                bindingId: opts.publication!.bindingId,
+              };
+          });
         plannedEvents = durableIdentity
           ? createMatrixPlannedEvents({ identity: durableIdentity, events })
           : events.map((event) => ({
               content: event.content,
               receiptKind: event.receiptKind,
               transactionId: "",
+              ...(event.projectionFinalResult
+                ? { projectionFinalResult: event.projectionFinalResult }
+                : {}),
             }));
       }
 
@@ -344,6 +372,9 @@ export async function sendMessageMatrix(
           content: visibleContent,
         });
       }
+
+      if (opts.publication && acceptedEvents.length === plannedEvents.length && lastMessageId)
+        noteMatrixPublicationAccepted(opts.publication, roomId, lastMessageId);
 
       return {
         messageId: lastMessageId || "unknown",
@@ -458,6 +489,8 @@ export async function sendSingleTextMessageMatrix(
     extraContent?: MatrixExtraContentFields;
     /** When true, marks the message as a live/streaming update (MSC4357). */
     live?: boolean;
+    /** Whether this draft is technical progress or user-facing answer text. */
+    streamPhase?: MatrixStreamPhase;
   },
 ): Promise<MatrixSendResult> {
   const {
@@ -510,6 +543,7 @@ export async function sendSingleTextMessageMatrix(
       if (opts.live) {
         (content as Record<string, unknown>)[MSC4357_LIVE_KEY] = {};
       }
+      applyMatrixStreamPhase(content as Record<string, unknown>, opts.streamPhase);
       const eventId = await client.sendMessage(resolvedRoom, content);
       const replyToId = resolveMatrixReplyToEventId(content);
       return {
@@ -542,8 +576,17 @@ export async function editMessageMatrix(
     msgtype?: MatrixTextMsgType;
     includeMentions?: boolean;
     extraContent?: MatrixExtraContentFields;
+    /**
+     * Trusted projection capability for the replacement. Caller-supplied
+     * projection metadata is stripped as a forgery, so an in-place edit of a
+     * projected event must carry its publication through this option or the
+     * replacement stops identifying its source message.
+     */
+    publication?: MatrixPublication;
     /** When true, marks the edit as a live/streaming update (MSC4357). */
     live?: boolean;
+    /** Whether this edit is technical progress or user-facing answer text. */
+    streamPhase?: MatrixStreamPhase;
   },
 ): Promise<string> {
   return await withResolvedMatrixSendClient(
@@ -567,6 +610,10 @@ export async function editMessageMatrix(
         }),
         opts.extraContent,
       );
+      if (opts.publication) {
+        (newContent as Record<string, unknown>)[MATRIX_PROJECTION_CONTENT_KEY] =
+          matrixPublicationContent(opts.publication, resolvedRoom, 0, 1);
+      }
       await enrichMatrixFormattedContent({
         client,
         content: newContent,
@@ -627,6 +674,7 @@ export async function editMessageMatrix(
         content[MSC4357_LIVE_KEY] = {};
         (content["m.new_content"] as Record<string, unknown>)[MSC4357_LIVE_KEY] = {};
       }
+      applyMatrixStreamPhase(content, opts.streamPhase, true);
 
       const eventId = await client.sendMessage(resolvedRoom, content);
       return eventId ?? "";

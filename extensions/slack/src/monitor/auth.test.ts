@@ -67,7 +67,7 @@ function makeSlackCtx(allowFrom: string[]): SlackMonitorContext {
 function makeAuthorizeCtx(params?: {
   allowFrom?: string[];
   allowNameMatching?: boolean;
-  channelsConfig?: Record<string, { users?: string[] }>;
+  channelsConfig?: Record<string, { users?: string[]; requestUsers?: string[] }>;
   dmPolicy?: SlackMonitorContext["dmPolicy"];
   isChannelAllowed?: () => boolean;
   resolveUserName?: (userId: string) => Promise<{ name?: string; error?: unknown }>;
@@ -660,6 +660,25 @@ describe("authorizeSlackSystemEventSender interactiveEvent", () => {
       name: "keeps interactive channel events open when no allowlists are configured",
       request: interactiveRequest("U_ANYONE", { channelId: "C1" }),
       expected: allowedChannel,
+    },
+    {
+      name: "denies interactive actions from an admitted context-only collaborator",
+      ctx: {
+        allowFrom: ["U_OWNER"],
+        channelsConfig: {
+          C1: {
+            users: ["U_OWNER", "U_CONTEXT"],
+            requestUsers: ["U_OWNER"],
+          },
+        },
+      },
+      request: interactiveRequest("U_CONTEXT", { channelId: "C1" }),
+      expected: {
+        allowed: false,
+        reason: "request-user-denied",
+        channelType: "channel",
+        channelName: "general",
+      },
     },
     {
       name: "preserves explicit owner access for interactive events when allowFrom also contains wildcard",

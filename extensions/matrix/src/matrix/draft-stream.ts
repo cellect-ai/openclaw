@@ -2,7 +2,7 @@ import { createFinalizableDraftLifecycle } from "openclaw/plugin-sdk/channel-out
 import type { CoreConfig } from "../types.js";
 import type { MatrixClient } from "./sdk.js";
 import { editMessageMatrix, prepareMatrixSingleText, sendSingleTextMessageMatrix } from "./send.js";
-import { MsgType } from "./send/types.js";
+import { MsgType, type MatrixStreamPhase } from "./send/types.js";
 
 const DEFAULT_THROTTLE_MS = 1000;
 type MatrixDraftPreviewMode = "partial" | "quiet";
@@ -52,8 +52,12 @@ export function createMatrixDraftStream(params: {
   let finalizeInPlaceBlocked = false;
   let liveFinalized = false;
   let replyToId = params.replyToId;
+  let pendingPhase: MatrixStreamPhase = "answer";
 
   const sendOrEdit = async (text: string): Promise<boolean> => {
+    // Capture before the first await. A newer throttled update may change the
+    // pending phase while this send is in flight, but it must not relabel this frame.
+    const streamPhase = pendingPhase;
     const trimmed = text.trimEnd();
     if (!trimmed.trim()) {
       return false;
@@ -91,6 +95,7 @@ export function createMatrixDraftStream(params: {
           msgtype: preview.msgtype,
           includeMentions: preview.includeMentions,
           live: useLive,
+          streamPhase,
         });
         currentEventId = result.messageId;
         lastSentText = preparedText.trimmedText;
@@ -105,6 +110,7 @@ export function createMatrixDraftStream(params: {
           msgtype: preview.msgtype,
           includeMentions: preview.includeMentions,
           live: useLive,
+          streamPhase,
         });
         lastSentText = preparedText.trimmedText;
         lastSentContent = preparedText.convertedText;
@@ -169,6 +175,7 @@ export function createMatrixDraftStream(params: {
           msgtype: preview.msgtype,
           includeMentions: preview.includeMentions,
           live: false,
+          streamPhase: "answer",
         });
         log?.(`draft-stream: finalized ${currentEventId} (MSC4357 stream ended)`);
         return true;
@@ -197,6 +204,7 @@ export function createMatrixDraftStream(params: {
     sendFailed = false;
     finalizeInPlaceBlocked = false;
     liveFinalized = false;
+    pendingPhase = "answer";
     loop.resetPending();
     loop.resetThrottleWindow();
   };
@@ -218,7 +226,13 @@ export function createMatrixDraftStream(params: {
   };
 
   return {
-    update,
+    update: (text: string, phase: MatrixStreamPhase = "answer") => {
+      if (streamState.stopped) {
+        return;
+      }
+      pendingPhase = phase;
+      update(text);
+    },
     flush: loop.flush,
     stop,
     discardPending,

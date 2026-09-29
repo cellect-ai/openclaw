@@ -28,6 +28,7 @@ import {
   slackIngressIdentity,
   SLACK_USER_NAME_KIND,
 } from "./ingress-identity.js";
+import { resolveSlackRequestUserAllowed } from "./request-users.js";
 import { isTransientSlackThreadLookupError } from "./thread-resolution.js";
 
 type SlackChannelMembersCacheEntry = {
@@ -571,6 +572,22 @@ export async function authorizeSlackSystemEventSender(params: {
     eventScope: params.eventScope,
   });
   if (decision.decision === "allow") {
+    if (
+      params.interactiveEvent &&
+      (channelType === "channel" || channelType === "group") &&
+      !resolveSlackRequestUserAllowed({
+        requestUsers: channelConfig?.requestUsers,
+        teamId: params.eventScope?.teamId ?? params.ctx.teamId,
+        userId: senderId,
+      })
+    ) {
+      return {
+        allowed: false,
+        reason: "request-user-denied",
+        channelType,
+        channelName,
+      };
+    }
     return {
       allowed: true,
       channelType,

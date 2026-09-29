@@ -26,11 +26,14 @@ import {
 import { createSlackStartupAuthClient, createSlackWebClient } from "../client.js";
 import { normalizeSlackWebhookPath, registerSlackHttpHandler } from "../http/index.js";
 import { registerSlackInstallationState } from "../installation-identity-state.js";
+import { resolveSlackMediaMaxBytes } from "../limits.js";
+import { registerSlackThreadOwnerPeer } from "../sent-thread-cache.js";
 import {
   formatSlackBotTokenIdentityWarning,
   resolveSlackAppToken,
   resolveSlackBotToken,
 } from "../token.js";
+import { resolveSlackChannelConfig } from "./channel-config.js";
 import { resolveSlackSlashCommandConfig } from "./commands.js";
 import { getRuntimeConfig, resolveOpenProviderRuntimeGroupPolicy } from "./config.runtime.js";
 import { createSlackMonitorContext, type SlackMonitorContext } from "./context.js";
@@ -46,12 +49,19 @@ import { registerSlackCommonEvents, registerSlackWorkspaceEvents } from "./event
 import { createSlackHttpRequestHandler } from "./http-handler.js";
 import { createSlackDurableIngress } from "./ingress.js";
 import { createSlackMessageHandler } from "./message-handler.js";
+import {
+  buildSlackLivenessKey,
+  openSlackSocketLivenessStore,
+  recoverSlackMissedMentions,
+  SLACK_LIVENESS_HEARTBEAT_MS,
+} from "./missed-mentions.js";
 import { openSlackPresenceCooldownStore } from "./presence-cooldown-store.js";
 import {
   createSlackPresenceMonitor,
   hasSlackPresenceEventsEnabled,
   SLACK_PRESENCE_REQUEST_TIMEOUT_MS,
 } from "./presence-monitor.js";
+import { createSlackProjectionReader } from "./projection-reader.js";
 import {
   createSlackBoltApp,
   gracefulStopSlackApp,
@@ -295,7 +305,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
 
   const slackCfg = account.config;
   const slashCommand = resolveSlackSlashCommandConfig(opts.slashCommand ?? slackCfg.slashCommand);
-  const mediaMaxBytes = (opts.mediaMaxMb ?? slackCfg.mediaMaxMb ?? 20) * 1024 * 1024;
+  const mediaMaxBytes = resolveSlackMediaMaxBytes(opts.mediaMaxMb ?? slackCfg.mediaMaxMb);
   const slackDispatcher = resolveSlackProxyDispatcher();
   const clientOptions = resolveSlackWebClientOptions({}, slackDispatcher);
   const durableIngress = createSlackDurableIngress({
@@ -304,6 +314,10 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
   });
   const monitorContextRef: { current?: SlackMonitorContext } = {};
+  let slackLivenessTimer: ReturnType<typeof setInterval> | undefined;
+  // Socket Mode drops what happens while disconnected. Projection readers use
+  // this to re-snapshot DMs after a reconnect instead of waiting for rotation.
+  let socketConnectedAt: number | undefined;
   const { app, receiver, socketModeLogger } = createSlackBoltApp({
     interop: await getSlackBoltInterop(),
     slackMode,
@@ -633,6 +647,27 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
   }
 
   async function installSlackRuntimeForIdentity(identity: SlackInstallationIdentity) {
+    if (identity.kind === "workspace") {
+      const readClient = createSlackWebClient(account.userToken || token, {
+        ...clientOptions,
+        timeout: 10_000,
+        retryConfig: { retries: 0 },
+        rejectRateLimitedCalls: true,
+      });
+      registerChannelRuntimeContext({
+        channelRuntime: opts.channelRuntime,
+        channelId: "slack",
+        accountId: account.accountId,
+        capability: "thread-read-projection",
+        context: createSlackProjectionReader({
+          client: readClient,
+          workspaceId: identity.teamId,
+          botUserId: ctx.botUserId,
+          socketConnectedAt: () => socketConnectedAt,
+        }),
+        abortSignal: opts.abortSignal,
+      });
+    }
     installSlackApprovalRuntime(identity);
     installSlackPresenceRuntime(identity);
     if (identity.kind === "workspace") {
@@ -697,6 +732,22 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     account.accountId,
     installationIdentity.kind,
   );
+  const unregisterThreadOwnerPeer = registerSlackThreadOwnerPeer(account.accountId, {
+    botUserId: () => ctx.botUserId,
+    answersUnmentioned: (channelId, channelName) => {
+      const channelConfig = resolveSlackChannelConfig({
+        teamId: ctx.teamId,
+        allowUnscoped: ctx.installationIdentity?.kind !== "enterprise",
+        channelId,
+        channelName,
+        channels: ctx.channelsConfig,
+        channelKeys: ctx.channelsConfigKeys,
+        defaultRequireMention: ctx.defaultRequireMention,
+        allowNameMatching: ctx.allowNameMatching,
+      });
+      return Boolean(channelConfig?.allowed && !channelConfig.requireMention);
+    },
+  });
 
   try {
     await installSlackRuntimeForIdentity(installationIdentity);
@@ -716,6 +767,25 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
     if (slackMode === "socket") {
       let reconnectAttempts = 0;
       let hasLoggedSocketConnected = false;
+      // Socket Mode drops everything that happens while we are disconnected, so
+      // the socket records that it is alive and each reconnect replays what it
+      // missed between the last mark and now.
+      const livenessStore = openSlackSocketLivenessStore();
+      // Resolved per use: the workspace id is only final once identity recovery
+      // has run, which happens inside onStarted.
+      const livenessKey = () =>
+        buildSlackLivenessKey({ accountId: account.accountId, teamId: ctx.teamId });
+      const markAlive = async () => {
+        try {
+          await livenessStore?.register(livenessKey(), Date.now());
+        } catch (error) {
+          runtime.log?.(`slack socket liveness mark failed: ${formatUnknownError(error)}`);
+        }
+      };
+      if (livenessStore) {
+        slackLivenessTimer = setInterval(() => void markAlive(), SLACK_LIVENESS_HEARTBEAT_MS);
+        slackLivenessTimer.unref?.();
+      }
       while (!opts.abortSignal?.aborted) {
         try {
           const disconnect = await startSlackSocketAndWaitForDisconnect({
@@ -723,7 +793,31 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             abortSignal: opts.abortSignal,
             onStarted: async () => {
               reconnectAttempts = 0;
+              socketConnectedAt = Date.now();
               await recoverSlackIdentity();
+              if (livenessStore) {
+                // Read the previous mark before overwriting it, or the gap we
+                // are about to measure is always zero.
+                const lastAliveAt = await livenessStore
+                  .lookup(livenessKey())
+                  .catch(() => undefined);
+                await markAlive();
+                // Recovery re-reads Slack history, so it must never hold up the
+                // connection it just came back on.
+                void recoverSlackMissedMentions({
+                  ctx,
+                  client: app.client,
+                  lastAliveAt,
+                  dispatch: async (message) => {
+                    await handleSlackMessage(message, { source: "message" });
+                  },
+                  ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
+                }).catch((error) => {
+                  runtime.error?.(
+                    `slack missed-mention recovery failed: ${formatUnknownError(error)}`,
+                  );
+                });
+              }
               publishSlackConnectedStatus(opts.setStatus, ctx.identityHealth);
               if (!hasLoggedSocketConnected) {
                 hasLoggedSocketConnected = true;
@@ -833,6 +927,10 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       }
     }
   } finally {
+    if (slackLivenessTimer) {
+      clearInterval(slackLivenessTimer);
+    }
+    unregisterThreadOwnerPeer();
     installationState.release();
     runtimeStarted = false;
     presenceRequestAbort?.abort();

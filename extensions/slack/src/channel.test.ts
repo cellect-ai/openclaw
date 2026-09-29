@@ -341,6 +341,7 @@ describe("slackPlugin actions", () => {
         "react",
         "reactions",
         "conversation-open",
+        "thread-reply",
         "read",
         "edit",
         "delete",
@@ -470,6 +471,19 @@ describe("slackPlugin actions", () => {
     ).toBe(true);
   });
 
+  it("formats {sender.mention} for routed room replies but not DMs", () => {
+    const formatSenderMention = slackPlugin.messaging?.formatSenderMention;
+    if (!formatSenderMention) {
+      throw new Error("slack messaging.formatSenderMention unavailable");
+    }
+
+    expect(formatSenderMention({ senderId: "u123", to: "channel:C123" })).toBe("<@U123>");
+    expect(formatSenderMention({ senderId: "U123", to: "C123" })).toBe("<@U123>");
+    expect(formatSenderMention({ senderId: "U123", to: "user:U123" })).toBe("");
+    expect(formatSenderMention({ senderId: "U123", to: "channel:D123" })).toBe("");
+    expect(formatSenderMention({ senderId: "not-a-user", to: "channel:C123" })).toBe("");
+  });
+
   it("forwards read threadId to Slack action handler", async () => {
     handleSlackActionMock.mockResolvedValueOnce({ messages: [], hasMore: false });
     const handleAction = requireSlackHandleAction();
@@ -514,6 +528,7 @@ describe("slackPlugin actions", () => {
       },
       mediaLocalRoots,
       mediaReadFile,
+      mediaAccess: { workspaceDir: "/tmp/workspace-agent" },
       toolContext: {
         currentChannelId: "C123",
         replyToMode: "all",
@@ -532,6 +547,7 @@ describe("slackPlugin actions", () => {
       replyToMode: "all",
       mediaLocalRoots,
       mediaReadFile,
+      mediaWorkspaceDir: "/tmp/workspace-agent",
     });
   });
 

@@ -19,6 +19,22 @@ import {
   resolveMatrixDurableDeliveryIdentity,
 } from "./delivery-plan.js";
 import { createMatrixDraftStream } from "./draft-stream.js";
+import { createMatrixSourcePublication } from "./projection-publication.js";
+
+const projectionBinding = vi.hoisted(() => ({ override: undefined as unknown }));
+vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("openclaw/plugin-sdk/conversation-binding-runtime")>();
+  return {
+    ...actual,
+    getSessionBindingService: () => {
+      const service = actual.getSessionBindingService();
+      return projectionBinding.override
+        ? { ...service, resolveByConversation: () => projectionBinding.override }
+        : service;
+    },
+  };
+});
 import { markdownToMatrixBody, markdownToMatrixHtml } from "./format.js";
 import { createBundledReplacementEvent } from "./monitor/test-events.js";
 import { matrixEventToRaw } from "./sdk/event-helpers.js";
@@ -35,7 +51,10 @@ import {
   makeClient,
   makeEncryptedMediaClient,
 } from "./send.test-support.js";
-import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY } from "./send/types.js";
+import {
+  MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY,
+  MATRIX_STREAM_PHASE_CONTENT_KEY,
+} from "./send/types.js";
 
 const loadOutboundMediaFromUrlMock = vi.hoisted(() => vi.fn());
 const loadWebMediaMock = vi.fn().mockResolvedValue({
@@ -1381,6 +1400,22 @@ describe("sendMessageMatrix threads", () => {
 });
 
 describe("sendSingleTextMessageMatrix", () => {
+  it("labels draft sends with their stream phase", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await sendSingleTextMessageMatrix("room:!room:example", "Working...", {
+      client,
+      cfg: {} as never,
+      includeMentions: false,
+      live: true,
+      streamPhase: "progress",
+    });
+
+    const content = sentContent(sendMessage);
+    expect(content["org.matrix.msc4357.live"]).toEqual({});
+    expect(content[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     resetMatrixSendRuntimeMocks();
@@ -1617,7 +1652,68 @@ describe("sendSingleTextMessageMatrix", () => {
   });
 });
 
+describe("editMessageMatrix projection publication", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetMatrixSendRuntimeMocks();
+  });
+
+  it("carries only the trusted publication into the replacement", async () => {
+    const { client, sendMessage, getEvent } = makeClient();
+    getEvent.mockResolvedValue({ content: { body: "before" } });
+    projectionBinding.override = {
+      bindingId: "binding",
+      metadata: {
+        environment: "test",
+        projectedConversationId: "conversation",
+        sourceAccountId: "T1",
+      },
+    };
+    const publication = createMatrixSourcePublication({
+      bindingId: "binding",
+      roomId: "!room:example",
+      threadId: "$root",
+      provider: "slack",
+      accountId: "default",
+      messageId: "1700000000.000001",
+      actorId: "U111",
+      publishedAtMs: 1700000000000,
+      role: "user",
+      publicationRevision: 2,
+    })!;
+    await editMessageMatrix("room:!room:example", "$original", "after", {
+      client,
+      cfg: {} as never,
+      publication,
+      extraContent: { "ai.cellect.projection": { forged: true }, "com.example.kept": 1 },
+    });
+    const replacement = newContent(sentContent(sendMessage));
+    expect(replacement["ai.cellect.projection"]).toMatchObject({
+      publicationRevision: 2,
+      origin: { provider: "slack", messageId: "1700000000.000001" },
+    });
+    expect(replacement["ai.cellect.projection"]).not.toHaveProperty("forged");
+    expect(replacement["com.example.kept"]).toBe(1);
+    projectionBinding.override = undefined;
+  });
+});
+
 describe("editMessageMatrix mentions", () => {
+  it("places the stream phase on both halves of an edit", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await editMessageMatrix("room:!room:example", "$original", "Reading", {
+      client,
+      cfg: {} as never,
+      live: true,
+      streamPhase: "progress",
+    });
+
+    const content = sentContent(sendMessage);
+    expect(content[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
+    expect(newContent(content)[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     resetMatrixSendRuntimeMocks();

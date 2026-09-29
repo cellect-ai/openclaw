@@ -19,7 +19,7 @@ import {
   SLACK_MEDIA_READ_IDLE_TIMEOUT_MS,
 } from "./media.js";
 import { resolveSlackMessageContent } from "./message-handler/prepare-content.js";
-import { resolveSlackThreadStarter } from "./thread.js";
+import { hasSlackThreadReplyMatchingUser, resolveSlackThreadStarter } from "./thread.js";
 import { logVerbose } from "./thread.runtime.js";
 
 type FetchMock = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
@@ -1695,6 +1695,79 @@ describe("resolveSlackAttachmentContent", () => {
     expect(result).toBeNull();
     expect(saveRemoteMediaMock).not.toHaveBeenCalled();
     expect(mockFetch).not.toHaveBeenCalled();
+  });
+});
+
+describe("hasSlackThreadReplyMatchingUser", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("finds an authority match on a later page", async () => {
+    const replies = vi
+      .fn()
+      .mockResolvedValueOnce({
+        messages: [{ user: "U_CONTEXT", ts: "1.000" }],
+        response_metadata: { next_cursor: "cursor-2" },
+      })
+      .mockResolvedValueOnce({
+        messages: [{ user: "U_OWNER", ts: "2.000" }],
+        response_metadata: { next_cursor: "" },
+      });
+    const client = {
+      conversations: { replies },
+    } as unknown as Parameters<typeof hasSlackThreadReplyMatchingUser>[0]["client"];
+
+    const result = await hasSlackThreadReplyMatchingUser({
+      channelId: "C1",
+      threadTs: "1.000",
+      client,
+      currentMessageTs: "3.000",
+      matchesUser: (userId) => userId === "U_OWNER",
+    });
+
+    expect(result).toBe(true);
+    expect(replies).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not use an authority message posted after the current message", async () => {
+    const replies = vi.fn().mockResolvedValueOnce({
+      messages: [
+        { user: "U_CONTEXT", ts: "2.000" },
+        { user: "U_OWNER", ts: "3.000" },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+    const client = {
+      conversations: { replies },
+    } as unknown as Parameters<typeof hasSlackThreadReplyMatchingUser>[0]["client"];
+
+    const result = await hasSlackThreadReplyMatchingUser({
+      channelId: "C1",
+      threadTs: "1.000",
+      client,
+      currentMessageTs: "2.000",
+      matchesUser: (userId) => userId === "U_OWNER",
+    });
+
+    expect(result).toBe(false);
+  });
+
+  it("fails closed when Slack replies cannot be read", async () => {
+    const replies = vi.fn().mockRejectedValueOnce(new Error("missing_scope"));
+    const client = {
+      conversations: { replies },
+    } as unknown as Parameters<typeof hasSlackThreadReplyMatchingUser>[0]["client"];
+
+    const result = await hasSlackThreadReplyMatchingUser({
+      channelId: "C1",
+      threadTs: "1.000",
+      client,
+      currentMessageTs: "2.000",
+      matchesUser: () => true,
+    });
+
+    expect(result).toBe(false);
   });
 });
 

@@ -33,6 +33,15 @@ function expectSlackConfigKeyRejected(config: unknown, key: string) {
 }
 
 describe("slack config schema", () => {
+  it("accepts channel request-user allowlists, including an explicit empty list", () => {
+    expectSlackConfigValid({
+      channels: {
+        C123: { users: ["U_OWNER", "U_CONTEXT"], requestUsers: ["U_OWNER"] },
+        C456: { users: ["U_CONTEXT"], requestUsers: [] },
+      },
+    });
+  });
+
   it("accepts compact progress style", () => {
     expectSlackConfigValid({
       streaming: {
@@ -593,6 +602,54 @@ describe("slack config schema", () => {
         },
       },
     });
+  });
+
+  it("accepts a root-only cross-account thread owner preference", () => {
+    expectSlackConfigValid({
+      threadOwnership: { preferredAccounts: ["fi-admin", "fi-user"] },
+      accounts: { "fi-admin": {}, "fi-user": {} },
+    });
+    expectSlackConfigIssue(
+      { accounts: { "fi-admin": { threadOwnership: { preferredAccounts: ["fi-admin"] } } } },
+      "accounts.fi-admin",
+    );
+  });
+
+  it("accepts reaction triggers keyed by emoji name at root and account level", () => {
+    expectSlackConfigValid({
+      reactionTriggers: {
+        inbox_tray: { prompt: "File the attachments.", requestUsers: ["U123"] },
+      },
+      accounts: { "fi-admin": { reactionTriggers: { eyes: { prompt: "Review this." } } } },
+    });
+    expectSlackConfigIssue(
+      { reactionTriggers: { ":inbox_tray:": { prompt: "x" } } },
+      "reactionTriggers.:inbox_tray:",
+    );
+    expectSlackConfigIssue(
+      { reactionTriggers: { inbox_tray: { prompt: " " } } },
+      "reactionTriggers.inbox_tray.prompt",
+    );
+  });
+
+  it("accepts the opt-in payment-detail warning at root and account level", () => {
+    expectSlackConfigValid({
+      paymentDetailWarning: true,
+      accounts: { "fi-admin": { paymentDetailWarning: false } },
+    });
+    expectSlackConfigIssue({ paymentDetailWarning: "yes" }, "paymentDetailWarning");
+  });
+
+  it("accepts unanswered-mention notice settings", () => {
+    expectSlackConfigValid({
+      unansweredMentions: { notice: true, contact: "Ask Alex for access.", alertAfterMinutes: 0 },
+      accounts: { "fi-user": { unansweredMentions: { notice: false } } },
+    });
+    expectSlackConfigIssue(
+      { unansweredMentions: { alertAfterMinutes: -1 } },
+      "unansweredMentions.alertAfterMinutes",
+    );
+    expectSlackConfigKeyRejected({ unansweredMentions: { text: "x" } }, "text");
   });
 
   it("rejects the retired thread requireExplicitMention runtime key", () => {

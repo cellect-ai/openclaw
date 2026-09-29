@@ -21,6 +21,7 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload";
 import { createReplyReferencePlanner } from "openclaw/plugin-sdk/reply-reference";
+import { emitReplyPublicationAccepted } from "openclaw/plugin-sdk/reply-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
 import { buildSlackBlocksFallbackText } from "../blocks-fallback.js";
@@ -313,6 +314,14 @@ export async function deliverReplies(params: {
       });
     }
     if (delivered) {
+      const accepted = lastResult ?? acceptedResults.at(-1);
+      if (accepted?.messageId)
+        await emitReplyPublicationAccepted(payload, {
+          channel: "slack",
+          accountId: params.accountId ?? "default",
+          conversationId: params.messageSentHookTarget ?? params.target,
+          messageId: accepted.messageId,
+        });
       const hookContent = hookParts.join("\n\n") || textRaw || spokenText || "";
       // Preserve the media hook contract even when a trailing block send has a
       // message `ts`; the logical payload still spans multiple Slack objects.

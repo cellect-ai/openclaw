@@ -10,6 +10,7 @@ import {
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMatrixExtraContent } from "../../outbound.js";
 import type { CoreConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
+import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import type { createMatrixDraftController } from "./handler-draft-controller.js";
 import {
@@ -104,6 +105,7 @@ export function createMatrixReplyDispatcher(config: {
     ...prefixOptions,
     humanDelay,
     deliver: async (payload: ReplyPayload, info: { kind: "tool" | "block" | "final" }) => {
+      const publication = resolveMatrixReplyPublication(payload, accountId, roomId, threadTarget);
       const completeDelivery = async (
         result: MatrixReplyDeliveryResult,
       ): Promise<MatrixReplyDeliveryResult> => {
@@ -164,6 +166,9 @@ export function createMatrixReplyDispatcher(config: {
                   payloadText?.trim() &&
                   !payload.isError &&
                   !payloadReplyMismatch &&
+                  // Canonical publications own a fresh immutable event batch. A technical
+                  // draft/edit is never silently promoted into a final accepted result.
+                  !publication &&
                   !draftStream.mustDeliverFinalNormally()
                     ? { text: payloadText }
                     : undefined,
@@ -171,6 +176,7 @@ export function createMatrixReplyDispatcher(config: {
                   // A flush can discover a single-event limit, and mentions require a
                   // fresh event because draft mentions are deliberately inert.
                   if (
+                    Boolean(publication) ||
                     draftStream.mustDeliverFinalNormally() ||
                     (await matrixTextWouldActivateMentions(client, edit.text))
                   ) {
@@ -200,6 +206,7 @@ export function createMatrixReplyDispatcher(config: {
                       threadId: threadTarget,
                       accountId,
                       ...(Object.keys(extraContent).length > 0 ? { extraContent } : {}),
+                      streamPhase: "answer",
                     });
                   }
                   return createDraftDeliveryResult(
@@ -232,6 +239,7 @@ export function createMatrixReplyDispatcher(config: {
                 payloadText?.trim() ||
                 payload.isError ||
                 payloadReplyMismatch ||
+                Boolean(publication) ||
                 draftStream?.mustDeliverFinalNormally())
             ) {
               const id = draftStream?.eventId();

@@ -302,6 +302,7 @@ export abstract class MatrixClientCore extends MatrixClientBase {
     roomId: string,
     eventType: string,
     content: Record<string, unknown>,
+    transactionId?: string,
   ): Promise<string> {
     return await this.runSerializedRoomSend(roomId, async () => {
       // SDK encryption trusts these wire event types without inspecting their
@@ -319,7 +320,12 @@ export abstract class MatrixClientCore extends MatrixClientBase {
       if (eventType !== MATRIX_REACTION_EVENT_TYPE) {
         await this.prepareRoomForMessageSend(roomId, content);
       }
-      const sent = await this.client.sendEvent(roomId, eventType as never, content as never);
+      const sent = await this.client.sendEvent(
+        roomId,
+        eventType as never,
+        content as never,
+        transactionId,
+      );
       return sent.event_id;
     });
   }

@@ -13,8 +13,10 @@ const SYNC_CACHE_NAMESPACE = "sync-cache";
 const SYNC_CACHE_MAX_ENTRIES = 20_000;
 const SYNC_CACHE_MAX_CHUNKS = Math.floor((SYNC_CACHE_MAX_ENTRIES - 1) / 2);
 const SYNC_CACHE_STATE_KEY = "current";
-// PluginState serializes this string inside a row object; 24KB leaves room for JSON escaping.
-const SYNC_CACHE_CHUNK_BYTES = 24_000;
+// PluginState serializes this JSON string inside another JSON object. The
+// source is already JSON-escaped, so 256KB leaves ample room below the 1MB
+// PluginState value limit while avoiding thousands of SQLite transactions.
+const SYNC_CACHE_CHUNK_BYTES = 256_000;
 
 // A reader must finish its generation before another local writer retires its chunks.
 const syncCacheOperations = new KeyedAsyncQueue();
@@ -247,20 +249,18 @@ function chunkSyncCacheJson(value: string): string[] {
     }
     chunks.push(chunk);
   };
-  let current = "";
-  let currentBytes = 0;
-  for (const char of value) {
-    const charBytes = Buffer.byteLength(char, "utf8");
-    if (current && currentBytes + charBytes > SYNC_CACHE_CHUNK_BYTES) {
-      pushChunk(current);
-      current = "";
-      currentBytes = 0;
+  const encoded = Buffer.from(value, "utf8");
+  for (let offset = 0; offset < encoded.length;) {
+    let end = Math.min(offset + SYNC_CACHE_CHUNK_BYTES, encoded.length);
+    // Never start the next chunk on a UTF-8 continuation byte.
+    while (end < encoded.length && (encoded[end]! & 0xc0) === 0x80) {
+      end -= 1;
     }
-    current += char;
-    currentBytes += charBytes;
-  }
-  if (current) {
-    pushChunk(current);
+    if (end <= offset) {
+      throw new Error("Matrix sync cache contains an invalid UTF-8 chunk boundary");
+    }
+    pushChunk(encoded.toString("utf8", offset, end));
+    offset = end;
   }
   return chunks;
 }

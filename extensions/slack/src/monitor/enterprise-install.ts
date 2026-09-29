@@ -165,6 +165,11 @@ export function assertEnterpriseSlackPolicyConfig(params: {
       predicate: isStableSlackAllowlistUserEntry,
     });
     assertStableEntries({
+      values: channel?.requestUsers,
+      path: `channels.slack.accounts.${accountId}.channels.${channelKey}.requestUsers`,
+      predicate: isStableSlackAllowlistUserEntry,
+    });
+    assertStableEntries({
       values: Object.keys(channel?.toolsBySender ?? {}),
       path: `channels.slack.accounts.${accountId}.channels.${channelKey}.toolsBySender`,
       predicate: isStableSlackToolsBySenderEntry,

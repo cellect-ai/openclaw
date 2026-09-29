@@ -18,6 +18,7 @@ import type { SlackMonitorContext } from "../context.js";
 import { resolveSlackListenerEventScope, type SlackEventScope } from "../event-scope.js";
 import { resolveSlackIngressTurnLifecycle } from "../ingress.js";
 import type { SlackMessageHandler } from "../message-handler.js";
+import { maybeWarnSlackPaymentDetails } from "../payment-detail-warning.js";
 import type { SlackMessageChangedEvent } from "../types.js";
 import { resolveSlackMessageSubtypeHandler } from "./message-subtype-handlers.js";
 import { authorizeAndResolveSlackSystemEventContext } from "./system-event-context.js";
@@ -301,6 +302,8 @@ export function registerSlackMessageEvents(params: {
       }
 
       noteConversationMessage(message, eventScope);
+      // Independent of mention gating: every channel message is screened, off the reply path.
+      void maybeWarnSlackPaymentDetails({ ctx, message, eventScope });
       await handleSlackMessage(message, {
         source: "message",
         eventScope,

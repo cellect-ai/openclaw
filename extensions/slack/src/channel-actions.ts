@@ -8,6 +8,7 @@ import type { SlackActionContext } from "./action-context.js";
 import { handleSlackMessageAction } from "./message-action-dispatch.js";
 import { extractSlackToolSend } from "./message-actions.js";
 import { describeSlackMessageTool } from "./message-tool-api.js";
+import { parseSlackPermalink } from "./permalink.js";
 import { formatSlackTarget, parseSlackTarget, resolveSlackChannelId } from "./target-parsing.js";
 
 type SlackActionInvoke = (
@@ -27,6 +28,19 @@ const SLACK_TOOL_DELIVERY_ACTIONS = new Set([
 ]);
 
 const loadSlackActionRuntime = createLazyRuntimeModule(() => import("./action-runtime.runtime.js"));
+
+const SLACK_PERMALINK_PARAM_KEYS = ["permalink", "url", "link"];
+
+/** A pasted message permalink names the conversation to read; Slack gates the read itself. */
+function resolveSlackPermalinkReadTarget(args: Record<string, unknown>): string | undefined {
+  for (const key of SLACK_PERMALINK_PARAM_KEYS) {
+    const parsed = parseSlackPermalink(args[key]);
+    if (parsed?.kind === "message") {
+      return parsed.channelId;
+    }
+  }
+  return undefined;
+}
 
 function resolveSlackActionContext(
   ctx: ChannelMessageActionContext,
@@ -55,6 +69,7 @@ function resolveSlackActionContext(
     requesterAccountId: ctx.requesterAccountId ?? undefined,
     requesterSenderId: ctx.requesterSenderId ?? undefined,
     assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
+    mediaWorkspaceDir: ctx.mediaAccess?.workspaceDir,
   };
 }
 
@@ -72,6 +87,12 @@ export function createSlackActions(
       "emoji-list",
       "download-file",
     ],
+    messageActionTargetAliases: {
+      read: {
+        aliases: SLACK_PERMALINK_PARAM_KEYS,
+        resolveDeliveryTarget: ({ args }) => resolveSlackPermalinkReadTarget(args),
+      },
+    },
     describeMessageTool: describeSlackMessageTool,
     extractToolSend: ({ args }) => extractSlackToolSend(args),
     isToolDeliveryAction: ({ args }) =>

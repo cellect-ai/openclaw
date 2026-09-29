@@ -1,0 +1,172 @@
+{
+  "version": 1,
+  "derivation": "provider:account:msg:room:revision:part:kind:target_event_id. Each field escapes '%' as '%25' and then ':' as '%3A'. An absent field is the empty string. revision and part are decimal integers.",
+  "account": "ai.cellect.projection.origin.accountId of the projected copy",
+  "targets": {
+    "publish": "eventId, the new copy",
+    "edit": "replacesEventId, the original the replacement targets (m.relates_to.event_id). eventId is the replacement event",
+    "redact": "eventId, the event actually redacted (the m.room.redaction 'redacts'). For the gateway this is ProjectionAction.eventId, not its targetEventId",
+    "retire_notice": "eventId, the redacted notice",
+    "notice": "eventId, the notice",
+    "backfill": "eventId, the retained copy"
+  },
+  "revisionAndPart": {
+    "publish/edit/backfill": "publicationRevision and partIndex written by the action (the edit's m.new_content marker)",
+    "redact": "the redacted copy's current publicationRevision (after any in-place edit) and partIndex, as recorded in the mapping; absent when unknown",
+    "retire_notice/notice": "absent"
+  },
+  "cases": [
+    {
+      "name": "publish: target is the new copy",
+      "fields": {
+        "provider": "slack",
+        "account": "default",
+        "message": "1773075089.697959",
+        "room": "!projection:matrix.test",
+        "revision": 1,
+        "part": 0,
+        "kind": "publish",
+        "target": "$copy-a"
+      },
+      "key": "slack:default:1773075089.697959:!projection%3Amatrix.test:1:0:publish:$copy-a"
+    },
+    {
+      "name": "edit: target is the replaced original",
+      "fields": {
+        "provider": "slack",
+        "account": "default",
+        "message": "1773075089.697959",
+        "room": "!projection:matrix.test",
+        "revision": 2,
+        "part": 0,
+        "kind": "edit",
+        "target": "$copy-a"
+      },
+      "key": "slack:default:1773075089.697959:!projection%3Amatrix.test:2:0:edit:$copy-a"
+    },
+    {
+      "name": "redact: target is the redacted event",
+      "fields": {
+        "provider": "slack",
+        "account": "default",
+        "message": "1773075089.697959",
+        "room": "!projection:matrix.test",
+        "revision": 2,
+        "part": 0,
+        "kind": "redact",
+        "target": "$copy-dup"
+      },
+      "key": "slack:default:1773075089.697959:!projection%3Amatrix.test:2:0:redact:$copy-dup"
+    },
+    {
+      "name": "retire_notice: no source message",
+      "fields": {
+        "provider": "slack",
+        "account": "default",
+        "message": "",
+        "room": "!projection:matrix.test",
+        "revision": null,
+        "part": null,
+        "kind": "retire_notice",
+        "target": "$notice"
+      },
+      "key": "slack:default::!projection%3Amatrix.test:::retire_notice:$notice"
+    },
+    {
+      "name": "escaping: colons and percent in every field",
+      "fields": {
+        "provider": "slack",
+        "account": "acct:1%",
+        "message": "ts:2",
+        "room": "!projection:matrix.test",
+        "revision": 7,
+        "part": 3,
+        "kind": "publish",
+        "target": "$ev:matrix.test"
+      },
+      "key": "slack:acct%3A1%25:ts%3A2:!projection%3Amatrix.test:7:3:publish:$ev%3Amatrix.test"
+    }
+  ],
+  "observed": [
+    {
+      "name": "gateway in-place edit",
+      "event": {
+        "type": "m.room.message",
+        "room_id": "!projection:matrix.test",
+        "sender": "@cellect-fi:matrix.test",
+        "event_id": "$edit-1",
+        "origin_server_ts": 1773075300000,
+        "content": {
+          "msgtype": "m.text",
+          "body": "* (edit)",
+          "m.relates_to": {
+            "rel_type": "m.replace",
+            "event_id": "$copy-a"
+          },
+          "m.new_content": {
+            "msgtype": "m.text",
+            "body": "(new text)",
+            "ai.cellect.projection": {
+              "origin": {
+                "provider": "slack",
+                "accountId": "default",
+                "messageId": "1773075089.697959",
+                "actorId": "U0SYNTHETIC",
+                "publishedAtMs": 1773075089697
+              },
+              "publicationRevision": 3,
+              "partIndex": 0,
+              "partCount": 1,
+              "complete": true
+            },
+            "com.openclaw.source_revision": {
+              "contentHash": "9f2c5a0d1e7b3c4f6a8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
+            }
+          }
+        }
+      },
+      "action": {
+        "kind": "edit",
+        "messageId": "1773075089.697959",
+        "revision": 3,
+        "partIndex": 0,
+        "eventId": "$edit-1",
+        "replacesEventId": "$copy-a",
+        "contentHash": "9f2c5a0d1e7b3c4f6a8d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d"
+      },
+      "key": "slack:default:1773075089.697959:!projection%3Amatrix.test:3:0:edit:$copy-a"
+    },
+    {
+      "name": "redaction of a mapped part after its in-place edit",
+      "mapping": {
+        "provider": "slack",
+        "accountId": "default",
+        "messageId": "1773075089.697959",
+        "revision": 3,
+        "partIndex": 0,
+        "eventId": "$copy-a",
+        "editEventId": "$edit-1"
+      },
+      "event": {
+        "type": "m.room.redaction",
+        "room_id": "!projection:matrix.test",
+        "sender": "@cellect-fi:matrix.test",
+        "event_id": "$redaction-1",
+        "origin_server_ts": 1773075200000,
+        "redacts": "$copy-a",
+        "content": {
+          "redacts": "$copy-a",
+          "reason": "deleted_in_source"
+        }
+      },
+      "action": {
+        "kind": "redact",
+        "messageId": "1773075089.697959",
+        "revision": 3,
+        "partIndex": 0,
+        "eventId": "$copy-a"
+      },
+      "key": "slack:default:1773075089.697959:!projection%3Amatrix.test:3:0:redact:$copy-a"
+    }
+  ]
+}

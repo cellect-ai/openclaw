@@ -226,6 +226,11 @@ export async function resolveMatrixInboundContext(config: {
     ),
     messageId,
     timestamp: eventTs ?? undefined,
+    // Carry the homeserver event through the host-owned hook context, never the prompt.
+    channelContext: {
+      sender: { id: senderId },
+      chat: { id: roomId, eventId: messageId },
+    },
     from: isDirectMessage ? `matrix:${senderId}` : `matrix:channel:${roomId}`,
     sender: {
       id: senderId,

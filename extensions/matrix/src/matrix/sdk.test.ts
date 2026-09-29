@@ -2830,6 +2830,31 @@ describe("MatrixClient event bridge", () => {
     expect(resolved).toBe(true);
   });
 
+  it("does not start Matrix RTC membership scans for a headless messaging client", async () => {
+    const startMatrixRtc = vi.fn();
+    const stopMatrixRtc = vi.fn();
+    Object.assign(matrixJsClient, {
+      startMatrixRTC: startMatrixRtc,
+      matrixRTC: { stop: stopMatrixRtc },
+    });
+    matrixJsClient.on("sync", startMatrixRtc);
+    matrixJsClient.startClient = vi.fn(async () => {
+      const rtcCallback = (
+        matrixJsClient as unknown as { startMatrixRTC: (...args: unknown[]) => void }
+      ).startMatrixRTC;
+      matrixJsClient.on("sync", rtcCallback);
+      queueMicrotask(() => {
+        matrixJsClient.emit("sync", "PREPARED", null, undefined);
+      });
+    });
+
+    const client = new MatrixClient("https://matrix.example.org", "token");
+    await client.start();
+
+    expect(stopMatrixRtc).toHaveBeenCalledOnce();
+    expect(startMatrixRtc).not.toHaveBeenCalled();
+  });
+
   it("rejects startup when sync reports an unexpected error before ready", async () => {
     matrixJsClient.startClient = vi.fn(async () => {
       const timer = setTimeout(() => {

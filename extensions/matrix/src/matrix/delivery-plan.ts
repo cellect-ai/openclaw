@@ -7,6 +7,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getMatrixRuntime } from "../runtime.js";
+import { noteMatrixProjectionFinalResult } from "./projection-lifecycle.js";
 import { resolveMatrixReplyToEventId, resolveMatrixThreadRootId } from "./relations.js";
 import type { MatrixClient } from "./sdk.js";
 import type { MatrixMessageWireDispatch } from "./sdk/message-wire-dispatch.js";
@@ -32,6 +33,7 @@ export type MatrixPreparedEvent = {
   transactionId: string;
   receiptKind: MessageReceiptPartKind;
   content: MatrixOutboundContent;
+  projectionFinalResult?: { runId: string; generation: string; bindingId: string };
 };
 
 type MatrixDeliveryIdentity = {
@@ -362,6 +364,121 @@ async function requireTransactionScope(client: MatrixClient): Promise<string> {
   return scope;
 }
 
+/** Private operator repair replays only an exact frozen, registered publication. */
+export async function replayMatrixProjectionPublication(
+  cfg: import("../types.js").CoreConfig,
+  request: Record<string, unknown>,
+) {
+  const { getMatrixProjectionStatus } = await import("./projection-source.js");
+  const roomId = typeof request.roomId === "string" ? request.roomId : "",
+    accountId = typeof request.accountId === "string" ? request.accountId : "";
+  const owner = getMatrixProjectionStatus(roomId, accountId);
+  if (
+    owner.status !== "existing" ||
+    owner.environment !== request.environment ||
+    owner.conversationId !== request.conversationId ||
+    owner.bindingId !== request.bindingId
+  )
+    throw new MatrixDeliveryPlanInvariantError("unregistered publication replay target");
+  const publication = request.publication as Record<string, unknown> | undefined;
+  const origin = publication?.origin as Record<string, unknown> | undefined;
+  if (
+    !publication ||
+    !origin ||
+    typeof request.publicationKey !== "string" ||
+    !/^[a-f0-9]{64}$/.test(request.publicationKey) ||
+    !Number.isSafeInteger(request.expectedParts) ||
+    (request.expectedParts as number) < 1 ||
+    (request.expectedParts as number) > 256
+  )
+    throw new MatrixDeliveryPlanInvariantError("invalid replay descriptor");
+  const plans: MatrixDeliveryPlan[] = [];
+  for (const info of await createDeliveryPlanStore().entries()) {
+    const entry = await createDeliveryPlanStore().lookup(info.key);
+    if (!entry) continue;
+    const plan = decodePlan(entry.bytes);
+    if (plan.roomId !== roomId || plan.accountId !== accountId) continue;
+    const match =
+      plan.events.length === request.expectedParts &&
+      plan.events.every((event, index) => {
+        const wire = event.content["ai.cellect.projection"] as Record<string, unknown> | undefined;
+        if (
+          !wire ||
+          wire.environment !== request.environment ||
+          wire.bindingId !== request.bindingId ||
+          wire.conversationId !== request.conversationId
+        )
+          return false;
+        const source = wire.origin as Record<string, unknown> | undefined;
+        return (
+          !!source &&
+          ["provider", "accountId", "messageId", "actorId", "publishedAtMs"].every(
+            (key) => source[key] === origin[key],
+          ) &&
+          ["logicalPartId", "publicationRevision", "runId", "generation"].every(
+            (key) => wire[key] === publication[key],
+          ) &&
+          wire.partCount === request.expectedParts &&
+          wire.partIndex === index &&
+          wire.complete === (index === plan.events.length - 1)
+        );
+      });
+    if (match) plans.push(plan);
+  }
+  if (plans.length !== 1)
+    throw new MatrixDeliveryPlanInvariantError("missing or ambiguous frozen publication plan");
+  const plan = plans[0];
+  if (!plan) throw new MatrixDeliveryPlanInvariantError("missing frozen publication plan");
+  return withResolvedMatrixSendClient({ cfg, accountId }, async (client) => {
+    const sender = await client.getUserId();
+    const key = createHash("sha256")
+      .update(
+        JSON.stringify([
+          sender,
+          origin.provider,
+          origin.accountId,
+          origin.messageId,
+          publication.logicalPartId,
+          publication.publicationRevision,
+        ]),
+      )
+      .digest("hex");
+    if (key !== request.publicationKey)
+      throw new MatrixDeliveryPlanInvariantError("publication replay key mismatch");
+    const transactionScopeId = await requireTransactionScope(client),
+      wireEventType = await client.getMessageWireEventType(roomId);
+    assertPlanIdentity(plan, {
+      identity: plan,
+      accountId,
+      roomId,
+      transactionScopeId,
+      wireEventType,
+    });
+    const accepted: string[] = [];
+    for (const event of plan.events)
+      accepted.push(
+        await client.sendMessage(roomId, event.content, event.transactionId, async (dispatch) => {
+          await persistMatrixDeliveryPlan({
+            identity: plan,
+            accountId,
+            roomId,
+            transactionScopeId,
+            wireEventType,
+            events: plan.events,
+            dispatch,
+          });
+        }),
+      );
+    const final = plan.events.at(-1)?.projectionFinalResult;
+    if (final && accepted.at(-1))
+      noteMatrixProjectionFinalResult({
+        ...final,
+        resultEventId: accepted.at(-1)!,
+      });
+    return { accepted: true, eventIds: accepted };
+  });
+}
+
 export async function reconcileMatrixUnknownSend(
   ctx: ChannelMessageUnknownSendContext,
 ): Promise<ChannelMessageUnknownSendReconciliationResult> {
@@ -426,6 +543,12 @@ export async function reconcileMatrixUnknownSend(
           events: [...results.values()],
           threadId: resolveMatrixThreadRootId(orderedPlans[0]!.events[0]!.content),
         });
+        const final = orderedPlans.at(-1)?.events.at(-1)?.projectionFinalResult;
+        if (final && receipt.platformMessageIds.at(-1))
+          noteMatrixProjectionFinalResult({
+            ...final,
+            resultEventId: receipt.platformMessageIds.at(-1)!,
+          });
         return {
           status: "sent",
           messageId: receipt.platformMessageIds.at(-1),

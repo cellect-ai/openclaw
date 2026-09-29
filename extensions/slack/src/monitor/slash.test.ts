@@ -1543,7 +1543,15 @@ describe("Slack native command argument menus", () => {
 
 function createPolicyHarness(overrides?: {
   groupPolicy?: "open" | "allowlist";
-  channelsConfig?: Record<string, { enabled?: boolean; requireMention?: boolean }>;
+  channelsConfig?: Record<
+    string,
+    {
+      enabled?: boolean;
+      requireMention?: boolean;
+      users?: string[];
+      requestUsers?: string[];
+    }
+  >;
   channelId?: string;
   channelName?: string;
   allowFrom?: string[];
@@ -1748,6 +1756,33 @@ describe("Slack App Home command presentation", () => {
 });
 
 describe("slack slash commands channel policy", () => {
+  it("denies a slash command from an admitted context-only collaborator", async () => {
+    const harness = createPolicyHarness({
+      groupPolicy: "allowlist",
+      allowFrom: ["U_OWNER"],
+      channelId: "C12345678",
+      channelName: "shared",
+      channelsConfig: {
+        C12345678: {
+          enabled: true,
+          users: ["U_OWNER", "U_CONTEXT"],
+          requestUsers: ["U_OWNER"],
+        },
+      },
+    });
+    (harness.ctx as { channelsConfigKeys?: string[] }).channelsConfigKeys = ["C12345678"];
+    const { respond } = await registerAndRunPolicySlash({
+      harness,
+      command: { user_id: "U_CONTEXT", user_name: "Nicholas" },
+    });
+
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith({
+      text: "You may contribute context here, but only an authorized requester can start or administer agent work.",
+      response_type: "ephemeral",
+    });
+  });
+
   it("drops mismatched slash payloads before dispatch", async () => {
     const harness = createPolicyHarness({
       shouldDropMismatchedSlackEvent: () => true,

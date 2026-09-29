@@ -10,6 +10,7 @@ import {
   createMessageReceiptFromOutboundResults,
   type LivePreviewDeliveryResult,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { resolveMarkdownTableMode } from "openclaw/plugin-sdk/markdown-table-runtime";
 import {
@@ -21,7 +22,7 @@ import {
 import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
 import { danger, logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { formatSlackError } from "../../errors.js";
-import { normalizeSlackOutboundText } from "../../format.js";
+import { formatSlackUserMention, normalizeSlackOutboundText } from "../../format.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
 import { resolveSlackReplyRenderPlan } from "../../reply-blocks.js";
@@ -34,6 +35,11 @@ import {
 } from "../../sent-thread-cache.js";
 import { countSlackTextUtf8Bytes } from "../../truncate.js";
 import { registerSlackSessionRun } from "../session-run-targets.js";
+import { scheduleSlackSessionTitleAfterMeta } from "../slack-session-title.js";
+import {
+  resolveSlackPrincipalMention,
+  trackSlackPrincipalMention,
+} from "../unanswered-mentions.js";
 import { resolveSlackBotLoopProtection } from "./dispatch-helpers.js";
 import { createSlackProgressRuntime } from "./dispatch-progress.js";
 import { createSlackDispatchSetup, type SlackDispatchSetup } from "./dispatch-setup.js";
@@ -117,6 +123,16 @@ async function dispatchSlackMessageWithSetup(
   } = setup;
   let dispatchError: unknown;
   const delivery = createSlackStreamingDeliveryRuntime(setup);
+  const principalMention =
+    prepared.isRoomish &&
+    prepared.ctxPayload.ExplicitlyMentionedBot === true &&
+    prepared.ctxPayload.InboundEventKind !== "room_event" &&
+    message.ts
+      ? { accountId: account.accountId, channelId: message.channel, messageTs: message.ts }
+      : undefined;
+  if (principalMention) {
+    trackSlackPrincipalMention({ ctx, ...principalMention, userId: message.user });
+  }
   const progress = createSlackProgressRuntime({ setup, delivery });
   const { draftStream, previewLifecycle } = progress;
   // A posted draft/progress message counts as visible output even before it is
@@ -138,6 +154,8 @@ async function dispatchSlackMessageWithSetup(
         teamId?: string;
       }
     | undefined;
+  const responsePrefixContextProvider = replyPipeline.responsePrefixContextProvider;
+  const senderMention = prepared.isRoomish ? formatSlackUserMention(message.user) : "";
 
   const filterPassiveThreadFailure = (payload: ReplyPayload): ReplyPayload | null => {
     if (
@@ -423,6 +441,8 @@ async function dispatchSlackMessageWithSetup(
   let agentRunFailed = false;
   let settledDispatchResult: Parameters<typeof hasVisibleInboundReplyDispatch>[0];
   try {
+    const inboundRecord = prepared.turn.record as InboundReplyRecordOptions;
+    const sessionKey = prepared.ctxPayload.SessionKey ?? route.sessionKey;
     const turnResult = await dispatchChannelInboundTurn({
       cfg,
       channel: "slack",
@@ -439,9 +459,50 @@ async function dispatchSlackMessageWithSetup(
             : payload;
           return transformed ? filterPassiveThreadFailure(transformed) : null;
         },
+        // Extend the channel pipeline's live prefix context with the requester mention.
+        // Without a channel provider, core keeps its own per-agent prefix context.
+        ...(responsePrefixContextProvider
+          ? {
+              responsePrefixContextProvider: () => ({
+                ...responsePrefixContextProvider(),
+                senderMention,
+              }),
+            }
+          : {}),
         humanDelay: resolveHumanDelayConfig(cfg, route.agentId),
       },
       delivery: {
+        durable: (_payload, info) => {
+          if (
+            info.kind !== "final" ||
+            !getSessionBindingService()
+              .listBySession(sessionKey)
+              .some(
+                (binding) =>
+                  binding.conversation.channel === "matrix" &&
+                  binding.metadata?.environment &&
+                  binding.metadata.projectedConversationId &&
+                  binding.metadata.sourceReplyAuthorization,
+              )
+          )
+            return false;
+          return {
+            to: prepared.replyTarget,
+            threadId:
+              delivery.streamSession?.threadTs ??
+              delivery.nativeProgressStreamThreadTs ??
+              replyPlan.nextThreadTs(),
+            replyToMode: setup.replyDeliveryMode,
+            identity: setup.slackIdentity
+              ? {
+                  name: setup.slackIdentity.username,
+                  avatarUrl: setup.slackIdentity.iconUrl,
+                  emoji: setup.slackIdentity.iconEmoji,
+                }
+              : undefined,
+            requiredCapabilities: { reconcileUnknownSend: false },
+          };
+        },
         deliver: deliverSlackPayload,
         onError: (err, info) => {
           // Core settles delivery errors without throwing; Slack closeout still owns the failure.
@@ -450,7 +511,20 @@ async function dispatchSlackMessageWithSetup(
           replyPipeline.typingCallbacks?.onIdle?.();
         },
       },
-      record: prepared.turn.record as InboundReplyRecordOptions,
+      record: {
+        ...inboundRecord,
+        trackSessionMetaTask: (metaTask) => {
+          inboundRecord.trackSessionMetaTask?.(metaTask);
+          scheduleSlackSessionTitleAfterMeta({
+            metaTask,
+            cfg,
+            agentId: route.agentId,
+            sessionKey,
+            storePath: prepared.turn.storePath,
+            ctx: prepared.ctxPayload,
+          });
+        },
+      },
       botLoopProtection: resolveSlackBotLoopProtection(prepared),
       replyOptions: {
         groupThreadReplyFormatter: formatSlackGroupThreadReply,
@@ -594,6 +668,10 @@ async function dispatchSlackMessageWithSetup(
     }
   }
   await previewLifecycle.cleanup({ failed: Boolean(dispatchError || agentRunFailed) });
+
+  if (principalMention && anyReplyDelivered) {
+    resolveSlackPrincipalMention(principalMention);
+  }
 
   if (pendingFailureNotice && anyReplyDelivered) {
     recordSlackThreadFailureNotice(pendingFailureNotice);

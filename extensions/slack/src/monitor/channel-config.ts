@@ -21,6 +21,7 @@ export type SlackChannelConfigResolved = {
   allowBots?: boolean | "mentions";
   botLoopProtection?: ChannelBotLoopProtectionConfig;
   users?: Array<string | number>;
+  requestUsers?: Array<string | number>;
   skills?: string[];
   systemPrompt?: string;
   presenceEvents?: SlackChannelConfig["presenceEvents"];
@@ -36,6 +37,7 @@ type SlackChannelConfigEntry = {
   allowBots?: boolean | "mentions";
   botLoopProtection?: ChannelBotLoopProtectionConfig;
   users?: Array<string | number>;
+  requestUsers?: Array<string | number>;
   skills?: string[];
   systemPrompt?: string;
   presenceEvents?: SlackChannelConfig["presenceEvents"];
@@ -126,6 +128,15 @@ export function resolveSlackChannelConfig(params: {
     // ingress treats differently scoped values as non-matching.
     preserveUnmatchedScopedEntries: true,
   });
+  const configuredRequestUsers = firstDefined(resolved.requestUsers, fallback?.requestUsers);
+  const requestUsers =
+    configuredRequestUsers === undefined
+      ? undefined
+      : resolveSlackUserAllowListForTeam({
+          allowList: configuredRequestUsers,
+          teamId: params.teamId,
+          preserveUnmatchedScopedEntries: true,
+        });
   const skills = firstDefined(resolved.skills, fallback?.skills);
   const systemPrompt = firstDefined(resolved.systemPrompt, fallback?.systemPrompt);
   const presenceEvents = firstDefined(resolved.presenceEvents, fallback?.presenceEvents);
@@ -137,6 +148,7 @@ export function resolveSlackChannelConfig(params: {
     allowBots,
     botLoopProtection,
     users: users.length > 0 ? users : undefined,
+    requestUsers,
     skills,
     systemPrompt,
     presenceEvents,

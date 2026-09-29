@@ -21,7 +21,11 @@ import {
   type PersistedMatrixSyncStore,
 } from "./sync-cache-state.js";
 
-const PERSIST_DEBOUNCE_MS = 250;
+// A /sync response can retain tens of megabytes of joined-room state. Persist a
+// restart checkpoint periodically instead of rewriting that full snapshot on
+// every long-poll response. Explicit flushes (including shutdown) remain
+// immediate.
+const PERSIST_DEBOUNCE_MS = 60_000;
 
 function cloneJson<T>(value: T): T {
   return structuredClone(value);

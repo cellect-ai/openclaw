@@ -117,6 +117,25 @@ describe("downloadSlackFile", () => {
     expect(resolveSlackMedia).not.toHaveBeenCalled();
   });
 
+  it("names the size cap instead of silently failing an oversized file", async () => {
+    const client = createClient();
+    client.files.info.mockResolvedValueOnce({
+      file: makeSlackFileInfo({ name: "phase-i.pdf", size: 41_082_339 }),
+    });
+
+    await expect(
+      downloadSlackFile("F123", {
+        client,
+        token: "xoxb-test",
+        maxBytes: 20 * 1024 * 1024,
+        channelId: "C123",
+      }),
+    ).rejects.toThrow(
+      "Slack file F123 is 39.2 MB, above the 20.0 MB download cap for this Slack account",
+    );
+    expect(resolveSlackMedia).not.toHaveBeenCalled();
+  });
+
   it("downloads via resolveSlackMedia using fresh files.info metadata", async () => {
     const client = createClient();
     mockSuccessfulMediaDownload(client);

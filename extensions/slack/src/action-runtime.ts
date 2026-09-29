@@ -1,3 +1,7 @@
+import { createHash } from "node:crypto";
+import { createReadStream } from "node:fs";
+import { stat } from "node:fs/promises";
+import path from "node:path";
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-resolution";
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
 import { readBooleanParam } from "openclaw/plugin-sdk/boolean-param";
@@ -12,6 +16,7 @@ import {
 } from "openclaw/plugin-sdk/channel-actions";
 import type { ChannelMessageActionContext } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import { root as fsRoot } from "openclaw/plugin-sdk/file-access-runtime";
 import {
   createLazyRuntimeMethodBinder,
   createLazyRuntimeModule,
@@ -30,7 +35,7 @@ import type { SlackConversationInfo } from "./channel-type.js";
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { buildSlackChannelIdCandidates } from "./group-policy.js";
 import { getSlackInstallationKind } from "./installation-identity-state.js";
-import { SLACK_TEXT_LIMIT } from "./limits.js";
+import { resolveSlackMediaMaxBytes, SLACK_TEXT_LIMIT } from "./limits.js";
 import { resolveSlackChannelConfig } from "./monitor/channel-config.js";
 import { isSlackChannelAllowedByPolicy } from "./monitor/policy.js";
 import { hasSlackNativeDataBlock } from "./native-data-blocks.js";
@@ -64,11 +69,22 @@ const loadSlackAccountsRuntime = createLazyRuntimeModule(() => import("./account
 const loadSlackChannelTypeRuntime = createLazyRuntimeModule(() => import("./channel-type.js"));
 const bindSlackChannelType = createLazyRuntimeMethodBinder(loadSlackChannelTypeRuntime);
 
+type SlackConversationAccessModule = typeof import("./conversation-access.js");
+const loadSlackConversationAccessRuntime = createLazyRuntimeModule(
+  () => import("./conversation-access.js"),
+);
+
 export const slackActionRuntime = {
   deleteSlackMessage: bindSlackAction((runtime) => runtime.deleteSlackMessage),
   downloadSlackFile: bindSlackAction((runtime) => runtime.downloadSlackFile),
   editSlackMessage: bindSlackAction((runtime) => runtime.editSlackMessage),
   getSlackMemberInfo: bindSlackAction((runtime) => runtime.getSlackMemberInfo),
+  isSlackConversationMember: async (
+    ...args: Parameters<SlackConversationAccessModule["isSlackConversationMember"]>
+  ) => (await loadSlackConversationAccessRuntime()).isSlackConversationMember(...args),
+  listSlackFileShareChannelIds: async (
+    ...args: Parameters<SlackConversationAccessModule["listSlackFileShareChannelIds"]>
+  ) => (await loadSlackConversationAccessRuntime()).listSlackFileShareChannelIds(...args),
   listSlackEmojis: bindSlackAction((runtime) => runtime.listSlackEmojis),
   listSlackPins: bindSlackAction((runtime) => runtime.listSlackPins),
   listSlackReactions: bindSlackAction((runtime) => runtime.listSlackReactions),
@@ -93,6 +109,35 @@ export const slackActionRuntime = {
 };
 
 export type { SlackActionContext } from "./action-context.js";
+
+async function stageDownloadedSlackFile(
+  downloadedPath: string,
+  context: SlackActionContext | undefined,
+  fileId?: string,
+): Promise<string> {
+  const workspaceDir = context?.mediaWorkspaceDir?.trim();
+  if (!workspaceDir) {
+    return downloadedPath;
+  }
+  const fileName = fileId
+    ? `${fileId}-${path.basename(downloadedPath)}`
+    : path.basename(downloadedPath);
+  const relativePath = path.join("media", "inbound", fileName);
+  const workspace = await fsRoot(workspaceDir);
+  await workspace.copyIn(relativePath, downloadedPath, {
+    mkdir: true,
+    sourceHardlinks: "reject",
+  });
+  return relativePath.split(path.sep).join(path.posix.sep);
+}
+
+async function hashSlackFile(filePath: string): Promise<string> {
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(filePath)) {
+    hash.update(chunk as Buffer);
+  }
+  return hash.digest("hex");
+}
 
 function resolveThreadTsFromContext(
   explicitThreadTs: string | undefined,
@@ -208,6 +253,11 @@ function assertSlackMemberInfoAllowed(params: {
   if (params.context?.conversationReadOrigin === "direct-operator") {
     return;
   }
+  // Operator-trusted accounts may resolve any member of their own workspace;
+  // the workspace itself is still pinned by the trusted current team below.
+  if (params.account.config.memberInfoScope === "workspace") {
+    return;
+  }
   const requesterAccountId = params.context?.requesterAccountId?.trim();
   const requesterSenderId = normalizeOptionalLowercaseString(params.context?.requesterSenderId);
   if (
@@ -295,6 +345,38 @@ function resolveSlackChannelReadPolicy(params: {
   };
 }
 
+/**
+ * Returns the host-verified Slack sender for this action when it came from a
+ * live Slack conversation on the same account; undefined for delegated,
+ * detached, or cross-account callers.
+ */
+function resolveTrustedSlackRequesterId(
+  account: ResolvedSlackAccount,
+  context?: SlackActionContext,
+): string | undefined {
+  const requesterAccountId = context?.requesterAccountId?.trim();
+  const requesterSenderId = context?.requesterSenderId?.trim();
+  if (
+    normalizeOptionalLowercaseString(context?.currentChannelProvider) !== "slack" ||
+    !requesterAccountId ||
+    normalizeAccountId(requesterAccountId) !== normalizeAccountId(account.accountId) ||
+    !requesterSenderId ||
+    !/^[UW][A-Z0-9]+$/i.test(requesterSenderId)
+  ) {
+    return undefined;
+  }
+  return requesterSenderId.toUpperCase();
+}
+
+function readSlackPlatformErrorCode(error: unknown): string | undefined {
+  const data = (error as { data?: { error?: unknown } } | undefined)?.data;
+  if (typeof data?.error === "string") {
+    return data.error;
+  }
+  const message = error instanceof Error ? error.message : undefined;
+  return message?.match(/An API error occurred: ([a-z_]+)/)?.[1];
+}
+
 async function assertSlackReadTargetAllowed(params: {
   account: ResolvedSlackAccount;
   cfg: OpenClawConfig;
@@ -302,9 +384,51 @@ async function assertSlackReadTargetAllowed(params: {
   teamId?: string;
   conversationReadOrigin?: ConversationReadInvocationOrigin;
   context?: SlackActionContext;
+  /**
+   * Read-only callers may also admit a conversation the trusted requester
+   * belongs to (a pasted permalink). Writes never pass this.
+   */
+  requesterMembership?: {
+    readOpts: { cfg: OpenClawConfig; accountId?: string; token?: string; teamId?: string };
+  };
 }) {
   const deny = () => {
     throw new Error("Slack read target channel is not allowed.");
+  };
+  const requesterId = params.requesterMembership
+    ? resolveTrustedSlackRequesterId(params.account, params.context)
+    : undefined;
+  // Policy said no. Admit the target only when the trusted requester is a
+  // member of it; explicit channel or DM disables never reach this path.
+  const denyUnlessRequesterMember = async (info?: SlackConversationInfo): Promise<void> => {
+    if (!requesterId || !params.requesterMembership) {
+      deny();
+      return;
+    }
+    let member: boolean;
+    if (info?.type === "dm") {
+      member = info.user?.toUpperCase() === requesterId;
+    } else {
+      try {
+        member = await slackActionRuntime.isSlackConversationMember(
+          params.channelId,
+          requesterId,
+          params.requesterMembership.readOpts,
+        );
+      } catch (error) {
+        const code = readSlackPlatformErrorCode(error) ?? "unknown_error";
+        throw new Error(
+          `Slack read target channel is not allowed: this Slack app cannot see conversation ${params.channelId} (${code}). ` +
+            "It is usually a DM or private channel the bot is not in. Ask the requester to forward the message or share the file into this conversation.",
+          { cause: error },
+        );
+      }
+    }
+    if (!member) {
+      throw new Error(
+        `Slack read target channel is not allowed: the requester is not a member of conversation ${params.channelId}.`,
+      );
+    }
   };
   const currentConversation = isCurrentSlackReadTarget({
     account: params.account,
@@ -338,7 +462,7 @@ async function assertSlackReadTargetAllowed(params: {
         userId: info.user,
       }))
     ) {
-      deny();
+      await denyUnlessRequesterMember(info);
     }
     return;
   }
@@ -354,7 +478,7 @@ async function assertSlackReadTargetAllowed(params: {
     preliminary.shouldResolveName || preliminary.channelAllowed !== preliminary.groupDmAllowed;
   if (!needsMetadata) {
     if (!preliminary.channelAllowed) {
-      deny();
+      await denyUnlessRequesterMember();
     }
     return;
   }
@@ -368,13 +492,6 @@ async function assertSlackReadTargetAllowed(params: {
     ...(preliminary.shouldResolveName ? { requireFreshName: true } : {}),
     assertDirectAdapterHandoff: params.context?.assertDirectAdapterHandoff,
   });
-  if (
-    preliminary.shouldResolveName &&
-    (info.type === "channel" || info.type === "unknown") &&
-    !info.name
-  ) {
-    deny();
-  }
   const resolved = resolveSlackChannelReadPolicy({
     ...params,
     channelName: info.name,
@@ -384,17 +501,27 @@ async function assertSlackReadTargetAllowed(params: {
   if (resolved.channelExplicitlyDisabled) {
     deny();
   }
+  if (
+    preliminary.shouldResolveName &&
+    (info.type === "channel" || info.type === "unknown") &&
+    !info.name
+  ) {
+    await denyUnlessRequesterMember(info);
+    return;
+  }
   if (info.type === "dm") {
-    if (
-      !resolveSlackDmReadAllowed(params.account) ||
-      (!directOperator &&
-        !currentConversation &&
-        !(await isSlackDmTargetConfigured({
-          ...params,
-          userId: info.user,
-        })))
-    ) {
+    if (!resolveSlackDmReadAllowed(params.account)) {
       deny();
+    }
+    if (
+      !directOperator &&
+      !currentConversation &&
+      !(await isSlackDmTargetConfigured({
+        ...params,
+        userId: info.user,
+      }))
+    ) {
+      await denyUnlessRequesterMember(info);
     }
     return;
   }
@@ -405,7 +532,7 @@ async function assertSlackReadTargetAllowed(params: {
         ? resolved.groupDmAllowed
         : resolved.channelAllowed && resolved.groupDmAllowed;
   if (!allowed) {
-    deny();
+    await denyUnlessRequesterMember(info);
   }
 }
 
@@ -542,7 +669,10 @@ export async function handleSlackAction(
     };
   };
 
-  const assertReadTargetAllowed = async (target: SlackActionChannelTarget) => {
+  const assertReadTargetAllowed = async (
+    target: SlackActionChannelTarget,
+    opts?: { allowRequesterMembership?: boolean },
+  ) => {
     await assertSlackReadTargetAllowed({
       account,
       cfg,
@@ -550,6 +680,9 @@ export async function handleSlackAction(
       teamId: target.teamId,
       conversationReadOrigin: context?.conversationReadOrigin,
       context,
+      ...(opts?.allowRequesterMembership
+        ? { requesterMembership: { readOpts: buildActionOpts("read", target.teamId) } }
+        : {}),
     });
   };
 
@@ -833,7 +966,7 @@ export async function handleSlackAction(
       case "readMessages": {
         const target = resolveChannelTarget();
         const { channelId } = target;
-        await assertReadTargetAllowed(target);
+        await assertReadTargetAllowed(target, { allowRequesterMembership: true });
         const readOpts = buildActionOpts("read", target.teamId);
         const limit = readPositiveIntegerParam(params, "limit", {
           message: "limit must be a positive integer.",
@@ -865,29 +998,196 @@ export async function handleSlackAction(
         });
       }
       case "downloadFile": {
-        const fileId = readStringParam(params, "fileId", { required: true });
-        const channelTarget =
-          readStringParam(params, "channelId") ??
-          readStringParam(params, "to") ??
-          context?.currentChannelId;
-        if (!channelTarget) {
+        const fileId = readStringParam(params, "fileId");
+        const allThreadFiles = readBooleanParam(params, "allThreadFiles") === true;
+        // Set only from a parsed message permalink: stage that message's files.
+        const permalinkMessageId = readStringParam(params, "messageId");
+        const original = readBooleanParam(params, "original") === true;
+        const rawFileIds = params.fileIds;
+        const fileIds = Array.isArray(rawFileIds)
+          ? rawFileIds.map((value) => (typeof value === "string" ? value.trim() : ""))
+          : undefined;
+        if (rawFileIds !== undefined && (!fileIds || fileIds.some((value) => !value))) {
+          throw new Error("Slack fileIds must be an array of non-empty file ids.");
+        }
+        const uniqueFileIds = fileIds ? Array.from(new Set(fileIds)) : undefined;
+        if (
+          [
+            Boolean(fileId),
+            Boolean(uniqueFileIds),
+            allThreadFiles,
+            Boolean(permalinkMessageId),
+          ].filter(Boolean).length > 1
+        ) {
           throw new Error(
-            "Slack file download requires channelId or to so the read target can be authorized.",
+            "Slack file download accepts exactly one of fileId, fileIds, or allThreadFiles.",
           );
         }
-        const target = resolveSlackActionChannelTarget(account, channelTarget, context);
-        const { channelId } = target;
-        await assertReadTargetAllowed(target);
+        if (
+          !fileId &&
+          (!uniqueFileIds || uniqueFileIds.length === 0) &&
+          !allThreadFiles &&
+          !permalinkMessageId
+        ) {
+          throw new Error("Slack file download requires fileId, fileIds, or allThreadFiles.");
+        }
+        if (uniqueFileIds && uniqueFileIds.length > 20) {
+          throw new Error("Slack file download accepts at most 20 unique file ids.");
+        }
+        const explicitChannelTarget =
+          readStringParam(params, "channelId") ?? readStringParam(params, "to");
         const threadId = readStringParam(params, "threadId") ?? readStringParam(params, "replyTo");
-        const maxBytes = account.config?.mediaMaxMb
-          ? account.config.mediaMaxMb * 1024 * 1024
-          : 20 * 1024 * 1024;
+        if (allThreadFiles && !threadId) {
+          throw new Error("Slack allThreadFiles download requires threadId.");
+        }
+        const maxBytes = resolveSlackMediaMaxBytes(account.config?.mediaMaxMb);
         const readToken = resolveSlackOperationToken(account, "read");
+        const downloadOpts = (teamId?: string) => {
+          const opts = buildActionOpts("read", teamId);
+          return {
+            ...opts,
+            ...(readToken && !opts.token ? { token: readToken } : {}),
+            maxBytes,
+          };
+        };
+        const resolveFileShareTarget = async (
+          sharedFileId: string,
+        ): Promise<SlackActionChannelTarget> => {
+          // A pasted file permalink names no conversation. Try the current one
+          // first, then each conversation the file was shared into that the
+          // read gate (including requester membership) admits.
+          const teamId = resolveTrustedCurrentSlackTeamId({ account, context });
+          const shareIds = await slackActionRuntime.listSlackFileShareChannelIds(
+            sharedFileId,
+            buildActionOpts("read", teamId),
+          );
+          const currentId = context?.currentChannelId
+            ? resolveSlackActionChannelTarget(account, context.currentChannelId, context).channelId
+            : undefined;
+          const ordered = [
+            ...shareIds.filter((id) => id === currentId),
+            ...shareIds.filter((id) => id !== currentId),
+          ].slice(0, 10);
+          let lastError: unknown;
+          for (const candidate of ordered) {
+            const candidateTarget = resolveSlackActionChannelTarget(
+              account,
+              teamId ? formatSlackTarget({ teamId, kind: "channel", id: candidate }) : candidate,
+              context,
+            );
+            try {
+              await assertReadTargetAllowed(candidateTarget, { allowRequesterMembership: true });
+              return candidateTarget;
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          throw new Error(
+            `Slack file ${sharedFileId} is not shared in any conversation this app and the requester can both read.` +
+              (lastError instanceof Error ? ` Last check: ${lastError.message}` : ""),
+          );
+        };
+        const channelTarget = explicitChannelTarget ?? context?.currentChannelId;
+        let target: SlackActionChannelTarget;
+        if (fileId && !explicitChannelTarget && readBooleanParam(params, "fromPermalink")) {
+          target = await resolveFileShareTarget(fileId);
+        } else {
+          if (!channelTarget) {
+            throw new Error(
+              "Slack file download requires channelId or to so the read target can be authorized.",
+            );
+          }
+          target = resolveSlackActionChannelTarget(account, channelTarget, context);
+          await assertReadTargetAllowed(target, { allowRequesterMembership: true });
+        }
+        const { channelId } = target;
         const readOpts = buildActionOpts("read", target.teamId);
+        const sourceMessages =
+          allThreadFiles || permalinkMessageId
+            ? await slackActionRuntime.readSlackMessages(channelId, {
+                ...readOpts,
+                limit: permalinkMessageId ? 1 : 100,
+                threadId: threadId ?? undefined,
+                ...(permalinkMessageId ? { messageId: permalinkMessageId } : {}),
+              })
+            : undefined;
+        const sourceFileIds = sourceMessages
+          ? Array.from(
+              new Set(
+                sourceMessages.messages.flatMap((message) =>
+                  (message.files ?? []).flatMap((file) => (file.id ? [file.id] : [])),
+                ),
+              ),
+            )
+          : undefined;
+        const batchFileIds = uniqueFileIds ?? sourceFileIds;
+        if (batchFileIds && batchFileIds.length > 20) {
+          throw new Error(
+            `Slack thread contains ${batchFileIds.length} files; bounded batch download supports at most 20.`,
+          );
+        }
+        if (sourceMessages && (!batchFileIds || batchFileIds.length === 0)) {
+          return jsonResult({
+            ok: true,
+            channelId,
+            threadId,
+            messages: sourceMessages.messages,
+            files: [],
+          });
+        }
+        if (batchFileIds) {
+          const files = [];
+          for (const batchFileId of batchFileIds) {
+            let downloaded: Awaited<ReturnType<typeof slackActionRuntime.downloadSlackFile>>;
+            try {
+              downloaded = await slackActionRuntime.downloadSlackFile(batchFileId, {
+                ...downloadOpts(target.teamId),
+                channelId,
+                threadId: threadId ?? undefined,
+              });
+            } catch (error) {
+              files.push({
+                fileId: batchFileId,
+                ok: false,
+                error: error instanceof Error ? error.message : String(error),
+              });
+              continue;
+            }
+            if (!downloaded) {
+              files.push({
+                fileId: batchFileId,
+                ok: false,
+                error: "File could not be downloaded (not found or inaccessible).",
+              });
+              continue;
+            }
+            const [sha256, fileStat] = await Promise.all([
+              hashSlackFile(downloaded.path),
+              stat(downloaded.path),
+            ]);
+            const agentPath = await stageDownloadedSlackFile(downloaded.path, context, batchFileId);
+            files.push({
+              fileId: batchFileId,
+              ok: true,
+              path: agentPath,
+              contentType: downloaded.contentType,
+              size: fileStat.size,
+              sha256,
+            });
+          }
+          return jsonResult({
+            ok: files.every((file) => file.ok),
+            channelId,
+            threadId: threadId ?? null,
+            ...(sourceMessages ? { messages: sourceMessages.messages } : {}),
+            files,
+          });
+        }
+        if (!fileId) {
+          throw new Error("Slack single-file download is missing fileId.");
+        }
         const downloaded = await slackActionRuntime.downloadSlackFile(fileId, {
-          ...readOpts,
-          ...(readToken && !readOpts.token ? { token: readToken } : {}),
-          maxBytes,
+          ...downloadOpts(target.teamId),
           channelId,
           threadId: threadId ?? undefined,
         });
@@ -895,18 +1195,26 @@ export async function handleSlackAction(
           return jsonResult({
             ok: false,
             error:
-              "File could not be downloaded. Confirm the fileId came from the requested Slack channel or explicit thread and that the file is accessible and within the size limit.",
+              "File could not be downloaded. Confirm the fileId came from the requested Slack channel or explicit thread and that the file is accessible.",
           });
         }
-        if (!isImageContentType(downloaded.contentType)) {
+        const agentPath = await stageDownloadedSlackFile(downloaded.path, context);
+        const size = await stat(downloaded.path).then(
+          (fileStat) => fileStat.size,
+          () => undefined,
+        );
+        if (original || !isImageContentType(downloaded.contentType)) {
           return jsonResult({
             ok: true,
             fileId,
-            path: downloaded.path,
+            channelId,
+            path: agentPath,
             contentType: downloaded.contentType,
+            size,
+            original: true,
             placeholder: downloaded.placeholder,
             media: {
-              mediaUrl: downloaded.path,
+              mediaUrl: agentPath,
               outbound: false,
               ...(downloaded.contentType ? { contentType: downloaded.contentType } : {}),
             },
@@ -915,10 +1223,13 @@ export async function handleSlackAction(
         return await imageResultFromFile({
           label: "slack-file",
           path: downloaded.path,
-          extraText: downloaded.placeholder,
+          // The inline image can be downscaled for the model; the staged file is
+          // Slack's original upload (url_private_download), byte for byte.
+          extraText: `${downloaded.placeholder}\nOriginal file${size === undefined ? "" : ` (${size} bytes)`} saved at ${agentPath}; the inline preview may be resized. Pass original=true to skip the preview.`,
           details: {
             fileId,
-            path: downloaded.path,
+            path: agentPath,
+            size,
             ...(downloaded.contentType ? { contentType: downloaded.contentType } : {}),
             media: { outbound: false },
           },

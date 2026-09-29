@@ -112,6 +112,11 @@ type SlackMarkdownOptions = {
   mentions?: "escape";
 };
 
+export function formatSlackUserMention(userId: string | null | undefined): string {
+  const normalized = userId?.trim().toUpperCase();
+  return normalized && /^[UW][A-Z0-9]+$/.test(normalized) ? `<@${normalized}>` : "";
+}
+
 const SLACK_MRKDWN_WORD_CHARACTER_RE = /[\p{L}\p{M}\p{N}_]/u;
 const SLACK_MRKDWN_PUNCTUATION_RE = /\p{P}/u;
 const SLACK_MRKDWN_SYMBOL_RE = /\p{S}/u;
