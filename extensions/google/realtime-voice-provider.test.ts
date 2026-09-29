@@ -447,6 +447,13 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     expect(lastConnectParams().config).not.toHaveProperty("thinkingConfig");
   });
 
+  it("applies the requested transcription language hint to Google Live sessions", async () => {
+    await createGoogleLiveBridge({ language: "en" }).connect();
+    expect(lastConnectParams().config.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
+  });
+
   it("creates constrained browser sessions for Google Live Talk", async () => {
     const provider = buildGoogleRealtimeVoiceProvider();
 
@@ -461,6 +468,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
       },
       prefixPaddingMs: 250,
       silenceDurationMs: 650,
+      language: "en",
       instructions: "Speak briefly.",
       tools: [
         {
@@ -489,6 +497,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
                 silenceDurationMs?: number;
               };
             };
+            inputAudioTranscription?: { languageCodes?: string[] };
             responseModalities?: string[];
             speechConfig?: { voiceConfig?: { prebuiltVoiceConfig?: { voiceName?: string } } };
             systemInstruction?: string;
@@ -511,6 +520,9 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     expect(tokenConfig.config?.uses).toBe(1);
     expect(liveConstraints?.model).toBe("gemini-live-2.5-flash-preview");
     expect(liveConstraints?.config?.responseModalities).toEqual(["AUDIO"]);
+    expect(liveConstraints?.config?.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
     expect(liveConstraints?.config?.temperature).toBe(0.4);
     expect(liveConstraints?.config?.systemInstruction).toBe("Speak briefly.");
     expect(
@@ -544,7 +556,11 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
       };
       clientSecret: string;
       initialMessage: {
-        setup: { generationConfig: { responseModalities: string[] }; model: string };
+        setup: {
+          generationConfig: { responseModalities: string[] };
+          inputAudioTranscription?: { languageCodes?: string[] };
+          model: string;
+        };
       };
       protocol: string;
       websocketUrl: string;
@@ -564,6 +580,9 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     expect(websocketSession.initialMessage.setup.generationConfig.responseModalities).toEqual([
       "AUDIO",
     ]);
+    expect(websocketSession.initialMessage.setup.inputAudioTranscription).toEqual({
+      languageCodes: ["en-US"],
+    });
   });
 
   it("returns browser expiry in the epoch milliseconds required by the Talk gateway", async () => {

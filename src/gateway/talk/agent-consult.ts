@@ -1,4 +1,6 @@
-import { randomUUID } from "node:crypto";
+// Gateway Talk realtime agent-consult bridge.
+// Starts chat.send runs that answer realtime Talk tool calls.
+import { createHash, randomUUID } from "node:crypto";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   ErrorCodes,
@@ -17,10 +19,14 @@ import {
 import { abortChatRunById } from "../chat-abort.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
+import {
+  prepareTalkRelayConsultAdmission,
+  type TalkRelayConsultAdmission,
+} from "../talk-relay-consult-admission.js";
 import { formatForLog } from "../ws-log.js";
 import { prepareTalkAgentConsultTranscript } from "./agent-consult-transcript.js";
 import { resolveTalkAgentConsultAuthority } from "./client-gateway-control.js";
-import { registerTalkRealtimeRelayAgentRun } from "./relay/index.js";
+import { prepareTalkRealtimeRelayAgentRunRegistration } from "./relay/index.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
 
 function terminalTalkChatSendAckError(result: unknown): ErrorShape | undefined {
@@ -45,7 +51,15 @@ export async function startTalkRealtimeAgentConsult(
     args: unknown;
     relaySessionId?: string;
     connId?: string;
+    /** Server-authorized source route captured when the Matrix Talk capability is consumed. */
+    matrixRoute?: {
+      channel: "matrix";
+      roomId: string;
+      threadRootEventId: string;
+      accountId: string;
+    };
     onRunStarted?: (runId: string) => void;
+    assertCommitAllowed?: () => void;
   },
 ): Promise<{ ok: true; runId: string; idempotencyKey: string } | { ok: false; error: ErrorShape }> {
   let message: string;
@@ -54,12 +68,47 @@ export async function startTalkRealtimeAgentConsult(
   } catch (err) {
     return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(err)) };
   }
-  const idempotencyKey = `talk-${params.callId}-${randomUUID()}`;
+  const idempotencyKey = params.matrixRoute
+    ? `talk-${createHash("sha256")
+        .update(params.sessionTarget.canonicalKey)
+        .update("\0")
+        .update(params.relaySessionId ?? "")
+        .update("\0")
+        .update(params.callId)
+        .digest("hex")}`
+    : `talk-${params.callId}-${randomUUID()}`;
   const normalizedTalk = normalizeTalkSection(request.context.getRuntimeConfig().talk);
   const authority = resolveTalkAgentConsultAuthority(
     request.client?.connect?.scopes,
     request.client,
   );
+  let registerRelayRun: ((runId: string) => "registered" | "detached") | undefined;
+  let talkRelayAdmission: TalkRelayConsultAdmission | undefined;
+  try {
+    if (params.matrixRoute) {
+      if (!params.relaySessionId || !params.connId) {
+        throw new Error("Matrix Talk consultation requires its owning relay");
+      }
+      talkRelayAdmission = prepareTalkRelayConsultAdmission({
+        relaySessionId: params.relaySessionId,
+        connId: params.connId,
+        sessionKey: params.sessionTarget.canonicalKey,
+        callId: params.callId,
+        matrixRoute: params.matrixRoute,
+      });
+    }
+    registerRelayRun =
+      params.relaySessionId && params.connId
+        ? prepareTalkRealtimeRelayAgentRunRegistration({
+            relaySessionId: params.relaySessionId,
+            connId: params.connId,
+            sessionKey: params.sessionTarget.canonicalKey,
+            callId: params.callId,
+          })
+        : undefined;
+  } catch (error) {
+    return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(error)) };
+  }
   let acknowledgedRunId: string | undefined;
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined
@@ -85,6 +134,7 @@ export async function startTalkRealtimeAgentConsult(
         id: `${request.req.id}:talk-tool-call`,
         method: "chat.send",
       },
+      sessionMutationCommitGuard: params.assertCommitAllowed,
       params: {
         sessionKey: params.sessionTarget.canonicalKey,
         agentId: params.sessionTarget.agentId,
@@ -95,6 +145,15 @@ export async function startTalkRealtimeAgentConsult(
           kind: "internal_system",
           sourceTool: REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
         },
+        ...(params.matrixRoute
+          ? {
+              deliver: true,
+              originatingChannel: params.matrixRoute.channel,
+              originatingTo: `room:${params.matrixRoute.roomId}`,
+              originatingAccountId: params.matrixRoute.accountId,
+              originatingThreadId: params.matrixRoute.threadRootEventId,
+            }
+          : {}),
         ...(normalizedTalk?.consultThinkingLevel
           ? { thinking: normalizedTalk.consultThinkingLevel }
           : {}),
@@ -108,16 +167,18 @@ export async function startTalkRealtimeAgentConsult(
           const candidateRunId = asNullableRecord(result)?.runId;
           const runId = typeof candidateRunId === "string" ? candidateRunId : idempotencyKey;
           try {
-            if (params.relaySessionId && params.connId) {
-              registerTalkRealtimeRelayAgentRun({
-                relaySessionId: params.relaySessionId,
-                connId: params.connId,
-                sessionKey: params.sessionTarget.canonicalKey,
-                runId,
-                callId: params.callId,
-              });
+            if (registerRelayRun) {
+              const registration = registerRelayRun(runId);
+              if (registration === "detached") {
+                request.context.logGateway.info(
+                  `realtime Talk agent consult acknowledged after relay detached run=${runId}`,
+                );
+              } else {
+                params.onRunStarted?.(runId);
+              }
+            } else {
+              params.onRunStarted?.(runId);
             }
-            params.onRunStarted?.(runId);
             acknowledgedRunId = runId;
           } catch (registrationError) {
             abortChatRunById(request.context, {
@@ -144,11 +205,17 @@ export async function startTalkRealtimeAgentConsult(
       },
     } satisfies GatewayRequestHandlerOptions;
     // Speech owns reusable history; keep consult scaffolding only in the lossless archive.
-    const chatSendResult = handleTrustedInternalChatSend(chatSendOptions, undefined, {
+    const trustedTurnPolicy = params.matrixRoute
+      ? { inboundEventKind: "user_request" as const, sourceReplyDeliveryMode: "automatic" as const }
+      : {};
+    const inputOptions = {
       toolsAllow: authority.toolsAllow,
-      transcript: { display: false, excludeFromContext: true },
+      transcript: { display: false as const, excludeFromContext: true as const },
       prepareAssistantTranscriptMessage: prepareTalkAgentConsultTranscript,
-    });
+      talkRelayAdmission,
+      ...trustedTurnPolicy,
+    };
+    const chatSendResult = handleTrustedInternalChatSend(chatSendOptions, undefined, inputOptions);
     void Promise.resolve(chatSendResult).then(
       () => {
         if (!acknowledged) {

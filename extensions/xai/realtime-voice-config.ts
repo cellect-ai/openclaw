@@ -3,7 +3,10 @@ import type {
   RealtimeVoiceBridgeCreateRequest,
   RealtimeVoiceProviderConfig,
 } from "openclaw/plugin-sdk/realtime-voice";
-import { normalizeResolvedSecretInputString } from "openclaw/plugin-sdk/secret-input";
+import {
+  normalizeResolvedSecretInputString,
+  resolveSecretInputString,
+} from "openclaw/plugin-sdk/secret-input";
 import {
   asFiniteNumberInRange,
   asOptionalObjectRecord as readXaiObjectRecord,
@@ -32,6 +35,9 @@ type XaiRealtimeVoiceProviderConfig = {
 export type XaiRealtimeVoiceBridgeConfig = RealtimeVoiceBridgeCreateRequest &
   Omit<XaiRealtimeVoiceProviderConfig, "interruptResponseOnInputAudio"> & {
     baseUrl: string;
+    providerId?: string;
+    providerLabel?: string;
+    supportsServerVadAssistantAudioTruncation?: boolean;
     resolveApiKey?: () => Promise<string>;
   };
 
@@ -83,9 +89,12 @@ export type XaiRealtimeSessionUpdate = {
     audio: {
       input: {
         format: OpenAICompatibleRealtimeAudioFormat;
-        transcription: { model: string };
+        transcription: { model: string; language_hint?: string };
       };
-      output: { format: OpenAICompatibleRealtimeAudioFormat };
+      output: {
+        format: OpenAICompatibleRealtimeAudioFormat;
+        transcription?: Record<string, never>;
+      };
     };
     reasoning?: { effort: XaiRealtimeReasoningEffort };
     resumption?: { enabled: boolean };
@@ -95,6 +104,11 @@ export type XaiRealtimeSessionUpdate = {
 };
 
 export const XAI_REALTIME_DEFAULT_MODEL = "grok-voice-latest";
+export const LITELLM_REALTIME_VOICE_MODELS = [
+  "grok-voice-think-fast-2.0",
+  "gemini-3.8-live",
+] as const;
+export const LITELLM_REALTIME_BASE_URL = "http://192.168.5.139:4000/v1";
 export const XAI_REALTIME_CONNECT_TIMEOUT_MS = 10_000;
 export const XAI_REALTIME_WS_MAX_PAYLOAD_BYTES = 16 * 1024 * 1024;
 export const XAI_REALTIME_MAX_RECONNECT_ATTEMPTS = 5;
@@ -119,6 +133,41 @@ export const XAI_REALTIME_VOICES = [
   "leo",
 ] as const satisfies readonly XaiRealtimeVoice[];
 
+// Native-audio Live uses Google's prebuilt TTS voices, with case-sensitive names.
+// https://ai.google.dev/gemini-api/docs/speech-generation#voice-options
+export const GOOGLE_REALTIME_VOICES = [
+  "Zephyr",
+  "Puck",
+  "Charon",
+  "Kore",
+  "Fenrir",
+  "Leda",
+  "Orus",
+  "Aoede",
+  "Callirrhoe",
+  "Autonoe",
+  "Enceladus",
+  "Iapetus",
+  "Umbriel",
+  "Algieba",
+  "Despina",
+  "Erinome",
+  "Algenib",
+  "Rasalgethi",
+  "Laomedeia",
+  "Achernar",
+  "Alnilam",
+  "Schedar",
+  "Gacrux",
+  "Pulcherrima",
+  "Achird",
+  "Zubenelgenubi",
+  "Vindemiatrix",
+  "Sadachbia",
+  "Sadaltager",
+  "Sulafat",
+] as const;
+
 export function serializeXaiRealtimeToolResult(result: unknown): string {
   const message = "xAI realtime voice tool result is not JSON-serializable";
   try {
@@ -132,10 +181,10 @@ export function serializeXaiRealtimeToolResult(result: unknown): string {
   throw new Error(message);
 }
 
-function readNestedXaiConfig(rawConfig: RealtimeVoiceProviderConfig) {
+function readNestedXaiConfig(rawConfig: RealtimeVoiceProviderConfig, providerId = "xai") {
   const raw = readXaiObjectRecord(rawConfig);
   const providers = readXaiObjectRecord(raw?.providers);
-  return readXaiObjectRecord(providers?.xai ?? raw?.xai ?? raw) ?? {};
+  return readXaiObjectRecord(providers?.[providerId] ?? raw?.[providerId] ?? raw) ?? {};
 }
 
 export function normalizeXaiRealtimeBaseUrl(value?: string): string {
@@ -170,13 +219,26 @@ function asXaiReasoningEffort(value: unknown): XaiRealtimeReasoningEffort | unde
 
 export function normalizeXaiRealtimeProviderConfig(
   config: RealtimeVoiceProviderConfig,
+  providerId = "xai",
 ): XaiRealtimeVoiceProviderConfig {
-  const raw = readNestedXaiConfig(config);
+  const raw = readNestedXaiConfig(config, providerId);
+  const apiKeyPath = `talk.realtime.providers.${providerId}.apiKey`;
+  // OpenClaw deliberately leaves SecretRefs for non-selected Talk providers
+  // unresolved in the active runtime snapshot. LiteLLM's credential is still
+  // available to the gateway process from its role-scoped environment, so
+  // cataloging this selectable provider must not strictly read the inactive
+  // SecretRef. At connection time resolveLiteLlmRealtimeApiKey uses that
+  // gateway-only environment value; active/resolved refs continue to win.
+  const apiKey =
+    providerId === "litellm"
+      ? resolveSecretInputString({
+          value: raw.apiKey,
+          path: apiKeyPath,
+          mode: "inspect",
+        }).value
+      : normalizeResolvedSecretInputString({ value: raw.apiKey, path: apiKeyPath });
   return {
-    apiKey: normalizeResolvedSecretInputString({
-      value: raw.apiKey,
-      path: "plugins.entries.voice-call.config.realtime.providers.xai.apiKey",
-    }),
+    apiKey,
     baseUrl: normalizeOptionalString(raw.baseUrl),
     model: normalizeOptionalString(raw.model),
     voice: normalizeXaiRealtimeVoice(raw.speakerVoice ?? raw.voice),
@@ -189,7 +251,10 @@ export function normalizeXaiRealtimeProviderConfig(
   };
 }
 
-export function readXaiRealtimeErrorDetail(error: unknown): string {
+export function readXaiRealtimeErrorDetail(
+  error: unknown,
+  providerLabel = "xAI realtime voice",
+): string {
   if (typeof error === "string" && error) {
     return error;
   }
@@ -197,7 +262,7 @@ export function readXaiRealtimeErrorDetail(error: unknown): string {
   return (
     normalizeOptionalString(record?.message) ??
     normalizeOptionalString(record?.code) ??
-    "xAI realtime voice error"
+    `${providerLabel} error`
   );
 }
 

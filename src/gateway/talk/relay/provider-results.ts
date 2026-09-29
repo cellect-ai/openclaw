@@ -171,6 +171,8 @@ export function submitFinalProviderToolResult(params: {
 }
 
 export function clearRelayAgentToolCall(session: RelaySession, callId: string): void {
+  session.agentToolCallTerminalSubscriptions?.get(callId)?.();
+  session.agentToolCallTerminalSubscriptions?.delete(callId);
   const runId = session.activeAgentToolCalls.get(callId);
   session.activeAgentToolCalls.delete(callId);
   if (!runId) {

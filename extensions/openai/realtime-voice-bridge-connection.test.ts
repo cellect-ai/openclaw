@@ -321,7 +321,7 @@ describe("OpenAI realtime voice bridge connection", () => {
             input: {
               format: { type: "audio/pcmu" },
               noise_reduction: null,
-              transcription: { model: "gpt-4o-mini-transcribe", language: "de" },
+              transcription: { model: "gpt-live-transcribe", delay: "low", languages: ["de"] },
               turn_detection: {
                 type: "server_vad",
                 threshold: 0.5,

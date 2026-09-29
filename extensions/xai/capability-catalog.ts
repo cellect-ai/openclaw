@@ -1,5 +1,6 @@
 import type { PluginCapabilityCatalogEntry } from "openclaw/plugin-sdk/plugin-entry";
 import {
+  createLazyLiteLlmRealtimeVoiceProvider,
   createLazyXaiSpeechProvider,
   createLazyXaiRealtimeTranscriptionProvider,
   createLazyXaiRealtimeVoiceProvider,
@@ -8,7 +9,10 @@ import {
 const catalog: PluginCapabilityCatalogEntry = (context) => ({
   speechProviders: [createLazyXaiSpeechProvider(context)],
   realtimeTranscriptionProviders: [createLazyXaiRealtimeTranscriptionProvider(context)],
-  realtimeVoiceProviders: [createLazyXaiRealtimeVoiceProvider(context)],
+  realtimeVoiceProviders: [
+    createLazyXaiRealtimeVoiceProvider(context),
+    createLazyLiteLlmRealtimeVoiceProvider(context),
+  ],
 });
 
 export default catalog;

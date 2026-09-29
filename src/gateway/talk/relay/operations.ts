@@ -14,6 +14,7 @@ import type {
 import { resolveRealtimeVoiceBargeIn } from "../../../talk/realtime-session-policy.js";
 import type { TalkEvent } from "../../../talk/talk-session-controller.js";
 import { abortChatRunById } from "../../chat-abort.js";
+import { registerRelayChatTerminal } from "../../talk-realtime-relay-chat-results.js";
 import { decodeTalkRelayAudioBase64 } from "../relay-audio-base64.js";
 import {
   closeTalkRelaySessionsForConnection,
@@ -96,6 +97,7 @@ export function ensureTalkRealtimeRelayVoiceSession(params: {
 
 /** Omitting the abort reason releases relay correlation while accepted work continues. */
 function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
+  releaseRelayTerminalSubscriptions(session);
   if (reason !== undefined) {
     for (const [runId, sessionKey] of session.activeAgentRuns) {
       abortChatRunById(session.context, {
@@ -109,6 +111,12 @@ function retireRelayAgentRuns(session: RelaySession, reason?: string): void {
   session.activeAgentToolCalls.clear();
 }
 
+function releaseRelayTerminalSubscriptions(session: RelaySession): void {
+  for (const release of session.agentToolCallTerminalSubscriptions?.values() ?? []) {
+    release();
+  }
+  session.agentToolCallTerminalSubscriptions?.clear();
+}
 export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
   for (const runId of session.activeAgentRuns.keys()) {
     if (!session.context.chatAbortControllers.has(runId)) {
@@ -117,7 +125,7 @@ export function pruneInactiveRelayAgentRuns(session: RelaySession): number {
   }
   for (const [callId, runId] of session.activeAgentToolCalls) {
     if (!session.activeAgentRuns.has(runId)) {
-      session.activeAgentToolCalls.delete(callId);
+      clearRelayAgentToolCall(session, callId);
     }
   }
   return session.activeAgentRuns.size;
@@ -138,9 +146,11 @@ export function closeRelaySession(
   session.closing = closing;
   const disposition =
     options?.disposition ??
-    (isTalkVoiceSessionReplacing(session.id, session.connId, session.sessionTarget.agentId)
+    (session.speakerMxid ||
+    isTalkVoiceSessionReplacing(session.id, session.connId, session.sessionTarget.agentId)
       ? "detach"
       : "abort");
+  session.closeDisposition = disposition;
   unregisterTalkVoiceSession(session.id, session.connId, session.sessionTarget.agentId);
   session.confirmationReadiness.close();
   session.harness.close();
@@ -376,45 +386,79 @@ export function submitTalkRealtimeRelayToolResult(params: {
   return trackToolResultCompletion(session.pendingWorkingToolResults, params.callId, completion);
 }
 
-export function registerTalkRealtimeRelayAgentRun(params: {
+/** Tracks the chat run started for a realtime agent-consult tool call. */
+export function prepareTalkRealtimeRelayAgentRunRegistration(params: {
   relaySessionId: string;
   connId: string;
   sessionKey: string;
-  runId: string;
   callId?: string;
-}): void {
+}): (runId: string) => "registered" | "detached" {
   const session = getRelaySession(params.relaySessionId, params.connId);
-  const callId = params.callId?.trim();
+  // 2026.9.6 relays are pre-bound to one prepared session target. The caller's key
+  // (client alias or canonical form) addresses its run, but never another session.
+  const sessionKey = params.sessionKey.trim();
+  const target = session.sessionTarget;
   if (
-    callId &&
-    (session.toolCalls.isAgentCompleted(callId) || session.toolCalls.hasCancelled(callId))
+    sessionKey !== target.sessionKey &&
+    sessionKey !== target.canonicalKey &&
+    `agent:${target.agentId}:${sessionKey}` !== target.canonicalKey
   ) {
-    // Cancellation can win while chat.send or provider result acceptance is pending.
-    // Abort the late run before it can escape the relay's call-ownership tombstone.
-    abortChatRunById(session.context, {
-      runId: params.runId,
-      sessionKey: params.sessionKey,
-      stopReason: "realtime provider cancelled tool call",
+    throw new Error("Realtime relay session belongs to another agent session");
+  }
+  const callId = params.callId?.trim();
+  return (runId) => {
+    if (
+      callId &&
+      (session.toolCalls.isAgentCompleted(callId) || session.toolCalls.hasCancelled(callId))
+    ) {
+      // Provider cancellation can win while chat.send is still acknowledging. Abort
+      // the late run before it can escape the relay's call-ownership tombstone.
+      abortChatRunById(session.context, {
+        runId,
+        sessionKey,
+        stopReason: "realtime provider cancelled tool call",
+      });
+      throw new Error("Realtime provider cancelled the tool call before run registration");
+    }
+    if (session.closeDisposition === "detach") {
+      return "detached";
+    }
+    if (relaySessions.get(session.id) !== session) {
+      throw new Error("Realtime relay session closed before run registration");
+    }
+    if (callId && !session.toolCalls.tryAdmit([callId])) {
+      throw new Error("Realtime relay tool-call session limit exceeded");
+    }
+    session.activeAgentRuns.set(runId, sessionKey);
+    if (callId) {
+      session.activeAgentToolCalls.set(callId, runId);
+    }
+    if (!ensureRelayVoiceSession(session)) {
+      throw new Error("Realtime relay voice session could not be created for agent consult");
+    }
+    registerClientVoiceConsultRun({
+      agentId: session.sessionTarget.agentId,
+      sessionKey: session.sessionTarget.sessionKey,
+      voiceSessionId: session.id,
+      runId,
     });
-    throw new Error("Realtime provider cancelled the tool call before run registration");
-  }
-  if (callId && !session.toolCalls.tryAdmit([callId])) {
-    throw new Error("Realtime relay tool-call session limit exceeded");
-  }
-  session.activeAgentRuns.set(params.runId, params.sessionKey);
-  if (callId) {
-    session.activeAgentToolCalls.set(callId, params.runId);
-  }
-  if (!ensureRelayVoiceSession(session)) {
-    throw new Error("Realtime relay voice session could not be created for agent consult");
-  }
-  const { agentId, sessionKey } = session.sessionTarget;
-  registerClientVoiceConsultRun({
-    agentId,
-    sessionKey,
-    voiceSessionId: session.id,
-    runId: params.runId,
-  });
+    if (callId && session.matrixRoute) {
+      registerRelayChatTerminal(
+        session,
+        runId,
+        callId,
+        sessionKey,
+        submitTalkRealtimeRelayToolResult,
+      );
+    }
+    return "registered";
+  };
+}
+
+export function registerTalkRealtimeRelayAgentRun(
+  params: Parameters<typeof prepareTalkRealtimeRelayAgentRunRegistration>[0] & { runId: string },
+): "registered" | "detached" {
+  return prepareTalkRealtimeRelayAgentRunRegistration(params)(params.runId);
 }
 
 /** Retires one provider-owned tool call and aborts its exact relay consult, if started. */
