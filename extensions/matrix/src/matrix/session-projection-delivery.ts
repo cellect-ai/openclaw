@@ -10,7 +10,7 @@ import {
 } from "./projection-publication.js";
 import { isProjectionBinding } from "./projection-target.js";
 import { sendMessageMatrix } from "./send.js";
-import { projectionText } from "./session-projection-snapshot.js";
+import { projectionText } from "./session-projection-plan.js";
 
 // The initial source message can be supplied by an authorized product bridge
 // while its ordinary message_received hook is still in flight. Keep the two

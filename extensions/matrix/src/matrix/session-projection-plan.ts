@@ -234,12 +234,52 @@ export function sourceMessageContentHash(message: SourceProjectionMessage): stri
   return createHash("sha256").update(JSON.stringify(message)).digest("hex");
 }
 
+export function projectionText(params: {
+  channel: string;
+  role: "user" | "assistant";
+  text: string;
+  senderId?: string;
+  agentId?: string;
+  displayName?: string;
+}): string {
+  const author = params.displayName || params.agentId || params.senderId;
+  const speaker = author
+    ? author
+        .replace(/[\\`*_[\]<>]/g, "")
+        .replace(/\s+/g, " ")
+        .slice(0, 100)
+    : params.role === "user"
+      ? "User"
+      : "Assistant";
+  const source =
+    params.channel === "webchat"
+      ? "OpenClaw"
+      : `${params.channel.slice(0, 1).toUpperCase()}${params.channel.slice(1)}`;
+  return `**${source} · ${speaker}**\n${params.text}`;
+}
+
+/** The Matrix body a source message is published with. */
+export function sourceMessageBody(provider: string, message: SourceProjectionMessage): string {
+  return projectionText({
+    channel: provider,
+    role: message.role,
+    text: message.content || "[Message has no text]",
+    senderId: message.senderId,
+    agentId: message.agentId,
+    displayName: message.displayName,
+  });
+}
+
 /**
  * Publication state of one source message's own copies. With no `contentHash`
  * the source is assumed to still hold the recorded content, which is how a
  * structural (snapshot-free) plan and the invariants read a history.
  */
-export function analyzeProjectedMessage(existing: ProjectedCopy[], contentHash?: string) {
+export function analyzeProjectedMessage(
+  existing: ProjectedCopy[],
+  contentHash?: string,
+  equivalent?: (content: Record<string, unknown>) => boolean,
+) {
   const revision = Math.max(
     0,
     ...existing.map((event) => Number(publicationOf(event.content)?.publicationRevision) || 0),
@@ -247,12 +287,21 @@ export function analyzeProjectedMessage(existing: ProjectedCopy[], contentHash?:
   const currentParts = existing.filter(
     (event) => publicationOf(event.content)?.publicationRevision === revision,
   );
+  const expectedParts = Number(publicationOf(currentParts[0]?.content ?? {})?.partCount);
   const sameRevision =
     contentHash === undefined ||
     currentParts.some(
       (event) => object(event.content[SOURCE_CONTENT_REVISION_KEY])?.contentHash === contentHash,
-    );
-  const expectedParts = Number(publicationOf(currentParts[0]?.content ?? {})?.partCount);
+    ) ||
+    // The hash covers source fields that never reach the published event
+    // (agentId once a display name is set) and a file permalink's viewer
+    // segment, which follows whichever account read the thread. A single-part
+    // copy that already shows exactly what would be published is current; an
+    // edit would change nothing a reader sees yet freeze a projector revision.
+    (expectedParts === 1 &&
+      equivalent !== undefined &&
+      currentParts.length > 0 &&
+      currentParts.every((event) => equivalent(event.content)));
   const indexes = new Set(currentParts.map((event) => publicationOf(event.content)?.partIndex));
   const complete =
     sameRevision &&
@@ -289,6 +338,35 @@ export function analyzeProjectedMessage(existing: ProjectedCopy[], contentHash?:
   };
 }
 
+// Slack file permalinks embed the reading account's user id
+// (`https://<ws>.slack.com/files/<viewer>/<file>/<name>`); the file id names it.
+const SLACK_FILE_PERMALINK_VIEWER = /(https:\/\/[^\s/]+\.slack\.com\/files\/)[UW][A-Z0-9]+\//g;
+
+const comparableBody = (body: string) => body.replace(SLACK_FILE_PERMALINK_VIEWER, "$1-/");
+
+/**
+ * Whether a copy's current content already shows `message` as `body` would:
+ * same rendered text (up to a permalink's viewer segment) and the same author
+ * identity, role and name on its publication.
+ */
+export function publishesSameAs(
+  content: Record<string, unknown>,
+  message: SourceProjectionMessage,
+  body: string,
+): boolean {
+  const publication = publicationOf(content);
+  const origin = object(publication?.origin);
+  return (
+    typeof content.body === "string" &&
+    comparableBody(content.body) === comparableBody(body) &&
+    origin?.messageId === message.messageId &&
+    origin.actorId === message.senderId &&
+    origin.displayName === (message.displayName ? message.displayName.slice(0, 200) : undefined) &&
+    publication?.role === message.role &&
+    (message.sourceTs === undefined || origin.publishedAtMs === message.sourceTs)
+  );
+}
+
 function keptParts(kept: Map<unknown, string>): ProjectionPart[] {
   return Array.from(kept, ([partIndex, eventId]) => ({ partIndex: Number(partIndex), eventId }));
 }
@@ -303,7 +381,12 @@ function keptParts(kept: Map<unknown, string>): ProjectionPart[] {
 export function planProjectionReconcile(
   history: ProjectionHistory,
   snapshot: SourceProjectionSnapshot | undefined,
-  options: { publishable: boolean; retireThreadId?: string },
+  options: {
+    publishable: boolean;
+    retireThreadId?: string;
+    /** The body a message would be published with; enables equivalence with it. */
+    render?: (message: SourceProjectionMessage) => string;
+  },
 ): ProjectionAction[] {
   const thread = readProjectionThread(history);
   const actions: ProjectionAction[] = [];
@@ -318,15 +401,23 @@ export function planProjectionReconcile(
       });
     }
   };
+  const render = options.render;
   const desired = snapshot
     ? snapshot.messages.map((message) => ({
         messageId: message.messageId,
         contentHash: sourceMessageContentHash(message),
+        equivalent: render
+          ? (content: Record<string, unknown>) => publishesSameAs(content, message, render(message))
+          : undefined,
       }))
-    : Array.from(thread.messages.keys(), (messageId) => ({ messageId, contentHash: undefined }));
-  for (const { messageId, contentHash } of desired) {
+    : Array.from(thread.messages.keys(), (messageId) => ({
+        messageId,
+        contentHash: undefined,
+        equivalent: undefined,
+      }));
+  for (const { messageId, contentHash, equivalent } of desired) {
     const existing = thread.messages.get(messageId) ?? [];
-    const state = analyzeProjectedMessage(existing, contentHash);
+    const state = analyzeProjectedMessage(existing, contentHash, equivalent);
     let retainedEventId: string | undefined;
     if (state.unchanged) {
       actions.push({
