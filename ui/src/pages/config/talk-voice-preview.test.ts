@@ -6,9 +6,12 @@ import { TalkVoicePreview } from "./talk-voice-preview.ts";
 
 class PreviewAudioContext {
   static instances: PreviewAudioContext[] = [];
+  static resumePending = false;
   currentTime = 0;
   destination = {};
-  resume = vi.fn(async () => {});
+  resume = vi.fn(() =>
+    PreviewAudioContext.resumePending ? new Promise<void>(() => {}) : Promise.resolve(),
+  );
   close = vi.fn(async () => {});
   sources: { start: ReturnType<typeof vi.fn>; stop: ReturnType<typeof vi.fn> }[] = [];
   constructor() {
@@ -36,6 +39,7 @@ const owners: TalkVoicePreview[] = [];
 
 function setup() {
   PreviewAudioContext.instances = [];
+  PreviewAudioContext.resumePending = false;
   vi.stubGlobal("AudioContext", PreviewAudioContext);
   const preview = new TalkVoicePreview(vi.fn());
   owners.push(preview);
@@ -49,6 +53,52 @@ afterEach(() => {
 });
 
 describe("Talk voice preview lifecycle", () => {
+  it("bounds blocked audio startup and allows an explicit retry with a fresh context", async () => {
+    vi.useFakeTimers();
+    const preview = setup();
+    PreviewAudioContext.resumePending = true;
+    const request = vi.fn().mockResolvedValue(clip);
+    const client = { request } as unknown as GatewayBrowserClient;
+    preview.play(client, target);
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(preview.state).toBe("error");
+    expect(request).not.toHaveBeenCalled();
+    expect(PreviewAudioContext.instances[0]?.close).toHaveBeenCalledOnce();
+    PreviewAudioContext.resumePending = false;
+    preview.play(client, target);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(preview.state).toBe("playing");
+    expect(request).toHaveBeenCalledOnce();
+    expect(PreviewAudioContext.instances).toHaveLength(2);
+  });
+
+  it.each(["replace", "stop"])("%s releases a stalled audio owner immediately", async (action) => {
+    vi.useFakeTimers();
+    const preview = setup();
+    PreviewAudioContext.resumePending = true;
+    const request = vi.fn().mockResolvedValue(clip);
+    const client = { request } as unknown as GatewayBrowserClient;
+    preview.play(client, target);
+    if (action === "stop") {
+      preview.stop();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(preview.state).toBe("idle");
+      expect(request).not.toHaveBeenCalled();
+    }
+    PreviewAudioContext.resumePending = false;
+    preview.play(client, { ...target, voice: "voice-two" });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(preview.state).toBe("playing");
+    expect(request).toHaveBeenCalledOnce();
+    expect(request).toHaveBeenLastCalledWith(
+      "talk.voice.preview",
+      { ...target, voice: "voice-two" },
+      { timeoutMs: 25_000 },
+    );
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(preview.state).toBe("idle");
+  });
+
   it("unlocks audio in the gesture and coalesces changed voices without playing stale clips", async () => {
     const preview = setup();
     const first = createDeferred<typeof clip>();

@@ -4,6 +4,30 @@ import { RealtimeTalkPcmOutputQueue } from "../chat/talk/audio.ts";
 export type TalkVoicePreviewTarget = { provider: string; model?: string; voice: string | null };
 export type TalkVoicePreviewState = "idle" | "loading" | "playing" | "error";
 
+function resumePreviewAudio(context: AudioContext, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const finish = (error?: unknown) => {
+      clearTimeout(timer);
+      signal.removeEventListener("abort", abort);
+      if (error) {
+        reject(error);
+      } else {
+        resolve();
+      }
+    };
+    const abort = () => finish(new Error("Preview was replaced"));
+    // Browsers can leave resume pending indefinitely when audio is blocked.
+    const timer = setTimeout(() => finish(new Error("Preview audio is blocked")), 2_000);
+    signal.addEventListener("abort", abort, { once: true });
+    // Keep the resume call inside the original select/button gesture.
+    try {
+      context.resume().then(() => finish(), finish);
+    } catch (error) {
+      finish(error);
+    }
+  });
+}
+
 /** Owns preview playback, never microphone capture or a conversation. */
 export class TalkVoicePreview {
   state: TalkVoicePreviewState = "idle";
@@ -17,18 +41,21 @@ export class TalkVoicePreview {
     resumed: Promise<void>;
   } | null = null;
   private requesting = false;
+  private resumeOwner: AbortController | undefined;
   private finishedTimer: ReturnType<typeof setTimeout> | undefined;
 
   constructor(private readonly notify: () => void) {}
 
   play(client: GatewayBrowserClient, target: TalkVoicePreviewTarget) {
     const generation = ++this.generation;
+    this.resumeOwner?.abort();
+    this.resumeOwner = new AbortController();
     this.output.stop(this.context);
     clearTimeout(this.finishedTimer);
     try {
       // Resume during the select/button gesture, before any network await.
       this.context ??= new AudioContext();
-      const resumed = this.context.resume();
+      const resumed = resumePreviewAudio(this.context, this.resumeOwner.signal);
       void resumed.catch(() => {});
       this.pending = { client, target, generation, resumed };
       this.update("loading");
@@ -41,6 +68,8 @@ export class TalkVoicePreview {
 
   stop() {
     ++this.generation;
+    this.resumeOwner?.abort();
+    this.resumeOwner = undefined;
     this.pending = null;
     clearTimeout(this.finishedTimer);
     this.output.stop(this.context);
@@ -90,6 +119,10 @@ export class TalkVoicePreview {
         }, durationMs);
       } catch {
         if (pick.generation === this.generation) {
+          // Retry gets a fresh audio context rather than the blocked instance.
+          this.output.stop(this.context);
+          void this.context?.close().catch(() => {});
+          this.context = null;
           this.update("error");
         }
       }
