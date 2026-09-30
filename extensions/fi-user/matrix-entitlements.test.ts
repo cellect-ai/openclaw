@@ -161,10 +161,28 @@ describe("registered Matrix agent entitlement hooks", () => {
       reply: { text: expect.any(String) },
     });
   });
+  it("rides out a brief Fi restart instead of replying with an access error", async () => {
+    fetchMock
+      .mockRejectedValueOnce(new TypeError("fetch failed"))
+      .mockResolvedValueOnce(new Response(null, { status: 503 }))
+      .mockResolvedValueOnce(allow());
+    expect(await plugin()("before_agent_reply", {}, context())).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+  it("does not retry a denial and stops after the attempt limit", async () => {
+    fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+    expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({ handled: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    fetchMock.mockReset();
+    fetchMock.mockRejectedValue(new TypeError("fetch failed"));
+    expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({ handled: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
   it("fails closed on network failure, malformed responses, and missing trusted event", async () => {
     const hook = plugin();
-    fetchMock.mockRejectedValueOnce(new Error("secret should never appear"));
+    fetchMock.mockRejectedValue(new Error("secret should never appear"));
     expect(JSON.stringify(await hook("before_agent_reply", {}, context()))).not.toContain("secret");
+    fetchMock.mockReset();
     fetchMock.mockResolvedValueOnce(
       new Response(JSON.stringify({ ok: true, agentId: "other", orgId: "tenant-a" })),
     );
@@ -172,7 +190,7 @@ describe("registered Matrix agent entitlement hooks", () => {
     expect(
       await hook("before_agent_reply", {}, context("cellect-main", { channelContext: undefined })),
     ).toMatchObject({ handled: true });
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it("uses the account's dev broker and never falls back for an unknown environment", async () => {
     const hook = plugin();

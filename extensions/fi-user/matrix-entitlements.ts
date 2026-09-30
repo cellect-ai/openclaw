@@ -4,6 +4,10 @@ import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegatio
 
 const AGENTS = new Set(["cellect-fi-user", "cellect-fi-admin", "cellect-main"]);
 const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";
+const AUTHORIZE_BUDGET_MS = 12_000;
+const AUTHORIZE_ATTEMPTS = 3;
+const AUTHORIZE_BACKOFF_MS = 500;
+const TRANSIENT_STATUSES = new Set([502, 503, 504]);
 const DENIED = "You don’t currently have access to this agent in this conversation.";
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 type Turn = {
@@ -28,26 +32,53 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (!connection || !token) {
         return UNAVAILABLE;
       }
-      // Shorter than the tool-hook deadline; admission catches all failures and returns a reply.
-      const response = await fetch(
-        `${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`,
-        {
-          method: "POST",
-          signal: AbortSignal.timeout(12_000),
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            roomId: turn.roomId,
-            agentId: turn.agentId,
-            ...(turn.mode === "voice"
-              ? {
-                  mode: "voice",
-                  speakerMxid: turn.senderId,
-                  threadRootEventId: turn.threadRootEventId,
-                }
-              : { eventId: turn.eventId }),
-          }),
-        },
-      );
+      // One budget, shorter than the tool-hook deadline; admission catches all
+      // failures and returns a reply. A connection failure or a 502/503/504 is
+      // Fi restarting or briefly overloaded, not a denial, so retry inside the
+      // same budget instead of turning the agent's reply into an access error.
+      const deadline = Date.now() + AUTHORIZE_BUDGET_MS;
+      const body = JSON.stringify({
+        roomId: turn.roomId,
+        agentId: turn.agentId,
+        ...(turn.mode === "voice"
+          ? {
+              mode: "voice",
+              speakerMxid: turn.senderId,
+              threadRootEventId: turn.threadRootEventId,
+            }
+          : { eventId: turn.eventId }),
+      });
+      let response: Response | undefined;
+      for (let attempt = 1; attempt <= AUTHORIZE_ATTEMPTS; attempt++) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          break;
+        }
+        try {
+          response = await fetch(
+            `${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`,
+            {
+              method: "POST",
+              signal: AbortSignal.timeout(remaining),
+              headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+              body,
+            },
+          );
+          if (!TRANSIENT_STATUSES.has(response.status)) {
+            break;
+          }
+        } catch {
+          response = undefined;
+        }
+        const backoff = AUTHORIZE_BACKOFF_MS * attempt;
+        if (attempt === AUTHORIZE_ATTEMPTS || deadline - Date.now() <= backoff + 1_000) {
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, backoff));
+      }
+      if (!response) {
+        return UNAVAILABLE;
+      }
       if (response.status === 403) {
         return DENIED;
       }
