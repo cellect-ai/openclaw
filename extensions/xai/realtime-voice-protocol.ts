@@ -38,6 +38,14 @@ export abstract class XaiRealtimeVoiceProtocol {
   protected responseActive = false;
   protected responseCreateInFlight = false;
   protected responseCancelInFlight = false;
+  /**
+   * True when the cancel in flight was aimed at a response that already existed.
+   * A later response.created is then a different response and must not inherit the
+   * cancel: its audio would be dropped until it finished, leaving text with no voice.
+   * False when the cancel raced a still-uncreated response, whose created event is
+   * the very response being cancelled.
+   */
+  protected cancelTargetsLiveResponse = false;
   protected responseCreatePending = false;
   protected continuingToolCallIds = new Set<string>();
   protected pendingToolCallIds = new Set<string>();
@@ -156,6 +164,7 @@ export abstract class XaiRealtimeVoiceProtocol {
       this.assistantAudioItem = null;
       if (this.responseActive || this.responseCreateInFlight) {
         this.responseCancelInFlight = true;
+        this.cancelTargetsLiveResponse = this.responseActive;
       }
       // xAI requires manual cancellation before truncating even completed playback.
       // Only active generation has a later response.done; VAD owns its cancellation.

@@ -405,6 +405,32 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       await bridge.close();
     });
 
+    it("does not carry a barge-in cancel over to a newer response", async () => {
+      const onAudio = vi.fn();
+      const bridge = createTestBridge({ getPlaybackState: () => [], onAudio });
+      const socket = await openRealtimeBridge(bridge);
+      socket.emitServer({ type: "response.created", response: { id: "first" } });
+      bridge.handleBargeIn?.({ audioPlaybackActive: true, force: true });
+      // Audio still arriving for the cancelled response stays dropped.
+      socket.emitServer({
+        type: "response.output_audio.delta",
+        item_id: "first",
+        delta: Buffer.alloc(8_000).toString("base64"),
+      });
+      expect(onAudio).not.toHaveBeenCalled();
+      // The provider starts a newer response before it confirms the cancel (its
+      // response.done arrives later). That response must be heard.
+      socket.emitServer({ type: "response.created", response: { id: "second" } });
+      socket.emitServer({
+        type: "response.output_audio.delta",
+        item_id: "second",
+        delta: Buffer.alloc(8_000).toString("base64"),
+      });
+      expect(onAudio).toHaveBeenCalledTimes(1);
+      expect(onAudio).toHaveBeenLastCalledWith(Buffer.alloc(8_000), { itemId: "second" });
+      await bridge.close();
+    });
+
     it.each(["response.created", "response.output_audio.delta"])(
       "allows the %s observer to cancel before PCM delivery",
       async (interruptOn) => {

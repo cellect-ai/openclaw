@@ -25,6 +25,12 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
 
   protected handleEvent(event: XaiRealtimeEvent, connection: RealtimeVoiceSessionConnection): void {
     if (event.type === "response.created" && this.acceptsEvent(connection)) {
+      // A cancel aimed at an earlier live response does not apply to this new one.
+      // Providers may start the next response before confirming the cancel, and
+      // carrying the flag over dropped every audio delta of the new answer.
+      if (this.responseCancelInFlight && this.cancelTargetsLiveResponse) {
+        this.responseCancelInFlight = false;
+      }
       // Publish the response owner before observers can interrupt its first PCM.
       this.outputAudioGeneration += 1;
       this.responseActive = true;
