@@ -141,6 +141,16 @@ describe("Matrix voice consult requester", () => {
     });
   });
 
+  it("names the Matrix room as the run's chat so the Fi entitlement guard can match it", async () => {
+    // The guard compares hook context.chatId with channelContext.chat.id. A gateway
+    // chat.send has no inbound-event builder to set ChatId, so without this the guard
+    // saw an undefined chat and answered every voice consult with "couldn't verify".
+    relaySessions.set("owned-relay", relay("@member:threads.example"));
+    const ctx = await dispatchedContext();
+    expect(ctx.ChatId).toBe("!private:example.test");
+    expect(ctx.ChannelContext).toMatchObject({ chat: { id: "!private:example.test" } });
+  });
+
   it("carries no requester when the relay has no attested speaker", async () => {
     relaySessions.set("owned-relay", relay());
     const ctx = await dispatchedContext();
