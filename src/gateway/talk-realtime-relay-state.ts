@@ -259,6 +259,8 @@ export type CreateTalkRealtimeRelaySessionParams = {
   provider: RealtimeVoiceProviderPlugin;
   providerConfig: RealtimeVoiceProviderConfig;
   instructions: string;
+  /** Untrusted client context captured at session creation for delegated consults. */
+  sessionContext?: string;
   tools: RealtimeVoiceTool[];
   model?: string;
   sessionKey?: string;

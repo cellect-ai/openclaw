@@ -72,6 +72,7 @@ const coreParams = {
 function createRunner(
   registerRun = vi.fn(),
   authority: TalkAgentConsultAuthority = { senderIsOwner: false, toolsAllow: ["read"] },
+  sessionContext?: string,
 ) {
   return createTalkClientAgentConsultRunner({
     config,
@@ -81,6 +82,7 @@ function createRunner(
     authority,
     getVoiceSessionId: () => "voice-session",
     initialItems: [],
+    sessionContext,
     registerRun,
   });
 }
@@ -170,6 +172,19 @@ describe("Talk client agent consult admission", () => {
     expect(mocks.consultRealtimeVoiceAgent.mock.calls[0]?.[0]).not.toHaveProperty("toolsAllow");
   });
 
+  it("forwards the session context captured at relay creation to the consult", async () => {
+    const context = "Budget screen data";
+    await expect(
+      createRunner(vi.fn(), { senderIsOwner: false, toolsAllow: ["read"] }, context).runPrompt({
+        prompt: "Check this budget",
+      }),
+    ).resolves.toEqual({ text: "done" });
+
+    expect(mocks.consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionContext: context }),
+    );
+  });
+
   it("closes the Talk admission when core execution fails", async () => {
     mocks.runEmbeddedAgentCore.mockRejectedValueOnce(new Error("core failed"));
 
@@ -252,7 +267,7 @@ describe("Talk client agent consult admission", () => {
     noteClientVoiceConfirmationUtterance({
       agentId: "researcher",
       voiceSessionId: "voice-session",
-      text: "yes",
+      text: "I confirm.",
       timestamp: now + 1,
     });
     authorizeClientVoiceConfirmation({
@@ -272,6 +287,9 @@ describe("Talk client agent consult admission", () => {
     await expect(
       createRunner(registerRun).runArgs({ question: "check", confirmationId }),
     ).resolves.toEqual({ text: "done" });
+    expect(mocks.consultRealtimeVoiceAgent).toHaveBeenCalledWith(
+      expect.objectContaining({ args: expect.objectContaining({ confirmationId }) }),
+    );
     expect(registerRun).toHaveBeenCalledWith({ runId: "run-talk" });
     expect(mocks.runEmbeddedAgentCore).toHaveBeenCalledOnce();
     expect(mocks.close).toHaveBeenCalledOnce();

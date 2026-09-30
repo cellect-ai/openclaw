@@ -86,6 +86,7 @@ describe("client voice confirmation", () => {
   it.each([
     ["exec", "git clean -fdx"],
     ["bash", "mv a b"],
+    ["sandbox_exec", "git clean -fdx"],
   ])(
     "requires confirmation for an unlisted destructive shell command: %s %s",
     (toolName, command) => {
@@ -100,6 +101,50 @@ describe("client voice confirmation", () => {
     },
   );
 
+  it("does not ask for confirmation to send plain text to the active internal chat", () => {
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        agentId: "main",
+        voiceSessionId: "voice-1",
+        toolName: "message",
+        toolParams: { action: "send", message: "I found the answer." },
+        turnSourceChannel: "webchat",
+      }),
+    ).toEqual({ allowed: true });
+  });
+
+  it.each([
+    { action: "send", message: "Send this to Alex.", channel: "slack" },
+    { action: "send", message: "Send this to Alex.", target: "U123" },
+    { action: "send", message: "Attach this.", media: "https://example.test/file.pdf" },
+    {
+      action: "send",
+      message: "Ask for approval.",
+      presentation: { blocks: [{ type: "buttons", buttons: [{ label: "Approve" }] }] },
+    },
+  ])("still requires confirmation for externally routed or non-plain messages: %o", (toolParams) => {
+    const result = checkClientVoiceToolConfirmationPolicy({
+      agentId: "main",
+      voiceSessionId: "voice-1",
+      toolName: "message",
+      toolParams,
+      turnSourceChannel: "webchat",
+    });
+
+    expect(result.allowed).toBe(false);
+  });
+
+  it("requires confirmation before mutating a Codex sandbox process", () => {
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "voice-run",
+        toolName: "sandbox_process",
+        toolParams: { action: "kill", sessionId: "process-1" },
+      }).allowed,
+    ).toBe(false);
+  });
+
   it.each(["ls -la", "grep -n TODO README.md"])(
     "does not require confirmation for a classified read-only shell command: %s",
     (command) => {
@@ -113,6 +158,24 @@ describe("client voice confirmation", () => {
       ).toEqual({ allowed: true });
     },
   );
+
+  it.each([
+    ["sandbox_exec", "sed -n '1,260p' /workspace/skills/fi-ops/SKILL.md"],
+    ["sandbox_exec", 'fi-psql -v ON_ERROR_STOP=1 -Atc "select 1"'],
+    [
+      "sandbox_exec",
+      'fi-psql -v ON_ERROR_STOP=1 -F \'|\' -Atc "select id, slug from public.projects where org_id=\'shape\' order by slug"',
+    ],
+  ])("does not require confirmation for safe Codex sandbox reads: %s %s", (toolName, command) => {
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        agentId: "main",
+        voiceSessionId: "voice-1",
+        toolName,
+        toolParams: { command },
+      }),
+    ).toEqual({ allowed: true });
+  });
 
   it("requires confirmation before delegating work outside the voice-bound run", () => {
     expect(
@@ -379,6 +442,46 @@ describe("client voice confirmation", () => {
       }),
     ).toEqual({ allowed: true });
   });
+
+  it.each(["I confirm.", "Confirm inbox check.", "Yes, run the live Fi lookup."])(
+    "accepts an explicit spoken confirmation phrased as %j",
+    (text) => {
+      const confirmationId = block({ voiceSessionId: "voice-1", now: 100 });
+      noteClientVoiceConfirmationUtterance({
+        voiceSessionId: "voice-1",
+        text,
+        timestamp: 101,
+      });
+
+      expect(() =>
+        authorizeClientVoiceConfirmation({
+          voiceSessionId: "voice-1",
+          confirmationId,
+          now: 102,
+        }),
+      ).not.toThrow();
+    },
+  );
+
+  it.each(["Yes, maybe later.", "Yes, but I think so.", "Confirm if it is still needed."])(
+    "does not treat a hedged response as confirmation: %j",
+    (text) => {
+      const confirmationId = block({ voiceSessionId: "voice-1", now: 100 });
+      noteClientVoiceConfirmationUtterance({
+        voiceSessionId: "voice-1",
+        text,
+        timestamp: 101,
+      });
+
+      expect(() =>
+        authorizeClientVoiceConfirmation({
+          voiceSessionId: "voice-1",
+          confirmationId,
+          now: 102,
+        }),
+      ).toThrow("explicit spoken confirmation was not found");
+    },
+  );
 
   it("prunes an abandoned confirmation when its TTL expires", () => {
     vi.useFakeTimers();

@@ -92,6 +92,7 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
     runId: args.ctx?.runId,
     toolName: normalizeToolPolicyName(args.toolName || "tool"),
     toolParams: args.params,
+    turnSourceChannel: args.ctx?.turnSourceChannel,
     ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
   });
 }
@@ -173,6 +174,7 @@ export async function runBeforeToolCallHook(args: {
       runId: args.ctx?.runId,
       toolName,
       toolParams: normalizedParams,
+      turnSourceChannel: args.ctx?.turnSourceChannel,
       ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
     });
     if (!voiceConfirmation.allowed) {

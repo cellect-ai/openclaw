@@ -226,6 +226,39 @@ describe("before_tool_call hook integration", () => {
     expect(consumeTrackedToolExecutionStarted("call-1")).toBeUndefined();
   });
 
+  it("executes documented voice read-only skill and Fi SQL checks without a confirmation loop", async () => {
+    const runId = "run-voice-read-only-inspection";
+    installVoiceRunBinding(runId);
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const hookContext = {
+      runId,
+      agentId: "main",
+      sessionKey: "agent:main:voice",
+      turnSourceChannel: "webchat",
+    };
+    const tool = wrapToolWithBeforeToolCallHook(
+      asAgentTool({ name: "sandbox_exec", execute }),
+      hookContext,
+    );
+    const extensionContext = {} as Parameters<typeof tool.execute>[3];
+
+    await tool.execute("call-voice-read-skills", {
+      command:
+        "sed -n '1,260p' /workspace/skills/fi-ops/SKILL.md && " +
+        "sed -n '1,260p' /workspace/skills/budget/SKILL.md",
+    }, undefined, extensionContext);
+    await tool.execute("call-voice-read-irr", {
+      command: String.raw`fi-psql -v ON_ERROR_STOP=1 -F $'\t' -Atc "select id, slug from public.projects where id='305-third-street-spe-llc'"`,
+    }, undefined, extensionContext);
+
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute.mock.calls.map(([, params]) => (params as { command: string }).command)).toEqual([
+      "sed -n '1,260p' /workspace/skills/fi-ops/SKILL.md && " +
+        "sed -n '1,260p' /workspace/skills/budget/SKILL.md",
+      String.raw`fi-psql -v ON_ERROR_STOP=1 -F $'\t' -Atc "select id, slug from public.projects where id='305-third-street-spe-llc'"`,
+    ]);
+  });
+
   it("consumes private execution validation through the standard update slot", async () => {
     beforeToolCallHook = installBeforeToolCallHook({ enabled: false });
     const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });

@@ -1868,6 +1868,7 @@ describe("talk.session unified handlers", () => {
       connId: "conn-1",
       provider,
       language: "de",
+      sessionContext: "Fi session metadata\n- Project: 305 Third Street SPE LLC",
       consultAuthority: {
         senderIsOwner: false,
         toolsAllow: ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
@@ -3322,6 +3323,7 @@ describe("talk.client.create handler", () => {
         silenceDurationMs: 650,
         prefixPaddingMs: 250,
         reasoningEffort: "low",
+        sessionCapsule: "Fi screen: /shape/chat\nProject: 305 Third Street",
       },
       respond,
       client: { connId: "conn-1", connect: { scopes: ["operator.talk"] } },
@@ -3391,6 +3393,7 @@ describe("talk.client.create handler", () => {
           { role: "user", text: `2:${"🙂".repeat(799)}` },
           { role: "assistant", text: `3:${"🙂".repeat(799)}` },
         ],
+        sessionContext: "Fi screen: /shape/chat\nProject: 305 Third Street",
         surface: "a browser Talk session",
         abortSignal: consultSignal,
         senderIsOwner: false,

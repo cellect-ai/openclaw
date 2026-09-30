@@ -38,15 +38,71 @@ describe("tool mutation helpers", () => {
     ).toEqual({ mutatingAction: true, replaySafe: false });
   });
 
+  it("treats the public Tavily search tool as read-only and replay-safe", () => {
+    const toolName = "tavily_search";
+    expect(isMutatingToolCall(toolName, { query: "Shape Management" })).toBe(false);
+    expect(isReplaySafeToolCall(toolName, { query: "Shape Management" })).toBe(true);
+  });
+
   it.each([
     ["exec", "sed -n '1,220p' src/agents/tool-mutation.ts"],
     ["bash", "cat package.json"],
     ["exec", "rg -n tool-mutation src/agents"],
+    [
+      "sandbox_exec",
+      "sed -n '1,260p' /workspace/skills/fi-ops/SKILL.md && sed -n '1,260p' /workspace/skills/budget/SKILL.md",
+    ],
+    ["exec", "cat package.json && sed -n '1,20p' README.md"],
     ["exec", "gh search prs --repo openclaw/openclaw tool-mutation --json number,title,state"],
     ["bash", "gh pr view 123 --repo openclaw/openclaw --json title,state"],
+    ["sandbox_exec", "mcporter --config /workspace/mcporter.json list ms365 --json"],
   ])("treats read-only shell command as non-mutating: %s %s", (toolName, command) => {
     expect(isMutatingToolCall(toolName, { command })).toBe(false);
     expect(buildToolMutationState(toolName, { command }).mutatingAction).toBe(false);
+  });
+
+  it("keeps mcporter calls outside the read-only discovery exemption", () => {
+    expect(
+      isMutatingToolCall("sandbox_exec", {
+        command: "mcporter --config /workspace/mcporter.json call ms365 list_messages --json",
+      }),
+    ).toBe(true);
+  });
+
+  it.each([
+    'fi-psql -v ON_ERROR_STOP=1 -Atc "select 1"',
+    String.raw`fi-psql -v ON_ERROR_STOP=1 -F $'\t' -Atc "select 1"`,
+    "fi-psql -v ON_ERROR_STOP=1 -F '|' -Atc \"select id, slug, name, status, org_id from public.projects where org_id='shape' and (id::text='305' or slug ilike '%305%' or name ilike '%305%') order by status, name;\"",
+    'fi-psql -Atc "select * from public.projects where name ilike \'%305%\'"',
+    'fi-psql -Atc "select current_setting(\'default_transaction_read_only\')"',
+    'fi-psql -Atc "with project as (select 1 as id) select id from project"',
+    'fi-psql -Atc "select CAST(1 AS numeric(12,2))"',
+    'fi-psql -Atc "select \'A; -- /* text\'"',
+  ])("classifies documented read-only fi-psql query as non-mutating: %s", (command) => {
+    expect(isMutatingToolCall("sandbox_exec", { command })).toBe(false);
+  });
+
+  it.each([
+    'psql -c "select 1"',
+    '/tmp/fi-psql -c "select 1"',
+    'fi-psql -f /workspace/query.sql',
+    'fi-psql -c "select pg_terminate_backend(123)"',
+    'fi-psql -c "select id from public.projects for share"',
+    'fi-psql -c "select id from public.projects for key share"',
+    'fi-psql -c "with removed as (delete from public.projects returning id) select 1"',
+    'fi-psql -c "select 1; update public.projects set name=\'changed\'"',
+    'fi-psql -c "select 1" && touch /tmp/voice-confirmation',
+  ])("keeps unsupported, locking, or mutating psql call gated: %s", (command) => {
+    expect(isMutatingToolCall("sandbox_exec", { command })).toBe(true);
+  });
+
+  it("applies canonical mutation semantics to Codex sandbox aliases", () => {
+    expect(isMutatingToolCall("sandbox_exec", { command: "cat package.json" })).toBe(false);
+    expect(isMutatingToolCall("sandbox_exec", { command: "git clean -fdx" })).toBe(true);
+    expect(isMutatingToolCall("sandbox_process", { action: "log" })).toBe(false);
+    expect(isMutatingToolCall("sandbox_process", { action: "kill" })).toBe(true);
+    expect(isReplaySafeToolCall("sandbox_process", { action: "log" })).toBe(true);
+    expect(isReplaySafeToolCall("sandbox_process", { action: "kill" })).toBe(false);
   });
 
   it.each([
@@ -55,6 +111,8 @@ describe("tool mutation helpers", () => {
     ["exec", "sed -n '1p' -i file.txt"],
     ["exec", "sed -n -e '1p' -e 'w /tmp/out' file.txt"],
     ["bash", "cat package.json > /tmp/package.json"],
+    ["sandbox_exec", "cat package.json && git clean -fdx"],
+    ["exec", "cat package.json || git clean -fdx"],
     ["bash", "rg foo src | wc -l"],
     ["bash", "rg --pre touch pattern file"],
     ["bash", "rg --pre=touch pattern file"],

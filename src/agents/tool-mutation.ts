@@ -72,6 +72,7 @@ const REPLAY_SAFE_TOOL_NAMES = new Set([
   "sessions_search",
   "tool_describe",
   "tool_search",
+  "tavily_search",
   "web_fetch",
   "web_search",
   "x_search",
@@ -111,6 +112,17 @@ function normalizeActionName(value: unknown): string | undefined {
   return normalized || undefined;
 }
 
+function canonicalizeMutationToolName(toolName: string): string {
+  switch (toolName) {
+    case "sandbox_exec":
+      return "exec";
+    case "sandbox_process":
+      return "process";
+    default:
+      return toolName;
+  }
+}
+
 function readShellCommand(record: Record<string, unknown> | undefined): string | undefined {
   const command = record?.command ?? record?.cmd;
   if (typeof command !== "string") {
@@ -120,15 +132,16 @@ function readShellCommand(record: Record<string, unknown> | undefined): string |
   return trimmed || undefined;
 }
 
+/**
+ * Psql examples commonly use Bash's `$'\\t'` for a tab field separator. That
+ * form is a literal escape, not parameter/command expansion; normalize only
+ * this exact safe spelling before the conservative shell lexer sees it.
+ */
+function normalizeSafeAnsiCTab(command: string): string {
+  return command.replace(/\$'\\t'/g, "'__openclaw_tab__'");
+}
+
 function tokenizeSimpleShellCommand(command: string): string[] | undefined {
-  if (/[;&|<>\n\r`]/.test(command) || command.includes("\\")) {
-    return undefined;
-  }
-  for (const char of SHELL_EXPANSION_CHARS) {
-    if (command.includes(char)) {
-      return undefined;
-    }
-  }
   const tokens: string[] = [];
   let current = "";
   let quote: "'" | '"' | undefined;
@@ -137,9 +150,17 @@ function tokenizeSimpleShellCommand(command: string): string[] | undefined {
       if (char === quote) {
         quote = undefined;
       } else {
+        // Single quotes suppress shell expansion. Double quotes still permit
+        // parameter, command, and escape expansion, so those remain denied.
+        if (quote === '"' && /[$`\\]/.test(char)) {
+          return undefined;
+        }
         current += char;
       }
       continue;
+    }
+    if (/[;&|<>\n\r`\\]/.test(char) || SHELL_EXPANSION_CHARS.has(char)) {
+      return undefined;
     }
     if (char === "'" || char === '"') {
       quote = char;
@@ -161,6 +182,62 @@ function tokenizeSimpleShellCommand(command: string): string[] | undefined {
     tokens.push(current);
   }
   return tokens.length > 0 ? tokens : undefined;
+}
+
+function splitSimpleAndChain(command: string): string[] | undefined {
+  const commands: string[] = [];
+  let current = "";
+  let quote: "'" | '"' | undefined;
+  for (let index = 0; index < command.length; index += 1) {
+    const char = command[index];
+    if (quote) {
+      current += char;
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (
+      char === "\\" ||
+      char === ";" ||
+      char === "|" ||
+      char === "<" ||
+      char === ">" ||
+      char === "`" ||
+      char === "\n" ||
+      char === "\r"
+    ) {
+      return undefined;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "&") {
+      if (command[index + 1] !== "&") {
+        return undefined;
+      }
+      const segment = current.trim();
+      if (!segment) {
+        return undefined;
+      }
+      commands.push(segment);
+      current = "";
+      index += 1;
+      continue;
+    }
+    current += char;
+  }
+  if (quote) {
+    return undefined;
+  }
+  const finalSegment = current.trim();
+  if (!finalSegment) {
+    return undefined;
+  }
+  commands.push(finalSegment);
+  return commands;
 }
 
 function isReadOnlySedCommand(tokens: readonly string[]): boolean {
@@ -238,11 +315,409 @@ function isReadOnlyGhCommand(tokens: readonly string[]): boolean {
   return false;
 }
 
+function isReadOnlyMcporterList(tokens: readonly string[]): boolean {
+  const positional: string[] = [];
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--json") {
+      continue;
+    }
+    if (token === "--config") {
+      if (!tokens[index + 1]) return false;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--config=") && token.length > "--config=".length) {
+      continue;
+    }
+    if (token.startsWith("-")) {
+      return false;
+    }
+    positional.push(token);
+  }
+  // `list [server]` only discovers the configured server/tool catalog. Keep
+  // calls, server edits, and any future subcommands fail-closed.
+  return positional[0] === "list" && positional.length <= 2;
+}
+
+const READ_ONLY_SQL_FUNCTIONS = new Set([
+  "abs",
+  "array_agg",
+  "avg",
+  "bool_and",
+  "bool_or",
+  "btrim",
+  "ceil",
+  "ceiling",
+  "char_length",
+  "coalesce",
+  "concat",
+  "concat_ws",
+  "count",
+  "date_part",
+  "date_trunc",
+  "floor",
+  "greatest",
+  "generate_series",
+  "json_agg",
+  "json_build_array",
+  "json_build_object",
+  "jsonb_agg",
+  "jsonb_build_array",
+  "jsonb_build_object",
+  "jsonb_array_elements",
+  "jsonb_array_elements_text",
+  "jsonb_each",
+  "jsonb_each_text",
+  "jsonb_extract_path",
+  "jsonb_extract_path_text",
+  "jsonb_typeof",
+  "least",
+  "left",
+  "length",
+  "lower",
+  "max",
+  "min",
+  "nullif",
+  "replace",
+  "regexp_matches",
+  "regexp_replace",
+  "right",
+  "round",
+  "split_part",
+  "stddev",
+  "stddev_pop",
+  "stddev_samp",
+  "string_agg",
+  "sum",
+  "current_setting",
+  "array_length",
+  "array_to_string",
+  "string_to_array",
+  "to_char",
+  "to_date",
+  "to_number",
+  "to_timestamp",
+  "trim",
+  "trunc",
+  "upper",
+  "variance",
+  "var_pop",
+  "var_samp",
+]);
+
+const READ_ONLY_SQL_CALL_SYNTAX = new Set([
+  "all",
+  "and",
+  "any",
+  "array",
+  "as",
+  "cast",
+  "character",
+  "char",
+  "decimal",
+  "exists",
+  "filter",
+  "in",
+  "integer",
+  "interval",
+  "numeric",
+  "over",
+  "or",
+  "real",
+  "row",
+  "smallint",
+  "time",
+  "timestamp",
+  "values",
+  "varchar",
+  "when",
+]);
+
+const FORBIDDEN_READ_ONLY_SQL_WORDS = new Set([
+  "abort",
+  "alter",
+  "analyze",
+  "begin",
+  "call",
+  "checkpoint",
+  "cluster",
+  "commit",
+  "comment",
+  "copy",
+  "create",
+  "delete",
+  "deallocate",
+  "discard",
+  "do",
+  "drop",
+  "execute",
+  "for",
+  "grant",
+  "insert",
+  "listen",
+  "lock",
+  "merge",
+  "notify",
+  "prepare",
+  "refresh",
+  "reindex",
+  "release",
+  "reset",
+  "revoke",
+  "rollback",
+  "savepoint",
+  "security_label",
+  "set",
+  "truncate",
+  "update",
+  "vacuum",
+]);
+
+type ReadOnlySqlToken = {
+  value: string;
+  kind: "word" | "identifier" | "operator" | "punct" | "literal";
+};
+
+const READ_ONLY_SQL_OPERATORS = new Set([
+  "!=",
+  "!~",
+  "!~*",
+  "#>",
+  "#>>",
+  "%",
+  "&",
+  "&&",
+  "*",
+  "+",
+  "-",
+  "->",
+  "->>",
+  "/",
+  "<",
+  "<@",
+  "<=",
+  "<>",
+  "=",
+  ">",
+  ">=",
+  "?",
+  "?&",
+  "?|",
+  "@>",
+  "^",
+  "||",
+  "~",
+  "~*",
+  "::",
+]);
+
+function tokenizeReadOnlySql(sql: string): ReadOnlySqlToken[] | undefined {
+  const trimmed = sql.trim();
+  if (!trimmed || /[\\$`\n\r]/.test(trimmed)) {
+    return undefined;
+  }
+
+  const tokens: ReadOnlySqlToken[] = [];
+  for (let index = 0; index < trimmed.length;) {
+    const char = trimmed[index]!;
+    if (/\s/.test(char)) {
+      index += 1;
+      continue;
+    }
+    if (char === ";") {
+      return trimmed.slice(index + 1).trim() ? undefined : tokens;
+    }
+    if ((char === "-" && trimmed[index + 1] === "-") || (char === "/" && trimmed[index + 1] === "*")) {
+      return undefined;
+    }
+    if (char === "'") {
+      index += 1;
+      let closed = false;
+      while (index < trimmed.length) {
+        if (trimmed[index] === "'" && trimmed[index + 1] === "'") {
+          index += 2;
+          continue;
+        }
+        if (trimmed[index] === "'") {
+          index += 1;
+          closed = true;
+          break;
+        }
+        index += 1;
+      }
+      if (!closed) return undefined;
+      tokens.push({ value: "<literal>", kind: "literal" });
+      continue;
+    }
+    if (char === '"') {
+      index += 1;
+      let closed = false;
+      let identifier = "";
+      while (index < trimmed.length) {
+        if (trimmed[index] === '"' && trimmed[index + 1] === '"') {
+          identifier += '"';
+          index += 2;
+          continue;
+        }
+        if (trimmed[index] === '"') {
+          index += 1;
+          closed = true;
+          break;
+        }
+        identifier += trimmed[index]!;
+        index += 1;
+      }
+      if (!closed) return undefined;
+      tokens.push({ value: identifier.toLowerCase(), kind: "identifier" });
+      continue;
+    }
+    if (/[A-Za-z_]/.test(char)) {
+      let end = index + 1;
+      while (end < trimmed.length && /[A-Za-z0-9_]/.test(trimmed[end]!)) end += 1;
+      tokens.push({ value: trimmed.slice(index, end).toLowerCase(), kind: "word" });
+      index = end;
+      continue;
+    }
+    if (/[0-9]/.test(char)) {
+      let end = index + 1;
+      while (end < trimmed.length && /[A-Za-z0-9_.]/.test(trimmed[end]!)) end += 1;
+      tokens.push({ value: trimmed.slice(index, end), kind: "literal" });
+      index = end;
+      continue;
+    }
+    if (/[!#%&*+\-/<=>?@^|~]/.test(char)) {
+      let end = index + 1;
+      while (end < trimmed.length && /[!#%&*+\-/<=>?@^|~]/.test(trimmed[end]!)) end += 1;
+      const operator = trimmed.slice(index, end);
+      if (!READ_ONLY_SQL_OPERATORS.has(operator)) return undefined;
+      tokens.push({ value: operator, kind: "operator" });
+      index = end;
+      continue;
+    }
+    tokens.push({ value: char, kind: "punct" });
+    index += 1;
+  }
+  return tokens;
+}
+
+function isReadOnlySql(sql: string): boolean {
+  const tokens = tokenizeReadOnlySql(sql);
+  if (!tokens || tokens.length === 0) return false;
+  const words = tokens.filter((token) => token.kind === "word").map((token) => token.value);
+  const statementKind = words[0];
+  if (
+    !["select", "show", "values", "table"].includes(statementKind ?? "") &&
+    !(statementKind === "with" && words.includes("select"))
+  ) {
+    return false;
+  }
+  if (words.some((word) => FORBIDDEN_READ_ONLY_SQL_WORDS.has(word) || word === "into")) return false;
+  for (let index = 0; index < tokens.length - 1; index += 1) {
+    const token = tokens[index]!;
+    if (token.kind === "identifier" && tokens[index + 1]?.value === "(") return false;
+    if (token.kind !== "word" || tokens[index + 1]?.value !== "(") continue;
+    if (!READ_ONLY_SQL_FUNCTIONS.has(token.value) && !READ_ONLY_SQL_CALL_SYNTAX.has(token.value)) return false;
+    if (tokens[index - 1]?.value === "." && tokens[index - 2]?.value !== "pg_catalog") return false;
+  }
+  return true;
+}
+
+function isReadOnlyPsqlCommand(tokens: readonly string[]): boolean {
+  // Require the sandbox-provisioned command name. A path ending in `fi-psql`
+  // could point at an arbitrary user script and must not inherit the exemption.
+  if (normalizeLowercaseStringOrEmpty(tokens[0]) !== "fi-psql") return false;
+  let query: string | undefined;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    if (token === "--command" || token === "-c") {
+      if (query || !tokens[index + 1]) return false;
+      query = tokens[++index];
+      continue;
+    }
+    if (token.startsWith("--command=")) {
+      if (query || token.length === "--command=".length) return false;
+      query = token.slice("--command=".length);
+      continue;
+    }
+    if (token === "--no-psqlrc" || token === "--quiet" || token === "--no-align" || token === "--tuples-only") {
+      continue;
+    }
+    if (token === "--field-separator" || token === "-F") {
+      if (!tokens[index + 1]) return false;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--field-separator=") && token.length > "--field-separator=".length) {
+      continue;
+    }
+    if (token === "--set" || token === "-v") {
+      const value = tokens[index + 1];
+      if (value !== "ON_ERROR_STOP=1") return false;
+      index += 1;
+      continue;
+    }
+    if (token.startsWith("--set=")) {
+      if (token !== "--set=ON_ERROR_STOP=1") return false;
+      continue;
+    }
+    if (token.startsWith("-v") && token.length > 2) {
+      if (token !== "-vON_ERROR_STOP=1") return false;
+      continue;
+    }
+    if (token.startsWith("-F") && token.length > 2) continue;
+    if (token === "-A" || token === "-t" || token === "-X" || token === "-q") continue;
+    if (token.startsWith("-") && !token.startsWith("--")) {
+      const flags = token.slice(1);
+      let commandSeen = false;
+      for (let flagIndex = 0; flagIndex < flags.length; flagIndex += 1) {
+        const flag = flags[flagIndex]!;
+        if (flag === "A" || flag === "t" || flag === "X" || flag === "q") continue;
+        if (flag === "c") {
+          if (query) return false;
+          const inline = flags.slice(flagIndex + 1);
+          if (inline) query = inline;
+          else if (tokens[index + 1]) query = tokens[++index];
+          else return false;
+          commandSeen = true;
+          break;
+        }
+        if (flag === "F") {
+          if (!flags.slice(flagIndex + 1) && !tokens[index + 1]) return false;
+          if (!flags.slice(flagIndex + 1)) index += 1;
+          commandSeen = true;
+          break;
+        }
+        if (flag === "v") {
+          const inline = flags.slice(flagIndex + 1);
+          const value = inline || tokens[index + 1];
+          if (value !== "ON_ERROR_STOP=1") return false;
+          if (!inline) index += 1;
+          commandSeen = true;
+          break;
+        }
+        return false;
+      }
+      if (!commandSeen && flags.length === 0) return false;
+      continue;
+    }
+    return false;
+  }
+  return Boolean(query && isReadOnlySql(query));
+}
+
 function isPlainReadOnlyShellCommand(command: string | undefined): boolean {
   if (!command) {
     return false;
   }
-  const tokens = tokenizeSimpleShellCommand(command);
+  const commands = splitSimpleAndChain(normalizeSafeAnsiCTab(command));
+  if (!commands) {
+    return false;
+  }
+  if (commands.length > 1) {
+    return commands.every((segment) => isPlainReadOnlyShellCommand(segment));
+  }
+  const tokens = tokenizeSimpleShellCommand(commands[0]!);
   if (!tokens) {
     return false;
   }
@@ -259,11 +734,17 @@ function isPlainReadOnlyShellCommand(command: string | undefined): boolean {
   if (executable === "gh") {
     return isReadOnlyGhCommand(tokens);
   }
+  if (executable === "mcporter") {
+    return isReadOnlyMcporterList(tokens);
+  }
+  if (executable === "fi-psql") {
+    return isReadOnlyPsqlCommand(tokens);
+  }
   return false;
 }
 
 export function isMutatingToolCall(toolName: string, args: unknown): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(toolName);
+  const normalized = canonicalizeMutationToolName(normalizeLowercaseStringOrEmpty(toolName));
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
 
@@ -320,7 +801,7 @@ export function isMutatingToolCall(toolName: string, args: unknown): boolean {
 
 /** Return true only for tool calls whose structured contract proves replay safety. */
 export function isReplaySafeToolCall(toolName: string, args: unknown): boolean {
-  const normalized = normalizeLowercaseStringOrEmpty(toolName);
+  const normalized = canonicalizeMutationToolName(normalizeLowercaseStringOrEmpty(toolName));
   const record = asRecord(args);
   const action = normalizeActionName(record?.action);
   if (REPLAY_SAFE_TOOL_NAMES.has(normalized)) {

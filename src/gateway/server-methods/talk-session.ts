@@ -359,6 +359,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             realtimeContext.instructions,
             params.sessionCapsule,
           ),
+          sessionContext: params.sessionCapsule,
           tools: [REALTIME_VOICE_AGENT_CONSULT_TOOL, REALTIME_VOICE_AGENT_CONTROL_TOOL],
           model: launchOptions.model,
           sessionKey,

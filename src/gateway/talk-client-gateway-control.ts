@@ -247,6 +247,7 @@ export function createTalkClientAgentConsultRunner(params: {
   authority?: TalkAgentConsultAuthority;
   getVoiceSessionId: () => string | undefined;
   initialItems: Array<{ role: "user" | "assistant"; text: string }>;
+  sessionContext?: string;
   runIdPrefix?: string;
   surface?: string;
   registerRun?: (params: { runId: string }) => void;
@@ -299,6 +300,7 @@ export function createTalkClientAgentConsultRunner(params: {
           runIdPrefix: params.runIdPrefix ?? "talk-realtime-consult",
           args: parsedArgs,
           transcript: params.initialItems,
+          sessionContext: params.sessionContext,
           surface: params.surface ?? "a browser Talk session",
           userLabel: "User",
           questionSourceLabel: "user",

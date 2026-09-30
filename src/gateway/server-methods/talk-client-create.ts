@@ -291,6 +291,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         authority: resolveTalkAgentConsultAuthority(client?.connect?.scopes),
         getVoiceSessionId: () => activeVoiceSessionId,
         initialItems,
+        sessionContext: params.sessionCapsule,
       });
       const gatewayControlOwner = ownsProvider
         ? createTalkClientGatewayControlOwner({

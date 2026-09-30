@@ -2,6 +2,8 @@
 import { createHash, randomUUID } from "node:crypto";
 import { buildToolMutationState } from "../agents/tool-mutation.js";
 import { AUTOMATIONS_TOOL_NAME } from "../agents/tools/automations-tool-name.js";
+import { INTERNAL_MESSAGE_CHANNEL } from "../utils/message-channel-constants.js";
+import { normalizeMessageChannel } from "../utils/message-channel-normalize.js";
 
 const CONFIRMATION_TTL_MS = 2 * 60_000;
 
@@ -147,7 +149,51 @@ function stableToolFingerprint(toolName: string, params: unknown): string {
     .digest("hex");
 }
 
-function requiresHighImpactVoiceConfirmation(toolName: string, params: unknown): boolean {
+function isVoiceSelfMessage(
+  toolName: string,
+  params: unknown,
+  turnSourceChannel: string | undefined,
+): boolean {
+  if (
+    toolName.trim().toLowerCase() !== "message" ||
+    normalizeMessageChannel(turnSourceChannel) !== INTERNAL_MESSAGE_CHANNEL
+  ) {
+    return false;
+  }
+  const record = params && typeof params === "object" && !Array.isArray(params)
+    ? (params as Record<string, unknown>)
+    : undefined;
+  if (
+    !record ||
+    typeof record.action !== "string" ||
+    record.action.trim().toLowerCase() !== "send"
+  ) {
+    return false;
+  }
+  if (
+    (record.channel !== undefined &&
+      normalizeMessageChannel(String(record.channel)) !== INTERNAL_MESSAGE_CHANNEL) ||
+    typeof record.message !== "string" ||
+    !record.message.trim()
+  ) {
+    return false;
+  }
+  // Only exempt a plain text reply to the active internal chat. Explicit routing,
+  // recipients, threads, attachments, and rich interactive payloads remain gated.
+  const extraKeys = Object.keys(record).filter(
+    (key) => !["action", "channel", "message", "final"].includes(key),
+  );
+  return extraKeys.length === 0;
+}
+
+function requiresHighImpactVoiceConfirmation(
+  toolName: string,
+  params: unknown,
+  turnSourceChannel?: string,
+): boolean {
+  if (isVoiceSelfMessage(toolName, params, turnSourceChannel)) {
+    return false;
+  }
   const normalizedTool = toolName.trim().toLowerCase();
   if (!buildToolMutationState(normalizedTool, params).mutatingAction) {
     return false;
@@ -245,6 +291,7 @@ type ClientVoiceToolConfirmationPolicyParams = {
   runId?: string;
   toolName: string;
   toolParams: unknown;
+  turnSourceChannel?: string;
   isConfirmable?: () => boolean;
   now?: number;
 };
@@ -260,7 +307,13 @@ function resolveClientVoiceToolConfirmationPolicy(
   if (!params.agentId || !params.voiceSessionId) {
     return { allowed: true };
   }
-  if (!requiresHighImpactVoiceConfirmation(params.toolName, params.toolParams)) {
+  if (
+    !requiresHighImpactVoiceConfirmation(
+      params.toolName,
+      params.toolParams,
+      params.turnSourceChannel,
+    )
+  ) {
     return { allowed: true };
   }
   // Sessions that cannot report spoken approvals (legacy clients without transcript
@@ -320,6 +373,8 @@ export function consumeClientVoiceToolConfirmationPolicy(
 }
 
 const REFUSAL_PATTERN = /\b(no|don't|do not|cancel|stop|never mind)\b/;
+const AFFIRMATION_HEDGE_PATTERN =
+  /\b(maybe|perhaps|if|unless|but|wait|hold on|later|not sure|i think|i guess|only if)\b/;
 
 function normalizeUtterance(text: string): string {
   return (
@@ -336,11 +391,15 @@ function normalizeUtterance(text: string): string {
 
 function isExplicitAffirmation(text: string): boolean {
   const normalized = normalizeUtterance(text);
-  if (REFUSAL_PATTERN.test(normalized)) {
+  if (REFUSAL_PATTERN.test(normalized) || AFFIRMATION_HEDGE_PATTERN.test(normalized)) {
     return false;
   }
-  // English-only phrases are an accepted first version; localized matching is follow-up work.
-  return /^(yes|yes do it|do it|confirm|confirmed|go ahead|proceed|send it|make the change|restart it)$/.test(
+  // Realtime transcripts often include the action name after the affirmative
+  // (for example, "Confirm inbox check"), or a short subject ("I confirm").
+  // The server-issued challenge id and exact tool fingerprint still bind that
+  // utterance to one pending action; do not require the model to normalize the
+  // user's wording before it can continue.
+  return /^(?:yes|yeah|yep|i confirm|confirm(?:ed)?|do it|go ahead|proceed|send it|make the change|restart it)(?:\s+.{1,120})?$/.test(
     normalized,
   );
 }
