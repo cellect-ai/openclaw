@@ -320,6 +320,13 @@ async function handleChatSendWithOptions(
     if (options?.talkRelayAdmission?.speakerMxid) {
       preparedUserTurn.ctx.SenderId = options.talkRelayAdmission.speakerMxid;
       preparedUserTurn.ctx.ChannelContext = options.talkRelayAdmission.channelContext;
+      // A gateway chat.send has no inbound-event builder to set the run's chat identity.
+      // Plugin entitlement guards compare it with ChannelContext.chat.id, so name the
+      // admitted Matrix room as the chat too; leaving it unset made them refuse the turn.
+      const admittedRoomId = options.talkRelayAdmission.channelContext?.chat?.id;
+      if (admittedRoomId) {
+        preparedUserTurn.ctx.ChatId = admittedRoomId;
+      }
     }
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
     admitted.value.setPendingInputCleanup(() => {
