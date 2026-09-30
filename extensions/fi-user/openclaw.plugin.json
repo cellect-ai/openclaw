@@ -13,7 +13,8 @@
       "fi_user_deliver_file",
       "fi_user_esign",
       "fi_user_budget_import",
-      "request_admin_action"
+      "request_admin_action",
+      "read_conversation"
     ]
   },
   "configSchema": {

@@ -56,6 +56,7 @@ import {
   withOnBehalfOfEnv,
 } from "./on-behalf-of.js";
 import { projectionFailureKind } from "./projection-failure.js";
+import { createReadConversationTool, registerReadConversationCap } from "./read-conversation.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 
 const MAX_DRIVE_TEXT_CHARS = 200_000;
@@ -508,6 +509,7 @@ export default definePluginEntry({
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
     const matrixEntitlements = registerMatrixEntitlements(api);
+    const readConversationCap = registerReadConversationCap(api);
     const projectionConnection = () => {
       const config = configFromRuntime(api);
       return {
@@ -537,6 +539,10 @@ export default definePluginEntry({
       "before_tool_call",
       (event, ctx) => {
         const authorizeAndAttribute = () => {
+          const capped = readConversationCap(event.toolName, ctx);
+          if (capped) {
+            return capped;
+          }
           const config = configFromRuntime(api);
           const blocked = adminHandoffBlock(config, event, ctx);
           if (blocked) {
@@ -582,5 +588,8 @@ export default definePluginEntry({
       ];
       return tools;
     });
+    api.registerTool((context: OpenClawPluginToolContext) =>
+      createReadConversationTool(api, context),
+    );
   },
 });
