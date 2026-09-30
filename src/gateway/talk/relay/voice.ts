@@ -35,6 +35,14 @@ async function projectRelayTranscriptToOwningMatrix(params: {
   if (deliveryContext?.channel?.toLowerCase() !== "matrix" || !deliveryContext.to) {
     return;
   }
+  // Matrix is the canonical conversation transcript for a bound voice turn:
+  // the delegated agent publishes its answer there. The realtime model's
+  // assistant transcript is speech output, and forwarding it too creates a
+  // second answer (or exposes an ungrounded voice-side error) in that thread.
+  // Keep it in the durable voice-session transcript; project only caller speech.
+  if (params.role === "assistant") {
+    return;
+  }
   const projectionId = `voice:${params.session.id}:${params.entryId}`;
   await deliverOutboundPayloads({
     cfg,

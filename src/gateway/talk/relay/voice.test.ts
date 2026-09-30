@@ -102,6 +102,24 @@ describe("realtime relay voice transcript persistence", () => {
     );
   });
 
+  it("persists assistant speech without duplicating it into the Matrix conversation", async () => {
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+
+    expect(enqueueRelayVoiceTranscript(session, "assistant", "The next number is 5.")).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ role: "assistant", text: "The next number is 5." }),
+    );
+    expect(projectionMocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+  });
+
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {
     const firstAppend = deferred();
     voiceSessionMocks.appendRelayVoiceTranscript.mockImplementation(
