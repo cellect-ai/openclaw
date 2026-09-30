@@ -109,8 +109,15 @@ function errorMessage(result: unknown): string {
     if (typeof error === "string") {
       return error;
     }
-    if (error && typeof error === "object" && "message" in error) {
-      return String((error as { message: unknown }).message);
+    const { code, message } = (error ?? {}) as { code?: unknown; message?: unknown };
+    if (typeof message === "string" && message.trim()) {
+      return message;
+    }
+    if (code === "read_disabled") {
+      return "conversation reads are not enabled";
+    }
+    if (typeof code === "string") {
+      return code;
     }
   }
   return "";

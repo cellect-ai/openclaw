@@ -299,8 +299,10 @@ describe("read_conversation", () => {
       { error: { code: "forbidden", message: "Conversation reads are not enabled" } },
       /Not permitted.*not enabled/,
     ],
+    [403, { error: { code: "read_disabled" } }, /Not permitted.*reads are not enabled/],
+    [403, { error: { code: "forbidden" } }, /Not permitted to read that conversation: forbidden/],
     [
-      409,
+      403,
       {
         error: {
           code: "no_eligible_bot",
