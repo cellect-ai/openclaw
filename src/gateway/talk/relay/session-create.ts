@@ -30,6 +30,7 @@ import {
 } from "./issues.js";
 import {
   adoptTalkRealtimeRelaySession,
+  cancelTalkRealtimeRelayTurn,
   cancelTalkRealtimeRelayProviderToolCall,
   closeRelaySession,
   pruneInactiveRelayAgentRuns,
@@ -356,12 +357,29 @@ export function createTalkRealtimeRelaySession(
       if (event.type === "session.created") {
         continuityResetActive = false;
       }
-      if (event.type === "input_audio_buffer.speech_started" && event.itemId) {
-        broadcastToOwner(params.context, params.connId, {
-          relaySessionId,
-          type: "inputAudioStart",
-          itemId: event.itemId,
-        });
+      if (event.type === "input_audio_buffer.speech_started") {
+        const activeTurnId = relay.harness.talk.activeTurnId;
+        if (activeTurnId && outputOwnership.phase === "owned") {
+          const providerOwnsBargeIn =
+            relay.capabilities?.handlesInputAudioBargeIn === true &&
+            params.forceAgentConsultOnFinalTranscript !== true;
+          void cancelTalkRealtimeRelayTurn({
+            relaySessionId,
+            connId: params.connId,
+            reason: "barge-in",
+            turnId: activeTurnId,
+            ...(providerOwnsBargeIn ? { providerOwnsBargeIn: true } : {}),
+          }).catch(() => {
+            getActiveRelay()?.failSession("Realtime provider cancellation failed. Reconnecting.");
+          });
+        }
+        if (event.itemId) {
+          broadcastToOwner(params.context, params.connId, {
+            relaySessionId,
+            type: "inputAudioStart",
+            itemId: event.itemId,
+          });
+        }
       }
       if (
         (event.type === "response.done" || event.type === "response.cancelled") &&

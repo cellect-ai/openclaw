@@ -620,6 +620,8 @@ export async function cancelTalkRealtimeRelayTurn(params: {
   connId: string;
   reason?: string;
   turnId?: string;
+  /** The provider's server VAD already owns cancellation for this input utterance. */
+  providerOwnsBargeIn?: boolean;
 }) {
   const session = getRelaySession(params.relaySessionId, params.connId);
   const turnId = session.harness.talk.activeTurnId;
@@ -708,6 +710,13 @@ export async function cancelTalkRealtimeRelayTurn(params: {
       });
     }),
   );
+  if (params.providerOwnsBargeIn) {
+    // Server VAD has already interrupted playback and will produce the next
+    // response itself. Retire the old Talk turn now and fence its output until
+    // the provider's replacement response establishes a new owner.
+    session.outputOwnership.completeCancellationLocally();
+    return { status: "applied" as const, turnId };
+  }
   try {
     session.bridge.handleBargeIn({ audioPlaybackActive: true });
   } catch {
