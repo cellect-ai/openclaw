@@ -35,6 +35,7 @@ import {
 import { createRoomHistoryTracker, type HistoryEntry } from "./room-history.js";
 import { resolveMatrixInboundRoute } from "./route.js";
 import { logInboundDrop } from "./runtime-api.js";
+import { logMatrixInboundRoute } from "./threads.js";
 import type { MatrixRawEvent } from "./types.js";
 
 export async function resolveMatrixIngressContent(config: {
@@ -74,6 +75,8 @@ export async function resolveMatrixIngressContent(config: {
     mediaMaxBytes,
     dmSessionScope,
     getMemberDisplayName,
+    threadReplies,
+    dmThreadReplies,
   } = handler;
 
   const {
@@ -360,6 +363,19 @@ export async function resolveMatrixIngressContent(config: {
         roomHistoryTracker.recordPending(roomId, pendingEntry, historyThreadId);
       }
     }
+    logMatrixInboundRoute({
+      outcome: "skip",
+      reason: "no-mention",
+      roomId,
+      eventId: messageId,
+      accountId,
+      isDirectMessage,
+      threadReplies,
+      dmThreadReplies,
+      threadRootId,
+      sessionThreadId: thread.threadId,
+      mentioned: wasMentioned,
+    });
     logger.info("skipping room message", { roomId, reason: "no-mention" });
     await commitInboundEventIfClaimed();
     return undefined;
@@ -489,6 +505,18 @@ export async function resolveMatrixIngressContent(config: {
     : undefined;
   const triggerSnapshot = preparedTrigger;
 
+  logMatrixInboundRoute({
+    outcome: "dispatch",
+    roomId,
+    eventId: messageId,
+    accountId,
+    isDirectMessage,
+    threadReplies,
+    dmThreadReplies,
+    threadRootId,
+    sessionThreadId: thread.threadId,
+    mentioned: wasMentioned,
+  });
   return {
     cfg,
     liveDmAllowFrom,

@@ -14,6 +14,34 @@ type Turn = {
   sessionKey: string;
 } & ({ eventId: string; mode: "text" } | { threadRootEventId: string; mode: "voice" });
 
+function sessionThreadId(sessionKey: string): string | undefined {
+  const marker = ":thread:";
+  const at = sessionKey.lastIndexOf(marker);
+  if (at < 0) {
+    return undefined;
+  }
+  const id = sessionKey.slice(at + marker.length);
+  return id.length > 0 ? id : undefined;
+}
+
+function logEntitlements(fields: Record<string, unknown>, mismatch?: string): void {
+  const line = {
+    evt: "threads.agent_entitlements",
+    ...fields,
+    ...(mismatch ? { mismatch } : {}),
+  };
+  console.info(JSON.stringify(line));
+  if (mismatch) {
+    console.warn(JSON.stringify({ ...line, level: "warn" }));
+  }
+}
+
+function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: string | null } {
+  return turn.mode === "voice"
+    ? { eventId: null, threadRootEventId: turn.threadRootEventId }
+    : { eventId: turn.eventId, threadRootEventId: null };
+}
+
 /** Fi owns live grants. Retain only host-proven event identity, never an access decision. */
 export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const turns = new Map<string, Turn>();
@@ -84,6 +112,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const eventId = context.channelContext?.chat?.eventId;
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
       const senderId = context.channelContext?.sender?.id;
+      const threadId = sessionThreadId(context.sessionKey ?? "");
       if (
         !context.runId ||
         !context.agentId ||
@@ -96,6 +125,21 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         context.chatId !== roomId ||
         context.senderId !== senderId
       ) {
+        logEntitlements(
+          {
+            phase: "admission",
+            roomId: typeof roomId === "string" ? roomId : null,
+            agentId: context.agentId ?? null,
+            accountId: context.accountId ?? null,
+            outcome: "unavailable",
+            reason: "incomplete_host_context",
+            eventId: typeof eventId === "string" ? eventId : null,
+            threadRootEventId:
+              typeof talkThreadRootEventId === "string" ? talkThreadRootEventId : null,
+            sessionThreadId: threadId ?? null,
+          },
+          "incomplete_host_context",
+        );
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const source =
@@ -109,6 +153,20 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
             ? { mode: "text" as const, eventId }
             : undefined;
       if (!source) {
+        logEntitlements(
+          {
+            phase: "admission",
+            roomId,
+            agentId: context.agentId,
+            accountId: context.accountId,
+            outcome: "unavailable",
+            eventId: typeof eventId === "string" ? eventId : null,
+            threadRootEventId:
+              typeof talkThreadRootEventId === "string" ? talkThreadRootEventId : null,
+            sessionThreadId: threadId ?? null,
+          },
+          "exclusive_source",
+        );
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const turn: Turn = {
@@ -119,7 +177,25 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         senderId,
         sessionKey: context.sessionKey,
       };
+      const voiceMismatch =
+        turn.mode === "voice" && threadId && threadId !== turn.threadRootEventId
+          ? "session_thread"
+          : undefined;
       const failure = await authorize(turn);
+      const outcome = failure ? (failure === DENIED ? "denied" : "unavailable") : "admitted";
+      logEntitlements(
+        {
+          phase: "admission",
+          roomId,
+          agentId: turn.agentId,
+          accountId: turn.accountId,
+          mode: turn.mode,
+          outcome,
+          ...turnIds(turn),
+          sessionThreadId: threadId ?? null,
+        },
+        voiceMismatch,
+      );
       if (failure) {
         return { handled: true, reply: { text: failure } };
       }
@@ -148,11 +224,33 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       turn.senderId !== context.requester?.senderId ||
       turn.accountId !== context.requester?.accountId
     ) {
+      logEntitlements(
+        {
+          phase: "tool",
+          roomId: turn?.roomId ?? null,
+          agentId: context.agentId ?? null,
+          accountId: context.accountId ?? turn?.accountId ?? null,
+          outcome: "unavailable",
+          reason: "no_admission",
+          sessionThreadId: sessionThreadId(context.sessionKey ?? "") ?? null,
+        },
+        "no_admission",
+      );
       return { block: true, blockReason: UNAVAILABLE };
     }
-    return authorize(turn).then((failure) =>
-      failure ? { block: true, blockReason: failure } : undefined,
-    );
+    return authorize(turn).then((failure) => {
+      logEntitlements({
+        phase: "tool",
+        roomId: turn.roomId,
+        agentId: turn.agentId,
+        accountId: turn.accountId,
+        mode: turn.mode,
+        outcome: failure ? (failure === DENIED ? "denied" : "unavailable") : "admitted",
+        ...turnIds(turn),
+        sessionThreadId: sessionThreadId(turn.sessionKey) ?? null,
+      });
+      return failure ? { block: true, blockReason: failure } : undefined;
+    });
   };
   api.on("agent_end", (_event, context) => {
     if (context.runId) {
