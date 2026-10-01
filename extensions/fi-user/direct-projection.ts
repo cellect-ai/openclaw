@@ -23,6 +23,7 @@ type DirectReader = {
     peerSenderId: string,
   ) => Promise<{
     directSource: { workspaceId: string; channelId: string; peerSenderId: string };
+    sourcePointerPresent?: boolean;
     messages: Array<{
       messageId: string;
       senderId: string;
@@ -31,6 +32,12 @@ type DirectReader = {
       bot: boolean;
     }>;
   }>;
+  postChatPointer?: (input: {
+    channelId: string;
+    chatUrl: string;
+    rootMessageId?: string;
+    alreadyPresent?: boolean;
+  }) => Promise<"posted" | "existing" | "skipped">;
 };
 
 /** Operator recovery uses a canonical app source hint, never an inferred DM channel. */
@@ -115,6 +122,21 @@ export async function recoverSlackDirectProjection(
     !["created", "existing", "skipped"].includes(String(result.status))
   ) {
     throw new Error("Invalid Fi direct recovery result");
+  }
+  if (
+    (result.status === "created" || result.status === "existing") &&
+    "chatUrl" in result &&
+    typeof result.chatUrl === "string"
+  ) {
+    try {
+      await reader.postChatPointer?.({
+        channelId: directSource.channelId,
+        chatUrl: result.chatUrl,
+        alreadyPresent: source.sourcePointerPresent,
+      });
+    } catch {
+      // Recovery still succeeded; the next DM snapshot retries the pointer.
+    }
   }
   return { status: result.status };
 }
@@ -308,7 +330,7 @@ export async function reconcileSlackDirectProjections(
     if (!response.ok) {
       throw new Error(`Fi direct projection failed (${response.status})`);
     }
-    const result = (await response.json()) as { status?: unknown };
+    const result = (await response.json()) as { status?: unknown; chatUrl?: unknown };
     if (
       result.status !== "created" &&
       result.status !== "existing" &&
@@ -316,7 +338,7 @@ export async function reconcileSlackDirectProjections(
     ) {
       throw new Error("Invalid Fi direct projection result");
     }
-    return result.status;
+    return result as { status: "created" | "existing" | "skipped"; chatUrl?: unknown };
   };
   for (const sessionKey of scheduled) {
     signal.throwIfAborted();
@@ -340,7 +362,7 @@ export async function reconcileSlackDirectProjections(
         throw new Error("Direct source reader unavailable");
       }
       const source = await reader.readDirect(channelId, peerSenderId);
-      const status = await post({
+      const result = await post({
         discover: true,
         agentId,
         sessionKey,
@@ -357,6 +379,22 @@ export async function reconcileSlackDirectProjections(
           })),
         },
       });
+      const status = result.status;
+      if ((status === "created" || status === "existing") && typeof result.chatUrl === "string") {
+        try {
+          await reader.postChatPointer?.({
+            channelId,
+            chatUrl: result.chatUrl,
+            alreadyPresent: source.sourcePointerPresent,
+          });
+        } catch (error) {
+          api.logger.warn(
+            `fi-user: slack chat pointer failed direct=${channelId} error=${
+              error instanceof Error ? error.message : "unavailable"
+            }`,
+          );
+        }
+      }
       report[status]++;
       backlog?.reconciled.add(sessionKey);
       backlog?.failed.delete(sessionKey);

@@ -25,6 +25,13 @@ describe("Slack projection source snapshot", () => {
           messages: [
             { ts: "1700000000.000001", user: "U111", text: "Question" },
             { ts: "1700000000.000002", user: "U333", text: "Answer", bot_id: "B333" },
+            {
+              ts: "1700000000.000003",
+              user: "UBOT",
+              bot_id: "BBOT",
+              text: "This conversation continues in Fi: <https://app.cellect.ai/fi/shape/chat?fiConversation=8934026f-8d33-43a9-8bde-32bb4cfcbd3c|Open in Fi>",
+              metadata: { event_type: "cellect.fi_chat_pointer" },
+            },
           ],
         }),
       },
@@ -39,6 +46,8 @@ describe("Slack projection source snapshot", () => {
       "1700000000.000001",
     );
     expect(result.memberSenderIds).toEqual(["U111", "U222"]);
+    expect(result.messages).toHaveLength(2);
+    expect(result.sourcePointerPresent).toBe(true);
     expect(result.messages[1]).toEqual({
       messageId: "1700000000.000002",
       senderId: "U333",

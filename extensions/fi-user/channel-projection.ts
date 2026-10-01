@@ -34,6 +34,7 @@ type SlackSnapshot = {
   channelId: string;
   rootMessageId: string;
   memberSenderIds: string[];
+  sourcePointerPresent?: boolean;
   messages: Array<{
     messageId: string;
     senderId: string;
@@ -50,6 +51,12 @@ type SlackThreadReader = {
   botUserId: string;
   readThread: (channelId: string, rootMessageId: string) => Promise<SlackSnapshot>;
   readChannel: (channelId: string) => Promise<SlackChannelScope>;
+  postChatPointer?: (input: {
+    channelId: string;
+    chatUrl: string;
+    rootMessageId?: string;
+    alreadyPresent?: boolean;
+  }) => Promise<"posted" | "existing" | "skipped">;
 };
 type SlackChannelScope = Omit<SlackSnapshot, "rootMessageId" | "messages"> & {
   readThread: (rootMessageId: string) => Promise<SlackSnapshot>;
@@ -169,8 +176,11 @@ async function publishSlackThreadSnapshot(
     if (!response.ok) {
       throw new Error(`Fi channel projection failed (${response.status})`);
     }
+    const result =
+      typeof response.json === "function"
+        ? ((await response.json()) as { status?: unknown; chatUrl?: unknown })
+        : {};
     if (params.onResult) {
-      const result = (await response.json()) as { status?: unknown };
       if (
         result.status !== "created" &&
         result.status !== "existing" &&
@@ -180,6 +190,7 @@ async function publishSlackThreadSnapshot(
       }
       params.onResult(result.status);
     }
+    return result;
   };
   let snapshot: SlackSnapshot;
   try {
@@ -279,7 +290,7 @@ async function publishSlackThreadSnapshot(
     params.onResult?.("skipped");
     return true;
   }
-  await post({
+  const result = await post({
     requesterSenderId,
     ...(params.reconcile ? { reconcile: true } : {}),
     ...(params.discover ? { discover: true } : {}),
@@ -301,6 +312,25 @@ async function publishSlackThreadSnapshot(
       })),
     },
   });
+  if (
+    (result.status === "created" || result.status === "existing" || result.status === undefined) &&
+    typeof result.chatUrl === "string"
+  ) {
+    try {
+      await reader?.postChatPointer?.({
+        channelId,
+        rootMessageId,
+        chatUrl: result.chatUrl,
+        alreadyPresent: snapshot.sourcePointerPresent,
+      });
+    } catch (error) {
+      params.api.logger.warn(
+        `fi-user: slack chat pointer failed channel=${channelId} error=${
+          error instanceof Error ? error.message : "unavailable"
+        }`,
+      );
+    }
+  }
   return true;
 }
 

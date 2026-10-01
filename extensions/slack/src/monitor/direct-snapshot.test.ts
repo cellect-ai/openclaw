@@ -8,7 +8,16 @@ function client() {
       info: vi.fn().mockResolvedValue({ ok: true, channel: { is_im: true, user: "U111" } }),
       history: vi.fn().mockResolvedValue({
         ok: true,
-        messages: [{ ts: "1700000000.000001", user: "U111", text: "Question", reply_count: 1 }],
+        messages: [
+          { ts: "1700000000.000001", user: "U111", text: "Question", reply_count: 1 },
+          {
+            ts: "1700000000.000003",
+            user: "UBOT",
+            bot_id: "BBOT",
+            text: "This conversation continues in Fi: <https://app.cellect.ai/fi/shape/chat?fiConversation=8934026f-8d33-43a9-8bde-32bb4cfcbd3c|Open in Fi>",
+            metadata: { event_type: "cellect.fi_chat_pointer" },
+          },
+        ],
       }),
       replies: vi.fn().mockResolvedValue({
         ok: true,
@@ -39,6 +48,7 @@ describe("Slack direct source history", () => {
       "1700000000.000002",
     ]);
     expect(result.messages[1]?.bot).toBe(true);
+    expect(result.sourcePointerPresent).toBe(true);
   });
   it("rejects a different peer before reading private history", async () => {
     const slack = client();

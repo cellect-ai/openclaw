@@ -661,6 +661,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         capability: "thread-read-projection",
         context: createSlackProjectionReader({
           client: readClient,
+          writeClient: createSlackWebClient(token, clientOptions),
           workspaceId: identity.teamId,
           botUserId: ctx.botUserId,
           socketConnectedAt: () => socketConnectedAt,
