@@ -1,7 +1,7 @@
 // Matrix tests cover threads plugin behavior.
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { resolveMatrixReplyToEventId, resolveMatrixThreadRootId } from "../relations.js";
-import { resolveMatrixThreadRouting } from "./threads.js";
+import { logMatrixInboundRoute, resolveMatrixThreadRouting } from "./threads.js";
 
 describe("resolveMatrixThreadRouting", () => {
   it.each([undefined, false, true])(
@@ -83,5 +83,65 @@ describe("resolveMatrixThreadRouting", () => {
     ).toEqual({
       threadId: undefined,
     });
+  });
+});
+
+describe("logMatrixInboundRoute", () => {
+  it("labels a top-level always-thread send as a new root", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    expect(
+      logMatrixInboundRoute({
+        outcome: "dispatch",
+        roomId: "!room:example",
+        eventId: "$new",
+        accountId: "fi-user",
+        isDirectMessage: false,
+        threadReplies: "always",
+        sessionThreadId: "$new",
+        mentioned: true,
+      }),
+    ).toEqual({ kind: "new_root", mismatch: false });
+    expect(JSON.parse(String(info.mock.calls[0]?.[0]))).toEqual({
+      evt: "matrix.inbound_route",
+      outcome: "dispatch",
+      roomId: "!room:example",
+      eventId: "$new",
+      accountId: "fi-user",
+      isDirectMessage: false,
+      threadRootId: null,
+      sessionThreadId: "$new",
+      kind: "new_root",
+      mentioned: true,
+    });
+    info.mockRestore();
+  });
+
+  it("warns when the session thread disagrees with m.thread and never logs a body", () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      logMatrixInboundRoute({
+        outcome: "dispatch",
+        roomId: "!room:example",
+        eventId: "$reply",
+        accountId: "fi-admin",
+        isDirectMessage: false,
+        threadReplies: "always",
+        threadRootId: "$root",
+        sessionThreadId: "$other",
+        mentioned: true,
+      }),
+    ).toEqual({ kind: "thread", mismatch: true });
+    const line = JSON.parse(String(warn.mock.calls[0]?.[0]));
+    expect(line).toMatchObject({
+      evt: "matrix.inbound_route_mismatch",
+      level: "warn",
+      threadRootId: "$root",
+      sessionThreadId: "$other",
+      kind: "thread",
+    });
+    expect(JSON.stringify([info.mock.calls, warn.mock.calls])).not.toMatch(/body|Please|secret/);
+    info.mockRestore();
+    warn.mockRestore();
   });
 });

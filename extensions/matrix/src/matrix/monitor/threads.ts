@@ -44,3 +44,65 @@ export function resolveMatrixThreadRouting(params: {
     threadId,
   };
 }
+
+export type MatrixInboundRouteKind = "thread" | "new_root" | "flat";
+
+export type MatrixInboundRouteLog = {
+  outcome: "dispatch" | "skip";
+  reason?: string;
+  roomId: string;
+  eventId: string;
+  accountId: string;
+  isDirectMessage: boolean;
+  threadReplies: MatrixThreadReplies;
+  dmThreadReplies?: MatrixThreadReplies;
+  threadRootId?: string;
+  sessionThreadId?: string;
+  mentioned?: boolean;
+};
+
+/**
+ * One stdout record per admitted-or-skipped Matrix inbound, joinable to Fi
+ * mint/authorize by roomId + eventId. Never includes message bodies.
+ */
+export function logMatrixInboundRoute(params: MatrixInboundRouteLog): {
+  kind: MatrixInboundRouteKind;
+  mismatch: boolean;
+} {
+  const messageId = params.eventId.trim();
+  const threadRootId = params.threadRootId?.trim() || undefined;
+  const inboundThreadId = threadRootId && threadRootId !== messageId ? threadRootId : undefined;
+  const sessionThreadId = params.sessionThreadId?.trim() || undefined;
+  const kind: MatrixInboundRouteKind = inboundThreadId
+    ? "thread"
+    : sessionThreadId === messageId
+      ? "new_root"
+      : "flat";
+  const mismatch = Boolean(
+    inboundThreadId && sessionThreadId && inboundThreadId !== sessionThreadId,
+  );
+  const record = {
+    evt: "matrix.inbound_route",
+    outcome: params.outcome,
+    ...(params.reason ? { reason: params.reason } : {}),
+    roomId: params.roomId,
+    eventId: params.eventId,
+    accountId: params.accountId,
+    isDirectMessage: params.isDirectMessage,
+    threadRootId: threadRootId ?? null,
+    sessionThreadId: sessionThreadId ?? null,
+    kind,
+    mentioned: params.mentioned ?? null,
+  };
+  console.info(JSON.stringify(record));
+  if (mismatch) {
+    console.warn(
+      JSON.stringify({
+        ...record,
+        evt: "matrix.inbound_route_mismatch",
+        level: "warn",
+      }),
+    );
+  }
+  return { kind, mismatch };
+}
