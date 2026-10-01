@@ -4448,6 +4448,87 @@ describe("talk realtime gateway relay", () => {
     },
   );
 
+  it("retires server-VAD-interrupted output before adopting its replacement response", () => {
+    let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
+    const close = vi.fn();
+    const handleBargeIn = vi.fn();
+    const provider = createIdleRelayProvider();
+    provider.createBridge = (request) => {
+      bridgeRequest = request;
+      return makeRelayTransport({ close, handleBargeIn });
+    };
+    const {
+      broadcastToConnIds,
+      logGateway,
+      session: relaySession,
+    } = createAbortableRelayRunFixture(provider);
+    const session = relaySessions.get(relaySession.relaySessionId);
+    if (!session) {
+      throw new Error("Realtime relay was not registered");
+    }
+    const fixtureTurnId = session.harness.talk.activeTurnId;
+    expect(fixtureTurnId).toBeDefined();
+    session.harness.talk.cancelTurn({ turnId: fixtureTurnId });
+    session.harness.talk.startTurn({ turnId: "interrupted-turn" });
+    // The provider reports speech-started before its bridge applies its own
+    // server-VAD interruption; the relay must retire the Talk owner in that
+    // callback without sending a second provider cancellation.
+    session.capabilities = { handlesInputAudioBargeIn: true } as never;
+
+    bridgeRequest?.onEvent?.({
+      direction: "server",
+      type: "response.created",
+      responseId: "response-1",
+    });
+    const interruptedTurnId = session.harness.talk.activeTurnId;
+    expect(interruptedTurnId).toBeDefined();
+
+    bridgeRequest?.onEvent?.({
+      direction: "server",
+      type: "input_audio_buffer.speech_started",
+      itemId: "input-item-1",
+    });
+    expect(session.harness.talk.activeTurnId).toBeUndefined();
+    expect(session.outputOwnership.phase).toBe("discarding");
+
+    // Server VAD may create the next response before publishing a terminal
+    // event for the interrupted response.
+    bridgeRequest?.onEvent?.({
+      direction: "server",
+      type: "response.created",
+      responseId: "response-2",
+    });
+    const successorTurnId = session.harness.talk.activeTurnId;
+    expect(successorTurnId).toBeDefined();
+    expect(successorTurnId).not.toBe(interruptedTurnId);
+    expect(session.outputOwnership).toMatchObject({
+      phase: "owned",
+      mode: "exact-response",
+      responseId: "response-2",
+      turnId: successorTurnId,
+    });
+
+    bridgeRequest?.onEvent?.({
+      direction: "server",
+      type: "response.done",
+      responseId: "response-1",
+    });
+    expect(session.harness.talk.activeTurnId).toBe(successorTurnId);
+    expect(session.outputOwnership.responseId).toBe("response-2");
+    expect(close).not.toHaveBeenCalled();
+    expect(handleBargeIn).not.toHaveBeenCalled();
+    expect(
+      logGateway.warn.mock.calls.some(([message]) =>
+        String(message).includes("provider event ownership failure"),
+      ),
+    ).toBe(false);
+    expect(
+      broadcastToConnIds.mock.calls.filter(
+        (call) => (call[1] as { type?: string }).type === "responseStarted",
+      ),
+    ).toHaveLength(2);
+  });
+
   it("fails visibly when a replacement response starts before cancellation confirms", async () => {
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const close = vi.fn();
