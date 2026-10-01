@@ -1,5 +1,5 @@
 import type { WebClient } from "@slack/web-api";
-import { isSlackFiChatPointer } from "./fi-chat-pointer.js";
+import { isSlackFiChatPointer, sourcePointerCoversProjected } from "./fi-chat-pointer.js";
 import { hydrateSlackProjectionNames } from "./projection-actor.js";
 import { slackProjectionContent } from "./projection-content.js";
 import { createProjectionDeadline } from "./projection-deadline.js";
@@ -115,9 +115,20 @@ export async function readSlackDirectSnapshot(
         ]
       : [],
   );
+  const latestPointerMessageId = [...messages.values()]
+    .filter((message) => isSlackFiChatPointer(message))
+    .reduce<string | undefined>(
+      (latest, message) =>
+        message.ts && (!latest || message.ts.localeCompare(latest) > 0) ? message.ts : latest,
+      undefined,
+    );
   return {
     directSource,
-    sourcePointerPresent: [...messages.values()].some((message) => isSlackFiChatPointer(message)),
+    sourcePointerPresent: Boolean(latestPointerMessageId),
+    sourcePointerCurrent: sourcePointerCoversProjected(
+      latestPointerMessageId,
+      projected.map((message) => message.messageId),
+    ),
     messages: await hydrateSlackProjectionNames(
       client,
       workspaceId,

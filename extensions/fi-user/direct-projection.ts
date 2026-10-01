@@ -24,6 +24,7 @@ type DirectReader = {
   ) => Promise<{
     directSource: { workspaceId: string; channelId: string; peerSenderId: string };
     sourcePointerPresent?: boolean;
+    sourcePointerCurrent?: boolean;
     messages: Array<{
       messageId: string;
       senderId: string;
@@ -36,7 +37,7 @@ type DirectReader = {
     channelId: string;
     chatUrl: string;
     rootMessageId?: string;
-    alreadyPresent?: boolean;
+    coversLatest?: boolean;
   }) => Promise<"posted" | "existing" | "skipped">;
 };
 
@@ -132,7 +133,7 @@ export async function recoverSlackDirectProjection(
       await reader.postChatPointer?.({
         channelId: directSource.channelId,
         chatUrl: result.chatUrl,
-        alreadyPresent: source.sourcePointerPresent,
+        coversLatest: source.sourcePointerCurrent,
       });
     } catch {
       // Recovery still succeeded; the next DM snapshot retries the pointer.
@@ -385,7 +386,7 @@ export async function reconcileSlackDirectProjections(
           await reader.postChatPointer?.({
             channelId,
             chatUrl: result.chatUrl,
-            alreadyPresent: source.sourcePointerPresent,
+            coversLatest: source.sourcePointerCurrent,
           });
         } catch (error) {
           api.logger.warn(

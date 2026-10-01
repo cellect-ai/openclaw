@@ -124,4 +124,95 @@ describe("Slack Fi chat pointer post", () => {
     ).resolves.toBe("existing");
     expect(postMessage).not.toHaveBeenCalled();
   });
+
+  it("reposts into the Slack thread after a later source message", async () => {
+    const postMessage = vi.fn().mockResolvedValue({ ok: true });
+    const replies = vi.fn().mockResolvedValue({
+      ok: true,
+      messages: [
+        { ts: "1700000000.000001", user: "U111", text: "Question" },
+        {
+          ts: "1700000000.000002",
+          user: "UBOT",
+          bot_id: "BBOT",
+          text: `This conversation continues in Fi: <${URL}|Open in Fi>`,
+          metadata: { event_type: FI_CHAT_POINTER_EVENT },
+        },
+        {
+          ts: "1700000000.000003",
+          user: "U111",
+          text: "",
+          files: [{ name: "lease.pdf" }],
+        },
+      ],
+    });
+    const client = {
+      auth: { test: vi.fn().mockResolvedValue({ ok: true, team_id: "T123" }) },
+      conversations: {
+        members: vi.fn().mockResolvedValue({ ok: true, members: ["U111"] }),
+        replies,
+        history: vi.fn().mockResolvedValue({ ok: true, messages: [] }),
+      },
+      chat: { postMessage },
+    };
+    const reader = createSlackProjectionReader({
+      client: client as unknown as WebClient,
+      workspaceId: "T123",
+      botUserId: "UBOT",
+      socketConnectedAt: () => undefined,
+    });
+    await expect(
+      reader.postChatPointer({
+        channelId: "C123ABCDE12",
+        rootMessageId: "1700000000.000001",
+        chatUrl: URL,
+      }),
+    ).resolves.toBe("posted");
+    expect(postMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("reposts into a Slack DM after a later source message", async () => {
+    const postMessage = vi.fn().mockResolvedValue({ ok: true });
+    const history = vi.fn().mockResolvedValue({
+      ok: true,
+      messages: [
+        {
+          ts: "1700000000.000003",
+          user: "U111",
+          text: "",
+          files: [{ name: "lease.pdf" }],
+        },
+        {
+          ts: "1700000000.000002",
+          user: "UBOT",
+          bot_id: "BBOT",
+          text: `This conversation continues in Fi: <${URL}|Open in Fi>`,
+          metadata: { event_type: FI_CHAT_POINTER_EVENT },
+        },
+        { ts: "1700000000.000001", user: "U111", text: "Question" },
+      ],
+    });
+    const client = {
+      auth: { test: vi.fn().mockResolvedValue({ ok: true, team_id: "T123" }) },
+      conversations: {
+        members: vi.fn(),
+        replies: vi.fn(),
+        history,
+      },
+      chat: { postMessage },
+    };
+    const reader = createSlackProjectionReader({
+      client: client as unknown as WebClient,
+      workspaceId: "T123",
+      botUserId: "UBOT",
+      socketConnectedAt: () => undefined,
+    });
+    await expect(
+      reader.postChatPointer({
+        channelId: "D123ABCDE12",
+        chatUrl: URL,
+      }),
+    ).resolves.toBe("posted");
+    expect(postMessage).toHaveBeenCalledTimes(1);
+  });
 });

@@ -4,6 +4,7 @@ export const FI_CHAT_POINTER_EVENT = "cellect.fi_chat_pointer";
 const FI_CHAT_PATH = /\/chat\/?$/i;
 
 export type SlackPointerCandidate = {
+  ts?: string;
   bot_id?: string;
   bot?: boolean;
   text?: string;
@@ -39,6 +40,48 @@ export function isFiConversationChatUrl(value: string | undefined): boolean {
     }
   }
   return false;
+}
+
+/**
+ * True when a pointer is already the latest Slack activity: later source
+ * messages (a file upload, a reply) need a fresh notice at the bottom.
+ */
+export function sourcePointerCoversLatest(messages: SlackPointerCandidate[]): boolean {
+  let latestPointer: string | undefined;
+  let latestOther: string | undefined;
+  for (const message of messages) {
+    if (!message.ts) {
+      continue;
+    }
+    if (isSlackFiChatPointer(message)) {
+      if (!latestPointer || message.ts.localeCompare(latestPointer) > 0) {
+        latestPointer = message.ts;
+      }
+      continue;
+    }
+    if (!latestOther || message.ts.localeCompare(latestOther) > 0) {
+      latestOther = message.ts;
+    }
+  }
+  if (!latestPointer) {
+    return false;
+  }
+  return !latestOther || latestOther.localeCompare(latestPointer) <= 0;
+}
+
+export function sourcePointerCoversProjected(
+  latestPointerMessageId: string | undefined,
+  messageIds: Iterable<string>,
+): boolean {
+  if (!latestPointerMessageId) {
+    return false;
+  }
+  for (const id of messageIds) {
+    if (id.localeCompare(latestPointerMessageId) > 0) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function fiChatPointerText(chatUrl: string): string | null {

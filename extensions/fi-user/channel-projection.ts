@@ -35,6 +35,7 @@ type SlackSnapshot = {
   rootMessageId: string;
   memberSenderIds: string[];
   sourcePointerPresent?: boolean;
+  sourcePointerCurrent?: boolean;
   messages: Array<{
     messageId: string;
     senderId: string;
@@ -55,7 +56,7 @@ type SlackThreadReader = {
     channelId: string;
     chatUrl: string;
     rootMessageId?: string;
-    alreadyPresent?: boolean;
+    coversLatest?: boolean;
   }) => Promise<"posted" | "existing" | "skipped">;
 };
 type SlackChannelScope = Omit<SlackSnapshot, "rootMessageId" | "messages"> & {
@@ -321,7 +322,7 @@ async function publishSlackThreadSnapshot(
         channelId,
         rootMessageId,
         chatUrl: result.chatUrl,
-        alreadyPresent: snapshot.sourcePointerPresent,
+        coversLatest: snapshot.sourcePointerCurrent,
       });
     } catch (error) {
       params.api.logger.warn(

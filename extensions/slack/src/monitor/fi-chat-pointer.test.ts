@@ -4,6 +4,7 @@ import {
   fiChatPointerText,
   isFiConversationChatUrl,
   isSlackFiChatPointer,
+  sourcePointerCoversLatest,
 } from "./fi-chat-pointer.js";
 
 const URL =
@@ -31,5 +32,17 @@ describe("Fi chat pointer notices", () => {
     expect(fiChatPointerText("http://app.cellect.ai/fi/shape/chat?fiConversation=abc")).toBeNull();
     expect(isFiConversationChatUrl(URL)).toBe(true);
     expect(isFiConversationChatUrl("https://evil.test/chat?fiConversation=nope")).toBe(false);
+  });
+
+  it("covers the latest source only when no later Slack activity follows the pointer", () => {
+    const pointer = {
+      ts: "1700000000.000002",
+      bot_id: "B1",
+      metadata: { event_type: FI_CHAT_POINTER_EVENT },
+    };
+    expect(sourcePointerCoversLatest([{ ts: "1700000000.000001", text: "hi" }, pointer])).toBe(
+      true,
+    );
+    expect(sourcePointerCoversLatest([pointer, { ts: "1700000000.000003", text: "" }])).toBe(false);
   });
 });

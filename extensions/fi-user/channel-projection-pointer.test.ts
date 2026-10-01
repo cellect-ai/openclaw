@@ -7,7 +7,7 @@ describe("Slack-origin Fi chat pointer", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts one Fi chat pointer into a Slack-origin thread and does not post again when it is already there", async () => {
+  it("posts one Fi chat pointer into a Slack-origin thread and does not post again when it still covers the latest source", async () => {
     const chatUrl =
       "https://app.cellect.ai/fi/shape/chat?fiConversation=8934026f-8d33-43a9-8bde-32bb4cfcbd3c";
     const postChatPointer = vi.fn().mockResolvedValue("posted");
@@ -17,6 +17,7 @@ describe("Slack-origin Fi chat pointer", () => {
       rootMessageId: "1700000000.000001",
       memberSenderIds: ["U111"],
       sourcePointerPresent: false,
+      sourcePointerCurrent: false,
       messages: [{ messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false }],
     });
     const fetchMock = vi.fn().mockResolvedValue({
@@ -44,7 +45,7 @@ describe("Slack-origin Fi chat pointer", () => {
       channelId: "C123",
       rootMessageId: "1700000000.000001",
       chatUrl,
-      alreadyPresent: false,
+      coversLatest: false,
     });
     postChatPointer.mockClear();
     readThread.mockResolvedValue({
@@ -53,6 +54,7 @@ describe("Slack-origin Fi chat pointer", () => {
       rootMessageId: "1700000000.000001",
       memberSenderIds: ["U111"],
       sourcePointerPresent: true,
+      sourcePointerCurrent: true,
       messages: [{ messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false }],
     });
     await projectSlackChannelThread({
@@ -63,6 +65,28 @@ describe("Slack-origin Fi chat pointer", () => {
       baseUrl: "https://fi.example",
       token: "test-token",
     });
-    expect(postChatPointer).toHaveBeenCalledWith(expect.objectContaining({ alreadyPresent: true }));
+    expect(postChatPointer).toHaveBeenCalledWith(expect.objectContaining({ coversLatest: true }));
+    postChatPointer.mockClear();
+    readThread.mockResolvedValue({
+      workspaceId: "T123",
+      channelId: "C123",
+      rootMessageId: "1700000000.000001",
+      memberSenderIds: ["U111"],
+      sourcePointerPresent: true,
+      sourcePointerCurrent: false,
+      messages: [
+        { messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false },
+        { messageId: "1700000000.000003", senderId: "U111", content: "📎 lease.pdf", bot: false },
+      ],
+    });
+    await projectSlackChannelThread({
+      api,
+      sessionKey: "agent:cellect-fi-user:slack:channel:c123:thread:1700000000.000001",
+      accountId: "fi-user",
+      requesterSenderId: "U111",
+      baseUrl: "https://fi.example",
+      token: "test-token",
+    });
+    expect(postChatPointer).toHaveBeenCalledWith(expect.objectContaining({ coversLatest: false }));
   });
 });

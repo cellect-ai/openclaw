@@ -4,15 +4,16 @@ import { readSlackDirectIdentity, readSlackDirectSnapshot } from "./direct-snaps
 import {
   FI_CHAT_POINTER_EVENT,
   fiChatPointerText,
-  isSlackFiChatPointer,
+  sourcePointerCoversLatest,
 } from "./fi-chat-pointer.js";
 import { readSlackProjectionChannel, readSlackThreadSnapshot } from "./thread-snapshot.js";
 
 const pointerPosts = new KeyedAsyncQueue();
 
 /**
- * Slack source snapshots for the Fi projection reconciler, plus one idempotent
+ * Slack source snapshots for the Fi projection reconciler, plus an idempotent
  * notice that points at the Fi conversation. Snapshots never include that notice.
+ * A later Slack message (file, reply) after the last notice gets a fresh one.
  */
 export function createSlackProjectionReader(params: {
   client: WebClient;
@@ -40,7 +41,7 @@ export function createSlackProjectionReader(params: {
       channelId: string;
       chatUrl: string;
       rootMessageId?: string;
-      alreadyPresent?: boolean;
+      coversLatest?: boolean;
     }): Promise<"posted" | "existing" | "skipped"> => {
       const text = fiChatPointerText(input.chatUrl);
       if (!text || !/^[CDG][A-Z0-9]+$/.test(input.channelId)) {
@@ -51,7 +52,7 @@ export function createSlackProjectionReader(params: {
       }
       const key = `${workspaceId}:${input.channelId}:${input.rootMessageId ?? "direct"}`;
       return pointerPosts.enqueue(key, async () => {
-        if (input.alreadyPresent) {
+        if (input.coversLatest) {
           return "existing";
         }
         if (input.rootMessageId) {
@@ -61,7 +62,7 @@ export function createSlackProjectionReader(params: {
             input.channelId,
             input.rootMessageId,
           );
-          if (snapshot.sourcePointerPresent) {
+          if (snapshot.sourcePointerCurrent) {
             return "existing";
           }
         } else {
@@ -69,7 +70,7 @@ export function createSlackProjectionReader(params: {
             channel: input.channelId,
             limit: 200,
           });
-          if (history.messages?.some((message) => isSlackFiChatPointer(message))) {
+          if (sourcePointerCoversLatest(history.messages ?? [])) {
             return "existing";
           }
         }
