@@ -336,4 +336,76 @@ describe("registered Matrix agent entitlement hooks", () => {
     ).toMatchObject({ block: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it("records exclusive-source mismatches without message bodies", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const hook = plugin();
+    expect(
+      await hook(
+        "before_agent_reply",
+        {},
+        context("cellect-main", {
+          channelContext: {
+            sender: { id: "@alex:matrix.example" },
+            chat: {
+              id: "!room:matrix.example",
+              eventId: "$event",
+              talkThreadRootEventId: "$root",
+            },
+          },
+        }),
+      ),
+    ).toMatchObject({ handled: true });
+    const line = warn.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "threads.agent_entitlements");
+    expect(line).toMatchObject({
+      mismatch: "exclusive_source",
+      outcome: "unavailable",
+      eventId: "$event",
+      threadRootEventId: "$root",
+      level: "warn",
+    });
+    expect(info.mock.calls.length).toBeGreaterThan(0);
+    expect(JSON.stringify([info.mock.calls, warn.mock.calls])).not.toMatch(/secret|Please/);
+    info.mockRestore();
+    warn.mockRestore();
+  });
+
+  it("records an admitted text turn with the session thread id", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    fetchMock.mockResolvedValue(allow("cellect-fi-user"));
+    await plugin()(
+      "before_agent_reply",
+      {},
+      context("cellect-fi-user", {
+        sessionKey: "agent:cellect-fi-user:matrix:channel:!room:matrix.example:thread:$root",
+      }),
+    );
+    const line = info.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "threads.agent_entitlements");
+    expect(line).toMatchObject({
+      phase: "admission",
+      outcome: "admitted",
+      mode: "text",
+      eventId: "$event",
+      sessionThreadId: "$root",
+      roomId: "!room:matrix.example",
+    });
+    info.mockRestore();
+  });
 });
