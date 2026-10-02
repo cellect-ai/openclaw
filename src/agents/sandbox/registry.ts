@@ -22,7 +22,6 @@ import {
   assertSandboxRegistryReservationCurrent,
   browserEntryToRow,
   containerEntryToRow,
-  insertRegistryRow,
   insertSandboxRegistryRowInDatabase,
   type SandboxRegistryInsert,
   type SandboxRegistryWrite,
