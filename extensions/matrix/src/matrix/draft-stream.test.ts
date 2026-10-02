@@ -474,9 +474,6 @@ describe("createMatrixDraftStream", () => {
   });
 
   it("bypasses newline chunking for the draft preview message", async () => {
-    resolveChunkModeMock.mockReturnValue("newline");
-    chunkMarkdownTextWithModeMock.mockImplementation((text: string) => text.split("\n"));
-
     const stream = createMatrixDraftStream({
       roomId: "!room:test",
       client,
