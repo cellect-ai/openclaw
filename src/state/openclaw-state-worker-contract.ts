@@ -7,6 +7,10 @@ import type {
   SubagentRegistryWriteReceipt,
 } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type {
+  SandboxRegistryEntry,
+  SandboxBrowserRegistryEntry,
+} from "../agents/sandbox/registry.types.js";
+import type {
   WorkspaceAttestation,
   WorkspaceAttestationInput,
 } from "../agents/workspace-state-store.kernel.js";
@@ -86,6 +90,18 @@ export type OpenClawStateWorkerOperations = RegisteredStateWorkerOperations &
   TranscriptReadOperations &
   OpenClawStateLeaseLifecycleOperations & {
     "database.walMaintenance": { input: SqliteWalPeriodicRequest; output: SqliteWalPeriodicResult };
+    "worktrees.admitRunLease": { input: WorktreeRunLeaseRowInput; output: void };
+    "worktrees.reapRunLeases": { input: { scopes: string[] }; output: void };
+    "worktrees.releaseRunLease": {
+      input: { worktreeId: string; token: string };
+      output: void;
+    };
+    "sandboxRegistry.updateContainer": { input: SandboxRegistryEntry; output: void };
+    "sandboxRegistry.updateBrowser": { input: SandboxBrowserRegistryEntry; output: void };
+    "sandboxRegistry.remove": {
+      input: { kind: "container" | "browser"; containerName: string };
+      output: void;
+    };
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "sandboxRegistry.insertIfMissing": { input: SandboxRegistryInsert; output: void };

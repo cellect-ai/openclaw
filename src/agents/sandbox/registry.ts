@@ -18,10 +18,13 @@ import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contract.js";
+import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import {
   assertSandboxRegistryReservationCurrent,
   containerEntryToRow,
+  insertRegistryRow,
   insertSandboxRegistryRowInDatabase,
+  type SandboxRegistryInsert,
   type SandboxRegistryWrite,
   readSandboxRegistryEntryInDatabase,
   readSandboxRegistryRowInDatabase,
@@ -75,6 +78,21 @@ async function writeRegistry(
   );
 }
 
+function insertRegistryRowIfMissing(row: SandboxRegistryInsert): void {
+  runOpenClawStateWriteTransaction(({ db }) => {
+    const stateDb = getSandboxRegistryKysely(db);
+    executeSqliteQuerySync(
+      db,
+      stateDb
+        .insertInto("sandbox_registry_entries")
+        .values(row)
+        .onConflict((conflict) =>
+          conflict.columns(["registry_kind", "container_name"]).doNothing(),
+        ),
+    );
+  });
+}
+
 /** Reads all registered sandbox runtime containers from SQLite. */
 export async function readRegistry(): Promise<SandboxRegistry> {
   const reply = await executeExistingOpenClawStateRead({}, { type: "sandboxRegistry.list" });
@@ -120,6 +138,11 @@ export async function readRegisteredSandboxRuntimeIds(params: {
     throw new Error("Unexpected sandbox runtime ID result");
   }
   return reply.runtimeIds;
+}
+
+/** Inserts one sandbox runtime registry entry without replacing an existing entry. */
+export function insertSandboxRegistryEntryIfMissing(entry: SandboxRegistryEntry): void {
+  insertRegistryRowIfMissing(containerEntryToRow(entry));
 }
 
 /** Creates or updates one sandbox runtime registry entry, preserving immutable creation fields. */
@@ -319,12 +342,23 @@ export function assertSandboxBrowserRegistryEntryCurrent(entry: SandboxBrowserRe
   }
 }
 
+/** Inserts one browser sandbox registry entry without replacing an existing entry. */
+export function insertSandboxBrowserRegistryEntryIfMissing(
+  entry: SandboxBrowserRegistryEntry,
+): void {
+  insertRegistryRowIfMissing(browserEntryToRow(entry));
+}
+
 /** Creates or updates one browser sandbox registry entry, preserving immutable creation fields. */
 export async function updateBrowserRegistry(
   entry: SandboxBrowserRegistryEntry,
   assertCurrent?: () => void,
 ) {
-  await writeRegistry({ operation: "updateBrowser", entry }, undefined, assertCurrent);
+  assertCurrent?.();
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.updateBrowser",
+    input: entry,
+  });
 }
 
 /** Forget only the inspected allocation, under the caller's still-live settlement lease. */
@@ -338,5 +372,8 @@ export async function removeSandboxRegistryGeneration(
 
 /** Removes one browser sandbox registry entry by container name. */
 export async function removeBrowserRegistryEntry(containerName: string) {
-  await writeRegistry({ operation: "removeBrowser", containerName });
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.remove",
+    input: { kind: "browser", containerName },
+  });
 }

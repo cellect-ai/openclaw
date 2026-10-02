@@ -557,6 +557,12 @@ original store, and unknown outcomes never replay. The media scheduler retains
 accepted cleanup through the Gateway close prelude before shared-state teardown.
 Public media APIs remain asynchronous; trust policy, schemas, retention, durability,
 and update behavior are unchanged.
+Sandbox container and browser registry updates and removals use this shared-state
+writer. Provisioning awaits their commits without blocking the Gateway thread,
+so database coordination cannot consume the readiness probes' deadlines on that
+thread. Row codecs, immutable allocation facts, ordering, and update behavior are
+unchanged. Synchronous generation reservation and retirement primitives retain
+their existing owners.
 
 Published agent and shared-state database timers dispatch periodic WAL checkpoints
 and bounded page reclamation through those same writers. The existing timer keeps
