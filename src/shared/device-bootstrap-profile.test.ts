@@ -14,6 +14,7 @@ import {
   isVoiceNodePairingSetupBootstrapProfile,
   normalizeDeviceBootstrapHandoffProfile,
   normalizeDeviceBootstrapProfile,
+  resolveBootstrapProfileScopesForRole,
 } from "./device-bootstrap-profile.js";
 
 describe("device bootstrap profile", () => {
