@@ -40,6 +40,22 @@ describe("openclaw plugin tool context", () => {
     expect(result.context.nativeChannelId).toBe("oc_native_chat");
   });
 
+  it("forwards the inbound message identity without deriving it from the reply route", () => {
+    const result = resolveOpenClawPluginToolInputs({
+      options: {
+        agentChannel: "matrix",
+        nativeChannelId: "!room:example",
+        currentMessageId: "$inbound",
+        agentThreadId: "$thread-root",
+        requesterSenderId: "@requester:example",
+      },
+    });
+    expect(result.context.currentMessageId).toBe("$inbound");
+    expect(result.context.nativeChannelId).toBe("!room:example");
+    expect(result.context.requesterSenderId).toBe("@requester:example");
+    expect(resolveOpenClawPluginToolInputs({}).context.currentMessageId).toBeUndefined();
+  });
+
   it("defaults missing and unknown conversation-read origins to delegated", () => {
     const missing = resolveOpenClawPluginToolInputs({
       options: { config: {} as never },

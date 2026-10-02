@@ -61,6 +61,27 @@ describe("createOpenClawTools browser plugin integration", () => {
     resetPluginRuntimeStateForTest();
   });
 
+  it("passes host Matrix event identity through the registered plugin-tool entry point", () => {
+    hoisted.resolvePluginTools.mockReturnValue([]);
+    createOpenClawTools({
+      config: {},
+      agentSessionKey: "agent:main:matrix:group:!room:example",
+      agentChannel: "matrix",
+      agentAccountId: "configured",
+      nativeChannelId: "!room:example",
+      currentMessageId: "$inbound-event",
+      agentThreadId: "$thread-root",
+      requesterSenderId: "@requester:example",
+    });
+    expect(firstResolvePluginToolsParams().context).toMatchObject({
+      messageChannel: "matrix",
+      agentAccountId: "configured",
+      nativeChannelId: "!room:example",
+      currentMessageId: "$inbound-event",
+      requesterSenderId: "@requester:example",
+    });
+  });
+
   it("keeps the browser tool returned by plugin resolution", () => {
     hoisted.resolvePluginTools.mockReturnValue([
       {
