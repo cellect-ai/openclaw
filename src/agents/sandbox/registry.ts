@@ -22,7 +22,6 @@ import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-st
 import {
   assertSandboxRegistryReservationCurrent,
   containerEntryToRow,
-  insertRegistryRow,
   insertSandboxRegistryRowInDatabase,
   type SandboxRegistryInsert,
   type SandboxRegistryWrite,
