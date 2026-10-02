@@ -108,6 +108,13 @@ spool files and await release during cleanup, so a concurrent writer waiting for
 host admission cannot block media sends on the Gateway thread. The existing custody
 rows, atomic enqueue, expiry, and update behavior are unchanged.
 
+Sandbox container and browser registry updates and removals use this shared-state
+writer. Provisioning awaits their commits without blocking the Gateway thread,
+so database coordination cannot consume the readiness probes' deadlines on that
+thread. Row codecs, immutable allocation facts, ordering, and update behavior are
+unchanged. Synchronous generation reservation and retirement primitives retain
+their existing owners.
+
 Published agent and shared-state database timers dispatch periodic WAL checkpoints
 and bounded page reclamation through those same writers. The existing timer keeps
 its cadence and page budget, releases writer custody between units, and installs

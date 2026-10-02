@@ -16,6 +16,11 @@ import {
 } from "../agents/mcp-oauth-store.worker.js";
 import { importSandboxRegistryRow } from "../agents/sandbox/registry-import.worker.js";
 import { writeSandboxRegistry } from "../agents/sandbox/registry-write.worker.js";
+import {
+  updateSandboxContainerRegistryInDatabase,
+  updateSandboxBrowserRegistryInDatabase,
+  removeSandboxRegistryEntryInDatabase,
+} from "../agents/sandbox/registry.kernel.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import { replaceWorkspaceAttestationInDatabase } from "../agents/workspace-state-store.kernel.js";
 import {
@@ -400,6 +405,25 @@ export function executeSharedStateCommand(
       : read(open().db);
   }
   const database = open();
+  if (
+    command.type === "sandboxRegistry.updateContainer" ||
+    command.type === "sandboxRegistry.updateBrowser" ||
+    command.type === "sandboxRegistry.remove"
+  ) {
+    return runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        if (command.type === "sandboxRegistry.updateContainer") {
+          return updateSandboxContainerRegistryInDatabase(db, command.input);
+        }
+        if (command.type === "sandboxRegistry.updateBrowser") {
+          return updateSandboxBrowserRegistryInDatabase(db, command.input);
+        }
+        return removeSandboxRegistryEntryInDatabase(db, command.input);
+      },
+      { database, path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+      { operationLabel: command.type },
+    );
+  }
   if (command.type === "githubRepository.personalPending") {
     return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
   }

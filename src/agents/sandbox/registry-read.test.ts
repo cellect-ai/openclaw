@@ -28,6 +28,8 @@ import {
   readRegistryEntry,
   updateBrowserRegistry,
   updateRegistry,
+  removeRegistryEntry,
+  removeBrowserRegistryEntry,
 } from "./registry.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
@@ -69,35 +71,77 @@ async function seed() {
   await updateBrowserRegistry(browser);
 }
 
-it.each(["cached", "fresh"])(
-  "reads all four sandbox projections off the parent thread with a %s source and unrelated data",
-  async (mode) => {
+function watchNativeSql() {
+  const { DatabaseSync, StatementSync } = requireNodeSqlite();
+  return [
+    vi.spyOn(DatabaseSync.prototype, "prepare"),
+    vi.spyOn(DatabaseSync.prototype, "exec"),
+    ...(["get", "all", "run", "iterate"] as const).map((method) =>
+      vi.spyOn(StatementSync.prototype, method),
+    ),
+  ];
+}
+
+it("updates and removes both sandbox registries without blocking the gateway thread on SQLite", async () => {
+  fixture();
+  await seed();
+  const calls = watchNativeSql();
+  await updateRegistry({ ...container, lastUsedAtMs: 99 });
+  await updateBrowserRegistry({ ...browser, lastUsedAtMs: 99 });
+  expect(await readRegistryEntry(container.containerName)).toMatchObject({ lastUsedAtMs: 99 });
+  expect((await readBrowserRegistry()).entries).toEqual([
+    expect.objectContaining({ lastUsedAtMs: 99 }),
+  ]);
+  await removeRegistryEntry(container.containerName);
+  await removeBrowserRegistryEntry(browser.containerName);
+  expect(await readRegistry()).toEqual({ entries: [] });
+  expect(await readBrowserRegistry()).toEqual({ entries: [] });
+  expect(calls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
+});
+
+it.each([
+  { mode: "cached", otherRows: 0 },
+  { mode: "fresh", otherRows: 0 },
+  { mode: "cached", otherRows: 512 },
+  { mode: "fresh", otherRows: 512 },
+] as const)(
+  "reads all four sandbox projections off the parent thread with a $mode source and $otherRows unrelated rows",
+  async ({ mode, otherRows }) => {
     expect(isMainThread).toBe(true);
-    fixture();
+    const { databasePath } = fixture();
     await seed();
-    // A shared state database can be much larger than its sandbox registry.
-    runOpenClawStateWriteTransaction(({ db }) => {
-      executeSqliteQuerySync(
-        db,
-        getNodeSqliteKysely<DB>(db)
-          .insertInto("plugin_state_entries")
-          .values(
-            Array.from({ length: 512 }, (_, index) => ({
-              plugin_id: "fixture",
-              namespace: "unrelated",
-              entry_key: String(index),
-              value_json: JSON.stringify({ text: "x".repeat(16 * 1024) }),
-              created_at: 1,
-              expires_at: null,
-            })),
-          ),
-      );
-    });
+    if (otherRows) {
+      // A shared state database can be much larger than its sandbox registry.
+      runOpenClawStateWriteTransaction(({ db }) => {
+        executeSqliteQuerySync(
+          db,
+          getNodeSqliteKysely<DB>(db)
+            .insertInto("plugin_state_entries")
+            .values(
+              Array.from({ length: otherRows }, (_, index) => ({
+                plugin_id: "fixture",
+                namespace: "unrelated",
+                entry_key: String(index),
+                value_json: JSON.stringify({ text: "x".repeat(16 * 1024) }),
+                created_at: 1,
+                expires_at: null,
+              })),
+            ),
+        );
+      });
+    }
+    const sourceBytes = ["", "-wal"].reduce(
+      (total, suffix) =>
+        total +
+        (fs.existsSync(databasePath + suffix) ? fs.statSync(databasePath + suffix).size : 0),
+      0,
+    );
     if (mode === "fresh") {
       await closeOpenClawStateDatabaseAsync();
     }
     requireNodeSqlite();
     const calls = observeMainThreadSql();
+    const startedAt = performance.now();
     expect(await readRegistry()).toEqual({
       entries: [{ ...container, runtimeLabel: container.containerName, configLabelKind: "Image" }],
     });
@@ -106,7 +150,15 @@ it.each(["cached", "fresh"])(
       await readRegisteredSandboxRuntimeIds({ backendId: "fixture", scopeKey: "agent:main" }),
     ).toEqual([container.containerName]);
     expect(await readBrowserRegistry()).toEqual({ entries: [browser] });
-    expect(calls.count()).toBe(0);
+    const mainThreadSqlCalls = calls.count();
+    console.info("sandbox registry read", {
+      mode,
+      otherRows,
+      sourceBytes,
+      mainThreadSqlCalls,
+      elapsedMs: Math.round(performance.now() - startedAt),
+    });
+    expect(mainThreadSqlCalls).toBe(0);
   },
 );
 

@@ -8,6 +8,10 @@ import type {
   SandboxRegistryInsert,
   SandboxRegistryWrite,
 } from "../agents/sandbox/registry.kernel.js";
+import type {
+  SandboxRegistryEntry,
+  SandboxBrowserRegistryEntry,
+} from "../agents/sandbox/registry.types.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type {
   WorkspaceAttestation,
@@ -155,6 +159,12 @@ export type OpenClawStateWorkerOperations = UpdateRunReconciliationOperations &
     "worktrees.reapRunLeases": { input: { scopes: string[] }; output: void };
     "worktrees.releaseRunLease": {
       input: { worktreeId: string; token: string };
+      output: void;
+    };
+    "sandboxRegistry.updateContainer": { input: SandboxRegistryEntry; output: void };
+    "sandboxRegistry.updateBrowser": { input: SandboxBrowserRegistryEntry; output: void };
+    "sandboxRegistry.remove": {
+      input: { kind: "container" | "browser"; containerName: string };
       output: void;
     };
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
