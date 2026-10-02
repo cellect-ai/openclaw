@@ -136,7 +136,12 @@ export abstract class OpenAIRealtimeEvents extends OpenAIRealtimeProtocol {
         {
           const transcript = event.transcript ?? event.text;
           if (transcript) {
-            this.config.onTranscript?.("assistant", transcript, true);
+            this.config.onTranscript?.(
+              "assistant",
+              transcript,
+              true,
+              ...(event.item_id ? [{ itemId: event.item_id, textMode: "snapshot" as const }] : []),
+            );
           }
         }
         return;

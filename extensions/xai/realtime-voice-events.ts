@@ -20,7 +20,7 @@ const XAI_REALTIME_INPUT_SETTLE_MS = 1_500;
 export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   private assistantTranscriptBuffer = "";
   private assistantTranscriptFinalized = false;
-  private pendingInputTranscript: { key: string; text: string } | undefined;
+  private pendingInputTranscript: { key: string; text: string; itemId?: string } | undefined;
   private finalizedInputTranscriptKeys = new Set<string>();
   private inputSpeechSequence = 0;
   private inputResponseStarted = false;
@@ -185,7 +185,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
             return;
           }
         }
-        this.flushAssistantTranscript(event.transcript ?? event.text);
+        this.flushAssistantTranscript(event.transcript ?? event.text, event.item_id);
         return;
       case "conversation.item.input_audio_transcription.delta":
         if (event.delta) {
@@ -210,11 +210,18 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
             return;
           }
         }
-        this.pendingInputTranscript = { key, text: transcript };
+        this.pendingInputTranscript = {
+          key,
+          text: transcript,
+          ...(event.item_id ? { itemId: event.item_id } : {}),
+        };
         // xAI's completed events are cumulative snapshots, not utterance boundaries.
         // Preview immediately; commit once the response settles, so later corrections
         // cannot either duplicate the user message or truncate it permanently.
-        this.config.onTranscript?.("user", transcript, false, { textMode: "snapshot" });
+        this.config.onTranscript?.("user", transcript, false, {
+          ...(event.item_id ? { itemId: event.item_id } : {}),
+          textMode: "snapshot",
+        });
         if (this.inputResponseFinished) {
           // Recognition landed after the response settled; xAI may still revise
           // this item, so commit it after a quiet period rather than at once.
@@ -295,8 +302,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
             if (!this.acceptsEvent(connection)) {
               return;
             }
-            const terminalTranscript = output
-              .filter((item) => item.type === "message" && item.role === "assistant")
+            const assistantMessages = output.filter(
+              (item) => item.type === "message" && item.role === "assistant",
+            );
+            const terminalTranscript = assistantMessages
               .flatMap((item) => (Array.isArray(item.content) ? item.content.filter(isRecord) : []))
               .map((content) =>
                 typeof content.transcript === "string"
@@ -306,7 +315,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
                     : "",
               )
               .join("");
-            this.flushAssistantTranscript(terminalTranscript);
+            const terminalItemId = assistantMessages.find(
+              (item) => typeof item.id === "string" && item.id.length > 0,
+            )?.id;
+            this.flushAssistantTranscript(terminalTranscript, terminalItemId);
           });
           if (this.outputResponse) {
             this.outputResponse.ended = true;
@@ -418,7 +430,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.finalizedInputTranscriptKeys.delete(oldest);
       }
     }
-    this.config.onTranscript?.("user", pending.text, true, { textMode: "snapshot" });
+    this.config.onTranscript?.("user", pending.text, true, {
+      ...(pending.itemId ? { itemId: pending.itemId } : {}),
+      textMode: "snapshot",
+    });
   }
 
   private emitCompletedToolCall(item: XaiRealtimeEvent["item"], event: XaiRealtimeEvent): void {
@@ -458,13 +473,18 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     this.config.onTranscript?.("assistant", delta, false);
   }
 
-  private flushAssistantTranscript(finalTranscript?: string): void {
+  private flushAssistantTranscript(finalTranscript?: string, itemId?: string): void {
     if (this.assistantTranscriptFinalized) {
       return;
     }
     const transcript = finalTranscript || this.assistantTranscriptBuffer;
     if (transcript) {
-      this.config.onTranscript?.("assistant", transcript, true);
+      this.config.onTranscript?.(
+        "assistant",
+        transcript,
+        true,
+        ...(itemId ? [{ itemId, textMode: "snapshot" as const }] : []),
+      );
       this.assistantTranscriptFinalized = true;
     }
     this.assistantTranscriptBuffer = "";

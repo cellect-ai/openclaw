@@ -21,7 +21,12 @@ import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
-import { editMessageMatrix, sendMessageMatrix, sendPollMatrix } from "./matrix/send.js";
+import {
+  editMessageMatrix,
+  redactMessageMatrix,
+  sendMessageMatrix,
+  sendPollMatrix,
+} from "./matrix/send.js";
 import type { MatrixExtraContentFields } from "./matrix/send/types.js";
 import { matrixPresentationCapabilities } from "./presentation-capabilities.js";
 
@@ -32,6 +37,8 @@ const MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT = "---";
 
 type MatrixChannelData = {
   editEventId?: string;
+  /** Previous voice transcript to redact after this threaded replacement lands. */
+  supersedeEventId?: string;
   extraContent?: MatrixExtraContentFields;
 };
 
@@ -146,6 +153,40 @@ function resolveMatrixDeliveryProgress(
         await onDeliveryResult(attachChannelToResult("matrix", toMatrixOutboundResult(result)));
       }
     : undefined;
+}
+
+async function redactSupersededVoiceTranscript(params: {
+  to: string;
+  payload: ReplyPayload;
+  sentMessageId: string | undefined;
+  cfg: Parameters<NonNullable<ChannelOutboundAdapter["sendText"]>>[0]["cfg"];
+  accountId?: string;
+}): Promise<void> {
+  const supersedeEventId = resolveMatrixChannelData(params.payload).supersedeEventId?.trim();
+  if (
+    !supersedeEventId ||
+    !params.sentMessageId ||
+    params.sentMessageId === "unknown" ||
+    params.sentMessageId === supersedeEventId
+  ) {
+    return;
+  }
+  try {
+    await redactMessageMatrix(params.to, supersedeEventId, {
+      cfg: params.cfg,
+      accountId: params.accountId,
+      reason: "Revised voice transcript",
+    });
+  } catch {
+    // The replacement is already in the thread. A failed redaction must not
+    // hide that revision or fail the send.
+    console.warn(
+      JSON.stringify({
+        evt: "matrix.voice_transcript_redact",
+        outcome: "failed",
+      }),
+    );
+  }
 }
 
 async function sendMatrixOutbound(
@@ -312,6 +353,13 @@ export const matrixOutbound: ChannelOutboundAdapter = {
         resolvedThreadId,
       ),
       onDeliveryResult: resolveMatrixDeliveryProgress(onDeliveryResult),
+    });
+    await redactSupersededVoiceTranscript({
+      to,
+      payload,
+      sentMessageId: result.messageId,
+      cfg,
+      accountId: accountId ?? undefined,
     });
     return attachChannelToResult("matrix", toMatrixOutboundResult(result));
   },

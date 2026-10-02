@@ -200,13 +200,16 @@ describe("xAI realtime response and transcript lifecycle", () => {
     socket.emitServer({ type: "input_audio_buffer.speech_started" });
     socket.emitServer({ type: "response.created", response: { id: "response-1" } });
     inputTranscript(socket, "How", "user-1");
-    expect(onTranscript).toHaveBeenLastCalledWith("user", "How", false, { textMode: "snapshot" });
+    expect(onTranscript).toHaveBeenLastCalledWith("user", "How", false, {
+      itemId: "user-1",
+      textMode: "snapshot",
+    });
     socket.emitServer({ type: "response.output_audio.delta", delta: "AAA=" });
     inputTranscript(socket, "How big is Earth?", "user-1");
     responseDone(socket, "response-1");
     inputTranscript(socket, "How big is Earth?", "user-1");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "How big is Earth?", true, { textMode: "snapshot" }],
+      ["user", "How big is Earth?", true, { itemId: "user-1", textMode: "snapshot" }],
     ]);
     await bridge.close();
   });
@@ -225,6 +228,7 @@ describe("xAI realtime response and transcript lifecycle", () => {
     expect(onTranscript.mock.calls.filter((call) => call[0] === "user" && call[2])).toEqual([]);
     responseDone(socket, "new");
     expect(onTranscript).toHaveBeenLastCalledWith("user", "How big is Jupiter?", true, {
+      itemId: "new-input",
       textMode: "snapshot",
     });
     await bridge.close();
@@ -238,8 +242,8 @@ describe("xAI realtime response and transcript lifecycle", () => {
     socket.emitServer({ type: "response.created", response: { id: "response-B" } });
     responseDone(socket, "response-B");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Again", true, { textMode: "snapshot" }],
-      ["user", "Again", true, { textMode: "snapshot" }],
+      ["user", "Again", true, { itemId: "late-A", textMode: "snapshot" }],
+      ["user", "Again", true, { itemId: "B", textMode: "snapshot" }],
     ]);
     await bridge.close();
   });
@@ -276,10 +280,12 @@ describe("xAI realtime response and transcript lifecycle", () => {
     responseDone(socket, "two");
     inputTranscript(socket, "status", "u2");
     expect(onTranscript).toHaveBeenLastCalledWith("user", "status", false, {
+      itemId: "u2",
       textMode: "snapshot",
     });
     await bridge.close();
     expect(onTranscript).toHaveBeenLastCalledWith("user", "status", true, {
+      itemId: "u2",
       textMode: "snapshot",
     });
   });
@@ -297,7 +303,7 @@ describe("xAI realtime response and transcript lifecycle", () => {
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([]);
     vi.advanceTimersByTime(500);
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Check the sensor", true, { textMode: "snapshot" }],
+      ["user", "Check the sensor", true, { itemId: "u1", textMode: "snapshot" }],
     ]);
     vi.useRealTimers();
     await bridge.close();
@@ -319,7 +325,7 @@ describe("xAI realtime response and transcript lifecycle", () => {
     expect(onError).toHaveBeenCalledOnce();
     responseDone(socket, "one");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Read the gauge", true, { textMode: "snapshot" }],
+      ["user", "Read the gauge", true, { itemId: "b", textMode: "snapshot" }],
     ]);
     await bridge.close();
   });

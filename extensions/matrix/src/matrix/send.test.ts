@@ -41,6 +41,7 @@ import { matrixEventToRaw } from "./sdk/event-helpers.js";
 import {
   chunkMatrixText,
   editMessageMatrix,
+  redactMessageMatrix,
   sendMessageMatrix,
   sendPollMatrix,
   sendSingleTextMessageMatrix,
@@ -2339,6 +2340,27 @@ describe("sendTypingMatrix", () => {
     });
 
     expect(setTyping).toHaveBeenCalledWith("!room:example", true, 12_345);
+  });
+});
+
+describe("redactMessageMatrix", () => {
+  it("redacts the previous voice transcript in the resolved room", async () => {
+    const { client } = makeClient();
+    const redactEvent = vi.fn(async () => "$redaction");
+    Object.assign(client, { redactEvent });
+
+    await expect(
+      redactMessageMatrix("!room:example.org", "$spoken", {
+        client,
+        cfg: {} as CoreConfig,
+        reason: "Revised voice transcript",
+      }),
+    ).resolves.toBe("$redaction");
+    expect(redactEvent).toHaveBeenCalledExactlyOnceWith(
+      "!room:example.org",
+      "$spoken",
+      "Revised voice transcript",
+    );
   });
 });
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

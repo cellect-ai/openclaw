@@ -280,9 +280,16 @@ async function handleChatSendWithOptions(
     }
     // A bound Talk consult speaks for the person the app server attested for
     // that Matrix conversation, not for the browser client that relays audio.
+    // Hook chat id must be that room. A session key's raw id is
+    // `!room:server:thread:$root`, which entitlements otherwise reject.
     if (options?.talkRelayAdmission?.speakerMxid) {
       preparedUserTurn.ctx.SenderId = options.talkRelayAdmission.speakerMxid;
       preparedUserTurn.ctx.ChannelContext = options.talkRelayAdmission.channelContext;
+      const roomId = options.talkRelayAdmission.channelContext?.chat?.id;
+      if (typeof roomId === "string" && roomId.startsWith("!")) {
+        preparedUserTurn.ctx.ChatId = roomId;
+        preparedUserTurn.ctx.NativeChannelId = roomId;
+      }
     }
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
     admitted.value.setPendingInputCleanup(() => {
