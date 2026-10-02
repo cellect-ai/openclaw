@@ -99,20 +99,18 @@ export function createMatrixReplyDispatcher(config: {
     draftController.updateDraftFromLatestFullText();
   };
 
-  const dispatcherOptions = {
-    ...prefixOptions,
-    humanDelay,
-    deliver: async (payload: ReplyPayload, info: { kind: "tool" | "block" | "final" }) => {
+  return {
+    turnDispatcherOptions: {
+      ...prefixOptions,
+      humanDelay,
+      onReplyStart: typingCallbacks.onReplyStart,
+      onIdle: typingCallbacks.onIdle,
+    },
+    deliverReply: async (
+      payload: ReplyPayload,
+      info: { kind: "tool" | "block" | "final" },
+    ) => {
       const publication = resolveMatrixReplyPublication(payload, accountId, roomId, threadTarget);
-      const completeDelivery = async (
-        result: MatrixReplyDeliveryResult,
-      ): Promise<MatrixReplyDeliveryResult> => {
-        if (info.kind === "block") {
-          beginNextBlockDraft();
-          await typingCallbacks.onReplyStart();
-        }
-        return result;
-      };
       const createDraftReceipt = (id: string): MessageReceipt =>
         createPreviewMessageReceipt({
           id,

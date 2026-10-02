@@ -239,7 +239,7 @@ export async function hasSlackThreadReplyMatchingUser(params: {
         limit: fetchLimit,
         inclusive: true,
         ...(cursor ? { cursor } : {}),
-      })) as SlackRepliesPage; // SAFETY: Slack replies are narrowed to optional fields read below.
+      })) as ConversationsRepliesResponse; // SAFETY: Slack replies are narrowed to optional fields read below.
 
       for (const message of response.messages ?? []) {
         const isEarlierMessage = params.currentMessageTs

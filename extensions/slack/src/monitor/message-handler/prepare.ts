@@ -52,7 +52,7 @@ import type { ResolvedSlackAccount } from "../../accounts.js";
 import { reactSlackMessage } from "../../actions.js";
 import { normalizeSlackAppContextEntities, isSlackAppContext } from "../../agent-context.js";
 import { formatSlackError } from "../../errors.js";
-import { sendMessageSlack, type SlackSendIdentity } from "../../send.js";
+import { sendMessageSlack } from "../../send.js";
 import {
   claimSlackThreadOwner,
   getSlackThreadOwnerPeer,
@@ -1060,9 +1060,9 @@ export async function prepareSlackMessage(params: {
       explicitlyMentioned,
       mentionedUserIds,
       hasReplyToCurrentBot:
-        implicitMentionKinds.includes("reply_to_bot") && implicitMentions.replyToBot,
+        (implicitMentionKinds?.includes("reply_to_bot") ?? false) && implicitMentions.replyToBot,
       hasCurrentThreadParticipation:
-        implicitMentionKinds.includes("bot_thread_participant") &&
+        (implicitMentionKinds?.includes("bot_thread_participant") ?? false) &&
         implicitMentions.threadParticipation,
       isThreadReply,
       answersUnmentionedTopLevel: wasMentioned || !shouldRequireMention,
