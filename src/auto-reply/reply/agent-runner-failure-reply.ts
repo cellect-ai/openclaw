@@ -51,8 +51,6 @@ import {
   readErrorCauses,
   readErrorName,
 } from "../../infra/errors.js";
-import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
-import { extractErrorHttpStatus } from "../../shared/assistant-error-format.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
   copyReplyPayloadMetadata,
