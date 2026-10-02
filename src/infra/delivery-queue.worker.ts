@@ -18,6 +18,8 @@ import {
   replacePendingDeliveryQueueEntryInDatabase,
   upsertDeliveryQueueEntryOnceAcrossNamespacesInDatabase,
 } from "./delivery-queue-sqlite-namespace.kernel.js";
+import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
+import type { LifecycleObligation } from "./conversation-lifecycle.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
   deleteDeliveryQueueEntryInDatabase,
@@ -485,4 +487,28 @@ export const deliveryQueueOperations = {
     input: Parameters<typeof loadDeliveryQueueMediaRetentionSnapshotInDatabase>[1],
     { open },
   ) => loadDeliveryQueueMediaRetentionSnapshotInDatabase(open(), input),
+  "deliveryQueue.lifecycleRead": (
+    input: { id?: string },
+    { open, stateOptions },
+  ): LifecycleObligation[] =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleRead", input },
+      { database: open(), ...stateOptions() },
+    ),
+  "deliveryQueue.lifecycleAck": (
+    input: { id: string; revision: number },
+    { open, stateOptions },
+  ): LifecycleObligation | undefined =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleAck", input },
+      { database: open(), ...stateOptions() },
+    ),
+  "deliveryQueue.lifecycleRecover": (
+    input: { id: string; expected: string; replacement: LifecycleObligation },
+    { open, stateOptions },
+  ): void =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleRecover", input },
+      { database: open(), ...stateOptions() },
+    ),
 } satisfies WorkerOperationHandlers;

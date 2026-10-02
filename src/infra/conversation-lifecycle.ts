@@ -1,9 +1,11 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 // Durable projection custody; this module never schedules or resumes agent work.
 import { createHash } from "node:crypto";
 import {
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   isDefinitiveRunLifecycle,
 } from "../agents/agent-run-terminal-outcome.js";
+import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import {
   registerAgentEventPersistenceHandler,
   type AgentEventRuntimePayload,
@@ -14,13 +16,18 @@ import {
   registerAgentRunAdmissionHandler,
 } from "./agent-run-registry.js";
 import {
-  completeDeliveryQueueEntry,
   getDeliveryQueueEntryStatus,
   loadDeliveryQueueEntries,
   loadDeliveryQueueEntry,
   upsertDeliveryQueueEntry,
   type DeliveryQueueEntryState,
 } from "./delivery-queue-sqlite.js";
+import {
+  captureDeliveryQueueStateContext,
+  resolveDeliveryQueueStateEnv,
+} from "./delivery-queue-state-context.js";
+import { executeDeliveryQueueOperation } from "./delivery-queue-worker-store.js";
+import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 
 export type ConversationLifecycleState =
   | "queued"
@@ -55,7 +62,7 @@ export type ConversationLifecyclePublication = Readonly<{
   resultEventId?: string;
 }>;
 
-type LifecycleObligation = DeliveryQueueEntryState & {
+export type LifecycleObligation = DeliveryQueueEntryState & {
   transportId: string;
   binding: ConversationProjectionBinding;
   runId: string;
@@ -138,6 +145,11 @@ export function registerConversationLifecycleTransport(options: {
   stateDir?: string;
 }) {
   let stopped = false;
+  // A durable status obligation belongs to this transport, not to the agent
+  // event's temporary read/request scope. Retrying after that scope closes must
+  // retain the transport's own authority rather than a revoked producer scope.
+  const inOwnerContext = AsyncLocalStorage.snapshot();
+  const stateContext = captureDeliveryQueueStateContext(options.stateDir);
   let draining: Promise<void> | undefined;
   const owners = new Map<string, readonly ConversationProjectionBinding[]>();
   const retireTimers = new Set<ReturnType<typeof setTimeout>>();
@@ -201,47 +213,58 @@ export function registerConversationLifecycleTransport(options: {
         .map((binding) => Object.freeze({ ...binding }));
       owners.set(ownerKey, bindings);
     }
-    for (const binding of bindings) {
-      const id = identity(binding.bindingId, event.runId, generation);
-      if (getDeliveryQueueEntryStatus(QUEUE, id, options.stateDir) === "completed") continue;
-      const existing = read(id);
-      if (existing && existing.sessionId !== context.sessionId) continue;
-      if (existing && TERMINAL.has(existing.state)) continue;
-      // Registry metadata can be enriched repeatedly after admission. It must
-      // never rewind an already started run back into the queue.
-      if (existing && incomingState === "queued") continue;
-      const row: LifecycleObligation = existing ?? {
-        id,
-        enqueuedAt: Date.now(),
-        retryCount: 0,
-        completionRetention: RETENTION,
-        transportId: options.transportId,
-        binding,
-        runId: event.runId,
-        generation,
-        sessionId: context.sessionId,
-        revision: 0,
-        state: incomingState,
-        pending: [],
-        pendingApprovals: [],
-      };
-      let state = incomingState;
-      if (event.stream === "approval") {
-        const approvalId = [event.data.approvalId, event.data.itemId, event.data.toolCallId].find(
-          (value): value is string => typeof value === "string" && value.length > 0,
-        );
-        if (!approvalId) continue;
-        if (event.data.phase === "requested") {
-          if (!row.pendingApprovals.includes(approvalId)) row.pendingApprovals.push(approvalId);
-        } else {
-          if (!row.pendingApprovals.includes(approvalId)) continue;
-          row.pendingApprovals = row.pendingApprovals.filter((id) => id !== approvalId);
+    // The synchronous event contract persists before observers. Its retained
+    // transaction also services worker admission while waiting for the writer;
+    // raw autocommit writes could deadlock against a worker's commit grant.
+    runOpenClawStateWriteTransaction(
+      () => {
+        for (const binding of bindings) {
+          const id = identity(binding.bindingId, event.runId, generation);
+          if (getDeliveryQueueEntryStatus(QUEUE, id, options.stateDir) === "completed") continue;
+          const existing = read(id);
+          if (existing && existing.sessionId !== context.sessionId) continue;
+          if (existing && TERMINAL.has(existing.state)) continue;
+          // Registry metadata can be enriched repeatedly after admission. It must
+          // never rewind an already started run back into the queue.
+          if (existing && incomingState === "queued") continue;
+          const row: LifecycleObligation = existing ?? {
+            id,
+            enqueuedAt: Date.now(),
+            retryCount: 0,
+            completionRetention: RETENTION,
+            transportId: options.transportId,
+            binding,
+            runId: event.runId,
+            generation,
+            sessionId: context.sessionId,
+            revision: 0,
+            state: incomingState,
+            pending: [],
+            pendingApprovals: [],
+          };
+          let state = incomingState;
+          if (event.stream === "approval") {
+            const approvalId = [
+              event.data.approvalId,
+              event.data.itemId,
+              event.data.toolCallId,
+            ].find((value): value is string => typeof value === "string" && value.length > 0);
+            if (!approvalId) continue;
+            if (event.data.phase === "requested") {
+              if (!row.pendingApprovals.includes(approvalId)) row.pendingApprovals.push(approvalId);
+            } else {
+              if (!row.pendingApprovals.includes(approvalId)) continue;
+              row.pendingApprovals = row.pendingApprovals.filter((id) => id !== approvalId);
+            }
+            state = row.pendingApprovals.length ? "waiting" : "running";
+          }
+          if (!existing || existing.state !== state) appendTransition(row, state);
+          write(row);
         }
-        state = row.pendingApprovals.length ? "waiting" : "running";
-      }
-      if (!existing || existing.state !== state) appendTransition(row, state);
-      write(row);
-    }
+      },
+      { env: resolveDeliveryQueueStateEnv(options.stateDir, stateContext) },
+      { operationLabel: "record conversation lifecycle transition" },
+    );
     // Final payload delivery may follow the terminal lifecycle callback. Keep
     // the immutable presentation correlation until bounded lifecycle cleanup.
     if (TERMINAL.has(incomingState)) {
@@ -260,12 +283,26 @@ export function registerConversationLifecycleTransport(options: {
   const flush = (): Promise<void> => {
     if (draining) return draining;
     if (stopped) return Promise.resolve();
-    draining = (async () => {
-      const rows = loadDeliveryQueueEntries(QUEUE, options.stateDir) as LifecycleObligation[];
+    draining = inOwnerContext(async () => {
+      // Admission persistence stays synchronous until the event dispatcher has an
+      // acknowledged async persistence contract. Delivery never waits for SQLite
+      // on that thread: an accepted send is acknowledged by its worker owner.
+      const rows = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: {},
+      });
       for (const initial of rows) {
         if (stopped || initial.transportId !== options.transportId) continue;
-        let row = read(initial.id);
-        if (!row) continue;
+        // Settled lifecycle rows may intentionally wait for a final-result
+        // correlation. They have no publication obligation until noteResult.
+        if (!initial.pending.length && TERMINAL.has(initial.state)) continue;
+        let row = (
+          await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+            type: "deliveryQueue.lifecycleRead",
+            input: { id: initial.id },
+          })
+        )[0];
+        if (!row || stopped) continue;
         // Restart closes only projection liveness. No run is inferred complete
         // and no execution is re-admitted or resumed by delivery recovery.
         const currentOwner = getAgentRunContext(row.runId);
@@ -275,25 +312,52 @@ export function registerConversationLifecycleTransport(options: {
             currentOwner.sessionId !== row.sessionId) &&
           !TERMINAL.has(row.state)
         ) {
+          const expected = JSON.stringify(row);
           appendTransition(row, "unknown");
-          write(row);
+          const recovered = row;
+          await executeDeliveryQueueOperation(
+            stateContext,
+            options.stateDir,
+            {
+              type: "deliveryQueue.lifecycleRecover",
+              input: { id: row.id, expected, replacement: recovered },
+            },
+            {
+              createAdmission: () => ({
+                nativeLocations: [],
+                admission: createSqliteWorkerOperationAdmission((_, grant) => {
+                  if (stopped) throw new Error("Conversation lifecycle transport stopped");
+                  const owner = getAgentRunContext(recovered.runId);
+                  if (
+                    recovered.generation === getAgentRunLifecycleGeneration() &&
+                    owner?.sessionId === recovered.sessionId
+                  ) {
+                    throw new Error("Conversation lifecycle owner became current");
+                  }
+                  grant();
+                }),
+              }),
+            },
+          );
+          row = (
+            await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+              type: "deliveryQueue.lifecycleRead",
+              input: { id: initial.id },
+            })
+          )[0];
         }
         while (row?.pending.length && !stopped) {
           const event = row.pending[0]!;
           await options.publish(row.binding, event, `${row.id}:${event.revision}`);
           // A synchronous lifecycle transition can append while publish awaits;
           // reload its custody rather than overwriting the newer terminal fact.
-          row = read(initial.id);
-          if (!row) break;
-          row.pending = row.pending.filter((pending) => pending.revision > event.revision);
-          if (row.pending.length === 0 && TERMINAL.has(row.state) && row.resultEventId) {
-            completeDeliveryQueueEntry(QUEUE, row.id, options.stateDir);
-            break;
-          }
-          write(row);
+          row = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+            type: "deliveryQueue.lifecycleAck",
+            input: { id: initial.id, revision: event.revision },
+          });
         }
       }
-    })().finally(() => {
+    }).finally(() => {
       draining = undefined;
     });
     return draining;
@@ -329,26 +393,31 @@ export function registerConversationLifecycleTransport(options: {
       generation: string;
       bindingId: string;
       resultEventId: string;
-    }) => {
-      if (stopped || !result.resultEventId.startsWith("$") || result.resultEventId.length > 255)
-        return;
-      const row = read(identity(result.bindingId, result.runId, result.generation));
-      if (
-        !row ||
-        row.transportId !== options.transportId ||
-        row.resultEventId === result.resultEventId
-      )
-        return;
-      if (row.resultEventId) throw new Error("Conversation final result cannot change");
-      row.resultEventId = result.resultEventId;
-      // Terminal can precede visible delivery. Only an accepted final event
-      // proves a notification target; a preliminary answer never calls here.
-      if (TERMINAL.has(row.state)) appendTransition(row, row.state);
-      write(row);
-      queueMicrotask(() => {
-        void flush().catch(options.onError);
-      });
-    },
+    }) =>
+      runOpenClawStateWriteTransaction(
+        () => {
+          if (stopped || !result.resultEventId.startsWith("$") || result.resultEventId.length > 255)
+            return;
+          const row = read(identity(result.bindingId, result.runId, result.generation));
+          if (
+            !row ||
+            row.transportId !== options.transportId ||
+            row.resultEventId === result.resultEventId
+          )
+            return;
+          if (row.resultEventId) throw new Error("Conversation final result cannot change");
+          row.resultEventId = result.resultEventId;
+          // Terminal can precede visible delivery. Only an accepted final event
+          // proves a notification target; a preliminary answer never calls here.
+          if (TERMINAL.has(row.state)) appendTransition(row, row.state);
+          write(row);
+          queueMicrotask(() => {
+            void flush().catch(options.onError);
+          });
+        },
+        { env: resolveDeliveryQueueStateEnv(options.stateDir, stateContext) },
+        { operationLabel: "record conversation lifecycle result" },
+      ),
     resolveRun: (runId: string, sessionKey: string) => {
       const generation = getAgentRunLifecycleGeneration();
       const bindings = owners
