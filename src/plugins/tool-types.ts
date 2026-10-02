@@ -61,6 +61,8 @@ type OpenClawPluginToolContextBase = {
   delivery?: OpenClawPluginToolDelivery;
   /** Trusted platform-native conversation id for the active inbound turn. */
   nativeChannelId?: string;
+  /** Host-supplied platform-native message id for the active inbound turn, not tool arguments. */
+  currentMessageId?: string | number;
   /** Trusted sender id from inbound context (runtime-provided, not tool args). */
   requesterSenderId?: string;
   /** Trusted owner bit from inbound context (runtime-provided, not tool args). */
