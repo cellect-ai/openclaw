@@ -934,7 +934,6 @@ describe("handleSlackMessageAction", () => {
         },
       } as never,
       invoke: invoke as never,
-      includeReadThreadId: true,
     });
 
     expect(firstAction(invoke)).toMatchObject({
