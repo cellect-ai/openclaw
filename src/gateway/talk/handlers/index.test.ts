@@ -126,9 +126,9 @@ const mocks = vi.hoisted(() => ({
   ]),
   closeStaleClientVoiceSessions: vi.fn(async () => 0),
   createOrResumeClientVoiceSession: vi.fn(() => "voice-test"),
-  ensureClientVoiceAgentSessionEntry: vi.fn<typeof ensureClientVoiceAgentSessionEntry>(
-    async () => "session-main",
-  ),
+  ensureClientVoiceAgentSessionEntry: vi.fn<
+    typeof import("../../../talk/client-voice-session.js").ensureClientVoiceAgentSessionEntry
+  >(async () => "session-main"),
   resolveClientVoiceAgentSessionId: vi.fn<() => string | undefined>(() => "session-main"),
   assertClientVoiceSessionOpen: vi.fn(),
   registerClientVoiceConsultRun: vi.fn(),
