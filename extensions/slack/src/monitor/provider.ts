@@ -1,6 +1,7 @@
 import type { RequestListener } from "node:http";
 import { type FetchFunction, type WebClientOptions, WebClient } from "@slack/web-api";
 import { waitUntilAbort } from "openclaw/plugin-sdk/channel-outbound";
+import { registerChannelRuntimeContext } from "openclaw/plugin-sdk/channel-runtime-context";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { getRuntimeConfig } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
@@ -760,7 +761,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         try {
           await livenessStore?.register(livenessKey(), Date.now());
         } catch (error) {
-          runtime.log?.(`slack socket liveness mark failed: ${formatUnknownError(error)}`);
+          runtime.log?.(`slack socket liveness mark failed: ${formatSlackError(error)}`);
         }
       };
       if (livenessStore) {
@@ -795,7 +796,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
                   ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
                 }).catch((error) => {
                   runtime.error?.(
-                    `slack missed-mention recovery failed: ${formatUnknownError(error)}`,
+                    `slack missed-mention recovery failed: ${formatSlackError(error)}`,
                   );
                 });
               }

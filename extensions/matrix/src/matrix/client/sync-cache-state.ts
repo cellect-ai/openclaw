@@ -225,41 +225,6 @@ function isSyncCacheMeta(value: unknown): value is MatrixSyncCacheMeta {
   );
 }
 
-function isSyncCacheChunk(value: unknown): value is MatrixSyncCacheChunk {
-  return (
-    isRecord(value) &&
-    value.kind === "sync-chunk" &&
-    typeof value.index === "number" &&
-    Number.isSafeInteger(value.index) &&
-    value.index >= 0 &&
-    typeof value.data === "string"
-  );
-}
-
-function chunkSyncCacheJson(value: string): string[] {
-  const chunks: string[] = [];
-  const pushChunk = (chunk: string) => {
-    if (chunks.length >= SYNC_CACHE_MAX_CHUNKS) {
-      throw new Error("Matrix sync cache exceeds SQLite chunk limit");
-    }
-    chunks.push(chunk);
-  };
-  const encoded = Buffer.from(value, "utf8");
-  for (let offset = 0; offset < encoded.length;) {
-    let end = Math.min(offset + SYNC_CACHE_CHUNK_BYTES, encoded.length);
-    // Never start the next chunk on a UTF-8 continuation byte.
-    while (end < encoded.length && (encoded[end]! & 0xc0) === 0x80) {
-      end -= 1;
-    }
-    if (end <= offset) {
-      throw new Error("Matrix sync cache contains an invalid UTF-8 chunk boundary");
-    }
-    pushChunk(encoded.toString("utf8", offset, end));
-    offset = end;
-  }
-  return chunks;
-}
-
 function buildSyncCacheRows(
   stateKey: string,
   payload: PersistedMatrixSyncStore,
