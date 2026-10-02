@@ -122,3 +122,20 @@ describe("session delivery direct-session routing overrides", () => {
     ).toEqual({ channel: "telegram", to: "group:12345" });
   });
 });
+
+describe("Matrix continuation of a Slack-origin session", () => {
+  it("delivers this turn to Matrix instead of preserving Slack as the source", () => {
+    expect(
+      resolveSessionDeliveryRoute({
+        originatingChannelRaw: "matrix",
+        originatingToRaw: "room:!KTDOlPf7rAKomJqR8H:matrix.cellect.ai",
+        persistedLastChannel: "slack",
+        persistedLastTo: "channel:C0BJLAWS49H",
+        sessionKey: "agent:cellect-fi-admin:slack:channel:c0bjlaws49h:thread:1790712798.031899",
+      }),
+    ).toEqual({
+      channel: "matrix",
+      to: "room:!KTDOlPf7rAKomJqR8H:matrix.cellect.ai",
+    });
+  });
+});
