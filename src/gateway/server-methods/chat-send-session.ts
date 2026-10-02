@@ -41,7 +41,6 @@ import {
   resolveSessionModelRef,
 } from "../session-utils.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
-import { hasGatewayAdminScope } from "./chat-origin-routing.js";
 import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { hasGatewayAdminScope, resolveChatSendActiveScopeKey } from "./chat-origin-routing.js";
@@ -241,6 +240,11 @@ export function prepareChatSendSession(params: {
       return { ok: false as const, error: creationError };
     }
   }
+  const activeRunScopeKey = resolveChatSendActiveScopeKey({
+    sessionKey,
+    agentId: selectedAgent.agentId,
+    mainKey: cfg.session?.mainKey,
+  });
   const resolvedSessionModel = resolveSessionModelRef(cfg, entry, agentId);
   const resolvedSessionAuthProvider = resolveProviderIdForAuth(resolvedSessionModel.provider, {
     config: cfg,
@@ -275,6 +279,7 @@ export function prepareChatSendSession(params: {
       ...loadedValue,
       requestedSessionId,
       backingSessionId,
+      activeRunScopeKey,
       resolvedSessionModel,
       resolvedSessionAuthProvider,
       timeoutMs,

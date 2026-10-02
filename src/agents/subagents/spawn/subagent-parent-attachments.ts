@@ -17,7 +17,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { basenameFromAnyPath } from "@openclaw/media-core/file-name";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { safeFileURLToPath } from "../../../infra/local-file-access.js";
+import { safeFileURLToPath } from "@openclaw/fs-safe/advanced";
 import { isPathInside } from "../../../infra/path-guards.js";
 import { normalizeMediaFacts, type MediaFact } from "../../../media/media-facts.js";
 import { resolveMediaReferenceLocalPath } from "../../../media/media-reference.js";

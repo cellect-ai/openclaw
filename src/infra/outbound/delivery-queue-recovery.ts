@@ -111,9 +111,6 @@ const recoveryCoordinator = createDeliveryRecoveryCoordinator<QueuedDelivery>();
 const queuedDeliveryPayloads = (entry: QueuedDelivery) =>
   acceptedPreparedOutboundEntries(entry.preparedBatch).map((prepared) => prepared.payload);
 
-function queuedPayloadCount(entry: QueuedDelivery): number {
-  return entry.preparedBatch.sourcePayloadCount;
-}
 async function persistRecoveredPublicationReceipt(
   entry: QueuedDelivery,
   result: OutboundDeliveryResult,
