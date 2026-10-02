@@ -3,7 +3,8 @@
 // and never to a forwarded claim from an untrusted peer.
 import type { IncomingMessage } from "node:http";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildRateLimitIdentityKey, createAuthRateLimiter } from "./auth-rate-limit.js";
+import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
+import { buildRateLimitIdentityKey, createGatewayAuthRateLimiter } from "./auth-rate-limit.js";
 import { authorizeWsControlUiGatewayConnect } from "./auth.js";
 import { PROXY_ATTRIBUTION_REQUIRED_REASON } from "./ingress-attribution.js";
 
@@ -13,12 +14,15 @@ const CLIENT_B = "203.0.113.20";
 const SCOPE = "shared-secret";
 const auth = { mode: "token" as const, token: "secret", allowTailscale: false };
 
-const limiter = createAuthRateLimiter({
-  maxAttempts: 2,
-  windowMs: 60_000,
-  lockoutMs: 60_000,
-  pruneIntervalMs: 0,
-});
+const limiter = createGatewayAuthRateLimiter(
+  {
+    maxAttempts: 2,
+    windowMs: 60_000,
+    lockoutMs: 60_000,
+    pruneIntervalMs: 0,
+  },
+  { scheduler: createTestGatewayScheduler() },
+);
 
 afterEach(() => {
   for (const key of [PROXY, CLIENT_A, CLIENT_B]) {
