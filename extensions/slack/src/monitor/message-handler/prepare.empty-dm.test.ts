@@ -31,8 +31,8 @@ vi.mock("../media.runtime.js", async (importOriginal) => ({
   fetchWithRuntimeDispatcher: mediaFetchMock,
 }));
 
-vi.mock("../conversation.runtime.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../conversation.runtime.js")>()),
+vi.mock("openclaw/plugin-sdk/conversation-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/conversation-runtime")>()),
   upsertChannelPairingRequest: upsertChannelPairingRequestMock,
 }));
 
