@@ -182,7 +182,8 @@ describe("registered Matrix agent entitlement hooks", () => {
   });
   it("retains admission across an overflow attempt and fallback, but rechecks live grants", async () => {
     const hook = plugin();
-    fetchMock.mockResolvedValue(allow());
+    // Each HTTP authorization has its own consumable response body.
+    fetchMock.mockImplementation(async () => allow());
     await hook("before_agent_reply", {}, context());
     await hook("agent_end", { success: false, error: "context overflow" }, context());
     await hook(
