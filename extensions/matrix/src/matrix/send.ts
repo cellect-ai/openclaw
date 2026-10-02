@@ -245,6 +245,7 @@ export async function sendMessageMatrix(
             content,
             markdown: chunk,
             preparedBody: chunk === convertedText ? singleEventBody : undefined,
+            includeMentions: opts.includeMentions,
             tableMode,
           });
           prepareContent(content, "text");
