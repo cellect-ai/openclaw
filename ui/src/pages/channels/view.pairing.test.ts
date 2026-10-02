@@ -24,6 +24,8 @@ const request = {
   createdAt: "2026-07-20T10:00:00.000Z",
   lastSeenAt: "2026-07-20T10:05:00.000Z",
   expiresAt: "2026-07-20T11:00:00.000Z",
+  status: "pending",
+  stale: false,
   notifySupported: true,
 } as const;
 
@@ -42,7 +44,7 @@ function createProps(overrides: ChannelsViewTestOverrides = {}): ChannelsProps {
       ],
       requests: [request],
       commandOwnerConfigured: false,
-      limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+      limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
     },
     overrides,
   );
