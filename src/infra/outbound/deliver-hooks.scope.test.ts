@@ -31,7 +31,7 @@ describe("inbound reply hook scope", () => {
       { runId: "run-owned" },
     );
     await withPluginRuntimeGenerationScope(
-      { config, metadataSnapshot, pluginRegistry: modelRegistry },
+      { metadataSnapshot, pluginRegistry: modelRegistry },
       async () => {
         expect(await inboundStage({ text: "The answer" }, { kind: "block" })).toEqual({
           text: "The answer",
@@ -69,7 +69,7 @@ describe("inbound reply hook scope", () => {
       manifestRegistry: { plugins: [], diagnostics: [] },
     });
     const stage = withPluginRuntimeGenerationScope(
-      { config, metadataSnapshot, pluginRegistry: inbound },
+      { metadataSnapshot, pluginRegistry: inbound },
       () =>
         buildInboundReplyPayloadSendingBeforeDeliver(
           { Provider: "webchat", Surface: "webchat", SessionKey: "agent:fixture:device:owned" },
@@ -77,7 +77,7 @@ describe("inbound reply hook scope", () => {
         ),
     );
     await withPluginRuntimeGenerationScope(
-      { config, metadataSnapshot, pluginRegistry: model },
+      { metadataSnapshot, pluginRegistry: model },
       async () => {
         await stage({ text: "The answer" }, { kind: "final" });
       },
