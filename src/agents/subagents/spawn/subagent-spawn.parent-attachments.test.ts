@@ -120,9 +120,9 @@ describe("spawnSubagentDirect parent-turn attachments", () => {
       "Terra Legacy plumbing A.pdf",
       "Terra Legacy plumbing B.pdf",
     ]);
-    expect(refs[0]![1].startsWith(stateDir)).toBe(true);
-    expect(fs.readFileSync(refs[0]![1], "utf8")).toBe("%PDF-1.7 A");
-    expect(fs.readFileSync(refs[1]![1], "utf8")).toBe("%PDF-1.7 B");
+    expect(refs[0]![1]!.startsWith(stateDir)).toBe(true);
+    expect(fs.readFileSync(refs[0]![1]!, "utf8")).toBe("%PDF-1.7 A");
+    expect(fs.readFileSync(refs[1]![1]!, "utf8")).toBe("%PDF-1.7 B");
     expect(fs.existsSync(path.join(workspaceDir, ".openclaw", "attachments"))).toBe(false);
     expect(message).toContain("not forwarded: escape.pdf: not readable by the gateway");
   });
