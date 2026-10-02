@@ -762,7 +762,6 @@ describe("Matrix session projection", () => {
     for (const payload of [
       { text: "reasoning", isReasoning: true },
       { text: "commentary", isCommentary: true },
-      { text: "status", isStatusNotice: true },
       { text: "compaction", isCompactionNotice: true },
       { text: "fallback", isFallbackNotice: true },
     ]) {
@@ -795,6 +794,43 @@ describe("Matrix session projection", () => {
       "room:!room",
       "**OpenClaw · Assistant**\nThe completed answer.",
       expect.objectContaining({ deliveryPartIndex: 0, deliveryPartCount: 1 }),
+    );
+  });
+
+  it("mirrors a Slack status ack as an unmentioned room notice, not an assistant answer", async () => {
+    mocks.listBySession.mockReturnValue([projectionBinding]);
+    const context = { channelId: "slack", sessionKey, runId: "run-status" };
+    await handleMatrixSessionProjectionReplyPayloadSending(
+      {
+        kind: "block",
+        payload: { text: "Thinking level set to low.", isStatusNotice: true },
+        sessionKey,
+        runId: "run-status",
+      },
+      context,
+      cfg,
+    );
+    await handleMatrixSessionProjectionReplyPayloadSending(
+      { kind: "final", payload: { text: "Invoice is approved." }, sessionKey, runId: "run-status" },
+      context,
+      cfg,
+    );
+    expect(mocks.sendMessageMatrix).toHaveBeenCalledTimes(2);
+    expect(mocks.sendMessageMatrix).toHaveBeenNthCalledWith(
+      1,
+      "room:!room",
+      "Thinking level set to low.",
+      expect.objectContaining({
+        threadId: "$root",
+        includeMentions: false,
+        extraContent: { msgtype: "m.notice" },
+      }),
+    );
+    expect(mocks.sendMessageMatrix).toHaveBeenNthCalledWith(
+      2,
+      "room:!room",
+      "**Slack · Assistant**\nInvoice is approved.",
+      expect.not.objectContaining({ extraContent: { msgtype: "m.notice" } }),
     );
   });
 

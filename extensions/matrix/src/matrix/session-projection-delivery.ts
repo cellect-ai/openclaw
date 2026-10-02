@@ -102,6 +102,8 @@ async function projectToMatrix(params: {
   agentId?: string;
   publishedAtMs?: number;
   hostEvent?: unknown;
+  /** Slack `/think` and `/model` acks. Raw text, `m.notice`, not an assistant answer. */
+  statusNotice?: boolean;
 }): Promise<void> {
   const sourceChannel = normalizeChannel(params.sourceChannel);
   if (!sourceChannel || sourceChannel === "matrix") {
@@ -193,17 +195,21 @@ async function projectToMatrix(params: {
       try {
         await sendMessageMatrix(
           `room:${roomId}`,
-          projectionText({
-            channel: sourceChannel,
-            role: params.role,
-            text,
-            // Native chat's gateway client id identifies transport software,
-            // not the human author. Keep it in trusted origin metadata while
-            // presenting the portable user role on Matrix.
-            senderId:
-              sourceChannel === "webchat" && params.role === "user" ? undefined : params.senderId,
-            agentId: params.agentId,
-          }),
+          params.statusNotice
+            ? text
+            : projectionText({
+                channel: sourceChannel,
+                role: params.role,
+                text,
+                // Native chat's gateway client id identifies transport software,
+                // not the human author. Keep it in trusted origin metadata while
+                // presenting the portable user role on Matrix.
+                senderId:
+                  sourceChannel === "webchat" && params.role === "user"
+                    ? undefined
+                    : params.senderId,
+                agentId: params.agentId,
+              }),
           {
             cfg: params.cfg,
             accountId: binding.conversation.accountId,
@@ -214,6 +220,9 @@ async function projectToMatrix(params: {
             deliveryPartIndex: 0,
             deliveryPartCount: 1,
             publication,
+            ...(params.statusNotice
+              ? { includeMentions: false, extraContent: { msgtype: "m.notice" } }
+              : {}),
           },
         );
         bindingService.touch(binding.bindingId);
@@ -277,6 +286,14 @@ export async function handleMatrixSessionProjectionMessageReceived(
   });
 }
 
+function isStatusNoticeReply(event: ReplyPayloadSendingEvent): boolean {
+  return (
+    (event.kind === "block" || event.kind === "final") &&
+    Boolean(clean(event.payload.text)) &&
+    event.payload.isStatusNotice === true
+  );
+}
+
 function isVisibleAnswerReply(event: ReplyPayloadSendingEvent): boolean {
   const text = clean(event.payload.text);
   return (
@@ -298,6 +315,23 @@ export async function handleMatrixSessionProjectionReplyPayloadSending(
   _context: MessageHookContext,
   cfg: CoreConfig,
 ): Promise<void> {
+  if (isStatusNoticeReply(event)) {
+    const publication = resolveReplyPublication(event);
+    if (!publication) {
+      return;
+    }
+    await projectToMatrix({
+      cfg,
+      sessionKey: publication.sessionKey ?? "",
+      sourceChannel: publication.channel ?? "",
+      role: "assistant",
+      text: clean(event.payload.text),
+      runId: publication.runId,
+      hostEvent: event,
+      statusNotice: true,
+    });
+    return;
+  }
   if (!isVisibleAnswerReply(event)) {
     return;
   }
