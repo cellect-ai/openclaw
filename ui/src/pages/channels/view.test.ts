@@ -19,7 +19,7 @@ function createProps(snapshot: ChannelsProps["channels"]["channelsSnapshot"]): C
     accounts: [],
     requests: [],
     commandOwnerConfigured: true,
-    limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+    limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
   });
 }
 
