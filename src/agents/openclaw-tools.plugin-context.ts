@@ -37,6 +37,7 @@ export type OpenClawPluginToolOptions = {
   currentChannelId?: string;
   agentThreadId?: string | number;
   nativeChannelId?: string;
+  currentMessageId?: string | number;
   /** Opaque host-issued capability for current-turn channel message actions. */
   messageActionTurnCapability?: string;
   agentDir?: string;
@@ -133,6 +134,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentAccountId: options?.agentAccountId,
       deliveryContext,
       nativeChannelId: options?.nativeChannelId,
+      currentMessageId: options?.currentMessageId,
       requesterSenderId: options?.requesterSenderId ?? undefined,
       senderIsOwner: options?.senderIsOwner,
       memoryAudience: options?.memoryAudience,

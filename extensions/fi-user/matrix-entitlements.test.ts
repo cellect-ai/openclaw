@@ -1,10 +1,16 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type {
+  OpenClawPluginApi,
+  PluginAgentEventSubscriptionRegistration,
+  PluginRuntimeLifecycleRegistration,
+} from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fiUserPlugin from "./index.js";
 
 function plugin(configOverrides: Record<string, unknown> = {}) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
+  const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
+  const lifecycles: PluginRuntimeLifecycleRegistration[] = [];
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -30,9 +36,21 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
         channel: { runtimeContexts: { register: vi.fn() } },
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
+      registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
+      registerRuntimeLifecycle: (lifecycle) => lifecycles.push(lifecycle),
     }),
   );
   return async (name: string, event: unknown, context: unknown) => {
+    if (name === "settled") {
+      for (const subscription of subscriptions) {
+        await subscription.handle(event as never, {} as never);
+      }
+    }
+    if (name === "dispose") {
+      for (const lifecycle of lifecycles) {
+        await lifecycle.dispose?.();
+      }
+    }
     for (const hook of hooks.get(name) ?? []) {
       const result = await hook(event as never, context as never);
       if (result) {
@@ -150,9 +168,103 @@ describe("registered Matrix agent entitlement hooks", () => {
       await hook("before_tool_call", { toolName: "exec", params: { command: "change" } }, tools()),
     ).toMatchObject({ block: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    await hook("agent_end", {}, context());
+    await hook(
+      "settled",
+      {
+        runId: "run-1",
+        stream: "lifecycle",
+        data: { phase: "end", executionSettled: true },
+      },
+      context(),
+    );
     expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+  it("retains admission across an overflow attempt and fallback, but rechecks live grants", async () => {
+    const hook = plugin();
+    fetchMock.mockResolvedValue(allow());
+    await hook("before_agent_reply", {}, context());
+    await hook("agent_end", { success: false, error: "context overflow" }, context());
+    await hook(
+      "settled",
+      {
+        runId: "run-1",
+        stream: "lifecycle",
+        data: { phase: "finishing", error: "context overflow" },
+      },
+      context(),
+    );
+    expect(await hook("before_tool_call", {}, tools())).toBeUndefined();
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(fetchMock.mock.calls[1]?.[1].body).toBe(fetchMock.mock.calls[0]?.[1].body);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 403 }));
+    await hook("agent_end", { success: false, error: "model fallback" }, context());
+    expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    await hook(
+      "settled",
+      {
+        runId: "run-1",
+        stream: "lifecycle",
+        data: { phase: "error", executionSettled: true },
+      },
+      context(),
+    );
+    expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+  it.each(["settled", "dispose"])(
+    "rejects an awaited grant result after %s retires admission",
+    async (retirement) => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(allow());
+      await hook("before_agent_reply", {}, context());
+      let resolve!: (response: Response) => void;
+      fetchMock.mockImplementationOnce(
+        () =>
+          new Promise<Response>((done) => {
+            resolve = done;
+          }),
+      );
+      const pending = hook("before_tool_call", {}, tools());
+      await hook(
+        retirement,
+        {
+          runId: "run-1",
+          stream: "lifecycle",
+          data: { phase: "end", executionSettled: true },
+        },
+        context(),
+      );
+      resolve(allow());
+      expect(await pending).toMatchObject({ block: true });
+      expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    },
+  );
+  it("does not publish admission after its outer run settles during the initial grant check", async () => {
+    const hook = plugin();
+    let resolve!: (response: Response) => void;
+    fetchMock.mockImplementationOnce(
+      () =>
+        new Promise<Response>((done) => {
+          resolve = done;
+        }),
+    );
+    const pending = hook("before_agent_reply", {}, context());
+    await hook(
+      "settled",
+      {
+        runId: "run-1",
+        stream: "lifecycle",
+        data: { phase: "error", executionSettled: true },
+      },
+      context(),
+    );
+    resolve(allow());
+    expect(await pending).toMatchObject({ handled: true });
+    expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
   it.each([403, 503])("returns a visible refusal for HTTP %s", async (status) => {
     fetchMock.mockResolvedValue(new Response(null, { status }));
