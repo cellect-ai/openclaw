@@ -573,6 +573,7 @@ describe("OpenAI realtime voice bridge events", () => {
     });
     emitServerEvent(socket, {
       type: "response.output_audio_transcript.done",
+      item_id: "item_1",
       transcript: "hello from current realtime events",
     });
 
@@ -581,6 +582,10 @@ describe("OpenAI realtime voice bridge events", () => {
       "assistant",
       "hello from current realtime events",
       true,
+      {
+        itemId: "item_1",
+        textMode: "snapshot",
+      },
     );
   });
 
@@ -613,11 +618,20 @@ describe("OpenAI realtime voice bridge events", () => {
     const socket = await connectReadyBridge(bridge);
 
     emitServerEvent(socket, { type: "response.text.delta", delta: "draft assistant" });
-    emitServerEvent(socket, { type: "response.text.done", text: "corrected assistant" });
+    emitServerEvent(socket, {
+      type: "response.text.done",
+      item_id: "item_assistant",
+      text: "corrected assistant",
+    });
 
     expect(onTranscript.mock.calls).toEqual([
       ["assistant", "draft assistant", false],
-      ["assistant", "corrected assistant", true],
+      [
+        "assistant",
+        "corrected assistant",
+        true,
+        { itemId: "item_assistant", textMode: "snapshot" },
+      ],
     ]);
   });
 
@@ -699,6 +713,7 @@ describe("OpenAI realtime voice bridge events", () => {
     });
     emitServerEvent(socket, {
       type: "response.output_text.done",
+      item_id: "item_final",
       text: "final assistant text",
     });
 
@@ -707,7 +722,10 @@ describe("OpenAI realtime voice bridge events", () => {
       textMode: "delta",
     });
     expect(onTranscript).toHaveBeenCalledWith("assistant", "partial assistant", false);
-    expect(onTranscript).toHaveBeenCalledWith("assistant", "final assistant text", true);
+    expect(onTranscript).toHaveBeenCalledWith("assistant", "final assistant text", true, {
+      itemId: "item_final",
+      textMode: "snapshot",
+    });
   });
 
   it("does not send duplicate response.cancel while cancellation is pending", async () => {

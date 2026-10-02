@@ -135,7 +135,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       case "response.text.done":
       case "response.output_text.done":
       case "response.output_audio_transcript.done":
-        this.flushAssistantTranscript(event.transcript ?? event.text);
+        this.flushAssistantTranscript(event.transcript ?? event.text, event.item_id);
         return;
       case "conversation.item.input_audio_transcription.delta":
         if (event.delta) {
@@ -152,7 +152,12 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         const transcript = event.transcript ?? this.inputTranscriptReplacements.get(key);
         this.inputTranscriptReplacements.delete(key);
         if (transcript) {
-          this.config.onTranscript?.("user", transcript, true);
+          this.config.onTranscript?.(
+            "user",
+            transcript,
+            true,
+            ...(event.item_id ? [{ itemId: event.item_id, textMode: "snapshot" as const }] : []),
+          );
         }
         return;
       }
@@ -216,8 +221,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
             if (!this.acceptsEvent(connection)) {
               return;
             }
-            const terminalTranscript = output
-              .filter((item) => item.type === "message" && item.role === "assistant")
+            const assistantMessages = output.filter(
+              (item) => item.type === "message" && item.role === "assistant",
+            );
+            const terminalTranscript = assistantMessages
               .flatMap((item) => (Array.isArray(item.content) ? item.content.filter(isRecord) : []))
               .map((content) =>
                 typeof content.transcript === "string"
@@ -227,7 +234,10 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
                     : "",
               )
               .join("");
-            this.flushAssistantTranscript(terminalTranscript);
+            const terminalItemId = assistantMessages.find(
+              (item) => typeof item.id === "string" && item.id.length > 0,
+            )?.id;
+            this.flushAssistantTranscript(terminalTranscript, terminalItemId);
           });
           invoke(() => this.config.onResponseDone?.(outcome));
           invoke(emitBridgeEvent);
@@ -336,13 +346,18 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     this.config.onTranscript?.("assistant", delta, false);
   }
 
-  private flushAssistantTranscript(finalTranscript?: string): void {
+  private flushAssistantTranscript(finalTranscript?: string, itemId?: string): void {
     if (this.assistantTranscriptFinalized) {
       return;
     }
     const transcript = finalTranscript || this.assistantTranscriptBuffer;
     if (transcript) {
-      this.config.onTranscript?.("assistant", transcript, true);
+      this.config.onTranscript?.(
+        "assistant",
+        transcript,
+        true,
+        ...(itemId ? [{ itemId, textMode: "snapshot" as const }] : []),
+      );
       this.assistantTranscriptFinalized = true;
     }
     this.assistantTranscriptBuffer = "";

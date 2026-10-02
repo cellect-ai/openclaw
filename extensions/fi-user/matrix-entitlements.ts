@@ -24,6 +24,28 @@ function sessionThreadId(sessionKey: string): string | undefined {
   return id.length > 0 ? id : undefined;
 }
 
+/**
+ * Talk consults keep the Matrix room on channel context, while the hook chat id
+ * can still be the session raw id (`!room:server:thread:$root`). That raw id is
+ * the same room only when its thread suffix is the attested Talk root.
+ */
+function hostChatMatchesRoom(chatId: unknown, roomId: string, threadRoot: unknown): boolean {
+  if (typeof chatId !== "string" || chatId.length === 0) {
+    return false;
+  }
+  if (chatId === roomId) {
+    return true;
+  }
+  if (typeof threadRoot !== "string" || !threadRoot.startsWith("$")) {
+    return false;
+  }
+  const marker = ":thread:";
+  const at = chatId.lastIndexOf(marker);
+  return (
+    at > 0 && chatId.slice(0, at) === roomId && chatId.slice(at + marker.length) === threadRoot
+  );
+}
+
 function logEntitlements(fields: Record<string, unknown>, mismatch?: string): void {
   const line = {
     evt: "threads.agent_entitlements",
@@ -113,6 +135,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
       const senderId = context.channelContext?.sender?.id;
       const threadId = sessionThreadId(context.sessionKey ?? "");
+      const chatMatches =
+        typeof roomId === "string" &&
+        hostChatMatchesRoom(context.chatId, roomId, talkThreadRootEventId);
+      const senderMatches = typeof senderId === "string" && context.senderId === senderId;
       if (
         !context.runId ||
         !context.agentId ||
@@ -122,8 +148,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         !roomId.startsWith("!") ||
         typeof senderId !== "string" ||
         !senderId.startsWith("@") ||
-        context.chatId !== roomId ||
-        context.senderId !== senderId
+        !chatMatches ||
+        !senderMatches
       ) {
         logEntitlements(
           {
@@ -137,6 +163,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
             threadRootEventId:
               typeof talkThreadRootEventId === "string" ? talkThreadRootEventId : null,
             sessionThreadId: threadId ?? null,
+            hasRunId: Boolean(context.runId),
+            hasSessionKey: Boolean(context.sessionKey),
+            chatMatches,
+            senderMatches,
           },
           "incomplete_host_context",
         );

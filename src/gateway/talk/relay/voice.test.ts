@@ -102,10 +102,10 @@ describe("realtime relay voice transcript persistence", () => {
     );
   });
 
-  it("edits one Matrix message when a later final revises the same utterance", async () => {
-    projectionMocks.deliverOutboundPayloads.mockResolvedValue([
-      { channel: "matrix", messageId: "$spoken" },
-    ]);
+  it("sends a new threaded message when a later final revises the same utterance", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$spoken" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$revised" }]);
     const { session } = createRelaySession();
     session.matrixRoute = {
       channel: "matrix",
@@ -130,14 +130,25 @@ describe("realtime relay voice transcript persistence", () => {
 
     expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledTimes(2);
     const first = projectionMocks.deliverOutboundPayloads.mock.calls[0]?.[0] as {
-      payloads: Array<{ channelData?: { matrix?: { editEventId?: string } } }>;
+      deliveryIntentId?: string;
+      payloads: Array<{
+        channelData?: { matrix?: { editEventId?: string; supersedeEventId?: string } };
+      }>;
     };
     const second = projectionMocks.deliverOutboundPayloads.mock.calls[1]?.[0] as {
-      payloads: Array<{ channelData?: { matrix?: { editEventId?: string } }; text?: string }>;
+      deliveryIntentId?: string;
+      payloads: Array<{
+        channelData?: { matrix?: { editEventId?: string; supersedeEventId?: string } };
+        text?: string;
+      }>;
     };
     expect(first.payloads[0]?.channelData?.matrix?.editEventId).toBeUndefined();
-    expect(second.payloads[0]?.channelData?.matrix?.editEventId).toBe("$spoken");
+    expect(first.payloads[0]?.channelData?.matrix?.supersedeEventId).toBeUndefined();
+    expect(first.deliveryIntentId).toBe("voice:relay-voice-bounded:item:item-1");
+    expect(second.payloads[0]?.channelData?.matrix?.editEventId).toBeUndefined();
+    expect(second.payloads[0]?.channelData?.matrix?.supersedeEventId).toBe("$spoken");
     expect(second.payloads[0]?.text).toBe("How long is a typical");
+    expect(second.deliveryIntentId).toBe("voice:relay-voice-bounded:item:item-1:2");
   });
 
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {

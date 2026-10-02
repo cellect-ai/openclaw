@@ -46,7 +46,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
   utteranceKey: string;
   projectionId: string;
   deliveryIntentId: string;
-  editEventId?: string;
+  supersedeEventId?: string;
 }): Promise<OutboundDeliveryResult[]> {
   const cfg = params.session.voiceConfig ?? params.session.context.getRuntimeConfig();
   const stored = extractDeliveryInfo(params.sessionKey, { cfg });
@@ -63,7 +63,10 @@ async function projectRelayTranscriptToOwningMatrix(params: {
     return [];
   }
   const projectionId = params.projectionId;
-  const editEventId = params.editEventId;
+  // Fi loads a thread only through /relations/{root}/m.thread. An m.replace edit
+  // drops that relation, so a revision has to be a new threaded message. The
+  // previous event is redacted after the replacement is accepted.
+  const supersedeEventId = params.supersedeEventId;
   const results = await deliverOutboundPayloads({
     cfg,
     channel: "matrix",
@@ -75,7 +78,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
         text: params.text,
         channelData: {
           matrix: {
-            ...(editEventId ? { editEventId } : {}),
+            ...(supersedeEventId ? { supersedeEventId } : {}),
             extraContent: {
               "com.openclaw.voice_transcript": {
                 version: 1,
@@ -94,23 +97,14 @@ async function projectRelayTranscriptToOwningMatrix(params: {
     deliveryIntentId: params.deliveryIntentId,
     queuePolicy: "required",
   });
-  if (!editEventId) {
-    const messageId = results.find(
-      (result) => result.messageId && result.messageId !== "unknown",
-    )?.messageId;
-    params.session.voiceUtterance = {
-      role: params.role,
-      key: params.utteranceKey,
-      text: params.text,
-      ...(messageId ? { eventId: messageId } : {}),
-    };
-    return results;
-  }
+  const messageId = results.find(
+    (result) => result.messageId && result.messageId !== "unknown",
+  )?.messageId;
   params.session.voiceUtterance = {
     role: params.role,
     key: params.utteranceKey,
     text: params.text,
-    eventId: editEventId,
+    ...(messageId ? { eventId: messageId } : {}),
   };
   return results;
 }
@@ -188,10 +182,10 @@ export function enqueueRelayVoiceTranscript(
             open?.role === role &&
             ((itemKey !== undefined && open.key === itemKey) ||
               sameSpokenUtterance(open.text, normalizedText));
-          const editEventId = revises ? open?.eventId : undefined;
+          const supersedeEventId = revises ? open?.eventId : undefined;
           const utteranceKey = revises && open ? open.key : (itemKey ?? entryId);
           const projectionId = `voice:${session.id}:${utteranceKey}`;
-          if (!(editEventId && open?.text === normalizedText)) {
+          if (!(supersedeEventId && open?.text === normalizedText)) {
             await projectRelayTranscriptToOwningMatrix({
               session,
               sessionKey,
@@ -200,8 +194,9 @@ export function enqueueRelayVoiceTranscript(
               text: normalizedText,
               utteranceKey,
               projectionId,
-              deliveryIntentId: editEventId ? `${projectionId}:${entryId}` : projectionId,
-              ...(editEventId ? { editEventId } : {}),
+              // A stable intent refuses a second send, so a revision needs its own.
+              deliveryIntentId: supersedeEventId ? `${projectionId}:${entryId}` : projectionId,
+              ...(supersedeEventId ? { supersedeEventId } : {}),
             });
           }
           return;

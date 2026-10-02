@@ -682,6 +682,31 @@ export async function editMessageMatrix(
   );
 }
 
+export async function redactMessageMatrix(
+  roomId: string,
+  eventId: string,
+  opts: {
+    client?: MatrixClient;
+    cfg: CoreConfig;
+    accountId?: string;
+    timeoutMs?: number;
+    reason?: string;
+  },
+): Promise<string> {
+  return await withResolvedMatrixSendClient(
+    {
+      client: opts.client,
+      cfg: opts.cfg,
+      accountId: opts.accountId,
+      timeoutMs: opts.timeoutMs,
+    },
+    async (client) => {
+      const resolvedRoom = await resolveMatrixRoomId(client, roomId);
+      return await client.redactEvent(resolvedRoom, eventId, opts.reason);
+    },
+  );
+}
+
 export async function reactMatrixMessage(
   roomId: string,
   messageId: string,
