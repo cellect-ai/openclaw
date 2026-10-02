@@ -13,6 +13,11 @@ import {
   isMcpOAuthWorkerCommand,
   executeMcpOAuthWorkerCommand,
 } from "../agents/mcp-oauth-store.worker.js";
+import {
+  updateSandboxContainerRegistryInDatabase,
+  updateSandboxBrowserRegistryInDatabase,
+  removeSandboxRegistryEntryInDatabase,
+} from "../agents/sandbox/registry.kernel.js";
 import { writeSubagentRunValuesInDatabase } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import * as worktreeRegistry from "../agents/worktrees/registry-read.kernel.js";
 import { listAuditEventsInDatabase } from "../audit/audit-event-read.kernel.js";
@@ -421,6 +426,25 @@ export function executeSharedStateCommand(
       : read(open().db);
   }
   const database = open();
+  if (
+    command.type === "sandboxRegistry.updateContainer" ||
+    command.type === "sandboxRegistry.updateBrowser" ||
+    command.type === "sandboxRegistry.remove"
+  ) {
+    return runOpenClawStateWriteTransaction(
+      ({ db }) => {
+        if (command.type === "sandboxRegistry.updateContainer") {
+          return updateSandboxContainerRegistryInDatabase(db, command.input);
+        }
+        if (command.type === "sandboxRegistry.updateBrowser") {
+          return updateSandboxBrowserRegistryInDatabase(db, command.input);
+        }
+        return removeSandboxRegistryEntryInDatabase(db, command.input);
+      },
+      { database, path: context.databasePath, env: getSqliteWorkerStateContext().environment },
+      { operationLabel: command.type },
+    );
+  }
   if (command.type === "githubRepository.personalPending") {
     return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
   }

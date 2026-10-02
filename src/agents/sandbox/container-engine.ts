@@ -55,6 +55,24 @@ function missingContainerEngineMessage(engine: SandboxContainerEngine): string {
   return 'Sandbox mode requires Podman, but the "podman" command was not found in PATH. Install Podman (and ensure "podman" is available), choose another sandbox backend, or set `agents.defaults.sandbox.mode=off` to disable sandboxing.';
 }
 
+function containerCommandAbort(
+  engine: SandboxContainerEngine,
+  operation: string | undefined,
+  signal?: AbortSignal,
+): Error {
+  const reason: unknown = signal?.reason;
+  if (reason instanceof Error && reason.name === "TimeoutError") {
+    // Only report the verb: remaining arguments can contain mounted secrets.
+    return Object.assign(
+      new Error(`${engine.displayName} sandbox ${operation ?? "command"} timed out`, {
+        cause: reason,
+      }),
+      { name: "SandboxCommandTimeoutError", code: "SANDBOX_COMMAND_TIMEOUT" },
+    );
+  }
+  return createAbortError("Aborted");
+}
+
 export async function execContainerRaw(
   engine: SandboxContainerEngine,
   args: string[],
@@ -72,7 +90,7 @@ export async function execContainerRaw(
     });
   } catch (error) {
     if (opts?.signal?.aborted) {
-      throw createAbortError("Aborted");
+      throw containerCommandAbort(engine, args[0], opts.signal);
     }
     if ((error as NodeJS.ErrnoException).code === "ENOENT") {
       throw Object.assign(new Error(missingContainerEngineMessage(engine)), {
@@ -83,7 +101,7 @@ export async function execContainerRaw(
     throw error;
   }
   if (opts?.signal?.aborted || result.isCanceled) {
-    throw createAbortError("Aborted");
+    throw containerCommandAbort(engine, args[0], opts?.signal);
   }
   if (result.failed && !isPlainCommandExitFailure(result)) {
     if (result.code === "ENOENT") {

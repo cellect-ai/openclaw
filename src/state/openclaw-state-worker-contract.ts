@@ -2,6 +2,10 @@ import type { AuthProfileRowRead, UserModelAuthProfile } from "../agents/auth-pr
 import type { NativeHookRelayStoreWorkerOperations } from "../agents/harness/native-hook-relay-store.worker-contract.js";
 import type { McpOAuthReadOperations } from "../agents/mcp-oauth-store.kernel.js";
 import type { McpOAuthWriteOperations } from "../agents/mcp-oauth-store.types.js";
+import type {
+  SandboxRegistryEntry,
+  SandboxBrowserRegistryEntry,
+} from "../agents/sandbox/registry.types.js";
 import type { SubagentRegistryWrite } from "../agents/subagents/registry/subagent-registry.store.kernel.js";
 import type { ManagedWorktreeRecord } from "../agents/worktrees/types.js";
 import type { AuditEventListQuery, AuditEventListPage } from "../audit/audit-event-types.js";
@@ -117,6 +121,12 @@ export type OpenClawStateWorkerOperations = McpOAuthReadOperations &
   TaskRegistryWorkerOperations &
   SkillUploadWorkerOperations &
   OpenClawStateLeaseLifecycleOperations & {
+    "sandboxRegistry.updateContainer": { input: SandboxRegistryEntry; output: void };
+    "sandboxRegistry.updateBrowser": { input: SandboxBrowserRegistryEntry; output: void };
+    "sandboxRegistry.remove": {
+      input: { kind: "container" | "browser"; containerName: string };
+      output: void;
+    };
     "deviceIdentity.read": { input: { identityKey: string }; output: DeviceIdentity | null };
     "deviceIdentity.load": { input: { identityKey: string }; output: DeviceIdentity };
     "updateRuns.reconcileInterrupted": {

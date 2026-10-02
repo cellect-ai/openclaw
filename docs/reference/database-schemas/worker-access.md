@@ -34,6 +34,13 @@ asynchronous planning first, then reread authoritative rows inside the admitted
 transaction. Preserve FIFO order, coordinator custody, transaction/commit grants,
 and settlement of accepted write-capable work.
 
+Sandbox container and browser registry updates and removals use this shared-state
+writer. Provisioning awaits their commits without blocking the Gateway thread,
+so database coordination cannot consume the readiness probes' deadlines on that
+thread. Row codecs, immutable allocation facts, ordering, and update behavior are
+unchanged. Synchronous generation reservation and retirement primitives retain
+their existing owners.
+
 Worker authority requests wait for the retained host owner's grant or refusal;
 host scheduling delays do not expire that authority. The host still checks current
 authority before granting, and broker failure joins worker exit before releasing

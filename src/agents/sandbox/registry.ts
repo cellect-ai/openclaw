@@ -5,7 +5,6 @@
  */
 import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
-import type { Insertable, Updateable } from "kysely";
 import { withFileLock } from "../../infra/file-lock.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../../infra/kysely-sync.js";
 import {
@@ -16,11 +15,17 @@ import { tableExists } from "../../state/openclaw-state-db-schema-helpers.js";
 import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
+import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
+import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import {
   readSandboxRegistryEntryInDatabase,
   readSandboxRegistryRowInDatabase,
   rowToBrowserEntry,
   rowToContainerEntry,
+  containerEntryToRow,
+  browserEntryToRow,
+  insertRegistryRow,
+  type SandboxRegistryInsert,
 } from "./registry.kernel.js";
 import type {
   SandboxBrowserRegistry,
@@ -32,78 +37,10 @@ import type {
 export type { SandboxRegistryEntry, SandboxBrowserRegistryEntry } from "./registry.types.js";
 
 type SandboxRegistryKind = "container" | "browser";
-type SandboxRegistryTable = OpenClawStateKyselyDatabase["sandbox_registry_entries"];
 type SandboxRegistryDatabase = Pick<OpenClawStateKyselyDatabase, "sandbox_registry_entries">;
-type SandboxRegistryInsert = Insertable<SandboxRegistryTable>;
-type SandboxRegistryUpdate = Updateable<SandboxRegistryTable>;
 
 function getSandboxRegistryKysely(db: import("node:sqlite").DatabaseSync) {
   return getNodeSqliteKysely<SandboxRegistryDatabase>(db);
-}
-
-function containerEntryToRow(entry: SandboxRegistryEntry, existing?: SandboxRegistryEntry | null) {
-  const next: SandboxRegistryEntry = {
-    ...entry,
-    backendId: entry.backendId ?? existing?.backendId,
-    backendTarget: entry.backendTarget ?? existing?.backendTarget,
-    runtimeLabel: entry.runtimeLabel ?? existing?.runtimeLabel,
-    createdAtMs: existing?.createdAtMs ?? entry.createdAtMs,
-    image: existing?.image ?? entry.image,
-    configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
-    configHash: entry.configHash ?? existing?.configHash,
-    runtimeState: entry.runtimeState ?? existing?.runtimeState,
-    workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
-  };
-  return {
-    registry_kind: "container",
-    container_name: next.containerName,
-    session_key: next.sessionKey,
-    backend_id: next.backendId ?? null,
-    runtime_label: next.runtimeLabel ?? null,
-    image: next.image,
-    created_at_ms: next.createdAtMs,
-    last_used_at_ms: next.lastUsedAtMs,
-    config_label_kind: next.configLabelKind ?? null,
-    config_hash: next.configHash ?? null,
-    cdp_port: null,
-    no_vnc_port: null,
-    entry_json: JSON.stringify(next),
-    updated_at: Date.now(),
-  } satisfies SandboxRegistryInsert;
-}
-
-function browserEntryToRow(
-  entry: SandboxBrowserRegistryEntry,
-  existing?: SandboxBrowserRegistryEntry | null,
-) {
-  const next: SandboxBrowserRegistryEntry = {
-    ...entry,
-    createdAtMs: existing?.createdAtMs ?? entry.createdAtMs,
-    image: existing?.image ?? entry.image,
-    configHash: entry.configHash ?? existing?.configHash,
-    workspaceDir: entry.workspaceDir ?? existing?.workspaceDir,
-  };
-  return {
-    registry_kind: "browser",
-    container_name: next.containerName,
-    session_key: next.sessionKey,
-    backend_id: null,
-    runtime_label: null,
-    image: next.image,
-    created_at_ms: next.createdAtMs,
-    last_used_at_ms: next.lastUsedAtMs,
-    config_label_kind: null,
-    config_hash: next.configHash ?? null,
-    cdp_port: next.cdpPort,
-    no_vnc_port: next.noVncPort ?? null,
-    entry_json: JSON.stringify(next),
-    updated_at: Date.now(),
-  } satisfies SandboxRegistryInsert;
-}
-
-function rowToUpdate(row: SandboxRegistryInsert): SandboxRegistryUpdate {
-  const { registry_kind: _registryKind, container_name: _containerName, ...update } = row;
-  return update;
 }
 
 function insertRegistryRowIfMissing(row: SandboxRegistryInsert): void {
@@ -117,35 +54,6 @@ function insertRegistryRowIfMissing(row: SandboxRegistryInsert): void {
         .onConflict((conflict) =>
           conflict.columns(["registry_kind", "container_name"]).doNothing(),
         ),
-    );
-  });
-}
-
-function insertRegistryRow(
-  db: import("node:sqlite").DatabaseSync,
-  row: SandboxRegistryInsert,
-): void {
-  const stateDb = getSandboxRegistryKysely(db);
-  executeSqliteQuerySync(
-    db,
-    stateDb
-      .insertInto("sandbox_registry_entries")
-      .values(row)
-      .onConflict((conflict) =>
-        conflict.columns(["registry_kind", "container_name"]).doUpdateSet(rowToUpdate(row)),
-      ),
-  );
-}
-
-function removeRegistryRow(kind: SandboxRegistryKind, containerName: string): void {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    const stateDb = getSandboxRegistryKysely(db);
-    executeSqliteQuerySync(
-      db,
-      stateDb
-        .deleteFrom("sandbox_registry_entries")
-        .where("registry_kind", "=", kind)
-        .where("container_name", "=", containerName),
     );
   });
 }
@@ -204,16 +112,18 @@ export function insertSandboxRegistryEntryIfMissing(entry: SandboxRegistryEntry)
 
 /** Creates or updates one sandbox runtime registry entry, preserving immutable creation fields. */
 export async function updateRegistry(entry: SandboxRegistryEntry) {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    const existingRow = readSandboxRegistryRowInDatabase(db, "container", entry.containerName);
-    const existing = existingRow ? rowToContainerEntry(existingRow) : null;
-    insertRegistryRow(db, containerEntryToRow(entry, existing));
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.updateContainer",
+    input: entry,
   });
 }
 
 /** Removes one sandbox runtime registry entry by container name. */
 export async function removeRegistryEntry(containerName: string) {
-  removeRegistryRow("container", containerName);
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.remove",
+    input: { kind: "container", containerName },
+  });
 }
 
 /** Atomically select one generation for a backend/scope before provider allocation. */
@@ -434,10 +344,9 @@ export function insertSandboxBrowserRegistryEntryIfMissing(
 
 /** Creates or updates one browser sandbox registry entry, preserving immutable creation fields. */
 export async function updateBrowserRegistry(entry: SandboxBrowserRegistryEntry) {
-  runOpenClawStateWriteTransaction(({ db }) => {
-    const existingRow = readSandboxRegistryRowInDatabase(db, "browser", entry.containerName);
-    const existing = existingRow ? rowToBrowserEntry(existingRow) : null;
-    insertRegistryRow(db, browserEntryToRow(entry, existing));
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.updateBrowser",
+    input: entry,
   });
 }
 
@@ -477,5 +386,8 @@ export function removeSandboxRegistryGeneration(
 
 /** Removes one browser sandbox registry entry by container name. */
 export async function removeBrowserRegistryEntry(containerName: string) {
-  removeRegistryRow("browser", containerName);
+  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
+    type: "sandboxRegistry.remove",
+    input: { kind: "browser", containerName },
+  });
 }
