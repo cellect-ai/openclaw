@@ -1,5 +1,6 @@
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
+import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
   deleteDeliveryQueueEntryInDatabase,
@@ -33,6 +34,9 @@ export function isDeliveryQueueCommand(command: {
     command.type === "deliveryQueue.stageFailure" ||
     command.type === "deliveryQueue.finalizeFailure" ||
     command.type === "deliveryQueue.retireUnsent" ||
+    command.type === "deliveryQueue.lifecycleRead" ||
+    command.type === "deliveryQueue.lifecycleAck" ||
+    command.type === "deliveryQueue.lifecycleRecover" ||
     command.type === "deliveryQueue.claimPlatformSend" ||
     command.type === "deliveryQueue.renewPlatformSendLease" ||
     command.type === "deliveryQueue.ack" ||
@@ -63,6 +67,10 @@ export function executeDeliveryQueueCommand(
     case "deliveryQueue.finalizeFailure":
     case "deliveryQueue.retireUnsent":
       return executeOutboundDeliveryStorageCommand(command, options);
+    case "deliveryQueue.lifecycleRead":
+    case "deliveryQueue.lifecycleAck":
+    case "deliveryQueue.lifecycleRecover":
+      return executeConversationLifecycleCommand(command, options);
     case "deliveryQueue.claimPlatformSend":
     case "deliveryQueue.renewPlatformSendLease":
       return executeDeliveryQueuePlatformLeaseCommand(command, options);

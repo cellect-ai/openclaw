@@ -1,4 +1,5 @@
 import type { OpenClawStateWorkerErrorPayload } from "../state/openclaw-state-worker-error.js";
+import type { LifecycleObligation } from "./conversation-lifecycle.js";
 import type {
   claimDeliveryQueueEntryPlatformSendInDatabase,
   renewDeliveryQueueEntryPlatformSendLeaseInDatabase,
@@ -19,6 +20,18 @@ import type {
 import type { OutboundDeliveryStorageOperations } from "./outbound/delivery-queue-storage.worker-contract.js";
 
 export type DeliveryQueueWorkerOperations = OutboundDeliveryStorageOperations & {
+  "deliveryQueue.lifecycleRead": {
+    input: { id?: string };
+    output: LifecycleObligation[];
+  };
+  "deliveryQueue.lifecycleAck": {
+    input: { id: string; revision: number };
+    output: LifecycleObligation | undefined;
+  };
+  "deliveryQueue.lifecycleRecover": {
+    input: { id: string; expected: string; replacement: LifecycleObligation };
+    output: void;
+  };
   "deliveryQueue.findIntentOwners": {
     input: Parameters<typeof findDeliveryIntentOwnersInDatabase>[1];
     output: ReturnType<typeof findDeliveryIntentOwnersInDatabase>;
