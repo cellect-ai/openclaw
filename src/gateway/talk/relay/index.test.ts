@@ -89,7 +89,10 @@ type RelayFixtureDefaults = "connId" | "providerConfig" | "instructions" | "tool
 
 function createTalkRealtimeRelaySession(
   params: Omit<RelaySessionParams, "sessionTarget" | "controlSource" | RelayFixtureDefaults> &
-    Partial<Pick<RelaySessionParams, RelayFixtureDefaults>> & { sessionKey?: string },
+    Partial<Pick<RelaySessionParams, RelayFixtureDefaults>> & {
+      sessionKey?: string;
+      controlSource?: RelaySessionParams["controlSource"];
+    },
 ): ReturnType<typeof createTalkRealtimeRelaySessionRaw> {
   const {
     sessionKey,
@@ -97,6 +100,7 @@ function createTalkRealtimeRelaySession(
     providerConfig = {},
     instructions = "brief",
     tools = [],
+    controlSource: controlSourceOverride,
     ...request
   } = params;
   const cfg = params.cfg ?? { agents: { entries: { main: { default: true } } } };
@@ -113,7 +117,9 @@ function createTalkRealtimeRelaySession(
     providerConfig,
     instructions,
     tools,
-    controlSource: capabilities?.handlesAgentConsult === true ? "delegation" : "transcript",
+    controlSource:
+      controlSourceOverride ??
+      (capabilities?.handlesAgentConsult === true ? "delegation" : "transcript"),
     capabilities,
     context: {
       ...request.context,
