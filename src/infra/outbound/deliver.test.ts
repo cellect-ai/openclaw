@@ -1552,7 +1552,14 @@ describe("deliverOutboundPayloads", () => {
     );
     const commitParams = requireMockCallArg<
       [Record<string, unknown> & { result?: { messageId?: string } }]
-    >(afterCommit, "afterCommit");
+    >(
+      afterCommit as unknown as {
+        mock: {
+          calls: Array<[Record<string, unknown> & { result?: { messageId?: string } }]>;
+        };
+      },
+      "afterCommit",
+    );
     expect(commitParams?.kind).toBe("text");
     expect(commitParams?.result?.messageId).toBe("message-adapter-1");
     expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id", expectedQueueStateDir, {
