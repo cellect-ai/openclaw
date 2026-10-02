@@ -158,6 +158,7 @@ describe("createOpenClawTools browser plugin integration", () => {
     hoisted.resolvePluginTools.mockReturnValue([
       {
         name: "browser",
+        label: "browser fixture tool",
         description: "browser fixture tool",
         parameters: {
           type: "object",
@@ -166,6 +167,7 @@ describe("createOpenClawTools browser plugin integration", () => {
         async execute() {
           return {
             content: [{ type: "text", text: "ok" }],
+            details: {},
           };
         },
       },
@@ -215,6 +217,7 @@ describe("createOpenClawTools browser plugin integration", () => {
       return [
         {
           name: "browser",
+          label: "browser fixture tool",
           description: "browser fixture tool",
           parameters: {
             type: "object",
