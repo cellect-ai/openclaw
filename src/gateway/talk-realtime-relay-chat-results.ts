@@ -1,5 +1,5 @@
 import { observeChatTerminal } from "./chat-terminal-observer.js";
-import { formatError } from "./server-utils.js";
+import { formatErrorMessage as formatError } from "../infra/errors.js";
 import type { submitTalkRealtimeRelayToolResult } from "./talk/relay/operations.js";
 import { relaySessions, type RelaySession } from "./talk/relay/state.js";
 

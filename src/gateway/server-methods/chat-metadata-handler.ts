@@ -81,7 +81,6 @@ export function resolveChatMetadataReadParams(
           isDeepStrictEqual(previous[field], current[field]),
         ),
     );
-    const isCurrent = () => isRequestCurrent() && session.isCurrent();
     const assertVisible = () => {
       const visible = createSessionListEntryFilter({
         client,
@@ -114,11 +113,7 @@ export function resolveChatMetadataReadParams(
       return undefined;
     }
     const isCurrent = () =>
-      !signal?.aborted &&
-      readGatewayAccessRevision() === accessRevision &&
-      client?.authenticatedUserProfile?.profileId === profileInput &&
-      client?.authenticatedUserId === userInput &&
-      session.isCurrent();
+      isRequestCurrent() && readGatewayAccessRevision() === accessRevision && session.isCurrent();
     try {
       assertVisible();
       return {

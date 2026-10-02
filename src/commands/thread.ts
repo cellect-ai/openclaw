@@ -7,7 +7,7 @@ import { getRuntimeConfig } from "../config/config.js";
 import { resolveAllAgentSessionStoreTargetsSync, type SessionEntry } from "../config/sessions.js";
 import {
   listSessionEntriesReadOnly,
-  loadTranscriptTailEventsSync,
+  loadTranscriptEventsSync,
 } from "../config/sessions/session-accessor.js";
 import { callGateway } from "../gateway/call.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -119,15 +119,12 @@ export async function readThreadTranscriptTail(
     return {};
   }
   const tail: ThreadTranscriptTail = {};
-  const events = loadTranscriptTailEventsSync(
-    {
-      agentId: session.agentId,
-      sessionId: session.entry.sessionId,
-      sessionKey: session.sessionKey,
-      storePath: session.storePath,
-    },
-    200,
-  );
+  const events = loadTranscriptEventsSync({
+    agentId: session.agentId,
+    sessionId: session.entry.sessionId,
+    sessionKey: session.sessionKey,
+    storePath: session.storePath,
+  }).slice(-200);
   for (const event of events.toReversed()) {
     const parsed = event as {
       timestamp?: string;
