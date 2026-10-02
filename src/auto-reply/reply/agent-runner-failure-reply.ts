@@ -43,6 +43,7 @@ import { isAgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { isProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
 import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recovery-hint.js";
 import type { ReplyCompletion, ReplyExpectation } from "../../agents/reply-completion.js";
+import { isSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { extractErrorHttpStatus } from "../../shared/assistant-error-format.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
@@ -260,6 +261,14 @@ export function buildExternalRunFailureReply(
   const message = typeof input === "string" ? input : input.message;
   const error = typeof input === "string" ? undefined : input.error;
   const normalizedMessage = collapseRepeatedFailureDetail(message);
+  // Setup happens before inference. Its nested timeout/auth diagnostics must
+  // not be presented as a provider failure or disclose private container data.
+  if (isSandboxProvisioningError(error)) {
+    return {
+      text: "⚠️ The agent’s workspace could not be prepared, so this attempt stopped before it could run. Please try again; if it repeats, ask an administrator to check the agent runtime.",
+      isGenericRunnerFailure: false,
+    };
+  }
   // A preflight refusal is host-authored and names the next step. Heartbeats run
   // unattended in the owner's session, so they disclose it without the verbose
   // opt-in; raw thrown detail further below stays verbose-gated.

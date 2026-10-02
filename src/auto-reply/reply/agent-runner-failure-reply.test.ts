@@ -6,6 +6,7 @@ import {
 } from "../../agents/failover/user-copy.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { resolveReplyCompletion } from "../../agents/reply-completion.js";
+import { toSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import {
@@ -47,6 +48,22 @@ describe("buildEmptyInteractiveReplyPayload", () => {
 });
 
 describe("buildExternalRunFailureReply", () => {
+  it.each(["Docker sandbox exec timed out", "401 unauthorized", "529 overloaded"])(
+    "attributes sandbox %s to workspace setup rather than the model",
+    (detail) => {
+      const error = toSandboxProvisioningError(
+        new Error(`${detail}; private-container-canary`),
+        "docker",
+      );
+      const reply = buildExternalRunFailureReply({ message: error.message, error });
+      expect(reply.isGenericRunnerFailure).toBe(false);
+      expect(reply.text).toContain("workspace could not be prepared");
+      expect(reply.text).not.toContain("LLM request failed");
+      expect(reply.text).not.toContain("private-container-canary");
+      expect(reply.text).not.toContain("/new");
+    },
+  );
+
   it("does not expose a foreign error's userMessage property", () => {
     const error = Object.assign(new Error("private-diagnostic-canary"), {
       userMessage: "untrusted-public-canary",

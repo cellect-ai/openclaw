@@ -17,6 +17,7 @@ import {
 import { isAgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { resolveReplyExpectation } from "../../agents/reply-completion.js";
+import { isSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { CommandLaneClearedError, GatewayDrainingError } from "../../process/command-queue.js";
 import { defaultRuntime } from "../../runtime.js";
@@ -169,6 +170,11 @@ export async function handleAgentExecutionError(params: {
   });
   // The exhausted preflight is deliberate, even if its diagnostic cause looks
   // like HTTP/overload. Settle delivery and normal diagnostic policy without replay.
+  if (isSandboxProvisioningError(err)) {
+    defaultRuntime.error(`Agent workspace preparation failed before reply: ${message}`);
+    const reply = buildExternalRunFailureReply({ message, error: err });
+    return await settleFailure({ text: reply.text });
+  }
   if (isAgentHarnessPreflightError(err)) {
     const externalReply = buildExternalRunFailureReply(
       { message, error: err },
