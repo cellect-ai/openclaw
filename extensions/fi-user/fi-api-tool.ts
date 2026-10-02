@@ -39,9 +39,13 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 function stripActionHrefs(value: unknown): unknown {
-  if (!Array.isArray(value)) return value;
+  if (!Array.isArray(value)) {
+    return value;
+  }
   return value.map((action) => {
-    if (!isRecord(action)) return action;
+    if (!isRecord(action)) {
+      return action;
+    }
     const safeAction = { ...action };
     delete safeAction.href;
     return safeAction;
@@ -50,10 +54,14 @@ function stripActionHrefs(value: unknown): unknown {
 
 /** Keep screen metadata useful while withholding generated action URLs from the model. */
 function screenContextForModel(value: unknown): unknown {
-  if (!isRecord(value)) return value;
+  if (!isRecord(value)) {
+    return value;
+  }
   const safe = { ...value };
   delete safe.contextYaml;
-  if ("actions" in safe) safe.actions = stripActionHrefs(safe.actions);
+  if ("actions" in safe) {
+    safe.actions = stripActionHrefs(safe.actions);
+  }
   if (isRecord(safe.structuredContext)) {
     safe.structuredContext = {
       ...safe.structuredContext,
@@ -74,7 +82,9 @@ function screenTextActionPath(
   orgSlug: string,
   contextValue: unknown,
 ): string | null {
-  if (!isRecord(contextValue) || !Array.isArray(contextValue.actions)) return null;
+  if (!isRecord(contextValue) || !Array.isArray(contextValue.actions)) {
+    return null;
+  }
   const actions = contextValue.actions.filter(
     (action): action is JsonRecord => isRecord(action) && action.id === "copy_text",
   );
@@ -83,15 +93,23 @@ function screenTextActionPath(
   }
 
   const href = actions[0].href;
-  if (!href.startsWith("/") || href.startsWith("//")) return null;
+  if (!href.startsWith("/") || href.startsWith("//")) {
+    return null;
+  }
 
   try {
     const base = new URL(baseUrl);
     const target = new URL(href, base);
-    if (target.origin !== base.origin || target.hash) return null;
-    if (target.searchParams.size > MAX_QUERY_PARAMS) return null;
+    if (target.origin !== base.origin || target.hash) {
+      return null;
+    }
+    if (target.searchParams.size > MAX_QUERY_PARAMS) {
+      return null;
+    }
     for (const [key, value] of target.searchParams) {
-      if (key.length > 64 || value.length > 500) return null;
+      if (key.length > 64 || value.length > 500) {
+        return null;
+      }
     }
 
     const basePath = base.pathname.replace(/\/+$/, "");
@@ -107,7 +125,9 @@ function screenTextActionPath(
     if (!relative && !basePath && target.pathname.startsWith("/api/")) {
       relative = target.pathname.slice("/api/".length);
     }
-    if (!relative) return null;
+    if (!relative) {
+      return null;
+    }
 
     const scopedPath = fiUserApiPath(orgSlug, `api/${relative}`);
     return `${scopedPath}${target.search}`;
@@ -123,7 +143,9 @@ async function readCurrentScreenText(
   contextValue: unknown,
 ) {
   const path = screenTextActionPath(config.baseUrl, orgSlug, contextValue);
-  if (!path) return { status: "not_available" as const };
+  if (!path) {
+    return { status: "not_available" as const };
+  }
 
   const response = await delegatedFetch(config, delegation, path, {
     method: "GET",

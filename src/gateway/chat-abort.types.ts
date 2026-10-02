@@ -1,13 +1,13 @@
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
 import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
+import type { WebchatCompletionDeliveryState } from "./webchat-completion-delivery.js";
 
 type ChatTerminalProducer = {
   sessionId: string;
   sessionKey: string;
   handoff: (settle: (producerCompleted: Promise<void>) => Promise<void>) => boolean;
 };
-import type { WebchatCompletionDeliveryState } from "./webchat-completion-delivery.js";
 
 export type ChatAbortControllerEntry = {
   controller: AbortController;
