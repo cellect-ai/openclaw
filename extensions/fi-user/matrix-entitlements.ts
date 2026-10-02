@@ -268,7 +268,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           phase: "tool",
           roomId: turn?.roomId ?? null,
           agentId: context.agentId ?? null,
-          accountId: context.accountId ?? turn?.accountId ?? null,
+          accountId: context.requester?.accountId ?? turn?.accountId ?? null,
           outcome: "unavailable",
           reason: "no_admission",
           sessionThreadId: sessionThreadId(context.sessionKey ?? "") ?? null,
