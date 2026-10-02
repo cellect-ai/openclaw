@@ -24,7 +24,7 @@ describe("typed hook plugin-instance ownership", () => {
       pluginsWithChannelRegistrationConflict: new Set<string>(),
       reportRegistrationError: vi.fn(),
       reportRegistrationWarning: vi.fn(),
-    } as PluginRegistryState);
+    } as unknown as PluginRegistryState);
 
     try {
       instance.run(() => {
@@ -34,10 +34,13 @@ describe("typed hook plugin-instance ownership", () => {
         });
       });
 
-      const hook = registry.typedHooks[0];
+      const hook = registry.typedHooks[0] as
+        | import("./hook-types.js").PluginHookRegistration<"subagent_ended">
+        | undefined;
       expect(hook).toBeDefined();
+      expect(hook!.hookName).toBe("subagent_ended");
       await hook!.handler(
-        { targetSessionKey: "agent:fixture:child", targetKind: "subagent" },
+        { targetSessionKey: "agent:fixture:child", targetKind: "subagent", reason: "completed" },
         { childSessionKey: "agent:fixture:child" },
       );
       expect(observed).toHaveBeenCalledExactlyOnceWith("owned runtime");
