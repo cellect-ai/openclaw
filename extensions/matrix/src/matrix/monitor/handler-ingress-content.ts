@@ -106,7 +106,7 @@ export async function resolveMatrixIngressContent(config: {
     effectiveGroupAllowFrom,
     effectiveRoomUsers,
   } = access;
-  const { messageIngress, resolveMessageIngress } = accessState;
+  const { resolveMessageIngress } = accessState;
   if (isMatrixReadOnlyProjectionRoom(accountId, roomId)) {
     await commitInboundEventIfClaimedAndDiscardReserved();
     return undefined;
