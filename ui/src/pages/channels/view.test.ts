@@ -18,6 +18,7 @@ function createProps(snapshot: ChannelsProps["channels"]["channelsSnapshot"]): C
   return createChannelsViewProps(snapshot, {
     accounts: [],
     requests: [],
+    history: [],
     commandOwnerConfigured: true,
     limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
   });
