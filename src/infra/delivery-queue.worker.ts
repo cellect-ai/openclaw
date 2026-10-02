@@ -1,4 +1,5 @@
 import type { OpenClawStateDatabase } from "../state/openclaw-state-db-contract.js";
+import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
   pruneExpiredDeliveryQueueTombstonesInDatabase,
@@ -16,6 +17,9 @@ export function isDeliveryQueueCommand(command: {
   type: string;
 }): command is { type: keyof DeliveryQueueWorkerOperations } {
   return (
+    command.type === "deliveryQueue.lifecycleRead" ||
+    command.type === "deliveryQueue.lifecycleAck" ||
+    command.type === "deliveryQueue.lifecycleRecover" ||
     command.type === "deliveryQueue.claimPlatformSend" ||
     command.type === "deliveryQueue.renewPlatformSendLease" ||
     command.type === "deliveryQueue.ack" ||
@@ -33,6 +37,10 @@ export function executeDeliveryQueueCommand(
   options: { database: OpenClawStateDatabase; env: NodeJS.ProcessEnv },
 ): DeliveryQueueWorkerOperations[keyof DeliveryQueueWorkerOperations]["output"] {
   switch (command.type) {
+    case "deliveryQueue.lifecycleRead":
+    case "deliveryQueue.lifecycleAck":
+    case "deliveryQueue.lifecycleRecover":
+      return executeConversationLifecycleCommand(command, options);
     case "deliveryQueue.claimPlatformSend":
     case "deliveryQueue.renewPlatformSendLease":
       return executeDeliveryQueuePlatformLeaseCommand(command, options);

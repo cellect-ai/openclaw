@@ -66,8 +66,19 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         },
       );
     },
-    onError: () => {
-      api.logger.warn("matrix: lifecycle publication remains in durable custody");
+    onError: (error) => {
+      // Do not log raw transport errors (URLs, tokens, or private event data).
+      // A bounded error class still distinguishes SQLite contention from stale
+      // invocation authority and wire failures instead of hiding the cause.
+      const name =
+        error instanceof Error && /^[A-Za-z][A-Za-z0-9_-]{0,63}$/.test(error.name)
+          ? error.name
+          : "unknown";
+      const reason =
+        error instanceof Error && error.message === "Channel read authority is no longer active."
+          ? "channel_read_closed"
+          : name;
+      api.logger.warn(`matrix: lifecycle publication remains in durable custody (${reason})`);
     },
   });
   activeLifecycle = handle;

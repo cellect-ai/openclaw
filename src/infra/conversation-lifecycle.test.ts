@@ -2,6 +2,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import {
+  captureChannelReadAuthority,
+  withChannelReadAuthority,
+} from "../shared/channel-read-authority.js";
+import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import {
   emitAgentEvent,
   onAgentEvent,
@@ -43,11 +49,79 @@ describe("trusted durable conversation lifecycle", () => {
     publications.length = 0;
     stop = [];
   });
-  afterEach(() => {
+  afterEach(async () => {
     for (const close of stop) close();
     resetAgentEventsForTest();
     vi.restoreAllMocks();
+    await closeOpenClawStateDatabaseAsync();
     fs.rmSync(stateDir, { recursive: true, force: true });
+  });
+  it("delivers and acknowledges retained terminal transitions without host data SQL", async () => {
+    const transport = install();
+    owner("worker-flush");
+    emit("worker-flush", "start");
+    emit("worker-flush", "end");
+    const sql = observeHostDataSql({ ...process.env, OPENCLAW_STATE_DIR: stateDir });
+    try {
+      await transport.flush();
+      expect(sql.calls.map((call) => call.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
+      expect(publications.map((event) => event.state)).toEqual(["queued", "running", "completed"]);
+    } finally {
+      sql.restore();
+    }
+  });
+  it("preserves a terminal appended while its predecessor is on the wire", async () => {
+    const transport = registerConversationLifecycleTransport({
+      transportId: "test-matrix",
+      stateDir,
+      resolveBindings: () => [binding],
+      publish: async (_, event, transactionId) => {
+        publications.push({ ...event, transactionId });
+        if (event.state === "queued") emit("overlap", "end");
+      },
+      onError: () => {},
+    });
+    stop.push(transport.stop);
+    owner("overlap");
+    emit("overlap", "start");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "completed"]);
+    const retained = custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0];
+    expect(retained).toMatchObject({ state: "completed", pending: [] });
+  });
+  it("publishes retained status in transport custody after the producer read scope closes", async () => {
+    let failFirstSend = true;
+    const transport = registerConversationLifecycleTransport({
+      transportId: "test-matrix",
+      stateDir,
+      resolveBindings: () => [binding],
+      publish: async (_, event, transactionId) => {
+        // Real Matrix bootstrap asserts any captured channel read authority.
+        captureChannelReadAuthority()?.();
+        expect(captureChannelReadAuthority()).toBeUndefined();
+        publications.push({ ...event, transactionId });
+        if (failFirstSend) {
+          failFirstSend = false;
+          throw new Error("temporary wire failure");
+        }
+      },
+      onError: () => {},
+    });
+    stop.push(transport.stop);
+    let producerAuthority: (() => void) | undefined;
+    await withChannelReadAuthority(
+      () => {},
+      async () => {
+        producerAuthority = captureChannelReadAuthority();
+        owner("closed-producer");
+        emit("closed-producer", "end");
+        await expect(transport.flush()).rejects.toThrow("temporary wire failure");
+      },
+    );
+    expect(() => producerAuthority?.()).toThrow("no longer active");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "queued", "completed"]);
+    expect(publications[1]?.transactionId).toBe(publications[0]?.transactionId);
   });
   function owner(runId: string) {
     registerAgentRunContext(runId, {
