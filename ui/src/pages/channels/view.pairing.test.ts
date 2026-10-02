@@ -43,6 +43,7 @@ function createProps(overrides: ChannelsViewTestOverrides = {}): ChannelsProps {
         },
       ],
       requests: [request],
+      history: [],
       commandOwnerConfigured: false,
       limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
     },
