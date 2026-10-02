@@ -6,7 +6,11 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { ChannelOutboundAdapter } from "../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../config/config.js";
-import { resolveAgentIdFromSessionKey, resolveMainSessionKey } from "../config/sessions.js";
+import {
+  resolveAgentIdFromSessionKey,
+  resolveAgentMainSessionKey,
+  resolveMainSessionKey,
+} from "../config/sessions.js";
 import { getActivePluginRegistry, setActivePluginRegistry } from "../plugins/runtime.js";
 import { buildAgentPeerSessionKey } from "../routing/session-key.js";
 import {
