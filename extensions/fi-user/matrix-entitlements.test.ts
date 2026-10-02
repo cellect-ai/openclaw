@@ -146,6 +146,72 @@ describe("registered Matrix agent entitlement hooks", () => {
     ).toMatchObject({ block: true });
     expect(fetchMock.mock.calls[1]?.[1].body).toEqual(fetchMock.mock.calls[0]?.[1].body);
   });
+  it("admits a Talk consult whose hook chat id is the room plus the attested thread", async () => {
+    const hook = plugin();
+    fetchMock.mockResolvedValue(allow());
+    const voice = context("cellect-main", {
+      chatId: "!room:matrix.example:thread:$root-from-other-person",
+      sessionKey:
+        "agent:cellect-main:matrix:channel:!room:matrix.example:thread:$root-from-other-person",
+      channelContext: {
+        sender: { id: "@alex:matrix.example" },
+        chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root-from-other-person" },
+      },
+    });
+    expect(await hook("before_agent_reply", {}, voice)).toBeUndefined();
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body)).toEqual({
+      roomId: "!room:matrix.example",
+      agentId: "cellect-main",
+      mode: "voice",
+      speakerMxid: "@alex:matrix.example",
+      threadRootEventId: "$root-from-other-person",
+    });
+  });
+  it("fail-closes a Talk consult whose hook chat id names a different thread", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const hook = plugin();
+      expect(
+        await hook(
+          "before_agent_reply",
+          {},
+          context("cellect-main", {
+            chatId: "!room:matrix.example:thread:$other",
+            sessionKey: "agent:cellect-main:matrix:channel:!room:matrix.example:thread:$other",
+            channelContext: {
+              sender: { id: "@alex:matrix.example" },
+              chat: {
+                id: "!room:matrix.example",
+                talkThreadRootEventId: "$root-from-other-person",
+              },
+            },
+          }),
+        ),
+      ).toMatchObject({ handled: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+      const line = warn.mock.calls
+        .map(([value]) => {
+          try {
+            return JSON.parse(String(value)) as Record<string, unknown>;
+          } catch {
+            return null;
+          }
+        })
+        .find((record) => record?.evt === "threads.agent_entitlements");
+      expect(line).toMatchObject({
+        mismatch: "incomplete_host_context",
+        chatMatches: false,
+        senderMatches: true,
+        hasRunId: true,
+        hasSessionKey: true,
+      });
+      expect(JSON.stringify([info.mock.calls, warn.mock.calls])).not.toMatch(/@alex|secret|Please/);
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
   it("refuses a tenant that the sandbox does not own and an unconfigured runtime", async () => {
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ ok: true, agentId: "cellect-main", orgId: "tenant-b" })),

@@ -620,6 +620,38 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     expect(requireSession(socket).reasoning).toEqual({ effort: "none" });
   });
 
+  it("treats xAI input transcription updates as replacements until completed", async () => {
+    const onTranscript = vi.fn();
+    const bridge = createTestBridge({
+      onTranscript,
+    });
+
+    const socket = await openRealtimeBridge(bridge);
+
+    socket.emitServer({
+      type: "conversation.item.input_audio_transcription.updated",
+      item_id: "item_1",
+      transcript: "open",
+    });
+    socket.emitServer({
+      type: "conversation.item.input_audio_transcription.updated",
+      item_id: "item_1",
+      transcript: "open claw",
+    });
+    socket.emitServer({
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item_1",
+      transcript: "OpenClaw",
+    });
+    socket.emitServer({ type: "response.done", response: { status: "completed" } });
+    await bridge.close();
+
+    expect(onTranscript.mock.calls).toEqual([
+      ["user", "OpenClaw", false, { itemId: "item_1", textMode: "snapshot" }],
+      ["user", "OpenClaw", true, { itemId: "item_1", textMode: "snapshot" }],
+    ]);
+  });
+
   it("forwards standard incremental input-transcription events", async () => {
     const onTranscript = vi.fn();
     const { socket } = await connect({ onTranscript });
@@ -662,20 +694,87 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     });
   });
 
+  it("buffers assistant transcript deltas and finalizes them when done has no text", async () => {
+    const onTranscript = vi.fn();
+    const bridge = createTestBridge({
+      onTranscript,
+    });
+
+    const socket = await openRealtimeBridge(bridge);
+
+    socket.emitServer({ type: "response.created" });
+    socket.emitServer({ type: "response.output_audio_transcript.delta", delta: "Hello " });
+    socket.emitServer({ type: "response.output_audio_transcript.delta", delta: "OpenClaw" });
+    socket.emitServer({
+      type: "response.output_audio_transcript.done",
+      item_id: "item_audio",
+    });
+    socket.emitServer({ type: "response.done" });
+    await bridge.close();
+
+    expect(onTranscript).toHaveBeenNthCalledWith(1, "assistant", "Hello ", false);
+    expect(onTranscript).toHaveBeenNthCalledWith(2, "assistant", "OpenClaw", false);
+    expect(onTranscript).toHaveBeenNthCalledWith(3, "assistant", "Hello OpenClaw", true, {
+      itemId: "item_audio",
+      textMode: "snapshot",
+    });
+    expect(onTranscript).toHaveBeenCalledTimes(3);
+  });
+
   it("preserves corrected final text from legacy realtime text events", async () => {
     const onTranscript = vi.fn();
     const { socket } = await connect({ onTranscript });
     socket.emitServer({ type: "response.created" });
     socket.emitServer({ type: "response.text.delta", delta: "draft assistant" });
-    socket.emitServer({ type: "response.text.done", text: "corrected assistant" });
+    socket.emitServer({
+      type: "response.text.done",
+      item_id: "item_assistant",
+      text: "corrected assistant",
+    });
     socket.emitServer({ type: "response.done" });
     expect(onTranscript.mock.calls).toEqual([
       ["assistant", "draft assistant", false],
-      ["assistant", "corrected assistant", true],
+      [
+        "assistant",
+        "corrected assistant",
+        true,
+        { itemId: "item_assistant", textMode: "snapshot" },
+      ],
     ]);
   });
 
-  it("continues after malformed terminal items and content beside valid text", async () => {
+  it.each([
+    {
+      name: "non-array output",
+      output: { unexpected: true },
+      expectedTranscript: undefined,
+    },
+    {
+      name: "a null output item beside a valid message",
+      output: [
+        null,
+        {
+          id: "msg_valid",
+          type: "message",
+          role: "assistant",
+          content: [{ type: "output_text", text: "Valid terminal text" }],
+        },
+      ],
+      expectedTranscript: "Valid terminal text",
+    },
+    {
+      name: "null message content beside a valid part",
+      output: [
+        {
+          id: "msg_valid",
+          type: "message",
+          role: "assistant",
+          content: [null, { type: "output_audio", transcript: "Valid terminal audio" }],
+        },
+      ],
+      expectedTranscript: "Valid terminal audio",
+    },
+  ])("continues after malformed terminal output: $name", async ({ output, expectedTranscript }) => {
     const onTranscript = vi.fn();
     const { bridge, socket } = await connect({ onTranscript });
     socket.emitServer({ type: "response.created" });
@@ -702,7 +801,11 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       userMessageEvent("Continue."),
       { type: "response.create" },
     ]);
-    expect(onTranscript.mock.calls).toEqual([["assistant", "Valid text and audio", true]]);
+    expect(onTranscript.mock.calls).toEqual(
+      expectedTranscript
+        ? [["assistant", expectedTranscript, true, { itemId: "msg_valid", textMode: "snapshot" }]]
+        : [],
+    );
   });
 
   it.each([false, true])(
