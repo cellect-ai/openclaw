@@ -845,7 +845,9 @@ describe("TalkSettingsPage realtime transport mutation", () => {
     await page.updateComplete;
 
     expect(page.querySelector("wa-radio-group")).not.toBeNull();
-    expect([...page.querySelectorAll("select option")].map((option) => option.value)).toEqual([
+    expect(
+      [...page.querySelectorAll<HTMLOptionElement>("select option")].map((option) => option.value),
+    ).toEqual([
       "",
       "eve",
       "ara",
@@ -863,7 +865,7 @@ describe("TalkSettingsPage realtime transport mutation", () => {
     expect(page.querySelector("select")?.disabled).toBe(true);
 
     request.mockRejectedValueOnce(new Error("temporary gateway refresh failure"));
-    page.context.gateway.connectionRevision += 1;
+    (page.context.gateway as { connectionRevision: number }).connectionRevision += 1;
     updateGateway({ phase: "connected" });
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     await page.updateComplete;
