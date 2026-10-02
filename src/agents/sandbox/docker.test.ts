@@ -713,6 +713,34 @@ describe("Podman init dependency diagnostics", () => {
 });
 
 describe("execDockerRaw", () => {
+  it.each(["throw", "result"] as const)(
+    "reports the readiness operation and timeout cause after a %s without leaking arguments",
+    async (settlement) => {
+      const reason = new DOMException("The operation timed out", "TimeoutError");
+      const signal = AbortSignal.abort(reason);
+      if (settlement === "throw") {
+        spawnState.executionError = new Error("execution cancelled");
+      } else {
+        spawnState.commandResult = { code: 0, stdout: "", stderr: "" };
+      }
+      await expect(
+        execDockerRaw(["inspect", "synthetic-private-container"], { signal }),
+      ).rejects.toMatchObject({
+        name: "SandboxCommandTimeoutError",
+        code: "SANDBOX_COMMAND_TIMEOUT",
+        message: "Docker sandbox inspect timed out",
+        cause: reason,
+      });
+    },
+  );
+
+  it("preserves ordinary cancellation as an abort", async () => {
+    spawnState.executionError = new Error("execution cancelled");
+    await expect(
+      execDockerRaw(["inspect", "fixture"], { signal: AbortSignal.abort() }),
+    ).rejects.toMatchObject({ name: "AbortError", message: "Aborted" });
+  });
+
   it("preserves canonical wrapper execution errors", async () => {
     spawnState.executionError = new Error("docker execution failed");
 
