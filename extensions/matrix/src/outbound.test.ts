@@ -5,11 +5,13 @@ import { chunkTextForOutbound, type OpenClawConfig } from "../runtime-api.js";
 const mocks = vi.hoisted(() => ({
   sendMessageMatrix: vi.fn(),
   sendPollMatrix: vi.fn(),
+  redactMessageMatrix: vi.fn(),
 }));
 
 vi.mock("./matrix/send.js", () => ({
   sendMessageMatrix: mocks.sendMessageMatrix,
   sendPollMatrix: mocks.sendPollMatrix,
+  redactMessageMatrix: mocks.redactMessageMatrix,
 }));
 
 vi.mock("./runtime.js", () => ({
@@ -71,8 +73,10 @@ describe("matrixOutbound cfg threading", () => {
   beforeEach(() => {
     mocks.sendMessageMatrix.mockReset();
     mocks.sendPollMatrix.mockReset();
+    mocks.redactMessageMatrix.mockReset();
     mocks.sendMessageMatrix.mockResolvedValue({ messageId: "evt-1", roomId: "!room:example" });
     mocks.sendPollMatrix.mockResolvedValue({ eventId: "$poll", roomId: "!room:example" });
+    mocks.redactMessageMatrix.mockResolvedValue("$redact");
   });
 
   it("chunks outbound text without requiring Matrix runtime initialization", () => {
@@ -303,6 +307,75 @@ describe("matrixOutbound cfg threading", () => {
     expect(mockOptions(mocks.sendMessageMatrix, "sendMessageMatrix").extraContent).toEqual({
       "com.openclaw.presentation": presentationContent,
     });
+    expect(mocks.redactMessageMatrix).not.toHaveBeenCalled();
+  });
+
+  it("redacts the previous voice transcript after a threaded replacement is accepted", async () => {
+    const cfg = {
+      channels: {
+        matrix: {
+          accessToken: "resolved-token",
+        },
+      },
+    } as OpenClawConfig;
+    mocks.sendMessageMatrix.mockResolvedValue({ messageId: "$revised", roomId: "!room:example" });
+
+    await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "How long is a typical",
+      payload: {
+        text: "How long is a typical",
+        channelData: {
+          matrix: {
+            supersedeEventId: "$spoken",
+            extraContent: {
+              "com.openclaw.voice_transcript": {
+                version: 1,
+                type: "voice.transcript",
+                role: "user",
+                id: "voice:1",
+              },
+            },
+          },
+        },
+      },
+      accountId: "default",
+      threadId: "$thread",
+    });
+
+    expect(mocks.sendMessageMatrix).toHaveBeenCalledOnce();
+    expect(mocks.redactMessageMatrix).toHaveBeenCalledExactlyOnceWith(
+      "room:!room:example",
+      "$spoken",
+      expect.objectContaining({
+        cfg,
+        accountId: "default",
+        reason: "Revised voice transcript",
+      }),
+    );
+  });
+
+  it("keeps a revised voice transcript when redaction fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.redactMessageMatrix.mockRejectedValue(new Error("homeserver rejected the redaction"));
+    const cfg = { channels: { matrix: { accessToken: "resolved-token" } } } as OpenClawConfig;
+
+    const result = await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "revised",
+      payload: {
+        text: "revised",
+        channelData: { matrix: { supersedeEventId: "$spoken" } },
+      },
+      accountId: "default",
+    });
+
+    expect(result.messageId).toBe("evt-1");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain("revised");
+    warn.mockRestore();
   });
 
   it("only forwards presentation metadata from Matrix extraContent", async () => {

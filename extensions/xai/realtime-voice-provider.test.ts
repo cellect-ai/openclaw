@@ -913,8 +913,8 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     await bridge.close();
 
     expect(onTranscript.mock.calls).toEqual([
-      ["user", "OpenClaw", false, { textMode: "snapshot" }],
-      ["user", "OpenClaw", true, { textMode: "snapshot" }],
+      ["user", "OpenClaw", false, { itemId: "item_1", textMode: "snapshot" }],
+      ["user", "OpenClaw", true, { itemId: "item_1", textMode: "snapshot" }],
     ]);
   });
 
@@ -983,13 +983,19 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     socket.emitServer({ type: "response.created" });
     socket.emitServer({ type: "response.output_audio_transcript.delta", delta: "Hello " });
     socket.emitServer({ type: "response.output_audio_transcript.delta", delta: "OpenClaw" });
-    socket.emitServer({ type: "response.output_audio_transcript.done" });
+    socket.emitServer({
+      type: "response.output_audio_transcript.done",
+      item_id: "item_audio",
+    });
     socket.emitServer({ type: "response.done" });
     await bridge.close();
 
     expect(onTranscript).toHaveBeenNthCalledWith(1, "assistant", "Hello ", false);
     expect(onTranscript).toHaveBeenNthCalledWith(2, "assistant", "OpenClaw", false);
-    expect(onTranscript).toHaveBeenNthCalledWith(3, "assistant", "Hello OpenClaw", true);
+    expect(onTranscript).toHaveBeenNthCalledWith(3, "assistant", "Hello OpenClaw", true, {
+      itemId: "item_audio",
+      textMode: "snapshot",
+    });
     expect(onTranscript).toHaveBeenCalledTimes(3);
   });
 
@@ -1002,12 +1008,21 @@ describe("buildXaiRealtimeVoiceProvider", () => {
 
     socket.emitServer({ type: "response.created" });
     socket.emitServer({ type: "response.text.delta", delta: "draft assistant" });
-    socket.emitServer({ type: "response.text.done", text: "corrected assistant" });
+    socket.emitServer({
+      type: "response.text.done",
+      item_id: "item_assistant",
+      text: "corrected assistant",
+    });
     socket.emitServer({ type: "response.done" });
 
     expect(onTranscript.mock.calls).toEqual([
       ["assistant", "draft assistant", false],
-      ["assistant", "corrected assistant", true],
+      [
+        "assistant",
+        "corrected assistant",
+        true,
+        { itemId: "item_assistant", textMode: "snapshot" },
+      ],
     ]);
   });
 
@@ -1022,6 +1037,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       output: [
         null,
         {
+          id: "msg_valid",
           type: "message",
           role: "assistant",
           content: [{ type: "output_text", text: "Valid terminal text" }],
@@ -1033,6 +1049,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       name: "null message content beside a valid part",
       output: [
         {
+          id: "msg_valid",
           type: "message",
           role: "assistant",
           content: [null, { type: "output_audio", transcript: "Valid terminal audio" }],
@@ -1061,7 +1078,9 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       { type: "response.create" },
     ]);
     expect(onTranscript.mock.calls).toEqual(
-      expectedTranscript ? [["assistant", expectedTranscript, true]] : [],
+      expectedTranscript
+        ? [["assistant", expectedTranscript, true, { itemId: "msg_valid", textMode: "snapshot" }]]
+        : [],
     );
   });
 
