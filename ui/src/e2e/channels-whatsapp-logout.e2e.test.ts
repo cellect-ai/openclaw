@@ -53,8 +53,9 @@ suite.define(() => {
           "channels.pairing.list": {
             accounts: [],
             requests: [],
+            history: [],
             commandOwnerConfigured: true,
-            limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+            limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
           },
           "wizard.start": channelWizard.start,
           "wizard.next": channelWizard.next,
@@ -111,8 +112,9 @@ suite.define(() => {
             "channels.pairing.list": {
               accounts: [],
               requests: [],
+              history: [],
               commandOwnerConfigured: true,
-              limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+              limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
             },
             "config.get": {
               config,
@@ -225,8 +227,9 @@ suite.define(() => {
             "channels.pairing.list": {
               accounts: [],
               requests: [],
+              history: [],
               commandOwnerConfigured: true,
-              limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+              limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
             },
           },
         });
@@ -296,8 +299,9 @@ suite.define(() => {
             "channels.pairing.list": {
               accounts: [],
               requests: [],
+              history: [],
               commandOwnerConfigured: true,
-              limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+              limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
             },
             "web.login.start": {
               connected: false,
@@ -414,8 +418,9 @@ suite.define(() => {
           "channels.pairing.list": {
             accounts: [],
             requests: [],
+            history: [],
             commandOwnerConfigured: true,
-            limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+            limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
           },
           "channels.logout": {
             channel: "whatsapp",
@@ -491,8 +496,9 @@ suite.define(() => {
           "channels.pairing.list": {
             accounts: [],
             requests: [],
+            history: [],
             commandOwnerConfigured: true,
-            limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+            limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
           },
           "wizard.start": {
             sessionId: "channel-standard-proof",

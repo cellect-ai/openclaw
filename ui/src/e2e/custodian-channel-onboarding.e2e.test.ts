@@ -88,8 +88,9 @@ describeControlUiE2e("Control UI Custodian channel onboarding mocked Gateway E2E
         "channels.pairing.list": {
           accounts: [],
           requests: [],
+          history: [],
           commandOwnerConfigured: true,
-          limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+          limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
         },
         "channels.status": emptyChannelSnapshot,
         "openclaw.setup.detect": {
