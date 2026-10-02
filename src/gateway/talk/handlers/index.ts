@@ -77,6 +77,7 @@ import { inferSpeechMimeType } from "../../server-methods/speech-mime.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
 import { mintTalkBindingCapability } from "../../talk-binding-capability.js";
+import { logTalkJoin, sessionThreadIdFromKey } from "../../talk-join-log.js";
 import { resolveMatrixTalkBinding } from "../../talk-matrix-binding.js";
 import { formatForLog } from "../../ws-log.js";
 import {
@@ -764,10 +765,11 @@ export const talkHandlers: GatewayRequestHandlers = {
   ...talkVoiceHandlers,
   ...talkVoicePreviewHandlers,
   "talk.binding.resolve": async ({ params, respond, context }) => {
+    const roomId = normalizeOptionalString(params.roomId);
+    const threadRootEventId = normalizeOptionalString(params.threadRootEventId);
+    const agentMxid = normalizeOptionalString(params.agentMxid);
+    const speakerMxid = normalizeOptionalString(params.speakerMxid);
     try {
-      const roomId = normalizeOptionalString(params.roomId);
-      const threadRootEventId = normalizeOptionalString(params.threadRootEventId);
-      const agentMxid = normalizeOptionalString(params.agentMxid);
       if (!roomId || !threadRootEventId || !agentMxid) {
         throw new Error("Matrix Talk binding requires roomId, threadRootEventId, and agentMxid");
       }
@@ -777,7 +779,6 @@ export const talkHandlers: GatewayRequestHandlers = {
         threadRootEventId,
         agentMxid,
       });
-      const speakerMxid = normalizeOptionalString(params.speakerMxid);
       if (!speakerMxid?.startsWith("@")) {
         throw new Error("Matrix Talk speaker is required");
       }
@@ -793,7 +794,29 @@ export const talkHandlers: GatewayRequestHandlers = {
         },
         undefined,
       );
+      logTalkJoin("talk.binding_resolve", {
+        roomId,
+        threadRootEventId,
+        agentMxid,
+        speaker: true,
+        agentId: resolved.agentId,
+        accountId: resolved.accountId,
+        sessionThreadId: sessionThreadIdFromKey(resolved.sessionKey) ?? threadRootEventId,
+      });
     } catch (error) {
+      logTalkJoin(
+        "talk.binding_resolve",
+        {
+          roomId: roomId ?? null,
+          threadRootEventId: threadRootEventId ?? null,
+          agentMxid: agentMxid?.startsWith("@") ? agentMxid : null,
+          speaker: Boolean(speakerMxid?.startsWith("@")),
+          agentId: null,
+          accountId: null,
+          sessionThreadId: threadRootEventId ?? null,
+        },
+        "resolve_failed",
+      );
       respond(
         false,
         undefined,

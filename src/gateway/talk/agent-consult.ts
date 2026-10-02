@@ -18,6 +18,7 @@ import {
 import { abortChatRunById } from "../chat-abort.js";
 import { handleTrustedInternalChatSend } from "../server-methods/chat-send-handler.js";
 import type { GatewayRequestHandlerOptions } from "../server-methods/shared-types.js";
+import { logTalkJoin, sessionThreadIdFromKey } from "../talk-join-log.js";
 import {
   prepareTalkRelayConsultAdmission,
   type TalkRelayConsultAdmission,
@@ -131,6 +132,28 @@ export async function startTalkRealtimeAgentConsult(
   } catch (error) {
     return { ok: false, error: errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(error)) };
   }
+  const speaker = Boolean(talkRelayAdmission?.speakerMxid);
+  const hasChannelContext = Boolean(talkRelayAdmission?.channelContext);
+  const looksMatrix = params.sessionTarget.canonicalKey.includes(":matrix:");
+  const consultMismatch = params.matrixRoute
+    ? speaker
+      ? undefined
+      : "no_speaker"
+    : looksMatrix
+      ? "no_matrix_route"
+      : undefined;
+  logTalkJoin(
+    "talk.consult",
+    {
+      speaker,
+      hasChannelContext,
+      roomId: params.matrixRoute?.roomId ?? null,
+      threadRootEventId: params.matrixRoute?.threadRootEventId ?? null,
+      sessionThreadId: sessionThreadIdFromKey(params.sessionTarget.canonicalKey) ?? null,
+      relaySessionId: params.relaySessionId ?? null,
+    },
+    consultMismatch,
+  );
   let acknowledgedRunId: string | undefined;
   const chatResponse = await new Promise<
     { ok: true; result: unknown } | { ok: false; error: ErrorShape } | undefined

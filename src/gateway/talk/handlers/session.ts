@@ -30,6 +30,7 @@ import { getSessionRowProjection } from "../../session-row-projection-access.js"
 import { SessionMutationAuthorizationChangedError } from "../../session-sharing.js";
 import { resolveSessionKeyFromResolveParams } from "../../sessions-resolve.js";
 import { consumeTalkBindingCapability } from "../../talk-binding-capability.js";
+import { logTalkJoin, sessionThreadIdFromKey, talkClientJoin } from "../../talk-join-log.js";
 import { isWebchatSessionAllowed } from "../../webchat-agent-authorization.js";
 import { formatForLog } from "../../ws-log.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
@@ -288,6 +289,21 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         }
         const bound = binding ? consumeTalkBindingCapability(binding) : undefined;
         if (binding && !bound) {
+          logTalkJoin(
+            "talk.session_create",
+            {
+              bound: false,
+              speaker: false,
+              roomId: null,
+              threadRootEventId: null,
+              sessionThreadId: sessionThreadIdFromKey(params.sessionKey) ?? null,
+              agentId: null,
+              accountId: null,
+              relaySessionId: null,
+              ...talkClientJoin(client),
+            },
+            "binding_invalid",
+          );
           return respondInvalidRequest(respond, "Talk binding is invalid or expired");
         }
         const realtimeConfig = buildTalkRealtimeConfig(
@@ -324,6 +340,21 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             sessionKey: target.canonicalKey,
           })
         ) {
+          logTalkJoin(
+            "talk.session_create",
+            {
+              bound: Boolean(bound),
+              speaker: Boolean(bound?.speakerMxid),
+              roomId: bound?.roomId ?? null,
+              threadRootEventId: bound?.threadRootEventId ?? null,
+              sessionThreadId: sessionThreadIdFromKey(target.canonicalKey) ?? null,
+              agentId,
+              accountId: bound?.accountId ?? null,
+              relaySessionId: null,
+              ...talkClientJoin(client),
+            },
+            "unauthorized_matrix_browser",
+          );
           return respondInvalidRequest(
             respond,
             "Matrix Talk sessions require an authorized binding",
@@ -432,6 +463,17 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           connId,
           relaySessionId: session.relaySessionId,
           sessionTarget: target,
+        });
+        logTalkJoin("talk.session_create", {
+          bound: Boolean(bound),
+          speaker: Boolean(bound?.speakerMxid),
+          roomId: bound?.roomId ?? null,
+          threadRootEventId: bound?.threadRootEventId ?? null,
+          sessionThreadId: sessionThreadIdFromKey(target.canonicalKey) ?? null,
+          agentId,
+          accountId: bound?.accountId ?? null,
+          relaySessionId: session.relaySessionId,
+          ...talkClientJoin(client),
         });
         const publicSession = projectInternalRealtimeVoicePublicConfig({
           provider: resolution.provider,

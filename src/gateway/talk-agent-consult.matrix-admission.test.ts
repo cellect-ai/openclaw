@@ -125,6 +125,42 @@ describe("Matrix voice consult crosses the real browser chat authorization bound
     );
   });
 
+  it("records a missing Matrix route on a Control UI session key", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const input = params();
+    const result = await startTalkRealtimeAgentConsult(input, {
+      sessionTarget: {
+        agentId: "admin",
+        sessionKey,
+        canonicalKey: sessionKey,
+        storePath: "/test/sessions.json",
+      },
+      callId: input.callId,
+      args: input.args,
+      relaySessionId: input.relaySessionId,
+      connId: input.connId,
+    });
+    expect(result, JSON.stringify(result)).toMatchObject({ ok: true });
+    const line = warn.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "talk.consult");
+    expect(line).toMatchObject({
+      mismatch: "no_matrix_route",
+      speaker: false,
+      hasChannelContext: false,
+      roomId: null,
+      sessionThreadId: "$root",
+      level: "warn",
+    });
+    warn.mockRestore();
+  });
+
   it("still rejects raw browser chat with the same known Matrix key", async () => {
     const input = params();
     const respond = vi.fn();

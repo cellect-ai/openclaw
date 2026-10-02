@@ -42,6 +42,67 @@ function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: strin
     : { eventId: turn.eventId, threadRootEventId: null };
 }
 
+function idKind(value: unknown): "missing" | "mxid" | "room" | "event" | "other" {
+  if (typeof value !== "string" || value.length === 0) {
+    return "missing";
+  }
+  if (value.startsWith("@")) {
+    return "mxid";
+  }
+  if (value.startsWith("!")) {
+    return "room";
+  }
+  if (value.startsWith("$")) {
+    return "event";
+  }
+  return "other";
+}
+
+function joinableId(value: unknown): string | null {
+  return typeof value === "string" &&
+    (value.startsWith("!") || value.startsWith("$") || value.startsWith("@"))
+    ? value
+    : null;
+}
+
+function hostContextGaps(params: {
+  runId?: string;
+  agentId?: string;
+  accountId?: string;
+  sessionKey?: string;
+  roomId: unknown;
+  senderId: unknown;
+  chatId: unknown;
+  contextSenderId: unknown;
+}): string[] {
+  const gaps: string[] = [];
+  if (!params.runId) {
+    gaps.push("runId");
+  }
+  if (!params.agentId) {
+    gaps.push("agentId");
+  }
+  if (!params.accountId) {
+    gaps.push("accountId");
+  }
+  if (!params.sessionKey) {
+    gaps.push("sessionKey");
+  }
+  if (typeof params.roomId !== "string" || !params.roomId.startsWith("!")) {
+    gaps.push("roomId");
+  }
+  if (typeof params.senderId !== "string" || !params.senderId.startsWith("@")) {
+    gaps.push("senderId");
+  }
+  if (params.chatId !== params.roomId) {
+    gaps.push("chatId");
+  }
+  if (params.contextSenderId !== params.senderId) {
+    gaps.push("senderEq");
+  }
+  return gaps;
+}
+
 /** Fi owns live grants. Retain only host-proven event identity, never an access decision. */
 export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const turns = new Map<string, Turn>();
@@ -113,33 +174,48 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
       const senderId = context.channelContext?.sender?.id;
       const threadId = sessionThreadId(context.sessionKey ?? "");
-      if (
-        !context.runId ||
-        !context.agentId ||
-        !context.accountId ||
-        !context.sessionKey ||
-        typeof roomId !== "string" ||
-        !roomId.startsWith("!") ||
-        typeof senderId !== "string" ||
-        !senderId.startsWith("@") ||
-        context.chatId !== roomId ||
-        context.senderId !== senderId
-      ) {
+      const gaps = hostContextGaps({
+        runId: context.runId,
+        agentId: context.agentId,
+        accountId: context.accountId,
+        sessionKey: context.sessionKey,
+        roomId,
+        senderId,
+        chatId: context.chatId,
+        contextSenderId: context.senderId,
+      });
+      if (gaps.length > 0) {
         logEntitlements(
           {
             phase: "admission",
-            roomId: typeof roomId === "string" ? roomId : null,
+            roomId: joinableId(roomId),
             agentId: context.agentId ?? null,
             accountId: context.accountId ?? null,
             outcome: "unavailable",
             reason: "incomplete_host_context",
-            eventId: typeof eventId === "string" ? eventId : null,
-            threadRootEventId:
-              typeof talkThreadRootEventId === "string" ? talkThreadRootEventId : null,
+            eventId: joinableId(eventId),
+            threadRootEventId: joinableId(talkThreadRootEventId),
             sessionThreadId: threadId ?? null,
+            gaps,
+            chatId: joinableId(context.chatId),
+            senderKind: idKind(senderId),
+            chatEqRoom: context.chatId === roomId,
+            senderEq: context.senderId === senderId,
+            hasRunId: Boolean(context.runId),
           },
           "incomplete_host_context",
         );
+        return { handled: true, reply: { text: UNAVAILABLE } };
+      }
+      if (
+        typeof roomId !== "string" ||
+        !roomId.startsWith("!") ||
+        typeof senderId !== "string" ||
+        !senderId.startsWith("@") ||
+        !context.agentId ||
+        !context.accountId ||
+        !context.sessionKey
+      ) {
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const source =

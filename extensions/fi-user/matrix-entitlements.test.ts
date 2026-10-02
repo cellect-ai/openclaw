@@ -295,4 +295,82 @@ describe("registered Matrix agent entitlement hooks", () => {
     });
     info.mockRestore();
   });
+
+  it("names incomplete_host_context gaps when chatId is the thread-suffixed session rawId", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const chatId = "!room:matrix.example:thread:$root";
+    expect(
+      await plugin()(
+        "before_agent_reply",
+        {},
+        context("cellect-main", {
+          chatId,
+          sessionKey: "agent:cellect-main:matrix:group:!room:matrix.example:thread:$root",
+          channelContext: {
+            sender: { id: "@alex:matrix.example" },
+            chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+          },
+        }),
+      ),
+    ).toMatchObject({ handled: true });
+    const line = warn.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "threads.agent_entitlements");
+    expect(line).toMatchObject({
+      mismatch: "incomplete_host_context",
+      gaps: ["chatId"],
+      chatId,
+      chatEqRoom: false,
+      senderKind: "mxid",
+      senderEq: true,
+      hasRunId: true,
+      threadRootEventId: "$root",
+      sessionThreadId: "$root",
+      level: "warn",
+    });
+    expect(JSON.stringify([info.mock.calls, warn.mock.calls])).not.toMatch(/Please|secret|budget/);
+    info.mockRestore();
+    warn.mockRestore();
+  });
+
+  it("names a missing Talk speaker without logging a non-mxid sender", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    expect(
+      await plugin()(
+        "before_agent_reply",
+        {},
+        context("cellect-main", {
+          senderId: "operator-profile",
+          channelContext: {
+            sender: { id: "operator-profile" },
+            chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+          },
+        }),
+      ),
+    ).toMatchObject({ handled: true });
+    const line = warn.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "threads.agent_entitlements");
+    expect(line).toMatchObject({
+      mismatch: "incomplete_host_context",
+      senderKind: "other",
+      senderEq: true,
+    });
+    expect(line?.gaps).toEqual(expect.arrayContaining(["senderId"]));
+    expect(JSON.stringify(line)).not.toContain("operator-profile");
+    warn.mockRestore();
+  });
 });

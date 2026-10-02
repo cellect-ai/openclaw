@@ -133,18 +133,56 @@ describe("Matrix voice consult requester", () => {
   });
 
   it("runs as the speaker the app server attested for the binding", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
     relaySessions.set("owned-relay", relay("@member:threads.example"));
     const ctx = await dispatchedContext();
     expect(ctx).toMatchObject({
       OriginatingChannel: "matrix",
       SenderId: "@member:threads.example",
     });
+    const line = info.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "talk.consult");
+    expect(line).toMatchObject({
+      evt: "talk.consult",
+      speaker: true,
+      hasChannelContext: true,
+      roomId: route.roomId,
+      threadRootEventId: route.threadRootEventId,
+      sessionThreadId: "$root",
+      relaySessionId: "owned-relay",
+    });
+    expect(line).not.toHaveProperty("mismatch");
+    info.mockRestore();
   });
 
   it("carries no requester when the relay has no attested speaker", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     relaySessions.set("owned-relay", relay());
     const ctx = await dispatchedContext();
     expect(ctx.OriginatingChannel).toBe("matrix");
     expect(ctx.SenderId).toBeUndefined();
+    const line = warn.mock.calls
+      .map(([value]) => {
+        try {
+          return JSON.parse(String(value)) as Record<string, unknown>;
+        } catch {
+          return null;
+        }
+      })
+      .find((record) => record?.evt === "talk.consult");
+    expect(line).toMatchObject({
+      mismatch: "no_speaker",
+      speaker: false,
+      hasChannelContext: false,
+      level: "warn",
+    });
+    warn.mockRestore();
   });
 });
