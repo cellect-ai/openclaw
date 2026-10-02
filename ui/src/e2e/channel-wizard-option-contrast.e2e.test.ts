@@ -45,8 +45,9 @@ suite.define(() => {
             "channels.pairing.list": {
               accounts: [],
               requests: [],
+              history: [],
               commandOwnerConfigured: true,
-              limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+              limits: { pendingPerAccount: 3, historyPerAccount: 5, ttlMs: 3_600_000, staleAfterMs: 900_000 },
             },
             "wizard.start": {
               sessionId: "channel-option-contrast-proof",
