@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import type { ReplyPayload } from "./reply-payload.js";
 import type { ReplyDispatchKind } from "./reply/reply-dispatcher.types.js";
 
@@ -98,7 +97,9 @@ export function bindReplyPublication(
   const previous = records.get(params.payload);
   let identity = identities.get(params.payload);
   if (!identity) {
-    identity = { publicationId: randomUUID(), publishedAtMs: Date.now() };
+    // Browser-safe: this module ships in browser bundles, so use the
+    // WebCrypto global instead of node:crypto.
+    identity = { publicationId: globalThis.crypto.randomUUID(), publishedAtMs: Date.now() };
     identities.set(params.payload, identity);
   }
   const record = Object.freeze({
