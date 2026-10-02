@@ -681,11 +681,10 @@ export function discardConfigFormValue(state: RuntimeConfigState, path: Array<st
     return false;
   }
   let current = structuredClone(state.configForm);
-  const previous = path.reduce<unknown>(
-    (value, segment) =>
-      Array.isArray(value) && typeof segment === "number"
-        ? value[segment]
-        : isRecord(value) && typeof segment === "string"
+  const readPath = (config: unknown, nodePath: Array<string | number>) =>
+    nodePath.reduce<unknown>(
+      (value, segment) =>
+        Array.isArray(value) && typeof segment === "number"
           ? value[segment]
           : isRecord(value) && typeof segment === "string"
             ? value[segment]
