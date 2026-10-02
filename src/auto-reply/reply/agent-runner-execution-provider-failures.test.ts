@@ -5,6 +5,7 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { ProviderAuthError } from "../../agents/model-auth.js";
+import { toSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -77,6 +78,26 @@ function createOpenAiServiceUnavailableError() {
 }
 
 describe("executeAgentTurn: provider failures", () => {
+  it.each([false, true])(
+    "reports sandbox preparation separately from inference (control UI=%s)",
+    async (controlUi) => {
+      const error = toSandboxProvisioningError(
+        new Error("Docker sandbox exec timed out; private-container-canary"),
+        "docker",
+      );
+      state.isInternalMessageChannelMock.mockReturnValue(controlUi);
+      state.runEmbeddedAgentMock.mockRejectedValueOnce(error);
+      const result = await executeTestTurn({ sessionCtx: createDirectFailureSessionCtx() });
+      expect(result.kind).toBe("final");
+      if (result.kind === "final") {
+        expect(result.payload.isError).toBe(true);
+        expect(result.payload.text).toContain("workspace could not be prepared");
+        expect(result.payload.text).not.toContain("LLM request failed");
+        expect(result.payload.text).not.toContain("private-container-canary");
+      }
+    },
+  );
+
   it.each(
     [
       "Handoff refused after 529 OVERLOADED; reconnect before continuing.",
