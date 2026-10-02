@@ -439,7 +439,7 @@ describeNonWin("sandbox exec script preflight for compound commands", () => {
   it("keeps failing closed for compound commands on non-sandbox hosts", async () => {
     await withScripts(async (workspaceDir) => {
       await expect(
-        runExecPreflight({ command: "ls && python3 good.py", workdir: workspaceDir }),
+        runExecPreflight("ls && python3 good.py", workspaceDir),
       ).rejects.toThrow(/exec preflight: complex interpreter invocation detected/);
     });
   });

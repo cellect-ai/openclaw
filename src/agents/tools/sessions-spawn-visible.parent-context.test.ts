@@ -67,6 +67,7 @@ describe("visible sessions_spawn parent context", () => {
         task,
         label: "",
         runtime: "subagent",
+        expectsCompletionMessage: false,
         runTimeoutSeconds: 0,
         sandbox: "inherit",
         options: {
@@ -113,6 +114,7 @@ describe("visible sessions_spawn parent context", () => {
         task: "compare",
         label: "",
         runtime: "subagent",
+        expectsCompletionMessage: false,
         runTimeoutSeconds: 0,
         sandbox: "inherit",
         options: { ...options, parentTurnMedia: [{ path: pdf, fileName: "Scope A.pdf" }] },
