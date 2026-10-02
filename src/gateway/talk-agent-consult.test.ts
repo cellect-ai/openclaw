@@ -42,7 +42,9 @@ function createParams() {
     params: {
       sessionTarget: {
         canonicalKey: "agent:fi-admin:matrix:room:thread",
+        sessionKey: "agent:fi-admin:matrix:room:thread",
         agentId: "fi-admin",
+        storePath: "/tmp/talk-agent-consult-test.sqlite",
       },
       callId: "call-1",
       args: { question: "What changed?" },

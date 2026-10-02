@@ -163,6 +163,7 @@ describe("Matrix relay consumes its private chat terminal without browser transc
       broadcast: context.broadcast,
       broadcastToConnIds: context.broadcastToConnIds,
       nodeSendToSession: context.nodeSendToSession,
+      nodeHasSessionSubscribers: () => false,
       agentRunSeq: context.agentRunSeq,
       chatRunState: context.chatRunState,
       resolveSessionKeyForRun: () => sessionKey,
