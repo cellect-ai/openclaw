@@ -11,8 +11,23 @@ import {
 } from "../config/sessions/session-accessor.js";
 import { callGateway } from "../gateway/call.js";
 import type { RuntimeEnv } from "../runtime.js";
-import { reconcileInspectableTasks } from "../tasks/task-registry.reconcile.js";
-import type { TaskRecord } from "../tasks/task-registry.types.js";
+
+// 2026.9.7 removed src/tasks (task-registry) with no inspectable-task
+// replacement, so thread task inspection/resume is degraded to sessions-only
+// until it is reimplemented on a 9.7 run API. Thread status still reports
+// sessions and transcript tail; resume reports no recorded task.
+type ThreadTask = {
+  taskId: string;
+  status: string;
+  agentId?: string;
+  ownerKey: string;
+  requesterSessionKey: string;
+  childSessionKey?: string;
+  createdAt: number;
+  lastEventAt?: number;
+  error?: string;
+  task: string;
+};
 
 const ACTIVE_TASK_STATUSES = new Set(["queued", "running"]);
 const RESUMABLE_TASK_STATUSES = new Set(["failed", "timed_out", "lost"]);
@@ -70,18 +85,8 @@ export function parseSlackThreadPermalink(raw: string): SlackThreadRef {
   return { permalink: url.toString(), channelId, threadTs, sessionSuffix };
 }
 
-function tasksForThread(ref: SlackThreadRef): TaskRecord[] {
-  return reconcileInspectableTasks()
-    .filter(
-      (task) =>
-        task.ownerKey.endsWith(ref.sessionSuffix) ||
-        task.requesterSessionKey.endsWith(ref.sessionSuffix) ||
-        task.childSessionKey?.endsWith(ref.sessionSuffix),
-    )
-    .toSorted(
-      (left, right) =>
-        (right.lastEventAt ?? right.createdAt) - (left.lastEventAt ?? left.createdAt),
-    );
+function tasksForThread(_ref: SlackThreadRef): ThreadTask[] {
+  return [];
 }
 
 function sessionsForThread(ref: SlackThreadRef): ThreadSessionMatch[] {
