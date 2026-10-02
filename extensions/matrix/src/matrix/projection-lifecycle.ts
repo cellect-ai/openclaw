@@ -34,7 +34,9 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
             !metadata.environment ||
             typeof metadata.projectedConversationId !== "string" ||
             !metadata.projectedConversationId ||
-            metadata.agentId !== owner.agentId
+            // listBySession already selected this Slack/Matrix owner. A
+            // source-authorized bind can omit agentId; skip only a mismatch.
+            (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
           )
             return [];
           return [
