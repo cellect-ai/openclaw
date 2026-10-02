@@ -36,7 +36,7 @@ import {
 } from "../sessions/session-key-utils.js";
 import { resolveAssistantEventPhase } from "../shared/chat-message-content.js";
 import { setSafeTimeout } from "../utils/timer-delay.js";
-import { mergeAssistantText, resolveAssistantTextInput } from "./agent-event-assistant-text.js";
+import { resolveAssistantTextInput } from "./agent-event-assistant-text.js";
 import { hasChatTerminalObserver, publishChatTerminal } from "./chat-terminal-observer.js";
 import {
   appendChatCanvasBlocks,

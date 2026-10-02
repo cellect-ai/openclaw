@@ -136,14 +136,6 @@ export async function prepareAndAdmitChatSend(
       client,
       context,
       assertCurrent,
-    assertDelegatedAdmission: talkRelayAdmission
-      ? () =>
-          talkRelayAdmission.assertCurrent(
-            session.sessionKey,
-            client?.connId,
-            normalizedRequest.value.explicitOrigin,
-          )
-      : undefined,
     });
     if (nativeRestriction) {
       respond(false, undefined, nativeRestriction);
@@ -158,6 +150,14 @@ export async function prepareAndAdmitChatSend(
       onAdmissionOwned,
       hasCurrentClientAuthority,
       assertCurrent,
+      assertDelegatedAdmission: talkRelayAdmission
+        ? () =>
+            talkRelayAdmission.assertCurrent(
+              session.sessionKey,
+              client?.connId,
+              normalizedRequest.value.explicitOrigin,
+            )
+        : undefined,
     });
     if (!admitted.ok) {
       return undefined;

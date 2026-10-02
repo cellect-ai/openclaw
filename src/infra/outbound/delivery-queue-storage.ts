@@ -10,6 +10,7 @@ import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
   loadDeliveryQueueEntries,
+  loadDeliveryQueueEntry,
 } from "../delivery-queue-sqlite.js";
 import { executeDeliveryQueueOperation } from "../delivery-queue-worker-store.js";
 import type { DeliveryQueueWorkerOperations } from "../delivery-queue.worker-contract.js";

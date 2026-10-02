@@ -197,6 +197,11 @@ export function prepareChatSendSession(params: {
       return { ok: false as const, error: creationError };
     }
   }
+  const activeRunScopeKey = resolveChatSendActiveScopeKey({
+    sessionKey,
+    agentId: selectedAgent.agentId,
+    mainKey: cfg.session?.mainKey,
+  });
   const resolvedSessionModel = resolveSessionModelRef(cfg, entry, agentId);
   const resolvedSessionAuthProvider = resolveProviderIdForAuth(resolvedSessionModel.provider, {
     config: cfg,
@@ -254,6 +259,7 @@ export function prepareChatSendSession(params: {
       requestedAgentId,
       requestedSessionId,
       backingSessionId,
+      activeRunScopeKey,
       resolvedSessionModel,
       resolvedSessionAuthProvider,
       timeoutMs,
