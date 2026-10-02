@@ -196,6 +196,7 @@ export function registerConversationLifecycleTransport(options: {
       (event.agentId !== undefined && event.agentId !== context.agentId)
     )
       return;
+    const sessionId = context.sessionId;
     const ownerKey = `${generation}:${event.runId}`;
     let bindings = owners.get(ownerKey);
     if (!bindings) {
@@ -236,7 +237,7 @@ export function registerConversationLifecycleTransport(options: {
             binding,
             runId: event.runId,
             generation,
-            sessionId: context.sessionId,
+            sessionId,
             revision: 0,
             state: incomingState,
             pending: [],
