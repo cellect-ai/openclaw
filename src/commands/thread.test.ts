@@ -161,10 +161,10 @@ function testRuntime(): RuntimeEnv {
 }
 
 describe("thread run-event port", () => {
-  it("ranks a new success above an old failure past the 200-event page cap", () => {
+  it("reaches the real tail past 1000 events and resumes the newest failure", async () => {
     seedStateDir();
     const base = Date.now() - 3_600_000;
-    for (let i = 0; i < 210; i += 1) {
+    for (let i = 0; i < 1050; i += 1) {
       recordRun({
         sessionKey: THREAD_OWNER_KEY,
         kind: "human_direct_message",
@@ -176,21 +176,88 @@ describe("thread run-event port", () => {
       kind: "run_failed",
       runId: "run-old",
       outcome: "error",
-      occurredAt: base + 500,
+      occurredAt: base + 2000,
+    });
+    recordRun({
+      sessionKey: THREAD_OWNER_KEY,
+      kind: "run_failed",
+      runId: "run-new",
+      outcome: "timeout",
+      occurredAt: base + 2100,
+    });
+    const tasks = tasksForThread(
+      { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
+      [threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2100 })],
+    );
+    expect(tasks.map((task) => task.taskId)).toEqual(["run-new", "run-old"]);
+    expect(tasks[0]?.status).toBe("timed_out");
+    vi.mocked(callGateway).mockResolvedValueOnce({ ok: true });
+    const runtime = testRuntime();
+    await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
+      threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2100 }),
+    ]);
+    expect(callGateway).toHaveBeenCalledTimes(1);
+  });
+
+  it("ranks a same-millisecond success above its failure and refuses resume", async () => {
+    seedStateDir();
+    const at = Date.now() - 3_600_000;
+    recordRun({
+      sessionKey: THREAD_OWNER_KEY,
+      kind: "run_failed",
+      runId: "run-old",
+      outcome: "error",
+      occurredAt: at,
     });
     recordRun({
       sessionKey: THREAD_OWNER_KEY,
       kind: "run_completed",
       runId: "run-new",
-      occurredAt: base + 600,
+      occurredAt: at,
     });
     const tasks = tasksForThread(
       { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
-      [threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 600 })],
+      [threadMatch(THREAD_OWNER_KEY, { updatedAt: at })],
     );
     expect(tasks.map((task) => task.taskId)).toEqual(["run-new", "run-old"]);
-    expect(tasks[0]?.status).toBe("succeeded");
-    expect(tasks[1]?.status).toBe("failed");
+    const runtime = testRuntime();
+    await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
+      threadMatch(THREAD_OWNER_KEY, { updatedAt: at }),
+    ]);
+    expect(runtime.exit).toHaveBeenCalledWith(2);
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringMatching(/superseded/));
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("fails closed when the failure is buried past the tail window", async () => {
+    seedStateDir();
+    const base = Date.now() - 3_600_000;
+    recordRun({
+      sessionKey: THREAD_OWNER_KEY,
+      kind: "run_failed",
+      runId: "run-buried",
+      outcome: "error",
+      occurredAt: base,
+    });
+    for (let i = 0; i < 250; i += 1) {
+      recordRun({
+        sessionKey: THREAD_OWNER_KEY,
+        kind: "human_direct_message",
+        occurredAt: base + 1000 + i,
+      });
+    }
+    const tasks = tasksForThread(
+      { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
+      [threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2000 })],
+    );
+    expect(tasks).toEqual([]);
+    const runtime = testRuntime();
+    await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
+      threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2000 }),
+    ]);
+    expect(runtime.exit).toHaveBeenCalledWith(2);
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringMatching(/supersedes/));
+    expect(callGateway).not.toHaveBeenCalled();
   });
 
   it("treats a native running entry as live and refuses a duplicate resume", async () => {
@@ -240,6 +307,17 @@ describe("thread run-event port", () => {
     const runtime = testRuntime();
     await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
       threadMatch(THREAD_OWNER_KEY, { updatedAt: old }),
+    ]);
+    expect(runtime.exit).toHaveBeenCalledWith(2);
+    expect(runtime.error).toHaveBeenCalledWith(expect.stringMatching(/supersedes/));
+    expect(callGateway).not.toHaveBeenCalled();
+  });
+
+  it("reports no recorded task for a quiet thread", async () => {
+    seedStateDir();
+    const runtime = testRuntime();
+    await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
+      threadMatch(THREAD_OWNER_KEY, { updatedAt: Date.now() - 3_600_000 }),
     ]);
     expect(runtime.exit).toHaveBeenCalledWith(2);
     expect(runtime.error).toHaveBeenCalledWith(expect.stringMatching(/No failed task/));
@@ -379,6 +457,77 @@ describe("thread run-event port", () => {
     expect(sent.params?.message).toContain(trigger);
     expect(sent.params?.message).not.toContain(followUp);
     expect(trigger.length).toBeGreaterThan(500);
+  });
+
+  it("reads original context from the owner transcript, not the newest child", async () => {
+    seedStateDir();
+    const ownerDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-thread-owner-"));
+    const childDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-thread-child-"));
+    tempDirs.push(ownerDir, childDir);
+    const terminalAt = Date.now() - 3_600_000;
+    const childKey = "agent:main:subagent:thread-child";
+    const trigger = "owner trigger: reconcile the ledger";
+    const childText = "child-only chatter";
+    const ownerStore = path.join(ownerDir, "sessions.json");
+    const childStore = path.join(childDir, "sessions.json");
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: THREAD_OWNER_KEY, storePath: ownerStore },
+      { sessionId: "session-owner", updatedAt: terminalAt },
+    );
+    replaceTranscriptEventsSync(
+      { agentId: "main", sessionId: "session-owner", sessionKey: THREAD_OWNER_KEY, storePath: ownerStore },
+      [
+        {
+          type: "message",
+          timestamp: new Date(terminalAt - 60_000).toISOString(),
+          message: { role: "user", content: trigger },
+        },
+      ],
+    );
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey: childKey, storePath: childStore },
+      { sessionId: "session-child", updatedAt: terminalAt + 60_000 },
+    );
+    replaceTranscriptEventsSync(
+      { agentId: "main", sessionId: "session-child", sessionKey: childKey, storePath: childStore },
+      [
+        {
+          type: "message",
+          timestamp: new Date(terminalAt + 60_000).toISOString(),
+          message: { role: "user", content: childText },
+        },
+      ],
+    );
+    recordRun({
+      sessionKey: THREAD_OWNER_KEY,
+      kind: "run_failed",
+      runId: "run-owner",
+      outcome: "error",
+      occurredAt: terminalAt,
+    });
+    vi.mocked(callGateway).mockResolvedValueOnce({ ok: true });
+    const runtime = testRuntime();
+    await threadResumeCommand({ permalink: THREAD_PERMALINK }, runtime, [
+      {
+        agentId: "main",
+        sessionKey: childKey,
+        storePath: childStore,
+        entry: { sessionId: "session-child", updatedAt: terminalAt + 60_000 } as ThreadSessionMatch["entry"],
+      },
+      {
+        agentId: "main",
+        sessionKey: THREAD_OWNER_KEY,
+        storePath: ownerStore,
+        entry: { sessionId: "session-owner", updatedAt: terminalAt } as ThreadSessionMatch["entry"],
+      },
+    ]);
+    expect(callGateway).toHaveBeenCalledTimes(1);
+    const sent = vi.mocked(callGateway).mock.calls[0]?.[0] as {
+      params?: { message?: string; sessionKey?: string };
+    };
+    expect(sent.params?.sessionKey).toBe(THREAD_OWNER_KEY);
+    expect(sent.params?.message).toContain(trigger);
+    expect(sent.params?.message).not.toContain(childText);
   });
 
   it("reports the terminal record in status output", async () => {
