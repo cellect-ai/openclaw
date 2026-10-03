@@ -1205,7 +1205,9 @@ export async function handleSlackAction(
         }
         return await imageResultFromFile({
           label: "slack-file",
-          path: downloaded.path,
+          // Read the sandbox-visible staged copy (byte-identical to the store
+          // original) so the reported path, mediaUrl, and preview bytes agree.
+          path: staged.fsPath,
           // The inline image can be downscaled for the model; the staged file is
           // Slack's original upload (url_private_download), byte for byte.
           extraText: `${downloaded.placeholder}\nOriginal file${size === undefined ? "" : ` (${size} bytes)`} saved at ${staged.fsPath}; the inline preview may be resized. Pass original=true to skip the preview.`,

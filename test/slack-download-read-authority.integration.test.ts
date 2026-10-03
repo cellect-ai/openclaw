@@ -260,6 +260,18 @@ function resultPath(result: DownloadResult): string {
   return payloadPath(result?.details);
 }
 
+// Fork layout: the Slack download is staged into the agent workspace for
+// sandbox readback, so the reported path names the staged workspace copy
+// while the store original stays under mediaDir. Direct-operator calls carry
+// no agent workspace, so no staging engages and the stock store layout holds.
+function stagedInboundDir(workspaceDir: string): string {
+  return path.join(workspaceDir, "media", "inbound");
+}
+
+function toWorkspaceRoute(workspaceDir: string, absolutePath: string): string {
+  return path.relative(workspaceDir, absolutePath).split(path.sep).join(path.posix.sep);
+}
+
 afterEach(() => {
   interleaving.lookup = undefined;
   interleaving.afterMime = undefined;
@@ -286,6 +298,7 @@ async function withDownloadFixture(
     terminalRequests: URL[];
     phases: Set<Phase>;
     mediaDir: string;
+    workspaceDir: string;
     preservedPath: string;
     displacedPath: string;
     body: Buffer;
@@ -708,6 +721,7 @@ async function withDownloadFixture(
                 terminalRequests,
                 phases,
                 mediaDir,
+                workspaceDir: state.workspaceDir,
                 preservedPath,
                 displacedPath,
                 body,
@@ -754,7 +768,12 @@ describe("registered Slack attachment downloads", () => {
       await withDownloadFixture(options, async (fixture) => {
         const result = await fixture.invoke();
         const saved = resultPath(result);
-        expect(path.dirname(saved)).toBe(fixture.mediaDir);
+        // Direct-operator calls carry no agent workspace (stock store layout);
+        // every other execution reports the staged workspace copy.
+        const staged = options.entry !== "direct";
+        expect(path.dirname(saved)).toBe(
+          staged ? stagedInboundDir(fixture.workspaceDir) : fixture.mediaDir,
+        );
         await expect(fs.readFile(saved)).resolves.toEqual(fixture.body);
         if (process.platform !== "win32") {
           expect((await fs.stat(saved)).mode & 0o777).toBe(0o644);
@@ -765,7 +784,10 @@ describe("registered Slack attachment downloads", () => {
             ok: true,
             fileId: FILE_ID,
             contentType: "application/pdf",
-            media: { mediaUrl: saved, outbound: false },
+            media: {
+              mediaUrl: staged ? toWorkspaceRoute(fixture.workspaceDir, saved) : saved,
+              outbound: false,
+            },
           },
         });
         expect(
@@ -1071,9 +1093,10 @@ describe("Slack download authority through artifact completion", () => {
   it("preserves replacement content at a rejected result's former artifact path", async () => {
     await withDownloadFixture({ phase: "result", replaceResultFile: true }, async (fixture) => {
       await expect(fixture.invoke()).rejects.toThrow(/no longer active/i);
-      const remaining = (await filesUnder(fixture.mediaDir)).filter(
-        (file) => file !== fixture.preservedPath,
-      );
+      // The rejected result's former artifact path is the staged workspace
+      // copy; the store directory keeps only the preserved fixture file.
+      expect(await filesUnder(fixture.mediaDir)).toEqual([fixture.preservedPath]);
+      const remaining = await filesUnder(stagedInboundDir(fixture.workspaceDir));
       expect(remaining).toHaveLength(1);
       await expect(fs.readFile(remaining[0]!, "utf8")).resolves.toBe("replacement must remain");
       await expect(fs.readFile(fixture.displacedPath)).resolves.toEqual(fixture.body);
@@ -1092,9 +1115,11 @@ describe("Gateway message.action Slack download completion", () => {
         error: undefined,
       });
       const saved = payloadPath(response.payload);
-      expect(path.dirname(saved)).toBe(fixture.mediaDir);
+      expect(path.dirname(saved)).toBe(stagedInboundDir(fixture.workspaceDir));
       await expect(fs.readFile(saved)).resolves.toEqual(fixture.body);
-      expect(response.payload).toMatchObject({ media: { mediaUrl: saved, outbound: false } });
+      expect(response.payload).toMatchObject({
+        media: { mediaUrl: toWorkspaceRoute(fixture.workspaceDir, saved), outbound: false },
+      });
 
       const replay = await fixture.invokeGateway();
       expect(replay).toMatchObject({ ok: true, payload: response.payload, meta: { cached: true } });
