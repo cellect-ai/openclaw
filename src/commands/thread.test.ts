@@ -126,13 +126,23 @@ function seedStateDir() {
 
 function threadMatch(
   sessionKey: string,
-  entry: Record<string, unknown>,
+  entry: {
+    sessionId?: string;
+    updatedAt: number;
+    status?: string;
+    abortedLastRun?: boolean;
+    spawnedBy?: string;
+    observerDigest?: unknown;
+  },
 ): ThreadSessionMatch {
   return {
     agentId: "main",
     sessionKey,
     storePath: ":memory:",
-    entry: entry as ThreadSessionMatch["entry"],
+    entry: {
+      sessionId: `session-${sessionKey}`,
+      ...entry,
+    } as ThreadSessionMatch["entry"],
   };
 }
 
