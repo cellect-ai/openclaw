@@ -12,6 +12,11 @@ function sanitizedLiveShapedSlackSection() {
     mode: "socket",
     botToken: "xoxb-sanitized",
     appToken: "xapp-sanitized",
+    dmPolicy: "pairing",
+    groupPolicy: "allowlist",
+    postAs: "bot",
+    webhookPath: "/slack/events",
+    userTokenReadOnly: true,
     threadOwnership: { preferredAccounts: ["fi-admin", "fi-user"] },
     reactionTriggers: {
       inbox_tray: { prompt: "File the attachments.", requestUsers: ["U123"] },
