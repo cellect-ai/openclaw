@@ -16,8 +16,8 @@ import { isMainSessionRecoveryPending } from "../agents/main-session-recovery/ma
 import {
   getSessionStateVersion,
   listSessionStateEventsSince,
-  type SessionStateEventRecord,
 } from "../sessions/session-state-events.js";
+import type { SessionStateEventRecord } from "../sessions/session-state-events.kernel.js";
 
 // 9.8 port of the 9.6 task-registry inspection (src/tasks removed upstream in
 // 9.7): thread tasks are reconstructed from the maintained session-state
@@ -377,9 +377,10 @@ export async function threadResumeCommand(
     runtime.exit(2);
     return;
   }
-  const recoveryPending = state.sessions.find(
-    (session) => threadSessionLiveness(session).recoveryPending,
-  );
+  const recoveryPending = state.sessions.find((session) => {
+    const liveness = threadSessionLiveness(session);
+    return !liveness.live && liveness.recoveryPending;
+  });
   if (recoveryPending) {
     runtime.error(
       `Thread session ${recoveryPending.sessionKey} has a gateway recovery cycle pending; no thread resume was queued.`,
