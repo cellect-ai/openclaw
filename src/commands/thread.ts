@@ -14,6 +14,7 @@ import type { RuntimeEnv } from "../runtime.js";
 import { extractEditorText } from "../config/sessions/session-message-cut-content.js";
 import { isMainSessionRecoveryPending } from "../agents/main-session-recovery/main-session-recovery-state.js";
 import {
+  getSessionStateVersion,
   listSessionStateEventsSince,
   type SessionStateEventRecord,
 } from "../sessions/session-state-events.js";
@@ -38,6 +39,8 @@ type ThreadTask = {
   childSessionKey?: string;
   createdAt: number;
   lastEventAt?: number;
+  /** State-log sequence: breaks occurredAt ties so a same-ms success outranks its failure. */
+  sequence?: number;
   error?: string;
   task: string;
 };
@@ -67,6 +70,7 @@ function threadTaskFromRunEvent(
     requesterSessionKey: sessionKey,
     createdAt: event.occurredAt,
     lastEventAt: event.occurredAt,
+    sequence: event.sequence,
     ...(event.kind === "run_failed"
       ? { error: outcome ? `${event.summary} (${outcome})` : event.summary }
       : {}),
@@ -152,30 +156,32 @@ export function threadSessionLiveness(session: ThreadSessionMatch): ThreadLivene
 }
 
 /**
- * All state events for one session, oldest-first. Pages the ASC/capped reader
- * to the tail so a new success is never outranked by an old failure past the
- * cap.
+ * Tail state events for one session, oldest-first. Starts from the durable
+ * head cursor so the actual tail is reached no matter how many events precede
+ * it; `truncated` means concurrent growth past the cap and adjudication must
+ * fail closed.
  */
 export function listThreadSessionEvents(
   session: ThreadSessionMatch,
   limit = 200,
-): SessionStateEventRecord[] {
-  const events: SessionStateEventRecord[] = [];
-  let afterSequence = 0;
-  for (let page = 0; page < 5; page += 1) {
-    const result = listSessionStateEventsSince(
-      session.sessionKey,
-      session.agentId,
-      afterSequence,
-      limit,
-    );
-    events.push(...result.events);
-    if (!result.truncated || result.events.length === 0) {
-      break;
-    }
-    afterSequence = result.events[result.events.length - 1]?.sequence ?? afterSequence;
-  }
-  return events;
+): { events: SessionStateEventRecord[]; truncated: boolean } {
+  const head = getSessionStateVersion(session.sessionKey, session.agentId);
+  const cursor = head > 0 ? Math.max(0, head - limit) : 0;
+  const result = listSessionStateEventsSince(
+    session.sessionKey,
+    session.agentId,
+    cursor,
+    limit,
+  );
+  return { events: result.events, truncated: result.truncated };
+}
+
+/** Newest-first by (occurredAt, sequence): same-ms ties keep log order. */
+function compareThreadTasks(left: ThreadTask, right: ThreadTask): number {
+  return (
+    (right.lastEventAt ?? right.createdAt) - (left.lastEventAt ?? left.createdAt) ||
+    (right.sequence ?? -1) - (left.sequence ?? -1)
+  );
 }
 
 export function tasksForThread(
@@ -184,7 +190,7 @@ export function tasksForThread(
 ): ThreadTask[] {
   const tasks: ThreadTask[] = [];
   for (const session of sessions) {
-    for (const event of listThreadSessionEvents(session)) {
+    for (const event of listThreadSessionEvents(session).events) {
       const task = threadTaskFromRunEvent(event, session.sessionKey);
       if (task) {
         tasks.push(task);
@@ -204,9 +210,7 @@ export function tasksForThread(
       });
     }
   }
-  return tasks.toSorted(
-    (left, right) => (right.lastEventAt ?? right.createdAt) - (left.lastEventAt ?? left.createdAt),
-  );
+  return tasks.toSorted(compareThreadTasks);
 }
 
 function sessionsForThread(ref: SlackThreadRef): ThreadSessionMatch[] {
@@ -304,7 +308,11 @@ export async function inspectThread(rawPermalink: string, sessions?: ThreadSessi
   const tasks = tasksForThread(ref, matches);
   const latestTask = tasks[0];
   const session = matches[0];
-  const transcript = await readThreadTranscriptTail(session);
+  // Original context belongs to the owning thread session, which need not be
+  // the most recently updated match (often a child).
+  const ownerMatch =
+    matches.find((match) => match.sessionKey.endsWith(ref.sessionSuffix)) ?? session;
+  const transcript = await readThreadTranscriptTail(ownerMatch);
   return {
     ref,
     tasks,
@@ -379,14 +387,34 @@ export async function threadResumeCommand(
     runtime.exit(2);
     return;
   }
+  // Adjudication reads the same tail window the tasks came from. A truncated
+  // window means concurrent growth past the cap: fail closed, never resume.
+  const coverage = state.sessions.map((session) => listThreadSessionEvents(session));
+  if (coverage.some((window) => window.truncated)) {
+    runtime.error(
+      "Thread event history is incomplete; cannot adjudicate resume; no resume was queued.",
+    );
+    runtime.exit(2);
+    return;
+  }
+  const horizonEvents = coverage.flatMap((window) =>
+    window.events.filter((event) => event.kind !== "compacted"),
+  );
+  // Newest-first by (occurredAt, sequence): a same-millisecond success
+  // outranks its failure instead of resuming it.
+  const horizon = horizonEvents
+    .map(
+      (event) => [event.occurredAt, event.sequence] as const,
+    )
+    .toSorted((left, right) => right[0] - left[0] || right[1] - left[1])[0];
   // Trigger on the newest resumable failure thread-wide (newest-first order);
   // delivery below still targets the owning thread session, never the most
   // recently updated child.
   const latestTask = state.tasks.find((task) => RESUMABLE_TASK_STATUSES.has(task.status));
   if (!latestTask) {
     runtime.error(
-      state.latestTask
-        ? `Latest thread task ${state.latestTask.taskId} is ${state.latestTask.status}, not a terminal failure; no resume was queued.`
+      horizon
+        ? "No terminal failure in recent thread history; newer activity supersedes any older record; no resume was queued."
         : "No failed task is recorded for this Slack thread; no resume was queued.",
     );
     runtime.exit(2);
@@ -395,15 +423,11 @@ export async function threadResumeCommand(
   // Fail closed when the terminal failure is superseded: any newer meaningful
   // state event means the thread state is unknown, not resumable.
   const candidateAt = latestTask.lastEventAt ?? latestTask.createdAt;
-  const horizon = Math.max(
-    0,
-    ...state.sessions.flatMap((session) =>
-      listThreadSessionEvents(session)
-        .filter((event) => event.kind !== "compacted")
-        .map((event) => event.occurredAt),
-    ),
-  );
-  if (horizon > candidateAt) {
+  const candidateSequence = latestTask.sequence ?? -1;
+  const superseded =
+    horizon !== undefined &&
+    (horizon[0] > candidateAt || (horizon[0] === candidateAt && horizon[1] > candidateSequence));
+  if (superseded) {
     runtime.error(
       `Latest terminal failure ${latestTask.taskId} is superseded by newer thread activity; no resume was queued.`,
     );
