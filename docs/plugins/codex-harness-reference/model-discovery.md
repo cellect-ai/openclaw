@@ -101,9 +101,9 @@ response remains authoritative even if it contains no visible models; HTTP
 `401` and `403` return an empty catalog rather than exposing fallback models.
 
 <Note>
-The current bundled harness is `@openai/codex` `0.160.0`. A `model/list`
-probe against that app-server in an isolated, unauthenticated Codex home returned
-these visible bundled catalog entries on October 2, 2026:
+The current bundled harness is `@openai/codex` `0.159.3`. A historical live `model/list`
+probe against `0.158.0`, authenticated with a ChatGPT account, returned
+this public subset of catalog metadata on September 28, 2026:
 
 | Model id        | Input modalities | Reasoning efforts                    | Default effort |
 | --------------- | ---------------- | ------------------------------------ | -------------- |
