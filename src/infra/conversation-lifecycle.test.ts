@@ -61,7 +61,7 @@ describe("trusted durable conversation lifecycle", () => {
     owner("worker-flush");
     emit("worker-flush", "start");
     emit("worker-flush", "end");
-    const sql = observeHostDataSql({ ...process.env, OPENCLAW_STATE_DIR: stateDir });
+    const sql = observeHostDataSql();
     try {
       await transport.flush();
       expect(sql.calls.map((call) => call.mock.calls.length)).toEqual([0, 0, 0, 0, 0, 0]);
