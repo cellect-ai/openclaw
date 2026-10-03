@@ -315,9 +315,11 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
                     : "",
               )
               .join("");
-            const terminalItemId = assistantMessages.find(
+            const terminalItem = assistantMessages.find(
               (item) => typeof item.id === "string" && item.id.length > 0,
-            )?.id;
+            );
+            const terminalItemId =
+              typeof terminalItem?.id === "string" ? terminalItem.id : undefined;
             this.flushAssistantTranscript(terminalTranscript, terminalItemId);
           });
           if (this.outputResponse) {
