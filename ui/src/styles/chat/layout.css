@@ -3095,7 +3095,7 @@ openclaw-chat-ci-details {
   .agent-chat__input--chat .chat-mobile-dictation-action .chat-send-btn--voice > svg {
     width: var(--chat-mobile-row-icon-size);
     height: var(--chat-mobile-row-icon-size);
-    color: var(--muted);
+    color: var(--text-strong);
     opacity: var(--chat-mobile-row-mic-opacity);
     stroke-width: var(--chat-mobile-row-mic-stroke);
   }

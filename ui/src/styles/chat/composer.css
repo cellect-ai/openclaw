@@ -680,7 +680,7 @@
    separate hit areas so hover and focus always identify which action will fire. */
 .chat-talk-control {
   --chat-voice-background: transparent;
-  --chat-voice-color: var(--muted);
+  --chat-voice-color: var(--text-strong);
   --chat-voice-hover-background: var(--bg-hover);
   --chat-voice-hover-color: var(--text);
   --chat-microphone-picker-width: 28px;

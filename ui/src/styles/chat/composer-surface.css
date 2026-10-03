@@ -673,6 +673,18 @@
   stroke-linejoin: round;
 }
 
+/* Fill only the head. The stand stays a stroke; filling it with the head
+   draws a wedge through the mic. */
+.chat-send-btn--voice > svg .icon-mic-capsule {
+  fill: currentColor;
+  stroke: none;
+}
+
+/* The stand is an open arc. A fill on it closes a wedge through the head. */
+.chat-send-btn--voice > svg path:not(.icon-mic-capsule) {
+  fill: none;
+}
+
 /* Capture variants below own their hover fill independently of the primary action. */
 .chat-send-btn:hover:not(:disabled) {
   background: var(--primary-hover);
@@ -738,11 +750,12 @@
   color: var(--danger);
 }
 
-/* Voice keeps the quiet chrome treatment: it is a mode toggle beside send, not
-   a second primary action. */
+/* Voice keeps a quiet ground: it is a mode toggle beside send, not a second
+   primary action. The glyph stays the strong text color so the mark is present
+   before the field is focused. */
 .agent-chat__input .chat-send-btn--voice {
   background: transparent;
-  color: var(--text);
+  color: var(--text-strong);
 }
 
 .agent-chat__input .chat-send-btn--voice:disabled {
@@ -754,11 +767,11 @@
   color: var(--text-strong);
 }
 
-/* Idle voice fill stays muted so the idle -> hover -> recording progression
-   escalates without turning the microphone into a second primary action. */
+/* Idle voice chrome stays quiet. The ground is transparent; the glyph uses the
+   strong text color. A muted stroke read as a missing icon. */
 .chat-send-btn--voice {
-  background: var(--chat-voice-background, color-mix(in srgb, var(--accent) 10%, transparent));
-  color: var(--chat-voice-color, var(--accent));
+  background: var(--chat-voice-background, transparent);
+  color: var(--chat-voice-color, var(--text-strong));
   box-shadow: none;
 }
 
@@ -1119,7 +1132,8 @@
     --chat-mobile-row-action-padding: var(--chat-mobile-row-icon-padding);
     --chat-mobile-row-action-gap: 4px;
     --chat-mobile-row-stop-icon-size: 18px;
-    --chat-mobile-row-mic-opacity: 0.72;
+    /* Solid mark. 0.72 on --muted disappeared on the medium composer. */
+    --chat-mobile-row-mic-opacity: 1;
     --chat-mobile-row-mic-stroke: 2;
     --chat-composer-control-size: var(--chat-mobile-row-target-size);
     --chat-composer-chip-height: var(--chat-mobile-row-target-size);
@@ -1222,10 +1236,10 @@
     padding: var(--chat-mobile-row-icon-padding);
   }
 
-  .agent-chat__input--mobile-toolbar .chat-send-btn--voice > svg {
+  .agent-chat__input--mobile-toolbar .chat-talk-control .chat-send-btn--voice > svg {
     width: var(--chat-mobile-row-icon-size);
     height: var(--chat-mobile-row-icon-size);
-    color: var(--muted);
+    color: var(--text-strong);
     opacity: var(--chat-mobile-row-mic-opacity);
     stroke-width: var(--chat-mobile-row-mic-stroke);
   }
