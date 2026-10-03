@@ -1037,7 +1037,11 @@ describe("handleSlackAction", () => {
       await expect(fs.readFile(path.join(workspaceDir, stagedPath), "utf8")).resolves.toBe(
         "invoice evidence",
       );
-      expect(requireDetails(result).path).toBe(stagedPath);
+      expect(requireDetails(result).path).toBe(path.join(workspaceDir, stagedPath));
+      expect(requireDetails(result).media).toMatchObject({
+        mediaUrl: "media/inbound/source.pdf",
+        outbound: false,
+      });
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });
     }
@@ -1129,14 +1133,14 @@ describe("handleSlackAction", () => {
         {
           fileId: "F1",
           ok: true,
-          path: "media/inbound/F1-invoice.pdf",
+          path: path.join(workspaceDir, "media/inbound/F1-invoice.pdf"),
           contentType: "application/pdf",
           size: 16,
         },
         {
           fileId: "F2",
           ok: true,
-          path: "media/inbound/F2-receipt.png",
+          path: path.join(workspaceDir, "media/inbound/F2-receipt.png"),
           contentType: "image/png",
           size: 16,
         },
@@ -1191,7 +1195,7 @@ describe("handleSlackAction", () => {
       const details = requireDetails(result);
       expect(requireArray(details.messages, "thread messages")).toHaveLength(2);
       expect(requireArray(details.files, "thread files")).toMatchObject([
-        { fileId: "F1", ok: true, path: "media/inbound/F1-invoice.pdf" },
+        { fileId: "F1", ok: true, path: path.join(workspaceDir, "media/inbound/F1-invoice.pdf") },
       ]);
     } finally {
       await fs.rm(tempDir, { recursive: true, force: true });

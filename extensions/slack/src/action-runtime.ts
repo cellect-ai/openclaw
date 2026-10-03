@@ -106,14 +106,21 @@ export const slackActionRuntime = {
 
 export type { SlackActionContext } from "./action-context.js";
 
+export type StagedSlackFile = {
+  /** Absolute filesystem path: the `path` contract readers and tests rely on. */
+  fsPath: string;
+  /** Workspace-relative posix reference for outbound media routing. */
+  workspacePath: string;
+};
+
 async function stageDownloadedSlackFile(
   downloadedPath: string,
   context: SlackActionContext | undefined,
   fileId?: string,
-): Promise<string> {
+): Promise<StagedSlackFile> {
   const workspaceDir = context?.mediaWorkspaceDir?.trim();
   if (!workspaceDir) {
-    return downloadedPath;
+    return { fsPath: downloadedPath, workspacePath: downloadedPath };
   }
   const fileName = fileId
     ? `${fileId}-${path.basename(downloadedPath)}`
@@ -124,7 +131,10 @@ async function stageDownloadedSlackFile(
     mkdir: true,
     sourceHardlinks: "reject",
   });
-  return relativePath.split(path.sep).join(path.posix.sep);
+  return {
+    fsPath: path.join(workspaceDir, relativePath),
+    workspacePath: relativePath.split(path.sep).join(path.posix.sep),
+  };
 }
 
 async function hashSlackFile(filePath: string): Promise<string> {
@@ -1138,11 +1148,11 @@ export async function handleSlackAction(
               hashSlackFile(downloaded.path),
               stat(downloaded.path),
             ]);
-            const agentPath = await stageDownloadedSlackFile(downloaded.path, context, batchFileId);
+            const staged = await stageDownloadedSlackFile(downloaded.path, context, batchFileId);
             files.push({
               fileId: batchFileId,
               ok: true,
-              path: agentPath,
+              path: staged.fsPath,
               contentType: downloaded.contentType,
               size: fileStat.size,
               sha256,
@@ -1171,7 +1181,7 @@ export async function handleSlackAction(
               "File could not be downloaded. Confirm the fileId came from the requested Slack channel or explicit thread and that the file is accessible.",
           });
         }
-        const agentPath = await stageDownloadedSlackFile(downloaded.path, context);
+        const staged = await stageDownloadedSlackFile(downloaded.path, context);
         const size = await stat(downloaded.path).then(
           (fileStat) => fileStat.size,
           () => undefined,
@@ -1181,13 +1191,13 @@ export async function handleSlackAction(
             ok: true,
             fileId,
             channelId,
-            path: agentPath,
+            path: staged.fsPath,
             contentType: downloaded.contentType,
             size,
             original: true,
             placeholder: downloaded.placeholder,
             media: {
-              mediaUrl: agentPath,
+              mediaUrl: staged.workspacePath,
               outbound: false,
               ...(downloaded.contentType ? { contentType: downloaded.contentType } : {}),
             },
@@ -1198,10 +1208,10 @@ export async function handleSlackAction(
           path: downloaded.path,
           // The inline image can be downscaled for the model; the staged file is
           // Slack's original upload (url_private_download), byte for byte.
-          extraText: `${downloaded.placeholder}\nOriginal file${size === undefined ? "" : ` (${size} bytes)`} saved at ${agentPath}; the inline preview may be resized. Pass original=true to skip the preview.`,
+          extraText: `${downloaded.placeholder}\nOriginal file${size === undefined ? "" : ` (${size} bytes)`} saved at ${staged.fsPath}; the inline preview may be resized. Pass original=true to skip the preview.`,
           details: {
             fileId,
-            path: agentPath,
+            path: staged.fsPath,
             size,
             ...(downloaded.contentType ? { contentType: downloaded.contentType } : {}),
             media: { outbound: false },
