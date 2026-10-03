@@ -481,7 +481,14 @@ async function withDownloadFixture(
             }
           },
           afterOpen: (filePath, handle) => {
-            if (options.image && path.dirname(filePath) === mediaDir && filePath.endsWith(".png")) {
+            // Image bytes hydrate from the staged workspace copy (byte-identical
+            // to the store original); observe both layouts.
+            if (
+              options.image &&
+              filePath.endsWith(".png") &&
+              (path.dirname(filePath) === mediaDir ||
+                path.dirname(filePath) === stagedInboundDir(state.workspaceDir))
+            ) {
               const read = handle.readFile.bind(handle);
               vi.spyOn(handle, "readFile").mockImplementation(async (...args) => {
                 const bytes = await read(...args);
@@ -776,7 +783,9 @@ describe("registered Slack attachment downloads", () => {
         );
         await expect(fs.readFile(saved)).resolves.toEqual(fixture.body);
         if (process.platform !== "win32") {
-          expect((await fs.stat(saved)).mode & 0o777).toBe(0o644);
+          // Staged workspace copies are owner-only; the store keeps 0644 files
+          // under the 0700 media directory.
+          expect((await fs.stat(saved)).mode & 0o777).toBe(staged ? 0o600 : 0o644);
           expect((await fs.stat(fixture.mediaDir)).mode & 0o777).toBe(0o700);
         }
         expect(result).toMatchObject({
