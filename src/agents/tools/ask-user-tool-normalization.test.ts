@@ -32,6 +32,14 @@ describe("ask_user normalization", () => {
     expect(Value.Check(AskUserToolSchema, validArgs)).toBe(true);
     expect(
       Value.Check(AskUserToolSchema, {
+        questions: Array.from({ length: 5 }, (_, index) => ({
+          ...validArgs.questions[0],
+          id: `item_${index + 1}`,
+        })),
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(AskUserToolSchema, {
         questions: [{ ...validArgs.questions[0], isSecret: true }],
       }),
     ).toBe(false);
@@ -50,7 +58,7 @@ describe("ask_user normalization", () => {
     ["empty questions", { questions: [] }, "model-facing question contract"],
     [
       "too many questions",
-      { questions: Array.from({ length: 4 }, () => validArgs.questions[0]) },
+      { questions: Array.from({ length: 6 }, () => validArgs.questions[0]) },
       "model-facing question contract",
     ],
     [

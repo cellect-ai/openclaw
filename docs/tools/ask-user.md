@@ -7,10 +7,11 @@ read_when:
 title: "Ask user"
 ---
 
-`ask_user` lets the agent ask the human one to three structured questions and
+`ask_user` lets the agent ask the human one to five structured questions and
 wait for the answers. It is for decisions that genuinely belong to the user,
-not routine confirmation or information the agent can derive from the request,
-code, or a sensible default.
+not information the agent can derive from the request, code, or a sensible
+default. A described plan, dry-run, or slate that still needs a go-ahead is a
+Proceed vs Hold question, not a request to type yes.
 
 The tool is available only in the main session. Subagents and other non-primary
 runs do not receive it.
@@ -140,7 +141,7 @@ turn, including after reconnecting and recovering the question with
       description?: string;
     }>; // 2-4 options
     multiSelect?: boolean;
-  }>; // 1-3 questions
+  }>; // 1-5 questions
   timeoutSeconds?: number; // integer; default 900, clamped to 30-3600
 }
 ```
@@ -170,6 +171,7 @@ question.
 The model-facing contract tells the agent to:
 
 - ask only when blocked on a genuinely user-owned decision;
+- ask at most five questions per call (inbox and similar batches may use all five);
 - ask exactly one question per call unless several answers must be submitted
   together, because one-question prompts can use native messaging controls;
 - put every selectable choice in `options`, never only in question prose;
@@ -178,8 +180,9 @@ The model-facing contract tells the agent to:
 - omit an authored `Other` option because free text is added automatically;
 - continue with best judgment after `no_answer`.
 
-The agent should not use `ask_user` to ask whether it may proceed or to confirm
-its own plan.
+When a described plan, dry-run, or slate still needs a go-ahead, use `ask_user`
+with Proceed (Recommended) vs Hold instead of asking the user to type yes. Skip
+that card when they already said to execute, send, or go.
 
 ## Related
 

@@ -99,7 +99,7 @@ moving its highlighted choice when that model is still present.
 
 When the agent calls [`ask_user`](/tools/ask-user), the TUI opens a question
 prompt for the active session. This works in Gateway mode and local mode
-(`openclaw chat` or `openclaw tui --local`). Prompts with up to three questions
+(`openclaw chat` or `openclaw tui --local`). Prompts with up to five questions
 show one at a time, with a stepper and the time remaining.
 
 Use arrow keys or number keys to choose an option, then Enter to continue.
