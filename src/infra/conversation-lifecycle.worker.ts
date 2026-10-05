@@ -54,7 +54,7 @@ export function executeConversationLifecycleCommand(
       if (
         row.pending.length === 0 &&
         row.resultEventId &&
-        ["completed", "failed", "cancelled", "unknown"].includes(row.state)
+        ["completed", "failed", "cancelled", "interrupted", "unknown"].includes(row.state)
       ) {
         completeDeliveryQueueEntryInDatabase(database, QUEUE, row.id);
         return;
