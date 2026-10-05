@@ -407,6 +407,65 @@ describe("trusted durable conversation lifecycle", () => {
     expect(publications.filter((event) => event.runId === "late").at(-1)?.state).toBe("completed");
     expect(publications.filter((event) => event.state === "completed")).toHaveLength(9);
   });
+  it("publishes the current state once a binding appears after the run started", async () => {
+    let current: ConversationProjectionBinding[] = [];
+    const transport = install({ resolve: () => current });
+    owner("late");
+    emit("late", "start");
+    emitAgentEvent({
+      runId: "late",
+      stream: "approval",
+      data: { phase: "requested", status: "pending", approvalId: "open" },
+    });
+    await transport.flush();
+    current = [binding];
+    await transport.flush();
+    expect(publications).toEqual([]);
+    expect(transport.resolveRun("late", binding.sessionKey)).toBeUndefined();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["waiting"]);
+    expect(publications[0]).toMatchObject({ roomId: binding.roomId, revision: 1 });
+    expect(transport.resolveRun("late", binding.sessionKey)?.bindings).toEqual([binding]);
+    emitAgentEvent({
+      runId: "late",
+      stream: "approval",
+      data: { phase: "resolved", status: "approved", approvalId: "open" },
+    });
+    emit("late", "end");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["waiting", "running", "completed"]);
+  });
+  it("adopts a late binding on the run's next transition without waiting for the retry", async () => {
+    let current: ConversationProjectionBinding[] = [];
+    const transport = install({ resolve: () => current });
+    owner("next");
+    current = [binding];
+    emit("next", "start");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["running"]);
+  });
+  it("never adopts another session's or agent's binding, or a run that ended unbound", async () => {
+    let current: ConversationProjectionBinding[] = [
+      { ...binding, sessionKey: "agent:example:other" },
+      { ...binding, bindingId: "binding-2", agentId: "other" },
+    ];
+    const transport = install({ resolve: () => current });
+    owner("foreign");
+    emit("foreign", "start");
+    owner("ended");
+    emit("ended", "start");
+    emit("ended", "end");
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
+    await transport.flush();
+    expect(publications).toEqual([]);
+    current = [{ ...binding, roomId: "!other:test" }];
+    later.mockReturnValue(Date.now() + 5_000);
+    await transport.flush();
+    expect(publications.map((event) => [event.runId, event.state, event.roomId])).toEqual([
+      ["foreign", "running", "!other:test"],
+    ]);
+  });
   it("fails admission before returning acceptance when the initial obligation cannot be persisted", () => {
     install();
     vi.spyOn(custody, "upsertDeliveryQueueEntry").mockImplementation(() => {

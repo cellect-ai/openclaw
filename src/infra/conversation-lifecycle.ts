@@ -130,6 +130,26 @@ function lifecycleState(event: AgentEventRuntimePayload): ConversationLifecycleS
   return outcome.reason === "timed_out" ? "interrupted" : "failed";
 }
 
+/** Applies an approval to the holder's open set; undefined when the event carries no change. */
+function transition(
+  holder: { pendingApprovals: string[] },
+  event: AgentEventRuntimePayload,
+  incomingState: ConversationLifecycleState,
+): ConversationLifecycleState | undefined {
+  if (event.stream !== "approval") return incomingState;
+  const approvalId = [event.data.approvalId, event.data.itemId, event.data.toolCallId].find(
+    (value): value is string => typeof value === "string" && value.length > 0,
+  );
+  if (!approvalId) return;
+  if (event.data.phase === "requested") {
+    if (!holder.pendingApprovals.includes(approvalId)) holder.pendingApprovals.push(approvalId);
+  } else {
+    if (!holder.pendingApprovals.includes(approvalId)) return;
+    holder.pendingApprovals = holder.pendingApprovals.filter((id) => id !== approvalId);
+  }
+  return holder.pendingApprovals.length ? "waiting" : "running";
+}
+
 function appendTransition(
   row: LifecycleObligation,
   state: ConversationLifecycleState,
@@ -188,6 +208,20 @@ export function registerConversationLifecycleTransport(options: {
   const rowRetries = new Map<string, Retry>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
+  // Runs admitted before any binding existed (typically the first turn of a
+  // conversation started outside Matrix). Their state is tracked here so the
+  // room learns the current state once the binding appears.
+  const unbound = new Map<
+    string,
+    {
+      runId: string;
+      generation: string;
+      state: ConversationLifecycleState;
+      pendingApprovals: string[];
+      attempts: number;
+      notBefore: number;
+    }
+  >();
   // A durable status obligation belongs to this transport, not to the agent
   // event's temporary read/request scope. Retrying after that scope closes must
   // retain the transport's own authority rather than a revoked producer scope.
@@ -243,7 +277,6 @@ export function registerConversationLifecycleTransport(options: {
     const ownerKey = `${generation}:${event.runId}`;
     let bindings = owners.get(ownerKey);
     if (!bindings) {
-      if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
       bindings = options
         .resolveBindings({
           sessionKey: context.sessionKey,
@@ -255,8 +288,38 @@ export function registerConversationLifecycleTransport(options: {
             binding.sessionKey === context.sessionKey && binding.agentId === context.agentId,
         )
         .map((binding) => Object.freeze({ ...binding }));
+      if (!bindings.length) {
+        // An empty lookup is not frozen for the run: the binding can be created
+        // after admission. Later transitions and the bounded flush retry look
+        // again; a run that ends unbound is forgotten.
+        let tracked = unbound.get(ownerKey);
+        if (TERMINAL.has(incomingState)) {
+          unbound.delete(ownerKey);
+          return;
+        }
+        if (!tracked && unbound.size < 10_000) {
+          tracked = {
+            runId: event.runId,
+            generation,
+            state: "queued",
+            pendingApprovals: [],
+            attempts: 0,
+            notBefore: Date.now() + RETRY_BASE_MS,
+          };
+          unbound.set(ownerKey, tracked);
+        }
+        // As for a bound run, a repeated admission never rewinds the state.
+        const state =
+          tracked && incomingState !== "queued"
+            ? transition(tracked, event, incomingState)
+            : undefined;
+        if (tracked && state) tracked.state = state;
+        return;
+      }
+      if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
       owners.set(ownerKey, bindings);
     }
+    const late = unbound.get(ownerKey);
     // The synchronous event contract persists before observers. Its retained
     // transaction also services worker admission while waiting for the writer;
     // raw autocommit writes could deadlock against a worker's commit grant.
@@ -284,24 +347,13 @@ export function registerConversationLifecycleTransport(options: {
             revision: 0,
             state: incomingState,
             pending: [],
-            pendingApprovals: [],
+            pendingApprovals: late ? [...late.pendingApprovals] : [],
           };
-          let state = incomingState;
-          if (event.stream === "approval") {
-            const approvalId = [
-              event.data.approvalId,
-              event.data.itemId,
-              event.data.toolCallId,
-            ].find((value): value is string => typeof value === "string" && value.length > 0);
-            if (!approvalId) continue;
-            if (event.data.phase === "requested") {
-              if (!row.pendingApprovals.includes(approvalId)) row.pendingApprovals.push(approvalId);
-            } else {
-              if (!row.pendingApprovals.includes(approvalId)) continue;
-              row.pendingApprovals = row.pendingApprovals.filter((id) => id !== approvalId);
-            }
-            state = row.pendingApprovals.length ? "waiting" : "running";
-          }
+          let state = transition(row, event, incomingState);
+          if (!state) continue;
+          // A binding found by re-resolution announces where the run already
+          // is; the re-resolving admission must not present it as queued.
+          if (!existing && late && incomingState === "queued") state = late.state;
           if (!existing || existing.state !== state)
             appendTransition(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP);
           write(row);
@@ -310,6 +362,7 @@ export function registerConversationLifecycleTransport(options: {
       { env: resolveDeliveryQueueStateEnv(options.stateDir, stateContext) },
       { operationLabel: "record conversation lifecycle transition" },
     );
+    unbound.delete(ownerKey);
     // Final payload delivery may follow the terminal lifecycle callback. Keep
     // the immutable presentation correlation until bounded lifecycle cleanup.
     if (TERMINAL.has(incomingState)) {
@@ -323,6 +376,39 @@ export function registerConversationLifecycleTransport(options: {
     queueMicrotask(() => {
       void flush().catch(options.onError);
     });
+  };
+
+  const admit = (runId: string) => {
+    const owner = getAgentRunContext(runId);
+    if (!owner) return;
+    record({
+      runId,
+      stream: "admission",
+      seq: 0,
+      ts: Date.now(),
+      data: {},
+      lifecycleGeneration: owner.lifecycleGeneration,
+      sessionKey: owner.sessionKey,
+      sessionId: owner.sessionId,
+      agentId: owner.agentId,
+    });
+  };
+
+  // Looks again for the binding of each live unbound run: every 5s for the
+  // first minute, then once a minute. Ownership and binding identity are
+  // re-validated by `record` exactly as for the original admission.
+  const adoptLateBindings = () => {
+    const now = Date.now();
+    for (const [key, run] of unbound) {
+      if (run.generation !== getAgentRunLifecycleGeneration() || !getAgentRunContext(run.runId)) {
+        unbound.delete(key);
+        continue;
+      }
+      if (run.notBefore > now) continue;
+      run.attempts += 1;
+      run.notBefore = now + (run.attempts < 12 ? RETRY_BASE_MS : 60_000);
+      admit(run.runId);
+    }
   };
 
   const deliver = async (id: string): Promise<void> => {
@@ -392,6 +478,11 @@ export function registerConversationLifecycleTransport(options: {
   const flush = (): Promise<void> => {
     if (draining) return draining;
     if (stopped) return Promise.resolve();
+    try {
+      adoptLateBindings();
+    } catch (error) {
+      options.onError(error);
+    }
     draining = inOwnerContext(async () => {
       // Admission persistence stays synchronous until the event dispatcher has an
       // acknowledged async persistence contract. Delivery never waits for SQLite
@@ -451,21 +542,7 @@ export function registerConversationLifecycleTransport(options: {
   };
 
   const unsubscribe = registerAgentEventPersistenceHandler(record);
-  const unsubscribeAdmission = registerAgentRunAdmissionHandler((runId) => {
-    const owner = getAgentRunContext(runId);
-    if (!owner) return;
-    record({
-      runId,
-      stream: "admission",
-      seq: 0,
-      ts: Date.now(),
-      data: {},
-      lifecycleGeneration: owner.lifecycleGeneration,
-      sessionKey: owner.sessionKey,
-      sessionId: owner.sessionId,
-      agentId: owner.agentId,
-    });
-  });
+  const unsubscribeAdmission = registerAgentRunAdmissionHandler(admit);
   const timer = setInterval(() => {
     void flush().catch(options.onError);
   }, 5_000);
@@ -518,6 +595,7 @@ export function registerConversationLifecycleTransport(options: {
       unsubscribe();
       unsubscribeAdmission();
       owners.clear();
+      unbound.clear();
       for (const retireTimer of retireTimers) clearTimeout(retireTimer);
       retireTimers.clear();
     },
