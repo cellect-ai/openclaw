@@ -14,7 +14,11 @@ import {
   resetAgentEventsForTest,
   rotateAgentEventLifecycleGeneration,
 } from "./agent-events.js";
-import { getAgentRunLifecycleGeneration, registerAgentRunContext } from "./agent-run-registry.js";
+import {
+  getAgentRunLifecycleGeneration,
+  registerAgentRunContext,
+  sweepStaleRunContexts,
+} from "./agent-run-registry.js";
 import {
   registerConversationLifecycleTransport,
   type ConversationProjectionBinding,
@@ -208,7 +212,7 @@ describe("trusted durable conversation lifecycle", () => {
     // Terminal delivery is retained until a proved final visible result arrives.
     expect(custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)).toHaveLength(1);
   });
-  it("marks a vanished process run unknown only after replaying its retained start", async () => {
+  it("marks a vanished process run interrupted only after replaying its retained start", async () => {
     const first = install({ fail: true });
     owner("lost");
     emit("lost", "start");
@@ -221,7 +225,7 @@ describe("trusted durable conversation lifecycle", () => {
     expect(publications.slice(1).map((event) => event.state)).toEqual([
       "queued",
       "running",
-      "unknown",
+      "interrupted",
     ]);
     expect(publications.slice(1).every((event) => event.generation === oldGeneration)).toBe(true);
   });
@@ -295,7 +299,7 @@ describe("trusted durable conversation lifecycle", () => {
       "cancelled",
     ]);
   });
-  it("recovers a crash before start as queued then unknown, without admitting another execution", async () => {
+  it("recovers a crash before start as queued then interrupted, without admitting another execution", async () => {
     const first = install({ fail: true });
     owner("queued-crash");
     await expect(first.flush()).rejects.toThrow();
@@ -303,7 +307,28 @@ describe("trusted durable conversation lifecycle", () => {
     rotateAgentEventLifecycleGeneration();
     const next = install();
     await next.flush();
-    expect(publications.slice(1).map((event) => event.state)).toEqual(["queued", "unknown"]);
+    expect(publications.slice(1).map((event) => event.state)).toEqual(["queued", "interrupted"]);
+  });
+  it("reports a run swept for silence as interrupted and ignores its later events", async () => {
+    const transport = install();
+    owner("silent");
+    emit("silent", "start");
+    await transport.flush();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    owner("silent");
+    emit("silent", "end");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "interrupted"]);
+  });
+  it("reports a timed-out run as interrupted", async () => {
+    const transport = install();
+    owner("slow");
+    emit("slow", "start");
+    emit("slow", "end", { status: "timeout" });
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "interrupted"]);
   });
   it("fails admission before returning acceptance when the initial obligation cannot be persisted", () => {
     install();

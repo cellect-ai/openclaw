@@ -36,6 +36,9 @@ export type ConversationLifecycleState =
   | "completed"
   | "failed"
   | "cancelled"
+  | "interrupted"
+  // No path emits `unknown` any more; it remains only so rows persisted by an
+  // earlier build stay readable and settled.
   | "unknown";
 
 export type ConversationProjectionBinding = Readonly<{
@@ -80,6 +83,7 @@ const TERMINAL = new Set<ConversationLifecycleState>([
   "completed",
   "failed",
   "cancelled",
+  "interrupted",
   "unknown",
 ]);
 const RETENTION = { idPrefix: "lifecycle:", maxAgeMs: 30 * 86400_000, maxEntries: 100_000 };
@@ -106,7 +110,9 @@ function lifecycleState(event: AgentEventRuntimePayload): ConversationLifecycleS
   const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({ phase, data: event.data });
   if (outcome.reason === "completed") return "completed";
   if (["aborted", "cancelled", "superseded"].includes(outcome.reason)) return "cancelled";
-  return outcome.reason === "timed_out" ? "unknown" : "failed";
+  // A timed-out run stopped without an answer. Observers must see that it died:
+  // `unknown` reads as neither live nor failed and is never resolved downstream.
+  return outcome.reason === "timed_out" ? "interrupted" : "failed";
 }
 
 function appendTransition(row: LifecycleObligation, state: ConversationLifecycleState): void {
@@ -304,8 +310,9 @@ export function registerConversationLifecycleTransport(options: {
           })
         )[0];
         if (!row || stopped) continue;
-        // Restart closes only projection liveness. No run is inferred complete
-        // and no execution is re-admitted or resumed by delivery recovery.
+        // Restart or the silent-run sweep removed the owner, so nothing can ever
+        // report this run again: close it as interrupted. No run is inferred
+        // complete and no execution is re-admitted or resumed by recovery.
         const currentOwner = getAgentRunContext(row.runId);
         if (
           (row.generation !== getAgentRunLifecycleGeneration() ||
@@ -314,7 +321,7 @@ export function registerConversationLifecycleTransport(options: {
           !TERMINAL.has(row.state)
         ) {
           const expected = JSON.stringify(row);
-          appendTransition(row, "unknown");
+          appendTransition(row, "interrupted");
           const recovered = row;
           await executeDeliveryQueueOperation(
             stateContext,
