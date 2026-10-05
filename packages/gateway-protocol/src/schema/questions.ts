@@ -77,7 +77,7 @@ export const QuestionStatusSchema = Type.Union([
  */
 export const QuestionRecordSchema = closedObject({
   id: NonEmptyString,
-  questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 3 }),
+  questions: Type.Array(QuestionSchema, { minItems: 1, maxItems: 5 }),
   agentId: Type.Optional(NonEmptyString),
   sessionKey: Type.Optional(NonEmptyString),
   runId: Type.Optional(NonEmptyString),
@@ -90,7 +90,7 @@ export const QuestionRecordSchema = closedObject({
 
 export const QuestionRequestParamsSchema = closedObject({
   id: Type.Optional(NonEmptyString),
-  questions: Type.Array(QuestionRequestQuestionSchema, { minItems: 1, maxItems: 3 }),
+  questions: Type.Array(QuestionRequestQuestionSchema, { minItems: 1, maxItems: 5 }),
   agentId: Type.Optional(NonEmptyString),
   sessionKey: Type.Optional(NonEmptyString),
   runId: Type.Optional(NonEmptyString),

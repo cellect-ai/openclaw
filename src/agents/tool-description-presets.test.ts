@@ -17,6 +17,7 @@ describe("ask_user tool guidance", () => {
     expect(description).toContain("native controls");
     expect(description).toContain("Put every selectable choice in `options`");
     expect(description).toContain("Use `multiSelect` only");
+    expect(description).toContain("Proceed (Recommended) vs Hold");
   });
 });
 
