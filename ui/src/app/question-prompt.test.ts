@@ -212,6 +212,20 @@ describe("question event parsing", () => {
     ).toBe(false);
   });
 
+  it("accepts five questions and rejects a sixth", () => {
+    const question = requestedPayload().questions[0];
+    const batch = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        ...question,
+        questionId: `item_${index + 1}`,
+      }));
+    const state = createState();
+    expect(requestQuestion(state, { questions: batch(5) })).toBe(true);
+    expect(state.prompts.get("question-1")?.questions).toHaveLength(5);
+    expect(requestQuestion(state, { id: "question-2", questions: batch(6) })).toBe(false);
+    expect(state.prompts.has("question-2")).toBe(false);
+  });
+
   it.each([
     "javascript:alert(1)",
     "data:text/html,sign-in",

@@ -122,7 +122,7 @@ function parseQuestionRecord(payload: unknown): QuestionRecord | null {
   if (!id || createdAtMs === null || expiresAtMs === null || !Array.isArray(payload.questions)) {
     return null;
   }
-  if (payload.questions.length < 1 || payload.questions.length > 3) {
+  if (payload.questions.length < 1 || payload.questions.length > 5) {
     return null;
   }
   const questions = payload.questions.map(parseQuestion);

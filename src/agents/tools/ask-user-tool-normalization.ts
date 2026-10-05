@@ -108,7 +108,7 @@ const AskUserQuestionSchema = Type.Object(
 
 export const AskUserToolSchema = Type.Object(
   {
-    questions: Type.Array(AskUserQuestionSchema, { minItems: 1, maxItems: 3 }),
+    questions: Type.Array(AskUserQuestionSchema, { minItems: 1, maxItems: 5 }),
     timeoutSeconds: Type.Optional(
       Type.Integer({
         description:
