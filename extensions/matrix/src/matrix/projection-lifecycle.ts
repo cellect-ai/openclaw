@@ -68,6 +68,11 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         },
       );
     },
+    isDestinationGone: (error) => {
+      const refusal = error as { errcode?: unknown; data?: { errcode?: unknown } } | null;
+      const errcode = refusal?.errcode ?? refusal?.data?.errcode;
+      return errcode === "M_FORBIDDEN" || errcode === "M_NOT_FOUND";
+    },
     onError: (error, detail) => {
       // Do not log raw transport errors (URLs, tokens, or private event data).
       // A bounded error class still distinguishes SQLite contention from stale
@@ -81,6 +86,18 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
           ? "channel_read_closed"
           : name;
       // Room ids locate the failing destination; no event content is logged.
+      if (detail?.reason === "room_parked") {
+        api.logger.warn(
+          `matrix: lifecycle room parked, the homeserver refused the send room=${detail.roomId}`,
+        );
+        return;
+      }
+      if (detail?.reason === "terminal_after_interrupted") {
+        api.logger.warn(
+          `matrix: lifecycle run finished after it was published interrupted room=${detail.roomId}`,
+        );
+        return;
+      }
       if (detail?.reason === "backlog_capped") {
         api.logger.warn(
           `matrix: lifecycle backlog capped, superseded run states are shed room=${detail.roomId}`,
