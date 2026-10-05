@@ -13,6 +13,7 @@ import {
 import {
   getAgentRunContext,
   getAgentRunLifecycleGeneration,
+  hasAgentRunContextExecutionOwner,
   registerAgentRunAdmissionHandler,
 } from "./agent-run-registry.js";
 import {
@@ -93,6 +94,14 @@ const RUN_PENDING_CAP = 32;
 const ROOM_PENDING_CAP = 256;
 const RETRY_BASE_MS = 5_000;
 const RETRY_MAX_MS = 5 * 60_000;
+// The silent-run sweep removes a context idle for this long even when it still
+// had an execution claim or an open approval. Such a run is given the same
+// period again to reappear before it is reported interrupted; a run with
+// neither, or one whose context went while still active, is reported at once.
+const OWNERLESS_HOLD_MS = 30 * 60_000;
+// Unpublished status for a room the homeserver refuses is discarded at this age.
+const PARKED_ROW_EXPIRY_MS = 24 * 60 * 60_000;
+const SETTLED = new Set<ConversationLifecycleState>(["completed", "failed", "cancelled"]);
 
 type Retry = { failures: number; notBefore: number };
 
@@ -194,10 +203,12 @@ export function registerConversationLifecycleTransport(options: {
     error: unknown,
     detail?: Readonly<{
       roomId: string;
-      reason: "delivery_failed" | "backlog_capped";
+      reason: "delivery_failed" | "backlog_capped" | "room_parked" | "terminal_after_interrupted";
       failures: number;
     }>,
   ) => void;
+  /** True when the destination refused the transport outright and retrying cannot help. */
+  isDestinationGone?: (error: unknown) => boolean;
   stateDir?: string;
 }) {
   let stopped = false;
@@ -208,6 +219,17 @@ export function registerConversationLifecycleTransport(options: {
   const rowRetries = new Map<string, Retry>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
+  // Rooms the homeserver refused (bot removed, room gone), by the binding that
+  // was refused. Nothing is sent to a parked room until a different binding
+  // for it is resolved or an accepted final result proves it reachable again.
+  const parked = new Map<string, string>();
+  // Whether each open row's owner last held an execution claim or an open
+  // approval, when it was last active, and since when it has been missing.
+  const liveness = new Map<string, { live: boolean; activeAt: number; missingSince?: number }>();
+  // Rows whose interrupted state may have reached the room. In-memory only: a
+  // new generation never accepts events for these rows anyway.
+  const interruptedSent = new Set<string>();
+  const lateTerminals = new Set<string>();
   // Runs admitted before any binding existed (typically the first turn of a
   // conversation started outside Matrix). Their state is tracked here so the
   // room learns the current state once the binding appears.
@@ -318,8 +340,14 @@ export function registerConversationLifecycleTransport(options: {
       }
       if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
       owners.set(ownerKey, bindings);
+      for (const binding of bindings) {
+        const refused = parked.get(binding.roomId);
+        if (refused !== undefined && refused !== binding.bindingId) parked.delete(binding.roomId);
+      }
     }
     const late = unbound.get(ownerKey);
+    let adopted = !late;
+    const overtaken: string[] = [];
     // The synchronous event contract persists before observers. Its retained
     // transaction also services worker admission while waiting for the writer;
     // raw autocommit writes could deadlock against a worker's commit grant.
@@ -329,8 +357,21 @@ export function registerConversationLifecycleTransport(options: {
           const id = identity(binding.bindingId, event.runId, generation);
           if (getDeliveryQueueEntryStatus(QUEUE, id, options.stateDir) === "completed") continue;
           const existing = read(id);
-          if (existing && existing.sessionId !== context.sessionId) continue;
-          if (existing && TERMINAL.has(existing.state)) continue;
+          if (existing && TERMINAL.has(existing.state)) {
+            // A false sweep can close a run that then finishes. Its real outcome
+            // replaces an interrupted that has not been sent; once the room may
+            // have seen interrupted, the contract forbids changing it.
+            if (existing.state !== "interrupted" || !SETTLED.has(incomingState)) continue;
+            if (interruptedSent.has(id) || existing.pending.at(-1)?.state !== "interrupted") {
+              if (!lateTerminals.has(id)) overtaken.push(binding.roomId);
+              lateTerminals.add(id);
+              continue;
+            }
+            existing.pending = existing.pending.filter((event) => event.state !== "interrupted");
+          }
+          // Compaction moves a live run to a successor session. The same run id
+          // in the same generation is the same run, so the row follows it.
+          if (existing) existing.sessionId = sessionId;
           // Registry metadata can be enriched repeatedly after admission. It must
           // never rewind an already started run back into the queue.
           if (existing && incomingState === "queued") continue;
@@ -357,12 +398,20 @@ export function registerConversationLifecycleTransport(options: {
           if (!existing || existing.state !== state)
             appendTransition(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP);
           write(row);
+          adopted = true;
         }
       },
       { env: resolveDeliveryQueueStateEnv(options.stateDir, stateContext) },
       { operationLabel: "record conversation lifecycle transition" },
     );
-    unbound.delete(ownerKey);
+    // Carried approvals are kept until a row holds them.
+    if (adopted) unbound.delete(ownerKey);
+    for (const roomId of overtaken)
+      options.onError(new Error("Conversation lifecycle run finished after interrupted"), {
+        roomId,
+        reason: "terminal_after_interrupted",
+        failures: 0,
+      });
     // Final payload delivery may follow the terminal lifecycle callback. Keep
     // the immutable presentation correlation until bounded lifecycle cleanup.
     if (TERMINAL.has(incomingState)) {
@@ -411,6 +460,59 @@ export function registerConversationLifecycleTransport(options: {
     }
   };
 
+  const ownerPresent = (row: LifecycleObligation) =>
+    row.generation === getAgentRunLifecycleGeneration() && !!getAgentRunContext(row.runId);
+
+  const heldForOwner = (row: LifecycleObligation) => {
+    const seen = liveness.get(row.id);
+    const now = Date.now();
+    if (
+      !seen?.live ||
+      row.generation !== getAgentRunLifecycleGeneration() ||
+      now - seen.activeAt < OWNERLESS_HOLD_MS
+    )
+      return false;
+    seen.missingSince ??= now;
+    return now - seen.missingSince < OWNERLESS_HOLD_MS;
+  };
+
+  /** Compare-and-swap in the worker; a row that changed meanwhile is left as it is. */
+  const replace = (expected: string, replacement: LifecycleObligation, check?: () => void) =>
+    executeDeliveryQueueOperation(
+      stateContext,
+      options.stateDir,
+      {
+        type: "deliveryQueue.lifecycleRecover",
+        input: { id: replacement.id, expected, replacement },
+      },
+      {
+        createAdmission: () => ({
+          nativeLocations: [],
+          admission: createSqliteWorkerOperationAdmission((_, grant) => {
+            if (stopped) throw new Error("Conversation lifecycle transport stopped");
+            check?.();
+            grant();
+          }),
+        }),
+      },
+    );
+
+  const expireParked = async (id: string): Promise<void> => {
+    const row = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (!row || stopped || Date.now() - row.enqueuedAt < PARKED_ROW_EXPIRY_MS) return;
+    if (!TERMINAL.has(row.state) && ownerPresent(row)) return;
+    await replace(JSON.stringify(row), {
+      ...row,
+      pending: [],
+      state: TERMINAL.has(row.state) ? row.state : "interrupted",
+    });
+  };
+
   const deliver = async (id: string): Promise<void> => {
     let row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -421,41 +523,21 @@ export function registerConversationLifecycleTransport(options: {
     if (!row || stopped) return;
     // Restart or the silent-run sweep removed the owner, so nothing can ever
     // report this run again: close it as interrupted. No run is inferred
-    // complete and no execution is re-admitted or resumed by recovery.
-    const currentOwner = getAgentRunContext(row.runId);
-    if (
-      (row.generation !== getAgentRunLifecycleGeneration() ||
-        !currentOwner ||
-        currentOwner.sessionId !== row.sessionId) &&
-      !TERMINAL.has(row.state)
-    ) {
+    // complete and no execution is re-admitted or resumed by recovery. A live
+    // owner in this generation is the run itself, whatever session it is on.
+    const owner = ownerPresent(row) ? getAgentRunContext(row.runId) : undefined;
+    if (!TERMINAL.has(row.state) && owner) {
+      liveness.set(id, {
+        live: hasAgentRunContextExecutionOwner(row.runId) || row.pendingApprovals.length > 0,
+        activeAt: owner.lastActiveAt ?? owner.registeredAt ?? 0,
+      });
+    } else if (!TERMINAL.has(row.state) && !heldForOwner(row)) {
       const expected = JSON.stringify(row);
       appendTransition(row, "interrupted");
       const recovered = row;
-      await executeDeliveryQueueOperation(
-        stateContext,
-        options.stateDir,
-        {
-          type: "deliveryQueue.lifecycleRecover",
-          input: { id: row.id, expected, replacement: recovered },
-        },
-        {
-          createAdmission: () => ({
-            nativeLocations: [],
-            admission: createSqliteWorkerOperationAdmission((_, grant) => {
-              if (stopped) throw new Error("Conversation lifecycle transport stopped");
-              const owner = getAgentRunContext(recovered.runId);
-              if (
-                recovered.generation === getAgentRunLifecycleGeneration() &&
-                owner?.sessionId === recovered.sessionId
-              ) {
-                throw new Error("Conversation lifecycle owner became current");
-              }
-              grant();
-            }),
-          }),
-        },
-      );
+      await replace(expected, recovered, () => {
+        if (ownerPresent(recovered)) throw new Error("Conversation lifecycle owner became current");
+      });
       row = (
         await executeDeliveryQueueOperation(stateContext, options.stateDir, {
           type: "deliveryQueue.lifecycleRead",
@@ -465,6 +547,7 @@ export function registerConversationLifecycleTransport(options: {
     }
     while (row?.pending.length && !stopped) {
       const event = row.pending[0]!;
+      if (event.state === "interrupted") interruptedSent.add(id);
       await options.publish(row.binding, event, `${row.id}:${event.revision}`);
       // A synchronous lifecycle transition can append while publish awaits;
       // reload its custody rather than overwriting the newer terminal fact.
@@ -509,8 +592,10 @@ export function registerConversationLifecycleTransport(options: {
           });
       }
       cappedRooms = capped;
-      const live = new Set(rows.map((row) => row.id));
-      for (const id of rowRetries.keys()) if (!live.has(id)) rowRetries.delete(id);
+      const present = new Set(rows.map((row) => row.id));
+      for (const kept of [rowRetries, liveness, interruptedSent, lateTerminals])
+        for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
+      for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
       for (const initial of rows) {
         if (stopped || initial.transportId !== options.transportId) continue;
@@ -520,19 +605,32 @@ export function registerConversationLifecycleTransport(options: {
         const roomId = initial.binding.roomId;
         const now = Date.now();
         if (
-          (rowRetries.get(initial.id)?.notBefore ?? 0) > now ||
-          (roomRetries.get(roomId)?.notBefore ?? 0) > now
+          !parked.has(roomId) &&
+          ((rowRetries.get(initial.id)?.notBefore ?? 0) > now ||
+            (roomRetries.get(roomId)?.notBefore ?? 0) > now)
         )
           continue;
         try {
+          if (parked.has(roomId)) {
+            await expireParked(initial.id);
+            continue;
+          }
           await deliver(initial.id);
           rowRetries.delete(initial.id);
           roomRetries.delete(roomId);
         } catch (error) {
           if (stopped) return;
+          if (options.isDestinationGone?.(error)) {
+            parked.set(roomId, initial.binding.bindingId);
+            const failures = (roomRetries.get(roomId)?.failures ?? 0) + 1;
+            options.onError(error, { roomId, reason: "room_parked", failures });
+            continue;
+          }
           defer(rowRetries, initial.id, 2 * RETRY_BASE_MS);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
-          options.onError(error, { roomId, reason: "delivery_failed", failures });
+          // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
+          if ((failures & (failures - 1)) === 0)
+            options.onError(error, { roomId, reason: "delivery_failed", failures });
         }
       }
     }).finally(() => {
@@ -571,6 +669,8 @@ export function registerConversationLifecycleTransport(options: {
             return;
           if (row.resultEventId) throw new Error("Conversation final result cannot change");
           row.resultEventId = result.resultEventId;
+          // An accepted final event proves the room takes this bot's sends again.
+          parked.delete(row.binding.roomId);
           // Terminal can precede visible delivery. Only an accepted final event
           // proves a notification target; a preliminary answer never calls here.
           if (TERMINAL.has(row.state)) appendTransition(row, row.state);

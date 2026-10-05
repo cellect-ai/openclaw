@@ -47,6 +47,7 @@ describe("trusted durable conversation lifecycle", () => {
     transactionId: string;
   }> = [];
   const errors: Array<{ roomId?: string; reason?: string; failures?: number }> = [];
+  const failed = { roomId: binding.roomId, reason: "delivery_failed", failures: 1 };
   beforeEach(() => {
     stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "lifecycle-custody-"));
     resetAgentEventsForTest();
@@ -111,7 +112,9 @@ describe("trusted durable conversation lifecycle", () => {
           throw new Error("temporary wire failure");
         }
       },
-      onError: () => {},
+      onError: (_, detail) => {
+        errors.push({ ...detail });
+      },
     });
     stop.push(transport.stop);
     let producerAuthority: (() => void) | undefined;
@@ -124,6 +127,7 @@ describe("trusted durable conversation lifecycle", () => {
         await transport.flush();
       },
     );
+    expect(errors).toEqual([failed]);
     expect(() => producerAuthority?.()).toThrow("no longer active");
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
     await transport.flush();
@@ -143,6 +147,7 @@ describe("trusted durable conversation lifecycle", () => {
   function install(
     options: {
       fail?: boolean | ((roomId: string) => boolean);
+      refused?: boolean;
       resolve?: () => readonly ConversationProjectionBinding[];
     } = {},
   ) {
@@ -153,8 +158,11 @@ describe("trusted durable conversation lifecycle", () => {
       publish: async (_, event, transactionId) => {
         publications.push({ ...event, transactionId });
         if (typeof options.fail === "function" ? options.fail(event.roomId) : options.fail)
-          throw new Error("network unavailable");
+          throw Object.assign(new Error("network unavailable"), {
+            errcode: options.refused ? "M_FORBIDDEN" : undefined,
+          });
       },
+      isDestinationGone: (error) => (error as { errcode?: string }).errcode === "M_FORBIDDEN",
       onError: (_, detail) => {
         errors.push({ ...detail });
       },
@@ -207,7 +215,7 @@ describe("trusted durable conversation lifecycle", () => {
     emit("run", "start");
     emit("run", "end");
     await first.flush();
-    expect(errors).toEqual([{ roomId: binding.roomId, reason: "delivery_failed", failures: 1 }]);
+    expect(errors).toEqual([failed]);
     const failedTransaction = publications[0]?.transactionId;
     first.stop();
     rotateAgentEventLifecycleGeneration();
@@ -227,6 +235,7 @@ describe("trusted durable conversation lifecycle", () => {
     owner("lost");
     emit("lost", "start");
     await first.flush();
+    expect(errors).toEqual([failed]);
     const oldGeneration = getAgentRunLifecycleGeneration();
     first.stop();
     rotateAgentEventLifecycleGeneration();
@@ -313,13 +322,25 @@ describe("trusted durable conversation lifecycle", () => {
     const first = install({ fail: true });
     owner("queued-crash");
     await first.flush();
+    expect(errors).toEqual([failed]);
     first.stop();
     rotateAgentEventLifecycleGeneration();
     const next = install();
     await next.flush();
     expect(publications.slice(1).map((event) => event.state)).toEqual(["queued", "interrupted"]);
   });
-  it("reports a run swept for silence as interrupted and ignores its later events", async () => {
+  it("keeps a run alive across compaction onto a successor session", async () => {
+    const transport = install();
+    owner("compact");
+    emit("compact", "start");
+    await transport.flush();
+    registerAgentRunContext("compact", { sessionId: "successor" });
+    await transport.flush();
+    emit("compact", "end");
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "completed"]);
+  });
+  it("reports an idle swept run as interrupted and counts a real outcome that arrives too late", async () => {
     const transport = install();
     owner("silent");
     emit("silent", "start");
@@ -327,10 +348,110 @@ describe("trusted durable conversation lifecycle", () => {
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
     expect(sweepStaleRunContexts()).toBe(1);
     await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "interrupted"]);
     owner("silent");
     emit("silent", "end");
+    emit("silent", "end");
     await transport.flush();
-    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "interrupted"]);
+    expect(publications).toHaveLength(3);
+    expect(errors).toEqual([
+      { roomId: binding.roomId, reason: "terminal_after_interrupted", failures: 0 },
+    ]);
+  });
+  it("replaces an unsent interrupted with the real outcome of a falsely swept run", async () => {
+    let reachable = false;
+    const transport = install({ fail: () => !reachable });
+    owner("revived");
+    emit("revived", "start");
+    await transport.flush();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    expect(
+      custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0],
+    ).toMatchObject({ state: "interrupted" });
+    owner("revived");
+    emit("revived", "end");
+    reachable = true;
+    later.mockReturnValue(Date.now() + 60 * 60_000);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual([
+      "queued",
+      "queued",
+      "queued",
+      "running",
+      "completed",
+    ]);
+    expect(errors.map((error) => error.reason)).toEqual(["delivery_failed", "delivery_failed"]);
+  });
+  it("holds a swept run that had an open approval until it returns or stays gone", async () => {
+    const transport = install();
+    for (const runId of ["returns", "gone"]) {
+      owner(runId);
+      emit(runId, "start");
+      emitAgentEvent({
+        runId,
+        stream: "approval",
+        data: { phase: "requested", status: "pending", approvalId: "open" },
+      });
+    }
+    await transport.flush();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(2);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).not.toContain("interrupted");
+    owner("returns");
+    emitAgentEvent({
+      runId: "returns",
+      stream: "approval",
+      data: { phase: "resolved", status: "approved", approvalId: "open" },
+    });
+    emit("returns", "end");
+    later.mockReturnValue(Date.now() + 31 * 60_000);
+    await transport.flush();
+    const states = (runId: string) =>
+      publications.filter((event) => event.runId === runId).map((event) => event.state);
+    expect(states("returns")).toEqual(["queued", "running", "waiting", "running", "completed"]);
+    expect(states("gone")).toEqual(["queued", "running", "waiting", "interrupted"]);
+  });
+  it("reports a room that stays down at doubling failure counts only", async () => {
+    const transport = install({ fail: true });
+    owner("down");
+    const clock = vi.spyOn(Date, "now");
+    for (let attempt = 1; attempt <= 5; attempt += 1) {
+      clock.mockReturnValue(1_800_000_000_000 + attempt * 3_600_000);
+      await transport.flush();
+    }
+    expect(publications).toHaveLength(5);
+    expect(errors.map((error) => error.failures)).toEqual([1, 2, 4]);
+  });
+  it("parks a room the homeserver refuses, expires its old status and resumes on a new binding", async () => {
+    let current = binding;
+    let reachable = false;
+    const transport = install({ resolve: () => [current], fail: () => !reachable, refused: true });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("orphan");
+    emit("orphan", "end");
+    await transport.flush();
+    expect(errors).toEqual([{ roomId: binding.roomId, reason: "room_parked", failures: 1 }]);
+    clock.mockReturnValue(start + 60 * 60_000);
+    await transport.flush();
+    expect(publications).toHaveLength(1);
+    clock.mockReturnValue(start + 25 * 60 * 60_000);
+    await transport.flush();
+    expect(
+      custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0],
+    ).toMatchObject({ state: "completed", pending: [] });
+    current = { ...binding, bindingId: "binding-rejoined" };
+    reachable = true;
+    owner("fresh");
+    await transport.flush();
+    expect(publications.slice(1).map((event) => [event.runId, event.state])).toEqual([
+      ["fresh", "queued"],
+    ]);
+    expect(errors).toHaveLength(1);
   });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
