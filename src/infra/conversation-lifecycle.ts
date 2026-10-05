@@ -87,6 +87,21 @@ const TERMINAL = new Set<ConversationLifecycleState>([
   "unknown",
 ]);
 const RETENTION = { idPrefix: "lifecycle:", maxAgeMs: 30 * 86400_000, maxEntries: 100_000 };
+// Unpublished transitions kept for one run, and for one room across its runs.
+// Over the room cap each run keeps only its newest unpublished state.
+const RUN_PENDING_CAP = 32;
+const ROOM_PENDING_CAP = 256;
+const RETRY_BASE_MS = 5_000;
+const RETRY_MAX_MS = 5 * 60_000;
+
+type Retry = { failures: number; notBefore: number };
+
+function defer(retries: Map<string, Retry>, key: string, baseMs: number): number {
+  const failures = (retries.get(key)?.failures ?? 0) + 1;
+  const delay = Math.min(baseMs * 2 ** Math.min(failures - 1, 16), RETRY_MAX_MS);
+  retries.set(key, { failures, notBefore: Date.now() + delay });
+  return failures;
+}
 
 function identity(bindingId: string, runId: string, generation: string): string {
   return `lifecycle:${createHash("sha256")
@@ -115,10 +130,17 @@ function lifecycleState(event: AgentEventRuntimePayload): ConversationLifecycleS
   return outcome.reason === "timed_out" ? "interrupted" : "failed";
 }
 
-function appendTransition(row: LifecycleObligation, state: ConversationLifecycleState): void {
-  // Unresolved obligations are never evicted. Backpressure is explicit rather
-  // than dropping a transition while advertising durable custody to observers.
-  if (row.pending.length >= 256) throw new Error("Conversation lifecycle custody is full");
+function appendTransition(
+  row: LifecycleObligation,
+  state: ConversationLifecycleState,
+  cap = RUN_PENDING_CAP,
+): void {
+  // A room that cannot be reached must not fail the run or other rooms, so a
+  // full backlog sheds its oldest unpublished transitions instead of throwing.
+  // Observers order by revision and tolerate gaps, and nothing is appended
+  // after a terminal state except that same state again, so the newest entry
+  // kept here is always the run's current state and a terminal is never lost.
+  if (row.pending.length >= cap) row.pending.splice(0, row.pending.length - cap + 1);
   row.revision += 1;
   row.state = state;
   const { environment, conversationId, roomId, bindingId } = row.binding;
@@ -147,10 +169,25 @@ export function registerConversationLifecycleTransport(options: {
     event: ConversationLifecyclePublication,
     transactionId: string,
   ) => Promise<void>;
-  onError: (error: unknown) => void;
+  /** `detail` names the affected room only; it never carries event content. */
+  onError: (
+    error: unknown,
+    detail?: Readonly<{
+      roomId: string;
+      reason: "delivery_failed" | "backlog_capped";
+      failures: number;
+    }>,
+  ) => void;
   stateDir?: string;
 }) {
   let stopped = false;
+  // Delivery failures back off per run row and per room, so an unreachable
+  // room costs one attempt per period and never delays other rooms. A row
+  // waits twice as long as its room: a healthy room's other runs then go
+  // ahead of one row the homeserver keeps rejecting.
+  const rowRetries = new Map<string, Retry>();
+  const roomRetries = new Map<string, Retry>();
+  let cappedRooms = new Set<string>();
   // A durable status obligation belongs to this transport, not to the agent
   // event's temporary read/request scope. Retrying after that scope closes must
   // retain the transport's own authority rather than a revoked producer scope.
@@ -265,7 +302,8 @@ export function registerConversationLifecycleTransport(options: {
             }
             state = row.pendingApprovals.length ? "waiting" : "running";
           }
-          if (!existing || existing.state !== state) appendTransition(row, state);
+          if (!existing || existing.state !== state)
+            appendTransition(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP);
           write(row);
         }
       },
@@ -287,6 +325,70 @@ export function registerConversationLifecycleTransport(options: {
     });
   };
 
+  const deliver = async (id: string): Promise<void> => {
+    let row = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (!row || stopped) return;
+    // Restart or the silent-run sweep removed the owner, so nothing can ever
+    // report this run again: close it as interrupted. No run is inferred
+    // complete and no execution is re-admitted or resumed by recovery.
+    const currentOwner = getAgentRunContext(row.runId);
+    if (
+      (row.generation !== getAgentRunLifecycleGeneration() ||
+        !currentOwner ||
+        currentOwner.sessionId !== row.sessionId) &&
+      !TERMINAL.has(row.state)
+    ) {
+      const expected = JSON.stringify(row);
+      appendTransition(row, "interrupted");
+      const recovered = row;
+      await executeDeliveryQueueOperation(
+        stateContext,
+        options.stateDir,
+        {
+          type: "deliveryQueue.lifecycleRecover",
+          input: { id: row.id, expected, replacement: recovered },
+        },
+        {
+          createAdmission: () => ({
+            nativeLocations: [],
+            admission: createSqliteWorkerOperationAdmission((_, grant) => {
+              if (stopped) throw new Error("Conversation lifecycle transport stopped");
+              const owner = getAgentRunContext(recovered.runId);
+              if (
+                recovered.generation === getAgentRunLifecycleGeneration() &&
+                owner?.sessionId === recovered.sessionId
+              ) {
+                throw new Error("Conversation lifecycle owner became current");
+              }
+              grant();
+            }),
+          }),
+        },
+      );
+      row = (
+        await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+          type: "deliveryQueue.lifecycleRead",
+          input: { id },
+        })
+      )[0];
+    }
+    while (row?.pending.length && !stopped) {
+      const event = row.pending[0]!;
+      await options.publish(row.binding, event, `${row.id}:${event.revision}`);
+      // A synchronous lifecycle transition can append while publish awaits;
+      // reload its custody rather than overwriting the newer terminal fact.
+      row = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleAck",
+        input: { id, revision: event.revision },
+      });
+    }
+  };
+
   const flush = (): Promise<void> => {
     if (draining) return draining;
     if (stopped) return Promise.resolve();
@@ -298,71 +400,48 @@ export function registerConversationLifecycleTransport(options: {
         type: "deliveryQueue.lifecycleRead",
         input: {},
       });
+      const backlog = new Map<string, number>();
+      for (const row of rows) {
+        if (row.transportId !== options.transportId) continue;
+        const roomId = row.binding.roomId;
+        backlog.set(roomId, (backlog.get(roomId) ?? 0) + row.pending.length);
+      }
+      const capped = new Set<string>();
+      for (const [roomId, count] of backlog) {
+        if (count < ROOM_PENDING_CAP) continue;
+        capped.add(roomId);
+        if (!cappedRooms.has(roomId))
+          options.onError(new Error("Conversation lifecycle room backlog is capped"), {
+            roomId,
+            reason: "backlog_capped",
+            failures: roomRetries.get(roomId)?.failures ?? 0,
+          });
+      }
+      cappedRooms = capped;
+      const live = new Set(rows.map((row) => row.id));
+      for (const id of rowRetries.keys()) if (!live.has(id)) rowRetries.delete(id);
+      for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
       for (const initial of rows) {
         if (stopped || initial.transportId !== options.transportId) continue;
         // Settled lifecycle rows may intentionally wait for a final-result
         // correlation. They have no publication obligation until noteResult.
         if (!initial.pending.length && TERMINAL.has(initial.state)) continue;
-        let row = (
-          await executeDeliveryQueueOperation(stateContext, options.stateDir, {
-            type: "deliveryQueue.lifecycleRead",
-            input: { id: initial.id },
-          })
-        )[0];
-        if (!row || stopped) continue;
-        // Restart or the silent-run sweep removed the owner, so nothing can ever
-        // report this run again: close it as interrupted. No run is inferred
-        // complete and no execution is re-admitted or resumed by recovery.
-        const currentOwner = getAgentRunContext(row.runId);
+        const roomId = initial.binding.roomId;
+        const now = Date.now();
         if (
-          (row.generation !== getAgentRunLifecycleGeneration() ||
-            !currentOwner ||
-            currentOwner.sessionId !== row.sessionId) &&
-          !TERMINAL.has(row.state)
-        ) {
-          const expected = JSON.stringify(row);
-          appendTransition(row, "interrupted");
-          const recovered = row;
-          await executeDeliveryQueueOperation(
-            stateContext,
-            options.stateDir,
-            {
-              type: "deliveryQueue.lifecycleRecover",
-              input: { id: row.id, expected, replacement: recovered },
-            },
-            {
-              createAdmission: () => ({
-                nativeLocations: [],
-                admission: createSqliteWorkerOperationAdmission((_, grant) => {
-                  if (stopped) throw new Error("Conversation lifecycle transport stopped");
-                  const owner = getAgentRunContext(recovered.runId);
-                  if (
-                    recovered.generation === getAgentRunLifecycleGeneration() &&
-                    owner?.sessionId === recovered.sessionId
-                  ) {
-                    throw new Error("Conversation lifecycle owner became current");
-                  }
-                  grant();
-                }),
-              }),
-            },
-          );
-          row = (
-            await executeDeliveryQueueOperation(stateContext, options.stateDir, {
-              type: "deliveryQueue.lifecycleRead",
-              input: { id: initial.id },
-            })
-          )[0];
-        }
-        while (row?.pending.length && !stopped) {
-          const event = row.pending[0]!;
-          await options.publish(row.binding, event, `${row.id}:${event.revision}`);
-          // A synchronous lifecycle transition can append while publish awaits;
-          // reload its custody rather than overwriting the newer terminal fact.
-          row = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
-            type: "deliveryQueue.lifecycleAck",
-            input: { id: initial.id, revision: event.revision },
-          });
+          (rowRetries.get(initial.id)?.notBefore ?? 0) > now ||
+          (roomRetries.get(roomId)?.notBefore ?? 0) > now
+        )
+          continue;
+        try {
+          await deliver(initial.id);
+          rowRetries.delete(initial.id);
+          roomRetries.delete(roomId);
+        } catch (error) {
+          if (stopped) return;
+          defer(rowRetries, initial.id, 2 * RETRY_BASE_MS);
+          const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
+          options.onError(error, { roomId, reason: "delivery_failed", failures });
         }
       }
     }).finally(() => {

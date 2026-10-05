@@ -68,7 +68,7 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         },
       );
     },
-    onError: (error) => {
+    onError: (error, detail) => {
       // Do not log raw transport errors (URLs, tokens, or private event data).
       // A bounded error class still distinguishes SQLite contention from stale
       // invocation authority and wire failures instead of hiding the cause.
@@ -80,7 +80,18 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         error instanceof Error && error.message === "Channel read authority is no longer active."
           ? "channel_read_closed"
           : name;
-      api.logger.warn(`matrix: lifecycle publication remains in durable custody (${reason})`);
+      // Room ids locate the failing destination; no event content is logged.
+      if (detail?.reason === "backlog_capped") {
+        api.logger.warn(
+          `matrix: lifecycle backlog capped, superseded run states are shed room=${detail.roomId}`,
+        );
+        return;
+      }
+      api.logger.warn(
+        `matrix: lifecycle publication remains in durable custody (${reason})${
+          detail ? ` room=${detail.roomId} attempt=${detail.failures}` : ""
+        }`,
+      );
     },
   });
   activeLifecycle = handle;
