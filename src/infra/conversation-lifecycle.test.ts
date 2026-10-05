@@ -147,7 +147,7 @@ describe("trusted durable conversation lifecycle", () => {
   function install(
     options: {
       fail?: boolean | ((roomId: string) => boolean);
-      refused?: boolean;
+      refused?: "M_FORBIDDEN" | "M_NOT_FOUND";
       resolve?: () => readonly ConversationProjectionBinding[];
     } = {},
   ) {
@@ -159,10 +159,10 @@ describe("trusted durable conversation lifecycle", () => {
         publications.push({ ...event, transactionId });
         if (typeof options.fail === "function" ? options.fail(event.roomId) : options.fail)
           throw Object.assign(new Error("network unavailable"), {
-            errcode: options.refused ? "M_FORBIDDEN" : undefined,
+            errcode: options.refused,
           });
       },
-      isDestinationGone: (error) => (error as { errcode?: string }).errcode === "M_FORBIDDEN",
+      isDestinationGone: (error) => (error as { errcode?: string }).errcode !== undefined,
       onError: (_, detail) => {
         errors.push({ ...detail });
       },
@@ -428,7 +428,11 @@ describe("trusted durable conversation lifecycle", () => {
   it("parks a room the homeserver refuses, expires its old status and resumes on a new binding", async () => {
     let current = binding;
     let reachable = false;
-    const transport = install({ resolve: () => [current], fail: () => !reachable, refused: true });
+    const transport = install({
+      resolve: () => [current],
+      fail: () => !reachable,
+      refused: "M_FORBIDDEN",
+    });
     const clock = vi.spyOn(Date, "now");
     const start = 1_800_000_000_000;
     clock.mockReturnValue(start);
@@ -436,7 +440,7 @@ describe("trusted durable conversation lifecycle", () => {
     emit("orphan", "end");
     await transport.flush();
     expect(errors).toEqual([{ roomId: binding.roomId, reason: "room_parked", failures: 1 }]);
-    clock.mockReturnValue(start + 60 * 60_000);
+    clock.mockReturnValue(start + 30 * 60_000);
     await transport.flush();
     expect(publications).toHaveLength(1);
     clock.mockReturnValue(start + 25 * 60 * 60_000);
@@ -452,6 +456,81 @@ describe("trusted durable conversation lifecycle", () => {
       ["fresh", "queued"],
     ]);
     expect(errors).toHaveLength(1);
+  });
+  it("recovers a transiently refused room at the next probe", async () => {
+    let reachable = false;
+    const transport = install({ fail: () => !reachable, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("blip");
+    emit("blip", "start");
+    emit("blip", "end");
+    await transport.flush();
+    reachable = true;
+    clock.mockReturnValue(start + 30 * 60_000);
+    await transport.flush();
+    expect(publications).toHaveLength(1);
+    clock.mockReturnValue(start + 61 * 60_000);
+    await transport.flush();
+    expect(publications.slice(1).map((event) => event.state)).toEqual([
+      "queued",
+      "running",
+      "completed",
+    ]);
+    expect(errors).toEqual([{ roomId: binding.roomId, reason: "room_parked", failures: 1 }]);
+  });
+  it("tries a room that is gone once per probe interval", async () => {
+    const transport = install({ fail: true, refused: "M_NOT_FOUND" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("gone");
+    emit("gone", "end");
+    for (const minutes of [0, 30, 61, 90, 122, 150]) {
+      clock.mockReturnValue(start + minutes * 60_000);
+      await transport.flush();
+    }
+    expect(publications).toHaveLength(3);
+    expect(errors.map((error) => error.reason)).toEqual(Array(3).fill("room_parked"));
+  });
+  it("reopens a parked room when a final result is accepted there", async () => {
+    let reachable = false;
+    const transport = install({ fail: () => !reachable, refused: "M_FORBIDDEN" });
+    owner("final");
+    emit("final", "end");
+    await transport.flush();
+    expect(errors.map((error) => error.reason)).toEqual(["room_parked"]);
+    reachable = true;
+    await transport.flush();
+    expect(publications).toHaveLength(1);
+    transport.noteResult({
+      runId: "final",
+      generation: getAgentRunLifecycleGeneration(),
+      bindingId: binding.bindingId,
+      resultEventId: "$accepted-final",
+    });
+    await transport.flush();
+    expect(publications.at(-1)).toMatchObject({
+      state: "completed",
+      resultEventId: "$accepted-final",
+    });
+  });
+  it("closes a parked run that never ended once its status expires", async () => {
+    const transport = install({ fail: true, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("stale");
+    emit("stale", "start");
+    await transport.flush();
+    clock.mockReturnValue(start + 25 * 60 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    expect(publications).toHaveLength(1);
+    expect(
+      custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0],
+    ).toMatchObject({ state: "interrupted", pending: [] });
   });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();

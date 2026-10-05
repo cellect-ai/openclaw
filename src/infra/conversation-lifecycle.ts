@@ -101,6 +101,8 @@ const RETRY_MAX_MS = 5 * 60_000;
 const OWNERLESS_HOLD_MS = 30 * 60_000;
 // Unpublished status for a room the homeserver refuses is discarded at this age.
 const PARKED_ROW_EXPIRY_MS = 24 * 60 * 60_000;
+// A refusal can be transient, so a parked room is tried once more at this interval.
+const PARKED_PROBE_MS = 60 * 60_000;
 const SETTLED = new Set<ConversationLifecycleState>(["completed", "failed", "cancelled"]);
 
 type Retry = { failures: number; notBefore: number };
@@ -219,10 +221,10 @@ export function registerConversationLifecycleTransport(options: {
   const rowRetries = new Map<string, Retry>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
-  // Rooms the homeserver refused (bot removed, room gone), by the binding that
-  // was refused. Nothing is sent to a parked room until a different binding
-  // for it is resolved or an accepted final result proves it reachable again.
-  const parked = new Map<string, string>();
+  // Rooms the homeserver refused (bot removed, room gone), by when. A parked
+  // room gets one attempt per PARKED_PROBE_MS, and is tried again at once when
+  // a new run is admitted for it or an accepted final result proves it open.
+  const parked = new Map<string, number>();
   // Whether each open row's owner last held an execution claim or an open
   // approval, when it was last active, and since when it has been missing.
   const liveness = new Map<string, { live: boolean; activeAt: number; missingSince?: number }>();
@@ -230,6 +232,9 @@ export function registerConversationLifecycleTransport(options: {
   // new generation never accepts events for these rows anyway.
   const interruptedSent = new Set<string>();
   const lateTerminals = new Set<string>();
+  // Rows whose unsent interrupted was replaced; a delivery already holding the
+  // older copy must not send it.
+  const superseded = new Set<string>();
   // Runs admitted before any binding existed (typically the first turn of a
   // conversation started outside Matrix). Their state is tracked here so the
   // room learns the current state once the binding appears.
@@ -340,10 +345,8 @@ export function registerConversationLifecycleTransport(options: {
       }
       if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
       owners.set(ownerKey, bindings);
-      for (const binding of bindings) {
-        const refused = parked.get(binding.roomId);
-        if (refused !== undefined && refused !== binding.bindingId) parked.delete(binding.roomId);
-      }
+      // A newly admitted run is a good moment to try a parked room once more.
+      for (const binding of bindings) parked.delete(binding.roomId);
     }
     const late = unbound.get(ownerKey);
     let adopted = !late;
@@ -368,6 +371,7 @@ export function registerConversationLifecycleTransport(options: {
               continue;
             }
             existing.pending = existing.pending.filter((event) => event.state !== "interrupted");
+            superseded.add(id);
           }
           // Compaction moves a live run to a successor session. The same run id
           // in the same generation is the same run, so the row follows it.
@@ -513,14 +517,15 @@ export function registerConversationLifecycleTransport(options: {
     });
   };
 
-  const deliver = async (id: string): Promise<void> => {
+  /** Resolves to the number of publications the destination accepted. */
+  const deliver = async (id: string): Promise<number> => {
     let row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
         type: "deliveryQueue.lifecycleRead",
         input: { id },
       })
     )[0];
-    if (!row || stopped) return;
+    if (!row || stopped) return 0;
     // Restart or the silent-run sweep removed the owner, so nothing can ever
     // report this run again: close it as interrupted. No run is inferred
     // complete and no execution is re-admitted or resumed by recovery. A live
@@ -545,10 +550,24 @@ export function registerConversationLifecycleTransport(options: {
         })
       )[0];
     }
+    let sent = 0;
     while (row?.pending.length && !stopped) {
       const event = row.pending[0]!;
+      // `record` is synchronous, so it either replaced this interrupted before
+      // this check or sees it marked as sent; the copy read here may be stale.
+      if (event.state === "interrupted" && superseded.has(id)) {
+        superseded.delete(id);
+        row = (
+          await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+            type: "deliveryQueue.lifecycleRead",
+            input: { id },
+          })
+        )[0];
+        continue;
+      }
       if (event.state === "interrupted") interruptedSent.add(id);
       await options.publish(row.binding, event, `${row.id}:${event.revision}`);
+      sent += 1;
       // A synchronous lifecycle transition can append while publish awaits;
       // reload its custody rather than overwriting the newer terminal fact.
       row = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -556,6 +575,7 @@ export function registerConversationLifecycleTransport(options: {
         input: { id, revision: event.revision },
       });
     }
+    return sent;
   };
 
   const flush = (): Promise<void> => {
@@ -593,10 +613,27 @@ export function registerConversationLifecycleTransport(options: {
       }
       cappedRooms = capped;
       const present = new Set(rows.map((row) => row.id));
-      for (const kept of [rowRetries, liveness, interruptedSent, lateTerminals])
+      for (const kept of [rowRetries, liveness, interruptedSent, lateTerminals, superseded])
         for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
       for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
+      // Each parked room whose interval has passed probes with its oldest row
+      // that still has status worth sending.
+      const probes = new Map<string, LifecycleObligation>();
+      for (const row of rows) {
+        const roomId = row.binding.roomId;
+        const parkedAt = parked.get(roomId);
+        const now = Date.now();
+        if (
+          row.transportId === options.transportId &&
+          parkedAt !== undefined &&
+          now - parkedAt >= PARKED_PROBE_MS &&
+          row.pending.length &&
+          now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS &&
+          row.enqueuedAt < (probes.get(roomId)?.enqueuedAt ?? Infinity)
+        )
+          probes.set(roomId, row);
+      }
       for (const initial of rows) {
         if (stopped || initial.transportId !== options.transportId) continue;
         // Settled lifecycle rows may intentionally wait for a final-result
@@ -604,6 +641,7 @@ export function registerConversationLifecycleTransport(options: {
         if (!initial.pending.length && TERMINAL.has(initial.state)) continue;
         const roomId = initial.binding.roomId;
         const now = Date.now();
+        const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
         if (
           !parked.has(roomId) &&
           ((rowRetries.get(initial.id)?.notBefore ?? 0) > now ||
@@ -611,21 +649,26 @@ export function registerConversationLifecycleTransport(options: {
         )
           continue;
         try {
-          if (parked.has(roomId)) {
+          if (parked.has(roomId) && !probing) {
             await expireParked(initial.id);
             continue;
           }
-          await deliver(initial.id);
+          const sent = await deliver(initial.id);
+          // Only an accepted send proves a parked room is open again.
+          if (probing && !sent) continue;
+          parked.delete(roomId);
           rowRetries.delete(initial.id);
           roomRetries.delete(roomId);
         } catch (error) {
           if (stopped) return;
           if (options.isDestinationGone?.(error)) {
-            parked.set(roomId, initial.binding.bindingId);
+            parked.set(roomId, Date.now());
             const failures = (roomRetries.get(roomId)?.failures ?? 0) + 1;
             options.onError(error, { roomId, reason: "room_parked", failures });
             continue;
           }
+          // Any other failure is an ordinary outage: back off instead of parking.
+          parked.delete(roomId);
           defer(rowRetries, initial.id, 2 * RETRY_BASE_MS);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
           // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
