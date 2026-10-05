@@ -74,8 +74,24 @@ describe("question protocol validators", () => {
       }),
     ).toBe(false);
     expect(validateQuestionRequestParams({ questions: [] })).toBe(false);
-    expect(
-      validateQuestionRequestParams({ questions: [question, question, question, question] }),
-    ).toBe(false);
+  });
+
+  it("accepts five questions and rejects a sixth", () => {
+    const batch = (count: number) =>
+      Array.from({ length: count }, (_, index) => ({
+        ...question,
+        questionId: `item_${index + 1}`,
+      }));
+    const record = (count: number) => ({
+      id: "client-question-id",
+      questions: batch(count),
+      createdAtMs: 1,
+      expiresAtMs: 2,
+      status: "pending",
+    });
+    expect(validateQuestionRequestParams({ questions: batch(5) })).toBe(true);
+    expect(validateQuestionRequestParams({ questions: batch(6) })).toBe(false);
+    expect(Value.Check(QuestionRecordSchema, record(5))).toBe(true);
+    expect(Value.Check(QuestionRecordSchema, record(6))).toBe(false);
   });
 });
