@@ -817,6 +817,32 @@ describe("trusted durable conversation lifecycle", () => {
     await transport.flush();
     expect(publications.at(-1)?.state).toBe("interrupted");
   });
+  it("keeps the outcome of a run whose first send landed just before a restart", async () => {
+    // The send reaches the room and the process dies before its response.
+    const first = install({
+      fail: () => {
+        first.stop();
+        return true;
+      },
+    });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("crashed");
+    await first.flush();
+    expect(publications).toHaveLength(1);
+    rotateAgentEventLifecycleGeneration();
+    let refusing = true;
+    const next = install({ fail: () => refusing, refused: "M_FORBIDDEN" });
+    await next.flush();
+    clock.mockReturnValue(start + 25 * 60 * 60_000);
+    await next.flush();
+    refusing = false;
+    clock.mockReturnValue(start + 27 * 60 * 60_000);
+    await next.flush();
+    expect(publications.at(-1)).toMatchObject({ runId: "crashed", state: "interrupted" });
+    expect(errors.map((error) => error.reason)).toEqual(["room_parked", "room_parked"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");

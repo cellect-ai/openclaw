@@ -80,7 +80,7 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   pending: ConversationLifecyclePublication[];
   /** Highest revision the destination acknowledged; 0 while it has heard nothing of the run. */
   acked?: number;
-  /** A send failed without a refusal, so the destination may hold a state it never acknowledged. */
+  /** A send was started and not refused, so the destination may hold a state it never acknowledged. */
   attempted?: true;
   /** Whether the owner held an execution claim or an open approval at the last transition. */
   live?: boolean;
@@ -657,7 +657,22 @@ export function registerConversationLifecycleTransport(options: {
       )[0];
     }
     let sent = 0;
+    let firstSend = false;
     while (row?.pending.length && !stopped) {
+      // A send can land and the process die before its response. The row is
+      // marked before its first send, once per row, so the run then counts as
+      // known to the room; reading it back confirms the mark was written.
+      if (!told(row)) {
+        await replace(JSON.stringify(row), { ...row, attempted: true });
+        firstSend = true;
+        row = (
+          await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+            type: "deliveryQueue.lifecycleRead",
+            input: { id },
+          })
+        )[0];
+        continue;
+      }
       const event = row.pending[0]!;
       // `record` is synchronous, so it either replaced this interrupted before
       // this check or sees it marked as sent; the copy read here may be stale.
@@ -672,7 +687,15 @@ export function registerConversationLifecycleTransport(options: {
         continue;
       }
       if (event.state === "interrupted") interruptedSent.add(id);
-      await options.publish(row.binding, event, `${row.id}:${event.revision}`);
+      try {
+        await options.publish(row.binding, event, `${row.id}:${event.revision}`);
+      } catch (error) {
+        // A refusal is the response: the row's first send did not land.
+        if (firstSend && options.isDestinationGone?.(error))
+          await unset(id, "attempted").catch(options.onError);
+        throw error;
+      }
+      firstSend = false;
       sent += 1;
       // A synchronous lifecycle transition can append while publish awaits;
       // reload its custody rather than overwriting the newer terminal fact.
