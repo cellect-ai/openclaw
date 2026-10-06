@@ -619,6 +619,36 @@ export function registerConversationLifecycleTransport(options: {
     return true;
   };
 
+  /** Gives up the status a row still owes, and reports it only once the row shows it. */
+  const abandon = async (id: string): Promise<void> => {
+    const read = async () =>
+      (
+        await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+          type: "deliveryQueue.lifecycleRead",
+          input: { id },
+        })
+      )[0];
+    const row = await read();
+    if (!row || stopped || (!TERMINAL.has(row.state) && ownerPresent(row))) return;
+    const expected = JSON.stringify(row);
+    if (!TERMINAL.has(row.state)) appendTransition(row, "interrupted");
+    row.pending = [];
+    delete row.stuckAt;
+    await replace(expected, row);
+    const after = await read();
+    if (
+      after &&
+      !after.pending.length &&
+      after.stuckAt === undefined &&
+      after.revision === row.revision
+    )
+      options.onError(new Error("Conversation lifecycle status abandoned"), {
+        roomId: row.binding.roomId,
+        reason: "status_abandoned",
+        failures: 0,
+      });
+  };
+
   const expireParked = async (id: string): Promise<void> => {
     const row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -635,16 +665,9 @@ export function registerConversationLifecycleTransport(options: {
     // run stays live there for good: only superseded states are dropped and
     // the newest one stays queued for the probe. A run the room never heard
     // of is dropped whole.
-    const abandoned = told(row) && Date.now() - row.enqueuedAt >= PARKED_ROW_MAX_AGE_MS;
-    row.pending = told(row) && !abandoned ? row.pending.slice(-1) : [];
-    if (JSON.stringify(row) === expected) return;
-    await replace(expected, row);
-    if (abandoned)
-      options.onError(new Error("Conversation lifecycle status abandoned"), {
-        roomId: row.binding.roomId,
-        reason: "status_abandoned",
-        failures: 0,
-      });
+    if (told(row) && Date.now() - row.enqueuedAt >= PARKED_ROW_MAX_AGE_MS) return abandon(id);
+    row.pending = told(row) ? row.pending.slice(-1) : [];
+    if (JSON.stringify(row) !== expected) await replace(expected, row);
   };
 
   /** Resolves to the number of publications the destination accepted. */
