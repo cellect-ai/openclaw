@@ -868,6 +868,22 @@ describe("trusted durable conversation lifecycle", () => {
       publications.filter((event) => event.runId === "poison").map((event) => event.state),
     ).toEqual([...Array(5).fill("queued"), "running", "completed"]);
   });
+  it("keeps the state of an unbound run that is swept and returns", async () => {
+    let current: ConversationProjectionBinding[] = [];
+    const transport = install({ resolve: () => current });
+    owner("unbound");
+    emit("unbound", "start");
+    const clock = vi.spyOn(Date, "now");
+    const swept = Date.now() + 31 * 60_000;
+    clock.mockReturnValue(swept);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    owner("unbound");
+    current = [binding];
+    clock.mockReturnValue(swept + 60_000);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["running"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
