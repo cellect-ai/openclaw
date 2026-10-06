@@ -672,6 +672,31 @@ export function registerConversationLifecycleTransport(options: {
     if (JSON.stringify(row) !== expected) await replace(expected, row);
   };
 
+  /**
+   * Keeps the start of a hold on the row, for every open row in every pass
+   * whether or not its room is being delivered to: the hold is then bounded in
+   * wall time across reloads, and an owner seen again ends it even when the
+   * run returned without a transition or its room is parked or backing off.
+   */
+  const trackOwner = async (row: LifecycleObligation): Promise<void> => {
+    if (TERMINAL.has(row.state) || row.generation !== getAgentRunLifecycleGeneration()) return;
+    if (ownerPresent(row)) {
+      delete liveness.get(row.id)?.missingSince;
+      if (row.missingSince !== undefined) await unset(row.id, "missingSince");
+      return;
+    }
+    if (!heldForOwner(row) || row.missingSince !== undefined) return;
+    const current = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id: row.id },
+      })
+    )[0];
+    const missingSince = liveness.get(row.id)?.missingSince;
+    if (current && !TERMINAL.has(current.state) && current.missingSince === undefined)
+      await replace(JSON.stringify(current), { ...current, missingSince });
+  };
+
   /** Resolves to the number of publications the destination accepted. */
   const deliver = async (id: string): Promise<number> => {
     let row = (
@@ -691,18 +716,7 @@ export function registerConversationLifecycleTransport(options: {
         live: hasAgentRunContextExecutionOwner(row.runId) || row.pendingApprovals.length > 0,
         activeAt: owner.lastActiveAt ?? owner.registeredAt ?? 0,
       });
-      // The owner is back, so an earlier absence no longer counts toward a
-      // later hold, even when the run returned without recording a transition.
-      if (row.missingSince !== undefined) {
-        await unset(id, "missingSince");
-        delete row.missingSince;
-      }
-    } else if (!TERMINAL.has(row.state) && heldForOwner(row)) {
-      // The hold is bounded in wall time across reloads, so its start is kept.
-      const missingSince = liveness.get(id)?.missingSince;
-      if (row.missingSince === undefined && missingSince !== undefined)
-        await replace(JSON.stringify(row), { ...row, missingSince });
-    } else if (!TERMINAL.has(row.state)) {
+    } else if (!TERMINAL.has(row.state) && !heldForOwner(row)) {
       const expected = JSON.stringify(row);
       appendTransition(row, "interrupted");
       const recovered = row;
@@ -834,6 +848,7 @@ export function registerConversationLifecycleTransport(options: {
         if (!initial.pending.length && TERMINAL.has(initial.state)) continue;
         const roomId = initial.binding.roomId;
         const now = Date.now();
+        await trackOwner(initial).catch(options.onError);
         const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
         if (!parked.has(roomId) && initial.stuckAt !== undefined) {
           // A stuck row never holds back or backs off its room. It ends like a
