@@ -733,6 +733,64 @@ describe("trusted durable conversation lifecycle", () => {
     ).toMatchObject({ state: "completed", pending: [] });
     expect(errors.map((error) => error.reason)).toEqual(["room_parked", "status_abandoned"]);
   });
+  it("sets aside a row that alone keeps failing so later runs in its room proceed", async () => {
+    let healed = false;
+    const transport = install({ fail: (_, __, runId) => runId === "poison" && !healed });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    const states = (runId: string) =>
+      publications.filter((event) => event.runId === runId).map((event) => event.state);
+    clock.mockReturnValue(start);
+    owner("poison");
+    clock.mockReturnValue(start + 1_000);
+    owner("fine");
+    for (let pass = 1; pass <= 6; pass += 1) {
+      clock.mockReturnValue(start + pass * 600_000);
+      await transport.flush();
+    }
+    expect(states("poison")).toEqual(Array(5).fill("queued"));
+    expect(states("fine")).toEqual(["queued"]);
+    expect(errors.map((error) => [error.reason, error.failures])).toEqual([
+      ["delivery_failed", 1],
+      ["delivery_failed", 2],
+      ["delivery_failed", 4],
+      ["row_stuck", 5],
+    ]);
+    emit("poison", "start");
+    emit("poison", "end");
+    clock.mockReturnValue(start + 7 * 600_000);
+    await transport.flush();
+    expect(states("poison")).toHaveLength(5);
+    healed = true;
+    clock.mockReturnValue(start + 13 * 600_000);
+    await transport.flush();
+    // Only the run's newest state follows; its superseded ones are never sent late.
+    expect(states("poison").slice(5)).toEqual(["completed"]);
+    const rows = custody.loadDeliveryQueueEntries(
+      "conversation-lifecycle-v2",
+      stateDir,
+    ) as unknown as Array<{ runId: string; stuckAt?: number }>;
+    expect(rows.find((row) => row.runId === "poison")?.stuckAt).toBeUndefined();
+  });
+  it("keeps backing off the room when the row after a failing one fails too", async () => {
+    const transport = install({ fail: true });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("first");
+    clock.mockReturnValue(start + 1_000);
+    owner("second");
+    for (let pass = 1; pass <= 7; pass += 1) {
+      clock.mockReturnValue(start + pass * 600_000);
+      await transport.flush();
+    }
+    expect(publications.map((event) => event.runId)).toEqual([
+      ...Array(5).fill("first"),
+      "second",
+      "first",
+    ]);
+    expect(errors.map((error) => error.reason)).not.toContain("row_stuck");
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");

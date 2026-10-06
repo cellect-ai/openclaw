@@ -86,6 +86,8 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   live?: boolean;
   /** When that transition was recorded. */
   activeAt?: number;
+  /** Set while this row alone keeps failing; it is retried at the probe interval, out of order. */
+  stuckAt?: number;
   /** When a held run's owner was first found missing; the hold is measured from here. */
   missingSince?: number;
 };
@@ -114,6 +116,9 @@ const OWNERLESS_HOLD_MS = 30 * 60_000;
 const PARKED_ROW_EXPIRY_MS = 24 * 60 * 60_000;
 // Status still owed to a room that has refused every send for this long is given up.
 const PARKED_ROW_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
+// After this many consecutive failures of a room's oldest row, the next row is
+// tried once to tell a row the homeserver rejects from a room that is down.
+const HEAD_ROW_FAILURES = 5;
 // A refusal can be transient, so a parked room is tried once more at this interval.
 const PARKED_PROBE_MS = 60 * 60_000;
 const SETTLED = new Set<ConversationLifecycleState>(["completed", "failed", "cancelled"]);
@@ -223,7 +228,8 @@ export function registerConversationLifecycleTransport(options: {
         | "backlog_capped"
         | "room_parked"
         | "terminal_after_interrupted"
-        | "status_abandoned";
+        | "status_abandoned"
+        | "row_stuck";
       failures: number;
     }>,
   ) => void;
@@ -234,8 +240,10 @@ export function registerConversationLifecycleTransport(options: {
   let stopped = false;
   // Delivery failures back off per room, so an unreachable room costs one
   // attempt per period and never delays other rooms. Within a room rows are
-  // sent strictly in admission order: a newer run's state never overtakes an
-  // older run's, at the price of one rejected row holding back its own room.
+  // sent in admission order, so a newer run's state does not overtake an
+  // older run's. The one exception is a row set aside as stuck (`heads`).
+  // The room's oldest row while it keeps failing, and how often in a row.
+  const heads = new Map<string, { id: string; failures: number }>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
   // Rooms the homeserver refused (bot removed, room gone), by when. A parked
@@ -543,6 +551,25 @@ export function registerConversationLifecycleTransport(options: {
     if (row && !told(row)) await replace(JSON.stringify(row), { ...row, attempted: true });
   };
 
+  /**
+   * Marks a row as stuck, or renews the mark before a retry. Only its newest
+   * state is kept: a run's superseded state is never sent after a newer one.
+   */
+  const setAside = async (id: string): Promise<void> => {
+    const row = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (!row || stopped) return;
+    await replace(JSON.stringify(row), {
+      ...row,
+      stuckAt: Date.now(),
+      pending: row.pending.slice(-1),
+    });
+  };
+
   const expireParked = async (id: string): Promise<void> => {
     const row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -676,6 +703,7 @@ export function registerConversationLifecycleTransport(options: {
         for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
       for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
+      for (const roomId of heads.keys()) if (!backlog.has(roomId)) heads.delete(roomId);
       // Each parked room whose interval has passed probes with its oldest row
       // that still has status worth sending: unexpired, or owed to a room that
       // already knows the run.
@@ -695,7 +723,9 @@ export function registerConversationLifecycleTransport(options: {
         )
           probes.set(roomId, row);
       }
-      for (const initial of rows) {
+      // Rooms whose failing oldest row is passed over in this pass.
+      const trials = new Map<string, string>();
+      for (const [index, initial] of rows.entries()) {
         if (stopped || initial.transportId !== options.transportId) continue;
         // Settled lifecycle rows may intentionally wait for a final-result
         // correlation. They have no publication obligation until noteResult.
@@ -703,7 +733,33 @@ export function registerConversationLifecycleTransport(options: {
         const roomId = initial.binding.roomId;
         const now = Date.now();
         const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
+        if (!parked.has(roomId) && initial.stuckAt !== undefined) {
+          // A stuck row never holds back or backs off its room.
+          if (now - initial.stuckAt >= PARKED_PROBE_MS)
+            await setAside(initial.id)
+              .then(() => deliver(initial.id))
+              .catch(() => {});
+          continue;
+        }
         if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
+        const head = heads.get(roomId);
+        if (
+          !parked.has(roomId) &&
+          head?.id === initial.id &&
+          head.failures >= HEAD_ROW_FAILURES &&
+          rows
+            .slice(index + 1)
+            .some(
+              (row) =>
+                row.transportId === options.transportId &&
+                row.binding.roomId === roomId &&
+                row.stuckAt === undefined &&
+                row.pending.length > 0,
+            )
+        ) {
+          trials.set(roomId, initial.id);
+          continue;
+        }
         try {
           if (parked.has(roomId) && !probing) {
             await expireParked(initial.id);
@@ -714,6 +770,19 @@ export function registerConversationLifecycleTransport(options: {
           if (probing && !sent) continue;
           parked.delete(roomId);
           roomRetries.delete(roomId);
+          const aside = trials.get(roomId);
+          if (aside && sent) {
+            // A later row went through, so the room is fine and the row is not.
+            const failures = heads.get(roomId)?.failures ?? 0;
+            trials.delete(roomId);
+            heads.delete(roomId);
+            await setAside(aside).catch(options.onError);
+            options.onError(new Error("Conversation lifecycle row is stuck"), {
+              roomId,
+              reason: "row_stuck",
+              failures,
+            });
+          } else if (heads.get(roomId)?.id === initial.id) heads.delete(roomId);
         } catch (error) {
           if (stopped) return;
           if (options.isDestinationGone?.(error)) {
@@ -727,6 +796,14 @@ export function registerConversationLifecycleTransport(options: {
           // Its response may have been lost after the send landed.
           await markAttempted(initial.id).catch(options.onError);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
+          // The row after a failing head failed as well: it is the room.
+          if (trials.delete(roomId)) heads.delete(roomId);
+          else
+            heads.set(roomId, {
+              id: initial.id,
+              failures:
+                (heads.get(roomId)?.id === initial.id ? heads.get(roomId)!.failures : 0) + 1,
+            });
           // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
           if ((failures & (failures - 1)) === 0)
             options.onError(error, { roomId, reason: "delivery_failed", failures });
