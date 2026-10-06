@@ -14,6 +14,7 @@ import {
   getAgentRunContext,
   getAgentRunLifecycleGeneration,
   hasAgentRunContextExecutionOwner,
+  listCurrentAgentRunIds,
   registerAgentRunAdmissionHandler,
 } from "./agent-run-registry.js";
 import {
@@ -687,6 +688,40 @@ export function registerConversationLifecycleTransport(options: {
 
   const unsubscribe = registerAgentEventPersistenceHandler(record);
   const unsubscribeAdmission = registerAgentRunAdmissionHandler(admit);
+  // A reload forgets which live runs were still waiting for a binding. Each
+  // live run without a row is admitted again at the state the registry holds
+  // for it, so it gets a row now or is adopted when its binding appears.
+  try {
+    const generation = getAgentRunLifecycleGeneration();
+    for (const runId of listCurrentAgentRunIds()) {
+      const key = `${generation}:${runId}`;
+      const context = getAgentRunContext(runId);
+      if (
+        !context ||
+        owners.has(key) ||
+        context.isHeartbeat ||
+        context.projectSessionLifecycle === false ||
+        context.projectSessionMessages === false
+      )
+        continue;
+      const pendingApprovals = [...(context.executionActivity?.pendingApprovalIds ?? [])];
+      unbound.set(key, {
+        runId,
+        generation,
+        state: pendingApprovals.length
+          ? "waiting"
+          : context.lifecycleStartedAt === undefined
+            ? "queued"
+            : "running",
+        pendingApprovals,
+        attempts: 0,
+        notBefore: Date.now() + RETRY_BASE_MS,
+      });
+      admit(runId);
+    }
+  } catch (error) {
+    options.onError(error);
+  }
   const timer = setInterval(() => {
     void flush().catch(options.onError);
   }, 5_000);

@@ -563,6 +563,19 @@ describe("trusted durable conversation lifecycle", () => {
       "terminal_after_interrupted",
     ]);
   });
+  it("goes on looking for the binding of a live run after a reload", async () => {
+    let current: ConversationProjectionBinding[] = [];
+    const first = install({ resolve: () => current });
+    owner("reloaded");
+    emit("reloaded", "start");
+    await first.flush();
+    first.stop();
+    const next = install({ resolve: () => current });
+    current = [binding];
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5_000);
+    await next.flush();
+    expect(publications.map((event) => event.state)).toEqual(["running"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
