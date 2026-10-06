@@ -78,6 +78,10 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   resultEventId?: string;
   pendingApprovals: string[];
   pending: ConversationLifecyclePublication[];
+  /** Whether the owner held an execution claim or an open approval at the last transition. */
+  live?: boolean;
+  /** When that transition was recorded. */
+  activeAt?: number;
 };
 
 const QUEUE = "conversation-lifecycle-v2";
@@ -228,6 +232,8 @@ export function registerConversationLifecycleTransport(options: {
   const parked = new Map<string, number>();
   // Whether each open row's owner last held an execution claim or an open
   // approval, when it was last active, and since when it has been missing.
+  // The row carries the same evidence from its last transition, so a parked
+  // room or a reload cannot leave this empty or stale.
   const liveness = new Map<string, { live: boolean; activeAt: number; missingSince?: number }>();
   // Rows whose interrupted state may have reached the room. In-memory only: a
   // new generation never accepts events for these rows anyway.
@@ -405,6 +411,10 @@ export function registerConversationLifecycleTransport(options: {
           if (!existing && late && incomingState === "queued") state = late.state;
           if (!existing || existing.state !== state)
             appendTransition(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP);
+          row.live =
+            hasAgentRunContextExecutionOwner(event.runId) || row.pendingApprovals.length > 0;
+          row.activeAt = Date.now();
+          liveness.set(id, { live: row.live, activeAt: row.activeAt });
           write(row);
           adopted = true;
         }
@@ -472,14 +482,13 @@ export function registerConversationLifecycleTransport(options: {
     row.generation === getAgentRunLifecycleGeneration() && !!getAgentRunContext(row.runId);
 
   const heldForOwner = (row: LifecycleObligation) => {
-    const seen = liveness.get(row.id);
+    if (row.generation !== getAgentRunLifecycleGeneration()) return false;
+    // Without evidence the run is assumed to have held a claim: a late
+    // interrupted is recoverable, a false one is terminal.
+    const seen = liveness.get(row.id) ?? { live: row.live ?? true, activeAt: row.activeAt ?? 0 };
+    liveness.set(row.id, seen);
     const now = Date.now();
-    if (
-      !seen?.live ||
-      row.generation !== getAgentRunLifecycleGeneration() ||
-      now - seen.activeAt < OWNERLESS_HOLD_MS
-    )
-      return false;
+    if (!seen.live || now - seen.activeAt < OWNERLESS_HOLD_MS) return false;
     seen.missingSince ??= now;
     return now - seen.missingSince < OWNERLESS_HOLD_MS;
   };
@@ -513,7 +522,7 @@ export function registerConversationLifecycleTransport(options: {
       })
     )[0];
     if (!row || stopped || Date.now() - row.enqueuedAt < PARKED_ROW_EXPIRY_MS) return;
-    if (!TERMINAL.has(row.state) && ownerPresent(row)) return;
+    if (!TERMINAL.has(row.state) && (ownerPresent(row) || heldForOwner(row))) return;
     await replace(JSON.stringify(row), {
       ...row,
       pending: [],
