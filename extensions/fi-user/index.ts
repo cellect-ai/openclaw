@@ -575,11 +575,17 @@ export default definePluginEntry({
     api.on(
       "before_tool_call",
       (event, ctx) => {
+        // The host's deadline for this hook runs from here, across the grant check below.
+        const enteredAt = Date.now();
         const authorizeAndAttribute = () => {
           const config = configFromRuntime(api);
           const blocked = adminHandoffBlock(config, event, ctx);
           if (blocked) {
             return blocked;
+          }
+          const held = adminDelegation.held(config, event.toolName, ctx);
+          if (held) {
+            return held;
           }
           // The assertion is for the agents Fi's on-behalf-of knows by name; the
           // delegated token is for whichever agent is this runtime's admin tier.
@@ -601,7 +607,7 @@ export default definePluginEntry({
               : undefined;
           // The assertion stands on its own: a command still runs with it when
           // Fi issues no delegated token for this call.
-          const delegated = adminDelegation.mint(config, event, ctx);
+          const delegated = adminDelegation.mint(config, event, ctx, enteredAt);
           return delegated
             ? delegated.then((token) => ({
                 params: withOnBehalfOfEnv(event.params, assertion, token),

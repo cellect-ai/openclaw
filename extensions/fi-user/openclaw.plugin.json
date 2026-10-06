@@ -14,7 +14,8 @@
       "fi_user_esign",
       "fi_user_budget_import",
       "request_admin_action"
-    ]
+    ],
+    "agentToolResultMiddleware": ["openclaw", "codex", "agentsapi"]
   },
   "configSchema": {
     "type": "object",
