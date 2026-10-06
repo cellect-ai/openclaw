@@ -587,6 +587,14 @@ export function listAgentRunsForSession(params: {
   return runs.toSorted((a, b) => a.runId.localeCompare(b.runId));
 }
 
+/** Lists every registered run of the current lifecycle generation. */
+export function listCurrentAgentRunIds(): string[] {
+  const state = getAgentRunRegistryState();
+  return [...state.contexts]
+    .filter(([, context]) => context.lifecycleGeneration === state.lifecycleGeneration)
+    .map(([runId]) => runId);
+}
+
 export function recordAgentRunModel(runId: string, model: AgentRunModel | undefined): void {
   const context = getAgentRunContext(runId);
   if (!context || context.lifecycleGeneration !== getAgentRunLifecycleGeneration()) {
