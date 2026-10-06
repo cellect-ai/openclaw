@@ -242,7 +242,7 @@ export function registerConversationLifecycleTransport(options: {
   // attempt per period and never delays other rooms. Within a room rows are
   // sent in admission order, so a newer run's state does not overtake an
   // older run's. The one exception is a row set aside as stuck (`heads`).
-  // The room's oldest row while it keeps failing, and how often in a row.
+  // The room's oldest row while its sends keep failing, and how often in a row.
   const heads = new Map<string, { id: string; failures: number }>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
@@ -259,6 +259,9 @@ export function registerConversationLifecycleTransport(options: {
   // new generation never accepts events for these rows anyway.
   const interruptedSent = new Set<string>();
   const lateTerminals = new Set<string>();
+  // The last error thrown by `publish` itself, to tell a failed send from any
+  // other failure of a delivery.
+  let publishFailure: unknown;
   // Rows whose unsent interrupted was replaced; a delivery already holding the
   // older copy must not send it.
   const superseded = new Set<string>();
@@ -583,6 +586,39 @@ export function registerConversationLifecycleTransport(options: {
     });
   };
 
+  /**
+   * The room's oldest row has just failed again. The next row is sent once: if
+   * it fails too the room is down. If it goes through the room works, and the
+   * oldest row gets one more send straight away, so an outage that ended in
+   * between does not set a healthy row aside. True when the room works.
+   */
+  const isolatesHead = async (
+    head: LifecycleObligation,
+    next: LifecycleObligation,
+    failures: number,
+  ): Promise<boolean> => {
+    const roomId = head.binding.roomId;
+    try {
+      if (!(await deliver(next.id))) return false;
+    } catch {
+      heads.delete(roomId);
+      return false;
+    }
+    heads.delete(roomId);
+    try {
+      await deliver(head.id);
+    } catch (error) {
+      if (stopped || error !== publishFailure || options.isDestinationGone?.(error)) return true;
+      await setAside(head.id).catch(options.onError);
+      options.onError(new Error("Conversation lifecycle row is stuck"), {
+        roomId,
+        reason: "row_stuck",
+        failures,
+      });
+    }
+    return true;
+  };
+
   const expireParked = async (id: string): Promise<void> => {
     const row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -689,6 +725,7 @@ export function registerConversationLifecycleTransport(options: {
       try {
         await options.publish(row.binding, event, `${row.id}:${event.revision}`);
       } catch (error) {
+        publishFailure = error;
         // A refusal is the response: the row's first send did not land.
         if (firstSend && options.isDestinationGone?.(error))
           await unset(id, "attempted").catch(options.onError);
@@ -765,8 +802,6 @@ export function registerConversationLifecycleTransport(options: {
         )
           probes.set(roomId, row);
       }
-      // Rooms whose failing oldest row is passed over in this pass.
-      const trials = new Map<string, string>();
       for (const [index, initial] of rows.entries()) {
         if (stopped || initial.transportId !== options.transportId) continue;
         // Settled lifecycle rows may intentionally wait for a final-result
@@ -787,24 +822,6 @@ export function registerConversationLifecycleTransport(options: {
           continue;
         }
         if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
-        const head = heads.get(roomId);
-        if (
-          !parked.has(roomId) &&
-          head?.id === initial.id &&
-          head.failures >= HEAD_ROW_FAILURES &&
-          rows
-            .slice(index + 1)
-            .some(
-              (row) =>
-                row.transportId === options.transportId &&
-                row.binding.roomId === roomId &&
-                row.stuckAt === undefined &&
-                row.pending.length > 0,
-            )
-        ) {
-          trials.set(roomId, initial.id);
-          continue;
-        }
         try {
           if (parked.has(roomId) && !probing) {
             await expireParked(initial.id);
@@ -815,23 +832,12 @@ export function registerConversationLifecycleTransport(options: {
           if (probing && !sent) continue;
           parked.delete(roomId);
           roomRetries.delete(roomId);
-          const aside = trials.get(roomId);
-          if (aside && sent) {
-            // A later row went through, so the room is fine and the row is not.
-            const failures = heads.get(roomId)?.failures ?? 0;
-            trials.delete(roomId);
-            heads.delete(roomId);
-            await setAside(aside).catch(options.onError);
-            options.onError(new Error("Conversation lifecycle row is stuck"), {
-              roomId,
-              reason: "row_stuck",
-              failures,
-            });
-          } else if (heads.get(roomId)?.id === initial.id) heads.delete(roomId);
+          heads.delete(roomId);
         } catch (error) {
           if (stopped) return;
           if (options.isDestinationGone?.(error)) {
             parked.set(roomId, Date.now());
+            heads.delete(roomId);
             const failures = (roomRetries.get(roomId)?.failures ?? 0) + 1;
             options.onError(error, { roomId, reason: "room_parked", failures });
             continue;
@@ -839,14 +845,24 @@ export function registerConversationLifecycleTransport(options: {
           // Any other failure is an ordinary outage: back off instead of parking.
           parked.delete(roomId);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
-          // The row after a failing head failed as well: it is the room.
-          if (trials.delete(roomId)) heads.delete(roomId);
-          else
-            heads.set(roomId, {
-              id: initial.id,
-              failures:
-                (heads.get(roomId)?.id === initial.id ? heads.get(roomId)!.failures : 0) + 1,
-            });
+          // Only a failed send counts against the row; anything else thrown by
+          // a delivery says nothing about the row or its room.
+          if (error === publishFailure) {
+            const head = heads.get(roomId);
+            const count = (head?.id === initial.id ? head.failures : 0) + 1;
+            heads.set(roomId, { id: initial.id, failures: count });
+            const next = rows
+              .slice(index + 1)
+              .find(
+                (row) =>
+                  row.transportId === options.transportId &&
+                  row.binding.roomId === roomId &&
+                  row.stuckAt === undefined &&
+                  row.pending.length > 0,
+              );
+            if (count >= HEAD_ROW_FAILURES && next && (await isolatesHead(initial, next, count)))
+              roomRetries.delete(roomId);
+          }
           // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
           if ((failures & (failures - 1)) === 0)
             options.onError(error, { roomId, reason: "delivery_failed", failures });
