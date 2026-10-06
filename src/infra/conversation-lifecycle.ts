@@ -273,6 +273,9 @@ export function registerConversationLifecycleTransport(options: {
       continue;
     const key = `${row.generation}:${row.runId}`;
     owners.set(key, [...(owners.get(key) ?? []), Object.freeze({ ...row.binding })]);
+    // The previous registration may have sent this interrupted and lost the
+    // response. The room may hold it, so it is never replaced after a reload.
+    if (row.state === "interrupted") interruptedSent.add(row.id);
   }
 
   const record = (event: AgentEventRuntimePayload) => {
