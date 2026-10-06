@@ -283,6 +283,8 @@ export async function resolveMatrixInboundContext(config: {
       ...locationPayload?.context,
       CommandSource: "text" as const,
       NativeDirectUserId: isDirectMessage ? senderId : undefined,
+      // This path is fed only by the homeserver's own room event; its sender is the homeserver's.
+      SenderAuthentication: "verified" as const,
     },
   });
   if (quoteHidden) {

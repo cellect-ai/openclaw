@@ -17,7 +17,7 @@ import {
   createRequestAdminActionTool,
   decideAdminApproval,
 } from "./admin-action.js";
-import { registerAdminDelegation } from "./admin-delegation.js";
+import { isAdminAgent, registerAdminDelegation } from "./admin-delegation.js";
 import {
   projectSlackChannelThread,
   registerSlackChannelProjection,
@@ -526,6 +526,11 @@ export default definePluginEntry({
         sessionKey: event.sessionKey ?? context.sessionKey,
         conversationId: context.conversationId,
       });
+      adminDelegation.received({
+        channel: context.channelId,
+        senderId: event.senderId ?? context.senderId,
+        sessionKey: event.sessionKey ?? context.sessionKey,
+      });
       if (context.channelId === "webchat") {
         rememberWebchatContext(event.sessionKey ?? context.sessionKey, event.content);
       }
@@ -557,7 +562,7 @@ export default definePluginEntry({
           api.logger.warn("fi-user: admin approval handling failed");
         }
         // Only a message that goes on to the agent can start or join its turn.
-        adminDelegation.noteInbound({ channel, ...message });
+        adminDelegation.dispatched({ channel, ...message });
         return undefined;
       },
       { priority: 10_000 },
@@ -575,7 +580,7 @@ export default definePluginEntry({
           // delegated token is for whichever agent is this runtime's admin tier.
           const attributed = ON_BEHALF_OF_AGENTS.has(ctx.agentId ?? "");
           if (
-            !(attributed || ctx.agentId === config.adminAgentId) ||
+            !(attributed || isAdminAgent(config, ctx.agentId)) ||
             !ON_BEHALF_OF_TOOLS.has(event.toolName)
           ) {
             return undefined;
@@ -593,8 +598,8 @@ export default definePluginEntry({
           // Fi issues no delegated token for this call.
           const delegated = adminDelegation.mint(config, event, ctx);
           return delegated
-            ? delegated.then((minted) => ({
-                params: withOnBehalfOfEnv(event.params, assertion, minted),
+            ? delegated.then((token) => ({
+                params: withOnBehalfOfEnv(event.params, assertion, token),
               }))
             : { params: withOnBehalfOfEnv(event.params, assertion) };
         };

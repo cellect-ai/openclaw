@@ -55,9 +55,21 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
   };
   return {
     warn,
-    /** A message the host dispatches to the session. */
-    arrive: (overrides: Record<string, unknown> = {}) =>
+    /** Input the host accepts for the session without dispatching it: an injection into a run. */
+    inject: (overrides: Record<string, unknown> = {}) =>
       hook(
+        "message_received",
+        { from: "x", content: "also do this", senderId: "U0ADMIN001", ...overrides },
+        { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
+      ),
+    /** A message the host receives and then dispatches to the session. */
+    arrive: async (overrides: Record<string, unknown> = {}) => {
+      await hook(
+        "message_received",
+        { from: "x", content: "run the audit", senderId: "U0ADMIN001", ...overrides },
+        { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
+      );
+      return hook(
         "before_dispatch",
         {
           content: "run the audit",
@@ -68,7 +80,8 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
           ...overrides,
         },
         { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
-      ),
+      );
+    },
     /** The run the host starts for it. */
     start: (overrides: Record<string, unknown> = {}) =>
       hook(
@@ -133,7 +146,7 @@ afterEach(() => {
 });
 
 describe("the admin agent's delegated user token", () => {
-  it("gives a verified requester's exec their own token, pinned to the Fi it came from", async () => {
+  it("gives a verified requester's exec their own token", async () => {
     const turn = plugin();
     await turn.arrive();
     await turn.start();
@@ -141,17 +154,17 @@ describe("the admin agent's delegated user token", () => {
       {},
       {
         params: {
-          command: "npm run fi:audit",
-          requesterSenderId: "U0SOMEONE9",
-          env: { KEEP: "1", fi_delegated_user_token: "forged", Fi_App_Url: "https://evil.test" },
+          command: "npm run fi:audit --as U0SOMEONE9",
+          env: { KEEP: "1", fi_delegated_user_token: "forged", REQUESTER: "U0SOMEONE9" },
         },
       },
     );
+    // FI_APP_URL is the sandbox's own: nothing is set for it.
     expect(result?.params.env).toEqual({
       KEEP: "1",
+      REQUESTER: "U0SOMEONE9",
       FI_ON_BEHALF_OF: expect.any(String),
       FI_DELEGATED_USER_TOKEN: TOKEN,
-      FI_APP_URL: "https://fi.example.test/fi",
     });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
@@ -165,13 +178,37 @@ describe("the admin agent's delegated user token", () => {
     expect(mintBody()).toEqual({ requesterSenderId: "U0ADMIN001", agentId: "cellect-fi-admin" });
   });
 
+  it("withholds the token from a call that names another Fi, and leaves its env alone", async () => {
+    const turn = plugin();
+    await turn.arrive();
+    await turn.start();
+    const same = await turn.exec(
+      {},
+      { params: { command: "x", env: { Fi_App_Url: "https://fi.example.test/fi//" } } },
+    );
+    expect(same?.params.env).toEqual({
+      Fi_App_Url: "https://fi.example.test/fi//",
+      FI_ON_BEHALF_OF: expect.any(String),
+      FI_DELEGATED_USER_TOKEN: TOKEN,
+    });
+    fetchMock.mockClear();
+    for (const url of ["https://evil.test", "https://fi.example.test", 7]) {
+      const other = await turn.exec(
+        {},
+        { params: { command: "x", env: { FI_APP_URL: url, FI_DELEGATED_USER_TOKEN: "forged" } } },
+      );
+      expect(other?.params.env).toEqual({ FI_APP_URL: url, FI_ON_BEHALF_OF: expect.any(String) });
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("covers sandbox_exec and asks Fi afresh for every call", async () => {
     const turn = plugin();
     await turn.arrive();
     await turn.start();
     fetchMock.mockImplementationOnce(async () => minted({ token: "first.fixture.token" }));
     const first = await turn.exec({ toolName: "sandbox_exec" }, { toolName: "sandbox_exec" });
-    const second = await turn.exec();
+    const second = await turn.exec({}, { params: { command: "x", host: "sandbox" } });
     expect(first?.params.env?.FI_DELEGATED_USER_TOKEN).toBe("first.fixture.token");
     expect(second?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -182,12 +219,10 @@ describe("the admin agent's delegated user token", () => {
     const turn = plugin({ adminAgentId: "tenant-admin" });
     await turn.arrive({ sessionKey: session });
     await turn.start({ agentId: "tenant-admin", sessionKey: session });
-    const result = await turn.exec({ agentId: "tenant-admin", sessionKey: session });
+    // The host and the config may spell the agent id in different case.
+    const result = await turn.exec({ agentId: "Tenant-Admin", sessionKey: session });
     // No legacy assertion for an agent Fi's on-behalf-of does not know; the token alone.
-    expect(result?.params.env).toEqual({
-      FI_DELEGATED_USER_TOKEN: TOKEN,
-      FI_APP_URL: "https://fi.example.test/fi",
-    });
+    expect(result?.params.env).toEqual({ FI_DELEGATED_USER_TOKEN: TOKEN });
     expect(mintBody().agentId).toBe("cellect-fi-admin");
     // The default admin agent is no longer this runtime's admin tier.
     fetchMock.mockClear();
@@ -202,7 +237,7 @@ describe("the admin agent's delegated user token", () => {
     const session = "agent:cellect-fi-admin:slack:matrix-linked";
     const matrix = { channel: "matrix", senderId: "@admin:matrix.example" };
     const turn = plugin();
-    await turn.arrive({ ...matrix, sessionKey: session, senderAuthentication: undefined });
+    await turn.arrive({ ...matrix, sessionKey: session });
     await turn.start({ ...matrix, sessionKey: session });
     const result = await turn.exec({
       sessionKey: session,
@@ -223,36 +258,26 @@ describe("the admin agent's delegated user token", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("acts for the recorded requester of an approved admin action", async () => {
+  it("leaves an approved admin action with today's attribution only", async () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
-    const record = {
+    adminActionSessions.set(sessionKey, {
       id: "ZZZ222",
-      task: "external_share_link" as const,
+      task: "external_share_link",
       fields: {},
       requester: {
         email: "member@example.com",
-        identity: { channel: "slack" as const, requesterSenderId: "U0MEMBER01" },
+        identity: { channel: "slack", requesterSenderId: "U0MEMBER01" },
       },
       createdAt: Date.now(),
-      status: "approved" as const,
-    };
-    adminActionSessions.set(sessionKey, record);
+      status: "approved",
+    });
     try {
       const turn = plugin();
-      const result = await turn.exec({ sessionKey, runId: "action-run", requester: undefined });
-      expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
-      expect(mintBody().requesterSenderId).toBe("U0MEMBER01");
-      // Fi refuses a webchat identity for this token, so none is asked for.
-      fetchMock.mockClear();
-      adminActionSessions.set(sessionKey, {
-        ...record,
-        requester: {
-          email: "member@example.com",
-          identity: { channel: "webchat", appContextToken: "context" },
-        },
-      });
-      const webchat = await turn.exec({ sessionKey, runId: "action-run", requester: undefined });
-      expect(webchat?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      // Even a turn that would otherwise be admitted on that session.
+      await turn.arrive({ sessionKey });
+      await turn.start({ sessionKey });
+      const result = await turn.exec({ sessionKey });
+      expect(result?.params.env).toEqual({ FI_ON_BEHALF_OF: expect.any(String) });
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       adminActionSessions.delete(sessionKey);
@@ -325,16 +350,87 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec());
     });
 
-    it("a Matrix sender another party named", async () => {
-      const matrix = { channel: "matrix", senderId: "@admin:matrix.example" };
-      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
-      const session = "agent:cellect-fi-admin:slack:matrix-linked";
+    it.each(["asserted", undefined])(
+      "a Matrix sender the homeserver path did not stamp: %s",
+      async (authentication) => {
+        const matrix = { channel: "matrix", senderId: "@admin:matrix.example" };
+        vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+        const session = "agent:cellect-fi-admin:slack:matrix-linked";
+        const turn = plugin();
+        await turn.arrive({ ...matrix, sessionKey: session, senderAuthentication: authentication });
+        await turn.start({ ...matrix, sessionKey: session });
+        await refused(
+          turn.exec({ sessionKey: session, requester: { ...matrix, accountId: "adminprod" } }),
+        );
+      },
+    );
+
+    it("a message queued behind a long run and collected with the owner's much later", async () => {
+      vi.useFakeTimers();
+      try {
+        const turn = plugin();
+        await turn.arrive();
+        await turn.start();
+        // Someone else posts while the run is busy: queued, and it ends this run's admission.
+        await turn.arrive({ senderId: "U0OTHER002" });
+        vi.advanceTimersByTime(45 * 60 * 1000);
+        await turn.arrive();
+        await turn.settle();
+        // The host collects both under the last item's sender.
+        await turn.start({ runId: "run-2" });
+        await refused(turn.exec({ runId: "run-2" }));
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("a run that only a heartbeat separated from someone else's queued message", async () => {
       const turn = plugin();
-      await turn.arrive({ ...matrix, sessionKey: session, senderAuthentication: "asserted" });
-      await turn.start({ ...matrix, sessionKey: session });
-      await refused(
-        turn.exec({ sessionKey: session, requester: { ...matrix, accountId: "adminprod" } }),
-      );
+      await turn.arrive({ senderId: "U0OTHER002" });
+      await turn.start({ runId: "beat", trigger: "heartbeat", senderId: undefined });
+      await turn.settle("beat");
+      await turn.arrive();
+      await turn.start();
+      await refused(turn.exec());
+    });
+
+    it("a run that takes input injected without a dispatch", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      await turn.inject({ channel: "webchat", senderId: "operator-ui" });
+      await refused(turn.exec());
+    });
+
+    it("a turn after an undispatched input nobody proved", async () => {
+      const turn = plugin();
+      await turn.inject({ senderId: "U0OTHER002" });
+      await turn.arrive();
+      await turn.start();
+      await refused(turn.exec());
+      // The same person's own undispatched input alone proves nothing either.
+      await turn.settle();
+      await turn.inject();
+      await turn.start({ runId: "run-2" });
+      await refused(turn.exec({ runId: "run-2" }));
+    });
+
+    it("a session a Talk consult has run on, from then on", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      await turn.start({
+        runId: "consult",
+        channel: "matrix",
+        senderId: "@admin:matrix.example",
+        channelContext: { chat: { id: "!r:matrix.example", talkThreadRootEventId: "$root" } },
+      });
+      await refused(turn.exec());
+      await turn.settle();
+      await turn.settle("consult");
+      await turn.arrive();
+      await turn.start({ runId: "run-2" });
+      await refused(turn.exec({ runId: "run-2" }));
     });
 
     it("a tool call whose requester, session or run is not the admitted turn's", async () => {
@@ -355,6 +451,33 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec());
       await turn.start({ runId: "run-2" });
       await refused(turn.exec({ runId: "run-2" }));
+    });
+
+    it("forgets a steered message once the session has been idle, so the owner is not held back", async () => {
+      vi.useFakeTimers();
+      try {
+        const turn = plugin();
+        await turn.arrive();
+        await turn.start();
+        await turn.arrive({ senderId: "U0OTHER002" });
+        vi.advanceTimersByTime(45 * 60 * 1000);
+        // Idle is counted from the end of the run, not from the message.
+        await turn.settle();
+        vi.advanceTimersByTime(29 * 60 * 1000);
+        await turn.arrive();
+        await turn.start({ runId: "run-2" });
+        await refused(turn.exec({ runId: "run-2" }));
+        await turn.settle("run-2");
+        await turn.arrive({ senderId: "U0OTHER002" });
+        vi.advanceTimersByTime(31 * 60 * 1000);
+        await turn.arrive();
+        await turn.start({ runId: "run-3" });
+        expect((await turn.exec({ runId: "run-3" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
+          TOKEN,
+        );
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it("a message that arrived too long before the run", async () => {
@@ -379,17 +502,33 @@ describe("the admin agent's delegated user token", () => {
   });
 
   describe("tools and agents that get no token", () => {
-    it.each(["process", "gateway_exec", "node_exec", "sandbox_process", "read", "message"])(
-      "%s",
-      async (toolName) => {
-        const turn = plugin();
-        await turn.arrive();
-        await turn.start();
-        const result = await turn.exec({ toolName }, { toolName, params: {} });
-        expect(JSON.stringify(result ?? {})).not.toContain(TOKEN);
-        expect(fetchMock).not.toHaveBeenCalled();
-      },
-    );
+    it.each(["process", "sandbox_process", "read", "message"])("%s", async (toolName) => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const result = await turn.exec({ toolName }, { toolName, params: {} });
+      expect(JSON.stringify(result ?? {})).not.toContain(TOKEN);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    // Codex's gateway_exec and node_exec reach the hook as `exec` with the host pinned;
+    // a harness's native shell reaches it as `exec` with its own parameters.
+    it.each([
+      ["gateway_exec", { command: "x", host: "gateway" }],
+      ["node_exec", { command: "x", host: "node", node: "build-1" }],
+      ["a node named without a host", { command: "x", node: "build-1" }],
+      ["an inherited host", { command: "x", host: "auto" }],
+      ["an elevated command", { command: "x", elevated: true }],
+      ["Claude Code's native Bash", { command: "x", description: "run x", timeout: 1000 }],
+      ["Codex's native shell", { command: ["bash", "-lc", "x"], workdir: "/w" }],
+    ])("%s", async (_name, params) => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const result = await turn.exec({}, { params });
+      expect(result?.params.env).toEqual({ FI_ON_BEHALF_OF: expect.any(String) });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
 
     it("code-mode exec, which runs no shell command", async () => {
       const turn = plugin();
@@ -450,14 +589,18 @@ describe("the admin agent's delegated user token", () => {
           {
             params: {
               command: "npm run fi:audit",
-              env: { FI_DELEGATED_USER_TOKEN: "replayed", FI_APP_URL: "https://sandbox.test" },
+              env: {
+                FI_DELEGATED_USER_TOKEN: "replayed",
+                FI_APP_URL: "https://fi.example.test/fi",
+              },
             },
           },
         );
         // Nothing is set, nothing stands in for it, and the legacy path is as it was.
+        expect(fetchMock).toHaveBeenCalledTimes(1);
         expect(result?.params.env).toEqual({
           FI_ON_BEHALF_OF: expect.any(String),
-          FI_APP_URL: "https://sandbox.test",
+          FI_APP_URL: "https://fi.example.test/fi",
         });
         expect(JSON.stringify(result)).not.toContain(BROKER);
         const logged = JSON.stringify([turn.warn.mock.calls, consoleError.mock.calls]);
