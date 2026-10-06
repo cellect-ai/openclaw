@@ -1072,7 +1072,11 @@ describe("request_admin_action", () => {
     // Not an approver: ignored, and left to the conversation as an ordinary turn.
     await expect(
       received(
-        { content: `approve ${requestId}`, senderId: "U12345678" } as never,
+        {
+          content: `approve ${requestId}`,
+          senderId: "U12345678",
+          senderAuthentication: "verified",
+        } as never,
         { channelId: "slack" } as never,
       ),
     ).resolves.toBeUndefined();
@@ -1080,16 +1084,39 @@ describe("request_admin_action", () => {
     // An approver's unrelated remark is theirs to make: no request, no claim.
     await expect(
       received(
-        { content: "approved the budget yesterday", senderId: "UALEX00001" } as never,
+        {
+          content: "approved the budget yesterday",
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+        } as never,
         { channelId: "slack" } as never,
       ),
     ).resolves.toBeUndefined();
     expect(mocks.subagentRun).not.toHaveBeenCalled();
 
-    // The approval is claimed, so the same text never becomes an agent turn.
+    // A sender id Slack did not itself prove decides nothing, and is not a turn.
     await expect(
       received(
         { content: `approve ${requestId}`, senderId: "UALEX00001" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(mocks.sendText).toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining("did not verify") }),
+      ),
+    );
+    mocks.sendText.mockClear();
+
+    // The approval is claimed, so the same text never becomes an agent turn.
+    await expect(
+      received(
+        {
+          content: `approve ${requestId}`,
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+        } as never,
         { channelId: "slack" } as never,
       ),
     ).resolves.toEqual({ handled: true });
@@ -1111,7 +1138,11 @@ describe("request_admin_action", () => {
     // and still claimed, so it cannot reach an agent either.
     await expect(
       received(
-        { content: `approve ${requestId}`, senderId: "ULORENZO01" } as never,
+        {
+          content: `approve ${requestId}`,
+          senderId: "ULORENZO01",
+          senderAuthentication: "verified",
+        } as never,
         { channelId: "slack" } as never,
       ),
     ).resolves.toEqual({ handled: true });
@@ -1143,7 +1174,11 @@ describe("request_admin_action", () => {
     const requestId = (result.details as { requestId: string }).requestId;
     await expect(
       instance.hook("before_dispatch")(
-        { content: `<@UFIUSERBOT> deny ${requestId}`, senderId: "UALEX00001" } as never,
+        {
+          content: `<@UFIUSERBOT> deny ${requestId}`,
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+        } as never,
         { channelId: "slack" } as never,
       ),
     ).resolves.toEqual({ handled: true });
