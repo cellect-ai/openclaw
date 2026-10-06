@@ -15,13 +15,12 @@ const MINT_TIMEOUT_MS = 8_000;
 /** A token this close to expiry is not handed to a command. */
 const MIN_REMAINING_SECONDS = 60;
 /**
- * How long an idle session keeps arrivals no run took up. A queued message is
- * drained when the run ahead of it ends, so one still here this long after the
- * session went idle was steered into that run, not left waiting.
+ * Sessions and runs remembered at once. Nothing here is dropped on a clock:
+ * which runs take up a queued message is not all visible to a plugin, so an
+ * arrival is forgotten only when a message run takes it up or the host retires
+ * the session. Past the cap nothing is admitted until the plugin is reloaded.
  */
-const IDLE_ARRIVALS_TTL_MS = 30 * 60 * 1000;
-/** A run whose end was never reported stops holding its session's arrivals. */
-const RUN_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
+const MAX_TRACKED = 5_000;
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UNPROVEN = "unproven";
 /** The parameters OpenClaw's own exec tool takes; a native harness shell names others. */
@@ -40,12 +39,14 @@ const EXEC_PARAMS = new Set([
   "node",
 ]);
 
-type Arrivals = { senders: Set<string>; proven: boolean; at: number };
-type Run = { sessionKey: string; at: number; sender?: string };
+type Arrivals = { senders: Set<string>; proven: boolean };
+type Run = { sessionKey: string; sender?: string };
 type Inbound = {
   channel?: string;
   senderId?: string;
   senderAuthentication?: "verified" | "asserted";
+  /** False only when the channel itself classified the conversation as one person's. */
+  isGroup?: boolean;
   sessionKey?: string;
 };
 
@@ -63,7 +64,10 @@ export function isAdminAgent(
  * pinned, and elevation leaves the sandbox too. A harness's native shell
  * (Codex, Claude Code) is also called `exec` here but takes no `env`: a token
  * written into its input would be shown to the model and used by nothing. One
- * that sends only `command` cannot be told apart; see the plugin's deploy notes.
+ * that sends only `command` cannot be told apart; see the plugin's README.
+ *
+ * With no `host` the effective one is configuration's, which a plugin cannot
+ * see, so a call that gets a token is also pinned to the sandbox by the caller.
  */
 function runsInSandbox(params: Record<string, unknown>): boolean {
   return (
@@ -104,8 +108,11 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * same sender, and nobody else may write into the session while it runs.
  * Cron, heartbeat, webhook, sub-agent and inter-session runs bring no such
  * message; a batch from several people and a run another person steers are
- * refused. Arrivals are never forgotten while a run is active: a message
- * queued behind a long run still counts when it is collected with a later one.
+ * refused. Only a direct session is admitted: a room or thread carries other
+ * people's words the agent reads without their being dispatched to it. An
+ * arrival is never forgotten on a clock: a message queued behind a long run
+ * still counts when it is collected with a later one, at the price of one
+ * refused turn for the owner after someone else's message was steered in.
  *
  * Voice is not observable here: a Talk consult is dispatched by the Gateway
  * without these hooks. A session is refused from the first consult this
@@ -116,35 +123,54 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
   const arrivals = new Map<string, Arrivals>();
   const runs = new Map<string, Run>();
   const voiced = new Set<string>();
-  const hasActiveRun = (sessionKey: string) => {
-    for (const run of runs.values()) {
-      if (run.sessionKey === sessionKey) {
-        return true;
-      }
+  let overflowed = false;
+  const hasRoom = (tracked: { size: number }) => {
+    if (tracked.size < MAX_TRACKED) {
+      return true;
+    }
+    if (!overflowed) {
+      overflowed = true;
+      api.logger.warn("fi-user: admin delegation is off until reload; too many sessions tracked");
     }
     return false;
   };
-  const sweep = () => {
-    const now = Date.now();
-    for (const [id, run] of runs) {
-      if (now - run.at > RUN_RECORD_TTL_MS) {
-        runs.delete(id);
-      }
-    }
-    for (const [sessionKey, arrived] of arrivals) {
-      if (now - arrived.at > IDLE_ARRIVALS_TTL_MS && !hasActiveRun(sessionKey)) {
-        arrivals.delete(sessionKey);
-      }
-    }
+  const reset = () => {
+    arrivals.clear();
+    runs.clear();
+    voiced.clear();
+    overflowed = false;
   };
-  const settle = (runId: string) => {
-    const run = runs.get(runId);
-    runs.delete(runId);
-    const arrived = run && arrivals.get(run.sessionKey);
-    if (arrived && !hasActiveRun(run.sessionKey)) {
-      // The idle clock starts when the session does, not when the message came.
-      arrived.at = Date.now();
+  /**
+   * One person's own conversation with the admin agent, by the session key the
+   * host routed (compared in lower case). A room or channel thread carries
+   * other people's messages the agent reads without their being dispatched to
+   * it, so only a direct session can be one requester's turn:
+   * - Slack: `agent:<admin>:slack:direct:<peer>`, and the sender is that peer;
+   * - Matrix: `agent:<admin>:matrix:…`, whose key does not say what kind of
+   *   room it is, so each dispatched message must also be one the Matrix
+   *   monitor classified as a direct message.
+   */
+  const directSender = (
+    adminAgentId: string,
+    sessionKey: string,
+    message: Inbound,
+  ): string | undefined => {
+    const requester = onBehalfOfRequester(message);
+    const prefix = `agent:${adminAgentId.toLowerCase()}:`;
+    if (!requester || !sessionKey.startsWith(prefix)) {
+      return undefined;
     }
+    const rest = sessionKey.slice(prefix.length);
+    if ("requester_slack_user_id" in requester) {
+      return rest === `slack:direct:${requester.requester_slack_user_id.toLowerCase()}`
+        ? JSON.stringify(requester)
+        : undefined;
+    }
+    return "requester_matrix_user_id" in requester &&
+      rest.startsWith("matrix:") &&
+      message.isGroup === false
+      ? JSON.stringify(requester)
+      : undefined;
   };
   api.agent.events.registerAgentEventSubscription({
     id: "admin-delegation-turn-retirement",
@@ -154,32 +180,27 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
         event.data.executionSettled === true &&
         (event.data.phase === "end" || event.data.phase === "error")
       ) {
-        settle(event.runId);
+        runs.delete(event.runId);
       }
     },
   });
   api.lifecycle.registerRuntimeLifecycle({
     id: "admin-delegation-turns",
-    dispose: () => {
-      arrivals.clear();
-      runs.clear();
-      voiced.clear();
-    },
+    dispose: reset,
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
-        settle(runId);
+        runs.delete(runId);
       } else if (sessionKey) {
-        arrivals.delete(sessionKey);
-        voiced.delete(sessionKey);
+        const key = sessionKey.toLowerCase();
+        arrivals.delete(key);
+        voiced.delete(key);
         for (const [id, run] of runs) {
-          if (run.sessionKey === sessionKey) {
+          if (run.sessionKey === key) {
             runs.delete(id);
           }
         }
       } else {
-        arrivals.clear();
-        runs.clear();
-        voiced.clear();
+        reset();
       }
     },
   });
@@ -187,15 +208,20 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     "before_agent_reply",
     (_event, context) => {
       const config = configFromRuntime(api);
-      const { sessionKey, runId } = context;
+      const sessionKey = context.sessionKey?.toLowerCase();
+      const runId = context.runId;
       if (!isAdminAgent(config, context.agentId) || !sessionKey || !runId || runs.has(runId)) {
         return undefined;
       }
-      sweep();
       if (context.channelContext?.chat?.talkThreadRootEventId !== undefined) {
         voiced.add(sessionKey);
       }
-      const run: Run = { sessionKey, at: Date.now() };
+      if (!hasRoom(runs)) {
+        return undefined;
+      }
+      // Remembered whether admitted or not, so a second attempt of the same
+      // run does not take up what arrived for the next one.
+      const run: Run = { sessionKey };
       runs.set(runId, run);
       // Only a run that carries a message takes up what arrived; a heartbeat
       // or inter-session run in between must not clear a queued message.
@@ -211,6 +237,7 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       const sender = requester && JSON.stringify(requester);
       if (
         sender &&
+        !overflowed &&
         arrived?.proven &&
         arrived.senders.size === 1 &&
         arrived.senders.has(sender) &&
@@ -223,43 +250,60 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     { priority: 10_000 },
   );
 
-  const observe = (message: Inbound, proven: boolean): void => {
-    const config = configFromRuntime(api);
-    const sessionKey = message.sessionKey;
-    if (!sessionKey?.toLowerCase().startsWith(`agent:${config.adminAgentId.toLowerCase()}:`)) {
-      return;
+  /** `sender` is the direct session's own proven or named person; anyone else is unknown. */
+  const observe = (sessionKey: string, sender: string, proven: boolean): void => {
+    const arrived = arrivals.get(sessionKey);
+    if (arrived) {
+      arrived.senders.add(sender);
+      arrived.proven ||= proven;
+    } else if (hasRoom(arrivals)) {
+      arrivals.set(sessionKey, { senders: new Set([sender]), proven });
     }
-    sweep();
-    const requester = onBehalfOfRequester(message);
-    const sender = requester ? JSON.stringify(requester) : UNPROVEN;
-    const arrived = arrivals.get(sessionKey) ?? { senders: new Set(), proven: false, at: 0 };
-    arrived.senders.add(sender);
-    arrived.proven ||= proven && sender !== UNPROVEN;
-    arrived.at = Date.now();
-    arrivals.set(sessionKey, arrived);
     for (const run of runs.values()) {
       if (run.sessionKey === sessionKey && run.sender !== sender) {
         delete run.sender;
       }
     }
   };
+  const adminSession = (message: Inbound) => {
+    const { adminAgentId } = configFromRuntime(api);
+    const sessionKey = message.sessionKey?.toLowerCase();
+    return sessionKey?.startsWith(`agent:${adminAgentId.toLowerCase()}:`)
+      ? { adminAgentId, sessionKey }
+      : undefined;
+  };
 
   /**
    * A message the host is about to dispatch to the agent. Only here does the
-   * channel say whether it proved the sender itself: Slack for its own events,
-   * Matrix for the homeserver's. Anything else counts as someone unknown.
+   * channel say whether it proved the sender itself (Slack for its own events,
+   * Matrix for the homeserver's) and whether the conversation is one person's.
+   * Anything else counts as someone unknown.
    */
-  const dispatched = (message: Inbound): void =>
-    message.senderAuthentication === "verified"
-      ? observe(message, true)
-      : observe({ sessionKey: message.sessionKey }, false);
+  const dispatched = (message: Inbound): void => {
+    const session = adminSession(message);
+    if (!session) {
+      return;
+    }
+    const sender =
+      message.senderAuthentication === "verified"
+        ? directSender(session.adminAgentId, session.sessionKey, message)
+        : undefined;
+    observe(session.sessionKey, sender ?? UNPROVEN, sender !== undefined);
+  };
 
   /**
    * Any input the host accepted for a session, including one injected into a
    * running turn without a dispatch. It proves nobody, and counts against a
    * turn that belongs to somebody else.
    */
-  const received = (message: Inbound): void => observe(message, false);
+  const received = (message: Inbound): void => {
+    const session = adminSession(message);
+    if (!session) {
+      return;
+    }
+    const requester = onBehalfOfRequester(message);
+    observe(session.sessionKey, requester ? JSON.stringify(requester) : UNPROVEN, false);
+  };
 
   /**
    * The token for this tool call, or nothing. Synchronous refusals stay
@@ -280,20 +324,18 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       !ctx.sessionKey ||
       // An approved admin action keeps today's attribution; it is not this turn's requester.
       adminActionSessions.has(ctx.sessionKey) ||
-      voiced.has(ctx.sessionKey)
+      overflowed
     ) {
+      return undefined;
+    }
+    const sessionKey = ctx.sessionKey.toLowerCase();
+    if (voiced.has(sessionKey)) {
       return undefined;
     }
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     const requester = onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
-    if (
-      !run ||
-      !requester ||
-      !sender ||
-      run.sessionKey !== ctx.sessionKey ||
-      run.sender !== sender
-    ) {
+    if (!run || !requester || !sender || run.sessionKey !== sessionKey || run.sender !== sender) {
       return undefined;
     }
     let body: Record<string, string>;

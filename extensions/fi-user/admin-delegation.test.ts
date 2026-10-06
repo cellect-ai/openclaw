@@ -9,10 +9,36 @@ import fiUserPlugin from "./index.js";
 
 const BROKER = "fixture-broker-credential";
 const TOKEN = "fixtureheader.fixturepayload.fixturesignature";
-const SESSION = "agent:cellect-fi-admin:slack:channel:c1:thread:1.2";
+const SESSION = "agent:cellect-fi-admin:slack:direct:u0admin001";
+const MATRIX_SESSION = "agent:cellect-fi-admin:matrix:channel:!dm:matrix.example";
+const AUTHORIZE_URL = "https://fi.example.test/fi/api/threads/agent-authorize";
+/** A Matrix direct message from the admin, as the host reports it at each hook. */
+const matrix = {
+  arrive: {
+    channel: "matrix",
+    senderId: "@admin:matrix.example",
+    sessionKey: MATRIX_SESSION,
+    isGroup: false,
+  },
+  start: {
+    channel: "matrix",
+    senderId: "@admin:matrix.example",
+    sessionKey: MATRIX_SESSION,
+    accountId: "adminprod",
+    chatId: "!dm:matrix.example",
+    channelContext: {
+      sender: { id: "@admin:matrix.example" },
+      chat: { id: "!dm:matrix.example", eventId: "$event" },
+    },
+  },
+  exec: {
+    sessionKey: MATRIX_SESSION,
+    requester: { channel: "matrix", senderId: "@admin:matrix.example", accountId: "adminprod" },
+  },
+};
 const MINT_URL = "https://fi.example.test/fi/api/openclaw-user-delegation";
 type Env = Record<string, string>;
-type Rewrite = { params: { env?: Env } } | undefined;
+type Rewrite = { params: { env?: Env; host?: unknown; elevated?: unknown } } | undefined;
 
 function plugin(configOverrides: Record<string, unknown> = {}) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
@@ -131,12 +157,18 @@ const minted = (fi: Record<string, unknown> = {}, user: Record<string, unknown> 
     }),
     { status: 200, headers: { "content-type": "application/json" } },
   );
-const mintBody = (call = 0) =>
-  JSON.parse((fetchMock.mock.calls[call]![1] as { body: string }).body) as Record<string, string>;
+const mints = () => fetchMock.mock.calls.filter(([url]) => url === MINT_URL);
+const mintBody = () =>
+  JSON.parse((mints()[0]![1] as { body: string }).body) as Record<string, string>;
 
 beforeEach(() => {
   fetchMock.mockReset();
-  fetchMock.mockImplementation(async () => minted());
+  // The Matrix admission gate asks Fi about the turn; everything else here is a mint.
+  fetchMock.mockImplementation(async (url: string) =>
+    url === AUTHORIZE_URL
+      ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }))
+      : minted(),
+  );
   vi.stubGlobal("fetch", fetchMock);
   vi.stubEnv("FIXTURE_BROKER", BROKER);
 });
@@ -159,6 +191,8 @@ describe("the admin agent's delegated user token", () => {
         },
       },
     );
+    // The host is told where to run it, whatever its configured default or elevated level.
+    expect(result?.params).toMatchObject({ host: "sandbox", elevated: false });
     // FI_APP_URL is the sandbox's own: nothing is set for it.
     expect(result?.params.env).toEqual({
       KEEP: "1",
@@ -198,6 +232,8 @@ describe("the admin agent's delegated user token", () => {
         { params: { command: "x", env: { FI_APP_URL: url, FI_DELEGATED_USER_TOKEN: "forged" } } },
       );
       expect(other?.params.env).toEqual({ FI_APP_URL: url, FI_ON_BEHALF_OF: expect.any(String) });
+      expect(other?.params).not.toHaveProperty("host");
+      expect(other?.params).not.toHaveProperty("elevated");
     }
     expect(fetchMock).not.toHaveBeenCalled();
   });
@@ -215,12 +251,15 @@ describe("the admin agent's delegated user token", () => {
   });
 
   it("uses this runtime's own admin agent id with Fi's protocol name", async () => {
-    const session = "agent:tenant-admin:slack:channel:c1";
+    const session = "agent:tenant-admin:slack:direct:u0admin001";
     const turn = plugin({ adminAgentId: "tenant-admin" });
     await turn.arrive({ sessionKey: session });
     await turn.start({ agentId: "tenant-admin", sessionKey: session });
     // The host and the config may spell the agent id in different case.
-    const result = await turn.exec({ agentId: "Tenant-Admin", sessionKey: session });
+    const result = await turn.exec({
+      agentId: "Tenant-Admin",
+      sessionKey: "agent:Tenant-Admin:slack:direct:U0ADMIN001",
+    });
     // No legacy assertion for an agent Fi's on-behalf-of does not know; the token alone.
     expect(result?.params.env).toEqual({ FI_DELEGATED_USER_TOKEN: TOKEN });
     expect(mintBody().agentId).toBe("cellect-fi-admin");
@@ -232,30 +271,21 @@ describe("the admin agent's delegated user token", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("mints for a homeserver-recorded Matrix sender of the account's own Fi", async () => {
+  it("mints for a verified Matrix direct message, at the account's own Fi", async () => {
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
-    const session = "agent:cellect-fi-admin:slack:matrix-linked";
-    const matrix = { channel: "matrix", senderId: "@admin:matrix.example" };
     const turn = plugin();
-    await turn.arrive({ ...matrix, sessionKey: session });
-    await turn.start({ ...matrix, sessionKey: session });
-    const result = await turn.exec({
-      sessionKey: session,
-      requester: { ...matrix, accountId: "adminprod" },
+    await turn.arrive(matrix.arrive);
+    await turn.start(matrix.start);
+    const result = await turn.exec(matrix.exec);
+    expect(result?.params).toMatchObject({
+      host: "sandbox",
+      elevated: false,
+      env: { FI_DELEGATED_USER_TOKEN: TOKEN },
     });
-    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
     expect(mintBody()).toEqual({
       requesterMatrixUserId: "@admin:matrix.example",
       agentId: "cellect-fi-admin",
     });
-    // An account with no configured Fi environment has nowhere to ask.
-    fetchMock.mockClear();
-    const other = await turn.exec({
-      sessionKey: session,
-      requester: { ...matrix, accountId: "unknown" },
-    });
-    expect(other?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
-    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("leaves an approved admin action with today's attribution only", async () => {
@@ -286,10 +316,14 @@ describe("the admin agent's delegated user token", () => {
 
   describe("turns that get no token", () => {
     const refused = async (result: Promise<Rewrite>) => {
-      const env = (await result)?.params.env ?? {};
+      const params = (await result)?.params;
+      const env = params?.env ?? {};
       expect(env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
       expect(env).not.toHaveProperty("FI_APP_URL");
-      expect(fetchMock).not.toHaveBeenCalled();
+      // No token, no pin: the call runs as it always did.
+      expect(params ?? {}).not.toHaveProperty("host");
+      expect(params ?? {}).not.toHaveProperty("elevated");
+      expect(mints()).toEqual([]);
       return env;
     };
 
@@ -350,20 +384,39 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec());
     });
 
-    it.each(["asserted", undefined])(
-      "a Matrix sender the homeserver path did not stamp: %s",
-      async (authentication) => {
-        const matrix = { channel: "matrix", senderId: "@admin:matrix.example" };
-        vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
-        const session = "agent:cellect-fi-admin:slack:matrix-linked";
-        const turn = plugin();
-        await turn.arrive({ ...matrix, sessionKey: session, senderAuthentication: authentication });
-        await turn.start({ ...matrix, sessionKey: session });
-        await refused(
-          turn.exec({ sessionKey: session, requester: { ...matrix, accountId: "adminprod" } }),
-        );
-      },
-    );
+    it.each([
+      ["a Matrix sender nobody verified", { senderAuthentication: undefined }],
+      ["a Matrix sender another party named", { senderAuthentication: "asserted" }],
+      ["a Matrix room with other people in it", { isGroup: true }],
+      ["a Matrix conversation of unreported kind", { isGroup: undefined }],
+    ])("%s", async (_name, arrival) => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+      const turn = plugin();
+      await turn.arrive({ ...matrix.arrive, ...arrival });
+      await turn.start(matrix.start);
+      await refused(turn.exec(matrix.exec));
+    });
+
+    it("a Matrix account with no configured Fi environment", async () => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "staging" }));
+      const turn = plugin();
+      await turn.arrive(matrix.arrive);
+      await turn.start(matrix.start);
+      expect(JSON.stringify(await turn.exec(matrix.exec))).not.toContain(TOKEN);
+      expect(mints()).toEqual([]);
+    });
+
+    it.each([
+      ["a Slack channel", "agent:cellect-fi-admin:slack:channel:c1"],
+      ["a Slack thread", "agent:cellect-fi-admin:slack:channel:c1:thread:1.2"],
+      ["someone else's Slack direct session", "agent:cellect-fi-admin:slack:direct:u0other002"],
+      ["a Slack sender in a Matrix-keyed session", MATRIX_SESSION],
+    ])("%s: other people's words reach the agent undispatched", async (_name, sessionKey) => {
+      const turn = plugin();
+      await turn.arrive({ sessionKey, isGroup: false });
+      await turn.start({ sessionKey });
+      await refused(turn.exec({ sessionKey }));
+    });
 
     it("a message queued behind a long run and collected with the owner's much later", async () => {
       vi.useFakeTimers();
@@ -453,26 +506,19 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec({ runId: "run-2" }));
     });
 
-    it("forgets a steered message once the session has been idle, so the owner is not held back", async () => {
+    it("costs the owner one turn after someone else's message, however long ago, then recovers", async () => {
       vi.useFakeTimers();
       try {
         const turn = plugin();
+        await turn.arrive({ senderId: "U0OTHER002" });
+        vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000);
         await turn.arrive();
         await turn.start();
-        await turn.arrive({ senderId: "U0OTHER002" });
-        vi.advanceTimersByTime(45 * 60 * 1000);
-        // Idle is counted from the end of the run, not from the message.
+        await refused(turn.exec());
         await turn.settle();
-        vi.advanceTimersByTime(29 * 60 * 1000);
         await turn.arrive();
         await turn.start({ runId: "run-2" });
-        await refused(turn.exec({ runId: "run-2" }));
-        await turn.settle("run-2");
-        await turn.arrive({ senderId: "U0OTHER002" });
-        vi.advanceTimersByTime(31 * 60 * 1000);
-        await turn.arrive();
-        await turn.start({ runId: "run-3" });
-        expect((await turn.exec({ runId: "run-3" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
+        expect((await turn.exec({ runId: "run-2" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
           TOKEN,
         );
       } finally {
@@ -480,17 +526,15 @@ describe("the admin agent's delegated user token", () => {
       }
     });
 
-    it("a message that arrived too long before the run", async () => {
-      vi.useFakeTimers();
-      try {
-        const turn = plugin();
-        await turn.arrive();
-        vi.advanceTimersByTime(31 * 60 * 1000);
-        await turn.start();
-        await refused(turn.exec());
-      } finally {
-        vi.useRealTimers();
-      }
+    it("a second attempt of the same run does not take up what arrived after it began", async () => {
+      const turn = plugin();
+      await turn.start({ runId: "busy", senderId: "U0OTHER002" });
+      await turn.arrive({ senderId: "U0OTHER002" });
+      // A fallback attempt of the busy run reports itself again.
+      await turn.start({ runId: "busy", senderId: "U0OTHER002" });
+      await turn.arrive();
+      await turn.start();
+      await refused(turn.exec());
     });
 
     it("a runtime with no tenant", async () => {
@@ -543,7 +587,7 @@ describe("the admin agent's delegated user token", () => {
     });
 
     it.each(["cellect-main", "cellect-fi-user"])("%s", async (agentId) => {
-      const session = `agent:${agentId}:slack:channel:c1`;
+      const session = `agent:${agentId}:slack:direct:u0admin001`;
       const turn = plugin();
       await turn.arrive({ sessionKey: session });
       await turn.start({ agentId, sessionKey: session });

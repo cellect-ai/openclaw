@@ -562,7 +562,7 @@ export default definePluginEntry({
           api.logger.warn("fi-user: admin approval handling failed");
         }
         // Only a message that goes on to the agent can start or join its turn.
-        adminDelegation.dispatched({ channel, ...message });
+        adminDelegation.dispatched({ channel, isGroup: event.isGroup, ...message });
         return undefined;
       },
       { priority: 10_000 },
