@@ -562,6 +562,10 @@ describe("trusted durable conversation lifecycle", () => {
       "delivery_failed",
       "terminal_after_interrupted",
     ]);
+    // The retry is the same Matrix transaction, so the homeserver deduplicates it.
+    expect(publications[3]?.transactionId).toBe(publications[2]?.transactionId);
+    expect(publications[3]).toMatchObject({ revision: 3 });
+    expect(publications[3]?.transactionId.endsWith(":3")).toBe(true);
   });
   it("goes on looking for the binding of a live run after a reload", async () => {
     let current: ConversationProjectionBinding[] = [];
