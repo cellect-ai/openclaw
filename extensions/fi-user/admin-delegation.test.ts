@@ -1,3 +1,4 @@
+import { sanitizeToolArgs } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type {
   OpenClawPluginApi,
   PluginAgentEventSubscriptionRegistration,
@@ -5,6 +6,8 @@ import type {
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { adminActionSessions } from "./admin-action.js";
+import { registerAdminDelegation } from "./admin-delegation.js";
+import { configFromRuntime } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
 
 const BROKER = "fixture-broker-credential";
@@ -19,6 +22,7 @@ const matrix = {
     senderId: "@admin:matrix.example",
     sessionKey: MATRIX_SESSION,
     isGroup: false,
+    messageId: "$event",
   },
   start: {
     channel: "matrix",
@@ -55,10 +59,26 @@ const thread = (senderId = "@admin:matrix.example", eventId = "$e1") => ({
 });
 const MINT_URL = "https://fi.example.test/fi/api/openclaw-user-delegation";
 type Env = Record<string, string>;
-type Rewrite = { params: { env?: Env; host?: unknown; elevated?: unknown } } | undefined;
+type Rewrite =
+  | { params: { env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
+  | undefined;
+type Middleware = (
+  event: { toolName: string; result: unknown },
+  context: { agentId?: string },
+) => { result: unknown } | undefined;
+const HELD = "Another admin's command is still finishing here. Try again in a few minutes.";
+/** A runtime whose admin agent always runs in the sandbox, with elevation off. */
+const SANDBOXED = {
+  agents: { defaults: { sandbox: { mode: "all" as const } } },
+  tools: { elevated: { enabled: false } },
+};
 
-function plugin(configOverrides: Record<string, unknown> = {}) {
+function plugin(
+  configOverrides: Record<string, unknown> = {},
+  host: Record<string, unknown> = SANDBOXED,
+) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
+  const middlewares: Middleware[] = [];
   const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
   const warn = vi.fn();
   fiUserPlugin.register?.(
@@ -66,6 +86,7 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
       id: "fi-user",
       name: "Fi User Delegation",
       config: {
+        ...host,
         plugins: {
           entries: {
             "fi-user": {
@@ -85,6 +106,7 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
       registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
+      registerAgentToolResultMiddleware: (handler) => middlewares.push(handler as Middleware),
     }),
   );
   const hook = async (name: string, event: unknown, context: unknown) => {
@@ -153,6 +175,13 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
           ...overrides,
         },
       ) as Promise<Rewrite>,
+    /** What the host shows of a tool result once the plugin's middleware has seen it. */
+    result: (result: unknown, agentId = "cellect-fi-admin") =>
+      middlewares.reduce(
+        (current, middleware) =>
+          middleware({ toolName: "exec", result: current }, { agentId })?.result ?? current,
+        result,
+      ),
     settle: async (runId = "run-1") => {
       for (const subscription of subscriptions) {
         await subscription.handle(
@@ -343,43 +372,104 @@ describe("the admin agent's delegated user token", () => {
     });
 
     it("gives the next run in the thread nothing of the first", async () => {
-      fiKnowsOnlyTheAdmin();
-      const turn = plugin();
-      const first = thread();
-      await turn.arrive(first.arrive);
-      await turn.start(first.start);
-      expect(token(await turn.exec(first.exec))).toBe(TOKEN);
-      await turn.settle();
+      vi.useFakeTimers();
+      try {
+        fiKnowsOnlyTheAdmin();
+        const turn = plugin();
+        const first = thread();
+        await turn.arrive(first.arrive);
+        await turn.start(first.start);
+        expect(token(await turn.exec(first.exec))).toBe(TOKEN);
+        await turn.settle();
 
-      // Someone else, equally verified by the homeserver, writes next.
-      const second = thread(OTHER, "$e2");
-      await turn.arrive(second.arrive);
-      await turn.start({ ...second.start, runId: "run-2" });
-      fetchMock.mockClear();
-      const theirs = await turn.exec({ ...second.exec, runId: "run-2" });
-      expect(JSON.stringify(theirs)).not.toContain(TOKEN);
-      expect(theirs?.params).not.toHaveProperty("host");
-      // Fi was asked about them, not about the admin, and refused.
-      expect(mints()).toHaveLength(1);
-      expect(mintBody().requesterMatrixUserId).toBe(OTHER);
+        // Someone else, equally verified by the homeserver, writes next. The
+        // sandbox still holds the admin's token, so their commands wait.
+        const second = thread(OTHER, "$e2");
+        await turn.arrive(second.arrive);
+        await turn.start({ ...second.start, runId: "run-2" });
+        fetchMock.mockClear();
+        expect(await turn.exec({ ...second.exec, runId: "run-2" })).toEqual({
+          block: true,
+          blockReason: HELD,
+        });
+        // Neither the admin's name on their run nor the admin's settled run gets further.
+        for (const stale of [
+          { ...first.exec, runId: "run-2" },
+          { ...first.exec, runId: "run-1" },
+          { ...second.exec, runId: "run-1" },
+        ]) {
+          const result = await turn.exec(stale);
+          expect(result?.block).toBe(true);
+          expect(JSON.stringify(result)).not.toContain(TOKEN);
+        }
+        expect(mints()).toEqual([]);
 
-      // Neither the admin's name on their run nor the admin's settled run yields one.
-      fetchMock.mockClear();
-      for (const stale of [
-        { ...first.exec, runId: "run-2" },
-        { ...first.exec, runId: "run-1" },
-        { ...second.exec, runId: "run-1" },
-      ]) {
-        expect(JSON.stringify(await turn.exec(stale))).not.toContain(TOKEN);
+        // Once the admin's token has expired they are asked about on their own, and refused.
+        vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+        const theirs = await turn.exec({ ...second.exec, runId: "run-2" });
+        expect(theirs?.params.env).toEqual({ FI_ON_BEHALF_OF: expect.any(String) });
+        expect(theirs?.params).not.toHaveProperty("host");
+        expect(mints()).toHaveLength(1);
+        expect(mintBody().requesterMatrixUserId).toBe(OTHER);
+
+        // The admin's own next message is a new run with a new token.
+        await turn.settle("run-2");
+        const third = thread("@admin:matrix.example", "$e3");
+        await turn.arrive(third.arrive);
+        await turn.start({ ...third.start, runId: "run-3" });
+        expect(token(await turn.exec({ ...third.exec, runId: "run-3" }))).toBe(TOKEN);
+      } finally {
+        vi.useRealTimers();
       }
-      expect(mints()).toEqual([]);
+    });
 
-      // The admin's own next message is a new run with a new token.
-      await turn.settle("run-2");
-      const third = thread("@admin:matrix.example", "$e3");
-      await turn.arrive(third.arrive);
-      await turn.start({ ...third.start, runId: "run-3" });
-      expect(token(await turn.exec({ ...third.exec, runId: "run-3" }))).toBe(TOKEN);
+    it("requires the run's own sender to be the one the message proved", async () => {
+      // The Matrix admission gate refuses such a run first; this is the token rule alone.
+      const admit = async (runSender: string) => {
+        let onRun!: (event: unknown, context: unknown) => unknown;
+        const api = createTestPluginApi({
+          config: {
+            ...SANDBOXED,
+            plugins: {
+              entries: {
+                "fi-user": {
+                  config: {
+                    baseUrl: "https://fi.example.test/fi/",
+                    brokerTokenEnv: "FIXTURE_BROKER",
+                    tenantOrgId: "org-a",
+                  },
+                },
+              },
+            },
+          },
+          on: (_name, handler) => (onRun = handler as typeof onRun),
+        });
+        const delegation = registerAdminDelegation(api);
+        const message = thread();
+        delegation.dispatched({ ...message.arrive, senderAuthentication: "verified" as const });
+        await onRun(
+          {},
+          {
+            ...message.start,
+            runId: "run-1",
+            agentId: "cellect-fi-admin",
+            trigger: "user",
+            channelContext: {
+              sender: { id: runSender },
+              chat: { id: "!room:matrix.example", eventId: "$e1" },
+            },
+          },
+        );
+        return delegation.mint(
+          configFromRuntime(api),
+          { toolName: "exec", params: { command: "npm run fi:audit" } },
+          { ...message.exec, runId: "run-1", agentId: "cellect-fi-admin", toolName: "exec" },
+          Date.now(),
+        );
+      };
+      expect(await admit(OTHER)).toBeUndefined();
+      expect(mints()).toEqual([]);
+      expect(await admit("@admin:matrix.example")).toBe(TOKEN);
     });
 
     it("ends the admin's run when someone else writes into the thread", async () => {
@@ -505,6 +595,341 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
+  it("admits a Matrix direct message only for the run of that very event", async () => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+    const turn = plugin();
+    await turn.arrive(matrix.arrive);
+    await turn.start({
+      ...matrix.start,
+      channelContext: {
+        sender: { id: "@admin:matrix.example" },
+        chat: { id: "!dm:matrix.example", eventId: "$another" },
+      },
+    });
+    expect((await turn.exec(matrix.exec))?.params.env).not.toHaveProperty(
+      "FI_DELEGATED_USER_TOKEN",
+    );
+    expect(mints()).toEqual([]);
+  });
+
+  describe("a runtime where the sandbox pin would change how commands run", () => {
+    const admin = (entry: Record<string, unknown>) => ({
+      ...SANDBOXED,
+      agents: { ...SANDBOXED.agents, list: [{ id: "cellect-fi-admin", ...entry }] },
+    });
+    it.each([
+      ["no sandbox configured", { tools: SANDBOXED.tools }],
+      [
+        "only non-main sessions sandboxed",
+        { ...SANDBOXED, agents: { defaults: { sandbox: { mode: "non-main" } } } },
+      ],
+      ["the admin agent's own sandbox off", admin({ sandbox: { mode: "off" } })],
+      [
+        "commands on the Gateway",
+        { ...SANDBOXED, tools: { ...SANDBOXED.tools, exec: { host: "gateway" } } },
+      ],
+      ["the admin agent's commands on a node", admin({ tools: { exec: { host: "node" } } })],
+      ["elevation left at its default", { agents: SANDBOXED.agents }],
+      ["elevation switched on", { ...SANDBOXED, tools: { elevated: { enabled: true } } }],
+      ["Talk owned by the admin agent", { ...SANDBOXED, talk: { agentId: "Cellect-Fi-Admin" } }],
+    ])("issues nothing and pins nothing with %s", async (_name, host) => {
+      const turn = plugin({}, host);
+      await turn.arrive();
+      await turn.start();
+      const result = await turn.exec({}, { params: { command: "npm run fi:audit" } });
+      // Exactly what the command got before there was a token.
+      expect(result?.params).toEqual({
+        command: "npm run fi:audit",
+        env: { FI_ON_BEHALF_OF: expect.any(String) },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        "the sandbox named as the exec host",
+        { ...SANDBOXED, tools: { ...SANDBOXED.tools, exec: { host: "sandbox" } } },
+      ],
+      [
+        "the admin agent's own settings over looser defaults",
+        {
+          agents: {
+            defaults: { sandbox: { mode: "off" } },
+            list: [
+              {
+                id: "cellect-fi-admin",
+                sandbox: { mode: "all", scope: "session" },
+                tools: { exec: { host: "auto" }, elevated: { enabled: false } },
+              },
+            ],
+          },
+          tools: { exec: { host: "gateway" } },
+          talk: { agentId: "cellect-main" },
+        },
+      ],
+    ])("issues with %s", async (_name, host) => {
+      const turn = plugin({}, host);
+      await turn.arrive();
+      await turn.start();
+      expect((await turn.exec())?.params).toMatchObject({
+        host: "sandbox",
+        elevated: false,
+        env: { FI_DELEGATED_USER_TOKEN: TOKEN },
+      });
+    });
+  });
+
+  describe("the time Fi is given to answer", () => {
+    /** A Matrix turn whose grant check takes `ms` of the hook's deadline before Fi is asked. */
+    const afterGrantCheck = async (ms: number) => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+      const timeout = vi.spyOn(AbortSignal, "timeout");
+      const turn = plugin();
+      await turn.arrive(matrix.arrive);
+      await turn.start(matrix.start);
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url !== AUTHORIZE_URL) {
+          return minted();
+        }
+        vi.advanceTimersByTime(ms);
+        return new Response(
+          JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+        );
+      });
+      timeout.mockClear();
+      const result = await turn.exec(matrix.exec);
+      return { result, budgets: timeout.mock.calls.map(([budget]) => budget) };
+    };
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+      vi.restoreAllMocks();
+    });
+
+    it("is at most eight seconds", async () => {
+      const { result, budgets } = await afterGrantCheck(0);
+      expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(budgets).toEqual([12_000, 8_000]);
+    });
+
+    it("is what the grant check left of thirteen seconds", async () => {
+      const { result, budgets } = await afterGrantCheck(9_000);
+      expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(budgets).toEqual([12_000, 4_000]);
+    });
+
+    it("is not spent when under half a second is left: the command runs without a token", async () => {
+      const { result, budgets } = await afterGrantCheck(12_501);
+      expect(result?.block).toBeUndefined();
+      expect(result?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      expect(result?.params).not.toHaveProperty("host");
+      expect(budgets).toEqual([12_000]);
+      expect(mints()).toEqual([]);
+    });
+  });
+
+  describe("a sandbox that holds someone's token", () => {
+    const OTHER_SESSION = "agent:cellect-fi-admin:slack:direct:u0other002";
+    const other = { sessionKey: OTHER_SESSION, senderId: "U0OTHER002" };
+    const otherExec = {
+      runId: "run-2",
+      sessionKey: OTHER_SESSION,
+      requester: { channel: "slack", senderId: "U0OTHER002" },
+    };
+    /** The admin's command has run with a token; someone else's verified turn then starts. */
+    const afterAdminsCommand = async (host: Record<string, unknown> = SANDBOXED) => {
+      const turn = plugin({}, host);
+      await turn.arrive();
+      await turn.start();
+      expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      await turn.arrive(other);
+      await turn.start({ ...other, runId: "run-2" });
+      fetchMock.mockClear();
+      return turn;
+    };
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it.each([
+      "exec",
+      "sandbox_exec",
+      "process",
+      "sandbox_process",
+      "read",
+      "ls",
+      "write",
+      "edit",
+      "apply_patch",
+      "view_image",
+    ])(
+      "keeps another person's %s out of the agent's shared sandbox until the token expires",
+      async (toolName) => {
+        vi.useFakeTimers();
+        const turn = await afterAdminsCommand();
+        const call = () =>
+          turn.exec({ ...otherExec, toolName }, { toolName, params: { command: "ls", path: "." } });
+        expect(await call()).toEqual({ block: true, blockReason: HELD });
+        expect(fetchMock).not.toHaveBeenCalled();
+        vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+        expect((await call())?.block).toBeUndefined();
+      },
+    );
+
+    it("keeps out a run nobody proved, and the owner's own run once someone else wrote into it", async () => {
+      const turn = await afterAdminsCommand();
+      await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
+      expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
+        block: true,
+        blockReason: HELD,
+      });
+      // The admin's first run is still theirs.
+      expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      await turn.arrive({ senderId: "U0OTHER002" });
+      expect(await turn.exec()).toEqual({ block: true, blockReason: HELD });
+    });
+
+    it("leaves the owner's later runs and tools that do not reach the sandbox alone", async () => {
+      const turn = await afterAdminsCommand();
+      const message = await turn.exec(
+        { ...otherExec, toolName: "message" },
+        { toolName: "message", params: {} },
+      );
+      expect(message?.block).toBeUndefined();
+      await turn.settle();
+      await turn.arrive();
+      await turn.start({ runId: "run-3" });
+      expect((await turn.exec({ runId: "run-3" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
+        TOKEN,
+      );
+      const read = await turn.exec(
+        { runId: "run-3", toolName: "read" },
+        { toolName: "read", params: {} },
+      );
+      expect(read?.block).toBeUndefined();
+    });
+
+    it("holds only the session's own sandbox when sandboxes are per session", async () => {
+      const turn = await afterAdminsCommand({
+        ...SANDBOXED,
+        agents: { defaults: { sandbox: { mode: "all", scope: "session" } } },
+      });
+      // Another session is another sandbox: Fi is asked about its own sender.
+      expect((await turn.exec(otherExec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      // The admin's session stays theirs for a run nobody proved.
+      await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
+      expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
+        block: true,
+        blockReason: HELD,
+      });
+    });
+
+    it("does not hold a sandbox for a token Fi refused", async () => {
+      fetchMock.mockImplementation(async () => new Response("Not found", { status: 404 }));
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      await turn.arrive(other);
+      await turn.start({ ...other, runId: "run-2" });
+      expect((await turn.exec(otherExec))?.block).toBeUndefined();
+    });
+  });
+
+  describe("the issued token in what the host records", () => {
+    const issue = async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const rewritten = await turn.exec();
+      expect(rewritten?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      return { turn, rewritten };
+    };
+    const LOOKALIKE = "another.fixture.token";
+
+    it("is replaced in the admin agent's tool results, and nothing else is", async () => {
+      const { turn } = await issue();
+      const printed = {
+        content: [
+          {
+            type: "text",
+            text: `FI_DELEGATED_USER_TOKEN=${TOKEN}\nBearer ${TOKEN}; v1.2.3 ${LOOKALIKE}`,
+          },
+          { type: "image", data: "aGVsbG8=" },
+        ],
+        details: { status: "completed", aggregated: `{"token":"${TOKEN}"}`, exitCode: 0 },
+      };
+      const shown = turn.result(printed);
+      expect(JSON.stringify(shown)).not.toContain(TOKEN);
+      expect(shown).toEqual({
+        content: [
+          {
+            type: "text",
+            text: `FI_DELEGATED_USER_TOKEN=[redacted Fi token]\nBearer [redacted Fi token]; v1.2.3 ${LOOKALIKE}`,
+          },
+          { type: "image", data: "aGVsbG8=" },
+        ],
+        details: {
+          status: "completed",
+          aggregated: '{"token":"[redacted Fi token]"}',
+          exitCode: 0,
+        },
+      });
+      // A result without it is handed back as it came.
+      const clean = { content: [{ type: "text", text: `ok ${LOOKALIKE}` }], details: {} };
+      expect(turn.result(clean)).toBe(clean);
+      // Another agent's results are not this plugin's to rewrite.
+      expect(turn.result(printed, "cellect-main")).toBe(printed);
+    });
+
+    it("leaves results alone before any token was issued", () => {
+      const turn = plugin();
+      const printed = { content: [{ type: "text", text: TOKEN }], details: {} };
+      expect(turn.result(printed)).toBe(printed);
+    });
+
+    it("is masked by the host wherever it records the rewritten call's arguments", async () => {
+      const { rewritten } = await issue();
+      // Tool-start events, the trajectory, CLI and worker events all pass through this.
+      const recorded = JSON.stringify(sanitizeToolArgs(rewritten?.params));
+      expect(recorded).not.toContain(TOKEN);
+      expect(recorded).toContain("npm run fi:audit");
+    });
+  });
+
+  describe("what arrived and was never run", () => {
+    it("is forgotten oldest first, without switching issuing off", async () => {
+      const turn = plugin();
+      // More sessions than are remembered, each with a message no run took up.
+      for (let index = 0; index <= 5_000; index += 1) {
+        await turn.arrive({
+          sessionKey: `agent:cellect-fi-admin:slack:direct:u0flood${index}`,
+          senderId: `U0FLOOD${index}`,
+        });
+      }
+      await turn.arrive();
+      await turn.start();
+      expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(turn.warn).not.toHaveBeenCalled();
+    });
+
+    it("no longer admits a run six hours later", async () => {
+      vi.useFakeTimers();
+      try {
+        const turn = plugin();
+        await turn.arrive();
+        vi.advanceTimersByTime(6 * 60 * 60 * 1000);
+        await turn.start();
+        expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+        expect(mints()).toEqual([]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   it("leaves an approved admin action with today's attribution only", async () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
     adminActionSessions.set(sessionKey, {
@@ -604,7 +1029,8 @@ describe("the admin agent's delegated user token", () => {
     it.each([
       ["a Matrix sender nobody verified", { senderAuthentication: undefined }],
       ["a Matrix sender another party named", { senderAuthentication: "asserted" }],
-      ["a Matrix room message that names no event", { isGroup: true }],
+      ["a Matrix room message that names no event", { isGroup: true, messageId: undefined }],
+      ["a Matrix direct message that names no event", { messageId: undefined }],
       ["a Matrix conversation of unreported kind", { isGroup: undefined }],
     ])("%s", async (_name, arrival) => {
       vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
@@ -723,12 +1149,12 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec({ runId: "run-2" }));
     });
 
-    it("costs the owner one turn after someone else's message, however long ago, then recovers", async () => {
+    it("costs the owner one turn after someone else's message hours ago, then recovers", async () => {
       vi.useFakeTimers();
       try {
         const turn = plugin();
         await turn.arrive({ senderId: "U0OTHER002" });
-        vi.advanceTimersByTime(7 * 24 * 60 * 60 * 1000);
+        vi.advanceTimersByTime(5 * 60 * 60 * 1000);
         await turn.arrive();
         await turn.start();
         await refused(turn.exec());
@@ -780,6 +1206,8 @@ describe("the admin agent's delegated user token", () => {
       ["a node named without a host", { command: "x", node: "build-1" }],
       ["an inherited host", { command: "x", host: "auto" }],
       ["an elevated command", { command: "x", elevated: true }],
+      ["a terminal", { command: "x", pty: true }],
+      ["a command sent to the background", { command: "x", background: true }],
       ["Claude Code's native Bash", { command: "x", description: "run x", timeout: 1000 }],
       ["Codex's native shell", { command: ["bash", "-lc", "x"], workdir: "/w" }],
     ])("%s", async (_name, params) => {
