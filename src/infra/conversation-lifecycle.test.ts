@@ -146,7 +146,7 @@ describe("trusted durable conversation lifecycle", () => {
   }
   function install(
     options: {
-      fail?: boolean | ((roomId: string, state: string) => boolean);
+      fail?: boolean | ((roomId: string, state: string, runId: string) => boolean | "refused");
       refused?: "M_FORBIDDEN" | "M_NOT_FOUND";
       resolve?: () => readonly ConversationProjectionBinding[];
     } = {},
@@ -157,13 +157,13 @@ describe("trusted durable conversation lifecycle", () => {
       resolveBindings: options.resolve ?? (() => [binding]),
       publish: async (_, event, transactionId) => {
         publications.push({ ...event, transactionId });
-        if (
+        const failure =
           typeof options.fail === "function"
-            ? options.fail(event.roomId, event.state)
-            : options.fail
-        )
+            ? options.fail(event.roomId, event.state, event.runId)
+            : options.fail;
+        if (failure)
           throw Object.assign(new Error("network unavailable"), {
-            errcode: options.refused,
+            errcode: failure === "refused" ? "M_FORBIDDEN" : options.refused,
           });
       },
       isDestinationGone: (error) => (error as { errcode?: string }).errcode !== undefined,
@@ -666,6 +666,27 @@ describe("trusted durable conversation lifecycle", () => {
     clock.mockReturnValue(start + 7_000);
     await transport.flush();
     expect(publications.map((event) => event.runId)).toEqual(["old", "old", "new"]);
+  });
+  it("keeps the outcome of a run whose only send lost its response before the room parked", async () => {
+    let mode: "lost" | "refused" | "open" = "lost";
+    const transport = install({
+      fail: () => (mode === "open" ? false : mode === "refused" ? "refused" : true),
+    });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("unconfirmed");
+    await transport.flush();
+    mode = "refused";
+    emit("unconfirmed", "end");
+    clock.mockReturnValue(start + 60_000);
+    await transport.flush();
+    clock.mockReturnValue(start + 25 * 60 * 60_000);
+    await transport.flush();
+    mode = "open";
+    clock.mockReturnValue(start + 27 * 60 * 60_000);
+    await transport.flush();
+    expect(publications.at(-1)).toMatchObject({ runId: "unconfirmed", state: "completed" });
   });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
