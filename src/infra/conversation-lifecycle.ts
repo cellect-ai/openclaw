@@ -274,6 +274,7 @@ export function registerConversationLifecycleTransport(options: {
       pendingApprovals: string[];
       attempts: number;
       notBefore: number;
+      missingSince?: number;
     }
   >();
   // A durable status obligation belongs to this transport, not to the agent
@@ -489,10 +490,18 @@ export function registerConversationLifecycleTransport(options: {
   const adoptLateBindings = () => {
     const now = Date.now();
     for (const [key, run] of unbound) {
-      if (run.generation !== getAgentRunLifecycleGeneration() || !getAgentRunContext(run.runId)) {
+      if (run.generation !== getAgentRunLifecycleGeneration()) {
         unbound.delete(key);
         continue;
       }
+      if (!getAgentRunContext(run.runId)) {
+        // A swept run can return. Its tracked state is kept for one hold
+        // period, so it is not admitted again as queued whatever it was doing.
+        run.missingSince ??= now;
+        if (now - run.missingSince >= OWNERLESS_HOLD_MS) unbound.delete(key);
+        continue;
+      }
+      run.missingSince = undefined;
       if (run.notBefore > now) continue;
       run.attempts += 1;
       run.notBefore = now + (run.attempts < 12 ? RETRY_BASE_MS : 60_000);
