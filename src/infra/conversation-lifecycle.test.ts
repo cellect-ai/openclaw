@@ -616,6 +616,39 @@ describe("trusted durable conversation lifecycle", () => {
       "waiting",
     ]);
   });
+  it("keeps the outcome of a run a parked room already knows about past expiry", async () => {
+    let refusing = false;
+    const transport = install({ fail: () => refusing, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    const states = (runId: string) =>
+      publications.filter((event) => event.runId === runId).map((event) => event.state);
+    clock.mockReturnValue(start);
+    owner("older");
+    clock.mockReturnValue(start + 1_000);
+    owner("ghost");
+    await transport.flush();
+    refusing = true;
+    for (const runId of ["older", "ghost"]) {
+      emit(runId, "start");
+      emit(runId, "end");
+    }
+    await transport.flush();
+    clock.mockReturnValue(start + 25 * 60 * 60_000);
+    await transport.flush();
+    const rows = custody.loadDeliveryQueueEntries(
+      "conversation-lifecycle-v2",
+      stateDir,
+    ) as unknown as Array<{ runId: string; pending: unknown[] }>;
+    expect(rows.find((row) => row.runId === "ghost")?.pending).toMatchObject([
+      { state: "completed" },
+    ]);
+    refusing = false;
+    clock.mockReturnValue(start + 27 * 60 * 60_000);
+    await transport.flush();
+    expect(states("ghost")).toEqual(["queued", "completed"]);
+    expect(states("older").at(-1)).toBe("completed");
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");

@@ -51,6 +51,7 @@ export function executeConversationLifecycleCommand(
       // Re-read under the same write transaction: a terminal transition appended
       // during transport I/O must survive acknowledgement of its predecessor.
       row.pending = row.pending.filter((event) => event.revision > command.input.revision);
+      row.acked = Math.max(row.acked ?? 0, command.input.revision);
       if (
         row.pending.length === 0 &&
         row.resultEventId &&
