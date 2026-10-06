@@ -560,19 +560,9 @@ export function registerConversationLifecycleTransport(options: {
     await replace(expected, row);
   };
 
-  // The room knows the run when a send was acknowledged, or failed in a way
-  // that can hide a send that landed. Rows from before `acked` existed count.
+  // The room knows the run when a send was acknowledged, or was started and
+  // not refused. Rows from before `acked` existed count.
   const told = (row: LifecycleObligation) => row.acked !== 0 || row.attempted === true;
-
-  const markAttempted = async (id: string): Promise<void> => {
-    const row = (
-      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
-        type: "deliveryQueue.lifecycleRead",
-        input: { id },
-      })
-    )[0];
-    if (row && !told(row)) await replace(JSON.stringify(row), { ...row, attempted: true });
-  };
 
   /**
    * Marks a row as stuck, or renews the mark before a retry. Only its newest
@@ -848,8 +838,6 @@ export function registerConversationLifecycleTransport(options: {
           }
           // Any other failure is an ordinary outage: back off instead of parking.
           parked.delete(roomId);
-          // Its response may have been lost after the send landed.
-          await markAttempted(initial.id).catch(options.onError);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
           // The row after a failing head failed as well: it is the room.
           if (trials.delete(roomId)) heads.delete(roomId);
