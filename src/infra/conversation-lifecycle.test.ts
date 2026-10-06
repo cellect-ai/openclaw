@@ -576,6 +576,46 @@ describe("trusted durable conversation lifecycle", () => {
     await next.flush();
     expect(publications.map((event) => event.state)).toEqual(["running"]);
   });
+  it("holds a swept run that held an open approval across a transport reload", async () => {
+    const first = install();
+    owner("claimed");
+    emit("claimed", "start");
+    emitAgentEvent({
+      runId: "claimed",
+      stream: "approval",
+      data: { phase: "requested", status: "pending", approvalId: "open" },
+    });
+    first.stop();
+    const next = install();
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await next.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "waiting"]);
+  });
+  it("holds a swept run whose approval opened while its room was parked", async () => {
+    let reachable = false;
+    const transport = install({ fail: () => !reachable, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("parked");
+    await transport.flush();
+    emit("parked", "start");
+    emitAgentEvent({
+      runId: "parked",
+      stream: "approval",
+      data: { phase: "requested", status: "pending", approvalId: "open" },
+    });
+    reachable = true;
+    clock.mockReturnValue(start + 61 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    expect(publications.slice(1).map((event) => event.state)).toEqual([
+      "queued",
+      "running",
+      "waiting",
+    ]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
