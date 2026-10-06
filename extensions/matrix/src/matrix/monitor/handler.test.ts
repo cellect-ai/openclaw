@@ -586,6 +586,11 @@ describe("matrix monitor handler pairing account scope", () => {
 
     expect(recordInboundSession).toHaveBeenCalled();
     expect(runPrepared.mock.calls[0]?.[0].ctxPayload.GroupRequireMention).toBe(false);
+    // The homeserver proved the account; hooks are told it is not a person.
+    expect(runPrepared.mock.calls[0]?.[0].ctxPayload).toMatchObject({
+      SenderAuthentication: "verified",
+      ChannelContext: { sender: { id: "@ops:example.org", isBot: true } },
+    });
     expect(runPrepared.mock.calls[0]?.[0].botLoopProtection).toEqual({
       scopeId: "ops",
       conversationId: "!room:example.org",
@@ -744,13 +749,20 @@ describe("matrix monitor handler pairing account scope", () => {
       });
 
       expect(recordInboundSession).toHaveBeenCalledOnce();
-      expect(runPrepared.mock.calls[0]?.[0].ctxPayload).toMatchObject({
+      const ctxPayload = runPrepared.mock.calls[0]?.[0].ctxPayload;
+      expect(ctxPayload).toMatchObject({
         AccountId: "ops",
         WasMentioned: true,
-        ChannelContext: {
-          sender: { id: "@sender:example.org" },
-          chat: { id: "!room:example.org", eventId: "$native-plain-text-mention" },
-        },
+        // A room message carries the same proof as a direct one: the homeserver's
+        // sender, and the event that hooks see again on the run it starts.
+        SenderId: "@sender:example.org",
+        SenderAuthentication: "verified",
+        MessageSid: "$native-plain-text-mention",
+        GroupId: "!room:example.org",
+      });
+      expect(ctxPayload?.ChannelContext).toEqual({
+        sender: { id: "@sender:example.org" },
+        chat: { id: "!room:example.org", eventId: "$native-plain-text-mention" },
       });
       expect(getMemberDisplayName).not.toHaveBeenCalledWith(
         "!room:example.org",

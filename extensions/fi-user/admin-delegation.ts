@@ -39,7 +39,13 @@ const EXEC_PARAMS = new Set([
   "node",
 ]);
 
-type Arrivals = { senders: Set<string>; proven: boolean };
+type Arrivals = {
+  senders: Set<string>;
+  proven: boolean;
+  /** Event ids of the proven Matrix room messages among them; empty for a direct session. */
+  roomEvents: Set<string>;
+};
+type Proof = { sender: string; roomEventId?: string };
 type Run = { sessionKey: string; sender?: string };
 type Inbound = {
   channel?: string;
@@ -47,6 +53,8 @@ type Inbound = {
   senderAuthentication?: "verified" | "asserted";
   /** False only when the channel itself classified the conversation as one person's. */
   isGroup?: boolean;
+  /** The channel's own id of the dispatched message: for Matrix, the room event. */
+  messageId?: string;
   sessionKey?: string;
 };
 
@@ -108,9 +116,16 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * same sender, and nobody else may write into the session while it runs.
  * Cron, heartbeat, webhook, sub-agent and inter-session runs bring no such
  * message; a batch from several people and a run another person steers are
- * refused. Only a direct session is admitted: a room or thread carries other
- * people's words the agent reads without their being dispatched to it. An
- * arrival is never forgotten on a clock: a message queued behind a long run
+ * refused.
+ *
+ * A Slack session must be the sender's own direct one. A Matrix room or thread
+ * is admitted one message at a time (owner decision, 2026-10-06): the run must
+ * also be the one the host started for that very room event, so the token is
+ * that run's and that sender's, and the next run in the thread stands on its
+ * own message. The agent still reads other people's words in the room without
+ * their being dispatched to it; Fi decides whether the sender is an admin.
+ *
+ * An arrival is never forgotten on a clock: a message queued behind a long run
  * still counts when it is collected with a later one, at the price of one
  * refused turn for the owner after someone else's message was steered in.
  *
@@ -141,35 +156,40 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     overflowed = false;
   };
   /**
-   * One person's own conversation with the admin agent, by the session key the
-   * host routed (compared in lower case). A room or channel thread carries
-   * other people's messages the agent reads without their being dispatched to
-   * it, so only a direct session can be one requester's turn:
-   * - Slack: `agent:<admin>:slack:direct:<peer>`, and the sender is that peer;
+   * The sender a verified dispatched message proves for the admin agent's
+   * session, by the session key the host routed (compared in lower case):
+   * - Slack: `agent:<admin>:slack:direct:<peer>`, and the sender is that peer.
+   *   A Slack channel or thread proves nobody.
    * - Matrix: `agent:<admin>:matrix:…`, whose key does not say what kind of
-   *   room it is, so each dispatched message must also be one the Matrix
-   *   monitor classified as a direct message.
+   *   room it is, so the Matrix monitor must have classified the message. A
+   *   direct message proves its sender; a room or thread message proves its
+   *   sender for that one room event only.
    */
-  const directSender = (
+  const provenSender = (
     adminAgentId: string,
     sessionKey: string,
     message: Inbound,
-  ): string | undefined => {
+  ): Proof | undefined => {
     const requester = onBehalfOfRequester(message);
     const prefix = `agent:${adminAgentId.toLowerCase()}:`;
     if (!requester || !sessionKey.startsWith(prefix)) {
       return undefined;
     }
     const rest = sessionKey.slice(prefix.length);
+    const sender = JSON.stringify(requester);
     if ("requester_slack_user_id" in requester) {
       return rest === `slack:direct:${requester.requester_slack_user_id.toLowerCase()}`
-        ? JSON.stringify(requester)
+        ? { sender }
         : undefined;
     }
-    return "requester_matrix_user_id" in requester &&
-      rest.startsWith("matrix:") &&
-      message.isGroup === false
-      ? JSON.stringify(requester)
+    if (!("requester_matrix_user_id" in requester) || !rest.startsWith("matrix:")) {
+      return undefined;
+    }
+    if (message.isGroup === false) {
+      return { sender };
+    }
+    return message.isGroup === true && message.messageId?.startsWith("$")
+      ? { sender, roomEventId: message.messageId }
       : undefined;
   };
   api.agent.events.registerAgentEventSubscription({
@@ -235,12 +255,22 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
         senderId: context.senderId,
       });
       const sender = requester && JSON.stringify(requester);
+      // The Matrix monitor puts the homeserver event that started the run on
+      // the host-owned context. A room message admits only that event's run.
+      const origin = context.channelContext;
+      const startedByArrival =
+        arrived?.roomEvents.size === 0 ||
+        (typeof origin?.chat?.eventId === "string" &&
+          arrived?.roomEvents.has(origin.chat.eventId) === true);
       if (
         sender &&
         !overflowed &&
         arrived?.proven &&
         arrived.senders.size === 1 &&
         arrived.senders.has(sender) &&
+        startedByArrival &&
+        // Another agent's account is a proven sender but not a person.
+        origin?.sender?.isBot !== true &&
         !voiced.has(sessionKey)
       ) {
         run.sender = sender;
@@ -250,14 +280,19 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     { priority: 10_000 },
   );
 
-  /** `sender` is the direct session's own proven or named person; anyone else is unknown. */
-  const observe = (sessionKey: string, sender: string, proven: boolean): void => {
-    const arrived = arrivals.get(sessionKey);
+  /** `sender` is the session's proven or named person; anyone else is unknown. */
+  const observe = (sessionKey: string, sender: string, proof?: Proof): void => {
+    let arrived = arrivals.get(sessionKey);
+    if (!arrived && hasRoom(arrivals)) {
+      arrived = { senders: new Set(), proven: false, roomEvents: new Set() };
+      arrivals.set(sessionKey, arrived);
+    }
     if (arrived) {
       arrived.senders.add(sender);
-      arrived.proven ||= proven;
-    } else if (hasRoom(arrivals)) {
-      arrivals.set(sessionKey, { senders: new Set([sender]), proven });
+      arrived.proven ||= proof !== undefined;
+      if (proof?.roomEventId) {
+        arrived.roomEvents.add(proof.roomEventId);
+      }
     }
     for (const run of runs.values()) {
       if (run.sessionKey === sessionKey && run.sender !== sender) {
@@ -276,19 +311,19 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
   /**
    * A message the host is about to dispatch to the agent. Only here does the
    * channel say whether it proved the sender itself (Slack for its own events,
-   * Matrix for the homeserver's) and whether the conversation is one person's.
-   * Anything else counts as someone unknown.
+   * Matrix for the homeserver's), whether the conversation is one person's and
+   * which event it is. Anything else counts as someone unknown.
    */
   const dispatched = (message: Inbound): void => {
     const session = adminSession(message);
     if (!session) {
       return;
     }
-    const sender =
+    const proof =
       message.senderAuthentication === "verified"
-        ? directSender(session.adminAgentId, session.sessionKey, message)
+        ? provenSender(session.adminAgentId, session.sessionKey, message)
         : undefined;
-    observe(session.sessionKey, sender ?? UNPROVEN, sender !== undefined);
+    observe(session.sessionKey, proof?.sender ?? UNPROVEN, proof);
   };
 
   /**
@@ -302,7 +337,7 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       return;
     }
     const requester = onBehalfOfRequester(message);
-    observe(session.sessionKey, requester ? JSON.stringify(requester) : UNPROVEN, false);
+    observe(session.sessionKey, requester ? JSON.stringify(requester) : UNPROVEN);
   };
 
   /**

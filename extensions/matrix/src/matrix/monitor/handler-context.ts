@@ -227,7 +227,9 @@ export async function resolveMatrixInboundContext(config: {
     timestamp: eventTs ?? undefined,
     // Carry the homeserver event through the host-owned hook context, never the prompt.
     channelContext: {
-      sender: { id: senderId },
+      // A configured bot account is a proven sender but not a person; hooks that
+      // act for the sender need to tell the two apart.
+      sender: { id: senderId, ...(ingress.botLoopProtection ? { isBot: true } : {}) },
       chat: { id: roomId, eventId: messageId },
     },
     from: isDirectMessage ? `matrix:${senderId}` : `matrix:channel:${roomId}`,
