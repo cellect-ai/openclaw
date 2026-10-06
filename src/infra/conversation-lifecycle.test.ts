@@ -843,6 +843,31 @@ describe("trusted durable conversation lifecycle", () => {
     expect(publications.at(-1)).toMatchObject({ runId: "crashed", state: "interrupted" });
     expect(errors.map((error) => error.reason)).toEqual(["room_parked", "room_parked"]);
   });
+  it("returns a set-aside run to normal delivery once it publishes", async () => {
+    let healed = false;
+    const transport = install({ fail: (_, __, runId) => runId === "poison" && !healed });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("poison");
+    emit("poison", "start");
+    clock.mockReturnValue(start + 1_000);
+    owner("fine");
+    for (let pass = 1; pass <= 6; pass += 1) {
+      clock.mockReturnValue(start + pass * 600_000);
+      await transport.flush();
+    }
+    expect(errors.at(-1)?.reason).toBe("row_stuck");
+    healed = true;
+    clock.mockReturnValue(start + 13 * 600_000);
+    await transport.flush();
+    emit("poison", "end");
+    clock.mockReturnValue(start + 13 * 600_000 + 10_000);
+    await transport.flush();
+    expect(
+      publications.filter((event) => event.runId === "poison").map((event) => event.state),
+    ).toEqual([...Array(5).fill("queued"), "running", "completed"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
