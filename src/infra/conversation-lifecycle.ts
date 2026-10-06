@@ -78,6 +78,8 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   resultEventId?: string;
   pendingApprovals: string[];
   pending: ConversationLifecyclePublication[];
+  /** Highest revision the destination acknowledged; 0 while it has heard nothing of the run. */
+  acked?: number;
   /** Whether the owner held an execution claim or an open approval at the last transition. */
   live?: boolean;
   /** When that transition was recorded. */
@@ -403,6 +405,7 @@ export function registerConversationLifecycleTransport(options: {
             state: incomingState,
             pending: [],
             pendingApprovals: late ? [...late.pendingApprovals] : [],
+            acked: 0,
           };
           let state = transition(row, event, incomingState);
           if (!state) continue;
@@ -522,12 +525,16 @@ export function registerConversationLifecycleTransport(options: {
       })
     )[0];
     if (!row || stopped || Date.now() - row.enqueuedAt < PARKED_ROW_EXPIRY_MS) return;
-    if (!TERMINAL.has(row.state) && (ownerPresent(row) || heldForOwner(row))) return;
-    await replace(JSON.stringify(row), {
-      ...row,
-      pending: [],
-      state: TERMINAL.has(row.state) ? row.state : "interrupted",
-    });
+    const open = !TERMINAL.has(row.state);
+    if (open && (ownerPresent(row) || heldForOwner(row))) return;
+    const expected = JSON.stringify(row);
+    if (open) appendTransition(row, "interrupted");
+    // A room that was told of the run must still learn how it ended, or the
+    // run stays live there for good: only superseded states are dropped and
+    // the newest one stays queued for the probe. A run the room never heard
+    // of is dropped whole. Rows from before `acked` existed count as told.
+    row.pending = row.acked === 0 ? [] : row.pending.slice(-1);
+    if (JSON.stringify(row) !== expected) await replace(expected, row);
   };
 
   /** Resolves to the number of publications the destination accepted. */
@@ -631,7 +638,8 @@ export function registerConversationLifecycleTransport(options: {
       for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
       // Each parked room whose interval has passed probes with its oldest row
-      // that still has status worth sending.
+      // that still has status worth sending: unexpired, or owed to a room that
+      // already knows the run.
       const probes = new Map<string, LifecycleObligation>();
       for (const row of rows) {
         const roomId = row.binding.roomId;
@@ -642,7 +650,7 @@ export function registerConversationLifecycleTransport(options: {
           parkedAt !== undefined &&
           now - parkedAt >= PARKED_PROBE_MS &&
           row.pending.length &&
-          now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS &&
+          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS || row.acked !== 0) &&
           row.enqueuedAt < (probes.get(roomId)?.enqueuedAt ?? Infinity)
         )
           probes.set(roomId, row);
