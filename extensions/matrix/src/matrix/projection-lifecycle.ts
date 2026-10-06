@@ -92,6 +92,12 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         );
         return;
       }
+      if (detail?.reason === "status_abandoned") {
+        api.logger.warn(
+          `matrix: lifecycle status abandoned after a month of refusals room=${detail.roomId}`,
+        );
+        return;
+      }
       if (detail?.reason === "terminal_after_interrupted") {
         api.logger.warn(
           `matrix: lifecycle run finished after it was published interrupted room=${detail.roomId}`,

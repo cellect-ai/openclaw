@@ -112,6 +112,8 @@ const RETRY_MAX_MS = 5 * 60_000;
 const OWNERLESS_HOLD_MS = 30 * 60_000;
 // Unpublished status for a room the homeserver refuses is discarded at this age.
 const PARKED_ROW_EXPIRY_MS = 24 * 60 * 60_000;
+// Status still owed to a room that has refused every send for this long is given up.
+const PARKED_ROW_MAX_AGE_MS = 30 * 24 * 60 * 60_000;
 // A refusal can be transient, so a parked room is tried once more at this interval.
 const PARKED_PROBE_MS = 60 * 60_000;
 const SETTLED = new Set<ConversationLifecycleState>(["completed", "failed", "cancelled"]);
@@ -216,7 +218,12 @@ export function registerConversationLifecycleTransport(options: {
     error: unknown,
     detail?: Readonly<{
       roomId: string;
-      reason: "delivery_failed" | "backlog_capped" | "room_parked" | "terminal_after_interrupted";
+      reason:
+        | "delivery_failed"
+        | "backlog_capped"
+        | "room_parked"
+        | "terminal_after_interrupted"
+        | "status_abandoned";
       failures: number;
     }>,
   ) => void;
@@ -552,8 +559,16 @@ export function registerConversationLifecycleTransport(options: {
     // run stays live there for good: only superseded states are dropped and
     // the newest one stays queued for the probe. A run the room never heard
     // of is dropped whole.
-    row.pending = told(row) ? row.pending.slice(-1) : [];
-    if (JSON.stringify(row) !== expected) await replace(expected, row);
+    const abandoned = told(row) && Date.now() - row.enqueuedAt >= PARKED_ROW_MAX_AGE_MS;
+    row.pending = told(row) && !abandoned ? row.pending.slice(-1) : [];
+    if (JSON.stringify(row) === expected) return;
+    await replace(expected, row);
+    if (abandoned)
+      options.onError(new Error("Conversation lifecycle status abandoned"), {
+        roomId: row.binding.roomId,
+        reason: "status_abandoned",
+        failures: 0,
+      });
   };
 
   /** Resolves to the number of publications the destination accepted. */
@@ -674,7 +689,8 @@ export function registerConversationLifecycleTransport(options: {
           parkedAt !== undefined &&
           now - parkedAt >= PARKED_PROBE_MS &&
           row.pending.length &&
-          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS || told(row)) &&
+          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS ||
+            (told(row) && now - row.enqueuedAt < PARKED_ROW_MAX_AGE_MS)) &&
           row.enqueuedAt < (probes.get(roomId)?.enqueuedAt ?? Infinity)
         )
           probes.set(roomId, row);
