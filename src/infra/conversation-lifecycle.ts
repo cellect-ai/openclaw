@@ -221,11 +221,10 @@ export function registerConversationLifecycleTransport(options: {
   stateDir?: string;
 }) {
   let stopped = false;
-  // Delivery failures back off per run row and per room, so an unreachable
-  // room costs one attempt per period and never delays other rooms. A row
-  // waits twice as long as its room: a healthy room's other runs then go
-  // ahead of one row the homeserver keeps rejecting.
-  const rowRetries = new Map<string, Retry>();
+  // Delivery failures back off per room, so an unreachable room costs one
+  // attempt per period and never delays other rooms. Within a room rows are
+  // sent strictly in admission order: a newer run's state never overtakes an
+  // older run's, at the price of one rejected row holding back its own room.
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
   // Rooms the homeserver refused (bot removed, room gone), by when. A parked
@@ -633,7 +632,7 @@ export function registerConversationLifecycleTransport(options: {
       }
       cappedRooms = capped;
       const present = new Set(rows.map((row) => row.id));
-      for (const kept of [rowRetries, liveness, interruptedSent, lateTerminals, superseded])
+      for (const kept of [liveness, interruptedSent, lateTerminals, superseded])
         for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
       for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
@@ -663,12 +662,7 @@ export function registerConversationLifecycleTransport(options: {
         const roomId = initial.binding.roomId;
         const now = Date.now();
         const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
-        if (
-          !parked.has(roomId) &&
-          ((rowRetries.get(initial.id)?.notBefore ?? 0) > now ||
-            (roomRetries.get(roomId)?.notBefore ?? 0) > now)
-        )
-          continue;
+        if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
         try {
           if (parked.has(roomId) && !probing) {
             await expireParked(initial.id);
@@ -678,7 +672,6 @@ export function registerConversationLifecycleTransport(options: {
           // Only an accepted send proves a parked room is open again.
           if (probing && !sent) continue;
           parked.delete(roomId);
-          rowRetries.delete(initial.id);
           roomRetries.delete(roomId);
         } catch (error) {
           if (stopped) return;
@@ -690,7 +683,6 @@ export function registerConversationLifecycleTransport(options: {
           }
           // Any other failure is an ordinary outage: back off instead of parking.
           parked.delete(roomId);
-          defer(rowRetries, initial.id, 2 * RETRY_BASE_MS);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
           // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
           if ((failures & (failures - 1)) === 0)
