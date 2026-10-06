@@ -86,6 +86,8 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   live?: boolean;
   /** When that transition was recorded. */
   activeAt?: number;
+  /** When a held run's owner was first found missing; the hold is measured from here. */
+  missingSince?: number;
 };
 
 const QUEUE = "conversation-lifecycle-v2";
@@ -418,6 +420,7 @@ export function registerConversationLifecycleTransport(options: {
           row.live =
             hasAgentRunContextExecutionOwner(event.runId) || row.pendingApprovals.length > 0;
           row.activeAt = Date.now();
+          delete row.missingSince;
           liveness.set(id, { live: row.live, activeAt: row.activeAt });
           write(row);
           adopted = true;
@@ -493,7 +496,8 @@ export function registerConversationLifecycleTransport(options: {
     liveness.set(row.id, seen);
     const now = Date.now();
     if (!seen.live || now - seen.activeAt < OWNERLESS_HOLD_MS) return false;
-    seen.missingSince ??= now;
+    // Measured from the row when a reload has emptied the in-memory record.
+    seen.missingSince ??= row.missingSince ?? now;
     return now - seen.missingSince < OWNERLESS_HOLD_MS;
   };
 
@@ -571,7 +575,12 @@ export function registerConversationLifecycleTransport(options: {
         live: hasAgentRunContextExecutionOwner(row.runId) || row.pendingApprovals.length > 0,
         activeAt: owner.lastActiveAt ?? owner.registeredAt ?? 0,
       });
-    } else if (!TERMINAL.has(row.state) && !heldForOwner(row)) {
+    } else if (!TERMINAL.has(row.state) && heldForOwner(row)) {
+      // The hold is bounded in wall time across reloads, so its start is kept.
+      const missingSince = liveness.get(id)?.missingSince;
+      if (row.missingSince === undefined && missingSince !== undefined)
+        await replace(JSON.stringify(row), { ...row, missingSince });
+    } else if (!TERMINAL.has(row.state)) {
       const expected = JSON.stringify(row);
       appendTransition(row, "interrupted");
       const recovered = row;

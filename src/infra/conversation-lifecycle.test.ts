@@ -688,6 +688,31 @@ describe("trusted durable conversation lifecycle", () => {
     await transport.flush();
     expect(publications.at(-1)).toMatchObject({ runId: "unconfirmed", state: "completed" });
   });
+  it("bounds the ownerless hold across repeated reloads", async () => {
+    const approval = { phase: "requested", status: "pending", approvalId: "open" };
+    let transport = install();
+    owner("reloading");
+    emit("reloading", "start");
+    emitAgentEvent({ runId: "reloading", stream: "approval", data: approval });
+    await transport.flush();
+    const clock = vi.spyOn(Date, "now");
+    const missing = Date.now() + 31 * 60_000;
+    clock.mockReturnValue(missing);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    for (const minutes of [20, 31]) {
+      transport.stop();
+      transport = install();
+      clock.mockReturnValue(missing + minutes * 60_000);
+      await transport.flush();
+    }
+    expect(publications.map((event) => event.state)).toEqual([
+      "queued",
+      "running",
+      "waiting",
+      "interrupted",
+    ]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
