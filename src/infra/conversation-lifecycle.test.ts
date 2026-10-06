@@ -146,7 +146,7 @@ describe("trusted durable conversation lifecycle", () => {
   }
   function install(
     options: {
-      fail?: boolean | ((roomId: string) => boolean);
+      fail?: boolean | ((roomId: string, state: string) => boolean);
       refused?: "M_FORBIDDEN" | "M_NOT_FOUND";
       resolve?: () => readonly ConversationProjectionBinding[];
     } = {},
@@ -157,7 +157,11 @@ describe("trusted durable conversation lifecycle", () => {
       resolveBindings: options.resolve ?? (() => [binding]),
       publish: async (_, event, transactionId) => {
         publications.push({ ...event, transactionId });
-        if (typeof options.fail === "function" ? options.fail(event.roomId) : options.fail)
+        if (
+          typeof options.fail === "function"
+            ? options.fail(event.roomId, event.state)
+            : options.fail
+        )
           throw Object.assign(new Error("network unavailable"), {
             errcode: options.refused,
           });
@@ -531,6 +535,33 @@ describe("trusted durable conversation lifecycle", () => {
     expect(
       custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0],
     ).toMatchObject({ state: "interrupted", pending: [] });
+  });
+  it("never replaces an interrupted whose response was lost before a reload", async () => {
+    // The send reaches the room but its response is lost, so it stays queued.
+    const first = install({ fail: (_, state) => state === "interrupted" });
+    owner("lost-ack");
+    emit("lost-ack", "start");
+    await first.flush();
+    const later = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await first.flush();
+    expect(publications.at(-1)?.state).toBe("interrupted");
+    first.stop();
+    const next = install();
+    owner("lost-ack");
+    emit("lost-ack", "end");
+    later.mockReturnValue(Date.now() + 60 * 60_000);
+    await next.flush();
+    expect(publications.map((event) => event.state)).toEqual([
+      "queued",
+      "running",
+      "interrupted",
+      "interrupted",
+    ]);
+    expect(errors.map((error) => error.reason)).toEqual([
+      "delivery_failed",
+      "terminal_after_interrupted",
+    ]);
   });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
