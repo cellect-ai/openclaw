@@ -948,6 +948,36 @@ describe("trusted durable conversation lifecycle", () => {
     expect(rows.find((row) => row.runId === "poison")?.stuckAt).toBeUndefined();
     expect(errors.filter((error) => error.reason === "status_abandoned")).toHaveLength(1);
   });
+  it("holds a run again that returned while its room stayed parked", async () => {
+    let refusing = true;
+    const transport = install({ fail: () => refusing, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    const minute = 60_000;
+    clock.mockReturnValue(start);
+    owner("parked-twice");
+    await transport.flush();
+    clock.mockReturnValue(start + 29 * minute);
+    emit("parked-twice", "start");
+    emitAgentEvent({
+      runId: "parked-twice",
+      stream: "approval",
+      data: { phase: "requested", status: "pending", approvalId: "open" },
+    });
+    clock.mockReturnValue(start + 61 * minute);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    // The run returns without a transition while the room is still parked.
+    owner("parked-twice");
+    await transport.flush();
+    clock.mockReturnValue(start + 92 * minute);
+    expect(sweepStaleRunContexts()).toBe(1);
+    refusing = false;
+    clock.mockReturnValue(start + 122 * minute);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).not.toContain("interrupted");
+    expect(publications.at(-1)?.state).toBe("waiting");
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
