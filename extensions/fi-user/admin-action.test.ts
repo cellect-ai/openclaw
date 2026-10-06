@@ -76,16 +76,19 @@ async function harness(records: Record<string, ReturnType<typeof pending>>) {
     },
   } as unknown as OpenClawPluginApi;
   const run = vi.fn(async () => undefined);
+  // The ordinary case is a reply Slack verified; a test overrides either fact.
   const outcome = (
     content: string,
     senderId: string,
-    senderAuthentication: "verified" | "asserted" | undefined = "verified",
-    channelId = "slack",
+    from: { senderAuthentication?: "verified" | "asserted"; channelId: string } = {
+      senderAuthentication: "verified",
+      channelId: "slack",
+    },
   ) =>
     actions.decideAdminApproval(
       api,
-      { content, senderId, senderAuthentication },
-      { channelId },
+      { content, senderId, senderAuthentication: from.senderAuthentication },
+      { channelId: from.channelId },
       run,
     );
   const decide = async (content: string, senderId: string) =>
@@ -249,11 +252,12 @@ describe("admin approval replies are claimed", () => {
 describe("admin approval needs a sender Slack verified", () => {
   it("decides nothing for an asserted or unreported sender, and keeps the text from an agent", async () => {
     const { outcome, run, registerIfAbsent } = await harness({ ABC234: pending("ABC234") });
-    for (const authentication of ["asserted", undefined] as const) {
-      await expect(outcome("approve ABC234", "UALEX00001", authentication)).resolves.toEqual({
+    for (const senderAuthentication of ["asserted", undefined] as const) {
+      const from = { senderAuthentication, channelId: "slack" };
+      await expect(outcome("approve ABC234", "UALEX00001", from)).resolves.toEqual({
         claimed: true,
       });
-      await expect(outcome("deny ABC234", "UALEX00001", authentication)).resolves.toEqual({
+      await expect(outcome("deny ABC234", "UALEX00001", from)).resolves.toEqual({
         claimed: true,
       });
     }
@@ -270,9 +274,12 @@ describe("admin approval needs a sender Slack verified", () => {
 
   it("decides nothing on another channel, whatever that channel claims", async () => {
     const { outcome, run } = await harness({ ABC234: pending("ABC234") });
-    await expect(outcome("approve ABC234", "UALEX00001", "verified", "matrix")).resolves.toEqual({
-      claimed: true,
-    });
+    await expect(
+      outcome("approve ABC234", "UALEX00001", {
+        senderAuthentication: "verified",
+        channelId: "matrix",
+      }),
+    ).resolves.toEqual({ claimed: true });
     expect(run).not.toHaveBeenCalled();
     expect(notes()).toEqual([expect.stringContaining("did not verify")]);
   });
