@@ -649,6 +649,20 @@ describe("trusted durable conversation lifecycle", () => {
     expect(states("ghost")).toEqual(["queued", "completed"]);
     expect(states("older").at(-1)).toBe("completed");
   });
+  it("sends a room's runs in admission order after a failed attempt", async () => {
+    let failing = 1;
+    const transport = install({ fail: () => failing-- > 0 });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("old");
+    clock.mockReturnValue(start + 1_000);
+    owner("new");
+    await transport.flush();
+    clock.mockReturnValue(start + 7_000);
+    await transport.flush();
+    expect(publications.map((event) => event.runId)).toEqual(["old", "old", "new"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
