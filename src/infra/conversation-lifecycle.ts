@@ -702,6 +702,8 @@ export function registerConversationLifecycleTransport(options: {
   // for it, so it gets a row now or is adopted when its binding appears.
   try {
     const generation = getAgentRunLifecycleGeneration();
+    // Assumes an ended run's context is cleared: a context left behind after its
+    // terminal event would be admitted here as a live run.
     for (const runId of listCurrentAgentRunIds()) {
       const key = `${generation}:${runId}`;
       const context = getAgentRunContext(runId);
