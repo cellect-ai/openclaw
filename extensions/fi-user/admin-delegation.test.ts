@@ -36,6 +36,23 @@ const matrix = {
     requester: { channel: "matrix", senderId: "@admin:matrix.example", accountId: "adminprod" },
   },
 };
+const THREAD = "agent:cellect-fi-admin:matrix:channel:!room:matrix.example:thread:$root";
+/** One message in a Matrix room thread, as the host reports it at each hook. */
+const thread = (senderId = "@admin:matrix.example", eventId = "$e1") => ({
+  arrive: { channel: "matrix", senderId, sessionKey: THREAD, isGroup: true, messageId: eventId },
+  start: {
+    channel: "matrix",
+    senderId,
+    sessionKey: THREAD,
+    accountId: "adminprod",
+    chatId: "!room:matrix.example",
+    channelContext: { sender: { id: senderId }, chat: { id: "!room:matrix.example", eventId } },
+  },
+  exec: {
+    sessionKey: THREAD,
+    requester: { channel: "matrix", senderId, accountId: "adminprod" },
+  },
+});
 const MINT_URL = "https://fi.example.test/fi/api/openclaw-user-delegation";
 type Env = Record<string, string>;
 type Rewrite = { params: { env?: Env; host?: unknown; elevated?: unknown } } | undefined;
@@ -288,6 +305,206 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
+  describe("a Matrix room or thread, one message at a time", () => {
+    const OTHER = "@other:matrix.example";
+    const token = (result: Rewrite) => result?.params?.env?.FI_DELEGATED_USER_TOKEN;
+    /** Fi answers for the person asked about: only the admin is one. */
+    const fiKnowsOnlyTheAdmin = () =>
+      fetchMock.mockImplementation(async (url: string, init: { body: string }) => {
+        if (url === AUTHORIZE_URL) {
+          return new Response(
+            JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+          );
+        }
+        const asked = JSON.parse(init.body) as { requesterMatrixUserId?: string };
+        return asked.requesterMatrixUserId === "@admin:matrix.example"
+          ? minted()
+          : new Response("Not found", { status: 404 });
+      });
+    beforeEach(() => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+    });
+
+    it("mints for the run a verified admin's message started, pinned to the sandbox", async () => {
+      const turn = plugin();
+      const message = thread();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      const result = await turn.exec(message.exec);
+      expect(result?.params).toMatchObject({
+        host: "sandbox",
+        elevated: false,
+        env: { FI_DELEGATED_USER_TOKEN: TOKEN },
+      });
+      expect(mintBody()).toEqual({
+        requesterMatrixUserId: "@admin:matrix.example",
+        agentId: "cellect-fi-admin",
+      });
+    });
+
+    it("gives the next run in the thread nothing of the first", async () => {
+      fiKnowsOnlyTheAdmin();
+      const turn = plugin();
+      const first = thread();
+      await turn.arrive(first.arrive);
+      await turn.start(first.start);
+      expect(token(await turn.exec(first.exec))).toBe(TOKEN);
+      await turn.settle();
+
+      // Someone else, equally verified by the homeserver, writes next.
+      const second = thread(OTHER, "$e2");
+      await turn.arrive(second.arrive);
+      await turn.start({ ...second.start, runId: "run-2" });
+      fetchMock.mockClear();
+      const theirs = await turn.exec({ ...second.exec, runId: "run-2" });
+      expect(JSON.stringify(theirs)).not.toContain(TOKEN);
+      expect(theirs?.params).not.toHaveProperty("host");
+      // Fi was asked about them, not about the admin, and refused.
+      expect(mints()).toHaveLength(1);
+      expect(mintBody().requesterMatrixUserId).toBe(OTHER);
+
+      // Neither the admin's name on their run nor the admin's settled run yields one.
+      fetchMock.mockClear();
+      for (const stale of [
+        { ...first.exec, runId: "run-2" },
+        { ...first.exec, runId: "run-1" },
+        { ...second.exec, runId: "run-1" },
+      ]) {
+        expect(JSON.stringify(await turn.exec(stale))).not.toContain(TOKEN);
+      }
+      expect(mints()).toEqual([]);
+
+      // The admin's own next message is a new run with a new token.
+      await turn.settle("run-2");
+      const third = thread("@admin:matrix.example", "$e3");
+      await turn.arrive(third.arrive);
+      await turn.start({ ...third.start, runId: "run-3" });
+      expect(token(await turn.exec({ ...third.exec, runId: "run-3" }))).toBe(TOKEN);
+    });
+
+    it("ends the admin's run when someone else writes into the thread", async () => {
+      const turn = plugin();
+      const message = thread();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      await turn.arrive(thread(OTHER, "$e2").arrive);
+      expect(token(await turn.exec(message.exec))).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it.each([
+      ["nobody verified", { senderAuthentication: undefined }],
+      ["another party named", { senderAuthentication: "asserted" }],
+    ])("gives nothing for a sender %s", async (_name, arrival) => {
+      const turn = plugin();
+      const message = thread();
+      await turn.arrive({ ...message.arrive, ...arrival });
+      await turn.start(message.start);
+      expect(token(await turn.exec(message.exec))).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    const origin = (sender: Record<string, unknown>, eventId: string) => ({
+      channelContext: {
+        sender: { id: "@admin:matrix.example", ...sender },
+        chat: { id: "!room:matrix.example", eventId },
+      },
+    });
+    it.each([
+      ["a cron run", { trigger: "cron" }],
+      ["a heartbeat", { trigger: "heartbeat" }],
+      ["a system event", { trigger: "system" }],
+      ["a run the host started for another event", origin({}, "$e0")],
+      ["a run a configured bot account started", origin({ isBot: true }, "$e1")],
+    ])("gives nothing to %s, even after the admin's message", async (_name, run) => {
+      const turn = plugin();
+      const message = thread();
+      await turn.arrive(message.arrive);
+      await turn.start({ ...message.start, ...run });
+      expect(token(await turn.exec(message.exec))).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it("gives nothing to a run no message started: resumed, tool-injected, agent-to-agent", async () => {
+      const turn = plugin();
+      const message = thread();
+      // The host stamps a stored sender and event on such a run; nothing arrived for it.
+      await turn.start(message.start);
+      expect(token(await turn.exec(message.exec))).toBeUndefined();
+      // Nor does input injected without a dispatch prove anyone.
+      await turn.settle();
+      await turn.inject(message.arrive);
+      await turn.start({ ...message.start, runId: "run-2" });
+      expect(token(await turn.exec({ ...message.exec, runId: "run-2" }))).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it.each([403, 404])(
+      "treats Fi's refusal (%i) as no token and says only that",
+      async (status) => {
+        fetchMock.mockImplementation(async (url: string) =>
+          url === AUTHORIZE_URL
+            ? new Response(
+                JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+              )
+            : new Response(`@admin:matrix.example is not an admin of org-a`, { status }),
+        );
+        const turn = plugin();
+        const message = thread();
+        await turn.arrive(message.arrive);
+        await turn.start(message.start);
+        const result = await turn.exec(message.exec);
+        // The command still runs, with the attribution it always had.
+        expect(result?.params.env).toEqual({ FI_ON_BEHALF_OF: expect.any(String) });
+        expect(result?.params).not.toHaveProperty("host");
+        expect(mints()).toHaveLength(1);
+        // "Not a member" is an ordinary answer; any other refusal is logged by status alone.
+        expect(turn.warn.mock.calls).toEqual(
+          status === 404 ? [] : [[`fi-user: admin delegation not issued (status ${status})`]],
+        );
+      },
+    );
+
+    it("gives nothing in a room Fi places in another organization", async () => {
+      fetchMock.mockImplementation(async (url: string) =>
+        url === AUTHORIZE_URL
+          ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-b" }))
+          : minted(),
+      );
+      const turn = plugin();
+      const message = thread();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      const result = await turn.exec(message.exec);
+      expect(result).toMatchObject({ block: true });
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      expect(mints()).toEqual([]);
+    });
+
+    it.each([
+      ["a Slack channel", "slack", "agent:cellect-fi-admin:slack:channel:c1", "U0ADMIN001"],
+      [
+        "a Slack thread",
+        "slack",
+        "agent:cellect-fi-admin:slack:channel:c1:thread:1.2",
+        "U0ADMIN001",
+      ],
+      ["a Discord channel", "discord", "agent:cellect-fi-admin:discord:channel:1", "1234567890"],
+    ])("does not extend to %s", async (_name, channel, sessionKey, senderId) => {
+      const turn = plugin();
+      await turn.arrive({ channel, sessionKey, senderId, isGroup: true, messageId: "$e1" });
+      await turn.start({
+        channel,
+        sessionKey,
+        senderId,
+        channelContext: { sender: { id: senderId }, chat: { eventId: "$e1" } },
+      });
+      const result = await turn.exec({ sessionKey, requester: { channel, senderId } });
+      expect(JSON.stringify(result ?? {})).not.toContain(TOKEN);
+      expect(mints()).toEqual([]);
+    });
+  });
+
   it("leaves an approved admin action with today's attribution only", async () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
     adminActionSessions.set(sessionKey, {
@@ -387,7 +604,7 @@ describe("the admin agent's delegated user token", () => {
     it.each([
       ["a Matrix sender nobody verified", { senderAuthentication: undefined }],
       ["a Matrix sender another party named", { senderAuthentication: "asserted" }],
-      ["a Matrix room with other people in it", { isGroup: true }],
+      ["a Matrix room message that names no event", { isGroup: true }],
       ["a Matrix conversation of unreported kind", { isGroup: undefined }],
     ])("%s", async (_name, arrival) => {
       vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
