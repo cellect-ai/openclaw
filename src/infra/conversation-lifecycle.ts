@@ -779,8 +779,11 @@ export function registerConversationLifecycleTransport(options: {
         if (!parked.has(roomId) && initial.stuckAt !== undefined) {
           // A stuck row never holds back or backs off its room.
           if (now - initial.stuckAt >= PARKED_PROBE_MS)
+            // An accepted send clears the mark in the worker; with nothing to
+            // send the row is not stuck either, so the run is normal again.
             await setAside(initial.id)
               .then(() => deliver(initial.id))
+              .then((sent) => (sent ? undefined : unset(initial.id, "stuckAt")))
               .catch(() => {});
           continue;
         }

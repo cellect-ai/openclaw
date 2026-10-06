@@ -52,6 +52,7 @@ export function executeConversationLifecycleCommand(
       // during transport I/O must survive acknowledgement of its predecessor.
       row.pending = row.pending.filter((event) => event.revision > command.input.revision);
       row.acked = Math.max(row.acked ?? 0, command.input.revision);
+      // An accepted send ends a set-aside: the run's later states go out normally.
       delete row.stuckAt;
       if (
         row.pending.length === 0 &&
