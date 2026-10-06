@@ -15,7 +15,7 @@ import {
   adminActionSessions,
   adminHandoffBlock,
   createRequestAdminActionTool,
-  handleAdminApprovalMessage,
+  decideAdminApproval,
 } from "./admin-action.js";
 import {
   projectSlackChannelThread,
@@ -527,12 +527,33 @@ export default definePluginEntry({
       if (context.channelId === "webchat") {
         rememberWebchatContext(event.sessionKey ?? context.sessionKey, event.content);
       }
-      void handleAdminApprovalMessage(api, event, context).catch(() => {
-        api.logger.warn("fi-user: admin approval handling failed");
-      });
       // Keep source-channel delivery independent of Fi/Matrix latency.
       void projectVerifiedSlackMessage(api, event, context, slackProjection);
     });
+    // An approver's reply to an admin-action card is decided here and claimed,
+    // so the same text is not also run as an agent turn. message_received only
+    // observes: handling it there left "approve <ID>" to reach the model too.
+    api.on(
+      "before_dispatch",
+      async (event, context) => {
+        try {
+          const outcome = await decideAdminApproval(
+            api,
+            {
+              content: event.content,
+              senderId: event.senderId ?? context.senderId,
+              sessionKey: event.sessionKey ?? context.sessionKey,
+            },
+            { channelId: context.channelId ?? event.channel, sessionKey: context.sessionKey },
+          );
+          return outcome.claimed ? { handled: true } : undefined;
+        } catch {
+          api.logger.warn("fi-user: admin approval handling failed");
+          return undefined;
+        }
+      },
+      { priority: 10_000 },
+    );
     api.on(
       "before_tool_call",
       (event, ctx) => {

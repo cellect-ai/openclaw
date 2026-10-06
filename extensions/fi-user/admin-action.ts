@@ -408,22 +408,29 @@ export async function runApprovedAdminAction(api: OpenClawPluginApi, record: Adm
  * Handle an approver's reply. Only a configured approver's own message counts,
  * never the requester's own approval, and each request is decided once: later
  * or concurrent decisions are ignored with a note in the thread.
+ *
+ * `claimed` says the message was an approver's reply to a known request, so it
+ * belongs to this flow whatever the outcome and must not also reach an agent as
+ * an ordinary turn. Anything else, including an approver's unrelated message
+ * that merely starts with "approve", is left for the conversation.
  */
-export async function handleAdminApprovalMessage(
+export async function decideAdminApproval(
   api: OpenClawPluginApi,
   event: { content?: string; senderId?: string; sessionKey?: string },
   context: { channelId?: string; sessionKey?: string },
   run: (record: AdminActionRecord) => Promise<void> = (record) =>
     runApprovedAdminAction(api, record),
-): Promise<AdminActionRecord | undefined> {
+): Promise<{ claimed: boolean; decided?: AdminActionRecord }> {
+  const unclaimed = { claimed: false };
+  const refused = { claimed: true };
   const config = configFromRuntime(api);
   const sender = event.senderId?.trim() ?? "";
   if (!sender || !config.adminApprovers.some((id) => id.toLowerCase() === sender.toLowerCase())) {
-    return undefined;
+    return unclaimed;
   }
   const match = APPROVAL.exec(event.content ?? "");
   if (!match) {
-    return undefined;
+    return unclaimed;
   }
   const approve = /^approve/i.test(match[1] ?? "");
   const code = match[2]?.toUpperCase();
@@ -435,14 +442,14 @@ export async function handleAdminApprovalMessage(
     record = pending.length === 1 ? pending[0] : undefined;
   }
   if (!record || Date.now() - record.createdAt > RECORD_TTL_MS) {
-    return undefined;
+    return unclaimed;
   }
   const found = record;
   const note = (text: string) => post(api, found, text).catch(() => undefined);
   const alreadyDecided = `Admin action ${found.id} was already decided; this reply was ignored.`;
   if (found.status !== "pending" || claimed.has(found.id)) {
     await note(alreadyDecided);
-    return undefined;
+    return refused;
   }
   if (approve) {
     let own: boolean;
@@ -450,13 +457,13 @@ export async function handleAdminApprovalMessage(
       own = await isOwnRequest(config, found, sender);
     } catch {
       await note(`Admin action ${found.id}: the approver could not be verified; reply again.`);
-      return undefined;
+      return refused;
     }
     if (own) {
       await note(
         `Admin action ${found.id} cannot be approved by the person who requested it; another administrator must approve it.`,
       );
-      return undefined;
+      return refused;
     }
   }
   const decided: AdminActionRecord = {
@@ -471,11 +478,11 @@ export async function handleAdminApprovalMessage(
   });
   if (claim === "taken") {
     await note(alreadyDecided);
-    return undefined;
+    return refused;
   }
   if (claim === "unrecorded") {
     await note(`Admin action ${found.id}: the decision could not be recorded; reply again.`);
-    return undefined;
+    return refused;
   }
   records.set(decided.id, decided);
   await save(api, decided);
@@ -483,10 +490,10 @@ export async function handleAdminApprovalMessage(
     await post(api, decided, `Admin action ${decided.id} was declined by an administrator.`).catch(
       () => undefined,
     );
-    return decided;
+    return { claimed: true, decided };
   }
   void run(decided).catch(() => undefined);
-  return decided;
+  return { claimed: true, decided };
 }
 
 const RequestSchema = Type.Object(

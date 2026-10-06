@@ -6,7 +6,13 @@ export type PluginConfig = {
   brokerTokenEnv?: string;
   /** Explicit Fi origins and broker credentials for Matrix account environments. */
   matrixEnvironments?: Record<string, { baseUrl: string; brokerTokenEnv: string }>;
-  /** Tenant whose credentials and sandbox this configured runtime owns. */
+  /**
+   * Fi org id of the one tenant this runtime serves. Every Fi answer about a
+   * person or a Matrix turn must name it: the Matrix admission gate and the
+   * Slack, Matrix and webchat delegation exchange both refuse another org.
+   */
+  tenantOrgId?: string;
+  /** Earlier name of `tenantOrgId`, still honored. Both set must agree. */
   matrixTenantOrgId?: string;
   gamBinary?: string;
   gamConfigDir?: string;
@@ -36,11 +42,13 @@ export type ResolvedPluginConfig = Required<
   adminPrincipals: string[];
   projectionFullRefreshesPerTick: number;
   matrixEnvironments: Record<string, { baseUrl: string; brokerTokenEnv: string }>;
-  matrixTenantOrgId?: string;
+  tenantOrgId?: string;
+  /** The two tenant keys disagree: no org can be trusted, so every tenant check refuses. */
+  tenantOrgConflict?: true;
 };
 
 export type Delegation = {
-  user: { email: string; orgSlug: string; role: string };
+  user: { email: string; orgSlug: string; orgId?: string; role: string };
   gmail: { enabled: boolean; mailbox: string | null };
   fi: { token: string; expiresAt: number };
 };
@@ -56,11 +64,19 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
     Array.isArray(value)
       ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
       : [];
+  const tenantOrgId = raw?.tenantOrgId?.trim() || undefined;
+  const legacyTenantOrgId = raw?.matrixTenantOrgId?.trim() || undefined;
+  const tenantOrgConflict =
+    tenantOrgId !== undefined &&
+    legacyTenantOrgId !== undefined &&
+    tenantOrgId !== legacyTenantOrgId;
+  const tenant = tenantOrgConflict ? undefined : (tenantOrgId ?? legacyTenantOrgId);
   return {
     baseUrl: raw?.baseUrl?.replace(/\/+$/, "") || "https://app.cellect.ai/fi",
     brokerTokenEnv: raw?.brokerTokenEnv || "OPENCLAW_FI_USER_BROKER_TOKEN",
     matrixEnvironments: raw?.matrixEnvironments ?? {},
-    ...(raw?.matrixTenantOrgId?.trim() ? { matrixTenantOrgId: raw.matrixTenantOrgId.trim() } : {}),
+    ...(tenant ? { tenantOrgId: tenant } : {}),
+    ...(tenantOrgConflict ? { tenantOrgConflict: true as const } : {}),
     gamBinary: raw?.gamBinary || "/home/node/.openclaw/bin/gam7/gam",
     gamConfigDir: raw?.gamConfigDir || "/home/claude/GAMConfig",
     adminAgentId: raw?.adminAgentId?.trim() || "cellect-fi-admin",
@@ -245,11 +261,25 @@ export async function exchange(
   return { delegation, config, identity };
 }
 
-/** Fi's delegation for a channel-verified person; null when no active member is linked. */
+/**
+ * Fi's delegation for a channel-verified person; null when no active member is linked.
+ *
+ * A runtime with a configured tenant accepts only that tenant's members. Fi
+ * resolves the person, but which org it answers for follows the broker
+ * credential, so a credential or Fi origin configured for another tenant would
+ * otherwise hand this runtime that tenant's member and token. A response that
+ * does not name its org is refused too: absence is not a match.
+ */
 export async function lookupDelegation(
-  config: Pick<ResolvedPluginConfig, "baseUrl" | "brokerTokenEnv">,
+  config: Pick<
+    ResolvedPluginConfig,
+    "baseUrl" | "brokerTokenEnv" | "tenantOrgId" | "tenantOrgConflict"
+  >,
   requester: Record<string, string>,
 ): Promise<Delegation | null> {
+  if (config.tenantOrgConflict) {
+    throw new Error("This runtime's tenant is configured inconsistently");
+  }
   const token = brokerToken(config);
   if (!token) {
     throw new Error("Fi user delegation broker is not configured");
@@ -268,7 +298,12 @@ export async function lookupDelegation(
   if (!response.ok) {
     throw new Error(`Fi user delegation failed (${response.status})`);
   }
-  return (await response.json()) as Delegation;
+  // Untrusted JSON: a body without a user must fail the tenant check, not throw past it.
+  const delegation = (await response.json()) as Partial<Delegation> | null;
+  if (config.tenantOrgId && delegation?.user?.orgId !== config.tenantOrgId) {
+    throw new Error("The current requester does not belong to this runtime's Fi organization");
+  }
+  return delegation as Delegation;
 }
 
 export async function delegatedFetch(

@@ -22,6 +22,7 @@
     "properties": {
       "baseUrl": { "type": "string", "minLength": 1 },
       "brokerTokenEnv": { "type": "string", "minLength": 1 },
+      "tenantOrgId": { "type": "string", "minLength": 1 },
       "matrixTenantOrgId": { "type": "string", "minLength": 1 },
       "matrixEnvironments": {
         "type": "object",

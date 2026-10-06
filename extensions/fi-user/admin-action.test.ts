@@ -76,9 +76,11 @@ async function harness(records: Record<string, ReturnType<typeof pending>>) {
     },
   } as unknown as OpenClawPluginApi;
   const run = vi.fn(async () => undefined);
-  const decide = (content: string, senderId: string) =>
-    actions.handleAdminApprovalMessage(api, { content, senderId }, { channelId: "slack" }, run);
-  return { decide, run, claims, registerIfAbsent };
+  const outcome = (content: string, senderId: string) =>
+    actions.decideAdminApproval(api, { content, senderId }, { channelId: "slack" }, run);
+  const decide = async (content: string, senderId: string) =>
+    (await outcome(content, senderId)).decided;
+  return { decide, outcome, run, claims, registerIfAbsent };
 }
 
 function notes() {
@@ -189,6 +191,115 @@ describe("admin action approval", () => {
     expect(run).not.toHaveBeenCalled();
     await expect(decide("approve ABC234", "ULORENZO01")).resolves.toBeUndefined();
     expect(run).not.toHaveBeenCalled();
+  });
+});
+
+describe("admin approval replies are claimed", () => {
+  it("claims every reply an approver makes to a known request, whatever the outcome", async () => {
+    const { outcome, run } = await harness({
+      ABC234: pending("ABC234"),
+      OWN234: pending("OWN234", "alex@example.com", {
+        channel: "slack",
+        requesterSenderId: "UALEX00001",
+      }),
+    });
+    // Refused: the approver's own request.
+    await expect(outcome("approve OWN234", "UALEX00001")).resolves.toEqual({ claimed: true });
+    // Decided.
+    await expect(outcome("approve ABC234", "UALEX00001")).resolves.toMatchObject({
+      claimed: true,
+      decided: { status: "approved" },
+    });
+    // Already decided.
+    await expect(outcome("deny ABC234", "ULORENZO01")).resolves.toEqual({ claimed: true });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("claims a reply whose approver could not be verified, so it cannot run as a turn", async () => {
+    const { outcome, run } = await harness({ ABC234: pending("ABC234") });
+    vi.mocked(fetch).mockResolvedValueOnce(new Response("down", { status: 503 }));
+    await expect(outcome("approve ABC234", "UALEX00001")).resolves.toEqual({ claimed: true });
+    expect(run).not.toHaveBeenCalled();
+  });
+
+  it("leaves everything else to the conversation", async () => {
+    const { outcome, run } = await harness({ ABC234: pending("ABC234") });
+    // Not an approver, not a decision, and a decision that names no request.
+    await expect(outcome("approve ABC234", "U12345678")).resolves.toEqual({ claimed: false });
+    await expect(outcome("please look at ABC234", "UALEX00001")).resolves.toEqual({
+      claimed: false,
+    });
+    await expect(outcome("approve ZZZ999", "UALEX00001")).resolves.toEqual({ claimed: false });
+    await expect(outcome("approved, thanks", "UALEX00001")).resolves.toEqual({ claimed: false });
+    expect(run).not.toHaveBeenCalled();
+    expect(sendText).not.toHaveBeenCalled();
+  });
+});
+
+describe("admin approval from another tenant", () => {
+  it("refuses an approver whose Fi membership is in another organization", async () => {
+    const tenantConfig = {
+      plugins: {
+        entries: {
+          "fi-user": {
+            config: { ...runtimeConfig.plugins.entries["fi-user"].config, tenantOrgId: "org-a" },
+          },
+        },
+      },
+    };
+    vi.resetModules();
+    const actions = await import("./admin-action.js");
+    const record = pending("ABC234");
+    const api = {
+      config: tenantConfig,
+      logger: { warn: vi.fn() },
+      runtime: {
+        config: { current: () => tenantConfig },
+        state: {
+          openKeyedStore: ({ namespace }: { namespace: string }) =>
+            namespace === "admin-actions"
+              ? {
+                  register: vi.fn(async () => undefined),
+                  lookup: vi.fn(async () => ({ ...record })),
+                  entries: vi.fn(async () => []),
+                }
+              : { registerIfAbsent: vi.fn(async () => true) },
+        },
+        channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
+      },
+    } as unknown as OpenClawPluginApi;
+    const run = vi.fn(async () => undefined);
+    const member = (orgId: string) =>
+      new Response(
+        JSON.stringify({
+          user: { email: "alex@example.com", orgSlug: "other", orgId, role: "admin" },
+          gmail: { enabled: false, mailbox: null },
+          fi: { token: "delegated-token", expiresAt: 1_900_000_000 },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    vi.mocked(fetch).mockResolvedValueOnce(member("org-b"));
+    await expect(
+      actions.decideAdminApproval(
+        api,
+        { content: "approve ABC234", senderId: "UALEX00001" },
+        { channelId: "slack" },
+        run,
+      ),
+    ).resolves.toEqual({ claimed: true });
+    expect(run).not.toHaveBeenCalled();
+    expect(notes()).toEqual([expect.stringContaining("could not be verified")]);
+
+    vi.mocked(fetch).mockResolvedValueOnce(member("org-a"));
+    await expect(
+      actions.decideAdminApproval(
+        api,
+        { content: "approve ABC234", senderId: "UALEX00001" },
+        { channelId: "slack" },
+        run,
+      ),
+    ).resolves.toMatchObject({ claimed: true, decided: { status: "approved" } });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 });
 

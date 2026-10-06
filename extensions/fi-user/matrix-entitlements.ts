@@ -2,9 +2,10 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegation.js";
 
-const AGENTS = new Set(["cellect-fi-user", "cellect-fi-admin", "cellect-main"]);
 const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
+// Not the gated set: the only sessions exempt from it. These are the source
+// sessions the Matrix channel's own reply guard supports and authorizes.
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 type Turn = {
   agentId: string;
@@ -64,7 +65,14 @@ function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: strin
     : { eventId: turn.eventId, threadRootEventId: null };
 }
 
-/** Fi owns live grants. Retain only host-proven event identity, never an access decision. */
+/**
+ * Fi owns live grants. Retain only host-proven event identity, never an access decision.
+ *
+ * Every agent a Matrix account is bound to is gated, whatever its id: the host
+ * routes a Matrix turn to an agent by this runtime's bindings, so the gated set
+ * is exactly what is configured, with no list here to fall out of step. An
+ * agent this plugin has never heard of is denied until Fi admits the turn.
+ */
 export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const turns = new Map<string, Turn>();
   // agent_end closes one model attempt, not the admitted turn: recovery and
@@ -102,7 +110,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const authorize = async (turn: Turn): Promise<string | undefined> => {
     try {
       const config = configFromRuntime(api);
-      if (!config.matrixTenantOrgId) {
+      if (!config.tenantOrgId) {
         return UNAVAILABLE;
       }
       const connection = matrixConnection(config, turn.accountId);
@@ -145,7 +153,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         result.agentId === turn.agentId &&
         "orgId" in result &&
         typeof result.orgId === "string" &&
-        result.orgId === config.matrixTenantOrgId
+        result.orgId === config.tenantOrgId
         ? undefined
         : UNAVAILABLE;
     } catch {
@@ -155,7 +163,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   api.on(
     "before_agent_reply",
     async (_event, context) => {
-      if (context.channel !== "matrix" || !AGENTS.has(context.agentId ?? "")) {
+      if (context.channel !== "matrix") {
         return undefined;
       }
       // Source-linked continuations already pass the Matrix channel's source-session guard.
@@ -276,11 +284,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       context.requester?.channel === "matrix" ||
       (context.sessionKey?.includes(":matrix:") ?? false) ||
       Boolean(context.runId && turns.has(context.runId));
-    if (
-      !AGENTS.has(context.agentId ?? "") ||
-      !matrixTurn ||
-      SOURCE_SESSION.test(context.sessionKey ?? "")
-    ) {
+    if (!matrixTurn || SOURCE_SESSION.test(context.sessionKey ?? "")) {
       return undefined;
     }
     const runId = context.runId;
