@@ -80,6 +80,8 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   pending: ConversationLifecyclePublication[];
   /** Highest revision the destination acknowledged; 0 while it has heard nothing of the run. */
   acked?: number;
+  /** A send failed without a refusal, so the destination may hold a state it never acknowledged. */
+  attempted?: true;
   /** Whether the owner held an execution claim or an open approval at the last transition. */
   live?: boolean;
   /** When that transition was recorded. */
@@ -516,6 +518,20 @@ export function registerConversationLifecycleTransport(options: {
       },
     );
 
+  // The room knows the run when a send was acknowledged, or failed in a way
+  // that can hide a send that landed. Rows from before `acked` existed count.
+  const told = (row: LifecycleObligation) => row.acked !== 0 || row.attempted === true;
+
+  const markAttempted = async (id: string): Promise<void> => {
+    const row = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (row && !told(row)) await replace(JSON.stringify(row), { ...row, attempted: true });
+  };
+
   const expireParked = async (id: string): Promise<void> => {
     const row = (
       await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -531,8 +547,8 @@ export function registerConversationLifecycleTransport(options: {
     // A room that was told of the run must still learn how it ended, or the
     // run stays live there for good: only superseded states are dropped and
     // the newest one stays queued for the probe. A run the room never heard
-    // of is dropped whole. Rows from before `acked` existed count as told.
-    row.pending = row.acked === 0 ? [] : row.pending.slice(-1);
+    // of is dropped whole.
+    row.pending = told(row) ? row.pending.slice(-1) : [];
     if (JSON.stringify(row) !== expected) await replace(expected, row);
   };
 
@@ -649,7 +665,7 @@ export function registerConversationLifecycleTransport(options: {
           parkedAt !== undefined &&
           now - parkedAt >= PARKED_PROBE_MS &&
           row.pending.length &&
-          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS || row.acked !== 0) &&
+          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS || told(row)) &&
           row.enqueuedAt < (probes.get(roomId)?.enqueuedAt ?? Infinity)
         )
           probes.set(roomId, row);
@@ -683,6 +699,8 @@ export function registerConversationLifecycleTransport(options: {
           }
           // Any other failure is an ordinary outage: back off instead of parking.
           parked.delete(roomId);
+          // Its response may have been lost after the send landed.
+          await markAttempted(initial.id).catch(options.onError);
           const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
           // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
           if ((failures & (failures - 1)) === 0)
