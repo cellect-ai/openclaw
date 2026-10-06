@@ -748,7 +748,7 @@ describe("trusted durable conversation lifecycle", () => {
       clock.mockReturnValue(start + pass * 600_000);
       await transport.flush();
     }
-    expect(states("poison")).toEqual(Array(5).fill("queued"));
+    expect(states("poison")).toEqual(Array(6).fill("queued"));
     expect(states("fine")).toEqual(["queued"]);
     expect(errors.map((error) => [error.reason, error.failures])).toEqual([
       ["delivery_failed", 1],
@@ -760,12 +760,12 @@ describe("trusted durable conversation lifecycle", () => {
     emit("poison", "end");
     clock.mockReturnValue(start + 7 * 600_000);
     await transport.flush();
-    expect(states("poison")).toHaveLength(5);
+    expect(states("poison")).toHaveLength(6);
     healed = true;
     clock.mockReturnValue(start + 13 * 600_000);
     await transport.flush();
     // Only the run's newest state follows; its superseded ones are never sent late.
-    expect(states("poison").slice(5)).toEqual(["completed"]);
+    expect(states("poison").slice(6)).toEqual(["completed"]);
     const rows = custody.loadDeliveryQueueEntries(
       "conversation-lifecycle-v2",
       stateDir,
@@ -787,6 +787,7 @@ describe("trusted durable conversation lifecycle", () => {
     expect(publications.map((event) => event.runId)).toEqual([
       ...Array(5).fill("first"),
       "second",
+      "first",
       "first",
     ]);
     expect(errors.map((error) => error.reason)).not.toContain("row_stuck");
@@ -866,7 +867,7 @@ describe("trusted durable conversation lifecycle", () => {
     await transport.flush();
     expect(
       publications.filter((event) => event.runId === "poison").map((event) => event.state),
-    ).toEqual([...Array(5).fill("queued"), "running", "completed"]);
+    ).toEqual([...Array(6).fill("queued"), "running", "completed"]);
   });
   it("keeps the state of an unbound run that is swept and returns", async () => {
     let current: ConversationProjectionBinding[] = [];
@@ -883,6 +884,33 @@ describe("trusted durable conversation lifecycle", () => {
     clock.mockReturnValue(swept + 60_000);
     await transport.flush();
     expect(publications.map((event) => event.state)).toEqual(["running"]);
+  });
+  it("does not set aside the oldest row when an outage ends before the next row is tried", async () => {
+    let failing = Infinity;
+    const transport = install({ fail: () => failing-- > 0 });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("old");
+    emit("old", "start");
+    clock.mockReturnValue(start + 1_000);
+    owner("new");
+    for (let pass = 1; pass <= 5; pass += 1) {
+      // The server returns right after the oldest row's fifth failed send.
+      if (pass === 5) failing = 1;
+      clock.mockReturnValue(start + pass * 600_000);
+      await transport.flush();
+    }
+    expect(errors.map((error) => error.reason)).not.toContain("row_stuck");
+    expect(publications.slice(5).map((event) => [event.runId, event.state])).toEqual([
+      ["new", "queued"],
+      ["old", "queued"],
+      ["old", "running"],
+    ]);
+    emit("old", "end");
+    clock.mockReturnValue(start + 5 * 600_000 + 10_000);
+    await transport.flush();
+    expect(publications.at(-1)).toMatchObject({ runId: "old", state: "completed" });
   });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
