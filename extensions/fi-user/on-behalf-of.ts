@@ -88,6 +88,8 @@ export function onBehalfOfRequester(
  * model-supplied `FI_ON_BEHALF_OF` or `FI_DELEGATED_USER_TOKEN` is always
  * discarded, whatever its case: each is minted here or not at all.
  *
+ * A command that carries the delegated token is pinned to the sandbox.
+ *
  * The host merges these params over the model's, so an `env` the model sent is
  * always answered with one, even when nothing is left in it: omitting the key
  * would hand the model's own `env` back to the command.
@@ -115,6 +117,13 @@ export function withOnBehalfOfEnv(
   const next = { ...params };
   if (Object.keys(env).length > 0 || "env" in params) {
     next.env = env;
+  }
+  if (delegatedToken) {
+    // With no host named the effective one is configuration's, and a default
+    // elevated level moves the command to the Gateway. Naming both makes the
+    // host run it in the sandbox or refuse it; it never falls back.
+    next.host = "sandbox";
+    next.elevated = false;
   }
   return next;
 }
