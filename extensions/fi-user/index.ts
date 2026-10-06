@@ -17,6 +17,7 @@ import {
   createRequestAdminActionTool,
   decideAdminApproval,
 } from "./admin-action.js";
+import { registerAdminDelegation } from "./admin-delegation.js";
 import {
   projectSlackChannelThread,
   registerSlackChannelProjection,
@@ -508,6 +509,7 @@ export default definePluginEntry({
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
     const matrixEntitlements = registerMatrixEntitlements(api);
+    const adminDelegation = registerAdminDelegation(api);
     const projectionConnection = () => {
       const config = configFromRuntime(api);
       return {
@@ -536,22 +538,27 @@ export default definePluginEntry({
     api.on(
       "before_dispatch",
       async (event, context) => {
+        const message = {
+          senderId: event.senderId ?? context.senderId,
+          senderAuthentication: event.senderAuthentication,
+          sessionKey: event.sessionKey ?? context.sessionKey,
+        };
+        const channel = context.channelId ?? event.channel;
         try {
           const outcome = await decideAdminApproval(
             api,
-            {
-              content: event.content,
-              senderId: event.senderId ?? context.senderId,
-              senderAuthentication: event.senderAuthentication,
-              sessionKey: event.sessionKey ?? context.sessionKey,
-            },
-            { channelId: context.channelId ?? event.channel, sessionKey: context.sessionKey },
+            { content: event.content, ...message },
+            { channelId: channel, sessionKey: context.sessionKey },
           );
-          return outcome.claimed ? { handled: true } : undefined;
+          if (outcome.claimed) {
+            return { handled: true };
+          }
         } catch {
           api.logger.warn("fi-user: admin approval handling failed");
-          return undefined;
         }
+        // Only a message that goes on to the agent can start or join its turn.
+        adminDelegation.noteInbound({ channel, ...message });
+        return undefined;
       },
       { priority: 10_000 },
     );
@@ -564,8 +571,11 @@ export default definePluginEntry({
           if (blocked) {
             return blocked;
           }
+          // The assertion is for the agents Fi's on-behalf-of knows by name; the
+          // delegated token is for whichever agent is this runtime's admin tier.
+          const attributed = ON_BEHALF_OF_AGENTS.has(ctx.agentId ?? "");
           if (
-            !ON_BEHALF_OF_AGENTS.has(ctx.agentId ?? "") ||
+            !(attributed || ctx.agentId === config.adminAgentId) ||
             !ON_BEHALF_OF_TOOLS.has(event.toolName)
           ) {
             return undefined;
@@ -576,10 +586,17 @@ export default definePluginEntry({
             ctx.sessionKey ? adminActionSessions.get(ctx.sessionKey) : undefined,
           );
           const assertion =
-            secret && requester && ctx.agentId
+            attributed && secret && requester && ctx.agentId
               ? signOnBehalfOf({ secret, agentId: ctx.agentId, requester })
               : undefined;
-          return { params: withOnBehalfOfEnv(event.params, assertion) };
+          // The assertion stands on its own: a command still runs with it when
+          // Fi issues no delegated token for this call.
+          const delegated = adminDelegation.mint(config, event, ctx);
+          return delegated
+            ? delegated.then((minted) => ({
+                params: withOnBehalfOfEnv(event.params, assertion, minted),
+              }))
+            : { params: withOnBehalfOfEnv(event.params, assertion) };
         };
         const authorized = matrixEntitlements(ctx);
         return authorized instanceof Promise

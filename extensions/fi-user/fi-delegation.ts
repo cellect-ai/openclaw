@@ -54,6 +54,11 @@ export type Delegation = {
 };
 
 export const FI_USER_AGENT_ID = "cellect-fi-user";
+/**
+ * Fi's protocol name for the token an admin agent's sandbox command carries,
+ * whatever this runtime calls its own admin agent (`adminAgentId`).
+ */
+export const FI_ADMIN_DELEGATION_AGENT_ID = "cellect-fi-admin";
 export const FI_USER_CHANNELS = new Set(["slack", "matrix", "webchat"]);
 const ENVIRONMENT_VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
@@ -304,6 +309,10 @@ export async function lookupDelegation(
     "baseUrl" | "brokerTokenEnv" | "tenantOrgId" | "tenantOrgConflict"
   >,
   requester: Record<string, string>,
+  options: {
+    agentId?: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID;
+    signal?: AbortSignal;
+  } = {},
 ): Promise<Delegation | null> {
   if (config.tenantOrgConflict) {
     throw new Error("This runtime's tenant is configured inconsistently");
@@ -321,7 +330,8 @@ export async function lookupDelegation(
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ ...requester, agentId: FI_USER_AGENT_ID }),
+    body: JSON.stringify({ ...requester, agentId: options.agentId ?? FI_USER_AGENT_ID }),
+    ...(options.signal ? { signal: options.signal } : {}),
   });
   if (response.status === 404) {
     return null;

@@ -12,6 +12,10 @@ import type { AdminActionRecord } from "./admin-action.js";
  * attribution only — it grants nothing.
  */
 export const ON_BEHALF_OF_ENV = "FI_ON_BEHALF_OF";
+/** Where Fi's CLI reads the requester's own delegated token; it prefers it to the assertion. */
+export const DELEGATED_USER_TOKEN_ENV = "FI_DELEGATED_USER_TOKEN";
+/** The Fi origin Fi's CLI sends its bearer to. */
+export const FI_APP_URL_ENV = "FI_APP_URL";
 export const ON_BEHALF_OF_AGENTS = new Set(["cellect-fi-admin", "cellect-main"]);
 export const ON_BEHALF_OF_TOOLS = new Set(["exec", "sandbox_exec"]);
 const ASSERTION_TTL_SECONDS = 10 * 60;
@@ -82,31 +86,45 @@ export function onBehalfOfRequester(
 }
 
 /**
- * Rewrite exec params so the command sees exactly this turn's assertion. A
- * model-supplied `FI_ON_BEHALF_OF` is always discarded: an assertion is minted
- * here or not at all.
+ * Rewrite exec params so the command sees exactly this turn's credentials. A
+ * model-supplied `FI_ON_BEHALF_OF` or `FI_DELEGATED_USER_TOKEN` is always
+ * discarded, whatever its case: each is minted here or not at all. A delegated
+ * token travels with the Fi origin it was minted at, so the command cannot be
+ * pointed elsewhere by its own `FI_APP_URL`.
+ *
+ * The host merges these params over the model's, so an `env` the model sent is
+ * always answered with one, even when nothing is left in it: omitting the key
+ * would hand the model's own `env` back to the command.
  */
 export function withOnBehalfOfEnv(
   params: Record<string, unknown>,
   assertion: string | undefined,
+  delegated?: { token: string; appUrl: string },
 ): Record<string, unknown> {
   const env =
     params.env && typeof params.env === "object" && !Array.isArray(params.env)
       ? { ...(params.env as Record<string, unknown>) }
       : {};
+  const minted = new Set([
+    ON_BEHALF_OF_ENV,
+    DELEGATED_USER_TOKEN_ENV,
+    ...(delegated ? [FI_APP_URL_ENV] : []),
+  ]);
   for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === ON_BEHALF_OF_ENV) {
+    if (minted.has(key.toUpperCase())) {
       delete env[key];
     }
   }
   if (assertion) {
     env[ON_BEHALF_OF_ENV] = assertion;
   }
+  if (delegated) {
+    env[DELEGATED_USER_TOKEN_ENV] = delegated.token;
+    env[FI_APP_URL_ENV] = delegated.appUrl;
+  }
   const next = { ...params };
-  if (Object.keys(env).length > 0) {
+  if (Object.keys(env).length > 0 || "env" in params) {
     next.env = env;
-  } else {
-    delete next.env;
   }
   return next;
 }
