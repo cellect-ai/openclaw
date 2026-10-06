@@ -912,6 +912,42 @@ describe("trusted durable conversation lifecycle", () => {
     await transport.flush();
     expect(publications.at(-1)).toMatchObject({ runId: "old", state: "completed" });
   });
+  it("reports a set-aside row that keeps failing and gives it up after a month", async () => {
+    const transport = install({ fail: (_, __, runId) => runId === "poison" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("poison");
+    emit("poison", "end");
+    clock.mockReturnValue(start + 1_000);
+    owner("fine");
+    for (let pass = 1; pass <= 5; pass += 1) {
+      clock.mockReturnValue(start + pass * 600_000);
+      await transport.flush();
+    }
+    for (let hour = 2; hour <= 4; hour += 1) {
+      clock.mockReturnValue(start + hour * 3_700_000);
+      await transport.flush();
+    }
+    expect(errors.slice(3).map((error) => [error.reason, error.failures])).toEqual([
+      ["row_stuck", 5],
+      ["row_stuck", 1],
+      ["row_stuck", 2],
+    ]);
+    const sends = publications.length;
+    clock.mockReturnValue(start + 31 * 24 * 60 * 60_000);
+    await transport.flush();
+    await transport.flush();
+    expect(publications).toHaveLength(sends);
+    expect(errors.at(-1)?.reason).toBe("status_abandoned");
+    const rows = custody.loadDeliveryQueueEntries(
+      "conversation-lifecycle-v2",
+      stateDir,
+    ) as unknown as Array<{ runId: string; pending: unknown[]; stuckAt?: number }>;
+    expect(rows.find((row) => row.runId === "poison")).toMatchObject({ pending: [] });
+    expect(rows.find((row) => row.runId === "poison")?.stuckAt).toBeUndefined();
+    expect(errors.filter((error) => error.reason === "status_abandoned")).toHaveLength(1);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");

@@ -244,6 +244,8 @@ export function registerConversationLifecycleTransport(options: {
   // older run's. The one exception is a row set aside as stuck (`heads`).
   // The room's oldest row while its sends keep failing, and how often in a row.
   const heads = new Map<string, { id: string; failures: number }>();
+  // Failed hourly retries of each set-aside row.
+  const stuckFailures = new Map<string, number>();
   const roomRetries = new Map<string, Retry>();
   let cappedRooms = new Set<string>();
   // Rooms the homeserver refused (bot removed, room gone), by when. A parked
@@ -801,7 +803,7 @@ export function registerConversationLifecycleTransport(options: {
       }
       cappedRooms = capped;
       const present = new Set(rows.map((row) => row.id));
-      for (const kept of [liveness, interruptedSent, lateTerminals, superseded])
+      for (const kept of [liveness, interruptedSent, lateTerminals, superseded, stuckFailures])
         for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
       for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
       for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
@@ -834,14 +836,24 @@ export function registerConversationLifecycleTransport(options: {
         const now = Date.now();
         const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
         if (!parked.has(roomId) && initial.stuckAt !== undefined) {
-          // A stuck row never holds back or backs off its room.
-          if (now - initial.stuckAt >= PARKED_PROBE_MS)
+          // A stuck row never holds back or backs off its room. It ends like a
+          // parked one: after PARKED_ROW_MAX_AGE_MS its status is given up.
+          if (now - initial.enqueuedAt >= PARKED_ROW_MAX_AGE_MS)
+            await abandon(initial.id).catch(options.onError);
+          else if (now - initial.stuckAt >= PARKED_PROBE_MS)
             // An accepted send clears the mark in the worker; with nothing to
             // send the row is not stuck either, so the run is normal again.
             await setAside(initial.id)
               .then(() => deliver(initial.id))
               .then((sent) => (sent ? undefined : unset(initial.id, "stuckAt")))
-              .catch(() => {});
+              .then(() => stuckFailures.delete(initial.id))
+              .catch((error: unknown) => {
+                const failures = (stuckFailures.get(initial.id) ?? 0) + 1;
+                stuckFailures.set(initial.id, failures);
+                // Reported at 1, 2, 4, 8... failed retries, like a room that is down.
+                if (!stopped && (failures & (failures - 1)) === 0)
+                  options.onError(error, { roomId, reason: "row_stuck", failures });
+              });
           continue;
         }
         if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
