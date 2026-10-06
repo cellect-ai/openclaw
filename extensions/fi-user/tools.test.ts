@@ -1276,7 +1276,8 @@ describe("before_tool_call", () => {
         requester: { channel: "webchat", senderId: "webchat-ui" },
       } as never,
     ) as { params: Record<string, unknown> };
-    expect(result.params).toEqual({ command: "true" });
+    // The host merges hook params over the model's: an omitted env would restore the replay.
+    expect(result.params).toEqual({ command: "true", env: {} });
   });
 
   it("leaves other agents and tools alone", () => {
