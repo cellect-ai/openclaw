@@ -8,6 +8,7 @@ const runtimeConfig = {
         config: {
           baseUrl: "https://fi.example.test",
           brokerTokenEnv: "TEST_BROKER_TOKEN",
+          tenantOrgId: "org-shape",
           adminApprovers: ["UALEX00001", "ULORENZO01"],
         },
       },
@@ -114,7 +115,7 @@ beforeEach(() => {
       return email
         ? new Response(
             JSON.stringify({
-              user: { email, orgSlug: "shape", role: "admin" },
+              user: { email, orgSlug: "shape", orgId: "org-shape", role: "admin" },
               gmail: { enabled: true, mailbox: email },
               fi: { token: "delegated-token", expiresAt: 1_900_000_000 },
             }),
@@ -282,6 +283,76 @@ describe("admin approval needs a sender Slack verified", () => {
     ).resolves.toEqual({ claimed: true });
     expect(run).not.toHaveBeenCalled();
     expect(notes()).toEqual([expect.stringContaining("did not verify")]);
+  });
+});
+
+describe("admin approval on a runtime with no tenant", () => {
+  it("decides nothing: an approver list alone is not an organization", async () => {
+    const untenanted = {
+      plugins: {
+        entries: {
+          "fi-user": {
+            config: {
+              ...runtimeConfig.plugins.entries["fi-user"].config,
+              tenantOrgId: undefined,
+            },
+          },
+        },
+      },
+    };
+    vi.resetModules();
+    const actions = await import("./admin-action.js");
+    const record = pending("ABC234");
+    const registerIfAbsent = vi.fn(async () => true);
+    const api = {
+      config: untenanted,
+      logger: { warn: vi.fn() },
+      runtime: {
+        config: { current: () => untenanted },
+        state: {
+          openKeyedStore: ({ namespace }: { namespace: string }) =>
+            namespace === "admin-actions"
+              ? {
+                  register: vi.fn(async () => undefined),
+                  lookup: vi.fn(async () => ({ ...record })),
+                  entries: vi.fn(async () => []),
+                }
+              : { registerIfAbsent },
+        },
+        channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
+      },
+    } as unknown as OpenClawPluginApi;
+    const run = vi.fn(async () => undefined);
+    for (const content of ["approve ABC234", "deny ABC234"]) {
+      await expect(
+        actions.decideAdminApproval(
+          api,
+          { content, senderId: "UALEX00001", senderAuthentication: "verified" },
+          { channelId: "slack" },
+          run,
+        ),
+      ).resolves.toEqual({ claimed: true });
+    }
+    expect(run).not.toHaveBeenCalled();
+    expect(registerIfAbsent).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+    expect(notes()).toEqual([
+      expect.stringContaining("could not be verified"),
+      expect.stringContaining("could not be verified"),
+    ]);
+  });
+});
+
+describe("the approval card says where a reply counts", () => {
+  it("asks for a reply in the thread only when the request was filed in Slack", async () => {
+    const { approvalCardText } = await import("./admin-action.js");
+    const config = { adminPrincipals: ["UALEX00001"] } as never;
+    const card = (identity?: Identity) =>
+      approvalCardText(pending("ABC234", "member@example.com", identity) as never, config);
+    expect(card()).toContain("reply `approve ABC234` or `deny ABC234` in this thread.");
+    const elsewhere = card({ channel: "matrix", requesterMatrixUserId: "@member:threads.example" });
+    expect(elsewhere).toContain("reply `approve ABC234` or `deny ABC234` in Slack.");
+    expect(elsewhere).not.toContain("in this thread");
   });
 });
 

@@ -32,6 +32,7 @@ const runtimeConfig = {
         config: {
           baseUrl: "https://fi.example.test",
           brokerTokenEnv: "TEST_BROKER_TOKEN",
+          tenantOrgId: "org-shape",
           gamBinary: "/opt/gam",
           gamConfigDir: "/opt/gam-config",
         },
@@ -99,7 +100,7 @@ function delegatedResponse() {
   return {
     ok: true,
     json: async () => ({
-      user: { email: "member@example.com", orgSlug: "shape", role: "member" },
+      user: { email: "member@example.com", orgSlug: "shape", orgId: "org-shape", role: "member" },
       gmail: { enabled: true, mailbox: "member@example.com" },
       fi: { token: "delegated-token", expiresAt: 1_900_000_000 },
     }),

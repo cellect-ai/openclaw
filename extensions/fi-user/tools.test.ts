@@ -39,6 +39,7 @@ const runtimeConfig = {
         config: {
           baseUrl: "https://fi.example.test",
           brokerTokenEnv: "TEST_BROKER_TOKEN",
+          tenantOrgId: "org-shape",
           matrixEnvironments: {
             dev: {
               baseUrl: "https://dev-fi.example.test",
@@ -154,7 +155,7 @@ const members: Record<string, string> = {
 
 function delegation(body?: Record<string, unknown>) {
   return json({
-    user: { email: "member@example.com", orgSlug: "shape", role: "member" },
+    user: { email: "member@example.com", orgSlug: "shape", orgId: "org-shape", role: "member" },
     gmail: { enabled: true, mailbox: "member@example.com" },
     fi: { token: "delegated-token", expiresAt: 1_900_000_000 },
     ...body,
@@ -186,7 +187,7 @@ beforeEach(() => {
           members[requester?.requesterMatrixUserId ?? ""];
         return email
           ? delegation({
-              user: { email, orgSlug: "shape", role: "admin" },
+              user: { email, orgSlug: "shape", orgId: "org-shape", role: "admin" },
               gmail: { enabled: true, mailbox: email },
             })
           : delegation();

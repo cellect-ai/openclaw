@@ -205,11 +205,12 @@ async function claimDecision(
 /**
  * Whether this Slack approver may decide the request, and if not, why.
  *
- * A runtime with a configured tenant takes decisions only from that tenant's
- * members: Fi must resolve the approver, and `lookupDelegation` refuses any
- * other org. Being listed as an approver is not membership, so a decline is
- * checked too. Nobody approves their own request, on any channel; withdrawing
- * it by declining stays allowed. Throws when Fi cannot answer.
+ * Decisions are taken only from members of the tenant this runtime serves: Fi
+ * must resolve the approver, and `lookupDelegation` refuses any other org and
+ * a runtime with no tenant at all. Being listed as an approver is not
+ * membership, so a decline is checked too. Nobody approves their own request,
+ * on any channel; withdrawing it by declining stays allowed. Throws when Fi
+ * cannot answer or this runtime has no tenant.
  */
 async function approverRefusal(
   config: ResolvedPluginConfig,
@@ -221,12 +222,8 @@ async function approverRefusal(
   const sameSender =
     identity.channel === "slack" &&
     identity.requesterSenderId.toLowerCase() === sender.toLowerCase();
-  const tenantBound = Boolean(config.tenantOrgId || config.tenantOrgConflict);
-  if (!tenantBound && (!approve || sameSender)) {
-    return approve ? "own_request" : undefined;
-  }
   const approver = await lookupDelegation(config, { requesterSenderId: sender.toUpperCase() });
-  if (tenantBound && !approver) {
+  if (!approver) {
     return "not_a_member";
   }
   if (!approve) {
@@ -234,7 +231,7 @@ async function approverRefusal(
   }
   // The same person may have filed on another channel: compare Fi identities.
   return sameSender ||
-    approver?.user.email.trim().toLowerCase() === record.requester.email.trim().toLowerCase()
+    approver.user.email.trim().toLowerCase() === record.requester.email.trim().toLowerCase()
     ? "own_request"
     : undefined;
 }
@@ -296,10 +293,13 @@ export function approvalCardText(record: AdminActionRecord, config: ResolvedPlug
   const principals = config.adminPrincipals.map((id) =>
     /^U[A-Z0-9]+$/i.test(id) ? `<@${id}>` : id,
   );
+  // Only a reply Slack verified decides a request, so a card posted anywhere
+  // else must send the approver to Slack rather than invite a reply in place.
+  const where = record.requester.identity.channel === "slack" ? "in this thread" : "in Slack";
   return [
     `Admin action ${record.id} requested by ${requesterMention(record)} (${record.requester.email}): ${ADMIN_TASKS[record.task].label}`,
     describe(record),
-    `${principals.join(" ")}${principals.length ? " — " : ""}reply \`approve ${record.id}\` or \`deny ${record.id}\` in this thread. On approval Cellect Fi Admin carries out only this request.`,
+    `${principals.join(" ")}${principals.length ? " — " : ""}reply \`approve ${record.id}\` or \`deny ${record.id}\` ${where}. On approval Cellect Fi Admin carries out only this request.`,
   ]
     .filter(Boolean)
     .join("\n");
