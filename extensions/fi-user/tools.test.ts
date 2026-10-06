@@ -1068,21 +1068,31 @@ describe("request_admin_action", () => {
         },
       ],
     });
-    const received = instance.hook("message_received");
-    // Not an approver: ignored.
-    await received(
-      { content: `approve ${requestId}`, senderId: "U12345678" } as never,
-      { channelId: "slack" } as never,
-    );
-    await new Promise((resolve) => {
-      setTimeout(resolve, 0);
-    });
+    const received = instance.hook("before_dispatch");
+    // Not an approver: ignored, and left to the conversation as an ordinary turn.
+    await expect(
+      received(
+        { content: `approve ${requestId}`, senderId: "U12345678" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toBeUndefined();
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
+    // An approver's unrelated remark is theirs to make: no request, no claim.
+    await expect(
+      received(
+        { content: "approved the budget yesterday", senderId: "UALEX00001" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toBeUndefined();
     expect(mocks.subagentRun).not.toHaveBeenCalled();
 
-    await received(
-      { content: `approve ${requestId}`, senderId: "UALEX00001" } as never,
-      { channelId: "slack" } as never,
-    );
+    // The approval is claimed, so the same text never becomes an agent turn.
+    await expect(
+      received(
+        { content: `approve ${requestId}`, senderId: "UALEX00001" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
     await vi.waitFor(() => expect(mocks.sendText).toHaveBeenCalled());
     expect(mocks.subagentRun).toHaveBeenCalledTimes(1);
     const run = mocks.subagentRun.mock.calls[0]![0];
@@ -1097,11 +1107,14 @@ describe("request_admin_action", () => {
       }),
     );
 
-    // A second approval does not start another run; it is noted in the thread.
-    await received(
-      { content: `approve ${requestId}`, senderId: "ULORENZO01" } as never,
-      { channelId: "slack" } as never,
-    );
+    // A second approval does not start another run; it is noted in the thread
+    // and still claimed, so it cannot reach an agent either.
+    await expect(
+      received(
+        { content: `approve ${requestId}`, senderId: "ULORENZO01" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
     await vi.waitFor(() =>
       expect(mocks.sendText).toHaveBeenCalledWith(
         expect.objectContaining({ text: expect.stringContaining("already decided") }),
@@ -1128,10 +1141,12 @@ describe("request_admin_action", () => {
       recipientEmail: "federico@example.com",
     });
     const requestId = (result.details as { requestId: string }).requestId;
-    await instance.hook("message_received")(
-      { content: `<@UFIUSERBOT> deny ${requestId}`, senderId: "UALEX00001" } as never,
-      { channelId: "slack" } as never,
-    );
+    await expect(
+      instance.hook("before_dispatch")(
+        { content: `<@UFIUSERBOT> deny ${requestId}`, senderId: "UALEX00001" } as never,
+        { channelId: "slack" } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
     await vi.waitFor(() => expect(mocks.sendText).toHaveBeenCalled());
     expect(mocks.sendText.mock.calls[0]![0].text).toContain("declined");
     expect(mocks.subagentRun).not.toHaveBeenCalled();

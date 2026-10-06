@@ -382,6 +382,108 @@ describe("registered Matrix agent entitlement hooks", () => {
     ).toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
   });
+  describe("an agent no list names", () => {
+    const personal = (overrides = {}) => context("personal-main", overrides);
+    it("is gated like any other agent bound to a Matrix account", async () => {
+      const hook = plugin();
+      // Fi is asked again before each tool; a Response body reads once.
+      fetchMock.mockImplementation(async () => allow("personal-main"));
+      expect(await hook("before_agent_reply", {}, personal())).toBeUndefined();
+      expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body)).toEqual({
+        roomId: "!room:matrix.example",
+        agentId: "personal-main",
+        eventId: "$event",
+      });
+      expect(await hook("before_tool_call", {}, tools(personal()))).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+    it("is denied to a room member Fi does not admit", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+      expect(await hook("before_agent_reply", {}, personal())).toMatchObject({
+        handled: true,
+        reply: { text: expect.stringContaining("don’t currently have access") },
+      });
+      expect(await hook("before_tool_call", {}, tools(personal()))).toMatchObject({ block: true });
+    });
+    it("is refused when Fi answers for another agent or another tenant", async () => {
+      const hook = plugin();
+      for (const answer of [
+        { ok: true, agentId: "cellect-fi-user", orgId: "tenant-a" },
+        { ok: true, agentId: "personal-main", orgId: "tenant-b" },
+        { ok: true, agentId: "personal-main" },
+        { ok: false, agentId: "personal-main", orgId: "tenant-a" },
+      ]) {
+        fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(answer)));
+        expect(
+          await hook("before_agent_reply", {}, personal()),
+          JSON.stringify(answer),
+        ).toMatchObject({ handled: true });
+      }
+    });
+    it("fails closed while Fi is unreachable, slow or failing", async () => {
+      const hook = plugin();
+      fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+      expect(await hook("before_agent_reply", {}, personal())).toMatchObject({
+        handled: true,
+        reply: { text: expect.stringContaining("couldn’t verify") },
+      });
+      fetchMock.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
+      expect(await hook("before_agent_reply", {}, personal())).toMatchObject({ handled: true });
+      fetchMock.mockResolvedValueOnce(new Response("bad gateway", { status: 502 }));
+      expect(await hook("before_agent_reply", {}, personal())).toMatchObject({ handled: true });
+      // An admitted turn loses its tools the moment Fi stops answering.
+      fetchMock.mockResolvedValueOnce(allow("personal-main"));
+      expect(await hook("before_agent_reply", {}, personal())).toBeUndefined();
+      fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
+      expect(await hook("before_tool_call", {}, tools(personal()))).toMatchObject({ block: true });
+    });
+    it("has no tools without an admitted turn, and no turn without a tenant", async () => {
+      const hook = plugin();
+      expect(await hook("before_tool_call", {}, tools(personal()))).toMatchObject({ block: true });
+      expect(
+        await plugin({ matrixTenantOrgId: undefined })("before_agent_reply", {}, personal()),
+      ).toMatchObject({ handled: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("stays out of the agent's turns on other channels", async () => {
+      const hook = plugin();
+      const slack = personal({
+        channel: "slack",
+        sessionKey: "agent:personal-main:slack:direct:u123",
+      });
+      expect(await hook("before_agent_reply", {}, slack)).toBeUndefined();
+      expect(
+        await hook(
+          "before_tool_call",
+          {},
+          tools(slack, { requester: { channel: "slack", senderId: "U123", accountId: "a" } }),
+        ),
+      ).toBeUndefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+    it("is not exempted by a Slack session key the source-reply guard does not support", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValue(new Response(null, { status: 403 }));
+      const source = personal({
+        sessionKey: "agent:personal-main:slack:channel:c123:thread:1700000000.000001",
+      });
+      expect(await hook("before_agent_reply", {}, source)).toMatchObject({ handled: true });
+    });
+  });
+  describe("the tenant key", () => {
+    it("accepts tenantOrgId in place of the earlier matrixTenantOrgId", async () => {
+      const hook = plugin({ matrixTenantOrgId: undefined, tenantOrgId: "tenant-a" });
+      fetchMock.mockResolvedValue(allow());
+      expect(await hook("before_agent_reply", {}, context())).toBeUndefined();
+    });
+    it("refuses every turn when the two keys disagree", async () => {
+      const hook = plugin({ tenantOrgId: "tenant-b" });
+      fetchMock.mockResolvedValue(allow());
+      expect(await hook("before_agent_reply", {}, context())).toMatchObject({ handled: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
   it("blocks tools with no admission or a different requester/run", async () => {
     const hook = plugin();
     fetchMock.mockResolvedValue(allow());
