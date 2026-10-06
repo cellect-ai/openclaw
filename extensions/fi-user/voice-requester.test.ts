@@ -16,7 +16,11 @@ const runtimeConfig = {
   plugins: {
     entries: {
       "fi-user": {
-        config: { baseUrl: "https://fi.example.test", brokerTokenEnv: "TEST_BROKER_TOKEN" },
+        config: {
+          baseUrl: "https://fi.example.test",
+          brokerTokenEnv: "TEST_BROKER_TOKEN",
+          tenantOrgId: "org-shape",
+        },
       },
     },
   },
@@ -84,7 +88,12 @@ describe("fi-user on a realtime voice consult", () => {
           };
           return body.requesterMatrixUserId === LINKED_SPEAKER
             ? Response.json({
-                user: { email: "alex@example.com", orgSlug: "shape", role: "admin" },
+                user: {
+                  email: "alex@example.com",
+                  orgSlug: "shape",
+                  orgId: "org-shape",
+                  role: "admin",
+                },
                 gmail: { enabled: false, mailbox: null },
                 fi: { token: "delegated-token", expiresAt: 1_900_000_000 },
               })

@@ -261,14 +261,42 @@ export async function exchange(
   return { delegation, config, identity };
 }
 
+/** Each (answered, served) org pair is reported once per process, not once per turn. */
+const reportedTenantMismatches = new Set<string>();
+
+/**
+ * Fi answered for an org this runtime does not serve: a broker credential or
+ * Fi origin configured for another tenant. Every requester is refused until it
+ * is fixed, so say so loudly once. Org ids only; never the token or the person.
+ */
+function reportTenantMismatch(answered: unknown, served: string): void {
+  const answeredOrg = typeof answered === "string" && answered ? answered : "(none)";
+  const key = `${answeredOrg}\n${served}`;
+  if (reportedTenantMismatches.has(key)) {
+    return;
+  }
+  reportedTenantMismatches.add(key);
+  console.error(
+    JSON.stringify({
+      evt: "fi_user.delegation_tenant_mismatch",
+      level: "error",
+      answeredOrgId: answeredOrg,
+      servedOrgId: served,
+      message:
+        "Fi answered a delegation for an organization this runtime does not serve; every Fi-user delegation is refused until the broker credential, Fi origin or tenantOrgId agree",
+    }),
+  );
+}
+
 /**
  * Fi's delegation for a channel-verified person; null when no active member is linked.
  *
- * A runtime with a configured tenant accepts only that tenant's members. Fi
- * resolves the person, but which org it answers for follows the broker
+ * A runtime accepts only the members of the one tenant it is configured for.
+ * Fi resolves the person, but which org it answers for follows the broker
  * credential, so a credential or Fi origin configured for another tenant would
- * otherwise hand this runtime that tenant's member and token. A response that
- * does not name its org is refused too: absence is not a match.
+ * otherwise hand this runtime that tenant's member and token. Absence is never
+ * a match: a runtime with no tenant refuses everyone before asking Fi, and a
+ * response that does not name its org is refused too.
  */
 export async function lookupDelegation(
   config: Pick<
@@ -279,6 +307,9 @@ export async function lookupDelegation(
 ): Promise<Delegation | null> {
   if (config.tenantOrgConflict) {
     throw new Error("This runtime's tenant is configured inconsistently");
+  }
+  if (!config.tenantOrgId) {
+    throw new Error("This runtime has no Fi organization configured");
   }
   const token = brokerToken(config);
   if (!token) {
@@ -300,7 +331,8 @@ export async function lookupDelegation(
   }
   // Untrusted JSON: a body without a user must fail the tenant check, not throw past it.
   const delegation = (await response.json()) as Partial<Delegation> | null;
-  if (config.tenantOrgId && delegation?.user?.orgId !== config.tenantOrgId) {
+  if (delegation?.user?.orgId !== config.tenantOrgId) {
+    reportTenantMismatch(delegation?.user?.orgId, config.tenantOrgId);
     throw new Error("The current requester does not belong to this runtime's Fi organization");
   }
   return delegation as Delegation;

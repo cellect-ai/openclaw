@@ -93,15 +93,38 @@ describe("delegation is bound to this runtime's tenant", () => {
     ).rejects.toThrow(/delegation failed \(503\)/);
   });
 
-  it("leaves a runtime with no configured tenant as it was", async () => {
-    fetchMock.mockResolvedValueOnce(member());
-    await expect(lookupDelegation(connection, requester)).resolves.toMatchObject({
-      user: { orgSlug: "tenant-a" },
+  it("refuses everyone on a runtime with no configured tenant, without asking Fi", async () => {
+    fetchMock.mockResolvedValue(member({ orgId: "org-b" }));
+    await expect(lookupDelegation(connection, requester)).rejects.toThrow(
+      /no Fi organization configured/,
+    );
+    await expect(slackTurn({})).rejects.toThrow(/no Fi organization configured/);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("reports each mismatched organization pair once, naming both and nothing else", async () => {
+    const report = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const served = { ...connection, tenantOrgId: "org-served" };
+    for (const answered of ["org-answered", "org-answered", "org-other", undefined]) {
+      fetchMock.mockResolvedValueOnce(member(answered ? { orgId: answered } : {}));
+      await expect(lookupDelegation(served, requester)).rejects.toThrow(/does not belong/);
+    }
+    const lines = report.mock.calls.map((call) => JSON.parse(String(call[0])) as object);
+    expect(lines).toMatchObject([
+      { answeredOrgId: "org-answered", servedOrgId: "org-served" },
+      { answeredOrgId: "org-other", servedOrgId: "org-served" },
+      { answeredOrgId: "(none)", servedOrgId: "org-served" },
+    ]);
+    const text = report.mock.calls.join("\n");
+    expect(text).not.toContain("broker-token");
+    expect(text).not.toContain("delegated-token");
+    expect(text).not.toContain("member@example.com");
+    // A matching answer is not a mismatch.
+    fetchMock.mockResolvedValueOnce(member({ orgId: "org-served" }));
+    await expect(lookupDelegation(served, requester)).resolves.toMatchObject({
+      user: { orgId: "org-served" },
     });
-    fetchMock.mockResolvedValueOnce(member({ orgId: "org-b" }));
-    await expect(lookupDelegation(connection, requester)).resolves.toMatchObject({
-      user: { orgId: "org-b" },
-    });
+    expect(report).toHaveBeenCalledTimes(3);
   });
 });
 
