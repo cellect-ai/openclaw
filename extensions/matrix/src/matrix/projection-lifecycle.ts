@@ -94,13 +94,13 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
       }
       if (detail?.reason === "row_stuck") {
         api.logger.warn(
-          `matrix: lifecycle row set aside after ${detail.failures} failures, later rows proceed room=${detail.roomId}`,
+          `matrix: lifecycle row set aside and still failing, later rows proceed failures=${detail.failures} room=${detail.roomId}`,
         );
         return;
       }
       if (detail?.reason === "status_abandoned") {
         api.logger.warn(
-          `matrix: lifecycle status abandoned after a month of refusals room=${detail.roomId}`,
+          `matrix: lifecycle status abandoned after a month undelivered room=${detail.roomId}`,
         );
         return;
       }
