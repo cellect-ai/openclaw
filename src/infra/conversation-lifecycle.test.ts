@@ -713,6 +713,26 @@ describe("trusted durable conversation lifecycle", () => {
       "interrupted",
     ]);
   });
+  it("gives up status owed to a room that has refused for a month", async () => {
+    let refusing = false;
+    const transport = install({ fail: () => refusing, refused: "M_FORBIDDEN" });
+    const clock = vi.spyOn(Date, "now");
+    const start = 1_800_000_000_000;
+    clock.mockReturnValue(start);
+    owner("month");
+    await transport.flush();
+    refusing = true;
+    emit("month", "end");
+    await transport.flush();
+    clock.mockReturnValue(start + 31 * 24 * 60 * 60_000);
+    await transport.flush();
+    await transport.flush();
+    expect(publications).toHaveLength(2);
+    expect(
+      custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0],
+    ).toMatchObject({ state: "completed", pending: [] });
+    expect(errors.map((error) => error.reason)).toEqual(["room_parked", "status_abandoned"]);
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
