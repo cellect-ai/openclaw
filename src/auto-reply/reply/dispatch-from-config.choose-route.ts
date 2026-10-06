@@ -591,6 +591,7 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
                 channel: state.hookState.hookContext.channelId,
                 sessionKey: beforeDispatchSessionKey,
                 senderId: state.hookState.hookContext.senderId,
+                senderAuthentication: state.hookState.hookContext.senderAuthentication,
                 replyToId: state.hookState.hookContext.replyToId,
                 replyToIdFull: state.hookState.hookContext.replyToIdFull,
                 replyToBody: state.hookState.hookContext.replyToBody,

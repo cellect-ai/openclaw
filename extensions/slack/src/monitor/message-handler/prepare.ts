@@ -1823,6 +1823,9 @@ export async function prepareSlackMessage(params: {
       TransportThreadId: directThreadRoutedToDmSession ? threadContext.messageThreadId : undefined,
       // Keep the child message identity, but never inject it as Slack's thread root.
       ReplyThreading: isThreadReply ? { implicitCurrentMessage: "deny" } : undefined,
+      // Whether Slack's own event named this sender, or a relay or assistant
+      // metadata only asserted it. Hooks that act on who spoke need the difference.
+      SenderAuthentication: message.user ? opts.senderAuthentication : undefined,
       SlackAssistantThread: assistantThreadContext ? true : undefined,
       SlackAgentThread: agentViewThreadTs ? true : undefined,
       SlackAssistantThreadContextChannelId: assistantThreadContext?.channelId,

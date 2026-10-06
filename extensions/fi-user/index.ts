@@ -542,6 +542,7 @@ export default definePluginEntry({
             {
               content: event.content,
               senderId: event.senderId ?? context.senderId,
+              senderAuthentication: event.senderAuthentication,
               sessionKey: event.sessionKey ?? context.sessionKey,
             },
             { channelId: context.channelId ?? event.channel, sessionKey: context.sessionKey },

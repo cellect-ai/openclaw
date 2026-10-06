@@ -472,6 +472,12 @@ export type PluginHookBeforeDispatchEvent = {
   channel?: string;
   sessionKey?: string;
   senderId?: string;
+  /**
+   * Whether the channel itself proved `senderId` for this event ("verified") or
+   * another party only named it ("asserted"). Absent when the channel does not
+   * report it; treat absence as unproven.
+   */
+  senderAuthentication?: "verified" | "asserted";
   replyToId?: string;
   replyToIdFull?: string;
   replyToBody?: string;

@@ -144,6 +144,7 @@ function deriveInboundMessageHookContextBase(
       normalizeOptionalString(ctx.MessageSidFirst) ??
       normalizeOptionalString(ctx.MessageSidLast),
     senderId: ctx.SenderId,
+    senderAuthentication: ctx.SenderAuthentication,
     senderName: ctx.SenderName,
     senderUsername: ctx.SenderUsername,
     senderE164: ctx.SenderE164,

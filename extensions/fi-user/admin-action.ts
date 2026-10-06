@@ -202,30 +202,41 @@ async function claimDecision(
   }
 }
 
-/** Whether this approver is the person who filed the request, on any channel. */
-async function isOwnRequest(
+/**
+ * Whether this Slack approver may decide the request, and if not, why.
+ *
+ * A runtime with a configured tenant takes decisions only from that tenant's
+ * members: Fi must resolve the approver, and `lookupDelegation` refuses any
+ * other org. Being listed as an approver is not membership, so a decline is
+ * checked too. Nobody approves their own request, on any channel; withdrawing
+ * it by declining stays allowed. Throws when Fi cannot answer.
+ */
+async function approverRefusal(
   config: ResolvedPluginConfig,
   record: AdminActionRecord,
   sender: string,
-): Promise<boolean> {
+  approve: boolean,
+): Promise<"own_request" | "not_a_member" | undefined> {
   const identity = record.requester.identity;
-  const requesterId =
-    identity.channel === "slack"
-      ? identity.requesterSenderId
-      : identity.channel === "matrix"
-        ? identity.requesterMatrixUserId
-        : undefined;
-  if (requesterId?.toLowerCase() === sender.toLowerCase()) {
-    return true;
+  const sameSender =
+    identity.channel === "slack" &&
+    identity.requesterSenderId.toLowerCase() === sender.toLowerCase();
+  const tenantBound = Boolean(config.tenantOrgId || config.tenantOrgConflict);
+  if (!tenantBound && (!approve || sameSender)) {
+    return approve ? "own_request" : undefined;
+  }
+  const approver = await lookupDelegation(config, { requesterSenderId: sender.toUpperCase() });
+  if (tenantBound && !approver) {
+    return "not_a_member";
+  }
+  if (!approve) {
+    return undefined;
   }
   // The same person may have filed on another channel: compare Fi identities.
-  const approver = await lookupDelegation(
-    config,
-    sender.startsWith("@")
-      ? { requesterMatrixUserId: sender }
-      : { requesterSenderId: sender.toUpperCase() },
-  );
-  return approver?.user.email.trim().toLowerCase() === record.requester.email.trim().toLowerCase();
+  return sameSender ||
+    approver?.user.email.trim().toLowerCase() === record.requester.email.trim().toLowerCase()
+    ? "own_request"
+    : undefined;
 }
 
 async function pendingInSession(api: OpenClawPluginApi, sessionKey: string) {
@@ -409,6 +420,11 @@ export async function runApprovedAdminAction(api: OpenClawPluginApi, record: Adm
  * never the requester's own approval, and each request is decided once: later
  * or concurrent decisions are ignored with a note in the thread.
  *
+ * The reply must be a Slack message whose sender Slack itself named
+ * (`senderAuthentication: "verified"`). A relayed or otherwise asserted sender
+ * id proves nothing about who typed it, and no other channel reports the fact,
+ * so neither can decide a request.
+ *
  * `claimed` says the message was an approver's reply to a known request, so it
  * belongs to this flow whatever the outcome and must not also reach an agent as
  * an ordinary turn. Anything else, including an approver's unrelated message
@@ -416,7 +432,12 @@ export async function runApprovedAdminAction(api: OpenClawPluginApi, record: Adm
  */
 export async function decideAdminApproval(
   api: OpenClawPluginApi,
-  event: { content?: string; senderId?: string; sessionKey?: string },
+  event: {
+    content?: string;
+    senderId?: string;
+    senderAuthentication?: "verified" | "asserted";
+    sessionKey?: string;
+  },
   context: { channelId?: string; sessionKey?: string },
   run: (record: AdminActionRecord) => Promise<void> = (record) =>
     runApprovedAdminAction(api, record),
@@ -447,24 +468,34 @@ export async function decideAdminApproval(
   const found = record;
   const note = (text: string) => post(api, found, text).catch(() => undefined);
   const alreadyDecided = `Admin action ${found.id} was already decided; this reply was ignored.`;
+  if (context.channelId !== "slack" || event.senderAuthentication !== "verified") {
+    await note(
+      `Admin action ${found.id}: this reply was ignored because Slack did not verify who sent it. Reply in Slack yourself.`,
+    );
+    return refused;
+  }
   if (found.status !== "pending" || claimed.has(found.id)) {
     await note(alreadyDecided);
     return refused;
   }
-  if (approve) {
-    let own: boolean;
-    try {
-      own = await isOwnRequest(config, found, sender);
-    } catch {
-      await note(`Admin action ${found.id}: the approver could not be verified; reply again.`);
-      return refused;
-    }
-    if (own) {
-      await note(
-        `Admin action ${found.id} cannot be approved by the person who requested it; another administrator must approve it.`,
-      );
-      return refused;
-    }
+  let refusal: Awaited<ReturnType<typeof approverRefusal>>;
+  try {
+    refusal = await approverRefusal(config, found, sender, approve);
+  } catch {
+    await note(`Admin action ${found.id}: the approver could not be verified; reply again.`);
+    return refused;
+  }
+  if (refusal === "not_a_member") {
+    await note(
+      `Admin action ${found.id}: this reply was ignored because its sender is not a member of this organization in Fi.`,
+    );
+    return refused;
+  }
+  if (refusal === "own_request") {
+    await note(
+      `Admin action ${found.id} cannot be approved by the person who requested it; another administrator must approve it.`,
+    );
+    return refused;
   }
   const decided: AdminActionRecord = {
     ...found,

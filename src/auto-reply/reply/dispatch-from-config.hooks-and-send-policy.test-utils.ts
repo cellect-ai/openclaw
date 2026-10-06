@@ -228,6 +228,24 @@ describe("before_dispatch hook", () => {
     });
   });
 
+  it.each(["verified", "asserted", undefined] as const)(
+    "tells before_dispatch whether the channel proved the sender: %s",
+    async (authentication) => {
+      hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
+      await dispatchReplyFromConfig({
+        ctx: createHookCtx({ SenderId: "sender-1", SenderAuthentication: authentication }),
+        cfg: emptyConfig,
+        dispatcher: createDispatcher(),
+      });
+      const event = firstMockCall(
+        hookMocks.runner.runBeforeDispatch,
+        "before dispatch hook",
+      )[0] as { senderId?: unknown; senderAuthentication?: unknown };
+      expect(event.senderId).toBe("sender-1");
+      expect(event.senderAuthentication).toBe(authentication);
+    },
+  );
+
   it("passes inbound reply metadata to before_dispatch event and context", async () => {
     hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
     const dispatcher = createDispatcher();

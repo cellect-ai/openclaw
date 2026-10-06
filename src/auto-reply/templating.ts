@@ -331,6 +331,12 @@ export type MsgContext = Partial<CanonicalInboundText> & {
   SenderIsBot?: boolean;
   /** Channel-ingress fact: sender is the operator's own account (from-me). */
   SenderIsSelf?: boolean;
+  /**
+   * Channel-ingress fact: whether the platform itself proved `SenderId` for this
+   * event ("verified") or another party only named it ("asserted"). Absent when
+   * the channel does not report it; absence is never proof.
+   */
+  SenderAuthentication?: "verified" | "asserted";
   Timestamp?: number;
   LocationLat?: number;
   LocationLon?: number;
