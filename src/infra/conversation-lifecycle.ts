@@ -537,6 +537,20 @@ export function registerConversationLifecycleTransport(options: {
       },
     );
 
+  /** Removes a marker from a row unless the row changed meanwhile. */
+  const unset = async (id: string, key: "missingSince" | "attempted" | "stuckAt") => {
+    const row = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (!row || row[key] === undefined) return;
+    const expected = JSON.stringify(row);
+    delete row[key];
+    await replace(expected, row);
+  };
+
   // The room knows the run when a send was acknowledged, or failed in a way
   // that can hide a send that landed. Rows from before `acked` existed count.
   const told = (row: LifecycleObligation) => row.acked !== 0 || row.attempted === true;
@@ -617,6 +631,12 @@ export function registerConversationLifecycleTransport(options: {
         live: hasAgentRunContextExecutionOwner(row.runId) || row.pendingApprovals.length > 0,
         activeAt: owner.lastActiveAt ?? owner.registeredAt ?? 0,
       });
+      // The owner is back, so an earlier absence no longer counts toward a
+      // later hold, even when the run returned without recording a transition.
+      if (row.missingSince !== undefined) {
+        await unset(id, "missingSince");
+        delete row.missingSince;
+      }
     } else if (!TERMINAL.has(row.state) && heldForOwner(row)) {
       // The hold is bounded in wall time across reloads, so its start is kept.
       const missingSince = liveness.get(id)?.missingSince;

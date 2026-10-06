@@ -791,6 +791,32 @@ describe("trusted durable conversation lifecycle", () => {
     ]);
     expect(errors.map((error) => error.reason)).not.toContain("row_stuck");
   });
+  it("holds a run a full period again after it returned between two sweeps", async () => {
+    const transport = install();
+    owner("twice");
+    emit("twice", "start");
+    emitAgentEvent({
+      runId: "twice",
+      stream: "approval",
+      data: { phase: "requested", status: "pending", approvalId: "open" },
+    });
+    await transport.flush();
+    const clock = vi.spyOn(Date, "now");
+    const first = Date.now() + 31 * 60_000;
+    clock.mockReturnValue(first);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    // The run returns without any lifecycle transition.
+    owner("twice");
+    await transport.flush();
+    clock.mockReturnValue(first + 31 * 60_000);
+    expect(sweepStaleRunContexts()).toBe(1);
+    await transport.flush();
+    expect(publications.map((event) => event.state)).toEqual(["queued", "running", "waiting"]);
+    clock.mockReturnValue(first + 62 * 60_000);
+    await transport.flush();
+    expect(publications.at(-1)?.state).toBe("interrupted");
+  });
   it("reports a timed-out run as interrupted", async () => {
     const transport = install();
     owner("slow");
