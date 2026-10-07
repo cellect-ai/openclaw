@@ -5,7 +5,7 @@ export const MAX_AUDIO_BYTES = 16 * 1024 * 1024; // 16MB
 /** Default outbound video payload cap shared by media loaders and adapters. */
 export const MAX_VIDEO_BYTES = 16 * 1024 * 1024; // 16MB
 /** Default outbound document payload cap shared by media loaders and adapters. */
-export const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024; // 100MB
+export const MAX_DOCUMENT_BYTES = 200 * 1024 * 1024; // 200MB
 
 /** Canonical media families used by attachment facts, routing, and MIME classification. */
 export type MediaKind = "image" | "audio" | "video" | "document" | "sticker" | "unknown";

@@ -918,7 +918,7 @@ describe("handleSlackAction", () => {
     expect(requireMockArg(downloadSlackFile, "downloadSlackFile", 0, 0)).toBe("F123");
     expect(requireRecordArg(downloadSlackFile, "downloadSlackFile", 0, 1).token).toBe("tok");
     expect(requireRecordArg(downloadSlackFile, "downloadSlackFile", 0, 1).maxBytes).toBe(
-      100 * 1024 * 1024,
+      200 * 1024 * 1024,
     );
     expect(requireDetails(result)).toMatchObject({
       ok: false,
