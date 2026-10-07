@@ -195,6 +195,19 @@ The Matrix account must already be running and joined to the target room. The me
 
 The method does not replay prior transcript. A trusted product bridge may include the single source message that triggered the request so the new thread has a visible starting point. It requires `operator.admin`, returns `threadRootEventId`, and does not infer a destination room: the caller must choose a room the user is authorized to read and pass its exact, case-sensitive Matrix room ID.
 
+## Conversation lifecycle status
+
+For a conversation projected into a Matrix room, the gateway publishes each run's status as `m.cellect.conversation.lifecycle` events. Two environment switches, both off unless set, add to them. Each is read when a fact or card is sent, so turning one off stops it at once, including for facts already queued.
+
+| Switch                                    | Effect                                                                                                                                                                                                                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS` | Adds `atMs`, `admittedAtMs`, `waitingOn`, `failureKind` and `stoppedBy` to each fact and sends a heartbeat for a run whose executor still holds its claim. The heartbeat does not keep a silent run out of the 30 minute silence sweep, and stops an hour into a wait. |
+| `OPENCLAW_CONVERSATION_DECISION_CARDS`    | Sends a confirmation card for an approval a person may decide from the conversation, and lets `waitingOn` name it.                                                                                                                                                     |
+
+Turn the signals on only after the projector, Fi and the apps accept the fields. A consumer built before them rejects the whole fact.
+
+Decision cards are inert today. A card needs an approval of kind `plugin` whose emitter sets `chatDecidable`, and nothing sets it: the Codex bridge sends its file-change and permission-escalation prompts as kind `plugin`, and those are not decided from a conversation. Fi also refuses a chat decision unless the approval's `presentation.origin` is `plugin`, which the gateway does not write. A later, separate change adds that origin, in this order so no running consumer breaks: first the Android key list and the stored-row validation accept the new field, then the gateway writes it, then the cards switch is turned on.
+
 ## Related
 
 - [Channels Overview](/channels) - all supported channels

@@ -57,7 +57,10 @@ export function executeConversationLifecycleCommand(
       if (
         row.pending.length === 0 &&
         row.resultEventId &&
-        ["completed", "failed", "cancelled", "interrupted", "unknown"].includes(row.state)
+        ["completed", "failed", "cancelled", "interrupted", "unknown"].includes(row.state) &&
+        // A card the room is still owed (the answer to an approval) keeps the
+        // row; the transport completes it once the card is sent.
+        !Object.values(row.cards ?? {}).some((card) => card.sent < card.revision)
       ) {
         completeDeliveryQueueEntryInDatabase(database, QUEUE, row.id);
         return;
