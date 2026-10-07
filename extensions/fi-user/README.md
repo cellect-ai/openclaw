@@ -22,6 +22,7 @@ The runtime's configuration, read the way the host reads it (the admin agent's
 own setting, then the default):
 
 - `sandbox.mode` is `all`.
+- `sandbox.scope` is `session` or `agent`, not `shared`.
 - `tools.exec.host` is unset, `auto` or `sandbox`.
 - `tools.elevated.enabled` is `false`, globally or for the admin agent. Left
   unset it counts as on, and nothing is issued.
@@ -92,18 +93,34 @@ no proven person and are blocked too.
 Which sandbox that is follows `sandbox.scope` for the admin agent:
 
 - `session`: only that session (that thread) is held.
-- `agent` (the default, and what tenant runtimes are generated with) or
-  `shared`: the admin agent has one sandbox, so one person's token holds every
-  other person's admin-agent commands, in every conversation, for up to ten
-  minutes. The same person on Slack and on Matrix counts as two people.
+- `agent` (the default, and what tenant runtimes are generated with): the
+  admin agent has one sandbox, so one person's token holds every other person's
+  admin-agent commands, in every conversation, for up to ten minutes. The same
+  person on Slack and on Matrix counts as two people.
+- `shared`: other agents use the same sandbox and cannot be held, so no token
+  is issued at all.
+
+If two people's commands ask Fi at the same moment, the first answer takes the
+sandbox and the other command is blocked with the same message. A token that
+claims to live longer than fifteen minutes is refused, and nothing is held for
+a token that was not handed to a command.
 
 The hold is in memory. A plugin reload or Gateway restart forgets it.
 
-The exact token is also replaced with `[redacted Fi token]` in every tool
-result of the admin agent before the model, the transcript or the channel sees
-it. Only a hash of the token is kept to recognise it. The host masks the
-`FI_DELEGATED_USER_TOKEN` value wherever it records a call's arguments
-(tool-start events, trajectory, CLI and worker events).
+### Output is not scrubbed
+
+The plugin does not redact tool output. A command that prints its environment
+puts the token in the thread's transcript, where the model and everyone in the
+thread can read it. What bounds that: the token lives ten minutes, Fi accepts
+it on five routes only, Fi checked that its owner is an admin of this
+organization, and the sandbox is held for its owner while it lives.
+
+The host does mask the `FI_DELEGATED_USER_TOKEN` value where it records a
+call's arguments (tool-start events, trajectory, CLI and worker events).
+
+Follow-up: redaction in a separate plugin with a sandbox-tools matcher. It is
+not done here because a plugin that declares tool-result middleware changes
+how the host handles every agent's tool results on the Gateway.
 
 ### Deploy preconditions
 
@@ -112,6 +129,7 @@ Checked by the plugin; where one fails, no token is issued and nothing changes:
 | Setting                                                        | Enforced how                                |
 | -------------------------------------------------------------- | ------------------------------------------- |
 | Admin agent `sandbox.mode: "all"`                              | No token otherwise.                         |
+| Admin agent `sandbox.scope` is not `shared`                    | No token otherwise.                         |
 | Admin agent `tools.exec.host` unset, `auto` or `sandbox`       | No token otherwise.                         |
 | `tools.elevated.enabled: false`, global or for the admin agent | No token otherwise. Must be set explicitly. |
 | `talk.agentId` is not the admin agent                          | No token otherwise.                         |
@@ -137,9 +155,8 @@ the `FI_THREADS_ENV_BY_ACCOUNT` environment variable. No key was added.
 
 - The token is in the command's environment for up to ten minutes. The
   rewritten call, token included, also reaches other plugins' `after_tool_call`
-  hooks and tool-result middleware, and the exec approval request. Redaction
-  matches the exact token only: a command that prints it encoded or split is
-  not caught.
+  hooks and tool-result middleware, and the exec approval request. Tool output
+  is not redacted; see "Output is not scrubbed".
 - A command that outlives its call (the host moves a long command to the
   background on its own) keeps the token in its environment. The hold above is
   what keeps other people's runs away from it.

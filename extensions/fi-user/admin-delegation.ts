@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
@@ -23,7 +22,7 @@ const MAX_MINT_MS = 8_000;
 const MIN_MINT_MS = 500;
 /** A token this close to expiry is not handed to a command. */
 const MIN_REMAINING_SECONDS = 60;
-/** Sessions, runs, sandboxes and issued tokens remembered at once; the oldest is dropped. */
+/** Sessions, runs and sandboxes remembered at once; the oldest is dropped. */
 const MAX_TRACKED = 5_000;
 /**
  * How long what arrived for a session waits for a message run to take it up.
@@ -31,6 +30,11 @@ const MAX_TRACKED = 5_000;
  * also match one of the remembered events, so forgetting only refuses.
  */
 const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * Fi's tokens live ten minutes. One that claims more than this is refused, and
+ * no sandbox is held for longer on any answer's say-so.
+ */
+const MAX_HOLD_MS = 15 * 60 * 1000;
 /** Shown to whoever reaches a sandbox that still holds another person's token. */
 const HELD = "Another admin's command is still finishing here. Try again in a few minutes.";
 /**
@@ -50,8 +54,6 @@ const SANDBOX_TOOLS = new Set([
   "apply_patch",
   "view_image",
 ]);
-const JWT_ANYWHERE = /[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/g;
-const REDACTED = "[redacted Fi token]";
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UNPROVEN = "unproven";
 /** The parameters OpenClaw's own exec tool takes; a native harness shell names others. */
@@ -81,6 +83,7 @@ type Arrivals = {
 type Proof = { sender: string; eventId?: string };
 /** Who a sandbox last ran a token-bearing command for, and until when that token lives. */
 type Custody = { sender: string; expiresAt: number };
+type Held = { block: true; blockReason: string };
 
 /** Set `key` as the newest entry, dropping the oldest ones past the cap. */
 function remember<V>(tracked: Map<string, V>, key: string, value: V): void {
@@ -196,8 +199,6 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
   const runs = new Map<string, Run>();
   const voiced = new Set<string>();
   const custody = new Map<string, Custody>();
-  /** SHA-256 of each issued token and when it expires; never the token. */
-  const issued = new Map<string, { length: number; expiresAt: number }>();
   const reset = () => {
     arrivals.clear();
     runs.clear();
@@ -214,50 +215,23 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     const agent = resolveAgentConfig(cfg, adminAgentId);
     const defaults = cfg.agents?.defaults?.sandbox;
     const execHost = agent?.tools?.exec?.host ?? cfg.tools?.exec?.host ?? "auto";
+    const scope = agent?.sandbox?.scope ?? defaults?.scope ?? "agent";
     return {
       /** Naming the sandbox and no elevation is what every command already gets. */
       pinIsHarmless:
         (agent?.sandbox?.mode ?? defaults?.mode ?? "off") === "all" &&
+        // A sandbox shared with other agents cannot be held for one person.
+        scope !== "shared" &&
         (execHost === "auto" || execHost === "sandbox") &&
         (cfg.tools?.elevated?.enabled === false || agent?.tools?.elevated?.enabled === false) &&
         // Talk steers a session without these hooks; its own agent must not be this one.
         cfg.talk?.agentId?.trim().toLowerCase() !== adminAgentId.toLowerCase(),
-      scope: agent?.sandbox?.scope ?? defaults?.scope ?? "agent",
+      scope,
     };
   };
   /** One sandbox per session only under that scope; otherwise the agent's sessions share it. */
   const sandboxKey = (adminAgentId: string, sessionKey: string): string =>
     posture(adminAgentId).scope === "session" ? sessionKey : `agent:${adminAgentId.toLowerCase()}`;
-  const digest = (token: string) => createHash("sha256").update(token).digest("hex");
-  /** `value` with every issued token in it replaced, or `value` itself when there is none. */
-  const scrub = (value: unknown): unknown => {
-    if (typeof value === "string") {
-      return value.replace(JWT_ANYWHERE, (candidate) => {
-        const known = issued.get(digest(candidate));
-        return known?.length === candidate.length ? REDACTED : candidate;
-      });
-    }
-    if (Array.isArray(value)) {
-      const next = value.map(scrub);
-      return next.some((item, index) => item !== value[index]) ? next : value;
-    }
-    if (value && typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-      const entries = Object.entries(value).map(([key, item]) => [key, scrub(item)] as const);
-      return entries.some(([key, item]) => item !== (value as Record<string, unknown>)[key])
-        ? Object.fromEntries(entries)
-        : value;
-    }
-    return value;
-  };
-  // The model can print the token; what a tool returns is scrubbed of it
-  // before the model, the transcript or the channel sees the result.
-  api.registerAgentToolResultMiddleware((event, context) => {
-    if (issued.size === 0 || !isAdminAgent(configFromRuntime(api), context.agentId)) {
-      return undefined;
-    }
-    const result = scrub(event.result) as typeof event.result;
-    return result === event.result ? undefined : { result };
-  });
   /**
    * The sender a verified dispatched message proves for the admin agent's
    * session, by the session key the host routed (compared in lower case):
@@ -456,7 +430,10 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     config: ResolvedPluginConfig,
     toolName: string,
     ctx: PluginHookToolContext,
-  ): { block: true; blockReason: string } | undefined => {
+  ): Held | undefined => {
+    if (custody.size === 0) {
+      return undefined;
+    }
     if (!isAdminAgent(config, ctx.agentId) || !SANDBOX_TOOLS.has(toolName) || !ctx.sessionKey) {
       return undefined;
     }
@@ -477,8 +454,9 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
   };
 
   /**
-   * The token for this tool call, or nothing. Synchronous refusals stay
-   * synchronous so a call that gets no token is not delayed by asking Fi.
+   * The token for this tool call, the reason the call may not run, or nothing.
+   * Synchronous refusals stay synchronous so a call that gets no token is not
+   * delayed by asking Fi. A sandbox is held only for a token that is returned.
    */
   const mint = (
     config: ResolvedPluginConfig,
@@ -486,7 +464,7 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     ctx: PluginHookToolContext,
     /** When the host entered this tool call's hook; its deadline runs from then. */
     enteredAt: number,
-  ): Promise<string | undefined> | undefined => {
+  ): Promise<string | Held | undefined> | undefined => {
     if (
       !config.tenantOrgId ||
       !isAdminAgent(config, ctx.agentId) ||
@@ -539,23 +517,29 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       (delegation) => {
         const token: unknown = delegation?.fi?.token;
         const expiresAt: unknown = delegation?.fi?.expiresAt;
+        const now = Date.now();
         if (
           typeof token !== "string" ||
           !JWT.test(token) ||
           typeof expiresAt !== "number" ||
-          expiresAt - Date.now() / 1000 < MIN_REMAINING_SECONDS ||
+          expiresAt * 1000 - now < MIN_REMAINING_SECONDS * 1000 ||
+          expiresAt * 1000 - now > MAX_HOLD_MS ||
           ctx.abortSignal?.aborted ||
           runs.get(ctx.runId ?? "") !== run ||
           run.sender !== sender ||
-          voiced.has(run.sessionKey) ||
-          held(config, event.toolName, ctx)
+          voiced.has(run.sessionKey)
         ) {
           return undefined;
         }
+        // Someone else's token may have reached this sandbox while Fi answered:
+        // the call must then wait like any other, not run without a token.
+        const blocked = held(config, event.toolName, ctx);
+        if (blocked) {
+          return blocked;
+        }
         // From here the token is in the sandbox: it is this person's until it expires.
         const heldUntil = Math.max(custody.get(sandbox)?.expiresAt ?? 0, expiresAt * 1000);
-        remember(custody, sandbox, { sender, expiresAt: heldUntil });
-        remember(issued, digest(token), { length: token.length, expiresAt: expiresAt * 1000 });
+        remember(custody, sandbox, { sender, expiresAt: Math.min(heldUntil, now + MAX_HOLD_MS) });
         return token;
       },
       (error: unknown) => {

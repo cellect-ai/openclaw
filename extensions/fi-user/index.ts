@@ -609,9 +609,12 @@ export default definePluginEntry({
           // Fi issues no delegated token for this call.
           const delegated = adminDelegation.mint(config, event, ctx, enteredAt);
           return delegated
-            ? delegated.then((token) => ({
-                params: withOnBehalfOfEnv(event.params, assertion, token),
-              }))
+            ? delegated.then((minted) =>
+                // Another person's token reached the sandbox while Fi answered.
+                typeof minted === "object"
+                  ? minted
+                  : { params: withOnBehalfOfEnv(event.params, assertion, minted) },
+              )
             : { params: withOnBehalfOfEnv(event.params, assertion) };
         };
         const authorized = matrixEntitlements(ctx);

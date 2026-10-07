@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { sanitizeToolArgs } from "openclaw/plugin-sdk/agent-harness-runtime";
 import type {
   OpenClawPluginApi,
@@ -62,10 +63,6 @@ type Env = Record<string, string>;
 type Rewrite =
   | { params: { env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
   | undefined;
-type Middleware = (
-  event: { toolName: string; result: unknown },
-  context: { agentId?: string },
-) => { result: unknown } | undefined;
 const HELD = "Another admin's command is still finishing here. Try again in a few minutes.";
 /** A runtime whose admin agent always runs in the sandbox, with elevation off. */
 const SANDBOXED = {
@@ -78,7 +75,7 @@ function plugin(
   host: Record<string, unknown> = SANDBOXED,
 ) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
-  const middlewares: Middleware[] = [];
+  const middleware = vi.fn();
   const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
   const warn = vi.fn();
   fiUserPlugin.register?.(
@@ -106,7 +103,7 @@ function plugin(
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
       registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
-      registerAgentToolResultMiddleware: (handler) => middlewares.push(handler as Middleware),
+      registerAgentToolResultMiddleware: middleware,
     }),
   );
   const hook = async (name: string, event: unknown, context: unknown) => {
@@ -175,13 +172,12 @@ function plugin(
           ...overrides,
         },
       ) as Promise<Rewrite>,
-    /** What the host shows of a tool result once the plugin's middleware has seen it. */
-    result: (result: unknown, agentId = "cellect-fi-admin") =>
-      middlewares.reduce(
-        (current, middleware) =>
-          middleware({ toolName: "exec", result: current }, { agentId })?.result ?? current,
-        result,
-      ),
+    /** What the plugin registered with the host. */
+    registered: () => ({
+      hooks: [...hooks].flatMap(([name, handlers]) => handlers.map(() => name)).toSorted(),
+      subscriptions: subscriptions.map((subscription) => subscription.id).toSorted(),
+      middleware: middleware.mock.calls.length,
+    }),
     settle: async (runId = "run-1") => {
       for (const subscription of subscriptions) {
         await subscription.handle(
@@ -632,6 +628,10 @@ describe("the admin agent's delegated user token", () => {
       ["elevation left at its default", { agents: SANDBOXED.agents }],
       ["elevation switched on", { ...SANDBOXED, tools: { elevated: { enabled: true } } }],
       ["Talk owned by the admin agent", { ...SANDBOXED, talk: { agentId: "Cellect-Fi-Admin" } }],
+      [
+        "one sandbox shared by every agent",
+        { ...SANDBOXED, agents: { defaults: { sandbox: { mode: "all", scope: "shared" } } } },
+      ],
     ])("issues nothing and pins nothing with %s", async (_name, host) => {
       const turn = plugin({}, host);
       await turn.arrive();
@@ -826,76 +826,132 @@ describe("the admin agent's delegated user token", () => {
       });
     });
 
-    it("does not hold a sandbox for a token Fi refused", async () => {
-      fetchMock.mockImplementation(async () => new Response("Not found", { status: 404 }));
+    it.each([
+      ["Fi refused", async () => new Response("Not found", { status: 404 })],
+      [
+        "claims to live longer than fifteen minutes",
+        async () => minted({ expiresAt: Math.floor(Date.now() / 1000) + 15 * 60 + 5 }),
+      ],
+    ])("does not hold a sandbox for a token that %s", async (_name, answer) => {
+      fetchMock.mockImplementation(answer);
       const turn = plugin();
       await turn.arrive();
       await turn.start();
-      expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      const result = await turn.exec();
+      expect(result?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      expect(result?.params).not.toHaveProperty("host");
       await turn.arrive(other);
       await turn.start({ ...other, runId: "run-2" });
-      expect((await turn.exec(otherExec))?.block).toBeUndefined();
+      expect(
+        (await turn.exec({ ...otherExec, toolName: "read" }, { toolName: "read", params: {} }))
+          ?.block,
+      ).toBeUndefined();
+      expect(
+        (
+          await turn.exec(
+            { runId: "run-2", toolName: "process" },
+            { toolName: "process", params: {} },
+          )
+        )?.block,
+      ).toBeUndefined();
+    });
+
+    it("does not hold a sandbox for a token dropped because its run was joined meanwhile", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      let answer!: (response: Response) => void;
+      fetchMock.mockImplementation(() => new Promise<Response>((resolve) => (answer = resolve)));
+      const pending = turn.exec();
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled());
+      await turn.arrive(other);
+      await turn.start({ ...other, runId: "run-2" });
+      await turn.arrive({ senderId: "U0OTHER002" });
+      answer(minted());
+      expect((await pending)?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+      const read = await turn.exec(
+        { ...otherExec, toolName: "read" },
+        { toolName: "read", params: {} },
+      );
+      expect(read?.block).toBeUndefined();
+    });
+
+    it("lets one of two people asking at once have the sandbox, and makes the other wait", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      await turn.arrive(other);
+      await turn.start({ ...other, runId: "run-2" });
+      const answers: Array<(response: Response) => void> = [];
+      fetchMock.mockImplementation(() => new Promise<Response>((resolve) => answers.push(resolve)));
+      // Neither sandbox is held yet, so Fi is asked about both.
+      const admins = turn.exec();
+      const theirs = turn.exec(otherExec);
+      await vi.waitFor(() => expect(answers).toHaveLength(2));
+      answers[1]!(minted({ token: "their.fixture.token" }));
+      expect((await theirs)?.params.env?.FI_DELEGATED_USER_TOKEN).toBe("their.fixture.token");
+      answers[0]!(minted());
+      // The admin's command must not run beside the other person's token, with or without its own.
+      expect(await admins).toEqual({ block: true, blockReason: HELD });
+      // And the hold is still the first person's alone.
+      fetchMock.mockImplementation(async () => minted());
+      expect((await turn.exec(otherExec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(await turn.exec()).toEqual({ block: true, blockReason: HELD });
     });
   });
 
-  describe("the issued token in what the host records", () => {
-    const issue = async () => {
-      const turn = plugin();
-      await turn.arrive();
-      await turn.start();
-      const rewritten = await turn.exec();
-      expect(rewritten?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
-      return { turn, rewritten };
-    };
-    const LOOKALIKE = "another.fixture.token";
+  it("is masked by the host wherever it records the rewritten call's arguments", async () => {
+    const turn = plugin();
+    await turn.arrive();
+    await turn.start();
+    const rewritten = await turn.exec();
+    expect(rewritten?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    // Tool-start events, the trajectory, CLI and worker events all pass through this.
+    const recorded = JSON.stringify(sanitizeToolArgs(rewritten?.params));
+    expect(recorded).not.toContain(TOKEN);
+    expect(recorded).toContain("npm run fi:audit");
+  });
 
-    it("is replaced in the admin agent's tool results, and nothing else is", async () => {
-      const { turn } = await issue();
-      const printed = {
-        content: [
-          {
-            type: "text",
-            text: `FI_DELEGATED_USER_TOKEN=${TOKEN}\nBearer ${TOKEN}; v1.2.3 ${LOOKALIKE}`,
-          },
-          { type: "image", data: "aGVsbG8=" },
+  describe("what the plugin asks of the host", () => {
+    it("declares no tool-result middleware: declaring one slows every agent's tool results", () => {
+      const manifest = JSON.parse(
+        readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+      ) as { contracts: Record<string, unknown> };
+      expect(Object.keys(manifest.contracts)).toEqual(["tools"]);
+    });
+
+    it("registers one run hook and its retirement beyond the base branch, and they do nothing where no token is issued", async () => {
+      // A runtime with no sandbox: the pin would change how its commands run.
+      const turn = plugin({}, {});
+      expect(turn.registered()).toEqual({
+        // The base branch's hooks, and a second before_agent_reply for the token rule.
+        hooks: [
+          "before_agent_reply",
+          "before_agent_reply",
+          "before_dispatch",
+          "before_tool_call",
+          "message_received",
+          "message_received",
+          "message_sent",
         ],
-        details: { status: "completed", aggregated: `{"token":"${TOKEN}"}`, exitCode: 0 },
-      };
-      const shown = turn.result(printed);
-      expect(JSON.stringify(shown)).not.toContain(TOKEN);
-      expect(shown).toEqual({
-        content: [
-          {
-            type: "text",
-            text: `FI_DELEGATED_USER_TOKEN=[redacted Fi token]\nBearer [redacted Fi token]; v1.2.3 ${LOOKALIKE}`,
-          },
-          { type: "image", data: "aGVsbG8=" },
-        ],
-        details: {
-          status: "completed",
-          aggregated: '{"token":"[redacted Fi token]"}',
-          exitCode: 0,
-        },
+        subscriptions: ["admin-delegation-turn-retirement", "matrix-entitlement-turn-retirement"],
+        middleware: 0,
       });
-      // A result without it is handed back as it came.
-      const clean = { content: [{ type: "text", text: `ok ${LOOKALIKE}` }], details: {} };
-      expect(turn.result(clean)).toBe(clean);
-      // Another agent's results are not this plugin's to rewrite.
-      expect(turn.result(printed, "cellect-main")).toBe(printed);
-    });
-
-    it("leaves results alone before any token was issued", () => {
-      const turn = plugin();
-      const printed = { content: [{ type: "text", text: TOKEN }], details: {} };
-      expect(turn.result(printed)).toBe(printed);
-    });
-
-    it("is masked by the host wherever it records the rewritten call's arguments", async () => {
-      const { rewritten } = await issue();
-      // Tool-start events, the trajectory, CLI and worker events all pass through this.
-      const recorded = JSON.stringify(sanitizeToolArgs(rewritten?.params));
-      expect(recorded).not.toContain(TOKEN);
-      expect(recorded).toContain("npm run fi:audit");
+      await turn.arrive();
+      const started = await turn.start();
+      const call = { params: { command: "npm run fi:audit", pty: true } };
+      const result = await turn.exec({}, call);
+      const read = await turn.exec({ toolName: "read" }, { toolName: "read", params: {} });
+      await turn.settle();
+      // The run is not answered for, the command is as it was, and Fi is never asked.
+      expect(started).toBeUndefined();
+      expect(result?.params).toEqual({
+        ...call.params,
+        env: { FI_ON_BEHALF_OF: expect.any(String) },
+      });
+      expect(read).toBeUndefined();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(turn.warn).not.toHaveBeenCalled();
     });
   });
 
