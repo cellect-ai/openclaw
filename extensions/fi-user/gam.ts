@@ -8,7 +8,7 @@ import type { Delegation, ResolvedPluginConfig } from "./fi-delegation.js";
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 512 * 1024;
 const COMMAND_TIMEOUT_MS = 60_000;
-export const MAX_DRIVE_FILE_BYTES = 25 * 1024 * 1024;
+export const MAX_DRIVE_FILE_BYTES = 200 * 1024 * 1024;
 export const MAX_RESULTS = 50;
 // GAM exits 60 when a list matches nothing; that is an empty result.
 const GAM_NO_ENTITIES_EXIT = 60;

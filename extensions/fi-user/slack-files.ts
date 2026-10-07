@@ -1,6 +1,6 @@
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 
-export const MAX_SLACK_FILE_BYTES = 50 * 1024 * 1024;
+export const MAX_SLACK_FILE_BYTES = 200 * 1024 * 1024;
 const SLACK_API = "https://slack.com/api";
 const SLACK_FILE_ID = /^F[A-Z0-9]{6,}$/;
 const SLACK_SESSION =
