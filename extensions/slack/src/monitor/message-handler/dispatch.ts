@@ -21,6 +21,7 @@ import {
 import type { ReplyPayload, ReplyDispatchRuntimeInfo } from "openclaw/plugin-sdk/reply-runtime";
 import { danger, logVerbose, shouldLogVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { formatSlackError } from "../../errors.js";
+import { prepareSlackFinalDeliveryConfig } from "../../final-delivery-config.js";
 import { formatSlackUserMention, normalizeSlackOutboundText } from "../../format.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "../../limits.js";
 import { emitSlackMessageSentHooks } from "../../message-sent-hook.js";
@@ -481,6 +482,8 @@ async function dispatchSlackMessageWithSetup(
           )
             return false;
           return {
+            prepareRuntimeHandoff: (currentConfig) =>
+              prepareSlackFinalDeliveryConfig(currentConfig, account, ctx.botToken),
             to: prepared.replyTarget,
             threadId:
               delivery.streamSession?.threadTs ??

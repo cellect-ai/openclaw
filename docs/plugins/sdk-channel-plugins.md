@@ -421,7 +421,7 @@ and JavaScript, keep their existing contract.
       A prepared or filtered agent registry from the current Gateway publication
       is not a reload successor: ordinary final replies use that Gateway’s live
       channel registry and do not require a handoff callback.
-      Both durable inbound helpers accept an optional synchronous
+      Both durable inbound helpers and channel turn adapter `durable` options accept an optional synchronous
       `prepareRuntimeHandoff(cfg)` callback for final replies after an unrelated
       plugin reload. The channel must reject a changed admitted sender and return
       a config that pins the verified credential for all parts of that delivery.
