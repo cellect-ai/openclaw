@@ -3,8 +3,8 @@ import { describe, expect, it } from "vitest";
 import { resolveSlackMediaMaxBytes, SLACK_DEFAULT_MEDIA_MAX_MB } from "./limits.js";
 
 describe("resolveSlackMediaMaxBytes", () => {
-  it("defaults to at least 100 MB so large attachments stream to disk", () => {
-    expect(SLACK_DEFAULT_MEDIA_MAX_MB).toBeGreaterThanOrEqual(100);
+  it("defaults to 200 MB so large attachments stream to disk", () => {
+    expect(SLACK_DEFAULT_MEDIA_MAX_MB).toBe(200);
     expect(resolveSlackMediaMaxBytes(undefined)).toBe(SLACK_DEFAULT_MEDIA_MAX_MB * 1024 * 1024);
   });
 
