@@ -25,6 +25,14 @@ import { recordAgentRunOutputTokens } from "./agent-run-usage.js";
 export type AgentApprovalEventData = {
   phase: "requested" | "resolved";
   kind: "exec" | "plugin" | "unknown";
+  /**
+   * Set by an emitter that knows a person may decide this approval from the
+   * conversation. Opt-in and separate from `kind`: the Codex bridge labels
+   * file-change and permission-escalation approvals "plugin", and those are
+   * not decided from chat. Only a `plugin` approval with this marker gets a
+   * decision card; nothing sets it today.
+   */
+  chatDecidable?: true;
   status: "pending" | "unavailable" | "approved" | "denied" | "failed";
   title: string;
   itemId?: string;

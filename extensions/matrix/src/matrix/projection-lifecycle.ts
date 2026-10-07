@@ -68,6 +68,19 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
         },
       );
     },
+    // Decision cards are recorded and sent only while the core switch for them
+    // is on; this is the Matrix half of that path, a card in the run's thread.
+    publishDecision: async (binding, content, transactionId) => {
+      await withResolvedMatrixSendClient(
+        {
+          cfg: (api.runtime.config.current?.() ?? api.config) as CoreConfig,
+          accountId: binding.accountId,
+        },
+        async (client) => {
+          await client.sendEvent(binding.roomId, "m.room.message", content, transactionId);
+        },
+      );
+    },
     isDestinationGone: (error) => {
       const refusal = error as { errcode?: unknown; data?: { errcode?: unknown } } | null;
       const errcode = refusal?.errcode ?? refusal?.data?.errcode;
