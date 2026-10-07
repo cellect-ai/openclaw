@@ -16,7 +16,7 @@ export const SLACK_MESSAGE_TEXT_HARD_LIMIT = 40_000;
 // Default cap for Slack files the gateway downloads (inbound attachments and the
 // download-file action). Files stream to disk, so the cap bounds disk use and
 // transfer time rather than memory. Override per account with mediaMaxMb.
-export const SLACK_DEFAULT_MEDIA_MAX_MB = 100;
+export const SLACK_DEFAULT_MEDIA_MAX_MB = 200;
 
 export function resolveSlackMediaMaxBytes(mediaMaxMb: number | undefined): number {
   const mb =
