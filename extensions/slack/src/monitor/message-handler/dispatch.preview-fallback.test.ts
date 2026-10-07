@@ -12,6 +12,7 @@ import {
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/channel-test-helpers";
+import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import {
   createReplyDispatcher,
   finalizeInboundContext,
@@ -88,6 +89,9 @@ let mockedSlackDraftMode: "replace" | "status_final" | "append" = "append";
 let mockedPinnedMainDmOwner: string | undefined;
 let capturedReplyOptions: GetReplyOptions | undefined;
 let capturedDispatchReplyFromConfig: unknown;
+let capturedTurn:
+  | Parameters<typeof import("openclaw/plugin-sdk/channel-inbound").dispatchChannelInboundTurn>[0]
+  | undefined;
 let capturedStatusReactionOptions: { enabled?: boolean; initialEmoji?: string } | undefined;
 const statusReactionControllerMock = {
   setQueued: vi.fn(async () => {}),
@@ -381,6 +385,7 @@ function createPreparedSlackMessage(params?: {
     },
     account: {
       accountId: "default",
+      identity: "bot",
       config: params?.accountConfig ?? {},
     },
     relayIdentity: params?.relayIdentity,
@@ -820,6 +825,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
     ...actual,
     readAgentRunTerminalOutcome: () => mockedAgentRunTerminalOutcome,
     dispatchChannelInboundTurn: async (params: DispatchParams) => {
+      capturedTurn = params;
       if (useRealChannelInboundTurn) {
         return actual.dispatchChannelInboundTurn(params);
       }
@@ -1063,6 +1069,43 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
   });
 
   afterEach(() => resetPluginRuntimeStateForTest());
+
+  it("preserves the admitted Slack sender for projected durable final replies", async () => {
+    const bindings = vi.spyOn(getSessionBindingService(), "listBySession").mockReturnValue([
+      {
+        bindingId: "projection",
+        targetSessionKey: "agent:agent-1:slack:C123",
+        targetKind: "session",
+        conversation: { channel: "matrix", accountId: "default", conversationId: "!room:test" },
+        status: "active",
+        boundAt: 1,
+        metadata: {
+          environment: "test",
+          projectedConversationId: "!room:test",
+          sourceReplyAuthorization: "fixture",
+        },
+      },
+    ]);
+    try {
+      const cfg = { channels: { slack: { botToken: "xoxb-test" } } };
+      await dispatchPreparedSlackMessage(createPreparedSlackMessage({ cfg }));
+      const durable = capturedTurn?.delivery?.durable;
+      if (typeof durable !== "function") {
+        throw new Error("Expected a Slack durable final adapter");
+      }
+      const options = await durable({ text: FINAL_REPLY_TEXT }, { kind: "final" });
+      if (!options || !options.prepareRuntimeHandoff) {
+        throw new Error("Projected Slack finals must preserve their admitted sender");
+      }
+      const pinned = options.prepareRuntimeHandoff(cfg);
+      expect(pinned.channels?.slack?.accounts?.default?.botToken).toBe("xoxb-test");
+      expect(() =>
+        options.prepareRuntimeHandoff?.({ channels: { slack: { botToken: "xoxb-other" } } }),
+      ).toThrow("Slack reply sender changed");
+    } finally {
+      bindings.mockRestore();
+    }
+  });
 
   it.each([
     { agents: ["alice"], withMedia: true },

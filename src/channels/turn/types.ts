@@ -181,6 +181,8 @@ type ChannelTurnDurableDeliveryOptions = Pick<
   to?: string | null;
   replyToId?: string | null;
   requiredCapabilities?: DurableFinalDeliveryRequirements;
+  /** Validate and pin the admitted sender when delivery uses a successor registry. */
+  prepareRuntimeHandoff?: (cfg: OpenClawConfig) => OpenClawConfig;
 };
 
 type ChannelDeliveryAdapterBase = {
