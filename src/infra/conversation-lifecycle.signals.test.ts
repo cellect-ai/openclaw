@@ -911,11 +911,12 @@ describe("conversation lifecycle, contract v2", () => {
       });
       await transport.flush();
       expect(stored()).toHaveLength(1);
-      // The card said it could be decided for 30 minutes; the room is given an hour more.
-      clock = T0 + 89 * 60_000;
+      // The owner gives this request two minutes; the room gets one hour more.
+      const expiresAtMs = T0 + 120_000;
+      clock = expiresAtMs + 59 * 60_000;
       await transport.flush();
       expect(stored()).toHaveLength(1);
-      clock = T0 + 91 * 60_000;
+      clock = expiresAtMs + 61 * 60_000;
       await transport.flush();
       expect(stored()).toEqual([]);
       expect(cards).toEqual([]);
