@@ -13,6 +13,10 @@ import {
 } from "./agent-tools.before-tool-call.js";
 import type { ExtensionContext } from "./sessions/index.js";
 import type { AnyAgentTool } from "./tools/common.js";
+import {
+  getGatewayToolCallerIdentity,
+  withGatewayToolCallerIdentity,
+} from "./tools/gateway-caller-context.js";
 import { callGatewayTool } from "./tools/gateway.js";
 
 const hookRunner = vi.hoisted(() => ({
@@ -38,6 +42,51 @@ afterEach(() => {
 });
 
 describe("plugin approval policy subject and setup guidance", () => {
+  it.each([
+    {
+      label: "business",
+      conversation: { title: "Place call", summary: "Place a call to the owner." },
+      expected: true,
+    },
+    { label: "technical", expected: false },
+    {
+      label: "oversized",
+      conversation: { title: "Place call", summary: "x".repeat(281) },
+      expected: false,
+    },
+  ])(
+    "mints provenance only for the $label host hook confirmation",
+    async ({ conversation, expected }) => {
+      hookRunner.runBeforeToolCall.mockResolvedValue({
+        requireApproval: {
+          pluginId: "review-hook",
+          title: "Review selected action",
+          description: "Full reviewer text",
+          ...(conversation ? { conversation } : {}),
+        },
+      });
+      let observed: ReturnType<typeof getGatewayToolCallerIdentity>;
+      mockCallGateway.mockImplementation(async () => {
+        observed = getGatewayToolCallerIdentity();
+        return { id: "server-business", decision: "allow-once" };
+      });
+      const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
+      const selectedTool = { name: "business_tool", execute } as unknown as AnyAgentTool;
+      await withGatewayToolCallerIdentity({ agentId: "main", sessionKey: "main" }, async () => {
+        await wrapToolWithBeforeToolCallHook(selectedTool, {
+          agentId: "main",
+          sessionKey: "main",
+          loopDetection: { enabled: false },
+        }).execute("call-business", {}, undefined, undefined);
+      });
+      expect(observed?.approvalOrigin).toBe(expected ? "plugin" : undefined);
+      expect(observed?.approvalConversation).toEqual(expected ? conversation : undefined);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(mockCallGateway.mock.calls[0]?.[2]).not.toHaveProperty("approvalOrigin");
+      expect(mockCallGateway.mock.calls[0]?.[2]).not.toHaveProperty("conversation");
+    },
+  );
+
   it.each(["wrapped", "adapted"] as const)(
     "binds a %s tool approval to its registered owner rather than the approval hook owner",
     async (path) => {

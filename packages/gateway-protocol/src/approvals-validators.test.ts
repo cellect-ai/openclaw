@@ -62,6 +62,9 @@ describe("unified approval protocol validators", () => {
   it("accepts only reviewer-safe approval presentations", () => {
     expect(validateApprovalPresentation(execPresentation)).toBe(true);
     expect(validateApprovalPresentation(pluginPresentation)).toBe(true);
+    expect(validateApprovalPresentation({ ...pluginPresentation, origin: "plugin" })).toBe(true);
+    expect(validateApprovalPresentation({ ...pluginPresentation, origin: "forged" })).toBe(false);
+    expect(validateApprovalPresentation({ ...execPresentation, origin: "plugin" })).toBe(false);
     expect(validateApprovalPresentation(systemAgentPresentation)).toBe(true);
     expect(
       validateApprovalPresentation({

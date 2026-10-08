@@ -1,5 +1,6 @@
 import { truncateCodePoints } from "@openclaw/normalization-core/code-points";
 import { summarizeApprovalScope, type ApprovalScope } from "./approval-scope.js";
+import type { BusinessApprovalConversation } from "./business-approval-conversation.js";
 import type { ExecApprovalDecision } from "./exec-approvals-core.js";
 
 type PluginApprovalActionView = {
@@ -28,6 +29,9 @@ type PluginApprovalPlacementGrantBinding = {
 
 export type PluginApprovalRequestPayload = {
   pluginId?: string | null;
+  /** Host-derived business provenance; never accepted in public approval RPC. */
+  approvalOrigin?: "plugin";
+  conversation?: BusinessApprovalConversation;
   title: string;
   description: string;
   detail?: string | null;
@@ -49,6 +53,8 @@ export type PluginApprovalRequestPayload = {
   actions?: readonly PluginApprovalActionView[] | null;
   agentId?: string | null;
   sessionKey?: string | null;
+  /** Resolved from the live host run or worker claim, never public RPC input. */
+  sessionId?: string | null;
   /** Host-derived source run; never accepted from plugin approval RPC params. */
   runId?: string | null;
   /** Host-derived grant binding; never accepted from plugin approval RPC params. */
@@ -81,7 +87,7 @@ export const DEFAULT_PLUGIN_APPROVAL_TIMEOUT_MS = 120_000;
 export const MAX_PLUGIN_APPROVAL_TIMEOUT_MS = 600_000;
 export const PLUGIN_APPROVAL_TITLE_MAX_LENGTH = 80;
 export const PLUGIN_APPROVAL_DESCRIPTION_MAX_LENGTH = 512;
-const PLUGIN_APPROVAL_DETAIL_MAX_LENGTH = 16_384;
+export const PLUGIN_APPROVAL_DETAIL_MAX_LENGTH = 16_384;
 const PLUGIN_APPROVAL_DETAIL_TRUNCATION_SUFFIX = "…[truncated]";
 const DEFAULT_PLUGIN_APPROVAL_DECISIONS = [
   "allow-once",

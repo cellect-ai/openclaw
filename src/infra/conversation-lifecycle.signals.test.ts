@@ -3,6 +3,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createTestApprovalFixture } from "../gateway/exec-approval-manager.test-support.js";
+import { createOperatorApprovalSessionEventRuntime } from "../gateway/operator-approval-session-events.js";
 import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import {
   emitAgentEvent,
@@ -22,6 +24,7 @@ import {
   type ConversationProjectionBinding,
 } from "./conversation-lifecycle.js";
 import * as custody from "./delivery-queue-sqlite.js";
+import type { PluginApprovalRequestPayload } from "./plugin-approvals.js";
 import {
   isDecisionCard,
   isRunHeartbeat,
@@ -77,6 +80,7 @@ describe("conversation lifecycle, contract v2", () => {
     }
     resetAgentEventsForTest();
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
     await closeOpenClawStateDatabaseAsync();
     fs.rmSync(stateDir, { recursive: true, force: true });
   });
@@ -132,6 +136,9 @@ describe("conversation lifecycle, contract v2", () => {
     status: "pending",
     title: "Plugin approval requested",
     approvalId: id,
+    expiresAtMs: clock + 120_000,
+    allowedDecisions: ["allow-once", "deny"],
+    conversation: { title: "Approve a payment", summary: "Pay 49.99 EUR to the supplier" },
     ...extra,
   });
   const stored = () =>
@@ -572,6 +579,131 @@ describe("conversation lifecycle, contract v2", () => {
   });
 
   describe("decision cards", () => {
+    it.each(["approve", "decline", "expire", "cancel", "no-route"] as const)(
+      "projects the actual business approval owner and its %s settlement",
+      async (outcome, testContext) => {
+        vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
+        const transport = install();
+        admit("business-run");
+        emit("business-run", "start");
+        const fixture = createTestApprovalFixture<PluginApprovalRequestPayload>(testContext, {
+          approvalKind: "plugin",
+          resolveAllowedDecisions: (request) => request.allowedDecisions ?? ["allow-once", "deny"],
+          onLifecycle: (event) => runtime.publish(event),
+        });
+        const runtime = createOperatorApprovalSessionEventRuntime({
+          clients: [],
+          sessionMessageSubscribers: { getApprovals: () => new Set<string>() },
+          broadcastToConnIds: () => {},
+          getLiveManager: () => fixture.manager,
+        });
+        await fixture.run(async () => {
+          const record = fixture.manager.create(
+            {
+              pluginId: "billing",
+              approvalOrigin: "plugin",
+              conversation: {
+                title: "Approve a payment",
+                summary: "Pay 49.99 EUR to the supplier",
+              },
+              title: "Internal tool approval",
+              description: "Internal execution diagnostics must stay off the card",
+              allowedDecisions: ["allow-once", "deny"],
+              agentId: binding.agentId,
+              sessionKey: binding.sessionKey,
+              sessionId: "session",
+              runId: "business-run",
+            },
+            120_000,
+            "plugin:business-request",
+          );
+          const { decision } = await fixture.manager.register(record, 120_000);
+          await transport.flush();
+          expect(cards).toHaveLength(1);
+          expect(cards[0]!.content["ai.cellect.card"]).toMatchObject({
+            id: record.id,
+            status: "pending",
+            revision: 1,
+            title: "Approve a payment",
+            summary: "Pay 49.99 EUR to the supplier",
+            expiresAtMs: record.expiresAtMs,
+            decisions: ["approve", "decline"],
+          });
+          expect(of("business-run").at(-1)?.waitingOn?.ref).toBe(record.id);
+          if (outcome === "no-route") {
+            await fixture.manager.expire(record.id, "no-approval-route");
+          } else if (outcome === "expire") {
+            clock = record.expiresAtMs;
+            await fixture.manager.expire(record.id);
+          } else if (outcome === "cancel") {
+            await fixture.manager.forceDenyDetailed(
+              record.id,
+              "run-aborted",
+              { kind: "system", id: "abort" },
+              "cancelled",
+            );
+          } else {
+            expect(
+              await fixture.manager.resolve(
+                record.id,
+                outcome === "approve" ? "allow-once" : "deny",
+              ),
+            ).toBe(true);
+            expect(
+              await fixture.manager.resolve(
+                record.id,
+                outcome === "approve" ? "deny" : "allow-once",
+              ),
+            ).toBe(false);
+          }
+          await decision;
+          await transport.flush();
+          expect(cards).toHaveLength(2);
+          expect(cards[1]!.content["ai.cellect.card"]).toMatchObject({
+            id: record.id,
+            revision: 2,
+            status:
+              outcome === "approve"
+                ? "approved"
+                : outcome === "decline"
+                  ? "declined"
+                  : outcome === "expire"
+                    ? "expired"
+                    : "cancelled",
+            expiresAtMs: record.expiresAtMs,
+            summary: "Pay 49.99 EUR to the supplier",
+          });
+          expect(of("business-run").at(-1)?.waitingOn).toBeUndefined();
+        });
+      },
+    );
+
+    it("offers only decline when the owner has no one-time approval choice", async () => {
+      const transport = install();
+      admit("run");
+      approval(
+        "run",
+        plugin("plugin:decline-only", { allowedDecisions: ["allow-always", "deny"] }),
+      );
+      await transport.flush();
+      expect(cards[0]!.content["ai.cellect.card"]).toMatchObject({ decisions: ["decline"] });
+    });
+
+    it("retains the approval's action and deadline when its binding appears later", async () => {
+      let bound = false;
+      const transport = install(() => (bound ? [binding] : []));
+      admit("run");
+      approval("run", plugin("plugin:late-binding"));
+      bound = true;
+      clock += 5_001;
+      await transport.flush();
+      expect(cards[0]!.content["ai.cellect.card"]).toMatchObject({
+        id: "plugin:late-binding",
+        expiresAtMs: T0 + 120_000,
+        summary: "Pay 49.99 EUR to the supplier",
+      });
+    });
+
     it("opens a card when a person is asked and closes it when the answer comes", async () => {
       const transport = install();
       admit("run");
@@ -874,7 +1006,7 @@ describe("conversation lifecycle, contract v2", () => {
       )
       .toSorted((a, b) => a.runId.localeCompare(b.runId) || a.revision - b.revision);
     const golden = {
-      note: "Facts and cards as the gateway emits them with both switches on. Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1); the same file is held in cellect-threads kit/fixtures and read by the kit's own tests. Its cards come from a path production cannot take yet: the test sets chatDecidable on the approval itself, and nothing in the gateway does.",
+      note: "Facts and business decision cards emitted with both switches on. Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1). Canonical approval owner publication is covered separately by the business approval flow tests.",
       facts: normalized,
       heartbeats: normalized
         .map((fact, i) => {

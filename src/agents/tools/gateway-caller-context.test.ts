@@ -299,6 +299,60 @@ describe("gateway caller context wrapper", () => {
       }
     },
   );
+  it("keeps business provenance scoped to its host call and clears it for native owners", async () => {
+    await withGatewayToolCallerIdentity({ agentId: "main", sessionKey: "session-1" }, async () => {
+      await withGatewayToolApprovalOwner(
+        "business-plugin",
+        async () => {
+          expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBe("plugin");
+          await withGatewayToolApprovalOwner("codex", async () => {
+            expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBeUndefined();
+          });
+          expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBe("plugin");
+        },
+        { title: "Place call", summary: "Place a call to the owner." },
+      );
+      expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBeUndefined();
+    });
+  });
+
+  it("preserves admitted host authority through nested built-in tool wrappers", async () => {
+    const operationalRunInstance = { instanceId: "instance-1", runId: "run-1" };
+    const executionIdentityToken = createExecutionIdentityAdmissionToken("run-1");
+    let nestedIdentity: ReturnType<typeof getGatewayToolCallerIdentity>;
+
+    await withGatewayToolCallerIdentity(
+      {
+        agentId: "main",
+        sessionKey: "agent:main:session-1",
+        operationalRunInstance,
+        executionIdentityToken,
+        turnSourceChannel: "telegram",
+      },
+      async () => {
+        await withGatewayToolCallerIdentity(
+          {
+            agentId: "nested",
+            sessionKey: "agent:nested:session-2",
+            cronSelfManagementJobId: "job-1",
+            turnSourceChannel: "discord",
+          },
+          () => {
+            nestedIdentity = getGatewayToolCallerIdentity();
+          },
+        );
+      },
+    );
+
+    expect(nestedIdentity).toMatchObject({
+      agentId: "main",
+      sessionKey: "agent:main:session-1",
+      operationalRunInstance,
+      executionIdentityToken,
+      cronSelfManagementJobId: "job-1",
+      turnSourceChannel: "telegram",
+    });
+  });
 
   it.each([
     [undefined, true, true],
