@@ -156,22 +156,20 @@ const sessionSpawnContextSchema = z
     }),
     spawnModelAutoSelection: spawnModelAutoSelectionSchema.optional(),
   })
-  .transform(
-    (context): AgentRuntimeSessionSpawnContext => ({
-      ...(context.requesterProfileId ? { requesterProfileId: context.requesterProfileId } : {}),
-      ...(context.completionOwnerSessionKey
-        ? { completionOwnerSessionKey: context.completionOwnerSessionKey }
-        : {}),
-      inheritedToolPolicy: context.inheritedToolPolicy,
-      ...(context.inheritedPermissionMode
-        ? { inheritedPermissionMode: context.inheritedPermissionMode }
-        : {}),
-      ...(context.resolvedModel ? { resolvedModel: context.resolvedModel } : {}),
-      ...(context.spawnModelAutoSelection
-        ? { spawnModelAutoSelection: context.spawnModelAutoSelection }
-        : {}),
-    }),
-  );
+  .transform((context): AgentRuntimeSessionSpawnContext => ({
+    ...(context.requesterProfileId ? { requesterProfileId: context.requesterProfileId } : {}),
+    ...(context.completionOwnerSessionKey
+      ? { completionOwnerSessionKey: context.completionOwnerSessionKey }
+      : {}),
+    inheritedToolPolicy: context.inheritedToolPolicy,
+    ...(context.inheritedPermissionMode
+      ? { inheritedPermissionMode: context.inheritedPermissionMode }
+      : {}),
+    ...(context.resolvedModel ? { resolvedModel: context.resolvedModel } : {}),
+    ...(context.spawnModelAutoSelection
+      ? { spawnModelAutoSelection: context.spawnModelAutoSelection }
+      : {}),
+  }));
 const cronCreatorAuthorityGrantSchema = z.object({
   runId: normalizedRequiredStringSchema,
   token: normalizedRequiredStringSchema,
@@ -194,12 +192,10 @@ const messageActionToolContextSchema = z
     sameChannelThreadRequired: z.boolean().optional().catch(undefined),
     skipCrossContextDecoration: z.boolean().optional().catch(undefined),
   })
-  .transform(
-    (context): InternalChannelThreadingToolContext => ({
-      ...context,
-      currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
-    }),
-  );
+  .transform((context): InternalChannelThreadingToolContext => ({
+    ...context,
+    currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
+  }));
 const messageActionContextSchema = z.object({
   expiresAtMs: z.number().finite(),
   turnCapability: normalizedRequiredStringSchema.optional(),
