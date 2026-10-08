@@ -350,22 +350,25 @@ describe("the admin agent's delegated user token", () => {
       vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
     });
 
-    it("mints for the run a verified admin's message started, pinned to the sandbox", async () => {
-      const turn = plugin();
-      const message = thread();
-      await turn.arrive(message.arrive);
-      await turn.start(message.start);
-      const result = await turn.exec(message.exec);
-      expect(result?.params).toMatchObject({
-        host: "sandbox",
-        elevated: false,
-        env: { FI_DELEGATED_USER_TOKEN: TOKEN },
-      });
-      expect(mintBody()).toEqual({
-        requesterMatrixUserId: "@admin:matrix.example",
-        agentId: "cellect-fi-admin",
-      });
-    });
+    it.each(["!room:matrix.example", "!room:matrix.example:thread:$root"])(
+      "mints for a verified admin thread with host chat id %s, pinned to the sandbox",
+      async (chatId) => {
+        const turn = plugin();
+        const message = thread();
+        await turn.arrive(message.arrive);
+        expect(await turn.start({ ...message.start, chatId })).toBeUndefined();
+        const result = await turn.exec(message.exec);
+        expect(result?.params).toMatchObject({
+          host: "sandbox",
+          elevated: false,
+          env: { FI_DELEGATED_USER_TOKEN: TOKEN },
+        });
+        expect(mintBody()).toEqual({
+          requesterMatrixUserId: "@admin:matrix.example",
+          agentId: "cellect-fi-admin",
+        });
+      },
+    );
 
     it("gives the next run in the thread nothing of the first", async () => {
       vi.useFakeTimers();

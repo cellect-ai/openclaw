@@ -120,6 +120,44 @@ describe("registered Matrix agent entitlement hooks", () => {
       );
     },
   );
+  it("admits native text replies using the host session's threaded chat id and rechecks tools", async () => {
+    const hook = plugin();
+    fetchMock.mockImplementation(async () => allow());
+    const text = context("cellect-main", {
+      chatId: "!room:matrix.example:thread:$root",
+      sessionKey: "agent:cellect-main:matrix:channel:!room:matrix.example:thread:$root",
+    });
+    expect(await hook("before_agent_reply", {}, text)).toBeUndefined();
+    const result = await hook("before_tool_call", { toolName: "exec", params: {} }, tools(text));
+    expect(result).toMatchObject({ params: {} });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(fetchMock.mock.calls[0]?.[1].body)).toEqual({
+      roomId: "!room:matrix.example",
+      agentId: "cellect-main",
+      eventId: "$event",
+    });
+  });
+  it.each([
+    "agent:cellect-main:matrix:channel:!other:matrix.example:thread:$root",
+    "agent:cellect-main:matrix:channel:!room:matrix.example:thread:$other",
+    "agent:other:matrix:channel:!room:matrix.example:thread:$root",
+  ])(
+    "rejects a threaded text chat that does not match its host session: %s",
+    async (sessionKey) => {
+      const hook = plugin();
+      expect(
+        await hook(
+          "before_agent_reply",
+          {},
+          context("cellect-main", {
+            chatId: "!room:matrix.example:thread:$root",
+            sessionKey,
+          }),
+        ),
+      ).toMatchObject({ handled: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
   it("revalidates voice as the host-attested speaker rather than the root's author", async () => {
     const hook = plugin();
     fetchMock
