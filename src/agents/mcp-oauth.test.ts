@@ -1,7 +1,4 @@
-import assert from "node:assert/strict";
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { McpServerConfig } from "../config/types.mcp.js";
@@ -13,6 +10,10 @@ import {
   openOpenClawStateDatabase,
 } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
+import {
+  authorizationCode,
+  startAuthorizationServer,
+} from "./mcp-oauth-authorization-server.test-harness.js";
 import { operatorMcpOAuthIdentity } from "./mcp-oauth-identity.js";
 import {
   readMcpOAuthPendingAuthorization as readPending,
@@ -69,98 +70,6 @@ async function persistRedirect(provider: OAuthClientProvider) {
   return "REDIRECT" as const;
 }
 
-function sendOAuthJson(response: ServerResponse, body: unknown, status = 200): void {
-  response.writeHead(status, { "content-type": "application/json" });
-  response.end(JSON.stringify(body));
-}
-
-async function readOAuthBody(request: IncomingMessage): Promise<string> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of request) {
-    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
-  }
-  return Buffer.concat(chunks).toString("utf8");
-}
-
-async function startAuthorizationServer() {
-  const requests: string[] = [];
-  const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
-    const url = new URL(request.url ?? "/", issuer);
-    if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
-      sendOAuthJson(response, { resource: `${issuer}/mcp`, authorization_servers: [issuer] });
-      return;
-    }
-    if (url.pathname === "/.well-known/oauth-authorization-server") {
-      sendOAuthJson(response, {
-        issuer,
-        authorization_endpoint: `${issuer}/authorize`,
-        token_endpoint: `${issuer}/token`,
-        registration_endpoint: `${issuer}/register`,
-        response_types_supported: ["code"],
-        grant_types_supported: ["authorization_code", "refresh_token"],
-        token_endpoint_auth_methods_supported: ["none"],
-        code_challenge_methods_supported: ["S256"],
-      });
-      return;
-    }
-    if (url.pathname === "/register" && request.method === "POST") {
-      const body = await readOAuthBody(request);
-      requests.push(body);
-      const metadata = JSON.parse(body) as Record<string, unknown>;
-      sendOAuthJson(response, { ...metadata, client_id: "fixture-client" }, 201);
-      return;
-    }
-    if (url.pathname === "/token" && request.method === "POST") {
-      const body = await readOAuthBody(request);
-      requests.push(body);
-      const form = new URLSearchParams(body);
-      const challenge = createHash("sha256")
-        .update(form.get("code_verifier") ?? "")
-        .digest("base64url");
-      if (form.get("code") !== challenge) {
-        sendOAuthJson(response, { error: "invalid_grant" }, 400);
-        return;
-      }
-      sendOAuthJson(response, {
-        access_token: `access-${challenge.slice(0, 8)}`,
-        refresh_token: "fixture-refresh",
-        token_type: "Bearer",
-        expires_in: 3600,
-      });
-      return;
-    }
-    response.writeHead(404).end();
-  };
-  const server = createServer((request, response) => {
-    void handleRequest(request, response).catch((error: unknown) => {
-      response.destroy(error instanceof Error ? error : new Error("OAuth fixture failed"));
-    });
-  });
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  assert(address && typeof address !== "string");
-  const issuer = `http://127.0.0.1:${address.port}`;
-  return {
-    issuer,
-    requests,
-    close: () =>
-      new Promise<void>((resolve) => {
-        server.close(() => resolve());
-      }),
-  };
-}
-
-function authorizationCode(authorizationUrl: string): string {
-  const code = new URL(authorizationUrl).searchParams.get("code_challenge");
-  if (!code) {
-    throw new Error("authorization URL omitted the PKCE challenge");
-  }
-  return code;
-}
-
 vi.mock("@modelcontextprotocol/sdk/client/auth.js", () => ({
   auth: authMock,
 }));
@@ -176,77 +85,6 @@ describe("MCP OAuth provider", () => {
     await closeOpenClawStateDatabaseAsync();
     closeOpenClawStateDatabaseForTest();
   });
-
-  it.each(["legacy pair", "bound token with legacy client"] as const)(
-    "reauthorizes a fresh %s through actual SDK start and a recreated callback provider",
-    async (kind) => {
-      await withTempHome(
-        async () => {
-          const { auth: realAuth } = await vi.importActual<
-            typeof import("@modelcontextprotocol/sdk/client/auth.js")
-          >("@modelcontextprotocol/sdk/client/auth.js");
-          authMock.mockImplementation(realAuth);
-          const fixture = await startAuthorizationServer();
-          const identity = operatorMcpOAuthIdentity("legacy-login", `${fixture.issuer}/mcp`);
-          const config = resolvedOAuthConfig(identity);
-          const legacyTokens = {
-            access_token: "legacy-access",
-            refresh_token: "legacy-refresh-secret",
-            token_type: "Bearer",
-            expires_in: 3600,
-            ...(kind === "bound token with legacy client" ? { issuer: fixture.issuer } : {}),
-          };
-          const controller = new AbortController();
-          const login = {
-            signal: controller.signal,
-            assertCurrent: () => controller.signal.throwIfAborted(),
-            onAuthorizationPublished: vi.fn(),
-            beforeTokensSaved: vi.fn(),
-            onTokensSaved: vi.fn(),
-          };
-          try {
-            await withMcpOAuthProviderForTest({ identity }, async (provider) => {
-              await provider.saveClientInformation?.({
-                client_id: "legacy-client",
-                client_secret: "legacy-client-secret",
-              });
-              await provider.saveTokens(legacyTokens);
-            });
-            const first = await startMcpOAuthAuthorization(identity, config, { login });
-            if (first.status !== "redirect") {
-              throw new Error("Legacy credentials must require a new browser authorization");
-            }
-            expect((await readMcpOAuthStore(identity.storeKey)).tokens).toEqual(legacyTokens);
-            expect(login.onAuthorizationPublished).toHaveBeenCalledWith(first.state);
-            await closeOpenClawStateDatabaseAsync();
-            closeOpenClawStateDatabaseForTest();
-            await expect(
-              completeMcpOAuthAuthorization(identity, config, {
-                code: authorizationCode(first.authorizationUrl),
-              }),
-            ).resolves.toBe("authorized");
-            await closeOpenClawStateDatabaseAsync();
-            closeOpenClawStateDatabaseForTest();
-            const stored = await readMcpOAuthStore(identity.storeKey);
-            expect(stored.tokens?.issuer).toBe(fixture.issuer);
-            expect(stored.clientInformation?.issuer).toBe(fixture.issuer);
-            expect(stored.tokens?.access_token).toMatch(/^access-/);
-            expect(stored.tokens?.refresh_token).toBe("fixture-refresh");
-            expect(stored).not.toHaveProperty("codeVerifier");
-            expect(fixture.requests.join("\n")).not.toContain("legacy-refresh-secret");
-            expect(fixture.requests.join("\n")).not.toContain("legacy-client-secret");
-          } finally {
-            await fixture.close();
-          }
-        },
-        {
-          prefix: "openclaw-mcp-legacy-explicit-login-",
-          skipSessionCleanup: true,
-          env: { OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
-        },
-      );
-    },
-  );
 
   it("reuses a valid stored session without persisting an authorization redirect", async () => {
     await withTempHome(
