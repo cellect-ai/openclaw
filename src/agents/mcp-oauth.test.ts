@@ -83,6 +83,7 @@ async function readOAuthBody(request: IncomingMessage): Promise<string> {
 }
 
 async function startAuthorizationServer() {
+  const requests: string[] = [];
   const handleRequest = async (request: IncomingMessage, response: ServerResponse) => {
     const url = new URL(request.url ?? "/", issuer);
     if (url.pathname.startsWith("/.well-known/oauth-protected-resource")) {
@@ -103,12 +104,16 @@ async function startAuthorizationServer() {
       return;
     }
     if (url.pathname === "/register" && request.method === "POST") {
-      const metadata = JSON.parse(await readOAuthBody(request)) as Record<string, unknown>;
+      const body = await readOAuthBody(request);
+      requests.push(body);
+      const metadata = JSON.parse(body) as Record<string, unknown>;
       sendOAuthJson(response, { ...metadata, client_id: "fixture-client" }, 201);
       return;
     }
     if (url.pathname === "/token" && request.method === "POST") {
-      const form = new URLSearchParams(await readOAuthBody(request));
+      const body = await readOAuthBody(request);
+      requests.push(body);
+      const form = new URLSearchParams(body);
       const challenge = createHash("sha256")
         .update(form.get("code_verifier") ?? "")
         .digest("base64url");
@@ -140,6 +145,7 @@ async function startAuthorizationServer() {
   const issuer = `http://127.0.0.1:${address.port}`;
   return {
     issuer,
+    requests,
     close: () =>
       new Promise<void>((resolve) => {
         server.close(() => resolve());
@@ -171,11 +177,83 @@ describe("MCP OAuth provider", () => {
     closeOpenClawStateDatabaseForTest();
   });
 
+  it.each(["legacy pair", "bound token with legacy client"] as const)(
+    "reauthorizes a fresh %s through actual SDK start and a recreated callback provider",
+    async (kind) => {
+      await withTempHome(
+        async () => {
+          const { auth: realAuth } = await vi.importActual<
+            typeof import("@modelcontextprotocol/sdk/client/auth.js")
+          >("@modelcontextprotocol/sdk/client/auth.js");
+          authMock.mockImplementation(realAuth);
+          const fixture = await startAuthorizationServer();
+          const identity = operatorMcpOAuthIdentity("legacy-login", `${fixture.issuer}/mcp`);
+          const config = resolvedOAuthConfig(identity);
+          const legacyTokens = {
+            access_token: "legacy-access",
+            refresh_token: "legacy-refresh-secret",
+            token_type: "Bearer",
+            expires_in: 3600,
+            ...(kind === "bound token with legacy client" ? { issuer: fixture.issuer } : {}),
+          };
+          const controller = new AbortController();
+          const login = {
+            signal: controller.signal,
+            assertCurrent: () => controller.signal.throwIfAborted(),
+            onAuthorizationPublished: vi.fn(),
+            beforeTokensSaved: vi.fn(),
+            onTokensSaved: vi.fn(),
+          };
+          try {
+            await withMcpOAuthProviderForTest({ identity }, async (provider) => {
+              await provider.saveClientInformation?.({
+                client_id: "legacy-client",
+                client_secret: "legacy-client-secret",
+              });
+              await provider.saveTokens(legacyTokens);
+            });
+            const first = await startMcpOAuthAuthorization(identity, config, { login });
+            if (first.status !== "redirect") {
+              throw new Error("Legacy credentials must require a new browser authorization");
+            }
+            expect((await readMcpOAuthStore(identity.storeKey)).tokens).toEqual(legacyTokens);
+            expect(login.onAuthorizationPublished).toHaveBeenCalledWith(first.state);
+            await closeOpenClawStateDatabaseAsync();
+            closeOpenClawStateDatabaseForTest();
+            await expect(
+              completeMcpOAuthAuthorization(identity, config, {
+                code: authorizationCode(first.authorizationUrl),
+              }),
+            ).resolves.toBe("authorized");
+            await closeOpenClawStateDatabaseAsync();
+            closeOpenClawStateDatabaseForTest();
+            const stored = await readMcpOAuthStore(identity.storeKey);
+            expect(stored.tokens?.issuer).toBe(fixture.issuer);
+            expect(stored.clientInformation?.issuer).toBe(fixture.issuer);
+            expect(stored.tokens?.access_token).toMatch(/^access-/);
+            expect(stored.tokens?.refresh_token).toBe("fixture-refresh");
+            expect(stored).not.toHaveProperty("codeVerifier");
+            expect(fixture.requests.join("\n")).not.toContain("legacy-refresh-secret");
+            expect(fixture.requests.join("\n")).not.toContain("legacy-client-secret");
+          } finally {
+            await fixture.close();
+          }
+        },
+        {
+          prefix: "openclaw-mcp-legacy-explicit-login-",
+          skipSessionCleanup: true,
+          env: { OPENCLAW_CONFIG_PATH: undefined, OPENCLAW_STATE_DIR: undefined },
+        },
+      );
+    },
+  );
+
   it("reuses a valid stored session without persisting an authorization redirect", async () => {
     await withTempHome(
       async () => {
         await withMcpOAuthProviderForTest({ identity: REMOTE_IDENTITY }, async (provider) => {
           await provider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "stored-access",
             refresh_token: "stored-refresh",
             token_type: "Bearer",
@@ -209,6 +287,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -304,6 +383,7 @@ describe("MCP OAuth provider", () => {
 
         authMock.mockImplementationOnce(async (loginProvider) => {
           await loginProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -334,6 +414,7 @@ describe("MCP OAuth provider", () => {
       async () => {
         await withMcpOAuthProviderForTest({ identity: REMOTE_IDENTITY }, async (provider) => {
           await provider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "replacement-token",
             refresh_token: "replacement-refresh",
             token_type: "Bearer",
@@ -363,6 +444,7 @@ describe("MCP OAuth provider", () => {
           { identity: REMOTE_IDENTITY },
           async (provider) =>
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "newer-token",
               refresh_token: "newer-refresh",
               token_type: "Bearer",
@@ -399,6 +481,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -459,6 +542,7 @@ describe("MCP OAuth provider", () => {
         );
         await withMcpOAuthProviderForTest({ identity: REMOTE_IDENTITY }, async (provider) => {
           await provider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "legacy-access",
             refresh_token: "legacy-refresh",
             token_type: "Bearer",
@@ -476,6 +560,7 @@ describe("MCP OAuth provider", () => {
         authMock.mockImplementationOnce(async (refreshProvider, options) => {
           expect(options).toMatchObject({ resourceMetadataUrl, scope: "docs.read" });
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -506,6 +591,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "example",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -528,6 +614,7 @@ describe("MCP OAuth provider", () => {
 
         authMock.mockImplementationOnce(async (refreshProvider) => {
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -660,9 +747,14 @@ describe("MCP OAuth provider", () => {
             identity: REMOTE_IDENTITY,
           },
           async (provider) => {
-            await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+            await provider.saveTokens({
+              issuer: "https://auth.example.com",
+              access_token: "access",
+              token_type: "Bearer",
+            });
 
             expect(await provider.tokens()).toEqual({
+              issuer: "https://auth.example.com",
               access_token: "access",
               token_type: "Bearer",
             });
@@ -727,8 +819,12 @@ describe("MCP OAuth provider", () => {
             allowAuthorizationRedirect: true,
           },
           async (provider) => {
-            await provider.saveClientInformation?.({ client_id: "client-id" });
+            await provider.saveClientInformation?.({
+              client_id: "client-id",
+              issuer: "https://auth.example.com",
+            });
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "access",
               refresh_token: "refresh",
               token_type: "Bearer",
@@ -744,7 +840,10 @@ describe("MCP OAuth provider", () => {
         );
 
         const store = await readMcpOAuthStore(REMOTE_IDENTITY.storeKey);
-        expect(store.clientInformation).toEqual({ client_id: "client-id" });
+        expect(store.clientInformation).toEqual({
+          client_id: "client-id",
+          issuer: "https://auth.example.com",
+        });
         expect(store.codeVerifier).toBe("verifier");
         expect(store.tokens).toBeUndefined();
         expect(store.tokenExpiresAt).toBeUndefined();
@@ -766,7 +865,11 @@ describe("MCP OAuth provider", () => {
             identity: REMOTE_IDENTITY,
           },
           async (provider) => {
-            await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+            await provider.saveTokens({
+              issuer: "https://auth.example.com",
+              access_token: "access",
+              token_type: "Bearer",
+            });
             const storeKey = REMOTE_IDENTITY.storeKey;
             openOpenClawStateDatabase()
               .db.prepare("UPDATE mcp_oauth_stores SET store_json = ? WHERE store_key = ?")
@@ -923,7 +1026,11 @@ describe("MCP OAuth provider", () => {
             identity: REMOTE_IDENTITY,
           },
           async (provider) => {
-            await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+            await provider.saveTokens({
+              issuer: "https://auth.example.com",
+              access_token: "access",
+              token_type: "Bearer",
+            });
           },
         );
 
