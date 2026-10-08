@@ -26,9 +26,9 @@ function sessionThreadId(sessionKey: string): string | undefined {
 }
 
 /**
- * Talk consults keep the Matrix room on channel context, while the hook chat id
- * can still be the session raw id (`!room:server:thread:$root`). That raw id is
- * the same room only when its thread suffix is the attested Talk root.
+ * Threaded text and Talk consults keep the bare Matrix room on channel context,
+ * while the hook chat id can be the session raw id (`!room:server:thread:$root`).
+ * Accept its suffix only when it matches the host-owned session (or Talk root).
  */
 function hostChatMatchesRoom(chatId: unknown, roomId: string, threadRoot: unknown): boolean {
   if (typeof chatId !== "string" || chatId.length === 0) {
@@ -175,9 +175,18 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
       const senderId = context.channelContext?.sender?.id;
       const threadId = sessionThreadId(context.sessionKey ?? "");
+      const textSessionMatches = ["channel", "group", "direct"].some(
+        (kind) =>
+          context.sessionKey ===
+          `agent:${context.agentId}:matrix:${kind}:${roomId}:thread:${threadId}`,
+      );
       const chatMatches =
         typeof roomId === "string" &&
-        hostChatMatchesRoom(context.chatId, roomId, talkThreadRootEventId);
+        hostChatMatchesRoom(
+          context.chatId,
+          roomId,
+          talkThreadRootEventId ?? (textSessionMatches ? threadId : undefined),
+        );
       const senderMatches = typeof senderId === "string" && context.senderId === senderId;
       if (
         !context.runId ||
