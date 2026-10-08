@@ -80,7 +80,7 @@ afterEach(() => {
 });
 
 describe("plugin approval signed agent runtime", () => {
-  it.each(["business", "native", "mismatched", "worker"] as const)(
+  it.for(["business", "native", "mismatched", "worker"] as const)(
     "binds %s requests to the live host session and preserves the verdict",
     async (kind, testContext) => {
       vi.stubEnv(DECISION_CARDS_ENV, "true");
@@ -152,7 +152,7 @@ describe("plugin approval signed agent runtime", () => {
           .db.prepare(
             "SELECT presentation_json, source_session_id FROM operator_approvals WHERE approval_id = ?",
           )
-          .get(record.id) as { presentation_json: string; source_session_id: string };
+          .get(record.id) as { presentation_json: string; source_session_id: string | null };
         expect(stored.source_session_id).toBe(
           kind === "worker" ? "worker-session" : kind === "mismatched" ? null : "host-session",
         );

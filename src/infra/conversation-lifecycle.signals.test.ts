@@ -579,7 +579,7 @@ describe("conversation lifecycle, contract v2", () => {
   });
 
   describe("decision cards", () => {
-    it.each(["approve", "decline", "expire", "cancel", "no-route"] as const)(
+    it.for(["approve", "decline", "expire", "cancel", "no-route"] as const)(
       "projects the actual business approval owner and its %s settlement",
       async (outcome, testContext) => {
         vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
