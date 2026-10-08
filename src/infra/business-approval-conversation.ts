@@ -6,7 +6,7 @@ import {
 import { sanitizeExecApprovalDisplayText } from "./exec-approval-text-sanitize.js";
 
 /** Enable writers only after compatible approval readers have been deployed. */
-export const DECISION_CARDS_ENV = "OPENCLAW_CONVERSATION_DECISION_CARDS";
+const DECISION_CARDS_ENV = "OPENCLAW_CONVERSATION_DECISION_CARDS";
 
 export function decisionCardsEnabled(
   env: Readonly<Record<string, string | undefined>> = process.env,
@@ -30,7 +30,9 @@ export function resolveBusinessApprovalConversation(request: {
   let copy = request.conversation;
   if (copy === undefined && request.scope && request.scope.kind !== "standing-grant") {
     const scope = sanitizeApprovalScope(request.scope);
-    if (!scope || scope.kind === "standing-grant") return;
+    if (!scope || scope.kind === "standing-grant") {
+      return undefined;
+    }
     copy = {
       title:
         scope.kind === "payment"
@@ -41,14 +43,22 @@ export function resolveBusinessApprovalConversation(request: {
       summary: summarizeApprovalScope(scope),
     };
   }
-  if (!copy || typeof copy !== "object" || Array.isArray(copy)) return;
-  if (!("title" in copy) || !("summary" in copy)) return;
+  if (!copy || typeof copy !== "object" || Array.isArray(copy)) {
+    return undefined;
+  }
+  if (!("title" in copy) || !("summary" in copy)) {
+    return undefined;
+  }
   const result: BusinessApprovalConversation = { title: "", summary: "" };
   for (const key of ["title", "summary"] as const) {
     const raw = copy[key];
-    if (typeof raw !== "string" || raw.length > LIMITS[key] || INVISIBLE.test(raw)) return;
+    if (typeof raw !== "string" || raw.length > LIMITS[key] || INVISIBLE.test(raw)) {
+      return undefined;
+    }
     const text = sanitizeExecApprovalDisplayText(raw).trim();
-    if (!VISIBLE.test(text) || text.length > LIMITS[key] || INVISIBLE.test(text)) return;
+    if (!VISIBLE.test(text) || text.length > LIMITS[key] || INVISIBLE.test(text)) {
+      return undefined;
+    }
     result[key] = text;
   }
   return result;

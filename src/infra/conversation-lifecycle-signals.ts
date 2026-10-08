@@ -15,7 +15,7 @@ import {
 import { formatErrorMessage } from "./errors.js";
 
 /** The optional fields of a lifecycle fact. A consumer built before them rejects the whole fact. */
-export const LIFECYCLE_SIGNAL_KEYS = [
+const LIFECYCLE_SIGNAL_KEYS = [
   "atMs",
   "admittedAtMs",
   "waitingOn",
@@ -23,7 +23,7 @@ export const LIFECYCLE_SIGNAL_KEYS = [
   "stoppedBy",
 ] as const;
 
-export const RUN_FAILURE_KINDS = [
+const RUN_FAILURE_KINDS = [
   "refusal",
   "timeout",
   "rate_limit",
@@ -33,10 +33,10 @@ export const RUN_FAILURE_KINDS = [
 ] as const;
 export type RunFailureKind = (typeof RUN_FAILURE_KINDS)[number];
 
-export const RUN_WAITING_ON_KINDS = ["question", "confirmation", "workflowApproval"] as const;
+const RUN_WAITING_ON_KINDS = ["question", "confirmation", "workflowApproval"] as const;
 export type RunWaitingOn = { kind: (typeof RUN_WAITING_ON_KINDS)[number]; ref: string };
 
-export const RUN_STOPPED_BY_KINDS = ["person", "coordinator", "auth_revoked"] as const;
+const RUN_STOPPED_BY_KINDS = ["person", "coordinator", "auth_revoked"] as const;
 export type RunStoppedBy = { kind: (typeof RUN_STOPPED_BY_KINDS)[number] };
 
 export type LifecycleSignals = {
@@ -48,14 +48,14 @@ export type LifecycleSignals = {
 };
 
 /** Producer times are epoch milliseconds in [10^12, 10^13). */
-export const LIFECYCLE_TIME_MIN_MS = 1_000_000_000_000;
-export const LIFECYCLE_TIME_MAX_MS = 10_000_000_000_000;
-export const RUN_REFERENCE_MAX = 128;
+const LIFECYCLE_TIME_MIN_MS = 1_000_000_000_000;
+const LIFECYCLE_TIME_MAX_MS = 10_000_000_000_000;
+const RUN_REFERENCE_MAX = 128;
 const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 /** The producer flag: switched on only after the projector, Fi and iOS accept the fields. */
-export const LIFECYCLE_SIGNALS_ENV = "OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS";
-export { DECISION_CARDS_ENV, decisionCardsEnabled } from "./business-approval-conversation.js";
+const LIFECYCLE_SIGNALS_ENV = "OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS";
+export { decisionCardsEnabled } from "./business-approval-conversation.js";
 
 function flag(name: string, env: Readonly<Record<string, string | undefined>>): boolean {
   const value = env[name]?.trim().toLowerCase();
@@ -86,7 +86,7 @@ export function isRunReference(value: unknown): value is string {
  * state it does not describe is a producer bug the consumer rejects as a whole,
  * so it is dropped here instead of sent.
  */
-export function validSignals(state: string, signals: LifecycleSignals): LifecycleSignals {
+function validSignals(state: string, signals: LifecycleSignals): LifecycleSignals {
   const out: LifecycleSignals = {};
   if (isLifecycleTime(signals.atMs)) {
     out.atMs = signals.atMs;
@@ -154,7 +154,7 @@ export function nextAtMs(now: number, previous: number | undefined): number | un
 }
 
 /** The chat stream's reading of an error text: refusal, rate limit, context length or timeout, else none. */
-export function errorKindOf(error: unknown): RunFailureKind | undefined {
+function errorKindOf(error: unknown): RunFailureKind | undefined {
   if (error === undefined) {
     return undefined;
   }
@@ -228,11 +228,9 @@ export const CHAT_DECIDABLE_APPROVAL_KINDS = ["plugin"] as const;
 // ---------------------------------------------------------------------------
 // Decision card (kit `decision.ts`, version 1).
 
-export const DECISION_CARD_TYPE = "m.cellect.decision";
-export const CARD_CONTENT_KEY = "ai.cellect.card";
-export const DECISION_TITLE_MAX = 80;
-export const DECISION_SUMMARY_MAX = 280;
-export const DECISION_STATUSES = [
+const DECISION_CARD_TYPE = "m.cellect.decision";
+const CARD_CONTENT_KEY = "ai.cellect.card";
+const DECISION_STATUSES = [
   "pending",
   "approved",
   "declined",
@@ -260,7 +258,7 @@ const UNSAFE_TEXT = /[\p{Cc}\p{Cf}\u2028\u2029]/u;
 const VISIBLE = /[^\s\p{Z}\p{Cc}\p{Cf}]/u;
 
 /** One line of plain text, no control or format characters, never empty, cut to `max`. */
-export function cardText(value: string, max: number, fallback: string): string {
+function cardText(value: string, max: number, fallback: string): string {
   const flat = value
     .replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
     .replace(/\s+/g, " ")
@@ -293,8 +291,9 @@ export function buildConfirmationCard(params: {
     decisions.length > 2 ||
     new Set(decisions).size !== decisions.length ||
     decisions.some((decision) => decision !== "approve" && decision !== "decline")
-  )
+  ) {
     return undefined;
+  }
   const runId = cardText(params.runId, 256, "");
   return {
     type: DECISION_CARD_TYPE,

@@ -13,10 +13,8 @@ import {
   factForSend,
   failureKindOf,
   lifecycleSignalsEnabled,
-  LIFECYCLE_SIGNAL_KEYS,
   nextAtMs,
   stoppedByOf,
-  validSignals,
   waitingOnOf,
   type LifecycleSignals,
 } from "./conversation-lifecycle-signals.js";
@@ -111,7 +109,9 @@ describe("what the gateway sends", () => {
       const sent = factForSend(fact as never, { signals: false, decisionCards: true });
       expect(sent).toEqual(baseRunLifecycle(fact));
       expect(
-        Object.keys(sent).some((key) => (LIFECYCLE_SIGNAL_KEYS as readonly string[]).includes(key)),
+        Object.keys(sent).some((key) =>
+          ["atMs", "admittedAtMs", "waitingOn", "failureKind", "stoppedBy"].includes(key),
+        ),
       ).toBe(false);
     }
   });
@@ -143,7 +143,11 @@ describe("what the gateway sends", () => {
       "revision",
       "state",
       "resultEventId",
-      ...LIFECYCLE_SIGNAL_KEYS,
+      "atMs",
+      "admittedAtMs",
+      "waitingOn",
+      "failureKind",
+      "stoppedBy",
     ]);
     let checked = 0;
     for (const test of lifecycle.negative) {
@@ -184,19 +188,35 @@ describe("what the gateway sends", () => {
       stoppedBy: { kind: "person" },
       atMs: 1_789_718_400_000,
     };
-    expect(validSignals("running", signals)).toEqual({ atMs: 1_789_718_400_000 });
-    expect(validSignals("failed", signals)).toEqual({
+    expect(
+      factForSend({ state: "running", ...signals }, { signals: true, decisionCards: true }),
+    ).toEqual({ state: "running", atMs: 1_789_718_400_000 });
+    expect(
+      factForSend({ state: "failed", ...signals }, { signals: true, decisionCards: true }),
+    ).toEqual({
+      state: "failed",
       atMs: 1_789_718_400_000,
       failureKind: "timeout",
     });
-    expect(validSignals("cancelled", signals)).toEqual({
+    expect(
+      factForSend({ state: "cancelled", ...signals }, { signals: true, decisionCards: true }),
+    ).toEqual({
+      state: "cancelled",
       atMs: 1_789_718_400_000,
       stoppedBy: { kind: "person" },
     });
-    expect(validSignals("running", { atMs: 1_789_718_400, admittedAtMs: 1e13 })).toEqual({});
     expect(
-      validSignals("waiting", { waitingOn: { kind: "confirmation", ref: "has space" } }),
-    ).toEqual({});
+      factForSend(
+        { state: "running", atMs: 1_789_718_400, admittedAtMs: 1e13 },
+        { signals: true, decisionCards: true },
+      ),
+    ).toEqual({ state: "running" });
+    expect(
+      factForSend(
+        { state: "waiting", waitingOn: { kind: "confirmation", ref: "has space" } },
+        { signals: true, decisionCards: true },
+      ),
+    ).toEqual({ state: "waiting" });
   });
 
   it("keeps the producer's clock strictly forward", () => {

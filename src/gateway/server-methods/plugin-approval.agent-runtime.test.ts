@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
-import { DECISION_CARDS_ENV } from "../../infra/business-approval-conversation.js";
 import type { PluginApprovalRequestPayload } from "../../infra/plugin-approvals.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import type { AgentRuntimeIdentity } from "../agent-runtime-identity-token.js";
@@ -83,7 +82,7 @@ describe("plugin approval signed agent runtime", () => {
   it.for(["business", "native", "mismatched", "worker"] as const)(
     "binds %s requests to the live host session and preserves the verdict",
     async (kind, testContext) => {
-      vi.stubEnv(DECISION_CARDS_ENV, "true");
+      vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
       const fixture = await createPreparedTestApprovalManager<PluginApprovalRequestPayload>(
         testContext,
         {
@@ -159,7 +158,9 @@ describe("plugin approval signed agent runtime", () => {
         expect(JSON.parse(stored.presentation_json).origin).toBe(
           kind === "business" ? "plugin" : undefined,
         );
-        if (kind !== "worker") expect(getAgentRunContext).toHaveBeenCalledWith("run-1");
+        if (kind !== "worker") {
+          expect(getAgentRunContext).toHaveBeenCalledWith("run-1");
+        }
         await fixture.manager.resolve(record.id, "allow-once", "test");
         await pending;
         expect((await fixture.manager.getSnapshot(record.id))?.decision).toBe("allow-once");

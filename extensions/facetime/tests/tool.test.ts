@@ -105,7 +105,14 @@ describe("FaceTime agent tool", () => {
   });
 
   it("keeps approval required but omits conversation copy when the target cannot fit safely", () => {
-    for (const handle of ["a".repeat(280), "owner\u202e@example.com"]) {
+    for (const handle of [
+      "a".repeat(280),
+      "owner\u202e@example.com",
+      "owner\u0000@example.com",
+      "owner\u001f@example.com",
+      "owner\u007f@example.com",
+      "owner\u009f@example.com",
+    ]) {
       const approval = resolveFaceTimeToolApproval({
         action: "initiate_call",
         handle,
