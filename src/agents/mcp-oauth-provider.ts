@@ -1,7 +1,11 @@
 /** MCP SDK OAuth provider backed by canonical OpenClaw state. */
 import { randomUUID } from "node:crypto";
 import type { OAuthClientProvider } from "@modelcontextprotocol/sdk/client/auth.js";
-import type { OAuthClientMetadata, OAuthTokens } from "@modelcontextprotocol/sdk/shared/auth.js";
+import type {
+  OAuthClientInformationMixed,
+  OAuthClientMetadata,
+  OAuthTokens,
+} from "@modelcontextprotocol/sdk/shared/auth.js";
 import type { FetchLike } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { OpenClawStateAsyncLeaseContext } from "../state/openclaw-state-lease.js";
@@ -35,6 +39,28 @@ function resolveTokenExpiresAt(tokens: OAuthTokens): number | undefined {
   return typeof expiresIn === "number" && Number.isFinite(expiresIn)
     ? Date.now() + expiresIn * 1000
     : undefined;
+}
+
+function hasCredentialIssuer(credential: OAuthTokens | OAuthClientInformationMixed): boolean {
+  if (typeof credential.issuer !== "string") {
+    return false;
+  }
+  if (!URL.canParse(credential.issuer)) {
+    return false;
+  }
+  const issuer = new URL(credential.issuer);
+  return issuer.protocol === "https:" || issuer.protocol === "http:";
+}
+
+/** Stored discovery is mutable; only the SDK's credential stamp is issuer authority. */
+export function hasUnboundMcpOAuthCredentials(store: McpOAuthStore): boolean {
+  return (
+    (store.clientInformation !== undefined && !hasCredentialIssuer(store.clientInformation)) ||
+    (store.tokens !== undefined && !hasCredentialIssuer(store.tokens)) ||
+    (store.clientInformation !== undefined &&
+      store.tokens !== undefined &&
+      store.clientInformation.issuer !== store.tokens.issuer)
+  );
 }
 
 function resolveOAuthRedirectUrl(config: McpOAuthConfig, store: McpOAuthStore = {}): string {
@@ -97,6 +123,10 @@ export async function createMcpOAuthClientProvider(params: {
   let preparation = 0;
   let nextWrite = 0;
   let lastSettledWrite = 0;
+  // Explicit sign-in may replace legacy credentials, but never offer their
+  // refresh grant to a freshly registered client during that sign-in.
+  let freshAuthorizationRequired = false;
+  let tokensIssued = false;
   const settleWrite = (write: number, value: typeof prepared) => {
     if (write < lastSettledWrite) {
       return;
@@ -114,6 +144,15 @@ export async function createMcpOAuthClientProvider(params: {
     await params.lease.assertOwned();
     params.login?.assertCurrent();
     if (currentPreparation === preparation) {
+      if (
+        params.allowAuthorizationRedirect === true &&
+        (hasUnboundMcpOAuthCredentials(store) ||
+          (!tokensIssued &&
+            store.codeVerifier !== undefined &&
+            store.lastAuthorizationUrl !== undefined))
+      ) {
+        freshAuthorizationRequired = true;
+      }
       prepared = { redirectUrl: store.redirectUrl };
     }
     return store;
@@ -161,6 +200,13 @@ export async function createMcpOAuthClientProvider(params: {
       );
     }
   };
+  const assertCredentialsBound = (store: McpOAuthStore) => {
+    if (hasUnboundMcpOAuthCredentials(store) && params.allowAuthorizationRedirect !== true) {
+      throw new Error(
+        `MCP server "${params.identity.serverName}" has OAuth credentials without a trustworthy issuer. Run openclaw mcp login ${params.identity.serverName} to sign in again.`,
+      );
+    }
+  };
   return {
     get redirectUrl() {
       return resolveOAuthRedirectUrl(config, preparedStore());
@@ -176,6 +222,7 @@ export async function createMcpOAuthClientProvider(params: {
         params.login.assertCurrent();
         if (
           store.tokens?.access_token &&
+          !freshAuthorizationRequired &&
           store.pendingAuthorizationChallenge?.requiresAuthorization !== true &&
           (store.tokenExpiresAt === undefined || store.tokenExpiresAt > Date.now())
         ) {
@@ -190,7 +237,21 @@ export async function createMcpOAuthClientProvider(params: {
     async clientInformation() {
       const store = await readStore();
       params.login?.assertCurrent();
-      return store.clientInformation;
+      assertCredentialsBound(store);
+      const authorizationServerUrl = store.discoveryState?.authorizationServerUrl;
+      if (
+        params.allowAuthorizationRedirect !== true &&
+        store.clientInformation !== undefined &&
+        authorizationServerUrl !== undefined &&
+        store.clientInformation.issuer !== authorizationServerUrl
+      ) {
+        // Discovery identifies this request's destination, never an old credential's authority.
+        // Stop before the SDK can register a replacement client and overwrite the stored pair.
+        assertAuthorizationRedirectAllowed();
+      }
+      return store.clientInformation && hasCredentialIssuer(store.clientInformation)
+        ? store.clientInformation
+        : undefined;
     },
     async saveClientInformation(clientInformation) {
       await updateStore({ kind: "clientInformation", clientInformation });
@@ -205,6 +266,10 @@ export async function createMcpOAuthClientProvider(params: {
       }
       const store = await readStore();
       params.login?.assertCurrent();
+      assertCredentialsBound(store);
+      if (freshAuthorizationRequired) {
+        return undefined;
+      }
       const discoveredAuthorizationServerUrl = store.discoveryState?.authorizationServerUrl;
       if (!store.tokens?.refresh_token || discoveredAuthorizationServerUrl === undefined) {
         return store.tokens;
@@ -222,6 +287,8 @@ export async function createMcpOAuthClientProvider(params: {
           onAcknowledged: params.login?.onTokensSaved,
         },
       );
+      tokensIssued = true;
+      freshAuthorizationRequired = false;
       params.login?.assertCurrent();
     },
     async redirectToAuthorization(authorizationUrl) {
@@ -272,6 +339,10 @@ export async function createMcpOAuthClientProvider(params: {
       params.login?.assertCurrent();
       if (params.login) {
         throw new Error("Existing authentication was retained. Use the CLI sign-in flow.");
+      }
+      const store = await readStore();
+      if (hasUnboundMcpOAuthCredentials(store)) {
+        throw new Error("Legacy OAuth credentials were retained. Use the CLI sign-in flow.");
       }
       await updateStore({
         kind: "invalidate",

@@ -92,12 +92,35 @@ describe("FaceTime agent tool", () => {
       requireApproval: {
         title: "Place FaceTime call",
         description: "Place a video FaceTime call to owner@example.com.",
+        conversation: {
+          title: "Place FaceTime call",
+          summary: "Place a video FaceTime call to owner@example.com.",
+        },
         severity: "warning",
         allowedDecisions: ["allow-once", "deny"],
         timeoutMs: 120_000,
       },
     });
     expect(resolveFaceTimeToolApproval({ action: "get_status" })).toBeUndefined();
+  });
+
+  it("keeps approval required but omits conversation copy when the target cannot fit safely", () => {
+    for (const handle of [
+      "a".repeat(280),
+      "owner\u202e@example.com",
+      "owner\u0000@example.com",
+      "owner\u001f@example.com",
+      "owner\u007f@example.com",
+      "owner\u009f@example.com",
+    ]) {
+      const approval = resolveFaceTimeToolApproval({
+        action: "initiate_call",
+        handle,
+      })?.requireApproval;
+      expect(approval).toBeDefined();
+      expect(approval?.conversation).toBeUndefined();
+      expect(approval?.description).toContain(handle);
+    }
   });
 
   it("dials an authorized owner target without exposing helper internals", async () => {

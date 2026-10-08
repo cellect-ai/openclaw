@@ -463,6 +463,7 @@ private fun parseGatewayExecApprovalPresentation(
     if (kind == GatewayApprovalKind.SystemAgent && decisions != listOf("allow-once", "deny")) return null
     if (kind == GatewayApprovalKind.SystemAgent && presentation.strictString("proposalHash")?.matches(Regex("[a-f0-9]{64}")) != true) return null
     if (kind == GatewayApprovalKind.Plugin && presentation.strictString("severity") !in setOf("info", "warning", "critical")) return null
+    if (kind == GatewayApprovalKind.Plugin && presentation.containsKey("origin") && presentation.strictString("origin") != "plugin") return null
     val agentId = presentation.optionalString("agentId", requireNonEmpty = true) ?: return null
     val external = if (presentation.containsKey("externalResolution")) presentation["externalResolution"].asObjectOrNull() ?: return null else null
     val externalDecisions =
@@ -630,7 +631,7 @@ private val EXEC_APPROVAL_PRESENTATION_KEYS =
   EXEC_APPROVAL_PRESENTATION_REQUIRED_KEYS +
     setOf("commandPreview", "warningText", "host", "nodeId", "agentId", "scope")
 
-private val PLUGIN_APPROVAL_PRESENTATION_KEYS = setOf("kind", "title", "description", "detail", "severity", "pluginId", "toolName", "agentId", "scope", "allowedDecisions", "externalResolution")
+private val PLUGIN_APPROVAL_PRESENTATION_KEYS = setOf("kind", "title", "description", "detail", "severity", "pluginId", "toolName", "agentId", "scope", "allowedDecisions", "externalResolution", "origin")
 private val SYSTEM_APPROVAL_PRESENTATION_KEYS = setOf("kind", "title", "description", "proposalHash", "agentId", "allowedDecisions")
 
 private val APPROVAL_DECISIONS = setOf("allow-once", "allow-always", "deny")

@@ -1,0 +1,252 @@
+{
+  "note": "Facts and business decision cards emitted with both switches on. Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1). Canonical approval owner publication is covered separately by the business approval flow tests.",
+  "facts": [
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 1,
+      "state": "queued",
+      "atMs": 1789718400000,
+      "admittedAtMs": 1789718400000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 2,
+      "state": "running",
+      "atMs": 1789718401000,
+      "admittedAtMs": 1789718400000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 3,
+      "state": "waiting",
+      "atMs": 1789718402000,
+      "admittedAtMs": 1789718400000,
+      "waitingOn": {
+        "kind": "confirmation",
+        "ref": "approval-0001"
+      }
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 4,
+      "state": "waiting",
+      "atMs": 1789718470000,
+      "admittedAtMs": 1789718400000,
+      "waitingOn": {
+        "kind": "confirmation",
+        "ref": "approval-0001"
+      }
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 5,
+      "state": "running",
+      "atMs": 1789718480000,
+      "admittedAtMs": 1789718400000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 6,
+      "state": "running",
+      "atMs": 1789718550000,
+      "admittedAtMs": 1789718400000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 7,
+      "state": "running",
+      "atMs": 1789718615000,
+      "admittedAtMs": 1789718400000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0001",
+      "generation": "generation-opaque-0001",
+      "revision": 8,
+      "state": "failed",
+      "atMs": 1789718621000,
+      "admittedAtMs": 1789718400000,
+      "failureKind": "rate_limit"
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0002",
+      "generation": "generation-opaque-0001",
+      "revision": 1,
+      "state": "queued",
+      "atMs": 1789718405000,
+      "admittedAtMs": 1789718405000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0002",
+      "generation": "generation-opaque-0001",
+      "revision": 2,
+      "state": "running",
+      "atMs": 1789718405001,
+      "admittedAtMs": 1789718405000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0002",
+      "generation": "generation-opaque-0001",
+      "revision": 3,
+      "state": "cancelled",
+      "atMs": 1789718405002,
+      "admittedAtMs": 1789718405000,
+      "stoppedBy": {
+        "kind": "coordinator"
+      }
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0003",
+      "generation": "generation-opaque-0001",
+      "revision": 1,
+      "state": "queued",
+      "atMs": 1789718405000,
+      "admittedAtMs": 1789718405000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0003",
+      "generation": "generation-opaque-0001",
+      "revision": 2,
+      "state": "running",
+      "atMs": 1789718405001,
+      "admittedAtMs": 1789718405000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0003",
+      "generation": "generation-opaque-0001",
+      "revision": 3,
+      "state": "completed",
+      "atMs": 1789718405002,
+      "admittedAtMs": 1789718405000
+    },
+    {
+      "version": 2,
+      "environment": "test",
+      "conversationId": "conversation-0001",
+      "roomId": "!room:matrix.test",
+      "bindingId": "binding-0001",
+      "runId": "run-0003",
+      "generation": "generation-opaque-0001",
+      "revision": 4,
+      "state": "completed",
+      "resultEventId": "$result-0003",
+      "atMs": 1789718622000,
+      "admittedAtMs": 1789718405000
+    }
+  ],
+  "heartbeats": [
+    3,
+    5,
+    6
+  ],
+  "cards": [
+    {
+      "type": "m.cellect.decision",
+      "version": 1,
+      "kind": "confirmation",
+      "id": "approval-0001",
+      "revision": 1,
+      "status": "pending",
+      "runId": "run-0001",
+      "title": "Approve a payment",
+      "summary": "Pay 49.99 EUR to the supplier",
+      "decisions": [
+        "approve",
+        "decline"
+      ],
+      "expiresAtMs": 1789718522000
+    },
+    {
+      "type": "m.cellect.decision",
+      "version": 1,
+      "kind": "confirmation",
+      "id": "approval-0001",
+      "revision": 2,
+      "status": "approved",
+      "runId": "run-0001",
+      "title": "Approve a payment",
+      "summary": "Pay 49.99 EUR to the supplier",
+      "decisions": [
+        "approve",
+        "decline"
+      ],
+      "expiresAtMs": 1789718522000
+    }
+  ]
+}

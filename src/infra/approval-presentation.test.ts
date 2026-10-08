@@ -1,5 +1,5 @@
 // Canonical durable approval presentation safety tests.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApprovalPresentation } from "./approval-presentation.js";
 import { PLUGIN_APPROVAL_DETAIL_MAX_LENGTH } from "./plugin-approvals.js";
 
@@ -19,6 +19,7 @@ function buildPluginPresentation(request: {
   description: string;
   detail?: string;
   pluginId?: string;
+  approvalOrigin?: "plugin";
   toolName?: string;
   agentId?: string;
   externalResolution?: {
@@ -29,7 +30,52 @@ function buildPluginPresentation(request: {
   return buildApprovalPresentation({ kind: "plugin", request, allowedDecisions });
 }
 
+afterEach(() => vi.unstubAllEnvs());
+
 describe("buildApprovalPresentation", () => {
+  it("projects only host-recorded plugin provenance without inferring it from tool metadata", () => {
+    vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
+    const request = {
+      title: "Review payment",
+      description: "Pay the vendor",
+      pluginId: "fi",
+      toolName: "pay",
+    };
+    expect(buildPluginPresentation(request)).not.toHaveProperty("origin");
+    expect(buildPluginPresentation({ ...request, approvalOrigin: "plugin" })).toMatchObject({
+      origin: "plugin",
+    });
+  });
+
+  it.each([undefined, "", "false", "0", "invalid"])(
+    "keeps reader-first presentation bytes unchanged with the card writer switch %s",
+    (flag) => {
+      vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", flag);
+      const request = { title: "Review payment", description: "Pay the vendor", pluginId: "fi" };
+      const before = buildPluginPresentation(request);
+      const prepared = buildPluginPresentation({ ...request, approvalOrigin: "plugin" });
+      expect(JSON.stringify(prepared)).toBe(JSON.stringify(before));
+      expect(prepared).not.toHaveProperty("origin");
+    },
+  );
+
+  it("does not mint origin for native or invalid provenance when cards are enabled", () => {
+    vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
+    for (const approvalOrigin of [undefined, "harness-native", "forged"]) {
+      expect(
+        buildApprovalPresentation({
+          kind: "plugin",
+          request: {
+            title: "Review file access",
+            description: "Native permission prompt",
+            approvalOrigin,
+          },
+          allowedDecisions,
+        }),
+      ).not.toHaveProperty("origin");
+    }
+  });
+
   it.each([
     { kind: "exec", request: { command: "printf safe" } },
     {

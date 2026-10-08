@@ -7,6 +7,7 @@ import {
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
@@ -175,7 +176,24 @@ export function createPluginApprovalHandlers(
         normalizeTrimmedString(value) === null
           ? null
           : sanitizeExecApprovalDisplayText(normalizeTrimmedString(value)!);
+      const localRunContext =
+        trustedAgentRuntime?.delegatedAuthority.kind === "local"
+          ? getAgentRunContext(trustedAgentRuntime.operationalRunInstance.runId)
+          : undefined;
+      const sourceSessionId =
+        trustedAgentRuntime?.delegatedAuthority.kind === "worker"
+          ? trustedAgentRuntime.delegatedAuthority.turnClaim.sessionId
+          : localRunContext?.sessionKey === trustedAgentRuntime?.sessionKey &&
+              localRunContext?.agentId === trustedAgentRuntime?.agentId
+            ? localRunContext?.sessionId
+            : undefined;
       const request: PluginApprovalRequestPayload = {
+        ...(trustedAgentRuntime?.approvalOrigin === "plugin" ? { approvalOrigin: "plugin" } : {}),
+        ...(trustedAgentRuntime?.approvalOrigin === "plugin" &&
+        trustedAgentRuntime.approvalConversation
+          ? { conversation: { ...trustedAgentRuntime.approvalConversation } }
+          : {}),
+        sessionId: sourceSessionId ?? null,
         pluginId: trustedAgentRuntime?.approvalOwnerPluginId ?? sanitizeMeta(p.pluginId),
         title: sanitizedTitle,
         description: sanitizedDescription,

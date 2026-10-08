@@ -21,6 +21,7 @@ it("persists SDK callbacks and pending state across close without parent SQL or 
     requireNodeSqlite();
     const identity = operatorMcpOAuthIdentity("worker-writes", "https://mcp.example.test/rpc");
     const tokens = {
+      issuer: "https://issuer.example.test",
       access_token: "fixture-access",
       refresh_token: "fixture-refresh",
       token_type: "Bearer",
@@ -40,7 +41,10 @@ it("persists SDK callbacks and pending state across close without parent SQL or 
           config: { redirectUrl },
           allowAuthorizationRedirect: true,
         });
-        await provider.saveClientInformation?.({ client_id: "fixture-client" });
+        await provider.saveClientInformation?.({
+          client_id: "fixture-client",
+          issuer: "https://issuer.example.test",
+        });
         await provider.saveDiscoveryState?.(discovery);
         const supplied = { ...tokens };
         const saving = provider.saveTokens(supplied);
@@ -69,7 +73,10 @@ it("persists SDK callbacks and pending state across close without parent SQL or 
         expect(await readMcpOAuthPendingAuthorization("fixture-delete", context)).toBeUndefined();
         await provider.invalidateCredentials?.("tokens");
         expect(await provider.tokens()).toBeUndefined();
-        expect(await provider.clientInformation()).toEqual({ client_id: "fixture-client" });
+        expect(await provider.clientInformation()).toEqual({
+          client_id: "fixture-client",
+          issuer: "https://issuer.example.test",
+        });
         expect(await provider.codeVerifier()).toBe("fixture-verifier");
         await provider.saveTokens(tokens);
       });

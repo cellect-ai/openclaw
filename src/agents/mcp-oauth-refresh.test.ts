@@ -91,6 +91,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "test-token-placeholder",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -122,6 +123,7 @@ describe("MCP OAuth provider", () => {
       async () => {
         await withMcpOAuthProviderForTest({ identity: IDENTITY }, async (provider) => {
           await provider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "decoy-token",
             refresh_token: "test-auth-token",
             token_type: "Bearer",
@@ -196,6 +198,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -205,6 +208,7 @@ describe("MCP OAuth provider", () => {
         );
         authMock.mockImplementationOnce(async (refreshProvider) => {
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -245,6 +249,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -265,6 +270,7 @@ describe("MCP OAuth provider", () => {
           signalRefreshStarted?.();
           await refreshGate;
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -308,6 +314,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -326,6 +333,7 @@ describe("MCP OAuth provider", () => {
         });
         authMock.mockImplementationOnce(async (refreshProvider) => {
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -377,6 +385,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -396,6 +405,7 @@ describe("MCP OAuth provider", () => {
           signalStarted?.();
           await gate;
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
@@ -439,6 +449,7 @@ describe("MCP OAuth provider", () => {
           },
           async (provider) => {
             await provider.saveTokens({
+              issuer: "https://auth.example.com",
               access_token: "decoy-token",
               refresh_token: "test-auth-token",
               token_type: "Bearer",
@@ -448,6 +459,7 @@ describe("MCP OAuth provider", () => {
         );
         authMock.mockImplementationOnce(async (refreshProvider) => {
           await refreshProvider.saveTokens({
+            issuer: "https://auth.example.com",
             access_token: "gateway-token",
             refresh_token: "secret-token",
             token_type: "Bearer",
