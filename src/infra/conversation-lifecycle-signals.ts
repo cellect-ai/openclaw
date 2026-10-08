@@ -8,6 +8,10 @@ import {
   type AgentRunTerminalFacts,
 } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import { isTimeoutError, resolveFailoverReasonFromError } from "../agents/failover-error.js";
+import {
+  resolveBusinessApprovalConversation,
+  type BusinessApprovalConversation,
+} from "./business-approval-conversation.js";
 import { formatErrorMessage } from "./errors.js";
 
 /** The optional fields of a lifecycle fact. A consumer built before them rejects the whole fact. */
@@ -51,11 +55,7 @@ const REFERENCE = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
 
 /** The producer flag: switched on only after the projector, Fi and iOS accept the fields. */
 export const LIFECYCLE_SIGNALS_ENV = "OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS";
-/**
- * Decision cards are a separate switch. They wait on the owner's sign-off on
- * who may give a confirmation, so the signals can go out without them.
- */
-export const DECISION_CARDS_ENV = "OPENCLAW_CONVERSATION_DECISION_CARDS";
+export { DECISION_CARDS_ENV, decisionCardsEnabled } from "./business-approval-conversation.js";
 
 function flag(name: string, env: Readonly<Record<string, string | undefined>>): boolean {
   const value = env[name]?.trim().toLowerCase();
@@ -66,12 +66,6 @@ export function lifecycleSignalsEnabled(
   env: Readonly<Record<string, string | undefined>> = process.env,
 ): boolean {
   return flag(LIFECYCLE_SIGNALS_ENV, env);
-}
-
-export function decisionCardsEnabled(
-  env: Readonly<Record<string, string | undefined>> = process.env,
-): boolean {
-  return flag(DECISION_CARDS_ENV, env);
 }
 
 export function isLifecycleTime(value: unknown): value is number {
@@ -120,8 +114,7 @@ export function validSignals(state: string, signals: LifecycleSignals): Lifecycl
     state === "cancelled" &&
     signals.stoppedBy &&
     RUN_STOPPED_BY_KINDS.includes(signals.stoppedBy.kind)
-  )
-  // Only the kind: the person's Matrix id may be published for a member of
+  ) // Only the kind: the person's Matrix id may be published for a member of
   // the room, and membership is not known here.
   {
     out.stoppedBy = { kind: signals.stoppedBy.kind };
@@ -279,17 +272,15 @@ export function cardText(value: string, max: number, fallback: string): string {
   return VISIBLE.test(text) && !UNSAFE_TEXT.test(text) ? text : fallback;
 }
 
-/**
- * A confirmation card for a plugin approval. The title and summary are fixed
- * words: an approval's own title and command can name a tool, a command or its
- * output, which the card must not.
- */
+/** A business confirmation, using the owner's separate conversation-safe copy and actual choices. */
 export function buildConfirmationCard(params: {
   id: string;
   revision: number;
   status: DecisionStatus;
   runId: string;
   expiresAtMs: number;
+  conversation?: BusinessApprovalConversation;
+  decisions?: readonly ("approve" | "decline")[];
 }): DecisionCard | undefined {
   if (!isRunReference(params.id) || !isLifecycleTime(params.expiresAtMs)) {
     return undefined;
@@ -297,6 +288,16 @@ export function buildConfirmationCard(params: {
   if (!Number.isSafeInteger(params.revision) || params.revision < 1) {
     return undefined;
   }
+  const conversation = resolveBusinessApprovalConversation({ conversation: params.conversation });
+  const decisions = params.decisions;
+  if (
+    !conversation ||
+    !decisions?.length ||
+    decisions.length > 2 ||
+    new Set(decisions).size !== decisions.length ||
+    decisions.some((decision) => decision !== "approve" && decision !== "decline")
+  )
+    return undefined;
   const runId = cardText(params.runId, 256, "");
   return {
     type: DECISION_CARD_TYPE,
@@ -306,15 +307,8 @@ export function buildConfirmationCard(params: {
     revision: params.revision,
     status: params.status,
     ...(runId ? { runId } : {}),
-    title: cardText("The agent needs your go-ahead", DECISION_TITLE_MAX, "Confirm to continue"),
-    summary: cardText(
-      params.status === "pending"
-        ? "The agent is waiting for you to approve or decline before it continues."
-        : "This request has been answered or is no longer open.",
-      DECISION_SUMMARY_MAX,
-      "Confirm to continue",
-    ),
-    decisions: ["approve", "decline"],
+    ...conversation,
+    decisions: [...decisions],
     expiresAtMs: params.expiresAtMs,
   };
 }

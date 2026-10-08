@@ -15,6 +15,10 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import {
+  resolveBusinessApprovalConversation,
+  type BusinessApprovalConversation,
+} from "../infra/business-approval-conversation.js";
+import {
   ensureExecApprovalsSnapshot,
   loadExecApprovalsReadOnlyAsync,
 } from "../infra/exec-approvals-store.js";
@@ -49,6 +53,8 @@ export type AgentRuntimeIdentity = {
   operationalRunInstance: OperationalRunInstanceRef;
   delegatedAuthority: AgentRuntimeDelegatedAuthority;
   approvalOwnerPluginId?: string;
+  approvalOrigin?: "plugin";
+  approvalConversation?: BusinessApprovalConversation;
   executionIdentity?: ExecutionIdentityAdmissionToken;
   turnSourceChannel?: string;
   /** Explicit admission fact; omission is unknown, never inferred from session routing. */
@@ -150,20 +156,22 @@ const sessionSpawnContextSchema = z
     }),
     spawnModelAutoSelection: spawnModelAutoSelectionSchema.optional(),
   })
-  .transform((context): AgentRuntimeSessionSpawnContext => ({
-    ...(context.requesterProfileId ? { requesterProfileId: context.requesterProfileId } : {}),
-    ...(context.completionOwnerSessionKey
-      ? { completionOwnerSessionKey: context.completionOwnerSessionKey }
-      : {}),
-    inheritedToolPolicy: context.inheritedToolPolicy,
-    ...(context.inheritedPermissionMode
-      ? { inheritedPermissionMode: context.inheritedPermissionMode }
-      : {}),
-    ...(context.resolvedModel ? { resolvedModel: context.resolvedModel } : {}),
-    ...(context.spawnModelAutoSelection
-      ? { spawnModelAutoSelection: context.spawnModelAutoSelection }
-      : {}),
-  }));
+  .transform(
+    (context): AgentRuntimeSessionSpawnContext => ({
+      ...(context.requesterProfileId ? { requesterProfileId: context.requesterProfileId } : {}),
+      ...(context.completionOwnerSessionKey
+        ? { completionOwnerSessionKey: context.completionOwnerSessionKey }
+        : {}),
+      inheritedToolPolicy: context.inheritedToolPolicy,
+      ...(context.inheritedPermissionMode
+        ? { inheritedPermissionMode: context.inheritedPermissionMode }
+        : {}),
+      ...(context.resolvedModel ? { resolvedModel: context.resolvedModel } : {}),
+      ...(context.spawnModelAutoSelection
+        ? { spawnModelAutoSelection: context.spawnModelAutoSelection }
+        : {}),
+    }),
+  );
 const cronCreatorAuthorityGrantSchema = z.object({
   runId: normalizedRequiredStringSchema,
   token: normalizedRequiredStringSchema,
@@ -186,10 +194,12 @@ const messageActionToolContextSchema = z
     sameChannelThreadRequired: z.boolean().optional().catch(undefined),
     skipCrossContextDecoration: z.boolean().optional().catch(undefined),
   })
-  .transform((context): InternalChannelThreadingToolContext => ({
-    ...context,
-    currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
-  }));
+  .transform(
+    (context): InternalChannelThreadingToolContext => ({
+      ...context,
+      currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
+    }),
+  );
 const messageActionContextSchema = z.object({
   expiresAtMs: z.number().finite(),
   turnCapability: normalizedRequiredStringSchema.optional(),
@@ -215,6 +225,8 @@ const agentRuntimeIdentityTokenPayloadSchema = z.object({
   operationalRunInstance: operationalRunInstanceSchema,
   delegatedAuthority: delegatedAuthoritySchema,
   approvalOwnerPluginId: z.string().optional().catch(undefined),
+  approvalOrigin: z.literal("plugin").optional(),
+  approvalConversation: z.object({ title: z.string(), summary: z.string() }).strict().optional(),
   executionIdentity: z.unknown().optional(),
   turnSourceChannel: z.string().optional().catch(undefined),
   turnSourceLocal: z.literal(true).optional(),
@@ -336,6 +348,12 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
     const agentId = normalizeAgentId(raw.agentId);
     const sessionKey = raw.sessionKey.trim();
     const approvalOwnerPluginId = normalizeOptionalString(raw.approvalOwnerPluginId);
+    const approvalConversation = resolveBusinessApprovalConversation({
+      conversation: raw.approvalConversation,
+    });
+    if (raw.approvalConversation && !approvalConversation) {
+      return undefined;
+    }
     const operationalInstanceId = raw.operationalRunInstance.instanceId;
     const operationalRunId = raw.operationalRunInstance.runId;
     const turnSourceAccountId = normalizeOptionalAccountId(raw.turnSourceAccountId);
@@ -399,6 +417,12 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
       operationalRunInstance,
       delegatedAuthority,
       ...(approvalOwnerPluginId ? { approvalOwnerPluginId } : {}),
+      ...(approvalOwnerPluginId && raw.approvalOrigin === "plugin"
+        ? { approvalOrigin: "plugin" as const }
+        : {}),
+      ...(approvalConversation && approvalOwnerPluginId && raw.approvalOrigin === "plugin"
+        ? { approvalConversation }
+        : {}),
       ...(turnSourceChannel ? { turnSourceChannel } : {}),
       ...(turnSourceLocal ? { turnSourceLocal } : {}),
       ...(turnSourceTo ? { turnSourceTo } : {}),
@@ -427,6 +451,8 @@ export type AgentRuntimeIdentityTokenParams = {
   sessionKey: string;
   operationalRunInstance: OperationalRunInstanceRef;
   approvalOwnerPluginId?: string;
+  approvalOrigin?: "plugin";
+  approvalConversation?: BusinessApprovalConversation;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
   turnSourceChannel?: string;
   turnSourceLocal?: true;
@@ -543,6 +569,18 @@ function prepareAgentRuntimeIdentityTokenPayload(
     delegatedAuthority,
     ...(normalizeOptionalString(params.approvalOwnerPluginId)
       ? { approvalOwnerPluginId: normalizeOptionalString(params.approvalOwnerPluginId) }
+      : {}),
+    ...(params.approvalOwnerPluginId?.trim() && params.approvalOrigin === "plugin"
+      ? { approvalOrigin: "plugin" as const }
+      : {}),
+    ...(params.approvalConversation &&
+    params.approvalOwnerPluginId?.trim() &&
+    params.approvalOrigin === "plugin"
+      ? {
+          approvalConversation: resolveBusinessApprovalConversation({
+            conversation: params.approvalConversation,
+          }),
+        }
       : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(params.turnSourceLocal === true ? { turnSourceLocal: true } : {}),

@@ -35,11 +35,17 @@ export function resolveFaceTimeToolApproval(input: unknown) {
     return undefined;
   }
   const mode = raw.mode === "video" ? "video" : "audio";
+  const summary = `Place a ${mode} FaceTime call to ${handle}.`;
+  const conversation =
+    summary.length <= 280 && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(handle)
+      ? { title: "Place FaceTime call", summary }
+      : undefined;
   const allowedDecisions: Array<"allow-once" | "deny"> = ["allow-once", "deny"];
   return {
     requireApproval: {
       title: "Place FaceTime call",
       description: `Place a ${mode} FaceTime call to ${handle}.`,
+      ...(conversation ? { conversation } : {}),
       severity: "warning" as const,
       // A phone call is never safe to approve durably. Bind consent to this invocation.
       allowedDecisions,

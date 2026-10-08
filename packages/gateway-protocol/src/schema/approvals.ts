@@ -168,6 +168,7 @@ export const ExecApprovalPresentationSchema = Type.Object(
 /** Plugin-supplied reviewer text safe to persist and render across surfaces. */
 export const PluginApprovalPresentationSchema = closedObject({
   kind: Type.Literal("plugin"),
+  origin: Type.Optional(Type.Literal("plugin")),
   title: Type.String({ minLength: 1, maxLength: 80 }),
   description: Type.String({ minLength: 1, maxLength: 512 }),
   detail: Type.Optional(Type.String({ minLength: 1, maxLength: 16_384 })),

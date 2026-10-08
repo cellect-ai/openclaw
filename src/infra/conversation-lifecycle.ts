@@ -18,6 +18,10 @@ import {
   registerAgentRunAdmissionHandler,
 } from "./agent-run-registry.js";
 import {
+  resolveBusinessApprovalConversation,
+  type BusinessApprovalConversation,
+} from "./business-approval-conversation.js";
+import {
   buildConfirmationCard,
   CHAT_DECIDABLE_APPROVAL_KINDS,
   decisionCardContent,
@@ -92,6 +96,9 @@ export type LifecycleDecisionCard = {
   revision: number;
   status: DecisionStatus;
   expiresAtMs: number;
+  /** Persisted human action copy; no command, raw tool arguments or diagnostic output. */
+  conversation?: BusinessApprovalConversation;
+  decisions?: ("approve" | "decline")[];
   /** Highest revision the destination accepted. */
   sent: number;
 };
@@ -180,9 +187,6 @@ const HEARTBEAT_INTERVAL_MS = 60_000;
 // longer than an approval is normally open says less about the run than about
 // an answer that is not coming, so past it the wait is reported as it stands.
 const HEARTBEAT_WAIT_LIMIT_MS = 60 * 60_000;
-// How long a pending confirmation card says it can be decided. The gateway's
-// approval record is the authority and refuses a late answer either way.
-const DECISION_CARD_TTL_MS = 30 * 60_000;
 
 type Retry = { failures: number; notBefore: number };
 
@@ -233,11 +237,28 @@ function approvalIdOf(event: AgentEventRuntimePayload): string | undefined {
  * approvals "plugin", and exec and system-agent approvals are never decided
  * from chat.
  */
-function isChatDecidable(data: Record<string, unknown>): boolean {
-  return (
-    (CHAT_DECIDABLE_APPROVAL_KINDS as readonly unknown[]).includes(data.kind) &&
-    data.chatDecidable === true
-  );
+function conversationDecisionOf(data: Record<string, unknown>):
+  | {
+      expiresAtMs: number;
+      conversation: BusinessApprovalConversation;
+      decisions: ("approve" | "decline")[];
+    }
+  | undefined {
+  if (
+    !(CHAT_DECIDABLE_APPROVAL_KINDS as readonly unknown[]).includes(data.kind) ||
+    data.chatDecidable !== true ||
+    !isLifecycleTime(data.expiresAtMs) ||
+    !Array.isArray(data.allowedDecisions) ||
+    !data.allowedDecisions.includes("deny")
+  )
+    return;
+  const conversation = resolveBusinessApprovalConversation({ conversation: data.conversation });
+  if (!conversation) return;
+  return {
+    expiresAtMs: data.expiresAtMs,
+    conversation,
+    decisions: data.allowedDecisions.includes("allow-once") ? ["approve", "decline"] : ["decline"],
+  };
 }
 
 /**
@@ -261,7 +282,7 @@ function transition(
     // gateway is decided elsewhere, so a run waiting on one names nothing.
     if (
       track &&
-      isChatDecidable(event.data) &&
+      conversationDecisionOf(event.data) !== undefined &&
       event.data.approvalId === approvalId &&
       isRunReference(approvalId) &&
       !holder.confirmations?.includes(approvalId)
@@ -416,17 +437,19 @@ function giveUpCards(row: LifecycleObligation): void {
  * or the run ends. Cards are sent from `deliver`, newest revision only.
  */
 function noteDecisionCards(
-  row: LifecycleObligation,
+  row: Pick<LifecycleObligation, "confirmations" | "cards">,
   event: AgentEventRuntimePayload,
   state: ConversationLifecycleState,
 ): void {
   if (event.stream === "approval") {
     const id = approvalIdOf(event);
+    const decision = conversationDecisionOf(event.data);
     if (
       id &&
       event.data.phase === "requested" &&
       event.data.status === "pending" &&
       row.confirmations?.includes(id) &&
+      decision &&
       !row.cards?.[id]
     ) {
       row.cards = {
@@ -434,7 +457,7 @@ function noteDecisionCards(
         [id]: {
           revision: 1,
           status: "pending",
-          expiresAtMs: Date.now() + DECISION_CARD_TTL_MS,
+          ...decision,
           sent: 0,
         },
       };
@@ -446,7 +469,9 @@ function noteDecisionCards(
           ? "approved"
           : event.data.status === "denied"
             ? "declined"
-            : "cancelled";
+            : event.data.reason === "timeout"
+              ? "expired"
+              : "cancelled";
     }
   }
   if (TERMINAL.has(state)) {
@@ -562,6 +587,7 @@ export function registerConversationLifecycleTransport(options: {
       state: ConversationLifecycleState;
       pendingApprovals: string[];
       confirmations: string[];
+      cards?: Record<string, LifecycleDecisionCard>;
       attempts: number;
       notBefore: number;
       missingSince?: number;
@@ -664,7 +690,10 @@ export function registerConversationLifecycleTransport(options: {
           tracked && incomingState !== "queued"
             ? transition(tracked, event, incomingState, true)
             : undefined;
-        if (tracked && state) tracked.state = state;
+        if (tracked && state) {
+          tracked.state = state;
+          if (cardsOn()) noteDecisionCards(tracked, event, state);
+        }
         return;
       }
       if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
@@ -717,6 +746,7 @@ export function registerConversationLifecycleTransport(options: {
             state: incomingState,
             pending: [],
             pendingApprovals: late ? [...late.pendingApprovals] : [],
+            ...(late?.cards && cardsOn() ? { cards: structuredClone(late.cards) } : {}),
             ...(late?.confirmations.length && (signalsOn() || cardsOn())
               ? { confirmations: [...late.confirmations] }
               : {}),
@@ -1139,6 +1169,8 @@ export function registerConversationLifecycleTransport(options: {
         status: card.status,
         runId: row.runId,
         expiresAtMs: card.expiresAtMs,
+        conversation: card.conversation,
+        decisions: card.decisions,
       });
       try {
         // A card the contract would reject is never sent; it is marked sent so it is not retried forever.

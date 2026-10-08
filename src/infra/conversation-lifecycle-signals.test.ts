@@ -281,6 +281,10 @@ describe("failure, stopper and wait", () => {
 
 describe("the confirmation card", () => {
   const expiresAtMs = 1_789_719_000_000;
+  const business = {
+    conversation: { title: "Approve a payment", summary: "Pay 49.99 EUR to the supplier" },
+    decisions: ["approve", "decline"] as const,
+  };
   it("is a decision card the contract accepts, in every status", () => {
     for (const status of [
       "pending",
@@ -291,6 +295,7 @@ describe("the confirmation card", () => {
       "cancelled",
     ] as const) {
       const card = buildConfirmationCard({
+        ...business,
         id: "approval-1",
         revision: 1,
         status,
@@ -300,8 +305,9 @@ describe("the confirmation card", () => {
       expect(isDecisionCard(card), status).toBe(true);
     }
   });
-  it("names no tool, command or person, and offers approve and decline only", () => {
+  it("uses the owner business intent and offers approve and decline only", () => {
     const card = buildConfirmationCard({
+      ...business,
       id: "approval-1",
       revision: 1,
       status: "pending",
@@ -310,6 +316,8 @@ describe("the confirmation card", () => {
     })!;
     expect(card.decisions).toEqual(["approve", "decline"]);
     expect(card.kind).toBe("confirmation");
+    expect(card.title).toBe(business.conversation.title);
+    expect(card.summary).toBe(business.conversation.summary);
     expect(Object.keys(card).toSorted()).toEqual(
       [
         "decisions",
@@ -329,6 +337,7 @@ describe("the confirmation card", () => {
   it("is refused rather than sent when it would be invalid", () => {
     expect(
       buildConfirmationCard({
+        ...business,
         id: "has space",
         revision: 1,
         status: "pending",
@@ -337,10 +346,18 @@ describe("the confirmation card", () => {
       }),
     ).toBeUndefined();
     expect(
-      buildConfirmationCard({ id: "ok", revision: 0, status: "pending", runId: "r", expiresAtMs }),
+      buildConfirmationCard({
+        ...business,
+        id: "ok",
+        revision: 0,
+        status: "pending",
+        runId: "r",
+        expiresAtMs,
+      }),
     ).toBeUndefined();
     expect(
       buildConfirmationCard({
+        ...business,
         id: "ok",
         revision: 1,
         status: "pending",
@@ -351,6 +368,7 @@ describe("the confirmation card", () => {
   });
   it("travels in the card envelope of a notice, in the run's thread", () => {
     const card = buildConfirmationCard({
+      ...business,
       id: "approval-1",
       revision: 1,
       status: "pending",

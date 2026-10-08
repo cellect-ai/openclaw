@@ -4,6 +4,7 @@ import type {
   SessionApprovalEvent,
 } from "../../packages/gateway-protocol/src/index.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { resolveBusinessApprovalConversation } from "../infra/business-approval-conversation.js";
 import type { OpenClawStateDatabaseOptions } from "../state/openclaw-state-db.js";
 import { resolveApprovalSourceStreamKey } from "./approval-session-audience.js";
 import { normalizeControlUiBasePath } from "./control-ui-shared.js";
@@ -143,6 +144,40 @@ export function createOperatorApprovalSessionEventRuntime(params: {
         stream: "execution",
         data: { approval: { id: event.record.id, state: pending ? "pending" : "resolved" } },
       });
+      const presentation = event.record.presentation;
+      if (presentation.kind === "plugin" && presentation.origin === "plugin") {
+        const conversation = pending
+          ? resolveBusinessApprovalConversation({ conversation: request?.conversation })
+          : undefined;
+        if (!pending || conversation) {
+          // The durable approval owner alone supplies a business card's deadline,
+          // offered choices and settlement. Harness/tool output cannot supply them.
+          emitAgentEvent({
+            runId: source.runId,
+            sessionId: source.sessionId,
+            ...(source.sessionKey ? { sessionKey: source.sessionKey } : {}),
+            stream: "approval",
+            data: {
+              kind: "plugin",
+              chatDecidable: true,
+              approvalId: event.record.id,
+              phase: pending ? "requested" : "resolved",
+              status: pending
+                ? "pending"
+                : event.record.status === "allowed"
+                  ? "approved"
+                  : event.record.status === "denied" && event.record.terminalReason === "user"
+                    ? "denied"
+                    : "failed",
+              title: "Business action confirmation",
+              expiresAtMs: event.record.expiresAtMs,
+              allowedDecisions: presentation.allowedDecisions,
+              ...(conversation ? { conversation } : {}),
+              ...(event.record.terminalReason ? { reason: event.record.terminalReason } : {}),
+            },
+          });
+        }
+      }
     }
     const approval = projectOperatorApprovalSnapshot(event.record, controlUiBasePath);
     if (!approval || event.record.audienceSessionKeys.length === 0) {

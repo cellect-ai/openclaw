@@ -1,5 +1,5 @@
 {
-  "note": "Facts and cards as the gateway emits them with both switches on. Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1); the same file is held in cellect-threads kit/fixtures and read by the kit's own tests. Its cards come from a path production cannot take yet: the test sets chatDecidable on the approval itself, and nothing in the gateway does.",
+  "note": "Facts and business decision cards emitted with both switches on. Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1). Canonical approval owner publication is covered separately by the business approval flow tests.",
   "facts": [
     {
       "version": 2,
@@ -224,13 +224,13 @@
       "revision": 1,
       "status": "pending",
       "runId": "run-0001",
-      "title": "The agent needs your go-ahead",
-      "summary": "The agent is waiting for you to approve or decline before it continues.",
+      "title": "Approve a payment",
+      "summary": "Pay 49.99 EUR to the supplier",
       "decisions": [
         "approve",
         "decline"
       ],
-      "expiresAtMs": 1789720202000
+      "expiresAtMs": 1789718522000
     },
     {
       "type": "m.cellect.decision",
@@ -240,13 +240,13 @@
       "revision": 2,
       "status": "approved",
       "runId": "run-0001",
-      "title": "The agent needs your go-ahead",
-      "summary": "This request has been answered or is no longer open.",
+      "title": "Approve a payment",
+      "summary": "Pay 49.99 EUR to the supplier",
       "decisions": [
         "approve",
         "decline"
       ],
-      "expiresAtMs": 1789720202000
+      "expiresAtMs": 1789718522000
     }
   ]
 }
