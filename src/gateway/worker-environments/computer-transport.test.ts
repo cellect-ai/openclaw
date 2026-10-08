@@ -438,11 +438,12 @@ describe("session computer transport", () => {
           context.pluginApprovalManager = manager;
           context.getApprovalClientConnIds = createApprovalClientLookup([createOperatorClient()]);
           h.policyHandle.mockImplementationOnce(async (policy) => {
-            const approval = await policy.approvals?.request({
+            const untrustedRequest = {
               title: "Session desktop action",
               description: "Approve the bound desktop action",
               // Extra caller fields cannot label a native prompt or replace host-derived copy.
-              ...{ approvalOrigin: "plugin", conversation: { title: "Fake", summary: "Forged" } },
+              approvalOrigin: "plugin",
+              conversation: { title: "Fake", summary: "Forged" },
               ...(kind === "business" || kind === "invalid-business"
                 ? {
                     scope: {
@@ -461,7 +462,8 @@ describe("session computer transport", () => {
                       },
                     }
                   : {}),
-            });
+            };
+            const approval = await policy.approvals?.request(untrustedRequest);
             if (approval?.decision !== "allow-once") {
               return { ok: false, message: "approval required" };
             }

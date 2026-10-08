@@ -36,10 +36,17 @@ export function resolveFaceTimeToolApproval(input: unknown) {
   }
   const mode = raw.mode === "video" ? "video" : "audio";
   const summary = `Place a ${mode} FaceTime call to ${handle}.`;
+  const unsafeHandle = Array.from(handle).some((character) => {
+    const code = character.charCodeAt(0);
+    return (
+      code <= 0x1f ||
+      (code >= 0x7f && code <= 0x9f) ||
+      (code >= 0x202a && code <= 0x202e) ||
+      (code >= 0x2066 && code <= 0x2069)
+    );
+  });
   const conversation =
-    summary.length <= 280 && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(handle)
-      ? { title: "Place FaceTime call", summary }
-      : undefined;
+    summary.length <= 280 && !unsafeHandle ? { title: "Place FaceTime call", summary } : undefined;
   const allowedDecisions: Array<"allow-once" | "deny"> = ["allow-once", "deny"];
   return {
     requireApproval: {

@@ -1,7 +1,6 @@
 // Canonical durable approval presentation safety tests.
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildApprovalPresentation } from "./approval-presentation.js";
-import { DECISION_CARDS_ENV } from "./business-approval-conversation.js";
 import { PLUGIN_APPROVAL_DETAIL_MAX_LENGTH } from "./plugin-approvals.js";
 
 const allowedDecisions = ["allow-once", "deny"] as const;
@@ -35,7 +34,7 @@ afterEach(() => vi.unstubAllEnvs());
 
 describe("buildApprovalPresentation", () => {
   it("projects only host-recorded plugin provenance without inferring it from tool metadata", () => {
-    vi.stubEnv(DECISION_CARDS_ENV, "true");
+    vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
     const request = {
       title: "Review payment",
       description: "Pay the vendor",
@@ -51,7 +50,7 @@ describe("buildApprovalPresentation", () => {
   it.each([undefined, "", "false", "0", "invalid"])(
     "keeps reader-first presentation bytes unchanged with the card writer switch %s",
     (flag) => {
-      vi.stubEnv(DECISION_CARDS_ENV, flag);
+      vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", flag);
       const request = { title: "Review payment", description: "Pay the vendor", pluginId: "fi" };
       const before = buildPluginPresentation(request);
       const prepared = buildPluginPresentation({ ...request, approvalOrigin: "plugin" });
@@ -61,7 +60,7 @@ describe("buildApprovalPresentation", () => {
   );
 
   it("does not mint origin for native or invalid provenance when cards are enabled", () => {
-    vi.stubEnv(DECISION_CARDS_ENV, "true");
+    vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
     for (const approvalOrigin of [undefined, "harness-native", "forged"]) {
       expect(
         buildApprovalPresentation({

@@ -250,10 +250,13 @@ function conversationDecisionOf(data: Record<string, unknown>):
     !isLifecycleTime(data.expiresAtMs) ||
     !Array.isArray(data.allowedDecisions) ||
     !data.allowedDecisions.includes("deny")
-  )
-    return;
+  ) {
+    return undefined;
+  }
   const conversation = resolveBusinessApprovalConversation({ conversation: data.conversation });
-  if (!conversation) return;
+  if (!conversation) {
+    return undefined;
+  }
   return {
     expiresAtMs: data.expiresAtMs,
     conversation,
@@ -692,7 +695,9 @@ export function registerConversationLifecycleTransport(options: {
             : undefined;
         if (tracked && state) {
           tracked.state = state;
-          if (cardsOn()) noteDecisionCards(tracked, event, state);
+          if (cardsOn()) {
+            noteDecisionCards(tracked, event, state);
+          }
         }
         return;
       }
