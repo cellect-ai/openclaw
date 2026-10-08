@@ -245,7 +245,7 @@ function conversationDecisionOf(data: Record<string, unknown>):
     }
   | undefined {
   if (
-    !(CHAT_DECIDABLE_APPROVAL_KINDS as readonly unknown[]).includes(data.kind) ||
+    !CHAT_DECIDABLE_APPROVAL_KINDS.some((kind) => kind === data.kind) ||
     data.chatDecidable !== true ||
     !isLifecycleTime(data.expiresAtMs) ||
     !Array.isArray(data.allowedDecisions) ||

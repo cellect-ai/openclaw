@@ -42,10 +42,10 @@ export function resolveBusinessApprovalConversation(request: {
     };
   }
   if (!copy || typeof copy !== "object" || Array.isArray(copy)) return;
-  const value = copy as Record<string, unknown>;
+  if (!("title" in copy) || !("summary" in copy)) return;
   const result: BusinessApprovalConversation = { title: "", summary: "" };
   for (const key of ["title", "summary"] as const) {
-    const raw = value[key];
+    const raw = copy[key];
     if (typeof raw !== "string" || raw.length > LIMITS[key] || INVISIBLE.test(raw)) return;
     const text = sanitizeExecApprovalDisplayText(raw).trim();
     if (!VISIBLE.test(text) || text.length > LIMITS[key] || INVISIBLE.test(text)) return;

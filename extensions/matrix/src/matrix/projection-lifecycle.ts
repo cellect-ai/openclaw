@@ -73,6 +73,7 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
     publishDecision: async (binding, content, transactionId) => {
       await withResolvedMatrixSendClient(
         {
+          // SAFETY: This is the same host runtime config used as CoreConfig by lifecycle sends above.
           cfg: (api.runtime.config.current?.() ?? api.config) as CoreConfig,
           accountId: binding.accountId,
         },

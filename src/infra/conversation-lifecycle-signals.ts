@@ -131,7 +131,7 @@ export function factForSend<T extends { state: string } & LifecycleSignals>(
   fact: T,
   options: { signals: boolean; decisionCards: boolean },
 ): T {
-  const base = { ...fact } as T & Record<string, unknown>;
+  const base = { ...fact };
   for (const key of LIFECYCLE_SIGNAL_KEYS) {
     delete base[key];
   }
@@ -190,11 +190,8 @@ export function failureKindOf(
   if (classifyAgentRunTerminalOutcome(outcome) === "timeout") {
     return "timeout";
   }
-  const reported = data.errorKind;
-  if (typeof reported === "string" && RUN_FAILURE_KINDS.includes(reported as RunFailureKind)) {
-    return reported as RunFailureKind;
-  }
-  return errorKindOf(data.error) ?? "unknown";
+  const reported = RUN_FAILURE_KINDS.find((kind) => kind === data.errorKind);
+  return reported ?? errorKindOf(data.error) ?? "unknown";
 }
 
 /** Who stopped a run, as far as the lifecycle can tell. A person's stop is not recorded on the event. */

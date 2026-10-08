@@ -198,12 +198,10 @@ const messageActionToolContextSchema = z
     sameChannelThreadRequired: z.boolean().optional().catch(undefined),
     skipCrossContextDecoration: z.boolean().optional().catch(undefined),
   })
-  .transform(
-    (context): InternalChannelThreadingToolContext => ({
-      ...context,
-      currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
-    }),
-  );
+  .transform((context): InternalChannelThreadingToolContext => ({
+    ...context,
+    currentChannelProvider: context.currentChannelProvider as ChannelId | undefined,
+  }));
 const messageActionContextSchema = z.object({
   expiresAtMs: z.number().finite(),
   turnCapability: normalizedRequiredStringSchema.optional(),
