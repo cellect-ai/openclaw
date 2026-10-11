@@ -7,6 +7,7 @@ import {
   resolveConfiguredMatrixBotUserIds,
   resolveDefaultMatrixAccountId,
   resolveMatrixAccount,
+  resolveMatrixAccountAsync,
 } from "./accounts.js";
 import type { MatrixStoredCredentials } from "./credentials-state.js";
 
@@ -661,5 +662,40 @@ describe("resolveMatrixAccount", () => {
     });
 
     expect(resolveMatrixAccount({ cfg, accountId: "ops" }).config[scopeKey]).toBeUndefined();
+  });
+});
+
+describe("resolveMatrixAccountAsync token-only identity", () => {
+  beforeEach(() => {
+    loadMatrixCredentialsMock.mockReset().mockReturnValue(null);
+  });
+
+  const cfg = {
+    channels: { matrix: { homeserver: "https://matrix.example.org", accounts: { fiadmin: {} } } },
+  } as unknown as CoreConfig;
+  const env = {
+    [getMatrixScopedEnvVarNames("fiadmin").accessToken]: "token-1",
+  } as NodeJS.ProcessEnv;
+
+  it("projects the stored MXID for an env-token account whose token matches", async () => {
+    loadMatrixCredentialsMock.mockReturnValue({
+      homeserver: "https://matrix.example.org",
+      userId: "@admin:example.org",
+      accessToken: "token-1",
+    } as MatrixStoredCredentials);
+    const account = await resolveMatrixAccountAsync({ cfg, accountId: "fiadmin", env });
+    expect(account.userId).toBe("@admin:example.org");
+    // The synchronous hook stays non-blocking and does not read the store.
+    expect(resolveMatrixAccount({ cfg, accountId: "fiadmin", env }).userId).toBeUndefined();
+  });
+
+  it("does not adopt an MXID stored for a different token", async () => {
+    loadMatrixCredentialsMock.mockReturnValue({
+      homeserver: "https://matrix.example.org",
+      userId: "@admin:example.org",
+      accessToken: "rotated-away",
+    } as MatrixStoredCredentials);
+    const account = await resolveMatrixAccountAsync({ cfg, accountId: "fiadmin", env });
+    expect(account.userId).toBeUndefined();
   });
 });
