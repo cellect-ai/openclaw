@@ -230,8 +230,11 @@ export async function resolveMatrixAccountAsync(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedMatrixAccount> {
   const prepared = prepareMatrixAccount(params);
+  // A token-only account (access token from env or config, no userId) learns
+  // its MXID from the credential store at login. The operational hook must
+  // project it, or every identity lookup by MXID (Talk bindings) finds nothing.
   const stored =
-    prepared.hasHomeserver && !prepared.hasConfiguredAuth
+    prepared.hasHomeserver && (!prepared.hasConfiguredAuth || !prepared.authView.userId)
       ? await loadMatrixCredentialsAsync(
           captureMatrixCredentialsEnv(params.env ?? process.env),
           prepared.account.accountId,
