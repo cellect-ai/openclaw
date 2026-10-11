@@ -7,7 +7,13 @@ const mocks = vi.hoisted(() => {
   }));
   const getLoadedChannelPlugin = vi.fn<
     () =>
-      | { config: { listAccountIds: typeof listAccountIds; resolveAccount: typeof resolveAccount } }
+      | {
+          config: {
+            listAccountIds: typeof listAccountIds;
+            resolveAccount: typeof resolveAccount;
+            resolveAccountAsync?: typeof resolveAccount;
+          };
+        }
       | undefined
   >(() => ({ config: { listAccountIds, resolveAccount } }));
   return {
@@ -96,6 +102,31 @@ describe("resolveMatrixTalkBinding", () => {
     expect(mocks.resolveRoute).toHaveBeenCalledWith(
       expect.objectContaining({ agentId: "room-admin", target: "room:!room:matrix.test" }),
     );
+  });
+
+  it("identifies token-only accounts through the operational hook, not the sync one", async () => {
+    // Production shape: MATRIX_<ACCOUNT>_ACCESS_TOKEN accounts have no userId in
+    // config, and the synchronous hook never reads the credential store.
+    const resolveSync = vi.fn(() => ({ userId: undefined }));
+    const resolveAsync = vi.fn(async (_cfg: unknown, accountId?: string | null) => ({
+      userId: accountId === "admin-prod" ? "@admin:matrix.test" : "@user:matrix.test",
+    }));
+    mocks.getLoadedChannelPlugin.mockReturnValueOnce({
+      config: {
+        listAccountIds: mocks.listAccountIds,
+        resolveAccount: resolveSync as never,
+        resolveAccountAsync: resolveAsync as never,
+      },
+    });
+    await expect(
+      resolveMatrixTalkBinding({
+        cfg: {} as never,
+        roomId: "!room:matrix.test",
+        threadRootEventId: "$root",
+        agentMxid: "@admin:matrix.test",
+      }),
+    ).resolves.toMatchObject({ accountId: "admin-prod" });
+    expect(resolveSync).not.toHaveBeenCalled();
   });
 
   it("fails closed when an MXID does not identify exactly one account", async () => {

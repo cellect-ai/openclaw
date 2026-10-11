@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { resolveChannelAccount } from "../channels/account-resolution.js";
 import { getLoadedChannelPlugin } from "../channels/plugins/index.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveOutboundSessionRoute } from "../infra/outbound/outbound-session.js";
@@ -25,12 +26,21 @@ export async function resolveMatrixTalkBinding(params: {
   if (!matrixPlugin) {
     throw new Error("Matrix Talk channel is unavailable");
   }
-  const matches = matrixPlugin.config.listAccountIds(params.cfg).filter((accountId) => {
-    const account = matrixPlugin.config.resolveAccount(params.cfg, accountId) as {
-      userId?: unknown;
-    };
-    return normalizeOptionalString(account.userId) === agentMxid;
-  });
+  // A token-only account (MATRIX_<ACCOUNT>_ACCESS_TOKEN) learns its MXID from
+  // the credential store; the synchronous hook deliberately never reads that
+  // store, so it reports no userId for every such account. Use the operational
+  // hook, exactly as channel startup does.
+  const matches: string[] = [];
+  for (const accountId of matrixPlugin.config.listAccountIds(params.cfg)) {
+    const account = (await resolveChannelAccount({
+      plugin: matrixPlugin,
+      cfg: params.cfg,
+      accountId,
+    })) as { userId?: unknown };
+    if (normalizeOptionalString(account.userId) === agentMxid) {
+      matches.push(accountId);
+    }
+  }
   if (matches.length !== 1) {
     throw new Error("Matrix Talk agent account did not resolve uniquely");
   }
