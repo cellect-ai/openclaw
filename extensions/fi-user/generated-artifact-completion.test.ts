@@ -263,6 +263,7 @@ describe("registered generated-artifact completion hooks", () => {
   it("does not turn corrupt stored observations into successful completion", async () => {
     await register();
     const runKey = [...rows.keys()][0];
+    if (!runKey) throw new Error("Expected a stored run observation");
     rows.set(runKey, { started: true, pending: "corrupt" });
     await deliver();
     expect(await final()).toEqual(incomplete());

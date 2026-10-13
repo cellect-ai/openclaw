@@ -6,6 +6,7 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
+import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -322,7 +323,22 @@ describe("requester-bound generated artifact delivery", () => {
     ).rejects.toThrow(/no delivery receipt/);
   });
 
-  it("allows exact-artifact retry after a definitive Slack platform rejection", async () => {
+  it("allows exact-artifact retry only after the delivery owner proves non-dispatch", async () => {
+    const artifactId = await register();
+    mocks.sendMedia.mockRejectedValueOnce(
+      new PlatformMessageNotDispatchedError("missing_scope", {
+        cause: new Error("Slack rejected before dispatch"),
+      }),
+    );
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/missing_scope/);
+    const result = await generatedFileAction(api, context, { action: "deliver", artifactId });
+    expect(details(result)).toMatchObject({ delivered: "slack_dm" });
+    expect(mocks.sendMedia).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not resend after a raw platform rejection without non-dispatch proof", async () => {
     const artifactId = await register();
     mocks.sendMedia.mockRejectedValueOnce(
       Object.assign(new Error("missing_scope"), {
@@ -333,9 +349,10 @@ describe("requester-bound generated artifact delivery", () => {
     await expect(
       generatedFileAction(api, context, { action: "deliver", artifactId }),
     ).rejects.toThrow(/missing_scope/);
-    const result = await generatedFileAction(api, context, { action: "deliver", artifactId });
-    expect(details(result)).toMatchObject({ delivered: "slack_dm" });
-    expect(mocks.sendMedia).toHaveBeenCalledTimes(2);
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/uncertain/);
+    expect(mocks.sendMedia).toHaveBeenCalledTimes(1);
   });
 
   it.each([true, false])(
