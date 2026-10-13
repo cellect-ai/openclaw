@@ -53,7 +53,13 @@ const DeliverSchema = Type.Object(
           "dm: attach the file in the requester's Slack DM. link: a Fi link that opens only after sign-in, for people who can read the document. Default: dm in a Slack DM, link elsewhere.",
       }),
     ),
-    message: Type.Optional(Type.String({ maxLength: 1_000 })),
+    message: Type.Optional(
+      Type.String({
+        maxLength: 1_000,
+        description:
+          "Caption for existing document delivery. Generated artifacts are attached without a caption; describe them in your final reply after the receipt.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );

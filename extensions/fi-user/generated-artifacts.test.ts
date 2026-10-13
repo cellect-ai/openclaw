@@ -188,6 +188,7 @@ describe("requester-bound generated artifact delivery", () => {
       throw new Error("Expected a Slack delivery call");
     }
     expect(send.to).toBe("user:UNICHOLAS");
+    expect(send.text).toBe("");
     expect(send.accountId).toBe("fi-user");
     expect(await send.mediaReadFile(send.mediaUrl)).toEqual(csv);
     expect((await tool.execute("again", { action: "deliver", artifactId })).details).toMatchObject({

@@ -98,6 +98,114 @@ const incomplete = () =>
   });
 
 describe("registered generated-artifact completion hooks", () => {
+  it("awaits concurrent fire-and-forget delivery through the registered production hooks", async () => {
+    const registered = new Map<string, Hook[]>();
+    fiUserPlugin.register?.(
+      createTestPluginApi({
+        id: "fi-user",
+        name: "Fi User Delegation",
+        runtime: {
+          state: { openKeyedStore: () => ({ observe, compareAndApply, lookup }) },
+          channel: { runtimeContexts: { register: vi.fn() } },
+        } as unknown as OpenClawPluginApi["runtime"],
+        on: (name, handler) =>
+          registered.set(name, [...(registered.get(name) ?? []), handler as Hook]),
+      }),
+    );
+    const producer = registered.get("after_tool_call")![0];
+    const context = {
+      agentId: "cellect-fi-user",
+      sessionKey,
+      runId,
+      toolName: "fi_user_deliver_file",
+    };
+    await producer(
+      {
+        toolName: "fi_user_deliver_file",
+        params: { action: "register", fileName: "Budget.xlsx" },
+        result: { details: { status: "generated_not_delivered", artifactId, sha256 } },
+        runId,
+      } as never,
+      context as never,
+    );
+    const originalObserve = observe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    observe.mockImplementationOnce(async (key: string) => {
+      await gate;
+      return originalObserve(key);
+    });
+    const deliveryObservation = producer(
+      {
+        toolName: "fi_user_deliver_file",
+        params: { action: "deliver", artifactId },
+        result: { details: { delivered: "slack_dm", artifactId, messageId: "receipt" } },
+        runId,
+      } as never,
+      context as never,
+    );
+    let settled = false;
+    const guarded = Promise.all(
+      (registered.get("reply_payload_sending") ?? []).map((handler) =>
+        handler(
+          { kind: "final", sessionKey, runId, payload: { text: "Delivered" } } as never,
+          { channelId: "slack", sessionKey, runId } as never,
+        ),
+      ),
+    ).then((results) => {
+      settled = true;
+      return results;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    release();
+    await deliveryObservation;
+    expect(await guarded).not.toContainEqual(incomplete());
+  });
+  it("preserves observation order when prepare, register and delivery hooks overlap", async () => {
+    const originalObserve = observe.getMockImplementation()!;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    observe.mockImplementationOnce(async (key: string) => {
+      await gate;
+      return originalObserve(key);
+    });
+    const preparation = after({ action: "prepare" }, { status: "ready" });
+    const registration = register();
+    const delivery = deliver();
+    const guarded = final();
+    release();
+    await Promise.all([preparation, registration, delivery]);
+    expect(await guarded).toBeUndefined();
+  });
+  it("does not treat an observation timeout as a completed delivery", async () => {
+    vi.useFakeTimers();
+    try {
+      await register();
+      const originalObserve = observe.getMockImplementation()!;
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      observe.mockImplementationOnce(async (key: string) => {
+        await gate;
+        return originalObserve(key);
+      });
+      const pending = deliver();
+      const guarded = final();
+      await vi.advanceTimersByTimeAsync(8000);
+      expect(await guarded).toEqual(incomplete());
+      release();
+      await pending;
+      expect(await final()).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
   it("registers the actual producer and final-output boundary hooks", () => {
     expect([...hooks.keys()]).toEqual(["after_tool_call", "reply_payload_sending"]);
   });

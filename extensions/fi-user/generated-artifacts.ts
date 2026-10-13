@@ -340,7 +340,9 @@ export async function generatedFileAction(
     const sent = await adapter.sendMedia({
       cfg,
       to: `user:${current.identity.requesterSenderId}`,
-      text: input.message?.trim() || "Here is the file you asked for.",
+      // One physical attachment send: a later caption chunk failure must not
+      // erase the claim for a file Slack has already accepted.
+      text: "",
       mediaUrl: path.join(context.workspaceDir!, current.directory, artifact.fileName),
       mediaLocalRoots: [path.join(context.workspaceDir!, current.directory)],
       mediaReadFile: async () => artifact.bytes,
