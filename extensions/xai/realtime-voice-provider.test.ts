@@ -652,6 +652,32 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     ]);
   });
 
+  it("replaces a completed input snapshot when a later correction arrives", async () => {
+    const onTranscript = vi.fn();
+    const bridge = createTestBridge({
+      onTranscript,
+    });
+    const socket = await openRealtimeBridge(bridge);
+
+    socket.emitServer({
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "item_1",
+      transcript: "short",
+    });
+    socket.emitServer({
+      type: "conversation.item.input_audio_transcription.updated",
+      item_id: "item_1",
+      transcript: "the full utterance",
+    });
+    await bridge.close();
+
+    expect(onTranscript.mock.calls).toEqual([
+      ["user", "short", false, { itemId: "item_1", textMode: "snapshot" }],
+      ["user", "the full utterance", false, { itemId: "item_1", textMode: "snapshot" }],
+      ["user", "the full utterance", true, { itemId: "item_1", textMode: "snapshot" }],
+    ]);
+  });
+
   it("forwards standard incremental input-transcription events", async () => {
     const onTranscript = vi.fn();
     const { socket } = await connect({ onTranscript });

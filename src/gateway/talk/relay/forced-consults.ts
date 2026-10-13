@@ -67,8 +67,8 @@ const FORCED_CONSULT_CHECKING_PROMPT = [
 
 function buildForcedConsultSpeechPrompt(text: string): string {
   return [
-    "OpenClaw finished checking. Speak this result naturally and concisely.",
-    "Do not mention tool calls, JSON, or internal routing.",
+    "OpenClaw finished checking. Read this result aloud in full.",
+    "Do not shorten it, and do not mention tool calls, JSON, or internal routing.",
     "",
     text,
   ].join("\n");

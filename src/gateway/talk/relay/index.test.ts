@@ -2740,8 +2740,8 @@ describe("talk realtime gateway relay", () => {
     );
     expect(bridge.sendUserMessage).toHaveBeenLastCalledWith(
       [
-        "OpenClaw finished checking. Speak this result naturally and concisely.",
-        "Do not mention tool calls, JSON, or internal routing.",
+        "OpenClaw finished checking. Read this result aloud in full.",
+        "Do not shorten it, and do not mention tool calls, JSON, or internal routing.",
         "",
         "Here is the checked answer.",
       ].join("\n"),
@@ -3380,15 +3380,56 @@ describe("talk realtime gateway relay", () => {
     expect(events.some((entry) => entry.payload.type === "close")).toBe(false);
   });
 
-  it.each([
-    { phase: "idle", source: "provider" },
-    { phase: "replacement transcript before audio", source: "provider" },
-    { phase: "replacement audio", source: "provider" },
-    { phase: "idle", source: "continuity reset" },
-    { phase: "completed response", source: "continuity reset" },
-    { phase: "replacement transcript before audio", source: "continuity reset" },
-    { phase: "replacement audio", source: "continuity reset" },
-  ])("clears the delivered audio owner during $phase ($source)", ({ phase, source }) => {
+  it("releases the provider playback gate when browser relay audio is delivered", () => {
+    let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
+    const bridge = makeRelayTransport();
+    const provider = createIdleRelayProvider();
+    provider.createBridge = (request) => {
+      bridgeRequest = request;
+      return bridge;
+    };
+    const broadcastToConnIds = vi.fn();
+    const session = createTalkRealtimeRelaySession({
+      context: { broadcastToConnIds } as never,
+      provider,
+    });
+    if (!bridgeRequest) {
+      throw new Error("expected realtime bridge request");
+    }
+    bridgeRequest.onEvent?.({
+      direction: "server",
+      type: "response.created",
+      responseId: "response-a",
+    });
+    bridgeRequest.onAudio(Buffer.alloc(960));
+    bridgeRequest.onMark?.("audio-1", () => {
+      bridge.acknowledgeMark("audio-1");
+    });
+    expect(bridge.acknowledgeMark).toHaveBeenCalledWith("audio-1");
+    expect(broadcastToConnIds).toHaveBeenCalledWith(
+      "talk.event",
+      expect.objectContaining({
+        relaySessionId: session.relaySessionId,
+        type: "mark",
+        markName: "audio-1",
+      }),
+      new Set(["conn-1"]),
+      { dropIfSlow: false },
+    );
+  });
+
+  it.each(
+    [
+      "idle",
+      "active response",
+      "completed response",
+      "replacement transcript before audio",
+      "replacement audio",
+    ].flatMap((phase) => [
+      { phase, source: "provider" },
+      { phase, source: "continuity reset" },
+    ]),
+  )("clears the delivered audio owner during $phase ($source)", ({ phase, source }) => {
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const bridge = makeRelayTransport();
     const provider = createIdleRelayProvider((request) => {
