@@ -482,7 +482,7 @@ async function uploadToProjectLibrary(
       receipt.sha256 !== upload.provenance.sha256 ||
       (!result.duplicate &&
         (receipt.provenance?.artifactId !== upload.provenance.artifactId ||
-          receipt.provenance.sessionId !== upload.provenance.sessionId))
+          receipt.provenance?.sessionId !== upload.provenance.sessionId))
     ) {
       throw new Error(
         "The generated file may have filed, but Fi did not confirm its persisted filing receipt. Keep the same artifact ID and reconcile the library before retrying; do not regenerate it.",

@@ -195,7 +195,10 @@ export async function generatedFileAction(
           "Inspect accepts PNG/JPEG previews up to 10 MB; render a bounded page or crop into the output directory",
         );
       }
-      return { content: [{ type: "image" as const, data: bytes.toString("base64"), mimeType }] };
+      return {
+        content: [{ type: "image" as const, data: bytes.toString("base64"), mimeType }],
+        details: { inspected: name, bytes: bytes.length },
+      };
     }
     const sha256 = createHash("sha256").update(bytes).digest("hex");
     const id = `ga_${randomUUID()}`;
