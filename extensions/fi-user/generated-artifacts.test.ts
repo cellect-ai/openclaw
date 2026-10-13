@@ -429,6 +429,13 @@ describe("requester-bound generated artifact delivery", () => {
 });
 
 describe("internal download links", () => {
+  it.each(["</workspace/output.xlsx|Download>", "&lt;/workspace/output.xlsx|Download&gt;"])(
+    "removes inaccessible Slack link %s",
+    (content) => {
+      expect(withoutInternalDownloadLinks(content)).not.toContain("/workspace/");
+      expect(withoutInternalDownloadLinks(content)).toContain("delivery has not been verified");
+    },
+  );
   it("does not expose bare internal output paths as accessible downloads", () => {
     expect(
       withoutInternalDownloadLinks("Download /workspace/report.xlsx or file:///tmp/report.pdf"),
