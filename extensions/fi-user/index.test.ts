@@ -24,6 +24,7 @@ vi.mock("openclaw/plugin-sdk/document-extractor", () => ({
 import fiUserPlugin from "./index.js";
 
 type ToolFactory = (context: OpenClawPluginToolContext) => AnyAgentTool | AnyAgentTool[] | null;
+type ToolRegistration = AnyAgentTool | ToolFactory | { contextVersion: 2; create: ToolFactory };
 
 const runtimeConfig = {
   plugins: {
@@ -42,7 +43,7 @@ const runtimeConfig = {
 };
 
 function registeredTools(context: OpenClawPluginToolContext): AnyAgentTool[] {
-  const registrations: Array<AnyAgentTool | ToolFactory> = [];
+  const registrations: ToolRegistration[] = [];
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -51,14 +52,19 @@ function registeredTools(context: OpenClawPluginToolContext): AnyAgentTool[] {
       runtime: {
         channel: { runtimeContexts: { register: vi.fn() } },
       } as unknown as OpenClawPluginApi["runtime"],
-      registerTool: (tool) => registrations.push(tool as AnyAgentTool | ToolFactory),
+      registerTool: (tool) => registrations.push(tool as ToolRegistration),
     }),
   );
   const registered = registrations[0];
   if (!registered) {
     throw new Error("expected fi-user tool registration");
   }
-  const result = typeof registered === "function" ? registered(context) : registered;
+  const result =
+    typeof registered === "function"
+      ? registered(context)
+      : "create" in registered
+        ? registered.create(context)
+        : registered;
   return result ? (Array.isArray(result) ? result : [result]) : [];
 }
 

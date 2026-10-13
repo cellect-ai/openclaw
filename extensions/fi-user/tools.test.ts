@@ -29,6 +29,7 @@ import fiUserPlugin from "./index.js";
 import { registerFiUserMatrixEnvironmentTests } from "./tools.matrix-environment.test-support.js";
 
 type ToolFactory = (context: OpenClawPluginToolContext) => AnyAgentTool | AnyAgentTool[] | null;
+type ToolRegistration = AnyAgentTool | ToolFactory | { contextVersion: 2; create: ToolFactory };
 type Hook = (event: never, context: never) => unknown;
 
 const BROKER = "broker-token";
@@ -59,7 +60,7 @@ const runtimeConfig = {
 };
 
 function plugin() {
-  const tools: Array<AnyAgentTool | ToolFactory> = [];
+  const tools: ToolRegistration[] = [];
   const hooks = new Map<string, Hook[]>();
   fiUserPlugin.register?.(
     createTestPluginApi({
@@ -86,13 +87,20 @@ function plugin() {
           },
         },
       } as unknown as OpenClawPluginApi["runtime"],
-      registerTool: (tool: unknown) => tools.push(tool as AnyAgentTool | ToolFactory),
+      registerTool: (tool: unknown) => tools.push(tool as ToolRegistration),
       on: (name: string, handler: Hook) => {
         hooks.set(name, [...(hooks.get(name) ?? []), handler]);
       },
     } as never),
   );
-  const factory = tools[0] as ToolFactory;
+  const registration = tools[0]!;
+  const factory = (
+    typeof registration === "function"
+      ? registration
+      : "create" in registration
+        ? registration.create
+        : () => registration
+  ) as ToolFactory;
   return {
     tool(name: string, toolContext: OpenClawPluginToolContext) {
       const result = factory(toolContext);
@@ -615,6 +623,7 @@ describe("fi_user_dataroom", () => {
       "upload_gmail_attachment",
       "upload_slack_file",
       "upload_drive_file",
+      "upload_generated_artifact",
       "upload_to_project_library",
     ]);
     expect(JSON.stringify(schema)).not.toMatch(/"method"|"path"|jsonBody/);
