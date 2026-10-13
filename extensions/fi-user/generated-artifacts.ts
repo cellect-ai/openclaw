@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 import path from "node:path";
 import JSZip from "jszip";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { exchange } from "./fi-delegation.js";
@@ -358,26 +359,9 @@ export async function generatedFileAction(
       messageId: sent.messageId,
     });
   } catch (error) {
-    // Only a definitive platform rejection permits a new send. A transport
-    // timeout may follow a successful upload and must not produce duplicates.
-    const rejected =
-      error !== null &&
-      typeof error === "object" &&
-      "code" in error &&
-      error.code === "slack_webapi_platform_error" &&
-      "data" in error &&
-      error.data !== null &&
-      typeof error.data === "object" &&
-      "error" in error.data &&
-      [
-        "invalid_auth",
-        "missing_scope",
-        "account_inactive",
-        "channel_not_found",
-        "not_in_channel",
-        "file_uploads_disabled",
-      ].includes(String(error.data.error));
-    if (rejected) {
+    // Only the delivery owner can prove no recipient-visible dispatch began.
+    // Even a platform rejection code can follow an ambiguous completion call.
+    if (error instanceof PlatformMessageNotDispatchedError) {
       await deliveries.delete(key);
     } else {
       await deliveryStore.register(key, { status: "unknown" });
