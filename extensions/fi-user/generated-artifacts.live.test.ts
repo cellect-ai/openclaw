@@ -286,11 +286,11 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
                 throw new Error("Only the supplied source fixture may be read");
               const inputZip = await JSZip.loadAsync(sourceBytes);
               const entries = await Promise.all(
-                Object.keys(inputZip.files)
-                  .filter((name) => !inputZip.files[name].dir)
-                  .map(async (name) => ({
-                    name,
-                    text: await inputZip.file(name)!.async("string"),
+                Object.values(inputZip.files)
+                  .filter((entry) => !entry.dir)
+                  .map(async (entry) => ({
+                    name: entry.name,
+                    text: await entry.async("string"),
                   })),
               );
               actions.push("readzip");
@@ -413,16 +413,18 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
           expect.arrayContaining(["prepare", "sandbox_exec", "register", "deliver"]),
         );
         expect(received).toHaveLength(1);
+        const deliveredFile = received[0];
+        if (!deliveredFile) throw new Error("The model did not deliver an artifact");
         expect(final).not.toMatch(/\/workspace\/|file:\/\/|\/tmp\//);
         expect(final.length).toBeGreaterThan(0);
         if (testCase.id === "g702-g703") expect(actions).toContain("readzip");
         if (testCase.id === "rfq") {
-          const text = received[0].bytes.toString("utf8");
+          const text = deliveredFile.bytes.toString("utf8");
           expect(text).toContain("Item,Quantity,Unit,Notes");
           expect(text).toContain("Steel framing,3,ton,Include delivery");
           expect(text).toContain("Concrete,10,cy,Include pumping");
         } else {
-          const zip = await JSZip.loadAsync(received[0].bytes);
+          const zip = await JSZip.loadAsync(deliveredFile.bytes);
           const workbook = await zip.file("xl/workbook.xml")?.async("string");
           for (const sheet of testCase.sheets) expect(workbook).toContain(`name="${sheet}"`);
           const sheets = Object.keys(zip.files).filter((name) =>
@@ -448,7 +450,7 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
         });
         expect(objectDetails(repeated)).toMatchObject({
           reusedReceipt: true,
-          messageId: received[0].messageId,
+          messageId: deliveredFile.messageId,
         });
         expect(received).toHaveLength(1);
         console.log(
@@ -458,8 +460,8 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
             observedModel,
             reasoning: "high",
             actions,
-            sha256: received[0].sha256,
-            bytes: received[0].bytes.length,
+            sha256: deliveredFile.sha256,
+            bytes: deliveredFile.bytes.length,
             transport: "fixture_slack_sink",
             sqliteReceiptReopen: "passed",
             semanticArithmetic: "not_certified",
