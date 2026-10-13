@@ -194,7 +194,18 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         return;
       case "conversation.item.input_audio_transcription.updated":
         if (event.transcript) {
-          this.inputTranscriptReplacements.set(this.inputTranscriptKey(event), event.transcript);
+          const key = this.inputTranscriptKey(event);
+          this.inputTranscriptReplacements.set(key, event.transcript);
+          const pending = this.pendingInputTranscript;
+          // Completed snapshots can land before the corrected utterance. Replace
+          // the pending commit so speech_started does not lock in the short text.
+          if (pending?.key === key && pending.text !== event.transcript) {
+            this.pendingInputTranscript = { ...pending, text: event.transcript };
+            this.config.onTranscript?.("user", event.transcript, false, {
+              ...(pending.itemId ? { itemId: pending.itemId } : {}),
+              textMode: "snapshot",
+            });
+          }
         }
         return;
       case "conversation.item.input_audio_transcription.completed": {
@@ -425,6 +436,9 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     if (!pending) {
       return;
     }
+    const replacement = this.inputTranscriptReplacements.get(pending.key);
+    this.inputTranscriptReplacements.delete(pending.key);
+    const text = replacement ?? pending.text;
     this.finalizedInputTranscriptKeys.add(pending.key);
     if (this.finalizedInputTranscriptKeys.size > 1_024) {
       const oldest = this.finalizedInputTranscriptKeys.values().next().value;
@@ -432,7 +446,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.finalizedInputTranscriptKeys.delete(oldest);
       }
     }
-    this.config.onTranscript?.("user", pending.text, true, {
+    this.config.onTranscript?.("user", text, true, {
       ...(pending.itemId ? { itemId: pending.itemId } : {}),
       textMode: "snapshot",
     });
