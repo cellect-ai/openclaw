@@ -182,7 +182,10 @@ describe("requester-bound generated artifact delivery", () => {
     expect(
       (await tool.execute("deliver", { action: "deliver", artifactId })).details,
     ).toMatchObject({ delivered: "slack_dm", messageId: "1791918000.123456" });
-    const send = mocks.sendMedia.mock.calls[0][0];
+    const send = mocks.sendMedia.mock.calls[0]?.[0];
+    if (!send) {
+      throw new Error("Expected a Slack delivery call");
+    }
     expect(send.to).toBe("user:UNICHOLAS");
     expect(send.accountId).toBe("fi-user");
     expect(await send.mediaReadFile(send.mediaUrl)).toEqual(csv);
@@ -371,7 +374,7 @@ describe("requester-bound generated artifact delivery", () => {
       });
       vi.stubGlobal("fetch", fetch);
       const result = await generatedFileAction(api, context, { action: "reconcile", artifactId });
-      expect(String(fetch.mock.calls[0][1]?.body)).toBe("users=UNICHOLAS");
+      expect(String(fetch.mock.calls[0]?.[1]?.body)).toBe("users=UNICHOLAS");
       if (match) {
         expect(details(result)).toMatchObject({
           delivered: "slack_dm",
