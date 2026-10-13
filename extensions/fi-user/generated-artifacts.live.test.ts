@@ -354,7 +354,10 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
             role: "user",
             content:
               testCase.request +
-              ` Use filename ${testCase.filename} and the listed exact worksheet names.` +
+              ` Use filename ${testCase.filename}.` +
+              (testCase.sheets.length
+                ? ` Use these exact worksheet names: ${testCase.sheets.join(", ")}.`
+                : "") +
               (testCase.id === "g702-g703"
                 ? " Read the supplied Source.xlsx through sandbox_exec readzip before conversion."
                 : ""),
