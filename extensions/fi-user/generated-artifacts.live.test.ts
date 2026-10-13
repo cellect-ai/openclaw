@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
 import http from "node:http";
 import path from "node:path";
 import JSZip from "jszip";
@@ -88,7 +89,22 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
         throw new Error(
           "Live replay requires independently injected LITELLM_API_KEY and LITELLM_BASE_URL",
         );
-      if (!/(?:^|\/)gpt-6-luna$/.test(modelId))
+      const routePin = process.env.FI_ARTIFACT_LIVE_ROUTE_PIN
+        ? JSON.parse(process.env.FI_ARTIFACT_LIVE_ROUTE_PIN)
+        : null;
+      if (modelId === "balanced") {
+        // The proxy exposes semantic aliases, and its response echoes the alias.
+        // Backend identity is certified by the operator's before/after live-config
+        // check, never by pi-ai's reply.model (which echoes our model object).
+        expect(routePin).toMatchObject({
+          alias: "balanced",
+          providerModel: "openai/gpt-6-luna",
+          deployments: 1,
+          mode: "responses",
+        });
+        expect(routePin.containerId).toMatch(/^[a-f0-9]{64}$/);
+        expect(routePin.configSha256).toMatch(/^[a-f0-9]{64}$/);
+      } else if (!/(?:^|\/)gpt-6-luna$/.test(modelId))
         throw new Error("This replay requires the Luna route; no model substitution");
       const available = await fetch(`${apiBase}/models`, {
         headers: { authorization: `Bearer ${apiKey}` },
@@ -356,12 +372,24 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
               messages,
               tools,
             },
-            { apiKey, reasoning: "high", maxTokens: 16000, signal: AbortSignal.timeout(120000) },
+            {
+              apiKey,
+              reasoning: "low",
+              maxTokens: 16000,
+              signal: AbortSignal.timeout(120000),
+              onPayload: (payload) => {
+                if (!payload || typeof payload !== "object")
+                  throw new Error("Expected an HTTP request object");
+                // This must reach LiteLLM itself; an SDK option would not disable
+                // the proxy's fallback chain and could silently test another model.
+                return { ...payload, disable_fallbacks: true };
+              },
+            },
           );
           if (reply.stopReason === "error" || reply.stopReason === "aborted")
             throw new Error("Live model call failed; no delivery proof");
           observedModel = reply.model;
-          expect(reply.model.split("/").at(-1)).toBe("gpt-6-luna");
+          expect(reply.model).toBe(modelId);
           messages.push(reply);
           const calls = reply.content.filter((part) => part.type === "toolCall");
           if (!calls.length) {
@@ -415,6 +443,14 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
         expect(received).toHaveLength(1);
         const deliveredFile = received[0];
         if (!deliveredFile) throw new Error("The model did not deliver an artifact");
+        if (process.env.FI_ARTIFACT_LIVE_OUTPUT_DIR) {
+          const output = process.env.FI_ARTIFACT_LIVE_OUTPUT_DIR;
+          if (!path.isAbsolute(output)) throw new Error("Proof output directory must be absolute");
+          await fs.mkdir(output, { recursive: true, mode: 0o700 });
+          await fs.writeFile(path.join(output, testCase.filename), deliveredFile.bytes, {
+            mode: 0o600,
+          });
+        }
         expect(final).not.toMatch(/\/workspace\/|file:\/\/|\/tmp\//);
         expect(final.length).toBeGreaterThan(0);
         if (testCase.id === "g702-g703") expect(actions).toContain("readzip");
@@ -458,7 +494,11 @@ describe.skipIf(!enabled)("Luna generated-artifact behavioral replay", () => {
             replay: testCase.id,
             requestedModel: modelId,
             observedModel,
-            reasoning: "high",
+            reasoning: "low",
+            backendIdentity: routePin
+              ? { evidence: "operator_live_config_pin", ...routePin }
+              : null,
+            fallbacksDisabled: true,
             actions,
             sha256: deliveredFile.sha256,
             bytes: deliveredFile.bytes.length,
