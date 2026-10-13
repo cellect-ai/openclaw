@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { registerGeneratedArtifactCompletion } from "./generated-artifact-completion.js";
 import fiUserPlugin from "./index.js";
 
@@ -12,7 +12,7 @@ const sha256 = "a".repeat(64);
 let rows: Map<string, unknown>;
 let hooks: Map<string, Hook>;
 let compareAndApply: ReturnType<typeof vi.fn>;
-let observe: ReturnType<typeof vi.fn>;
+let observe: Mock<(key: string) => Promise<{ value: unknown; comparison: string }>>;
 let lookup: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
@@ -113,6 +113,7 @@ describe("registered generated-artifact completion hooks", () => {
       }),
     );
     const producer = registered.get("after_tool_call")![0];
+    if (!producer) throw new Error("Expected the registered production observation hook");
     const context = {
       agentId: "cellect-fi-user",
       sessionKey,
