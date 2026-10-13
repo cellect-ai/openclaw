@@ -18,6 +18,7 @@ import {
   readFiResponse,
 } from "./fi-delegation.js";
 import { downloadDriveFile, driveFilingExportArgs, requireMailbox } from "./gam.js";
+import { generatedFileAction } from "./generated-artifacts.js";
 import {
   downloadSlackFile,
   MAX_SLACK_FILE_BYTES,
@@ -36,6 +37,11 @@ function orgRoot(orgSlug: string) {
 
 const DeliverSchema = Type.Object(
   {
+    action: Type.Optional(
+      stringEnum(["prepare", "register", "inspect", "deliver", "reconcile"] as const),
+    ),
+    fileName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
+    artifactId: Type.Optional(Type.String({ pattern: "^ga_[0-9a-f-]{36}$" })),
     documentId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     project: Type.Optional(
       Type.String({ minLength: 1, maxLength: 200, description: "Project slug of the document." }),
@@ -53,6 +59,9 @@ const DeliverSchema = Type.Object(
 );
 
 type DeliverInput = {
+  action?: "prepare" | "register" | "inspect" | "deliver" | "reconcile";
+  fileName?: string;
+  artifactId?: string;
   documentId?: string;
   project?: string;
   driveFileId?: string;
@@ -92,10 +101,16 @@ export function createDeliverFileTool(
     name: "fi_user_deliver_file",
     label: "Send me a file",
     description:
-      "Send the verified requester a file they can already read: a Fi project document (documentId + project) or a file from their own Google Drive (driveFileId). In a Slack DM, or with via=dm, the file is attached in the requester's own Slack DM. Otherwise returns a Fi link that opens only after sign-in and only for people with access — post that link, never an API URL.",
+      "Deliver a file to the verified requester. For a new workbook/PDF/CSV: action=prepare returns this session's outputDirectory; generate and validate the file there; action=register with fileName returns artifactId; action=deliver with artifactId attaches it in the requester's Slack DM and returns a receipt. action=inspect with fileName displays a PNG/JPEG preview generated in that directory. A local /workspace path is never a download link. Existing Fi documents use documentId + project; own Drive files use driveFileId. via=link requires an existing Fi document. Do not claim delivery before a successful receipt; retain generated artifacts for retry.",
     parameters: DeliverSchema,
     async execute(_toolCallId, raw) {
       const input = raw as DeliverInput;
+      if (input.action || input.artifactId) {
+        if (input.documentId || input.driveFileId) {
+          throw new Error("Generated-artifact actions cannot also select a Fi or Drive document");
+        }
+        return generatedFileAction(api, context, input);
+      }
       const { delegation, config, identity } = await exchange(api, context);
       if (Boolean(input.documentId) === Boolean(input.driveFileId)) {
         throw new Error("Provide exactly one of documentId or driveFileId");
