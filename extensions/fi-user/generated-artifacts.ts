@@ -390,6 +390,10 @@ export async function generatedFileAction(
 export function withoutInternalDownloadLinks(content: string) {
   return content
     .replace(
+      /(?:<|&lt;)(?:\/workspace\/|\/tmp\/|file:\/\/)[^|\n>]*\|([^\n]*?)(?:>|&gt;)/gi,
+      "$1 — file delivery has not been verified; no accessible download link is available.",
+    )
+    .replace(
       /\[([^\]]+)\]\(<?(?:\/workspace\/|\/tmp\/|file:\/\/)[^\n)]*>?\)/gi,
       "$1 — file delivery has not been verified; no accessible download link is available.",
     )
