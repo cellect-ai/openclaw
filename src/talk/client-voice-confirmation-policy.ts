@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 import { buildToolMutationState } from "../agents/tool-mutation.js";
 
+/** Shell on a voice consult has the same authority as shell from a typed message. */
+const VOICE_SHELL_TOOLS = new Set(["bash", "exec", "gateway_exec", "node_exec", "sandbox_exec"]);
+
 export function stableToolFingerprint(toolName: string, params: unknown): string {
   const normalize = (value: unknown): unknown => {
     if (Array.isArray(value)) {
@@ -27,6 +30,11 @@ export function requiresHighImpactVoiceConfirmation(
 ): boolean {
   const normalizedTool = toolName.trim().toLowerCase();
   if (normalizedTool === "message" && isCurrentSourceMessageSend) {
+    return false;
+  }
+  // Reading CLIs and other shell commands run without a spoken yes. Sends, session
+  // delegation, and gateway changes still require one.
+  if (VOICE_SHELL_TOOLS.has(normalizedTool)) {
     return false;
   }
   if (!buildToolMutationState(normalizedTool, params).mutatingAction) {

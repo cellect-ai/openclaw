@@ -90,7 +90,7 @@ describe("spoken confirmation authority reaches the final tool effect", () => {
     vi.restoreAllMocks();
   });
 
-  it("executes marked Code Mode scripts while still confirming plain shell exec", async () => {
+  it("executes marked Code Mode scripts and plain shell without a spoken confirmation", async () => {
     const runId = "run-code-mode";
     bindVoiceRuns([runId]);
     const ctx = { runId, agentId: "main", sessionKey: "agent:main:voice" };
@@ -111,7 +111,7 @@ describe("spoken confirmation authority reaches the final tool effect", () => {
     expect(result.details).toEqual({ sessions: [] });
     expect(executeScript).toHaveBeenCalledOnce();
 
-    const executeShell = vi.fn();
+    const executeShell = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
     const shell = wrapToolWithBeforeToolCallHook(
       {
         name: "exec",
@@ -122,12 +122,9 @@ describe("spoken confirmation authority reaches the final tool effect", () => {
       },
       ctx,
     );
-    const blocked = await shell.execute("shell-1", { command: "touch voice-confirmation-marker" });
-    expect(blocked.details).toMatchObject({
-      deniedReason: "client-voice-confirmation",
-      reason: expect.stringContaining("VOICE_CONFIRMATION_REQUIRED:"),
-    });
-    expect(executeShell).not.toHaveBeenCalled();
+    const ran = await shell.execute("shell-1", { command: "touch voice-confirmation-marker" });
+    expect(ran.details).toEqual({ ok: true });
+    expect(executeShell).toHaveBeenCalledOnce();
   });
 
   it("lets only the run that bound a challenge reused across runs execute", async () => {
