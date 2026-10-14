@@ -326,12 +326,63 @@ function isReadOnlyTavilySearchCommand(tokens: readonly string[]): boolean {
   );
 }
 
+const CURL_READ_FLAGS = new Set([
+  "--compressed",
+  "--fail",
+  "--http1.1",
+  "--location",
+  "--show-error",
+  "--silent",
+]);
+const CURL_READ_VALUE_FLAGS = new Set([
+  "--connect-timeout",
+  "--max-redirs",
+  "--max-time",
+  "--retry",
+  "--retry-delay",
+  "--retry-max-time",
+  "-m",
+]);
+
+/** A curl GET does not change the workspace. Uploads, bodies, and saved output stay gated. */
+function isReadOnlyCurlGet(tokens: readonly string[]): boolean {
+  if (normalizeLowercaseStringOrEmpty(tokens[0]) !== "curl") {
+    return false;
+  }
+  let sawUrl = false;
+  for (let index = 1; index < tokens.length; index += 1) {
+    const token = tokens[index]!;
+    const normalized = normalizeLowercaseStringOrEmpty(token);
+    if (CURL_READ_FLAGS.has(normalized) || /^-[fsSL]+$/.test(token)) {
+      continue;
+    }
+    const valueFlag = normalized.includes("=")
+      ? normalized.slice(0, normalized.indexOf("="))
+      : normalized;
+    if (CURL_READ_VALUE_FLAGS.has(valueFlag)) {
+      if (!normalized.includes("=")) {
+        index += 1;
+        if (tokens[index] === undefined) {
+          return false;
+        }
+      }
+      continue;
+    }
+    if (/^https?:\/\//.test(token)) {
+      sawUrl = true;
+      continue;
+    }
+    return false;
+  }
+  return sawUrl;
+}
+
 function isReadOnlyShellTokens(tokens: readonly string[]): boolean {
   const executable = normalizeLowercaseStringOrEmpty(tokens[0]);
   if (executable === "rg" && hasUnsafeRipgrepFlag(tokens)) {
     return false;
   }
-  if (isReadOnlyTavilySearchCommand(tokens)) {
+  if (isReadOnlyTavilySearchCommand(tokens) || isReadOnlyCurlGet(tokens)) {
     return true;
   }
   if (READ_ONLY_SHELL_COMMANDS.has(executable)) {
