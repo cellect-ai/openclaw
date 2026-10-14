@@ -108,6 +108,16 @@ describe("tool mutation helpers", () => {
 
   it.each([
     ["sandbox_exec", { command: "cat README.md" }, false, false],
+    [
+      "sandbox_exec",
+      { command: "node /workspace/skills/tavily/scripts/search.mjs weather -n 5" },
+      false,
+      false,
+    ],
+    ["sandbox_exec", { command: "node /workspace/skills/tavily/scripts/search.mjs" }, false, false],
+    ["sandbox_exec", { command: "node ../skills/tavily/scripts/search.mjs weather" }, true, false],
+    ["sandbox_exec", { command: "node /tmp/search.mjs weather" }, true, false],
+    ["sandbox_exec", { command: "node -e 'process.exit(0)'" }, true, false],
     ["sandbox_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
     ["gateway_exec", { command: "cat README.md" }, false, false],
     ["gateway_exec", { command: "touch /tmp/voice-confirmation" }, true, false],

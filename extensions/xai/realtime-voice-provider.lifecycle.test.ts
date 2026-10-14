@@ -290,6 +290,21 @@ describe("xAI realtime response and transcript lifecycle", () => {
     });
   });
 
+  it("sends recognized speech while the assistant response is still open", async () => {
+    const { bridge, socket, onTranscript } = await openTranscriptBridge();
+    socket.emitServer({ type: "response.created", response: { id: "one" } });
+    vi.useFakeTimers();
+    inputTranscript(socket, "What is the forecast", "u1");
+    expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1_500);
+    expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
+      ["user", "What is the forecast", true, { itemId: "u1", textMode: "snapshot" }],
+    ]);
+    vi.useRealTimers();
+    await bridge.close();
+    expect(onTranscript.mock.calls.filter((call) => call[2])).toHaveLength(1);
+  });
+
   it("settles input recognized after the response finished once it stops changing", async () => {
     const { bridge, socket, onTranscript } = await openTranscriptBridge();
     socket.emitServer({ type: "input_audio_buffer.speech_started" });
