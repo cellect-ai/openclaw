@@ -26,7 +26,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   private finalizedInputTranscriptKeys = new Set<string>();
   private inputSpeechSequence = 0;
   private inputResponseStarted = false;
-  private inputResponseFinished = false;
   private outputResponse: { id?: string; ended: boolean } | undefined;
   private finalizedToolCallItems = new Set<string>();
   private inputTranscriptReplacements = new Map<string, string>();
@@ -51,7 +50,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     if (event.type === "response.created" && this.acceptsEvent(connection)) {
       // Publish the response owner before observers can interrupt its first PCM.
       this.inputResponseStarted = true;
-      this.inputResponseFinished = false;
       // Cancellation before response.created belongs to that pending response.
       // Only an identified successor can retire an older live response's fence.
       if (
@@ -168,7 +166,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.flushPendingInputTranscript();
         this.inputSpeechSequence += 1;
         this.inputResponseStarted = false;
-        this.inputResponseFinished = false;
         this.handleServerVadBargeIn();
         return;
       case "response.text.delta":
@@ -258,7 +255,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       case "response.done": {
         // A trailing terminal from an interrupted response must not settle new speech.
         if (this.isCurrentInputResponse(event)) {
-          this.inputResponseFinished = true;
           this.flushPendingInputTranscript();
           if (!this.acceptsEvent(connection)) {
             return;
@@ -405,7 +401,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     this.inputTranscriptReplacements.clear();
     this.finalizedInputTranscriptKeys.clear();
     this.inputResponseStarted = false;
-    this.inputResponseFinished = false;
     this.outputResponse = undefined;
     this.finalizedToolCallItems.clear();
   }
