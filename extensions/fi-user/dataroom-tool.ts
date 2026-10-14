@@ -331,9 +331,9 @@ async function uploadBytes(
       uploaded.filingReceipt?.documentId !== documentId ||
       uploaded.filingReceipt.sha256 !== provenance.sha256 ||
       uploaded.filingReceipt.provenance?.source !== "generated_artifact" ||
-      uploaded.filingReceipt.provenance.artifactId !== provenance.fileId ||
+      uploaded.filingReceipt.provenance.artifactId !== provenance.artifactId ||
       uploaded.filingReceipt.provenance.sha256 !== provenance.sha256 ||
-      uploaded.filingReceipt.provenance.sessionId !== provenance.messageId)
+      uploaded.filingReceipt.provenance.sessionId !== provenance.sessionId)
   ) {
     throw new Error(
       "The upload may have filed, but Fi did not confirm the generated file's persisted content receipt. Keep the same artifact ID and reconcile before retrying; do not regenerate it.",
