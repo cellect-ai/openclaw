@@ -14,6 +14,7 @@ import { createDataRoomTool } from "./dataroom-tool.js";
 const bytes = Buffer.from("budget,line\nconcrete,100\n");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
 const provenance = { artifactId: "ga_fixture", sha256, sessionId: "session-fixture" };
+const filingProvenance = { source: "generated_artifact", ...provenance };
 const context = { sessionKey: "session-fixture" } as OpenClawPluginToolContext;
 const api = {} as OpenClawPluginApi;
 const tool = () => createDataRoomTool(api, context);
@@ -51,11 +52,23 @@ beforeEach(() => {
       return {
         projectSlug: "24-bright",
         document: { documentId: "doc-1" },
-        filingReceipt: { documentId: "doc-1", sha256, projectSlug: "24-bright", provenance },
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          projectSlug: "24-bright",
+          provenance: filingProvenance,
+        },
       };
     }
     if (pathname.endsWith("/documents/upload")) {
-      return { document: { documentId: "doc-1" }, filingReceipt: { documentId: "doc-1", sha256 } };
+      return {
+        document: { documentId: "doc-1" },
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: filingProvenance,
+        },
+      };
     }
     if (init.method === "GET") {
       return {
@@ -132,11 +145,22 @@ describe("generated-artifact filing through requester tools", () => {
     );
   });
 
-  it("accepts exact-byte duplicate receipts without rewriting the document's original source", async () => {
+  it("refuses duplicate content when persisted provenance belongs to another source", async () => {
     mocks.delegatedJson.mockResolvedValue({
       duplicate: true,
       document: { documentId: "doc-1" },
       filingReceipt: { documentId: "doc-1", sha256, provenance: { source: "slack" } },
+    });
+    await expect(tool().execute("duplicate", libraryInput)).rejects.toThrow(
+      /persisted filing receipt/,
+    );
+  });
+
+  it("accepts an exact-artifact duplicate receipt without writing a second copy", async () => {
+    mocks.delegatedJson.mockResolvedValue({
+      duplicate: true,
+      document: { documentId: "doc-1" },
+      filingReceipt: { documentId: "doc-1", sha256, provenance: filingProvenance },
     });
     expect((await tool().execute("duplicate", libraryInput)).details).toMatchObject({
       duplicate: true,
@@ -172,6 +196,30 @@ describe("generated-artifact filing through requester tools", () => {
           },
     );
     await expect(tool().execute("misplaced", roomInput)).rejects.toThrow(/placement did not match/);
+  });
+
+  it("refuses room filing when the persisted artifact or session receipt does not match", async () => {
+    mocks.delegatedJson.mockImplementation(async (_config, _delegation, pathname, init) => {
+      if (pathname.endsWith("/documents/upload"))
+        return {
+          document: { documentId: "doc-1" },
+          filingReceipt: {
+            documentId: "doc-1",
+            sha256,
+            provenance: {
+              source: "generated_artifact",
+              artifactId: "ga_other",
+              sha256,
+              sessionId: provenance.sessionId,
+            },
+          },
+        };
+      if (init.method === "GET") return { roomVersion: 3, documents: [] };
+      return {};
+    });
+    await expect(tool().execute("bad-provenance", roomInput)).rejects.toThrow(
+      /persisted content receipt/,
+    );
   });
 
   it("requires explicit visibility and refuses mixed generated and Slack source arguments", async () => {

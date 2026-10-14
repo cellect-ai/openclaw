@@ -312,7 +312,11 @@ describe("registered generated-artifact completion hooks", () => {
       { action: "upload_to_project_library", artifactId },
       {
         document: { documentId: "doc-1" },
-        filingReceipt: { documentId: "doc-1", sha256, provenance: { artifactId } },
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: { source: "generated_artifact", artifactId, sha256 },
+        },
       },
       undefined,
       { tool: "fi_user_dataroom" },
@@ -323,7 +327,14 @@ describe("registered generated-artifact completion hooks", () => {
     await register();
     await after(
       { action: "upload_generated_artifact", artifactId },
-      { documentId: "doc-1", filingReceipt: { documentId: "doc-1", sha256 } },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: { source: "generated_artifact", artifactId, sha256 },
+        },
+      },
       undefined,
       { tool: "fi_user_dataroom" },
     );
@@ -348,6 +359,37 @@ describe("registered generated-artifact completion hooks", () => {
     await after(
       { action: "upload_generated_artifact", artifactId },
       { documentId: "different-document", filingReceipt: { documentId: "doc-1", sha256 } },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it("does not treat a receipt for another artifact or an unverified source as complete", async () => {
+    await register();
+    await after(
+      { action: "upload_generated_artifact", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: { source: "generated_artifact", artifactId: "another-artifact", sha256 },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
+    await after(
+      { action: "upload_generated_artifact", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: { source: "slack", artifactId, sha256 },
+        },
+      },
       undefined,
       { tool: "fi_user_dataroom" },
     );

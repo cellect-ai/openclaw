@@ -126,6 +126,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               details.artifactId === artifactId &&
               !!string(details.messageId);
             const receipt = record(details?.filingReceipt);
+            const provenance = record(receipt?.provenance);
             const documentId =
               string(details?.documentId) ?? string(record(details?.document)?.documentId);
             const filed =
@@ -134,6 +135,9 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               !!documentId &&
               receipt?.documentId === documentId &&
               validHash(receipt?.sha256) &&
+              provenance?.source === "generated_artifact" &&
+              provenance.artifactId === artifactId &&
+              provenance.sha256 === receipt.sha256 &&
               (!next.pending[artifactId].sha256 ||
                 next.pending[artifactId].sha256 === receipt.sha256);
             if (delivered || filed) delete next.pending[artifactId];
