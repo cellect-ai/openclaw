@@ -280,15 +280,22 @@ export async function generatedFileAction(
     if (!opened.channel?.id) {
       throw new Error("Slack returned no requester DM");
     }
-    const history = await slackRead<{ messages?: Array<{ ts?: string; files?: SlackFileInfo[] }> }>(
-      "conversations.history",
-      {
-        channel: opened.channel.id,
-        limit: "100",
-      },
-    );
+    const sender = await slackRead<{ user_id?: string }>("auth.test", {});
+    if (!sender.user_id) {
+      throw new Error("Slack did not identify the current account for delivery reconciliation");
+    }
+    const history = await slackRead<{
+      messages?: Array<{ ts?: string; user?: string; files?: SlackFileInfo[] }>;
+    }>("conversations.history", {
+      channel: opened.channel.id,
+      limit: "100",
+    });
     let checked = 0;
     for (const message of history.messages ?? []) {
+      // A requester can upload the same bytes and filename to this DM. Only a
+      // message authored by the bot account whose token is being reconciled can
+      // prove our earlier send completed.
+      if (message.user !== sender.user_id) continue;
       for (const file of message.files ?? []) {
         if (
           file.name !== artifact.fileName ||

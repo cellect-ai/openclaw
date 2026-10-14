@@ -318,14 +318,22 @@ async function uploadBytes(
     "Fi data-room upload",
   )) as {
     document?: { documentId?: string; id?: string };
-    filingReceipt?: { documentId?: string; sha256?: string };
+    filingReceipt?: {
+      documentId?: string;
+      sha256?: string;
+      provenance?: { source?: string; artifactId?: string; sha256?: string; sessionId?: string };
+    };
   };
   const documentId = uploaded.document?.documentId ?? uploaded.document?.id;
   if (
     provenance?.source === "generated_artifact" &&
     (!documentId ||
       uploaded.filingReceipt?.documentId !== documentId ||
-      uploaded.filingReceipt.sha256 !== provenance.sha256)
+      uploaded.filingReceipt.sha256 !== provenance.sha256 ||
+      uploaded.filingReceipt.provenance?.source !== "generated_artifact" ||
+      uploaded.filingReceipt.provenance.artifactId !== provenance.fileId ||
+      uploaded.filingReceipt.provenance.sha256 !== provenance.sha256 ||
+      uploaded.filingReceipt.provenance.sessionId !== provenance.messageId)
   ) {
     throw new Error(
       "The upload may have filed, but Fi did not confirm the generated file's persisted content receipt. Keep the same artifact ID and reconcile before retrying; do not regenerate it.",
@@ -471,7 +479,7 @@ async function uploadToProjectLibrary(
       documentId?: string;
       sha256?: string;
       projectSlug?: string;
-      provenance?: { artifactId?: string; sha256?: string; sessionId?: string };
+      provenance?: { source?: string; artifactId?: string; sha256?: string; sessionId?: string };
     };
   };
   if (upload.provenance.source === "generated_artifact") {
@@ -480,9 +488,10 @@ async function uploadToProjectLibrary(
       !receipt?.documentId ||
       receipt.documentId !== result.document?.documentId ||
       receipt.sha256 !== upload.provenance.sha256 ||
-      (!result.duplicate &&
-        (receipt.provenance?.artifactId !== upload.provenance.artifactId ||
-          receipt.provenance?.sessionId !== upload.provenance.sessionId))
+      receipt.provenance?.source !== "generated_artifact" ||
+      receipt.provenance.artifactId !== upload.provenance.artifactId ||
+      receipt.provenance.sha256 !== upload.provenance.sha256 ||
+      receipt.provenance.sessionId !== upload.provenance.sessionId
     ) {
       throw new Error(
         "The generated file may have filed, but Fi did not confirm its persisted filing receipt. Keep the same artifact ID and reconcile the library before retrying; do not regenerate it.",

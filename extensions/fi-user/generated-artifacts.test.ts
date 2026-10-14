@@ -368,13 +368,29 @@ describe("requester-bound generated artifact delivery", () => {
         if (url.endsWith("conversations.open")) {
           return new Response(JSON.stringify({ ok: true, channel: { id: "DREQUESTER" } }));
         }
+        if (url.endsWith("auth.test")) {
+          return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
+        }
         if (url.endsWith("conversations.history")) {
           return new Response(
             JSON.stringify({
               ok: true,
               messages: [
                 {
+                  ts: "1791919000.000001",
+                  user: "UNICHOLAS",
+                  files: [
+                    {
+                      id: "FREQUESTER",
+                      name: "Budget.csv",
+                      size: csv.length,
+                      url_private_download: "https://files.slack.com/requester-file",
+                    },
+                  ],
+                },
+                {
                   ts: "1791919000.111111",
+                  user: "UBOT",
                   files: [
                     {
                       id: "FFILE001",
@@ -411,6 +427,48 @@ describe("requester-bound generated artifact delivery", () => {
       expect(mocks.sendMedia).toHaveBeenCalledTimes(1);
     },
   );
+
+  it("does not accept an identical requester-uploaded file as proof of a bot send", async () => {
+    const artifactId = await register();
+    mocks.sendMedia.mockRejectedValueOnce(new Error("timeout"));
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/timeout/);
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("conversations.open"))
+        return new Response(JSON.stringify({ ok: true, channel: { id: "DREQUESTER" } }));
+      if (url.endsWith("auth.test"))
+        return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
+      if (url.endsWith("conversations.history"))
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            messages: [
+              {
+                ts: "1791919000.000001",
+                user: "UNICHOLAS",
+                files: [
+                  {
+                    id: "FREQUESTER",
+                    name: "Budget.csv",
+                    size: csv.length,
+                    url_private_download: "https://files.slack.com/requester-file",
+                  },
+                ],
+              },
+            ],
+          }),
+        );
+      return new Response(csv);
+    });
+    vi.stubGlobal("fetch", fetch);
+    const result = await generatedFileAction(api, context, { action: "reconcile", artifactId });
+    expect(details(result)).toMatchObject({ status: "unknown" });
+    expect(fetch.mock.calls.some(([url]) => String(url).includes("files.slack.com"))).toBe(false);
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/uncertain/);
+  });
 
   it("returns bounded image content instead of a base64 text dump and rejects non-image inspection", async () => {
     const png = Buffer.from(
