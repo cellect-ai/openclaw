@@ -170,7 +170,10 @@ describe("generated-artifact filing through requester tools", () => {
   it("refuses missing room membership readback instead of claiming a completed filing", async () => {
     mocks.delegatedJson.mockImplementation(async (_config, _delegation, pathname) =>
       pathname.endsWith("/documents/upload")
-        ? { document: { documentId: "doc-1" }, filingReceipt: { documentId: "doc-1", sha256 } }
+        ? {
+            document: { documentId: "doc-1" },
+            filingReceipt: { documentId: "doc-1", sha256, provenance: filingProvenance },
+          }
         : { roomVersion: 3, documents: [] },
     );
     await expect(tool().execute("unconfirmed", roomInput)).rejects.toThrow(
@@ -181,7 +184,10 @@ describe("generated-artifact filing through requester tools", () => {
   it("refuses a placement readback that differs from the requested visibility", async () => {
     mocks.delegatedJson.mockImplementation(async (_config, _delegation, pathname) =>
       pathname.endsWith("/documents/upload")
-        ? { document: { documentId: "doc-1" }, filingReceipt: { documentId: "doc-1", sha256 } }
+        ? {
+            document: { documentId: "doc-1" },
+            filingReceipt: { documentId: "doc-1", sha256, provenance: filingProvenance },
+          }
         : {
             roomVersion: 3,
             documents: [
