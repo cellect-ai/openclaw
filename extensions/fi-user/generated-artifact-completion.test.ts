@@ -60,6 +60,7 @@ async function after(
     } as never,
     {
       sessionKey: options.session ?? sessionKey,
+      sessionId: "session-fixture",
       runId: options.run ?? runId,
       toolName: options.tool ?? "fi_user_deliver_file",
     } as never,
@@ -315,7 +316,12 @@ describe("registered generated-artifact completion hooks", () => {
         filingReceipt: {
           documentId: "doc-1",
           sha256,
-          provenance: { source: "generated_artifact", artifactId, sha256 },
+          provenance: {
+            source: "generated_artifact",
+            artifactId,
+            sha256,
+            sessionId: "session-fixture",
+          },
         },
       },
       undefined,
@@ -332,7 +338,12 @@ describe("registered generated-artifact completion hooks", () => {
         filingReceipt: {
           documentId: "doc-1",
           sha256,
-          provenance: { source: "generated_artifact", artifactId, sha256 },
+          provenance: {
+            source: "generated_artifact",
+            artifactId,
+            sha256,
+            sessionId: "session-fixture",
+          },
         },
       },
       undefined,
@@ -388,6 +399,28 @@ describe("registered generated-artifact completion hooks", () => {
           documentId: "doc-1",
           sha256,
           provenance: { source: "slack", artifactId, sha256 },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it("does not accept a persisted filing receipt from another session", async () => {
+    await register();
+    await after(
+      { action: "upload_generated_artifact", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: {
+            source: "generated_artifact",
+            artifactId,
+            sha256,
+            sessionId: "session-other",
+          },
         },
       },
       undefined,

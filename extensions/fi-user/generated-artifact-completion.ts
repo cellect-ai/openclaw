@@ -5,7 +5,7 @@ type RunObservation = {
   started: true;
   prepared: boolean;
   failedFiles: string[];
-  pending: Record<string, { sha256?: string }>;
+  pending: Record<string, { sha256?: string; sessionId?: string }>;
 };
 const incomplete =
   "File delivery has not been verified. Any generated artifact is retained for recovery; this task is incomplete. I will not present an internal file path as a download or ask you to upload a file you cannot access.";
@@ -39,7 +39,11 @@ function validObservation(value: unknown): value is RunObservation {
     !!record(row.pending) &&
     Object.values(row.pending as Record<string, unknown>).every((entry) => {
       const artifact = record(entry);
-      return !!artifact && (artifact.sha256 === undefined || validHash(artifact.sha256));
+      return (
+        !!artifact &&
+        (artifact.sha256 === undefined || validHash(artifact.sha256)) &&
+        (artifact.sessionId === undefined || typeof artifact.sessionId === "string")
+      );
     })
   );
 }
@@ -115,7 +119,10 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
             ) {
               next.prepared = false;
               next.failedFiles = next.failedFiles.filter((name) => name !== filename);
-              next.pending[id] = { sha256: details.sha256 };
+              next.pending[id] = {
+                sha256: details.sha256,
+                sessionId: string(context.sessionId),
+              };
             } else if (!next.failedFiles.includes(filename)) next.failedFiles.push(filename);
           }
           if (artifactId) {
@@ -138,6 +145,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               provenance?.source === "generated_artifact" &&
               provenance.artifactId === artifactId &&
               provenance.sha256 === receipt.sha256 &&
+              provenance.sessionId === next.pending[artifactId].sessionId &&
               (!next.pending[artifactId].sha256 ||
                 next.pending[artifactId].sha256 === receipt.sha256);
             if (delivered || filed) delete next.pending[artifactId];
