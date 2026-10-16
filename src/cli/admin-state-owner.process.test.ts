@@ -227,8 +227,15 @@ describe("administrative CLI state owner routing", () => {
     writeChannelPairingStateSnapshot(channel, {
       version: 1,
       requests: [
-        { id: "sender", code: "ABCDEFGH", createdAt: now, lastSeenAt: now },
-        { id: "expired", code: "JKLMNPQR", createdAt: "2000-01-01T00:00:00.000Z", lastSeenAt: now },
+        { id: "sender", code: "ABCDEFGH", createdAt: now, lastSeenAt: now, status: "pending" },
+        {
+          id: "expired",
+          code: "JKLMNPQR",
+          createdAt: "2000-01-01T00:00:00.000Z",
+          lastSeenAt: now,
+          // Stored pending; expiry derives from timestamps (fork status model).
+          status: "pending",
+        },
       ],
     });
     await updateExecApprovals({
