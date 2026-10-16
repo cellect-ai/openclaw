@@ -155,6 +155,26 @@ describe("Matrix relay consumes its private chat terminal without browser transc
     },
   );
 
+  it("speaks a display-hidden consult final without putting that text on the chat socket", () => {
+    const { context, providerResult } = fixture();
+    broadcastChatTerminal({
+      context,
+      runId,
+      sessionKey,
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: answer }],
+        display: false,
+      },
+    });
+    expect(providerResult).toHaveBeenCalledWith("provider-call", { result: answer }, undefined);
+    const chatPayload = context.broadcast.mock.calls.find(([event]) => event === "chat")?.[1] as
+      | { message?: unknown }
+      | undefined;
+    expect(chatPayload?.message).toBeUndefined();
+  });
+
   it("forwards native streamed completion even when no browser may receive chat events", async () => {
     const { context, providerResult } = fixture();
     registerAgentRunContext(runId, { sessionKey, isControlUiVisible: false, verboseLevel: "off" });

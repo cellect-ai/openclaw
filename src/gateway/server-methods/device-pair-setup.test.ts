@@ -381,7 +381,7 @@ describe("device.pair.setupCode", () => {
       expect.objectContaining({
         bootstrapProfile: {
           roles: ["operator"],
-          scopes: ["operator.read", "operator.talk", "operator.write"],
+          scopes: ["operator.questions", "operator.read", "operator.talk", "operator.write"],
           purpose: "webchat",
           allowedAgentIds: ["fi-admin", "fi-user"],
         },

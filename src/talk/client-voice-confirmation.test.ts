@@ -209,19 +209,16 @@ describe("client voice confirmation", () => {
     ["sandbox_exec", "git clean -fdx"],
     ["gateway_exec", "git clean -fdx"],
     ["node_exec", "git clean -fdx"],
-  ])(
-    "requires confirmation for an unlisted destructive shell command: %s %s",
-    (toolName, command) => {
-      expect(
-        block({
-          voiceSessionId: "voice-1",
-          runId: "voice-run",
-          toolName,
-          toolParams: { command },
-        }),
-      ).toBeTruthy();
-    },
-  );
+  ])("does not require confirmation for a shell command: %s %s", (toolName, command) => {
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        voiceSessionId: "voice-1",
+        runId: "voice-run",
+        toolName,
+        toolParams: { command },
+      }),
+    ).toEqual({ allowed: true });
+  });
 
   it.each([
     "ls -la",

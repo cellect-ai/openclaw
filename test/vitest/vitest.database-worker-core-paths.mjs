@@ -227,6 +227,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugin-sdk/persistent-dedupe.worker.test.ts",
   "src/acp/runtime/session-meta.legacy-migration.test.ts",
   "src/agents/mcp-oauth-refresh-issuer.test.ts",
+  "src/agents/mcp-oauth.login-issuer.test.ts",
   "src/agents/tools/skill-workshop-tool.collection-restore.test.ts",
   "src/agents/tools/skill-workshop-tool.availability.test.ts",
   "src/agents/tools/skill-workshop-tool.history.test.ts",

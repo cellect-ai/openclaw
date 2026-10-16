@@ -18,6 +18,28 @@ import {
   registerAgentRunAdmissionHandler,
 } from "./agent-run-registry.js";
 import {
+  resolveBusinessApprovalConversation,
+  type BusinessApprovalConversation,
+} from "./business-approval-conversation.js";
+import {
+  buildConfirmationCard,
+  CHAT_DECIDABLE_APPROVAL_KINDS,
+  decisionCardContent,
+  decisionCardsEnabled,
+  factForSend,
+  failureKindOf,
+  isLifecycleTime,
+  isRunReference,
+  lifecycleSignalsEnabled,
+  nextAtMs,
+  stoppedByOf,
+  waitingOnOf,
+  type DecisionStatus,
+  type LifecycleSignals,
+  type RunFailureKind,
+  type RunStoppedBy,
+} from "./conversation-lifecycle-signals.js";
+import {
   getDeliveryQueueEntryStatus,
   loadDeliveryQueueEntries,
   loadDeliveryQueueEntry,
@@ -65,7 +87,21 @@ export type ConversationLifecyclePublication = Readonly<{
   revision: number;
   state: ConversationLifecycleState;
   resultEventId?: string;
-}>;
+}> &
+  /** Contract v2. Recorded always, sent only while the producer flag is on. */
+  LifecycleSignals;
+
+/** A decision card the room is owed, by the gateway approval id it is the card of. */
+export type LifecycleDecisionCard = {
+  revision: number;
+  status: DecisionStatus;
+  expiresAtMs: number;
+  /** Persisted human action copy; no command, raw tool arguments or diagnostic output. */
+  conversation?: BusinessApprovalConversation;
+  decisions?: ("approve" | "decline")[];
+  /** Highest revision the destination accepted. */
+  sent: number;
+};
 
 export type LifecycleObligation = DeliveryQueueEntryState & {
   transportId: string;
@@ -90,6 +126,28 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   stuckAt?: number;
   /** When a held run's owner was first found missing; the hold is measured from here. */
   missingSince?: number;
+  /**
+   * The v2 fields of each pending fact, by revision, kept beside the facts and
+   * not in them, and recorded only while the signals switch is on. The facts
+   * stay exactly what the earlier contract stored, so a build without the
+   * fields that reads this row sends none of them.
+   */
+  signals?: Record<number, LifecycleSignals>;
+  /** When the run was admitted, read once from its registry context. Never filled in later. */
+  admittedAtMs?: number;
+  /** `atMs` of the row's newest fact, so the next one is strictly later. */
+  lastAtMs?: number;
+  /** When the row last produced a heartbeat. */
+  heartbeatAt?: number;
+  /** Pending approvals a person may decide from the conversation (plugin approvals). */
+  confirmations?: string[];
+  /** The `waitingOn` reference of the row's newest waiting fact. */
+  waitingRef?: string;
+  /** What a failed or cancelled run reported, kept for a republish of the same state. */
+  failureKind?: RunFailureKind;
+  stoppedBy?: RunStoppedBy;
+  /** Decision cards owed to the room, by approval id. Only recorded while cards are switched on. */
+  cards?: Record<string, LifecycleDecisionCard>;
 };
 
 const QUEUE = "conversation-lifecycle-v2";
@@ -122,6 +180,13 @@ const HEAD_ROW_FAILURES = 5;
 // A refusal can be transient, so a parked room is tried once more at this interval.
 const PARKED_PROBE_MS = 60 * 60_000;
 const SETTLED = new Set<ConversationLifecycleState>(["completed", "failed", "cancelled"]);
+// A live run's heartbeat: its current state again with a newer `atMs`, at most
+// this often, and only while nothing else of the run waits to be sent.
+const HEARTBEAT_INTERVAL_MS = 60_000;
+// A run that waits on a person is vouched for for this long. A claim held for
+// longer than an approval is normally open says less about the run than about
+// an answer that is not coming, so past it the wait is reported as it stands.
+const HEARTBEAT_WAIT_LIMIT_MS = 60 * 60_000;
 
 type Retry = { failures: number; notBefore: number };
 
@@ -159,41 +224,144 @@ function lifecycleState(event: AgentEventRuntimePayload): ConversationLifecycleS
   return outcome.reason === "timed_out" ? "interrupted" : "failed";
 }
 
-/** Applies an approval to the holder's open set; undefined when the event carries no change. */
-function transition(
-  holder: { pendingApprovals: string[] },
-  event: AgentEventRuntimePayload,
-  incomingState: ConversationLifecycleState,
-): ConversationLifecycleState | undefined {
-  if (event.stream !== "approval") return incomingState;
-  const approvalId = [event.data.approvalId, event.data.itemId, event.data.toolCallId].find(
+function approvalIdOf(event: AgentEventRuntimePayload): string | undefined {
+  return [event.data.approvalId, event.data.itemId, event.data.toolCallId].find(
     (value): value is string => typeof value === "string" && value.length > 0,
   );
+}
+
+/**
+ * Whether an approval may be decided from the conversation: its kind is on the
+ * allowlist AND its emitter said so. The marker is opt-in because a kind alone
+ * is not enough: the Codex bridge calls file-change and permission-escalation
+ * approvals "plugin", and exec and system-agent approvals are never decided
+ * from chat.
+ */
+function conversationDecisionOf(data: Record<string, unknown>):
+  | {
+      expiresAtMs: number;
+      conversation: BusinessApprovalConversation;
+      decisions: ("approve" | "decline")[];
+    }
+  | undefined {
+  if (
+    !CHAT_DECIDABLE_APPROVAL_KINDS.some((kind) => kind === data.kind) ||
+    data.chatDecidable !== true ||
+    !isLifecycleTime(data.expiresAtMs) ||
+    !Array.isArray(data.allowedDecisions) ||
+    !data.allowedDecisions.includes("deny")
+  ) {
+    return undefined;
+  }
+  const conversation = resolveBusinessApprovalConversation({ conversation: data.conversation });
+  if (!conversation) {
+    return undefined;
+  }
+  return {
+    expiresAtMs: data.expiresAtMs,
+    conversation,
+    decisions: data.allowedDecisions.includes("allow-once") ? ["approve", "decline"] : ["decline"],
+  };
+}
+
+/**
+ * Applies an approval to the holder's open set; undefined when the event
+ * carries no change. `track` also records which open approvals a person may
+ * decide, which only the v2 fields and cards use.
+ */
+function transition(
+  holder: { pendingApprovals: string[]; confirmations?: string[] },
+  event: AgentEventRuntimePayload,
+  incomingState: ConversationLifecycleState,
+  track = false,
+): ConversationLifecycleState | undefined {
+  if (event.stream !== "approval") return incomingState;
+  const approvalId = approvalIdOf(event);
   if (!approvalId) return;
   if (event.data.phase === "requested") {
     if (!holder.pendingApprovals.includes(approvalId)) holder.pendingApprovals.push(approvalId);
+    // Only a plugin approval, named by the gateway's own approval id, is one a
+    // person may decide from the conversation. A command or a change to the
+    // gateway is decided elsewhere, so a run waiting on one names nothing.
+    if (
+      track &&
+      conversationDecisionOf(event.data) !== undefined &&
+      event.data.approvalId === approvalId &&
+      isRunReference(approvalId) &&
+      !holder.confirmations?.includes(approvalId)
+    ) {
+      holder.confirmations = [...(holder.confirmations ?? []), approvalId];
+    }
   } else {
     if (!holder.pendingApprovals.includes(approvalId)) return;
     holder.pendingApprovals = holder.pendingApprovals.filter((id) => id !== approvalId);
+    if (holder.confirmations?.includes(approvalId)) {
+      const remaining = holder.confirmations.filter((id) => id !== approvalId);
+      if (remaining.length) {
+        holder.confirmations = remaining;
+      } else {
+        delete holder.confirmations;
+      }
+    }
   }
   return holder.pendingApprovals.length ? "waiting" : "running";
 }
 
-function appendTransition(
+/** What a failed or cancelled run reports about itself, from its terminal event. */
+function terminalSignalsOf(
+  event: AgentEventRuntimePayload,
+  state: ConversationLifecycleState,
+): { failureKind?: RunFailureKind; stoppedBy?: RunStoppedBy } | undefined {
+  if (state !== "failed" && state !== "cancelled") {
+    return undefined;
+  }
+  const phase = event.data.phase;
+  if (phase !== "end" && phase !== "error") {
+    return undefined;
+  }
+  const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({ phase, data: event.data });
+  if (state === "failed") {
+    return { failureKind: failureKindOf(outcome, event.data) };
+  }
+  const stoppedBy = stoppedByOf(outcome.reason);
+  return stoppedBy ? { stoppedBy } : undefined;
+}
+
+/**
+ * The v2 signals for the fact the row has just recorded, kept beside the
+ * pending facts under its revision. Advances the row's clock. Called only
+ * while the signals switch is on, so nothing is stored otherwise.
+ */
+function stamp(row: LifecycleObligation, state: ConversationLifecycleState): void {
+  const atMs = nextAtMs(Date.now(), row.lastAtMs);
+  if (atMs !== undefined) {
+    row.lastAtMs = atMs;
+  }
+  const waitingOn =
+    state === "waiting" ? waitingOnOf(row.pendingApprovals, row.confirmations) : undefined;
+  if (state === "waiting") {
+    row.waitingRef = waitingOn?.ref;
+  }
+  const signals: LifecycleSignals = {
+    ...(atMs !== undefined ? { atMs } : {}),
+    ...(row.admittedAtMs !== undefined ? { admittedAtMs: row.admittedAtMs } : {}),
+    ...(waitingOn ? { waitingOn } : {}),
+    ...(state === "failed" && row.failureKind ? { failureKind: row.failureKind } : {}),
+    ...(state === "cancelled" && row.stoppedBy ? { stoppedBy: row.stoppedBy } : {}),
+  };
+  const kept = new Set(row.pending.map((fact) => fact.revision));
+  const earlier = Object.entries(row.signals ?? {}).filter(([revision]) =>
+    kept.has(Number(revision)),
+  );
+  row.signals = Object.fromEntries([...earlier, [String(row.revision), signals]]);
+}
+
+function publication(
   row: LifecycleObligation,
   state: ConversationLifecycleState,
-  cap = RUN_PENDING_CAP,
-): void {
-  // A room that cannot be reached must not fail the run or other rooms, so a
-  // full backlog sheds its oldest unpublished transitions instead of throwing.
-  // Observers order by revision and tolerate gaps, and nothing is appended
-  // after a terminal state except that same state again, so the newest entry
-  // kept here is always the run's current state and a terminal is never lost.
-  if (row.pending.length >= cap) row.pending.splice(0, row.pending.length - cap + 1);
-  row.revision += 1;
-  row.state = state;
+): ConversationLifecyclePublication {
   const { environment, conversationId, roomId, bindingId } = row.binding;
-  row.pending.push({
+  return {
     version: 2,
     environment,
     conversationId,
@@ -204,7 +372,120 @@ function appendTransition(
     revision: row.revision,
     state,
     ...(row.resultEventId ? { resultEventId: row.resultEventId } : {}),
-  });
+  };
+}
+
+function appendTransition(
+  row: LifecycleObligation,
+  state: ConversationLifecycleState,
+  cap = RUN_PENDING_CAP,
+  terminal?: { failureKind?: RunFailureKind; stoppedBy?: RunStoppedBy },
+  signals = false,
+): void {
+  // A room that cannot be reached must not fail the run or other rooms, so a
+  // full backlog sheds its oldest unpublished transitions instead of throwing.
+  // Observers order by revision and tolerate gaps, and nothing is appended
+  // after a terminal state except that same state again, so the newest entry
+  // kept here is always the run's current state and a terminal is never lost.
+  if (row.pending.length >= cap) {
+    row.pending.splice(0, row.pending.length - cap + 1);
+  }
+  if (terminal?.failureKind) {
+    row.failureKind = terminal.failureKind;
+  }
+  if (terminal?.stoppedBy) {
+    row.stoppedBy = terminal.stoppedBy;
+  }
+  row.revision += 1;
+  row.state = state;
+  row.pending.push(publication(row, state));
+  if (signals) {
+    stamp(row, state);
+  }
+}
+
+/**
+ * The run's current state again under the next revision with a newer `atMs`:
+ * proof of life, nothing else. Only ever added to an empty backlog, so it
+ * sheds nothing and is never queued behind a fact it could overtake.
+ */
+function appendHeartbeat(row: LifecycleObligation): void {
+  row.revision += 1;
+  row.heartbeatAt = Date.now();
+  row.pending.push(publication(row, row.state));
+  stamp(row, row.state);
+}
+
+/** Closes every open card of a row whose run ended without its answer. */
+function cancelOpenCards(row: LifecycleObligation): void {
+  for (const card of Object.values(row.cards ?? {})) {
+    if (card.status !== "pending") {
+      continue;
+    }
+    card.revision += 1;
+    card.status = "cancelled";
+  }
+}
+
+/** Gives up the cards a row owes, because its room is given up too. */
+function giveUpCards(row: LifecycleObligation): void {
+  for (const card of Object.values(row.cards ?? {})) {
+    card.sent = card.revision;
+  }
+}
+
+/**
+ * Records the decision cards a row owes the room: one per plugin approval a
+ * person may decide, opened when it is requested and closed when it resolves
+ * or the run ends. Cards are sent from `deliver`, newest revision only.
+ */
+function noteDecisionCards(
+  row: Pick<LifecycleObligation, "confirmations" | "cards">,
+  event: AgentEventRuntimePayload,
+  state: ConversationLifecycleState,
+): void {
+  if (event.stream === "approval") {
+    const id = approvalIdOf(event);
+    const decision = conversationDecisionOf(event.data);
+    if (
+      id &&
+      event.data.phase === "requested" &&
+      event.data.status === "pending" &&
+      row.confirmations?.includes(id) &&
+      decision &&
+      !row.cards?.[id]
+    ) {
+      row.cards = {
+        ...row.cards,
+        [id]: {
+          revision: 1,
+          status: "pending",
+          ...decision,
+          sent: 0,
+        },
+      };
+    } else if (id && event.data.phase === "resolved" && row.cards?.[id]?.status === "pending") {
+      const card = row.cards[id];
+      card.revision += 1;
+      card.status =
+        event.data.status === "approved"
+          ? "approved"
+          : event.data.status === "denied"
+            ? "declined"
+            : event.data.reason === "timeout"
+              ? "expired"
+              : "cancelled";
+    }
+  }
+  if (TERMINAL.has(state)) {
+    for (const card of Object.values(row.cards ?? {})) {
+      if (card.status !== "pending") {
+        continue;
+      }
+      card.revision += 1;
+      card.status = "cancelled";
+    }
+  }
 }
 
 /** Install only for a trusted transport with already-persisted canonical bindings. */
@@ -236,8 +517,39 @@ export function registerConversationLifecycleTransport(options: {
   /** True when the destination refused the transport outright and retrying cannot help. */
   isDestinationGone?: (error: unknown) => boolean;
   stateDir?: string;
+  /**
+   * Contract v2: the optional fields on each fact, and the heartbeat. Read when
+   * a fact is sent, so switching it off stops the fields at once, backlog
+   * included. Default: the environment switch
+   * `OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS`, off unless set.
+   */
+  signals?: () => boolean;
+  /**
+   * Decision cards for approvals a person may decide, and `waitingOn` naming
+   * them. A separate switch from `signals`; default
+   * `OPENCLAW_CONVERSATION_DECISION_CARDS`, off unless set. Without
+   * `publishDecision` no card is recorded or sent.
+   */
+  decisionCards?: () => boolean;
+  /** Sends one `m.room.message` carrying a decision card, in the run's thread. */
+  publishDecision?: (
+    binding: ConversationProjectionBinding,
+    content: Record<string, unknown>,
+    transactionId: string,
+  ) => Promise<void>;
 }) {
   let stopped = false;
+  const signalsOn = () => (options.signals ?? lifecycleSignalsEnabled)();
+  const cardsOn = () =>
+    options.publishDecision !== undefined && (options.decisionCards ?? decisionCardsEnabled)();
+  // Failed card sends back off per approval, so one cannot delay a room's facts.
+  const cardRetries = new Map<string, Retry>();
+  const append = (
+    row: LifecycleObligation,
+    state: ConversationLifecycleState,
+    cap?: number,
+    terminal?: { failureKind?: RunFailureKind; stoppedBy?: RunStoppedBy },
+  ) => appendTransition(row, state, cap, terminal, signalsOn());
   // Delivery failures back off per room, so an unreachable room costs one
   // attempt per period and never delays other rooms. Within a room rows are
   // sent in admission order, so a newer run's state does not overtake an
@@ -277,6 +589,8 @@ export function registerConversationLifecycleTransport(options: {
       generation: string;
       state: ConversationLifecycleState;
       pendingApprovals: string[];
+      confirmations: string[];
+      cards?: Record<string, LifecycleDecisionCard>;
       attempts: number;
       notBefore: number;
       missingSince?: number;
@@ -337,6 +651,8 @@ export function registerConversationLifecycleTransport(options: {
     )
       return;
     const sessionId = context.sessionId;
+    // With the switch off none of this runs and the row holds what it always held.
+    const terminal = signalsOn() ? terminalSignalsOf(event, incomingState) : undefined;
     const ownerKey = `${generation}:${event.runId}`;
     let bindings = owners.get(ownerKey);
     if (!bindings) {
@@ -366,6 +682,7 @@ export function registerConversationLifecycleTransport(options: {
             generation,
             state: "queued",
             pendingApprovals: [],
+            confirmations: [],
             attempts: 0,
             notBefore: Date.now() + RETRY_BASE_MS,
           };
@@ -374,9 +691,14 @@ export function registerConversationLifecycleTransport(options: {
         // As for a bound run, a repeated admission never rewinds the state.
         const state =
           tracked && incomingState !== "queued"
-            ? transition(tracked, event, incomingState)
+            ? transition(tracked, event, incomingState, true)
             : undefined;
-        if (tracked && state) tracked.state = state;
+        if (tracked && state) {
+          tracked.state = state;
+          if (cardsOn()) {
+            noteDecisionCards(tracked, event, state);
+          }
+        }
         return;
       }
       if (owners.size >= 10_000) throw new Error("Conversation lifecycle owners are full");
@@ -429,15 +751,37 @@ export function registerConversationLifecycleTransport(options: {
             state: incomingState,
             pending: [],
             pendingApprovals: late ? [...late.pendingApprovals] : [],
+            ...(late?.cards && cardsOn() ? { cards: structuredClone(late.cards) } : {}),
+            ...(late?.confirmations.length && (signalsOn() || cardsOn())
+              ? { confirmations: [...late.confirmations] }
+              : {}),
             acked: 0,
+            // Taken from admission, never from the row's creation: a binding
+            // that appears later must not move the run in the conversation's order.
+            ...(signalsOn() && isLifecycleTime(context.registeredAt)
+              ? { admittedAtMs: context.registeredAt }
+              : {}),
           };
-          let state = transition(row, event, incomingState);
+          let state = transition(row, event, incomingState, signalsOn() || cardsOn());
           if (!state) continue;
           // A binding found by re-resolution announces where the run already
           // is; the re-resolving admission must not present it as queued.
           if (!existing && late && incomingState === "queued") state = late.state;
-          if (!existing || existing.state !== state)
-            appendTransition(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP);
+          // A run that stays `waiting` while it moves on to another approval names
+          // the new one in a fact of its own; the flag is off, nothing changes.
+          const waitMoved =
+            existing !== null &&
+            existing !== undefined &&
+            state === "waiting" &&
+            existing.state === "waiting" &&
+            signalsOn() &&
+            waitingOnOf(row.pendingApprovals, row.confirmations)?.ref !== row.waitingRef;
+          if (!existing || existing.state !== state || waitMoved) {
+            append(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP, terminal);
+          }
+          if (cardsOn()) {
+            noteDecisionCards(row, event, state);
+          }
           row.live =
             hasAgentRunContextExecutionOwner(event.runId) || row.pendingApprovals.length > 0;
           row.activeAt = Date.now();
@@ -633,7 +977,11 @@ export function registerConversationLifecycleTransport(options: {
     const row = await read();
     if (!row || stopped || (!TERMINAL.has(row.state) && ownerPresent(row))) return;
     const expected = JSON.stringify(row);
-    if (!TERMINAL.has(row.state)) appendTransition(row, "interrupted");
+    if (!TERMINAL.has(row.state)) {
+      append(row, "interrupted");
+    }
+    // The room is given up, so what it was owed in cards is too.
+    giveUpCards(row);
     row.pending = [];
     delete row.stuckAt;
     await replace(expected, row);
@@ -662,13 +1010,20 @@ export function registerConversationLifecycleTransport(options: {
     const open = !TERMINAL.has(row.state);
     if (open && (ownerPresent(row) || heldForOwner(row))) return;
     const expected = JSON.stringify(row);
-    if (open) appendTransition(row, "interrupted");
+    if (open) {
+      append(row, "interrupted");
+      cancelOpenCards(row);
+    }
     // A room that was told of the run must still learn how it ended, or the
     // run stays live there for good: only superseded states are dropped and
     // the newest one stays queued for the probe. A run the room never heard
     // of is dropped whole.
     if (told(row) && Date.now() - row.enqueuedAt >= PARKED_ROW_MAX_AGE_MS) return abandon(id);
     row.pending = told(row) ? row.pending.slice(-1) : [];
+    // A run the room never heard of never had a card either.
+    if (!told(row)) {
+      giveUpCards(row);
+    }
     if (JSON.stringify(row) !== expected) await replace(expected, row);
   };
 
@@ -718,7 +1073,8 @@ export function registerConversationLifecycleTransport(options: {
       });
     } else if (!TERMINAL.has(row.state) && !heldForOwner(row)) {
       const expected = JSON.stringify(row);
-      appendTransition(row, "interrupted");
+      append(row, "interrupted");
+      cancelOpenCards(row);
       const recovered = row;
       await replace(expected, recovered, () => {
         if (ownerPresent(recovered)) throw new Error("Conversation lifecycle owner became current");
@@ -762,7 +1118,14 @@ export function registerConversationLifecycleTransport(options: {
       }
       if (event.state === "interrupted") interruptedSent.add(id);
       try {
-        await options.publish(row.binding, event, `${row.id}:${event.revision}`);
+        await options.publish(
+          row.binding,
+          factForSend(
+            { ...event, ...row.signals?.[event.revision] },
+            { signals: signalsOn(), decisionCards: cardsOn() },
+          ),
+          `${row.id}:${event.revision}`,
+        );
       } catch (error) {
         publishFailure = error;
         // A refusal is the response: the row's first send did not land.
@@ -779,7 +1142,187 @@ export function registerConversationLifecycleTransport(options: {
         input: { id, revision: event.revision },
       });
     }
+    // Cards follow the facts and never hold them back: a card that cannot be
+    // sent is retried on its own backoff and reported, and the room's status goes on.
+    if (row && cardsOn()) {
+      await sendDecisionCards(row).catch(options.onError);
+    }
     return sent;
+  };
+
+  /** A card the room has refused for this long past its expiry is not worth sending any more. */
+  const cardLapsed = (card: LifecycleDecisionCard) =>
+    Date.now() > card.expiresAtMs + PARKED_PROBE_MS;
+
+  const owesCards = (row: LifecycleObligation) =>
+    cardsOn() &&
+    Object.values(row.cards ?? {}).some((card) => card.sent < card.revision && !cardLapsed(card));
+
+  /** Sends each card's newest revision, then records it as sent unless the row changed meanwhile. */
+  const sendDecisionCards = async (row: LifecycleObligation): Promise<void> => {
+    for (const [approvalId, card] of Object.entries(row.cards ?? {})) {
+      if (stopped || card.sent >= card.revision || cardLapsed(card)) {
+        continue;
+      }
+      const retry = cardRetries.get(`${row.id}:${approvalId}`);
+      if (retry && retry.notBefore > Date.now()) {
+        continue;
+      }
+      const built = buildConfirmationCard({
+        id: approvalId,
+        revision: card.revision,
+        status: card.status,
+        runId: row.runId,
+        expiresAtMs: card.expiresAtMs,
+        conversation: card.conversation,
+        decisions: card.decisions,
+      });
+      try {
+        // A card the contract would reject is never sent; it is marked sent so it is not retried forever.
+        if (built) {
+          await options.publishDecision!(
+            row.binding,
+            decisionCardContent(built, row.binding.threadRootEventId),
+            `${row.id}:card:${approvalId}:${card.revision}`,
+          );
+        }
+      } catch (error) {
+        const failures = defer(cardRetries, `${row.id}:${approvalId}`, RETRY_BASE_MS);
+        if ((failures & (failures - 1)) === 0) {
+          options.onError(error, {
+            roomId: row.binding.roomId,
+            reason: "delivery_failed",
+            failures,
+          });
+        }
+        continue;
+      }
+      cardRetries.delete(`${row.id}:${approvalId}`);
+      const current = (
+        await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+          type: "deliveryQueue.lifecycleRead",
+          input: { id: row.id },
+        })
+      )[0];
+      const held = current?.cards?.[approvalId];
+      if (!current || !held || held.sent >= card.revision) {
+        continue;
+      }
+      await replace(JSON.stringify(current), {
+        ...current,
+        cards: { ...current.cards, [approvalId]: { ...held, sent: card.revision } },
+      });
+    }
+    await completeSettled(row.id);
+  };
+
+  /**
+   * A settled row is held while it owes cards (the worker does not complete
+   * it), so the last card's answer is never lost with the row. Once every card
+   * is sent it is completed here, as its last fact's acknowledgement would have.
+   */
+  const completeSettled = async (id: string): Promise<void> => {
+    const current = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (
+      !current ||
+      stopped ||
+      !current.cards ||
+      !TERMINAL.has(current.state) ||
+      current.pending.length ||
+      !current.resultEventId ||
+      Object.values(current.cards).some((card) => card.sent < card.revision)
+    ) {
+      return;
+    }
+    await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+      type: "deliveryQueue.lifecycleAck",
+      input: { id, revision: current.revision },
+    });
+  };
+
+  /**
+   * The cards a settled row still owes are given up so the row can complete:
+   * all of them when cards are switched off, else only those long past expiry
+   * (a room that refuses a card for good must not keep the row queued).
+   */
+  const releaseCards = async (id: string): Promise<void> => {
+    const current = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id },
+      })
+    )[0];
+    if (!current || stopped || !TERMINAL.has(current.state) || current.pending.length) {
+      return;
+    }
+    const expected = JSON.stringify(current);
+    const all = !cardsOn();
+    for (const card of Object.values(current.cards ?? {})) {
+      if (card.sent < card.revision && (all || cardLapsed(card))) {
+        card.sent = card.revision;
+      }
+    }
+    await replace(expected, current);
+    await completeSettled(id);
+  };
+
+  /**
+   * The run's heartbeat: with the signals on, nothing of the run waiting to be
+   * sent and its executor still holding its claim, the current state is
+   * published again under a newer `atMs`. It reports a claim that is live and
+   * nothing more: it does not refresh the registry, so a run that holds its
+   * claim and does nothing is swept at the same time as ever and reported
+   * interrupted. A run waiting on a person is vouched for for the first hour of
+   * the wait only.
+   */
+  const heartbeat = async (row: LifecycleObligation): Promise<void> => {
+    if (
+      !signalsOn() ||
+      TERMINAL.has(row.state) ||
+      row.generation !== getAgentRunLifecycleGeneration()
+    ) {
+      return;
+    }
+    if (!hasAgentRunContextExecutionOwner(row.runId)) {
+      return;
+    }
+    const now = Date.now();
+    if (
+      row.state === "waiting" &&
+      now - (row.activeAt ?? row.enqueuedAt) >= HEARTBEAT_WAIT_LIMIT_MS
+    ) {
+      return;
+    }
+    if (
+      row.pending.length ||
+      now - (row.heartbeatAt ?? row.activeAt ?? row.enqueuedAt) < HEARTBEAT_INTERVAL_MS
+    ) {
+      return;
+    }
+    if (parked.has(row.binding.roomId) || row.stuckAt !== undefined) {
+      return;
+    }
+    const current = (
+      await executeDeliveryQueueOperation(stateContext, options.stateDir, {
+        type: "deliveryQueue.lifecycleRead",
+        input: { id: row.id },
+      })
+    )[0];
+    if (!current || stopped || TERMINAL.has(current.state) || current.pending.length) {
+      return;
+    }
+    const expected = JSON.stringify(current);
+    appendHeartbeat(current);
+    await replace(expected, current, () => {
+      if (!hasAgentRunContextExecutionOwner(current.runId)) {
+        throw new Error("Conversation lifecycle owner is gone");
+      }
+    });
   };
 
   const flush = (): Promise<void> => {
@@ -845,10 +1388,19 @@ export function registerConversationLifecycleTransport(options: {
         if (stopped || initial.transportId !== options.transportId) continue;
         // Settled lifecycle rows may intentionally wait for a final-result
         // correlation. They have no publication obligation until noteResult.
-        if (!initial.pending.length && TERMINAL.has(initial.state)) continue;
+        if (!initial.pending.length && TERMINAL.has(initial.state) && !owesCards(initial)) {
+          if (
+            initial.resultEventId &&
+            Object.values(initial.cards ?? {}).some((card) => card.sent < card.revision)
+          ) {
+            await releaseCards(initial.id).catch(options.onError);
+          }
+          continue;
+        }
         const roomId = initial.binding.roomId;
         const now = Date.now();
         await trackOwner(initial).catch(options.onError);
+        await heartbeat(initial).catch(options.onError);
         const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
         if (!parked.has(roomId) && initial.stuckAt !== undefined) {
           // A stuck row never holds back or backs off its room. It ends like a
@@ -954,6 +1506,8 @@ export function registerConversationLifecycleTransport(options: {
             ? "queued"
             : "running",
         pendingApprovals,
+        // The registry keeps ids, not kinds: a run adopted after a reload names nothing it waits on.
+        confirmations: [],
         attempts: 0,
         notBefore: Date.now() + RETRY_BASE_MS,
       });
@@ -994,7 +1548,9 @@ export function registerConversationLifecycleTransport(options: {
           parked.delete(row.binding.roomId);
           // Terminal can precede visible delivery. Only an accepted final event
           // proves a notification target; a preliminary answer never calls here.
-          if (TERMINAL.has(row.state)) appendTransition(row, row.state);
+          if (TERMINAL.has(row.state)) {
+            append(row, row.state);
+          }
           write(row);
           queueMicrotask(() => {
             void flush().catch(options.onError);

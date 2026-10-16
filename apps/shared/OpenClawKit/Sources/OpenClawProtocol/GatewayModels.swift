@@ -10179,6 +10179,7 @@ public struct PluginApprovalExternalResolution: Codable, Sendable {
 
 public struct PluginApprovalPresentation: Codable, Sendable {
     public let kind: String
+    public let origin: String?
     public let title: String
     public let description: String
     public let detail: String?
@@ -10192,6 +10193,7 @@ public struct PluginApprovalPresentation: Codable, Sendable {
 
     public init(
         kind: String,
+        origin: String? = nil,
         title: String,
         description: String,
         detail: String? = nil,
@@ -10204,6 +10206,7 @@ public struct PluginApprovalPresentation: Codable, Sendable {
         externalresolution: PluginApprovalExternalResolution? = nil)
     {
         self.kind = kind
+        self.origin = origin
         self.title = title
         self.description = description
         self.detail = detail
@@ -10218,6 +10221,7 @@ public struct PluginApprovalPresentation: Codable, Sendable {
 
     private enum CodingKeys: String, CodingKey {
         case kind
+        case origin
         case title
         case description
         case detail

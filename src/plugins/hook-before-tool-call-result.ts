@@ -19,6 +19,14 @@ export type PluginHookBeforeToolCallResult = {
     title: string;
     description: string;
     scope?: ApprovalScope;
+    /**
+     * Optional plugin-authored business confirmation shown in the conversation.
+     * Plain human action text only: title <=80 and summary <=280 characters.
+     * Never include tool names, commands, arguments, outputs, or credentials.
+     * This opt-in is not execution authority; the host binds it to this request.
+     * Invalid or oversized copy falls back to the ordinary approval surface.
+     */
+    conversation?: { title: string; summary: string };
     severity?: "info" | "warning" | "critical";
     timeoutMs?: number;
     /**

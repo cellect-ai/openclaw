@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
+import { getAgentRunContext } from "../infra/agent-run-registry.js";
 import { sanitizeApprovalScope } from "../infra/approval-scope.js";
+import { resolveBusinessApprovalConversation } from "../infra/business-approval-conversation.js";
 import {
   sanitizeExecApprovalDisplayText,
   sanitizeExecApprovalWarningText,
@@ -147,7 +149,23 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
         return { id: placementGrantResolution.approvalId, decision: "allow-always" };
       }
       const { allowedDecisions, binding: placementGrant } = placementGrantResolution;
+      // Registered host policy supplies structured business intent. Worker payloads and
+      // technical node prompts cannot mint conversation approval provenance.
+      const conversation = resolveBusinessApprovalConversation({ scope: input.scope });
+      const localRunContext =
+        callerIdentity?.delegatedAuthority.kind === "local"
+          ? getAgentRunContext(callerIdentity.operationalRunInstance.runId)
+          : undefined;
+      const sessionId =
+        callerIdentity?.delegatedAuthority.kind === "worker"
+          ? callerIdentity.delegatedAuthority.turnClaim.sessionId
+          : localRunContext?.agentId === callerIdentity?.agentId &&
+              localRunContext?.sessionKey === callerIdentity?.sessionKey
+            ? localRunContext?.sessionId
+            : undefined;
       const request: PluginApprovalRequestPayload = {
+        ...(conversation ? { approvalOrigin: "plugin", conversation } : {}),
+        sessionId: sessionId ?? null,
         pluginId: params.pluginId,
         // Internal node prompts truncate; RPC ingress rejects oversized prompts.
         // Normalize before escaping so empty prompts still fail closed.

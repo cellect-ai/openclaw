@@ -18,7 +18,7 @@ import {
 } from "./server.auth.test-helpers.js";
 
 export function registerControlUiBootstrapLifecycleSuite(): void {
-  test("webchat bootstrap silently pairs and returns a reconnecting device token", async () => {
+  test("webchat question client bootstraps and reconnects with its bounded device token", async () => {
     const { issueDevicePairSetupBootstrapToken } = await import("../infra/device-bootstrap.js");
     const { getPairedDevice } = await import("../infra/device-pairing.js");
     const { WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE } =
@@ -33,6 +33,9 @@ export function registerControlUiBootstrapLifecycleSuite(): void {
       platform: "web",
       mode: "webchat",
     };
+    // The embedding application's actual handshake, independent of the issuer
+    // profile: questions must work without requesting Talk or gateway admin.
+    const webchatScopes = ["operator.read", "operator.write", "operator.questions"];
 
     try {
       const issued = await issueDevicePairSetupBootstrapToken({
@@ -46,7 +49,7 @@ export function registerControlUiBootstrapLifecycleSuite(): void {
         skipDefaultAuth: true,
         bootstrapToken: issued.token,
         role: "operator",
-        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes],
+        scopes: webchatScopes,
         client,
         deviceIdentityPath: identityPath,
       });
@@ -69,7 +72,7 @@ export function registerControlUiBootstrapLifecycleSuite(): void {
         skipDefaultAuth: true,
         deviceToken: deviceToken as string,
         role: "operator",
-        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes],
+        scopes: webchatScopes,
         client,
         deviceIdentityPath: identityPath,
       });

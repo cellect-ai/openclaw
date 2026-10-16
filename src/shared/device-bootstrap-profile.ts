@@ -40,6 +40,7 @@ const BOOTSTRAP_HANDOFF_OPERATOR_SCOPE_SET = new Set<string>(BOOTSTRAP_HANDOFF_O
 
 /** Embedded webchat scopes, including Talk without widening native setup profiles. */
 const WEBCHAT_BOOTSTRAP_OPERATOR_SCOPE_SET = new Set<string>([
+  "operator.questions",
   "operator.read",
   "operator.talk",
   "operator.write",
@@ -81,7 +82,7 @@ export const PAIRING_SETUP_BOOTSTRAP_PROFILE: DeviceBootstrapProfile = {
 /** Embedded webchat bootstrap: conversation access and Talk, without gateway administration. */
 export const WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE: DeviceBootstrapProfile = {
   roles: ["operator"],
-  scopes: ["operator.read", "operator.talk", "operator.write"],
+  scopes: ["operator.questions", "operator.read", "operator.talk", "operator.write"],
   purpose: "webchat",
 };
 

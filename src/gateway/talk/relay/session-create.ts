@@ -285,7 +285,7 @@ export function createTalkRealtimeRelaySession(
         });
       },
       clearAudio: clearPlayback,
-      sendMark: (markName) => {
+      sendMark: (markName, acknowledge) => {
         const relay = getActiveRelay();
         if (!relay) {
           return;
@@ -299,6 +299,11 @@ export function createTalkRealtimeRelaySession(
         }
         // A playback checkpoint is not the end of the provider's response.
         emit({ relaySessionId, type: "mark", markName });
+        // Fi plays PCM on a local playhead and does not return
+        // talk.session.acknowledgeMark. Leaving the mark queued blocks
+        // response.create, so the consult result is never spoken. Ack on
+        // delivery; the playhead still sequences the next utterance.
+        acknowledge?.();
       },
     },
     onEvent: (event) => {

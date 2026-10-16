@@ -47,6 +47,8 @@ import {
   runGam,
   type DriveFileMetadata,
 } from "./gam.js";
+import { registerGeneratedArtifactCompletion } from "./generated-artifact-completion.js";
+import { withoutInternalDownloadLinks } from "./generated-artifacts.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "./member-tools.js";
 import {
@@ -508,6 +510,24 @@ export default definePluginEntry({
   name: "Fi User Delegation",
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
+    registerGeneratedArtifactCompletion(api);
+    api.on("reply_payload_sending", (event, context) => {
+      if (
+        !(event.sessionKey ?? context.sessionKey)?.startsWith("agent:cellect-fi-user:") ||
+        !event.payload.text
+      ) {
+        return;
+      }
+      const text = withoutInternalDownloadLinks(event.payload.text);
+      return text === event.payload.text ? undefined : { payload: { ...event.payload, text } };
+    });
+    api.on("message_sending", (event, context) => {
+      if (!context.sessionKey?.startsWith("agent:cellect-fi-user:")) {
+        return;
+      }
+      const content = withoutInternalDownloadLinks(event.content);
+      return content === event.content ? undefined : { content };
+    });
     const matrixEntitlements = registerMatrixEntitlements(api);
     const adminDelegation = registerAdminDelegation(api);
     const projectionConnection = () => {
@@ -624,21 +644,24 @@ export default definePluginEntry({
       },
       { priority: 10_000 },
     );
-    api.registerTool((context: OpenClawPluginToolContext) => {
-      if (!isFiUserTurn(context)) {
-        return null;
-      }
-      const tools = [
-        createFiUserApiTool(api, context),
-        createGmailTool(api, context),
-        createGDriveTool(api, context),
-        createDataRoomTool(api, context),
-        createDeliverFileTool(api, context),
-        createEsignTool(api, context),
-        createBudgetImportTool(api, context),
-        createRequestAdminActionTool(api, context),
-      ];
-      return tools;
+    api.registerTool({
+      contextVersion: 2,
+      create: (context: OpenClawPluginToolContext<2>) => {
+        if (!isFiUserTurn(context)) {
+          return null;
+        }
+        const tools = [
+          createFiUserApiTool(api, context),
+          createGmailTool(api, context),
+          createGDriveTool(api, context),
+          createDataRoomTool(api, context),
+          createDeliverFileTool(api, context),
+          createEsignTool(api, context),
+          createBudgetImportTool(api, context),
+          createRequestAdminActionTool(api, context),
+        ];
+        return tools;
+      },
     });
   },
 });

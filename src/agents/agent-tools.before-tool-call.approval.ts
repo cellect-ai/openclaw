@@ -7,6 +7,7 @@ import { addTimerTimeoutGraceMs } from "@openclaw/normalization-core/number-coer
 import { getRuntimeConfig } from "../config/config.js";
 import { GatewayClientRequestError } from "../gateway/client.js";
 import { sanitizeApprovalScope } from "../infra/approval-scope.js";
+import { resolveBusinessApprovalConversation } from "../infra/business-approval-conversation.js";
 import { isEmbeddedMode } from "../infra/embedded-mode.js";
 import { getEmbeddedPluginApprovalBroker } from "../infra/embedded-plugin-approval-broker.js";
 import { formatErrorMessage } from "../infra/errors.js";
@@ -211,6 +212,7 @@ async function requestPluginToolApproval(params: {
   overrideParams?: unknown;
 }): Promise<HookOutcome> {
   const approval = params.approval;
+  const approvalConversation = resolveBusinessApprovalConversation(approval);
   const policySubject = params.ctx?.toolOwnerPluginId
     ? { pluginKey: params.ctx.toolOwnerPluginId, tool: params.toolName }
     : undefined;
@@ -333,6 +335,7 @@ async function requestPluginToolApproval(params: {
           },
           { expectFinal: false, signal: params.signal },
         ),
+      approvalConversation,
     );
     gatewayApprovalPhase = "none";
     const id = requestResult?.id;

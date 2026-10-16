@@ -15,6 +15,7 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
+import type { BusinessApprovalConversation } from "../../infra/business-approval-conversation.js";
 import {
   bindGatewayContextResolver,
   getGatewayContextResolver,
@@ -54,6 +55,9 @@ type GatewayToolCallerIdentity = {
   approvalAuthorityCheck?: () => boolean | void;
   /** Exact host-resolved owner of this individual approval request. */
   approvalOwnerPluginId?: string;
+  /** Host-minted business approval provenance, never model/RPC parameters. */
+  approvalOrigin?: "plugin";
+  approvalConversation?: BusinessApprovalConversation;
   /** Host-owned tool/turn lifetimes; every same-run wrapper preserves earlier fences. */
   approvalSignals?: readonly AbortSignal[];
   /** Opaque already-signed identity used only by isolated worker transports. */
@@ -404,6 +408,18 @@ export async function withGatewayToolCallerIdentity<T>(
         : inheritedOwner?.approvalOwnerPluginId
           ? { approvalOwnerPluginId: inheritedOwner.approvalOwnerPluginId }
           : {}),
+      ...((identity.approvalOwnerPluginId
+        ? identity.approvalOrigin
+        : inheritedOwner?.approvalOrigin) === "plugin"
+        ? { approvalOrigin: "plugin" as const }
+        : {}),
+      ...(identity.approvalOwnerPluginId
+        ? identity.approvalConversation
+          ? { approvalConversation: identity.approvalConversation }
+          : {}
+        : inheritedOwner?.approvalConversation
+          ? { approvalConversation: inheritedOwner.approvalConversation }
+          : {}),
       ...(signedAgentRuntimeIdentityToken ? { signedAgentRuntimeIdentityToken } : {}),
       ...(cronSelfManagementJobId ? { cronSelfManagementJobId } : {}),
       ...(cronToolsAllowCapture ? { cronToolsAllowCapture } : {}),
@@ -434,13 +450,22 @@ export async function withGatewayToolCallerIdentity<T>(
 export async function withGatewayToolApprovalOwner<T>(
   pluginId: string | undefined,
   run: () => Promise<T> | T,
+  approvalConversation?: BusinessApprovalConversation,
 ): Promise<T> {
   const identity = gatewayToolCallerStorage.getStore();
   const approvalOwnerPluginId = pluginId?.trim();
   if (!identity || !approvalOwnerPluginId) {
     return await run();
   }
-  return await withGatewayToolCallerIdentity({ ...identity, approvalOwnerPluginId }, run);
+  return await withGatewayToolCallerIdentity(
+    {
+      ...identity,
+      approvalOwnerPluginId,
+      approvalOrigin: approvalConversation ? "plugin" : undefined,
+      approvalConversation,
+    },
+    run,
+  );
 }
 
 export function wrapToolWithGatewayCallerIdentity(

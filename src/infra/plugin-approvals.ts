@@ -1,5 +1,6 @@
 import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import { summarizeApprovalScope, type ApprovalScope } from "./approval-scope.js";
+import type { BusinessApprovalConversation } from "./business-approval-conversation.js";
 import type { ExecApprovalDecision } from "./exec-approvals-core.js";
 
 export type PluginApprovalActionView = {
@@ -28,6 +29,9 @@ type PluginApprovalPlacementGrantBinding = {
 
 export type PluginApprovalRequestPayload = {
   pluginId?: string | null;
+  /** Host-derived business provenance; never accepted in public approval RPC. */
+  approvalOrigin?: "plugin";
+  conversation?: BusinessApprovalConversation;
   title: string;
   description: string;
   detail?: string | null;
@@ -49,6 +53,8 @@ export type PluginApprovalRequestPayload = {
   actions?: readonly PluginApprovalActionView[] | null;
   agentId?: string | null;
   sessionKey?: string | null;
+  /** Resolved from the live host run or worker claim, never public RPC input. */
+  sessionId?: string | null;
   /** Host-derived source run; never accepted from plugin approval RPC params. */
   runId?: string | null;
   /** Host-derived grant binding; never accepted from plugin approval RPC params. */

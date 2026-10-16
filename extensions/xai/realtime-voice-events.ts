@@ -14,7 +14,9 @@ import { XaiRealtimeVoiceProtocol } from "./realtime-voice-protocol.js";
 
 export class XaiRealtimeMalformedAudioError extends Error {}
 
-// Quiet period before committing input that was recognized after its response settled.
+// Quiet period before committing recognized speech. A long assistant turn must
+// not hold the utterance: the timeline send happens once this window passes,
+// or sooner when the current response finishes.
 const XAI_REALTIME_INPUT_SETTLE_MS = 1_500;
 
 export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
@@ -24,7 +26,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   private finalizedInputTranscriptKeys = new Set<string>();
   private inputSpeechSequence = 0;
   private inputResponseStarted = false;
-  private inputResponseFinished = false;
   private outputResponse: { id?: string; ended: boolean } | undefined;
   private finalizedToolCallItems = new Set<string>();
   private inputTranscriptReplacements = new Map<string, string>();
@@ -49,7 +50,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     if (event.type === "response.created" && this.acceptsEvent(connection)) {
       // Publish the response owner before observers can interrupt its first PCM.
       this.inputResponseStarted = true;
-      this.inputResponseFinished = false;
       // Cancellation before response.created belongs to that pending response.
       // Only an identified successor can retire an older live response's fence.
       if (
@@ -166,7 +166,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.flushPendingInputTranscript();
         this.inputSpeechSequence += 1;
         this.inputResponseStarted = false;
-        this.inputResponseFinished = false;
         this.handleServerVadBargeIn();
         return;
       case "response.text.delta":
@@ -194,7 +193,18 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         return;
       case "conversation.item.input_audio_transcription.updated":
         if (event.transcript) {
-          this.inputTranscriptReplacements.set(this.inputTranscriptKey(event), event.transcript);
+          const key = this.inputTranscriptKey(event);
+          this.inputTranscriptReplacements.set(key, event.transcript);
+          const pending = this.pendingInputTranscript;
+          // Completed snapshots can land before the corrected utterance. Replace
+          // the pending commit so speech_started does not lock in the short text.
+          if (pending?.key === key && pending.text !== event.transcript) {
+            this.pendingInputTranscript = { ...pending, text: event.transcript };
+            this.config.onTranscript?.("user", event.transcript, false, {
+              ...(pending.itemId ? { itemId: pending.itemId } : {}),
+              textMode: "snapshot",
+            });
+          }
         }
         return;
       case "conversation.item.input_audio_transcription.completed": {
@@ -215,18 +225,15 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
           text: transcript,
           ...(event.item_id ? { itemId: event.item_id } : {}),
         };
-        // xAI's completed events are cumulative snapshots, not utterance boundaries.
-        // Preview immediately; commit once the response settles, so later corrections
-        // cannot either duplicate the user message or truncate it permanently.
         this.config.onTranscript?.("user", transcript, false, {
           ...(event.item_id ? { itemId: event.item_id } : {}),
           textMode: "snapshot",
         });
-        if (this.inputResponseFinished) {
-          // Recognition landed after the response settled; xAI may still revise
-          // this item, so commit it after a quiet period rather than at once.
-          this.armInputSettleTimer();
-        }
+        // xAI's completed events are cumulative snapshots, not utterance
+        // boundaries. Commit after a quiet period so a later correction can
+        // replace the pending text, without waiting for a long spoken reply.
+        // A response that finishes first flushes immediately and clears this.
+        this.armInputSettleTimer();
         return;
       }
       case "conversation.item.input_audio_transcription.failed": {
@@ -248,7 +255,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       case "response.done": {
         // A trailing terminal from an interrupted response must not settle new speech.
         if (this.isCurrentInputResponse(event)) {
-          this.inputResponseFinished = true;
           this.flushPendingInputTranscript();
           if (!this.acceptsEvent(connection)) {
             return;
@@ -395,7 +401,6 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     this.inputTranscriptReplacements.clear();
     this.finalizedInputTranscriptKeys.clear();
     this.inputResponseStarted = false;
-    this.inputResponseFinished = false;
     this.outputResponse = undefined;
     this.finalizedToolCallItems.clear();
   }
@@ -425,6 +430,9 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     if (!pending) {
       return;
     }
+    const replacement = this.inputTranscriptReplacements.get(pending.key);
+    this.inputTranscriptReplacements.delete(pending.key);
+    const text = replacement ?? pending.text;
     this.finalizedInputTranscriptKeys.add(pending.key);
     if (this.finalizedInputTranscriptKeys.size > 1_024) {
       const oldest = this.finalizedInputTranscriptKeys.values().next().value;
@@ -432,7 +440,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.finalizedInputTranscriptKeys.delete(oldest);
       }
     }
-    this.config.onTranscript?.("user", pending.text, true, {
+    this.config.onTranscript?.("user", text, true, {
       ...(pending.itemId ? { itemId: pending.itemId } : {}),
       textMode: "snapshot",
     });

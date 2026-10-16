@@ -28,6 +28,7 @@ vi.mock("@modelcontextprotocol/sdk/client/auth.js", () => ({
 async function saveAccessToken(identity: McpOAuthIdentity, accessToken: string): Promise<void> {
   await withMcpOAuthProviderForTest({ identity }, async (provider) => {
     await provider.saveTokens({
+      issuer: "https://auth.example.com",
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: 3600,
@@ -45,7 +46,11 @@ describe("MCP OAuth requester credentials", () => {
           "alice",
         );
         await withMcpOAuthProviderForTest({ identity }, async (provider) => {
-          await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+          await provider.saveTokens({
+            issuer: "https://auth.example.com",
+            access_token: "access",
+            token_type: "Bearer",
+          });
           const storeKey = identity.storeKey;
           openOpenClawStateDatabase()
             .db.prepare("UPDATE mcp_oauth_stores SET store_json = ? WHERE store_key = ?")

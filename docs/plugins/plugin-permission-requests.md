@@ -88,6 +88,21 @@ Write prompt text for the person who will approve the action:
 - `timeoutMs` defaults to 120000 (2 minutes) and is capped at 600000 (10
   minutes) regardless of the requested value.
 
+## Conversation confirmation cards
+
+A trusted `before_tool_call` plugin can opt into a conversation card by setting
+`requireApproval.conversation` to `{ title, summary }`. Describe the human business
+action completely in plain text: title is limited to 80 characters and summary
+to 280. Never include commands, tool names, arguments, output, or credentials.
+Oversized or unsafe copy is not truncated; the ordinary approval surface remains
+available. Structured message, payment, and publication scopes can supply safe
+card copy when explicit copy is absent. Shell permissions, native harness
+permissions, and external RPC requests do not gain conversation provenance.
+
+The host binds the copy and plugin origin to this one live request. A card does
+not grant authority: the canonical approval owner checks reviewers, allowed
+decisions, expiry, and current run authority before releasing the operation.
+
 ## Declare approval scope
 
 Set `requireApproval.scope` when your plugin knows the consequences of an

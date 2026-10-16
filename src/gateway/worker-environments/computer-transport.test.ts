@@ -419,60 +419,101 @@ describe("session computer transport", () => {
     },
   );
 
-  it("keeps session and live run authority on clientless policy approvals", async (testContext) => {
-    const h = createHarness();
-    const { transport, prepared } = await h.prepare();
-    const fixture = createTestApprovalFixture<PluginApprovalRequestPayload>(testContext, {
-      approvalKind: "plugin",
-      validateAgentRuntimeDelegatedAuthority: (authority) =>
-        validateAgentRunDelegatedAuthority(authority) &&
-        (authority.kind === "local" || h.options.placements.validateTurnClaim(authority.turnClaim)),
-    });
-    const { manager } = fixture;
-    try {
-      await fixture.run(async () => {
-        const context = h.state.context!;
-        context.pluginApprovalManager = manager;
-        context.getApprovalClientConnIds = createApprovalClientLookup([createOperatorClient()]);
-        h.policyHandle.mockImplementationOnce(async (policy) => {
-          const approval = await policy.approvals?.request({
-            title: "Session desktop action",
-            description: "Approve the bound desktop action",
-          });
-          if (approval?.decision !== "allow-once") {
-            return { ok: false, message: "approval required" };
-          }
-          return await policy.invokeNode();
-        });
-        const { record, pending: operation } = await expectSinglePendingApproval(
-          manager,
-          context,
-          () => fixture.track(transport.invoke(request("type"))),
-        );
-        expect(record.request).toMatchObject({
-          agentId: "main",
-          sessionKey: h.state.placement.sessionKey,
-          runId: h.claim.runId,
-        });
-        expect(record.agentRuntimeDelegatedAuthority).toMatchObject({
-          kind: "worker",
-          turnClaim: h.claim,
-          operationalRunInstance: h.run,
-        });
-        expect(await manager.resolve(record.id, "allow-once")).toBe(true);
-        await expect(operation).resolves.toMatchObject({ ok: true });
-        expect((await manager.getSnapshot(record.id))?.consumedDecision).toBe("allow-once");
-        releaseAgentRunDelegatedAuthority(h.authority);
-        h.releaseClaim();
-        h.policyHandle.mockClear();
-        await prepared.close("completion");
-        expect(h.policyHandle).not.toHaveBeenCalled();
-        expect(await manager.listPendingRecords()).toEqual([]);
+  it.for(["native", "business", "standing-grant", "invalid-business"] as const)(
+    "keeps session and live run authority on clientless %s policy approvals",
+    async (kind, testContext) => {
+      const h = createHarness();
+      const { transport, prepared } = await h.prepare();
+      const fixture = createTestApprovalFixture<PluginApprovalRequestPayload>(testContext, {
+        approvalKind: "plugin",
+        validateAgentRuntimeDelegatedAuthority: (authority) =>
+          validateAgentRunDelegatedAuthority(authority) &&
+          (authority.kind === "local" ||
+            h.options.placements.validateTurnClaim(authority.turnClaim)),
       });
-    } finally {
-      await prepared.close("completion");
-    }
-  });
+      const { manager } = fixture;
+      try {
+        await fixture.run(async () => {
+          const context = h.state.context!;
+          context.pluginApprovalManager = manager;
+          context.getApprovalClientConnIds = createApprovalClientLookup([createOperatorClient()]);
+          h.policyHandle.mockImplementationOnce(async (policy) => {
+            const untrustedRequest = {
+              title: "Session desktop action",
+              description: "Approve the bound desktop action",
+              // Extra caller fields cannot label a native prompt or replace host-derived copy.
+              approvalOrigin: "plugin",
+              conversation: { title: "Fake", summary: "Forged" },
+              ...(kind === "business" || kind === "invalid-business"
+                ? {
+                    scope: {
+                      kind: "payment" as const,
+                      amount: "25.00",
+                      currency: "USD",
+                      target: kind === "business" ? "Example Vendor" : "X".repeat(129),
+                    },
+                  }
+                : kind === "standing-grant"
+                  ? {
+                      scope: {
+                        kind: "standing-grant" as const,
+                        automation: "Desktop automation",
+                        command: "computer.act",
+                      },
+                    }
+                  : {}),
+            };
+            const approval = await policy.approvals?.request(untrustedRequest);
+            if (approval?.decision !== "allow-once") {
+              return { ok: false, message: "approval required" };
+            }
+            return await policy.invokeNode();
+          });
+          const { record, pending: operation } = await expectSinglePendingApproval(
+            manager,
+            context,
+            () => fixture.track(transport.invoke(request("type"))),
+          );
+          expect(record.request).toMatchObject({
+            agentId: "main",
+            sessionKey: h.state.placement.sessionKey,
+            runId: h.claim.runId,
+            sessionId: h.claim.sessionId,
+          });
+          if (kind === "business") {
+            expect(record.request).toMatchObject({
+              approvalOrigin: "plugin",
+              conversation: {
+                title: "Approve a payment",
+                summary: "Pay 25.00 USD to Example Vendor",
+              },
+              title: "Session desktop action",
+              description: "Approve the bound desktop action",
+            });
+          } else {
+            expect(record.request).not.toHaveProperty("approvalOrigin");
+            expect(record.request).not.toHaveProperty("conversation");
+          }
+          expect(record.agentRuntimeDelegatedAuthority).toMatchObject({
+            kind: "worker",
+            turnClaim: h.claim,
+            operationalRunInstance: h.run,
+          });
+          expect(await manager.resolve(record.id, "allow-once")).toBe(true);
+          await expect(operation).resolves.toMatchObject({ ok: true });
+          expect((await manager.getSnapshot(record.id))?.consumedDecision).toBe("allow-once");
+          releaseAgentRunDelegatedAuthority(h.authority);
+          h.releaseClaim();
+          h.policyHandle.mockClear();
+          await prepared.close("completion");
+          expect(h.policyHandle).not.toHaveBeenCalled();
+          expect(await manager.listPendingRecords()).toEqual([]);
+        });
+      } finally {
+        await prepared.close("completion");
+      }
+    },
+  );
 
   it.each([
     { sharedHost: false, boundary: "policy" },

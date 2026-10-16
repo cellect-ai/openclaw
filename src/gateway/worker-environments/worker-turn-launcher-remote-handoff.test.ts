@@ -292,6 +292,8 @@ describe("worker turn launcher remote handoff", () => {
       expect(admissionWork.envelope.runtimeInstanceId).toBe(ENVIRONMENT_ID);
     }
     expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalOwnerPluginId");
+    expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalOrigin");
+    expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalConversation");
     expect(descriptor?.assignment).not.toHaveProperty("admittedRunContext");
     expect(descriptor?.assignment).not.toHaveProperty("gatewayUiCommandTarget");
     expect(descriptor?.assignment.toolAuthority.allowedToolNames).toEqual(["browser"]);
@@ -478,6 +480,8 @@ describe("worker turn launcher remote handoff", () => {
     );
     expect(verifiedRuntimeIdentity).not.toHaveProperty("executionIdentity");
     expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalOwnerPluginId");
+    expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalOrigin");
+    expect(verifiedRuntimeIdentity).not.toHaveProperty("approvalConversation");
     expect(descriptor?.assignment.toolAuthority.allowedToolNames).toEqual([]);
     expect(descriptor?.assignment.browser).toBeUndefined();
     expect(descriptor?.assignment.initialMessages).toMatchObject([

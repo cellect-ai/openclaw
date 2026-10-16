@@ -25,6 +25,7 @@ import {
   requireMailbox,
   runGam,
 } from "./gam.js";
+import { readGeneratedArtifact } from "./generated-artifacts.js";
 import {
   downloadSlackFile,
   resolveRequesterSlackFile,
@@ -49,6 +50,7 @@ export const DATAROOM_ACTIONS = [
   "upload_gmail_attachment",
   "upload_slack_file",
   "upload_drive_file",
+  "upload_generated_artifact",
   "upload_to_project_library",
 ] as const;
 type DataRoomAction = (typeof DATAROOM_ACTIONS)[number];
@@ -110,6 +112,14 @@ const DataRoomSchema = Type.Object(
     slackFileId: Type.Optional(Type.String({ pattern: "^F[A-Za-z0-9]{6,}$" })),
     slackFileName: Type.Optional(Type.String({ minLength: 1, maxLength: 500 })),
     driveFileId: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]+$" })),
+    artifactId: Type.Optional(
+      Type.String({
+        pattern: "^ga_[A-Za-z0-9-]+$",
+        maxLength: 100,
+        description:
+          "Opaque generated artifact ID returned by fi_user_deliver_file; never a workspace path.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -136,7 +146,35 @@ type DataRoomInput = {
   slackFileId?: string;
   slackFileName?: string;
   driveFileId?: string;
+  artifactId?: string;
 };
+
+type UploadProvenance = {
+  source?: "slack" | "generated_artifact";
+  messageId?: string;
+  fileId?: string;
+  url?: string;
+  artifactId?: string;
+  sha256?: string;
+  sessionId?: string;
+};
+
+function setUploadProvenance(form: FormData, provenance: UploadProvenance, filename: string) {
+  form.set("provenanceSource", provenance.source ?? "slack");
+  for (const [field, value] of Object.entries({
+    provenanceMessageId: provenance.messageId,
+    provenanceFileId: provenance.fileId,
+    provenanceUrl: provenance.url,
+    provenanceArtifactId: provenance.artifactId,
+    provenanceSha256: provenance.sha256,
+    provenanceSessionId: provenance.sessionId,
+  })) {
+    if (value) {
+      form.set(field, value);
+    }
+  }
+  form.set("provenanceOriginalFilename", filename);
+}
 
 type RoomSnapshot = {
   roomVersion?: number;
@@ -145,7 +183,12 @@ type RoomSnapshot = {
   tasks?: Array<Record<string, unknown> & { id?: string; documentIds?: string[] }>;
 };
 
-type Ctx = { config: ResolvedPluginConfig; delegation: Delegation; root: string };
+type Ctx = {
+  config: ResolvedPluginConfig;
+  delegation: Delegation;
+  root: string;
+  assertCurrent?: () => void;
+};
 
 function idempotencyKey(delegation: Delegation, operation: unknown): string {
   const digest = createHash("sha256")
@@ -185,6 +228,7 @@ async function write(
   body: Record<string, unknown>,
 ): Promise<unknown> {
   const room = await snapshot(ctx, roomId);
+  ctx.assertCurrent?.();
   return delegatedJson(
     ctx.config,
     ctx.delegation,
@@ -231,8 +275,8 @@ async function uploadBytes(
   ctx: Ctx,
   roomId: string,
   input: DataRoomInput,
-  file: { bytes: Uint8Array; name: string },
-  provenance?: { messageId?: string; fileId?: string; url?: string },
+  file: { bytes: Uint8Array; name: string; mimeType?: string },
+  provenance?: UploadProvenance,
 ) {
   const room = await snapshot(ctx, roomId);
   const form = new FormData();
@@ -240,7 +284,7 @@ async function uploadBytes(
     file.bytes.byteOffset,
     file.bytes.byteOffset + file.bytes.byteLength,
   ) as ArrayBuffer;
-  form.set("file", new Blob([body]), file.name);
+  form.set("file", new Blob([body], { type: file.mimeType }), file.name);
   if (input.displayName) {
     form.set("displayName", input.displayName);
   }
@@ -251,18 +295,9 @@ async function uploadBytes(
     form.set("acknowledgeRestricted", "true");
   }
   if (provenance) {
-    form.set("provenanceSource", "slack");
-    if (provenance.messageId) {
-      form.set("provenanceMessageId", provenance.messageId);
-    }
-    if (provenance.fileId) {
-      form.set("provenanceFileId", provenance.fileId);
-    }
-    if (provenance.url) {
-      form.set("provenanceUrl", provenance.url);
-    }
-    form.set("provenanceOriginalFilename", file.name);
+    setUploadProvenance(form, provenance, file.name);
   }
+  ctx.assertCurrent?.();
   const uploaded = (await delegatedJson(
     ctx.config,
     ctx.delegation,
@@ -274,12 +309,36 @@ async function uploadBytes(
         name: file.name,
         size: file.bytes.byteLength,
         sha256: createHash("sha256").update(file.bytes).digest("hex"),
+        ...(provenance?.source === "generated_artifact"
+          ? { displayName: input.displayName, visibility: input.visibility }
+          : {}),
       }),
       body: form,
     },
     "Fi data-room upload",
-  )) as { document?: { documentId?: string; id?: string } };
+  )) as {
+    document?: { documentId?: string; id?: string };
+    filingReceipt?: {
+      documentId?: string;
+      sha256?: string;
+      provenance?: { source?: string; artifactId?: string; sha256?: string; sessionId?: string };
+    };
+  };
   const documentId = uploaded.document?.documentId ?? uploaded.document?.id;
+  if (
+    provenance?.source === "generated_artifact" &&
+    (!documentId ||
+      uploaded.filingReceipt?.documentId !== documentId ||
+      uploaded.filingReceipt.sha256 !== provenance.sha256 ||
+      uploaded.filingReceipt.provenance?.source !== "generated_artifact" ||
+      uploaded.filingReceipt.provenance.artifactId !== provenance.artifactId ||
+      uploaded.filingReceipt.provenance.sha256 !== provenance.sha256 ||
+      uploaded.filingReceipt.provenance.sessionId !== provenance.sessionId)
+  ) {
+    throw new Error(
+      "The upload may have filed, but Fi did not confirm the generated file's persisted content receipt. Keep the same artifact ID and reconcile before retrying; do not regenerate it.",
+    );
+  }
   // Placement (section/order/highlight) is a separate presentation write.
   if (documentId && (input.section || input.orderKey || input.highlighted !== undefined)) {
     await write(
@@ -294,10 +353,31 @@ async function uploadBytes(
       },
     );
   }
+  const verified = documentId ? await readback(ctx, roomId, documentId) : undefined;
+  if (provenance?.source === "generated_artifact" && (!documentId || !verified?.document)) {
+    throw new Error(
+      "The upload may have filed, but its room membership could not be verified. Keep the same artifact ID and reconcile the room before retrying; do not regenerate it.",
+    );
+  }
+  if (provenance?.source === "generated_artifact" && verified?.document) {
+    const expected = {
+      ...(input.displayName ? { displayName: input.displayName } : {}),
+      ...(input.section ? { roomCategory: input.section } : {}),
+      ...(input.orderKey ? { orderKey: input.orderKey } : {}),
+      ...(input.visibility ? { visibility: input.visibility } : {}),
+      ...(input.highlighted !== undefined ? { isHighlighted: input.highlighted } : {}),
+    };
+    if (Object.entries(expected).some(([field, value]) => verified.document?.[field] !== value)) {
+      throw new Error(
+        "The generated file is present, but room placement did not match the requested fields. Reconcile this document before claiming completion; do not generate or upload another copy.",
+      );
+    }
+  }
   return {
     uploaded: file.name,
     documentId: documentId ?? null,
-    ...(documentId ? await readback(ctx, roomId, documentId) : {}),
+    ...(uploaded.filingReceipt ? { filingReceipt: uploaded.filingReceipt } : {}),
+    ...verified,
   };
 }
 
@@ -334,6 +414,29 @@ async function requesterSlackUpload(
   };
 }
 
+async function generatedUpload(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+  input: DataRoomInput,
+) {
+  if (
+    !input.artifactId ||
+    input.slackFileId ||
+    input.slackFileName ||
+    input.driveFileId ||
+    input.messageId
+  ) {
+    throw new Error(
+      "Provide only artifactId for a generated file; do not mix it with another source or a workspace path",
+    );
+  }
+  const artifact = await readGeneratedArtifact(api, context, input.artifactId);
+  return {
+    file: { bytes: artifact.bytes, name: artifact.fileName, mimeType: artifact.mimeType },
+    provenance: { source: "generated_artifact" as const, ...artifact.provenance },
+  };
+}
+
 /**
  * File a Slack file into a project's document library (not a data room) under
  * the requester's own project grant. Fi lands it restricted and unclassified
@@ -342,7 +445,10 @@ async function requesterSlackUpload(
 async function uploadToProjectLibrary(
   ctx: Ctx,
   input: DataRoomInput,
-  upload: Awaited<ReturnType<typeof requesterSlackUpload>>,
+  upload: {
+    file: { bytes: Uint8Array; name: string; mimeType?: string };
+    provenance: UploadProvenance;
+  },
 ) {
   const project = pathSegment(input.project, "project");
   const form = new FormData();
@@ -350,34 +456,54 @@ async function uploadToProjectLibrary(
     upload.file.bytes.byteOffset,
     upload.file.bytes.byteOffset + upload.file.bytes.byteLength,
   ) as ArrayBuffer;
-  form.set("file", new Blob([body]), upload.file.name);
+  form.set("file", new Blob([body], { type: upload.file.mimeType }), upload.file.name);
   if (input.category) {
     form.set("category", input.category);
   }
   if (input.section) {
     form.set("section", input.section);
   }
-  form.set("provenanceSource", "slack");
-  form.set("provenanceFileId", upload.provenance.fileId);
-  if (upload.provenance.messageId) {
-    form.set("provenanceMessageId", upload.provenance.messageId);
-  }
-  if (upload.provenance.url) {
-    form.set("provenanceUrl", upload.provenance.url);
-  }
-  form.set("provenanceOriginalFilename", upload.file.name);
+  setUploadProvenance(form, upload.provenance, upload.file.name);
+  ctx.assertCurrent?.();
   const result = (await delegatedJson(
     ctx.config,
     ctx.delegation,
     `/api/${encodeURIComponent(ctx.delegation.user.orgSlug)}/${project}/docs/upload`,
     { method: "POST", body: form },
     "Fi project library upload",
-  )) as { duplicate?: boolean; projectSlug?: string; document?: Record<string, unknown> };
+  )) as {
+    duplicate?: boolean;
+    projectSlug?: string;
+    document?: Record<string, unknown>;
+    filingReceipt?: {
+      documentId?: string;
+      sha256?: string;
+      projectSlug?: string;
+      provenance?: { source?: string; artifactId?: string; sha256?: string; sessionId?: string };
+    };
+  };
+  if (upload.provenance.source === "generated_artifact") {
+    const receipt = result.filingReceipt;
+    if (
+      !receipt?.documentId ||
+      receipt.documentId !== result.document?.documentId ||
+      receipt.sha256 !== upload.provenance.sha256 ||
+      receipt.provenance?.source !== "generated_artifact" ||
+      receipt.provenance.artifactId !== upload.provenance.artifactId ||
+      receipt.provenance.sha256 !== upload.provenance.sha256 ||
+      receipt.provenance.sessionId !== upload.provenance.sessionId
+    ) {
+      throw new Error(
+        "The generated file may have filed, but Fi did not confirm its persisted filing receipt. Keep the same artifact ID and reconcile the library before retrying; do not regenerate it.",
+      );
+    }
+  }
   return {
     uploaded: upload.file.name,
     project: result.projectSlug ?? decodeURIComponent(project),
     duplicate: result.duplicate === true,
     document: result.document ?? null,
+    ...(result.filingReceipt ? { filingReceipt: result.filingReceipt } : {}),
     note: result.duplicate
       ? "These exact bytes were already in the project's library; no second copy was filed."
       : "Filed restricted and unclassified; Fi classifies it after text extraction. Only people with the project's documents grant see it until then.",
@@ -392,7 +518,7 @@ export function createDataRoomTool(
     name: "fi_user_dataroom",
     label: "My Fi Data Rooms",
     description:
-      "Work in Fi data rooms as the current verified requester, under their own room grants: list rooms, read a room and its checklist, add an existing Fi document, set a document's section/order/visibility within the room, link a document to a checklist task or complete a task, and upload a file from the requester's own Gmail, from a Slack file they posted in this conversation, or from their own Google Drive. upload_to_project_library files a Slack file the requester posted in this conversation into a PROJECT's document library (project slug, optional category and section) under their own project grant — it lands restricted and unclassified, not in any room. Every write is read back from Fi. Members, recipients, public links and room settings are administrator actions and are not available here.",
+      "Work in Fi data rooms as the current verified requester, under their own room grants: list rooms, read a room and its checklist, add an existing Fi document, set section/order/visibility, link checklist tasks, and upload their Gmail, conversation Slack, or Drive files. upload_generated_artifact files an opaque artifactId from fi_user_deliver_file in a room; supply explicit visibility and reviewed placement. upload_to_project_library accepts either artifactId or a Slack file the requester posted here into a PROJECT library (project slug, optional category and section) under their own project grant — restricted and unclassified, not in any room. Generated artifact IDs are bound to this requester and session; never pass workspace paths. Every write requires Fi readback. Filing does not deliver a downloadable file: use fi_user_deliver_file to attach generated output to the requester. Members, recipients, public links and room settings remain administrator actions.",
     parameters: DataRoomSchema,
     async execute(_toolCallId, raw) {
       const input = raw as DataRoomInput;
@@ -401,6 +527,7 @@ export function createDataRoomTool(
         config,
         delegation,
         root: `/api/${encodeURIComponent(delegation.user.orgSlug)}/datarooms`,
+        assertCurrent: context.assertInvocationCurrent,
       };
 
       if (input.action === "list") {
@@ -452,12 +579,23 @@ export function createDataRoomTool(
           await uploadToProjectLibrary(
             ctx,
             input,
-            await requesterSlackUpload(context, identity, input),
+            input.artifactId
+              ? await generatedUpload(api, context, input)
+              : await requesterSlackUpload(context, identity, input),
           ),
         );
       }
 
       const roomId = pathSegment(input.roomId, "roomId");
+      if (input.action === "upload_generated_artifact") {
+        if (!input.visibility) {
+          throw new Error(
+            "Choose shared or internal visibility from the user's intent and room snapshot before filing generated output",
+          );
+        }
+        const upload = await generatedUpload(api, context, input);
+        return jsonResult(await uploadBytes(ctx, roomId, input, upload.file, upload.provenance));
+      }
       if (input.action === "get") {
         return jsonResult(await snapshot(ctx, roomId));
       }

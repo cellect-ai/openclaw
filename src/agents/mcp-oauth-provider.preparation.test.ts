@@ -56,11 +56,11 @@ beforeEach(() => {
 
 it("keeps acknowledged metadata when an earlier read completes later", async () => {
   const original = {
-    clientInformation: { client_id: "original-client" },
+    clientInformation: { client_id: "original-client", issuer: "https://issuer.example.test" },
     redirectUrl: "https://callback.example.test/original",
   } satisfies McpOAuthStore;
   const committed = {
-    clientInformation: { client_id: "updated-client" },
+    clientInformation: { client_id: "updated-client", issuer: "https://issuer.example.test" },
     redirectUrl: "https://callback.example.test/updated",
   } satisfies McpOAuthStore;
   read.mockResolvedValueOnce(original);

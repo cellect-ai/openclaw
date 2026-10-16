@@ -12,6 +12,48 @@ class GatewayExecApprovalParsingTest {
   private val json = Json { ignoreUnknownKeys = true }
 
   @Test
+  fun pluginPresentationAcceptsTrustedOriginAndLegacyAbsence() {
+    for (origin in listOf(null, "\"plugin\"")) {
+      val payload = pendingGetPayload().replace(execPresentation(), pluginPresentation(origin))
+      val snapshot = parseGatewayExecApprovalGetPayload(payload, json, "approval-1")
+      assertTrue(snapshot is GatewayExecApprovalSnapshot.Pending)
+      val approval = (snapshot as GatewayExecApprovalSnapshot.Pending).summary
+      assertEquals(GatewayApprovalKind.Plugin, approval.kind)
+      assertEquals("Send the report", approval.title)
+      assertEquals(listOf("allow-once", "deny"), approval.allowedDecisions)
+    }
+  }
+
+  @Test
+  fun pluginPresentationRejectsUnknownAndMalformedOrigins() {
+    for (origin in listOf("null", "true", "1", "{}", "[]", "\"harness-native\"", "\"unknown\"", "\" plugin \"")) {
+      val payload = pendingGetPayload().replace(execPresentation(), pluginPresentation(origin))
+      assertNull(parseGatewayExecApprovalGetPayload(payload, json, "approval-1"))
+    }
+  }
+
+  @Test
+  fun originDoesNotRelaxPresentationKeyValidation() {
+    val execWithOrigin = execPresentation().replace("\"kind\": \"exec\",", "\"kind\": \"exec\", \"origin\": \"plugin\",")
+    assertNull(parseGatewayExecApprovalGetPayload(pendingGetPayload().replace(execPresentation(), execWithOrigin), json, "approval-1"))
+    val pluginWithUnknownKey = pluginPresentation("\"plugin\"").replace("\"kind\": \"plugin\",", "\"kind\": \"plugin\", \"untrusted\": true,")
+    assertNull(parseGatewayExecApprovalGetPayload(pendingGetPayload().replace(execPresentation(), pluginWithUnknownKey), json, "approval-1"))
+  }
+
+  private fun pluginPresentation(origin: String?): String {
+    val originField = origin?.let { ", \"origin\": $it" }.orEmpty()
+    return """
+      {
+        "kind": "plugin",
+        "title": "Send the report",
+        "description": "Send one report to its selected recipient.",
+        "severity": "warning",
+        "allowedDecisions": ["allow-once", "deny"]$originField
+      }
+      """.trimIndent()
+  }
+
+  @Test
   fun canonicalTerminalAttributionDoesNotHideTheRecordedWinner() {
     val payload =
       terminalPayload(status = "expired", reason = "timeout")
