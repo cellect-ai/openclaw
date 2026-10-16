@@ -592,7 +592,7 @@ export async function spawnSubagentDirect(
           queued: params.collect === true,
           ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
           attachmentId,
-          retainAttachmentsOnKeep: materializedAttachments?.retainOnSessionKeep ?? false,
+          retainAttachmentsOnKeep: retainOnSessionKeep,
         };
       },
     });
@@ -695,7 +695,7 @@ export async function spawnSubagentDirect(
         undefined,
       ...resolvedModelMetadata,
       modelApplied: plan.modelApplied || undefined,
-      attachments: materializedAttachments?.receipt,
+      attachments: attachmentsReceipt,
     };
   } finally {
     provisionalCleanupOpen = false;

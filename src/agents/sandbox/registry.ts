@@ -21,6 +21,7 @@ import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contra
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import {
   assertSandboxRegistryReservationCurrent,
+  browserEntryToRow,
   containerEntryToRow,
   insertSandboxRegistryRowInDatabase,
   type SandboxRegistryInsert,

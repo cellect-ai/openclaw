@@ -27,7 +27,6 @@ import { resolveUserPath } from "../../utils.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
 import {
   listAgentIds,
-  resolveAgentConfig,
   resolveAgentWorkspaceDir,
   resolveSessionAgentId,
 } from "../agent-scope.js";

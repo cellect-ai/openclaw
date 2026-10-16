@@ -49,6 +49,7 @@ type TalkHandoffRecord = Omit<TalkHandoffCreateParams, "ttlMs" | "mode" | "trans
 type TalkHandoffRevokeResult = {
   revoked: boolean;
   roomId?: string;
+  activeClientId?: string;
   events: TalkEvent[];
 };
 
@@ -129,6 +130,7 @@ export function revokeTalkHandoff(id: string): TalkHandoffRevokeResult {
   return {
     revoked: true,
     roomId: record.roomId,
+    activeClientId: record.room.activeClientId,
     events: [event],
   };
 }

@@ -151,7 +151,7 @@ async function authenticateGatewayConnectCore(
     return undefined;
   }
   let { scopes } = admission;
-  const { role, isControlUi, startupPending } = admission;
+  const { role, isControlUi, isWebchat, startupPending } = admission;
   const startupBootstrapConnect = startupPending && isStartupNodeBootstrapConnect(connectParams);
 
   const device = connectParams.device;

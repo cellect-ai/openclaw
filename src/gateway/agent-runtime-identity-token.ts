@@ -444,11 +444,10 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
   }
 }
 
-export type AgentRuntimeIdentityTokenParams = {
-  agentId: string;
-  sessionKey: string;
-  operationalRunInstance: OperationalRunInstanceRef;
-  approvalOwnerPluginId?: string;
+export type AgentRuntimeIdentityTokenParams = Omit<
+  AgentRuntimeIdentity,
+  "kind" | "delegatedAuthority" | "executionIdentity" | "cronSelfManagementContext"
+> & {
   approvalOrigin?: "plugin";
   approvalConversation?: BusinessApprovalConversation;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;

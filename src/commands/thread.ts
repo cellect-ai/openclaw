@@ -17,7 +17,7 @@ import {
   getSessionStateVersion,
   listSessionStateEventsSince,
 } from "../sessions/session-state-events.js";
-import type { SessionStateEventRecord } from "../sessions/session-state-events.kernel.js";
+import type { SessionStateEventRecord } from "../sessions/session-state-events.types.js";
 
 // 9.8 port of the 9.6 task-registry inspection (src/tasks removed upstream in
 // 9.7): thread tasks are reconstructed from the maintained session-state
@@ -161,13 +161,13 @@ export function threadSessionLiveness(session: ThreadSessionMatch): ThreadLivene
  * it; `truncated` means concurrent growth past the cap and adjudication must
  * fail closed.
  */
-export function listThreadSessionEvents(
+export async function listThreadSessionEvents(
   session: ThreadSessionMatch,
   limit = 200,
-): { events: SessionStateEventRecord[]; truncated: boolean } {
-  const head = getSessionStateVersion(session.sessionKey, session.agentId);
+): Promise<{ events: SessionStateEventRecord[]; truncated: boolean }> {
+  const head = await getSessionStateVersion(session.sessionKey, session.agentId);
   const cursor = head > 0 ? Math.max(0, head - limit) : 0;
-  const result = listSessionStateEventsSince(
+  const result = await listSessionStateEventsSince(
     session.sessionKey,
     session.agentId,
     cursor,

@@ -44,6 +44,7 @@ import { isProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
 import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recovery-hint.js";
 import type { ReplyCompletion, ReplyExpectation } from "../../agents/reply-completion.js";
 import { isSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
+import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import {
   collectErrorGraphCandidates,
   extractErrorCode,

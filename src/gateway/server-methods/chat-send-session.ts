@@ -32,6 +32,7 @@ import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
+import { resolveChatSendActiveScopeKey } from "./chat-origin-routing.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -199,7 +200,7 @@ export function prepareChatSendSession(params: {
   }
   const activeRunScopeKey = resolveChatSendActiveScopeKey({
     sessionKey,
-    agentId: selectedAgent.agentId,
+    agentId: requestedAgentId,
     mainKey: cfg.session?.mainKey,
   });
   const resolvedSessionModel = resolveSessionModelRef(cfg, entry, agentId);

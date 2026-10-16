@@ -107,7 +107,8 @@ function enqueueRestartSentinelWake(
   sessionKey: string,
   agentId: string,
 ) {
-  const message = entry.kind === "systemEvent" ? entry.text : entry.message;
+  const message =
+    entry.kind === "systemEvent" || entry.kind === "completionFallback" ? entry.text : entry.message;
   const deliveryContext =
     entry.kind === "completionFallback"
       ? undefined

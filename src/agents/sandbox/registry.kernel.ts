@@ -255,68 +255,6 @@ function sameSandboxRegistryGeneration(
   return isDeepStrictEqual(currentGeneration, expectedGeneration);
 }
 
-export function containerEntryToRow(
-  entry: SandboxRegistryEntry,
-  existing?: SandboxRegistryEntry | null,
-) {
-  const next: SandboxRegistryEntry = {
-    ...entry,
-    backendId: entry.backendId ?? existing?.backendId,
-    backendTarget: entry.backendTarget ?? existing?.backendTarget,
-    runtimeLabel: entry.runtimeLabel ?? existing?.runtimeLabel,
-    createdAtMs: existing?.createdAtMs ?? entry.createdAtMs,
-    image: existing?.image ?? entry.image,
-    configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
-    configHash: entry.configHash ?? existing?.configHash,
-    runtimeState: entry.runtimeState ?? existing?.runtimeState,
-    workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
-  };
-  return {
-    registry_kind: "container",
-    container_name: next.containerName,
-    session_key: next.sessionKey,
-    backend_id: next.backendId ?? null,
-    runtime_label: next.runtimeLabel ?? null,
-    image: next.image,
-    created_at_ms: next.createdAtMs,
-    last_used_at_ms: next.lastUsedAtMs,
-    config_label_kind: next.configLabelKind ?? null,
-    config_hash: next.configHash ?? null,
-    cdp_port: null,
-    no_vnc_port: null,
-    entry_json: JSON.stringify(next),
-    updated_at: Date.now(),
-  } satisfies SandboxRegistryInsert;
-}
-
-export function browserEntryToRow(
-  entry: SandboxBrowserRegistryEntry,
-  existing?: SandboxBrowserRegistryEntry | null,
-) {
-  const next: SandboxBrowserRegistryEntry = {
-    ...entry,
-    createdAtMs: existing?.createdAtMs ?? entry.createdAtMs,
-    image: existing?.image ?? entry.image,
-    configHash: entry.configHash ?? existing?.configHash,
-    workspaceDir: entry.workspaceDir ?? existing?.workspaceDir,
-  };
-  return {
-    registry_kind: "browser",
-    container_name: next.containerName,
-    session_key: next.sessionKey,
-    backend_id: null,
-    runtime_label: null,
-    image: next.image,
-    created_at_ms: next.createdAtMs,
-    last_used_at_ms: next.lastUsedAtMs,
-    config_label_kind: null,
-    config_hash: next.configHash ?? null,
-    cdp_port: next.cdpPort,
-    no_vnc_port: next.noVncPort ?? null,
-    entry_json: JSON.stringify(next),
-    updated_at: Date.now(),
-  } satisfies SandboxRegistryInsert;
-}
 
 export function insertSandboxRegistryRowIfMissingInDatabase(
   db: DatabaseSync,

@@ -60,15 +60,17 @@ export type TalkRealtimeRelayEventPayload =
   | { relaySessionId: string; type: "inputAudio"; byteLength: number }
   | { relaySessionId: string; type: "inputAudioStart"; itemId: string }
   | {
+      relaySessionId: string;
       type: "audio";
       audioBase64: string;
       itemId?: string;
       responseId?: string;
     }
-  | { type: "audioDone"; itemId?: string; responseId?: string }
-  | { type: "clear"; reason?: RealtimeVoiceAudioClearReason }
-  | { type: "mark"; markName: string }
+  | { relaySessionId: string; type: "audioDone"; itemId?: string; responseId?: string }
+  | { relaySessionId: string; type: "clear"; reason?: RealtimeVoiceAudioClearReason }
+  | { relaySessionId: string; type: "mark"; markName: string }
   | {
+      relaySessionId: string;
       type: "transcript";
       role: "user" | "assistant";
       text: string;
@@ -78,6 +80,7 @@ export type TalkRealtimeRelayEventPayload =
       transcriptId?: string;
     }
   | {
+      relaySessionId: string;
       type: "toolCall";
       itemId: string;
       callId: string;
@@ -85,10 +88,11 @@ export type TalkRealtimeRelayEventPayload =
       args: unknown;
       forced?: boolean;
     }
-  | { type: "toolCallCancelled"; callId: string }
-  | { type: "toolResult"; callId: string }
-  | { type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
+  | { relaySessionId: string; type: "toolCallCancelled"; callId: string }
+  | { relaySessionId: string; type: "toolResult"; callId: string }
+  | { relaySessionId: string; type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
   | {
+      relaySessionId: string;
       type: "error";
       message: string;
       code?: "realtime_unavailable";
@@ -97,8 +101,7 @@ export type TalkRealtimeRelayEventPayload =
       transport?: "gateway-relay";
       phase?: string;
     }
-  | { type: "close"; reason: "completed" | "error" };
-
+  | { relaySessionId: string; type: "close"; reason: "completed" | "error" };
 type TalkRealtimeRelayEvent = TalkRealtimeRelayEventPayload & { talkEvent?: TalkEvent };
 
 export type ForcedTerminalProviderResult = {

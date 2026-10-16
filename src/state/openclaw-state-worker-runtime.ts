@@ -178,6 +178,12 @@ export function executeSharedStateCommand(
       { operationLabel: command.type },
     );
   }
+  if (command.type === "githubPublication.prepareSessionReceiptDeletion") {
+    return readSessionReceiptDeletionIdentitiesInDatabase(database, command.input);
+  }
+  if (command.type === "githubPublication.deleteSessionReceipts") {
+    return deletePersonalGitHubSessionReceiptsInDatabase(database, command.input);
+  }
   if (command.type === "githubRepository.personalPending") {
     return readPendingRepositoryGitHubPublicationInDatabase(database.db, command.input);
   }

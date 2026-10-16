@@ -42,6 +42,7 @@ import {
   submitTalkRealtimeRelayToolResult,
 } from "../relay/index.js";
 import {
+  broadcastTalkRoomEvents,
   buildRealtimeInstructions,
   buildRealtimeVoiceLaunchOptions,
   buildTalkRealtimeConfig,
@@ -97,6 +98,21 @@ function talkSessionError(err: unknown) {
 
 function respondOk(respond: RespondFn, payload: unknown = { ok: true }) {
   respond(true, payload, undefined);
+}
+
+function canCloseManagedRoomSession(
+  session: { handoffId: string },
+  connId: string | undefined,
+): boolean {
+  const handoff = getTalkHandoff(session.handoffId);
+  return !handoff?.room.activeClientId || handoff.room.activeClientId === connId;
+}
+
+function managedRoomOwnershipError(action: string) {
+  return errorShape(
+    ErrorCodes.INVALID_REQUEST,
+    `talk.session.${action} requires the active managed-room connection`,
+  );
 }
 
 /** RPC handlers for gateway-managed Talk sessions and room lifecycle. */
@@ -582,7 +598,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
   "talk.session.close": defineValidatedGatewayHandler(
     "talk.session.close",
     validateTalkSessionCloseParams,
-    async ({ params, respond, client }) => {
+    async ({ params, respond, client, context }) => {
       const session = getUnifiedTalkSession(params.sessionId);
       if (session.kind === "realtime-relay") {
         const connId = requireUnifiedTalkSessionConn(session, client?.connId);
@@ -594,8 +610,16 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           connId,
         });
       } else {
-        getTalkHandoff(session.handoffId);
-        revokeTalkHandoff(session.handoffId);
+        if (!canCloseManagedRoomSession(session, client?.connId)) {
+          respond(false, undefined, managedRoomOwnershipError("close"));
+          return;
+        }
+        const result = revokeTalkHandoff(session.handoffId);
+        broadcastTalkRoomEvents(context, result.activeClientId, {
+          handoffId: session.handoffId,
+          roomId: session.roomId,
+          events: result.events,
+        });
       }
       forgetUnifiedTalkSession(params.sessionId);
       respondOk(respond);

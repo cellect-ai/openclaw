@@ -95,27 +95,10 @@ import { talkVoiceHandlers } from "./voice.js";
 type TalkSpeakReason =
   | "talk_unconfigured"
   | "talk_provider_unsupported"
+  | "method_unavailable"
   | "synthesis_failed"
   | "invalid_audio_result";
 
-function resolveCatalogProviderSelection(
-  configuredProvider: string | undefined,
-  resolveAutomaticProvider: () => string,
-): { activeProvider?: string; ready: boolean } {
-  // Provider priority belongs to the runtime resolver; catalog consumers must not infer it from row order.
-  try {
-    const resolvedProvider = resolveAutomaticProvider();
-    return {
-      activeProvider: resolvedProvider,
-      ready: true,
-    };
-  } catch {
-    return {
-      ...(configuredProvider ? { activeProvider: configuredProvider } : {}),
-      ready: false,
-    };
-  }
-}
 type TalkSpeakErrorDetails = {
   reason: TalkSpeakReason;
   fallbackEligible: boolean;
@@ -422,13 +405,20 @@ function buildTalkCatalog(config: OpenClawConfig, params: TalkCatalogParams) {
   };
 }
 
+function isFallbackEligibleTalkReason(reason: TalkSpeakReason): boolean {
+  return (
+    reason === "talk_unconfigured" ||
+    reason === "talk_provider_unsupported" ||
+    reason === "method_unavailable"
+  );
+}
+
 function talkSpeakError(reason: TalkSpeakReason, message: string) {
-  return errorShape(ErrorCodes.UNAVAILABLE, message, {
-    details: {
-      reason,
-      fallbackEligible: reason === "talk_unconfigured" || reason === "talk_provider_unsupported",
-    },
-  });
+  const details: TalkSpeakErrorDetails = {
+    reason,
+    fallbackEligible: isFallbackEligibleTalkReason(reason),
+  };
+  return errorShape(ErrorCodes.UNAVAILABLE, message, { details });
 }
 
 function resolveTalkSpeed(params: TalkSpeakParams): number | undefined {

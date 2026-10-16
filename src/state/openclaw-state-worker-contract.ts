@@ -14,6 +14,7 @@ import type {
   WorkspaceAttestation,
   WorkspaceAttestationInput,
 } from "../agents/workspace-state-store.kernel.js";
+import type { WorktreeRunLeaseRowInput } from "../agents/worktrees/run-lease-store.kernel.js";
 import type {
   WorkspaceStateGuard,
   WorkspaceStateWorkerOperations,

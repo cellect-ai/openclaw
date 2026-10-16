@@ -494,7 +494,7 @@ export const deliveryQueueOperations = {
     executeConversationLifecycleCommand(
       { type: "deliveryQueue.lifecycleRead", input },
       { database: open(), ...stateOptions() },
-    ),
+    ) as LifecycleObligation[],
   "deliveryQueue.lifecycleAck": (
     input: { id: string; revision: number },
     { open, stateOptions },
@@ -502,7 +502,7 @@ export const deliveryQueueOperations = {
     executeConversationLifecycleCommand(
       { type: "deliveryQueue.lifecycleAck", input },
       { database: open(), ...stateOptions() },
-    ),
+    ) as LifecycleObligation | undefined,
   "deliveryQueue.lifecycleRecover": (
     input: { id: string; expected: string; replacement: LifecycleObligation },
     { open, stateOptions },
@@ -510,5 +510,5 @@ export const deliveryQueueOperations = {
     executeConversationLifecycleCommand(
       { type: "deliveryQueue.lifecycleRecover", input },
       { database: open(), ...stateOptions() },
-    ),
+    ) as void,
 } satisfies WorkerOperationHandlers;
