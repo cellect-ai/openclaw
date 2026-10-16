@@ -267,6 +267,9 @@ export function buildExternalRunFailureReply(
   if (isSandboxProvisioningError(error)) {
     return {
       text: "⚠️ The agent’s workspace could not be prepared, so this attempt stopped before it could run. Please try again; if it repeats, ask an administrator to check the agent runtime.",
+      isGenericRunnerFailure: false,
+    };
+  }
   const useHeartbeatFailureCopy = options?.useHeartbeatFailureCopy ?? options?.isHeartbeat === true;
   const approvalMessage = resolveExecutionApprovalFailureMessage(normalizedMessage);
   if (approvalMessage) {

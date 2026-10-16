@@ -97,8 +97,7 @@ export type TalkRealtimeRelayEventPayload =
       transport?: "gateway-relay";
       phase?: string;
     }
-  | { type: "close"; reason: "completed" | "error" }
-);
+  | { type: "close"; reason: "completed" | "error" };
 
 type TalkRealtimeRelayEvent = TalkRealtimeRelayEventPayload & { talkEvent?: TalkEvent };
 
