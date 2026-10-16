@@ -4,10 +4,7 @@ import {
   normalizeStringifiedOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { Command } from "commander";
-import type {
-  ChannelsPairingCliListResult,
-  ChannelsPairingCodeApproveResult,
-} from "../../packages/gateway-protocol/src/schema/channel-pairing.js";
+import type { ChannelsPairingCodeApproveResult } from "../../packages/gateway-protocol/src/schema/channel-pairing.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { getTerminalTableWidth, renderTable } from "../../packages/terminal-core/src/table.js";
 import { theme } from "../../packages/terminal-core/src/theme.js";
@@ -22,6 +19,7 @@ import {
   listChannelPairingRequests,
   resolvePairingRequestStatus,
 } from "../pairing/pairing-store.js";
+import type { PairingRequest } from "../pairing/pairing-store.js";
 import type { PairingChannel } from "../pairing/pairing-store.types.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatCliCommand } from "./command-format.js";
@@ -105,7 +103,9 @@ export function registerPairingCli(program: Command) {
         }
       }
       const accountId = resolveAccountId(opts.account);
-      const requests = await runWithLocalStateOwner<ChannelsPairingCliListResult>({
+      // The local-owner path reads full store records (status included), not the
+      // status-stripped remote wire shape.
+      const requests = await runWithLocalStateOwner<PairingRequest[]>({
         method: "channels.pairing.list",
         params: { channel, format: "cli", ...(accountId ? { accountId } : {}) },
         target: `${channel} pairing requests`,
