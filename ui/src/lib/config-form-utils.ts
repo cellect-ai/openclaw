@@ -217,7 +217,6 @@ function sanitizeRedactedValue(params: {
     } else {
       omittedChild = true;
     }
-    }
   }
 
   // Prune parents made empty by omitted redactions, not explicitly authored
