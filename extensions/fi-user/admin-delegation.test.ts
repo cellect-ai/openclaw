@@ -614,7 +614,7 @@ describe("the admin agent's delegated user token", () => {
   describe("a runtime where the sandbox pin would change how commands run", () => {
     const admin = (entry: Record<string, unknown>) => ({
       ...SANDBOXED,
-      agents: { ...SANDBOXED.agents, list: [{ id: "cellect-fi-admin", ...entry }] },
+      agents: { ...SANDBOXED.agents, entries: { "cellect-fi-admin": { ...entry } } },
     });
     it.each([
       ["no sandbox configured", { tools: SANDBOXED.tools }],
@@ -658,13 +658,12 @@ describe("the admin agent's delegated user token", () => {
         {
           agents: {
             defaults: { sandbox: { mode: "off" } },
-            list: [
-              {
-                id: "cellect-fi-admin",
+            entries: {
+              "cellect-fi-admin": {
                 sandbox: { mode: "all", scope: "session" },
                 tools: { exec: { host: "auto" }, elevated: { enabled: false } },
               },
-            ],
+            },
           },
           tools: { exec: { host: "gateway" } },
           talk: { agentId: "cellect-main" },

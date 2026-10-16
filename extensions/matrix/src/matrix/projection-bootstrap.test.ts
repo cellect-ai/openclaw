@@ -39,7 +39,7 @@ vi.mock("./send/client.js", () => ({
 import { bootstrapMatrixSessionProjection } from "./projection-bootstrap.js";
 
 const cfg = {
-  agents: { list: [{ id: "native-owner" }, { id: "other" }] },
+  agents: { entries: { "native-owner": {}, other: {} } },
   bindings: [{ agentId: "native-owner", match: { channel: "matrix", accountId: "test-account" } }],
 } as CoreConfig;
 const request = {

@@ -89,7 +89,7 @@ describe("source-authorized Matrix continuation", () => {
     expect(isMatrixReadOnlyProjectionRoom(binding.accountId, "!source:example.test")).toBe(true);
     await expect(authorizeProjectionReply(params)).resolves.toBe("unavailable");
     const cfg: OpenClawConfig = {
-      agents: { list: [{ id: "main" }, { id: "admin" }] },
+      agents: { entries: { main: {}, admin: {} } },
       bindings: [{ agentId: "main", match: { channel: "matrix", accountId: binding.accountId } }],
     };
     const route = resolveMatrixInboundRoute({

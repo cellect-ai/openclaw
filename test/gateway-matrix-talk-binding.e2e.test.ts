@@ -134,7 +134,7 @@ describe("Matrix-bound Talk over a real isolated Gateway socket", () => {
       const pluginDir = path.join(fixtureDir, "plugin");
       await writeFakeRealtimePlugin(pluginDir);
       const config = {
-        agents: { list: [{ id: "voice-agent", default: true }] },
+        agents: { entries: { "voice-agent": {} } },
         bindings: [{ agentId: "voice-agent", match: { channel: "matrix", accountId: "default" } }],
         channels: {
           matrix: {

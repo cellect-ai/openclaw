@@ -8,7 +8,7 @@ import {
 
 const cfg = {
   agents: {
-    list: [{ id: "fi-user", default: true }, { id: "fi-admin" }, { id: "cellect-superadmin" }],
+    entries: { "fi-user": {}, "fi-admin": {}, "cellect-superadmin": {} },
   },
 } as OpenClawConfig;
 

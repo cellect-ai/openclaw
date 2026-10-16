@@ -875,14 +875,13 @@ describe("runHeartbeatOnce", () => {
           defaults: {
             heartbeat: { every: "30m", prompt: "Default prompt" },
           },
-          list: [
-            { id: "main", default: true },
-            {
-              id: "ops",
+          entries: {
+            main: {},
+            ops: {
               workspace: tmpDir,
               heartbeat: { every: "5m", target: "whatsapp", prompt: "Ops check" },
             },
-          ],
+          },
         },
         channels: { whatsapp: { allowFrom: ["*"] } },
         session: { store: storePath },
