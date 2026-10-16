@@ -348,9 +348,10 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
             : undefined);
       const startedByArrival =
         !requiresEvent ||
-        (origin?.sender?.id === nativeSender &&
-          (!slackChannel || origin.chat?.id?.toLowerCase() === slackChannel[1]) &&
-          typeof origin.chat?.eventId === "string" &&
+        (typeof nativeSender === "string" &&
+          origin?.sender?.id === nativeSender &&
+          (!slackChannel || origin?.chat?.id?.toLowerCase() === slackChannel[1]) &&
+          typeof origin?.chat?.eventId === "string" &&
           arrived?.events.has(origin.chat.eventId) === true);
       if (
         sender &&
