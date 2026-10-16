@@ -6,6 +6,7 @@ import type {
   ChannelOutboundAdapter,
   ChannelThreadingAdapter,
 } from "../../channels/plugins/types.public.js";
+import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { deliverOutboundPayloads } from "../../infra/outbound/deliver.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
