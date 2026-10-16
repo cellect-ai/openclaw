@@ -3098,9 +3098,9 @@ describe("slack implicit mention policy", () => {
         ts: "1700000001.000001",
         thread_ts: "1700000000.000000",
         parent_user_id: "U2",
-      }),
-      { source: "message", eventScope },
-    );
+      },
+      opts: { source: "message", eventScope: params.eventScope },
+    });
   }
 
   it("admits only the preferred participating account in a shared unmentioned thread", async () => {

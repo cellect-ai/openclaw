@@ -971,6 +971,7 @@ describe("editMessageMatrix mentions", () => {
         },
       };
     }
+  });
 
   it("places the stream phase on both halves of an edit", async () => {
     const { client, sendMessage } = makeClient();

@@ -383,6 +383,7 @@ describe("handleSlackAction", () => {
     expect(getSlackMemberInfo).toHaveBeenCalledWith("U999", { cfg, teamId: "T123" });
     expect(requireDetails(result)).toMatchObject({ ok: true, info: { user: { id: "U999" } } });
   });
+  });
 
   it("scopes every message and pin write to the trusted current workspace", async () => {
     await handleSlackAction({ ...send, content: "created" }, cfg, trustedContext);

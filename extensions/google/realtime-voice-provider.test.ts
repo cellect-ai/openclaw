@@ -322,6 +322,56 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     const now = Date.UTC(2026, 7, 1, 12, 34, 56, 789);
     vi.setSystemTime(now);
     const result = await buildGoogleRealtimeVoiceProvider().createBrowserSession?.({
+      providerConfig: {
+        apiKey: "gemini-key",
+        model: "gemini-live-2.5-flash-preview",
+        voice: "Puck",
+        temperature: 0.4,
+        prefixPaddingMs: 100,
+        silenceDurationMs: 300,
+      },
+      prefixPaddingMs: 250,
+      silenceDurationMs: 650,
+      instructions: "Speak briefly.",
+      tools: [createRealtimeTool(CONSULT)],
+    });
+    expect(createGoogleGenAIMock).toHaveBeenCalledWith({
+      apiKey: "gemini-key",
+      httpOptions: { apiVersion: "v1alpha", timeout: 30_000 },
+    });
+    expect(createTokenMock).toHaveBeenCalledExactlyOnceWith({
+      config: {
+        uses: 1,
+        expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
+        newSessionExpireTime: new Date(now + 60 * 1000).toISOString(),
+        liveConnectConstraints: {
+          model: "gemini-live-2.5-flash-preview",
+          config: expect.objectContaining({
+            temperature: 0.4,
+            systemInstruction: "Speak briefly.",
+            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } } },
+            realtimeInputConfig: {
+              automaticActivityDetection: { prefixPaddingMs: 250, silenceDurationMs: 650 },
+            },
+            tools: [
+              {
+                functionDeclarations: [
+                  { ...createRealtimeToolDeclaration(CONSULT), behavior: "NON_BLOCKING" },
+                ],
+              },
+            ],
+          }),
+        },
+      },
+    });
+    expect(result).toMatchObject({
+      transport: "provider-websocket",
+      protocol: "google-live-bidi",
+      clientSecret: "auth_tokens/browser-session",
+      expiresAt: now + 60_000,
+      initialMessage: { setup: { model: "models/gemini-live-2.5-flash-preview" } },
+    });
+  });
 
   it("omits adaptive thinking budgets for Gemini 3.1 Live", async () => {
     await createGoogleLiveBridge({ providerConfig: { thinkingBudget: -1 } }).connect();
@@ -380,7 +430,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
             ],
           }),
         },
-      ],
+      },
     });
 
     expect(createTokenMock).toHaveBeenCalledTimes(1);
