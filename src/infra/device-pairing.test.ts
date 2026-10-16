@@ -1076,7 +1076,7 @@ describe("device pairing tokens", () => {
   });
 
   test("persists the webchat agent ceiling on the reconnecting operator token", async () => {
-    const baseDir = await makeDevicePairingDir();
+    const baseDir = await suiteRootTracker.make("webchat-ceiling");
     const profile = {
       roles: ["operator"],
       scopes: ["operator.read", "operator.talk", "operator.write"],
@@ -1107,20 +1107,12 @@ describe("device pairing tokens", () => {
   });
 
   test("verifies token and rejects mismatches", async () => {
-    const { baseDir, token } = await setupOperatorToken(["operator.read"]);
+    const token = await setupOperatorToken(["operator.read"]);
 
-    const ok = await verifyOperatorToken({
-      baseDir,
-      token,
-      scopes: ["operator.read"],
-    });
+    const ok = await verifyOperatorToken(token, ["operator.read"]);
     expect(ok.ok).toBe(true);
 
-    const mismatch = await verifyOperatorToken({
-      baseDir,
-      token: "x".repeat(token.length),
-      scopes: ["operator.read"],
-    });
+    const mismatch = await verifyOperatorToken("x".repeat(token.length), ["operator.read"]);
     expect(mismatch.ok).toBe(false);
     expect(mismatch.reason).toBe("token-mismatch");
   });
