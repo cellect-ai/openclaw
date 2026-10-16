@@ -52,31 +52,6 @@ type ModelDefaultResetIntent = {
 type CatalogScope = { gatewayUrl: string; connectionRevision: number };
 type ReadyTalkCatalog = Extract<TalkCatalogState, { kind: "ready" }>;
 
-type TalkPageProps = {
-  configObject: Record<string, unknown>;
-  mutationDisabled: boolean;
-  /** Builds the embedded schema editor over the full `talk` section. */
-  buildEditor: () => TemplateResult;
-};
-
-function toProviderOption(
-  provider: TalkCatalogResult["realtime"]["providers"][number],
-): TalkRealtimeProviderOption {
-  return {
-    id: provider.id,
-    label: provider.label,
-    configured: provider.configured,
-    aliases: provider.aliases ?? [],
-    models: provider.models ?? [],
-    voices: provider.voices ?? [],
-    activeVoices: provider.activeVoices,
-    activeVoiceSelectionPolicy: provider.activeVoiceSelectionPolicy,
-    voicesByModel: provider.voicesByModel,
-    transports: provider.transports ?? [],
-    defaultModel: provider.defaultModel ?? null,
-  };
-}
-
 /** Transports whose sessions are client-owned (`talk.client.create`). */
 const TALK_CLIENT_OWNED_TRANSPORTS = new Set(["webrtc", "provider-websocket"]);
 

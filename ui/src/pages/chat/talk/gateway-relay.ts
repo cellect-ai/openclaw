@@ -368,11 +368,17 @@ export class GatewayRelayRealtimeTalkTransport implements RealtimeTalkTransport 
           return;
         case "transcript":
           if (event.role && event.text) {
+            // The 10.4 relay renamed fragment mode delta; the conversation
+            // store still appends literal fragments as verbatim.
+            const textMode =
+              event.textMode === "delta"
+                ? ("verbatim" as const)
+                : event.textMode;
             this.ctx.callbacks.onTranscript?.({
               role: event.role,
               text: event.text,
               final: event.final ?? false,
-              ...(event.textMode ? { textMode: event.textMode } : {}),
+              ...(textMode ? { textMode } : {}),
               ...(event.transcriptId ? { transcriptId: event.transcriptId } : {}),
             });
           }
