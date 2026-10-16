@@ -169,7 +169,9 @@ describe("Matrix relay consumes its private chat terminal without browser transc
       },
     });
     expect(providerResult).toHaveBeenCalledWith("provider-call", { result: answer }, undefined);
-    const chatPayload = context.broadcast.mock.calls.find(([event]) => event === "chat")?.[1] as
+    const chatPayload = vi
+      .mocked(context.broadcast)
+      .mock.calls.find(([event]) => event === "chat")?.[1] as
       | { message?: unknown }
       | undefined;
     expect(chatPayload?.message).toBeUndefined();
