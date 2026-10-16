@@ -4261,7 +4261,7 @@ describe("talk realtime gateway relay", () => {
     const provider = createIdleRelayProvider((request) => {
       bridgeRequest = request;
       return makeRelayTransport({ close });
-    };
+    });
     const { broadcastToConnIds, logGateway, session } = createAbortableRelayRunFixture(provider);
     const ownerFailureLog = vi.spyOn(logGateway, "warn");
     bridgeRequest?.onEvent?.({
