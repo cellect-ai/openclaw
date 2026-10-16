@@ -60,6 +60,7 @@ function createOAuthNetwork(config: {
   registrationClientId?: string;
 }) {
   const tokenRequests: Array<{ url: string; body: string }> = [];
+  const registrationRequests: string[] = [];
   const requests: Array<{ url: string; body: string; authorization: string | null }> = [];
   const fetchFn: FetchLike = async (input, init) => {
     const url = new URL(String(input instanceof Request ? input.url : input));
@@ -91,15 +92,18 @@ function createOAuthNetwork(config: {
         issuer: config.issuer,
         authorization_endpoint: `${config.issuer}/authorize`,
         token_endpoint: `${config.issuer}/token`,
-        registration_endpoint: `${config.issuer}/register`,
         response_types_supported: ["code"],
         grant_types_supported: ["authorization_code", "refresh_token"],
         token_endpoint_auth_methods_supported: ["client_secret_post", "none"],
+        ...(config.registrationClientId
+          ? { registration_endpoint: `${config.issuer}/register` }
+          : {}),
       });
     }
-    if (url.href === `${config.issuer}/register`) {
+    if (url.href === `${config.issuer}/register` && config.registrationClientId) {
+      registrationRequests.push(url.href);
       return Response.json(
-        { ...JSON.parse(bodyText(init?.body)), client_id: "new-client-id" },
+        { ...JSON.parse(bodyText(init?.body)), client_id: config.registrationClientId },
         { status: 201 },
       );
     }
@@ -114,7 +118,7 @@ function createOAuthNetwork(config: {
     }
     return new Response(null, { status: 404 });
   };
-  return { fetchFn, tokenRequests, requests };
+  return { fetchFn, tokenRequests, registrationRequests, requests };
 }
 
 async function seedAuthorizedStore(
@@ -354,10 +358,12 @@ describe("MCP OAuth refresh issuer binding", () => {
     );
   });
 
-  it("blocks an issuer-changing challenge after stamped credentials refreshed", async () => {
-    await withTempHome(
-      async () => {
-        await seedAuthorizedStore("tokens-then-discovery", 0);
+  it.each([undefined, "replacement-client-id"])(
+    "blocks an issuer-changing challenge after stamped credentials refreshed (registration client: %s)",
+    async (registrationClientId) => {
+      await withTempHome(
+        async () => {
+          await seedAuthorizedStore("tokens-then-discovery", 0);
         const sameIssuer = createOAuthNetwork({
           challengeMetadataUrl: ORIGINAL_METADATA_URL,
           issuer: ORIGINAL_ISSUER,
@@ -380,6 +386,7 @@ describe("MCP OAuth refresh issuer binding", () => {
         expect(newIssuer.requests.filter((request) => request.url.endsWith("/register"))).toEqual(
           [],
         );
+        expect(newIssuer.registrationRequests).toEqual([]);
         expect(JSON.stringify(newIssuer.requests)).not.toContain(STORED_SECRET);
         expect(JSON.stringify(newIssuer.requests)).not.toContain("rotated-refresh-secret");
         const after = await readStore();
@@ -387,9 +394,10 @@ describe("MCP OAuth refresh issuer binding", () => {
         expect(after.tokens).toEqual(before.tokens);
         expect(after.clientInformation).toEqual(before.clientInformation);
       },
-      { prefix: "openclaw-mcp-oauth-issuer-upgrade-challenge-", ...TEMP_HOME_OPTIONS },
-    );
-  });
+        { prefix: "openclaw-mcp-oauth-issuer-upgrade-challenge-", ...TEMP_HOME_OPTIONS },
+      );
+    },
+  );
 
   it("requires explicit sign-in for legacy credentials despite stored discovery", async () => {
     await withTempHome(
