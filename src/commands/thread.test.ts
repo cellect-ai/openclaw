@@ -195,7 +195,7 @@ describe("thread run-event port", () => {
       outcome: "timeout",
       occurredAt: base + 2100,
     });
-    const tasks = tasksForThread(
+    const tasks = await tasksForThread(
       { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
       [threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2100 })],
     );
@@ -225,7 +225,7 @@ describe("thread run-event port", () => {
       runId: "run-new",
       occurredAt: at,
     });
-    const tasks = tasksForThread(
+    const tasks = await tasksForThread(
       { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
       [threadMatch(THREAD_OWNER_KEY, { updatedAt: at })],
     );
@@ -256,7 +256,7 @@ describe("thread run-event port", () => {
         occurredAt: base + 1000 + i,
       });
     }
-    const tasks = tasksForThread(
+    const tasks = await tasksForThread(
       { permalink: "", channelId: "", threadTs: "", sessionSuffix: "" },
       [threadMatch(THREAD_OWNER_KEY, { updatedAt: base + 2000 })],
     );

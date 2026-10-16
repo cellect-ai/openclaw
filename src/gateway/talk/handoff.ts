@@ -33,6 +33,13 @@ type TalkHandoffCreateParams = {
   ttlMs?: number;
 };
 
+/** Fork room state: upstream 10.4 dropped tokenHash (its own test asserts
+ * absence); the managed-room owner pin stays fork-owned. */
+type TalkHandoffRoomState = {
+  activeClientId?: string;
+  talk: TalkSessionController;
+};
+
 /** Private handoff state and its event controller. */
 type TalkHandoffRecord = Omit<TalkHandoffCreateParams, "ttlMs" | "mode" | "transport" | "brain"> & {
   id: string;
@@ -43,7 +50,7 @@ type TalkHandoffRecord = Omit<TalkHandoffCreateParams, "ttlMs" | "mode" | "trans
   brain: TalkBrain;
   createdAt: number;
   expiresAt: number;
-  room: { talk: TalkSessionController };
+  room: TalkHandoffRoomState;
 };
 
 type TalkHandoffRevokeResult = {
@@ -100,7 +107,7 @@ export function createTalkHandoff(params: TalkHandoffCreateParams) {
   return {
     ...publicRecord,
     room: {
-      activeClientId: undefined,
+      activeClientId: room.activeClientId,
       activeTurnId: room.talk.activeTurnId,
       recentTalkEvents: [...room.talk.recentEvents],
     },

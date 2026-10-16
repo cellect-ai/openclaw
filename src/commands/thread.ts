@@ -184,13 +184,15 @@ function compareThreadTasks(left: ThreadTask, right: ThreadTask): number {
   );
 }
 
-export function tasksForThread(
+export async function tasksForThread(
   _ref: SlackThreadRef,
   sessions: ThreadSessionMatch[],
-): ThreadTask[] {
+): Promise<ThreadTask[]> {
   const tasks: ThreadTask[] = [];
   for (const session of sessions) {
-    for (const event of listThreadSessionEvents(session).events) {
+    // Session-state reads went async with the 10.4 worker-threaded broker;
+    // sessions are walked in order so task ranking stays deterministic.
+    for (const event of (await listThreadSessionEvents(session)).events) {
       const task = threadTaskFromRunEvent(event, session.sessionKey);
       if (task) {
         tasks.push(task);
@@ -305,7 +307,7 @@ export async function readThreadTranscriptTail(
 export async function inspectThread(rawPermalink: string, sessions?: ThreadSessionMatch[]) {
   const ref = parseSlackThreadPermalink(rawPermalink);
   const matches = sessions ?? sessionsForThread(ref);
-  const tasks = tasksForThread(ref, matches);
+  const tasks = await tasksForThread(ref, matches);
   const latestTask = tasks[0];
   const session = matches[0];
   // Original context belongs to the owning thread session, which need not be
@@ -390,7 +392,9 @@ export async function threadResumeCommand(
   }
   // Adjudication reads the same tail window the tasks came from. A truncated
   // window means concurrent growth past the cap: fail closed, never resume.
-  const coverage = state.sessions.map((session) => listThreadSessionEvents(session));
+  const coverage = await Promise.all(
+    state.sessions.map((session) => listThreadSessionEvents(session)),
+  );
   if (coverage.some((window) => window.truncated)) {
     runtime.error(
       "Thread event history is incomplete; cannot adjudicate resume; no resume was queued.",
