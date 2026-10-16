@@ -1843,6 +1843,7 @@ export async function prepareSlackMessage(params: {
     ctxPayload,
     sessionDisplayName: sessionEntry?.displayName,
     turn: {
+      storePath,
       record: {
         updateLastRoute:
           isDirectMessage || opts.eventScope

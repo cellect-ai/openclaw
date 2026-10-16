@@ -514,20 +514,6 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     this.config.onEvent?.({ direction: "client", type, ...(detail ? { detail } : {}) });
   }
 
-  private captureEvent(
-    url: string,
-    event: Omit<Parameters<typeof proxyCaptureSdk.captureWsEventAsync>[0], "url" | "flowId">,
-  ): void {
-    // Finalization retains capture failures; observe Promises returned by the SDK view.
-    void captureHost
-      .captureWsEventAsync?.({
-        url,
-        flowId: this.flowId,
-        ...event,
-        meta: { provider: "xai", capability: "realtime-voice", ...event.meta },
-      })
-      .catch(() => {});
-  }
 
   private failConnection(
     error: XaiRealtimeMalformedAudioError | XaiRealtimePlaybackMarkOverflowError,

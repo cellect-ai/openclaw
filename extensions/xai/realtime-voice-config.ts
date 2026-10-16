@@ -19,9 +19,20 @@ import { XAI_BASE_URL } from "./model-definitions.js";
 type XaiRealtimeVoice = "eve" | "ara" | "rex" | "sal" | "leo";
 type XaiRealtimeReasoningEffort = "high" | "none";
 
-type XaiRealtimeVoiceProviderConfig = Partial<
-  ReturnType<typeof normalizeXaiRealtimeProviderConfig>
->;
+// Explicit shape: Partial<ReturnType<...>> would circularly reference the
+// normalizer's own return annotation below.
+type XaiRealtimeVoiceProviderConfig = {
+  apiKey?: string;
+  baseUrl?: string;
+  model?: string;
+  voice?: string;
+  vadThreshold?: number;
+  silenceDurationMs?: number;
+  prefixPaddingMs?: number;
+  interruptResponseOnInputAudio?: boolean;
+  reasoningEffort?: XaiRealtimeReasoningEffort;
+  sessionResumption?: boolean;
+};
 
 export type XaiRealtimeVoiceBridgeConfig = RealtimeVoiceBridgeCreateRequest &
   Omit<XaiRealtimeVoiceProviderConfig, "interruptResponseOnInputAudio"> & {
