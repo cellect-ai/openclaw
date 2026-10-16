@@ -1800,7 +1800,10 @@ export async function prepareSlackMessage(params: {
       groupSystemPrompt: effectiveGroupSystemPrompt,
     },
     channelContext: {
+      sender: { id: senderId, isBot: isBotMessage || undefined },
       chat: {
+        id: message.channel,
+        eventId: threadContext.messageTs,
         commandSourceText,
         mentionStripPatterns,
       },

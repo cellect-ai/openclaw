@@ -97,6 +97,33 @@ describe("Slack bot-message admission", () => {
     expect(prepared.ctxPayload.CommandBody).toBe("");
     expect(prepared.ctxPayload.BodyForCommands).toBe("");
     expect(prepared.ctxPayload.BodyForAgent).toContain("Readiness probe failed");
+    expect(prepared.ctxPayload.ChannelContext).toMatchObject({
+      sender: { isBot: true },
+      chat: { id: "D123", eventId: "1.000" },
+    });
+  });
+
+  it("carries the actual channel, sender and child event for a verified human thread reply", async () => {
+    const ctx = createContext();
+    const prepared = await prepareSlackMessage({
+      ctx,
+      account: createSlackAccount(),
+      message: createSlackMessage({
+        channel: "C123",
+        channel_type: "channel",
+        user: "U0ADMIN001",
+        ts: "1792190933.152459",
+        thread_ts: "1792189039.487369",
+      }),
+      opts: { source: "message", senderAuthentication: "verified" },
+    });
+    assert(prepared);
+    expect(prepared.ctxPayload.SenderAuthentication).toBe("verified");
+    expect(prepared.ctxPayload.ChannelContext).toMatchObject({
+      sender: { id: "U0ADMIN001" },
+      chat: { id: "C123", eventId: "1792190933.152459" },
+    });
+    expect(prepared.ctxPayload.ChannelContext?.sender?.isBot).not.toBe(true);
   });
 
   it("drops bot-authored room messages when allowBots is true but no owner is present (#59284)", async () => {

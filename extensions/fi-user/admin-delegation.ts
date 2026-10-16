@@ -75,7 +75,7 @@ const EXEC_PARAMS = new Set([
 type Arrivals = {
   senders: Set<string>;
   proven: boolean;
-  /** Event ids of the proven Matrix messages among them. */
+  /** Event ids of proven shared-conversation messages among them. */
   events: Set<string>;
   /** When the last of them was observed. */
   at: number;
@@ -171,8 +171,8 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * message; a batch from several people and a run another person steers are
  * refused.
  *
- * A Slack session must be the sender's own direct one. A Matrix room or thread
- * is admitted one message at a time (owner decision, 2026-10-06): the run must
+ * A Slack DM must belong to the sender. Slack channels/threads and Matrix rooms
+ * are admitted one message at a time: the run must
  * also be the one the host started for that very room event, so the token is
  * that run's and that sender's, and the next run in the thread stands on its
  * own message. The agent still reads other people's words in the room without
@@ -235,8 +235,8 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
   /**
    * The sender a verified dispatched message proves for the admin agent's
    * session, by the session key the host routed (compared in lower case):
-   * - Slack: `agent:<admin>:slack:direct:<peer>`, and the sender is that peer.
-   *   A Slack channel or thread proves nobody.
+   * - Slack DMs bind the peer. Channels/threads additionally bind the native
+   *   message timestamp and the run's host-owned channel context below.
    * - Matrix: `agent:<admin>:matrix:…`, whose key does not say what kind of
    *   room it is, so the Matrix monitor must have classified the message as
    *   direct or as a room's. Either proves its sender for that one homeserver
@@ -255,8 +255,14 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
     const rest = sessionKey.slice(prefix.length);
     const sender = JSON.stringify(requester);
     if ("requester_slack_user_id" in requester) {
-      return rest === `slack:direct:${requester.requester_slack_user_id.toLowerCase()}`
-        ? { sender }
+      if (rest === `slack:direct:${requester.requester_slack_user_id.toLowerCase()}`) {
+        return { sender };
+      }
+      return message.isGroup === true &&
+        /^slack:(?:channel|group):[cg][a-z0-9]+(?::thread:\d+\.\d+)?$/.test(rest) &&
+        typeof message.messageId === "string" &&
+        /^\d+\.\d+$/.test(message.messageId)
+        ? { sender, eventId: message.messageId }
         : undefined;
     }
     if (!("requester_matrix_user_id" in requester) || !rest.startsWith("matrix:")) {
@@ -326,14 +332,24 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
         senderId: context.senderId,
       });
       const sender = requester && JSON.stringify(requester);
-      // The Matrix monitor puts the homeserver event that started the run and
-      // its sender on the host-owned context. A Matrix message admits only the
-      // run of that very event, by that very sender.
+      // Shared conversations admit only the run of the dispatched native event,
+      // by that same sender. Never reuse the stored sender on a synthetic wake.
       const origin = context.channelContext;
+      const slackChannel = /^slack:(?:channel|group):([cg][a-z0-9]+)(?::thread:\d+\.\d+)?$/.exec(
+        sessionKey.slice(`agent:${config.adminAgentId.toLowerCase()}:`.length),
+      );
+      const requiresEvent = requester && ("requester_matrix_user_id" in requester || slackChannel);
+      const nativeSender =
+        requester &&
+        ("requester_matrix_user_id" in requester
+          ? requester.requester_matrix_user_id
+          : "requester_slack_user_id" in requester
+            ? requester.requester_slack_user_id
+            : undefined);
       const startedByArrival =
-        !requester ||
-        !("requester_matrix_user_id" in requester) ||
-        (origin?.sender?.id === requester.requester_matrix_user_id &&
+        !requiresEvent ||
+        (origin?.sender?.id === nativeSender &&
+          (!slackChannel || origin.chat?.id?.toLowerCase() === slackChannel[1]) &&
           typeof origin.chat?.eventId === "string" &&
           arrived?.events.has(origin.chat.eventId) === true);
       if (
