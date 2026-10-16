@@ -50,6 +50,8 @@ describe("openclaw plugin tool context", () => {
     expect(() => resolve({ memoryAudience, agentSessionKey: "agent:main:other" })).toThrow(
       "memory audience is bound to a different session",
     );
+  });
+
   it("forwards trusted requester sender identity", () => {
     const result = resolveOpenClawPluginToolInputs({
       options: {
