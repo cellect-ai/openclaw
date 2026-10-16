@@ -1744,7 +1744,13 @@ export async function prepareSlackMessage(params: {
       groupSystemPrompt: effectiveGroupSystemPrompt,
     },
     channelContext: {
+      // Native producer for requester delegation: the verified sender, the
+      // actual channel, and the dispatched child-event id (the message's own
+      // ts, never the thread root). Ported from 9.8 carry 107dcf53.
+      sender: { id: senderId, isBot: isBotMessage || undefined },
       chat: {
+        id: message.channel,
+        eventId: message.ts,
         commandSourceText,
         mentionStripPatterns,
       },

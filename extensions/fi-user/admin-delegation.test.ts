@@ -59,6 +59,27 @@ const thread = (senderId = "@admin:matrix.example", eventId = "$e1") => ({
   },
 });
 const MINT_URL = "https://fi.example.test/fi/api/openclaw-user-delegation";
+const SLACK_CHANNEL = "C0CHANNEL1";
+const SLACK_THREAD = "agent:cellect-fi-admin:slack:channel:c0channel1:thread:1792189039.487369";
+const slackThread = (sessionKey = SLACK_THREAD) => ({
+  arrive: {
+    channel: "slack",
+    senderId: "U0ADMIN001",
+    sessionKey,
+    isGroup: true,
+    messageId: "1792190933.152459",
+  },
+  start: {
+    channel: "slack",
+    senderId: "U0ADMIN001",
+    sessionKey,
+    channelContext: {
+      sender: { id: "U0ADMIN001" },
+      chat: { id: SLACK_CHANNEL, eventId: "1792190933.152459" },
+    },
+  },
+  exec: { sessionKey, requester: { channel: "slack", senderId: "U0ADMIN001" } },
+});
 type Env = Record<string, string>;
 type Rewrite =
   | { params: { env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
@@ -220,6 +241,76 @@ afterEach(() => {
 });
 
 describe("the admin agent's delegated user token", () => {
+  describe("verified Slack channel requests", () => {
+    it.each([SLACK_THREAD, "agent:cellect-fi-admin:slack:channel:c0channel1"])(
+      "mints only for the dispatched sender and event in %s",
+      async (sessionKey) => {
+        const turn = plugin(),
+          message = slackThread(sessionKey);
+        await turn.arrive(message.arrive);
+        await turn.start(message.start);
+        const result = await turn.exec(message.exec);
+        expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+        expect(result?.params).toMatchObject({ host: "sandbox", elevated: false });
+        expect(mintBody()).toMatchObject({ requesterSenderId: "U0ADMIN001" });
+      },
+    );
+    it.each([
+      ["unverified sender", { senderAuthentication: "asserted" }, {}],
+      ["missing native event", { messageId: undefined }, {}],
+      ["non-Slack event", { messageId: "$forged" }, {}],
+      ["unclassified group", { isGroup: undefined }, {}],
+      ["another channel", {}, { chat: { id: "C0OTHER001", eventId: "1792190933.152459" } }],
+      ["another event", {}, { chat: { id: SLACK_CHANNEL, eventId: "1792190932.152459" } }],
+      ["another sender", {}, { sender: { id: "U0OTHER002" } }],
+      ["bot sender", {}, { sender: { id: "U0ADMIN001", isBot: true } }],
+    ])("does not mint for %s", async (_name, arrival, origin) => {
+      const turn = plugin(),
+        message = slackThread();
+      await turn.arrive({ ...message.arrive, ...arrival });
+      await turn.start({
+        ...message.start,
+        channelContext: { ...message.start.channelContext, ...origin },
+      });
+      expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+      expect(mints()).toEqual([]);
+    });
+    it("does not authorize a synthetic resume from stored sender/event context", async () => {
+      const turn = plugin(),
+        message = slackThread();
+      await turn.start(message.start);
+      expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+      await turn.inject(message.arrive);
+      await turn.settle();
+      await turn.start({ ...message.start, runId: "run-2" });
+      expect(JSON.stringify(await turn.exec({ ...message.exec, runId: "run-2" }))).not.toContain(
+        TOKEN,
+      );
+      expect(mints()).toEqual([]);
+    });
+    it("revokes the running sender proof when another user steers the thread", async () => {
+      const turn = plugin(),
+        message = slackThread();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      await turn.inject({ ...message.arrive, senderId: "U0OTHER002" });
+      expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+      expect(mints()).toEqual([]);
+    });
+    it("never carries a token into a subsequent run without a new dispatched message", async () => {
+      const turn = plugin(),
+        message = slackThread();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      await turn.settle();
+      await turn.start({ ...message.start, runId: "run-2" });
+      expect(JSON.stringify(await turn.exec({ ...message.exec, runId: "run-2" }))).not.toContain(
+        TOKEN,
+      );
+      expect(mints()).toHaveLength(1);
+    });
+  });
   it("gives a verified requester's exec their own token", async () => {
     const turn = plugin();
     await turn.arrive();

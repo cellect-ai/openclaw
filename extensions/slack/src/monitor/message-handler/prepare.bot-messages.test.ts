@@ -55,6 +55,36 @@ describe("Slack bot-message admission", () => {
     expect(prepared?.ctxPayload.CommandBody).toBe("");
     expect(prepared?.ctxPayload.BodyForCommands).toBe("");
     expect(prepared?.ctxPayload.BodyForAgent).toContain("Readiness probe failed");
+    expect(prepared?.ctxPayload.ChannelContext).toMatchObject({
+      sender: { isBot: true },
+      chat: { id: "D123", eventId: "1.000" },
+    });
+  });
+
+  it("carries the actual channel, sender and child event for a verified human thread reply", async () => {
+    const test = fixture();
+    test.ctx.allowFrom = ["*"];
+    const prepared = await prepareSlackMessage({
+      ctx: test.ctx,
+      account: createSlackTestAccount(),
+      message: {
+        type: "message",
+        channel: "C123",
+        channel_type: "channel",
+        user: "U0ADMIN001",
+        text: "status update",
+        ts: "1792190933.152459",
+        thread_ts: "1792189039.487369",
+      },
+      opts: { source: "message", senderAuthentication: "verified" },
+    });
+    expect(prepared).toBeDefined();
+    expect(prepared?.ctxPayload.SenderAuthentication).toBe("verified");
+    expect(prepared?.ctxPayload.ChannelContext).toMatchObject({
+      sender: { id: "U0ADMIN001" },
+      chat: { id: "C123", eventId: "1792190933.152459" },
+    });
+    expect(prepared?.ctxPayload.ChannelContext?.sender?.isBot).not.toBe(true);
   });
 
   it.each(["present", "absent", "lookup failure"] as const)(

@@ -120,6 +120,7 @@ describe("pairing store", () => {
               code: "ABCDEFGH",
               createdAt,
               lastSeenAt: createdAt,
+              status: "pending",
               meta: { accountId: "default" },
             },
           ],
