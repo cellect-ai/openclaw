@@ -766,7 +766,9 @@ describe("handleSlackAction", () => {
       expect.objectContaining({
         channelId: "C_ALLOWED",
         token: "tok",
-        maxBytes: 20 * 1024 * 1024,
+        // Intended fork default: SLACK_DEFAULT_MEDIA_MAX_MB = 200 (a sibling
+        // case above already expects 200 * 1024 * 1024).
+        maxBytes: 200 * 1024 * 1024,
       }),
     );
     expect(result.details).toMatchObject({

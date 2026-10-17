@@ -48,7 +48,15 @@ describe("MCP OAuth worker reads", () => {
         ["invalid-url", "another-invalid-url", false],
       ];
       for (const [registered, redirectUrl, matches] of cases) {
-        const clientInformation = { client_id: "fixture-client", redirect_uris: [registered] };
+        // Issuer custody is enforced by assertCredentialsBound (bind legacy OAuth
+        // credentials carry): the seed must carry the SDK credential stamp so the
+        // redirect-URI matching under test is reached. Discovery mismatch stays
+        // out of scope here — this fixture sets no discoveryState.
+        const clientInformation = {
+          client_id: "fixture-client",
+          issuer: "https://issuer.example.test",
+          redirect_uris: [registered],
+        };
         seedMcpOAuthStoreForTest(identity.storeKey, { clientInformation });
         await withMcpOAuthProviderForTest(
           { identity, config: { redirectUrl } },

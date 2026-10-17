@@ -1017,15 +1017,22 @@ describe("the admin agent's delegated user token", () => {
       // A runtime with no sandbox: the pin would change how its commands run.
       const turn = plugin({}, {});
       expect(turn.registered()).toEqual({
-        // The base branch's hooks, and a second before_agent_reply for the token rule.
+        // The base branch's hooks, a second before_agent_reply for the token
+        // rule, and the fork's own producers: generated-artifact filing
+        // completion (after_tool_call + reply_payload_sending) and fi-user
+        // download-link stripping (message_sending + reply_payload_sending).
         hooks: [
+          "after_tool_call",
           "before_agent_reply",
           "before_agent_reply",
           "before_dispatch",
           "before_tool_call",
           "message_received",
           "message_received",
+          "message_sending",
           "message_sent",
+          "reply_payload_sending",
+          "reply_payload_sending",
         ],
         subscriptions: ["admin-delegation-turn-retirement", "matrix-entitlement-turn-retirement"],
         middleware: 0,

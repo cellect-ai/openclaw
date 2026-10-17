@@ -49,8 +49,18 @@ function gmailTool(): AnyAgentTool {
       registerTool: (tool) => registrations.push(tool as AnyAgentTool | ToolFactory),
     }),
   );
-  const factory = registrations[0] as ToolFactory;
-  const result = factory({
+  // Native 10.4 registers a version-2 descriptor ({ contextVersion: 2, create })
+  // rather than a bare v1 factory (see OpenClawPluginToolFactory in
+  // src/plugins/tool-types.ts); resolve the factory by its real contract.
+  const registration = registrations[0];
+  if (!registration) {
+    throw new Error("expected fi-user tool registration");
+  }
+  const factory =
+    typeof registration === "function"
+      ? registration
+      : ("create" in registration ? registration.create : () => registration);
+  const result = (factory as ToolFactory)({
     agentId: "cellect-fi-user",
     messageChannel: "slack",
     requesterSenderId: "U12345678",
