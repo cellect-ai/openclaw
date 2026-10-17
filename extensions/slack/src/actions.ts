@@ -518,11 +518,32 @@ export async function readSlackMessages(
             : opts.threadId,
       })
     : await client.conversations.history(query);
-  // Preserve the parent message so a bounded thread read always contains
-  // the instruction that started the conversation. Exact reply lookups
-  // remain exact and do not add unrelated context.
+  // Preserve the parent message so a thread read without explicit bounds always
+  // contains the instruction that started the conversation. Exact reply lookups
+  // remain exact (inclusive) and do not add unrelated context.
+  // Enforce an explicit after/before window client-side with exclusive
+  // endpoints, mirroring the native contract (only exact message lookup is
+  // inclusive): the server normally applies oldest/latest, but an echoed root
+  // on or outside the requested bounds must not survive a bounded read.
+  const oldestBound =
+    !exactMessageId && exactBounds.oldest !== undefined ? Number(exactBounds.oldest) : undefined;
+  const latestBound =
+    !exactMessageId && exactBounds.latest !== undefined ? Number(exactBounds.latest) : undefined;
   const messages = ((result.messages ?? []) as SlackMessageSummary[])
     .filter((message) => (exactMessageId ? message.ts === exactMessageId : true))
+    .filter((message) => {
+      const ts = Number(message.ts);
+      if (!Number.isFinite(ts)) {
+        return true;
+      }
+      if (oldestBound !== undefined && Number.isFinite(oldestBound) && ts <= oldestBound) {
+        return false;
+      }
+      if (latestBound !== undefined && Number.isFinite(latestBound) && ts >= latestBound) {
+        return false;
+      }
+      return true;
+    })
     .map(renderSlackReadMessageText);
   return {
     messages,

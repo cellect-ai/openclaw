@@ -88,6 +88,22 @@ function buildOAuthClientMetadata(
   };
 }
 
+function hasRegisteredOAuthRedirect(redirectUris: string[], redirectUrl: string): boolean {
+  if (redirectUris.includes(redirectUrl)) {
+    return true;
+  }
+  const loopback = URL.parse(redirectUrl);
+  if (
+    !loopback ||
+    loopback.protocol !== "http:" ||
+    !["127.0.0.1", "[::1]", "localhost"].includes(loopback.hostname)
+  ) {
+    return false;
+  }
+  // RFC 8252 exempts the port, not other callback bytes changed by URL serialization.
+  return redirectUris.includes(redirectUrl.replace(/^(http:\/\/[^/?#]+):\d+(?=[/?#]|$)/iu, "$1"));
+}
+
 /** Bind OAuth network work to the lease that fences its persisted side effects. */
 export function withMcpOAuthLeaseSignal(
   fetchFn: FetchLike | undefined,
@@ -249,8 +265,23 @@ export async function createMcpOAuthClientProvider(params: {
         // Stop before the SDK can register a replacement client and overwrite the stored pair.
         assertAuthorizationRedirectAllowed();
       }
-      return store.clientInformation && hasCredentialIssuer(store.clientInformation)
-        ? store.clientInformation
+      const clientInformation = store.clientInformation;
+      // Re-register an unused client when the callback changes. Saved tokens remain
+      // bound to their original client; metadata-document clients have no redirect list.
+      if (
+        !store.tokens &&
+        clientInformation &&
+        "redirect_uris" in clientInformation &&
+        Array.isArray(clientInformation.redirect_uris) &&
+        !hasRegisteredOAuthRedirect(
+          clientInformation.redirect_uris,
+          resolveOAuthRedirectUrl(config, store),
+        )
+      ) {
+        return undefined;
+      }
+      return clientInformation && hasCredentialIssuer(clientInformation)
+        ? clientInformation
         : undefined;
     },
     async saveClientInformation(clientInformation) {

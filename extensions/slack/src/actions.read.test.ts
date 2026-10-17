@@ -141,15 +141,17 @@ describe("Slack read actions", () => {
     ];
     const attachments = [{ fallback: "[no preview available]", blocks }];
     client.conversations.history.mockResolvedValueOnce({
-      messages: [{ ts: "1", text: "  Please check these.  ", attachments }],
+      messages: [{ ts: "1712309696.5", text: "  Please check these.  ", attachments }],
       has_more: false,
     });
     createSlackLookupClientMock.mockReturnValueOnce(client);
     const result = await readSlackMessages("C1", {
       token: "test-auth-token",
       cfg: { channels: { slack: { enabled: true, botToken: "test-auth-token" } } },
-      before: "2024-04-05T12:34:56+03:00",
-      after: "2024-04-05T12:34:56.789+03:00",
+      // Coherent window: before names the later instant (latest), after the
+      // earlier one (oldest); the mocked message sits strictly inside.
+      before: "2024-04-05T12:34:56.789+03:00",
+      after: "2024-04-05T12:34:56+03:00",
     });
     expect(createSlackLookupClientMock).toHaveBeenCalledWith(
       "test-auth-token",
@@ -159,8 +161,8 @@ describe("Slack read actions", () => {
     expect(client.conversations.history).toHaveBeenCalledExactlyOnceWith({
       channel: "C1",
       limit: undefined,
-      latest: "1712309696",
-      oldest: "1712309696.789",
+      latest: "1712309696.789",
+      oldest: "1712309696",
     });
     expect(result.messages[0]?.text).toBe("  Please check these.  \nID\tStatus\n12345\tenabled");
     expect(result.messages[0]?.attachments).toBe(attachments);
@@ -194,6 +196,26 @@ describe("Slack read actions", () => {
       oldest: "1.000001",
     });
 
+  });
+
+  it("drops messages exactly on explicit reply bounds (exclusive endpoints)", async () => {
+    const client = createClient();
+    client.conversations.replies.mockResolvedValueOnce({
+      messages: [
+        { ts: "1.000001", text: "on-after" },
+        { ts: "1.001", text: "reply" },
+        { ts: "2.000001", text: "on-before" },
+      ],
+      has_more: false,
+    });
+    await expect(
+      readSlackMessages("C1", {
+        client,
+        threadId: "1.000",
+        before: "2.000001",
+        after: "1.000001",
+      }),
+    ).resolves.toEqual({ messages: [{ ts: "1.001", text: "reply" }], hasMore: false });
   });
 
   it("renders attachment tables in thread reads", async () => {

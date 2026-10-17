@@ -282,6 +282,7 @@ async function consult(question: string, callId: string) {
 
 async function startHeldConsult() {
   const ack = await consult("Keep this task running until released.", "held-task");
+  console.log("DIAG consult ack:", JSON.stringify(ack));
   await Promise.race([
     modelStarted.promise,
     getSessionWorkAdmissionRelease({ scope: storePath, identities: [canonicalKey, sessionId] }),

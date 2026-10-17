@@ -20,11 +20,22 @@ describe("Matrix account identity projection", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     for (const accountId of ["ops", "alerts"]) {
       vi.stubEnv(getMatrixScopedEnvVarNames(accountId).accessToken, `${accountId}-token`);
-      await saveMatrixCredentials(
-        { homeserver, userId: `@${accountId}:example.org`, accessToken: `${accountId}-token` },
-        process.env,
-        accountId,
-      );
+      try {
+        await saveMatrixCredentials(
+          { homeserver, userId: `@${accountId}:example.org`, accessToken: `${accountId}-token` },
+          process.env,
+          accountId,
+        );
+      } catch (error) {
+        const chain: string[] = [];
+        let current: unknown = error;
+        while (current instanceof Error && chain.length < 6) {
+          chain.push(`${current.name}: ${current.message}`);
+          current = (current as { cause?: unknown }).cause;
+        }
+        console.log("DIAG matrix save cause chain:", JSON.stringify(chain, null, 2));
+        throw error;
+      }
     }
   });
 

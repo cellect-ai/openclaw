@@ -581,6 +581,7 @@ export async function prepareSlackMessage(params: {
 }): Promise<PreparedSlackMessage | null> {
   const { ctx, account, message, opts } = params;
   const drop = (reason: SlackInboundDropReason, parentUserId?: string): null => {
+    console.log("DIAG prepare drop:", reason, message.ts, message.thread_ts ?? "-");
     // Record this preparation attempt; a later message/app_mention twin can still dispatch.
     // Logical-message deduplication remains owned by the handler's dispatch claim.
     ctx.logger.info(

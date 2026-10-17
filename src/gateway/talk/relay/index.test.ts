@@ -3438,7 +3438,10 @@ describe("talk realtime gateway relay", () => {
     });
     const broadcastToConnIds = vi.fn();
     const session = createTalkRealtimeRelaySession({
-      context: { broadcastToConnIds } as never,
+      context: {
+        broadcastToConnIds,
+        logGateway: { warn: (...args: unknown[]) => console.log("DIAG relay warn:", ...args) },
+      } as never,
       provider,
     });
     if (!bridgeRequest) {
