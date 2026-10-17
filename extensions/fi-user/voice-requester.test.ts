@@ -12,6 +12,8 @@ import fiUserPlugin from "./index.js";
 
 type ToolFactory = (context: OpenClawPluginToolContext) => AnyAgentTool | AnyAgentTool[] | null;
 
+type ToolRegistration = AnyAgentTool | ToolFactory | { contextVersion: 2; create: ToolFactory };
+
 const runtimeConfig = {
   plugins: {
     entries: {
@@ -35,7 +37,7 @@ const calls: Array<{ url: string; init: RequestInit }> = [];
  * with the speaker Fi attested for the Talk binding as the run's sender.
  */
 function voiceTools(requesterSenderId: string | undefined): AnyAgentTool[] {
-  const registrations: Array<AnyAgentTool | ToolFactory> = [];
+  const registrations: ToolRegistration[] = [];
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -44,7 +46,7 @@ function voiceTools(requesterSenderId: string | undefined): AnyAgentTool[] {
       runtime: {
         channel: { runtimeContexts: { register: vi.fn() } },
       } as unknown as OpenClawPluginApi["runtime"],
-      registerTool: (tool) => registrations.push(tool as AnyAgentTool | ToolFactory),
+      registerTool: (tool) => registrations.push(tool as ToolRegistration),
     }),
   );
   // Native 10.4 registers a version-2 descriptor ({ contextVersion: 2, create })
