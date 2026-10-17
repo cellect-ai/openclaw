@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { PluginCapabilityCatalogContext } from "openclaw/plugin-sdk/plugin-entry";
 import type {
   RealtimeVoiceAudioFormat,
@@ -14,9 +15,11 @@ import {
   toOpenAICompatibleRealtimeAudioFormat,
 } from "openclaw/plugin-sdk/realtime-voice-provider";
 import {
+  coerceSecretRef,
   normalizeResolvedSecretInputString,
   normalizeSecretInputString,
 } from "openclaw/plugin-sdk/secret-input";
+import { resolveReadOnlyEnvSecretRef } from "openclaw/plugin-sdk/secret-ref-readonly";
 import {
   asFiniteNumber,
   asFiniteNumberInRange,
@@ -153,13 +156,61 @@ export type RealtimeEvent = {
 
 type RealtimeGaSessionPolicy = ReturnType<typeof buildOpenAIRealtimeGaSessionPolicy>;
 
-export function normalizeProviderConfig(config: RealtimeVoiceProviderConfig) {
+/**
+ * Known realtime env name hydrated into voice-capable gateway runtimes.
+ * This sync catalog path may resolve ONLY this exact env id, and only when
+ * the caller's gateway config policy allows it (explicit provider
+ * allowlist honored, otherwise the builtin-default predicate). Anything
+ * else needs the snapshot machinery, not here.
+ */
+const OPENAI_REALTIME_ENV_VAR = "OPENAI_REALTIME_API_KEY";
+
+/**
+ * Resolve the configured OpenAI Realtime API key without weakening custody.
+ * The native read-only resolver runs first: explicit literals keep
+ * precedence, absence stays absence (downstream auth refuses), and the
+ * exact intended realtime env ref resolves only when gateway config policy
+ * allows. Blocked refs (named providers, other env names, file/exec refs,
+ * allowlist denials, unhydrated values) fail closed via the strict snapshot
+ * read on the coerced structured form — inline template strings
+ * ($NAME/${NAME}) would otherwise be minted as literals by the
+ * literal-first strict read (config-loader substitution normally runs
+ * before it); structured, they throw natively. SecretRefs stay in storage;
+ * nothing here writes back.
+ */
+function normalizeOpenAIRealtimeConfiguredApiKey(
+  value: unknown,
+  path: string,
+  cfg?: OpenClawConfig,
+): string | undefined {
+  // Pre-coerce so string-form refs ($NAME/${NAME}) enter the native helper
+  // as structured refs: the inspect read is literal-first for raw strings
+  // and would otherwise mint template text as bearer values.
+  const resolution = resolveReadOnlyEnvSecretRef({
+    value: coerceSecretRef(value) ?? value,
+    path,
+    cfg,
+    expectedEnvId: OPENAI_REALTIME_ENV_VAR,
+    normalizeValue: normalizeSecretInputString,
+  });
+  if (resolution.status === "available") {
+    return resolution.value;
+  }
+  if (resolution.status === "missing") {
+    return undefined;
+  }
+  const ref = coerceSecretRef(value);
+  return normalizeResolvedSecretInputString({ value: ref ?? value, path });
+}
+
+export function normalizeProviderConfig(config: RealtimeVoiceProviderConfig, cfg?: OpenClawConfig) {
   const raw = resolveOpenAIProviderConfigRecord(config);
   return {
-    apiKey: normalizeResolvedSecretInputString({
-      value: raw?.apiKey,
-      path: "plugins.entries.voice-call.config.realtime.providers.openai.apiKey",
-    }),
+    apiKey: normalizeOpenAIRealtimeConfiguredApiKey(
+      raw?.apiKey,
+      "plugins.entries.voice-call.config.realtime.providers.openai.apiKey",
+      cfg,
+    ),
     model: normalizeOptionalString(raw?.model),
     // Session creation selects the effective model; an earlier family fallback loses overrides.
     voice: normalizeOptionalLowercaseString(raw?.speakerVoice ?? raw?.voice),
@@ -273,11 +324,21 @@ export function hasOpenAIRealtimeConfiguredApiKeyInput(
   return Boolean(normalizeSecretInputString(configuredApiKey));
 }
 
-export function hasOpenAIRealtimeApiKeyInput(configuredApiKey: string | undefined): boolean {
-  return Boolean(
-    normalizeSecretInputString(configuredApiKey) ??
-    normalizeSecretInputString(process.env.OPENAI_API_KEY),
+/**
+ * Role-scoped environment fallback for the OpenAI Realtime API key.
+ * OPENAI_API_KEY is the long-standing name; OPENAI_REALTIME_API_KEY is the
+ * dedicated realtime name hydrated into voice-capable gateway runtimes.
+ * Precedence preserves existing behavior (OPENAI_API_KEY first).
+ */
+export function resolveOpenAIRealtimeEnvApiKey(): string | undefined {
+  return (
+    normalizeSecretInputString(process.env.OPENAI_API_KEY) ??
+    normalizeSecretInputString(process.env.OPENAI_REALTIME_API_KEY)
   );
+}
+
+export function hasOpenAIRealtimeApiKeyInput(configuredApiKey: string | undefined): boolean {
+  return Boolean(normalizeSecretInputString(configuredApiKey) ?? resolveOpenAIRealtimeEnvApiKey());
 }
 
 export function normalizeOpenAIRealtimeTools(
@@ -417,7 +478,7 @@ export async function resolveOpenAIRealtimePlatformAuth(
     profileTypes: ["api_key"],
     includeExternalCliAuth: false,
   });
-  return profileApiKey || resolveOpenAIRealtimeSecretInput(process.env.OPENAI_API_KEY);
+  return profileApiKey || resolveOpenAIRealtimeSecretInput(resolveOpenAIRealtimeEnvApiKey());
 }
 
 export async function requireOpenAIRealtimePlatformAuth(

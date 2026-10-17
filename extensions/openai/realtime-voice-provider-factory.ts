@@ -60,7 +60,7 @@ function resolveOpenAIRealtimeVoiceConfig(
   }: RealtimeVoiceProviderResolveConfigContext,
   context: OpenAIRealtimeHost,
 ): OpenAIRealtimeVoiceProviderConfig {
-  const config = normalizeProviderConfig(rawConfig);
+  const config = normalizeProviderConfig(rawConfig, cfg);
   if (config.model || (surface !== "browser-session" && surface !== "gateway-relay")) {
     return config;
   }
@@ -142,7 +142,7 @@ async function createOpenAIRealtimeBrowserSession(
   context: OpenAIRealtimeHost,
 ): Promise<RealtimeVoiceBrowserSession> {
   const { resolveAgentDir } = context;
-  const config = normalizeProviderConfig(req.providerConfig);
+  const config = normalizeProviderConfig(req.providerConfig, req.cfg);
   const authParams = {
     configuredApiKey: config.apiKey,
     cfg: req.cfg,
@@ -344,7 +344,7 @@ export function buildOpenAIRealtimeVoiceProvider(
     capabilities: OPENAI_REALTIME_CAPABILITIES,
     resolveConfig: (params) => resolveOpenAIRealtimeVoiceConfig(params, context),
     isConfigured: ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.azureEndpoint || config.azureDeployment) {
         return hasOpenAIRealtimeApiKeyInput(config.apiKey);
       }
@@ -358,7 +358,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       );
     },
     createBridge: (req) => {
-      const config = normalizeProviderConfig(req.providerConfig);
+      const config = normalizeProviderConfig(req.providerConfig, req.cfg);
       const model = config.model;
       if (model && isOpenAIGptLiveModel(model)) {
         if (config.azureEndpoint || config.azureDeployment) {
@@ -423,7 +423,7 @@ export function buildOpenAIRealtimeVoiceProvider(
   };
   const internalApi: InternalRealtimeVoiceProviderApi = {
     isBrowserSessionConfigured: ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.azureEndpoint || config.azureDeployment) {
         return false;
       }
@@ -453,7 +453,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       );
     },
     resolveBrowserSessionCapabilities: ({ cfg, providerConfig, agentId, model, clientControl }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       const effectiveModel = model ?? config.model ?? "";
       if (isOpenAIGptLiveModel(effectiveModel)) {
         // Older hosts do not prepare this control claim, even when they own native delegations.
@@ -483,7 +483,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       };
     },
     isGatewayRelayConfigured: ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (!isOpenAIGptLiveModel(config.model)) {
         return undefined;
       }
@@ -499,8 +499,8 @@ export function buildOpenAIRealtimeVoiceProvider(
           hasOpenAIChatGptSubscriptionAuthInput({ cfg, agentId }, context))
       );
     },
-    resolveGatewayRelayCapabilities: ({ providerConfig, model }) => {
-      const config = normalizeProviderConfig(providerConfig);
+    resolveGatewayRelayCapabilities: ({ cfg, providerConfig, model }) => {
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (isOpenAIGptLiveModel(model ?? config.model)) {
         return {
           ...OPENAI_REALTIME_CAPABILITIES,
@@ -511,8 +511,8 @@ export function buildOpenAIRealtimeVoiceProvider(
       return OPENAI_REALTIME_CAPABILITIES;
     },
     projectPublicProjection: projectRealtimeVoicePublicProjection,
-    validateGatewayRelayLaunch: ({ providerConfig, model, autoRespondToAudio }) => {
-      const config = normalizeProviderConfig(providerConfig);
+    validateGatewayRelayLaunch: ({ cfg, providerConfig, model, autoRespondToAudio }) => {
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (autoRespondToAudio === false && isOpenAIGptLiveModel(model ?? config.model)) {
         return "GPT-Live gateway-relay sessions cannot use forced agent consult routing; GPT-Live delegates to the agent natively";
       }
