@@ -31,6 +31,7 @@ export function createSlackSystemEventTestHarness(overrides?: SlackSystemEventTe
   };
   const ctx = {
     app,
+    accountId: "system-event-test",
     runtime: { error: () => {} },
     botUserId: "U_BOT",
     botId: "B_BOT",
