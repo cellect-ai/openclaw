@@ -258,6 +258,41 @@ describe("conversation lifecycle, contract v2", () => {
     consume("aborted");
   });
 
+  it.each(["queued", "running", "waiting"])(
+    "attributes revoked access after %s admission, including retained delivery",
+    async (phase) => {
+      const transport = install();
+      admit("revoked");
+      if (phase !== "queued") emit("revoked", "start");
+      if (phase === "waiting") approval("revoked", plugin("revoked-approval"));
+      failFacts = true;
+      emit("revoked", "end", { status: "cancelled", aborted: true, stopReason: "auth-revoked" });
+      await transport.flush();
+      expect(of("revoked")).toEqual([]);
+      failFacts = false;
+      await transport.flush();
+      expect(of("revoked").at(-1)).toMatchObject({
+        state: "cancelled",
+        stoppedBy: { kind: "auth_revoked" },
+      });
+      expect(consume("revoked")).toMatchObject({
+        state: "cancelled",
+        stoppedBy: { kind: "auth_revoked" },
+      });
+      // Disabling optional signals still strips a retained terminal's attribution.
+      flags.signals = false;
+      admit("legacy-revoked");
+      emit("legacy-revoked", "end", {
+        status: "cancelled",
+        aborted: true,
+        stopReason: "auth-revoked",
+      });
+      await transport.flush();
+      expect(of("legacy-revoked").at(-1)!.state).toBe("cancelled");
+      expect(of("legacy-revoked").at(-1)!.stoppedBy).toBeUndefined();
+    },
+  );
+
   it("keeps the failure kind when the terminal fact is restated with its result", async () => {
     const transport = install();
     admit("restated");
