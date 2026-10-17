@@ -37,11 +37,6 @@ export const SLACK_LIVENESS_HEARTBEAT_MS = 60_000;
  */
 const SLACK_LIVENESS_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const SLACK_LIVENESS_MAX_ENTRIES = 1_000;
-/**
- * Below this the socket only blipped; Slack had nowhere to drop a message, so a
- * sweep would re-read history for nothing.
- */
-const SLACK_RECOVERY_MIN_GAP_MS = 2 * SLACK_LIVENESS_HEARTBEAT_MS;
 /** Default ceiling on how far back a reconnect will look. */
 export const SLACK_RECOVERY_DEFAULT_WITHIN_MINUTES = 12 * 60;
 /** Bounds on one sweep, so a long outage cannot turn into an unbounded API run. */
@@ -430,9 +425,8 @@ export type SlackMissedMentionRecoveryResult = {
  * Replays the mentions and direct messages that arrived while this account's
  * socket was down.
  *
- * Returns without reading anything when the socket was only briefly away, when
- * there is no previous liveness mark (a first run has no outage to recover), or
- * when recovery is switched off.
+ * Every positive outage can lose a message. Skip only an unavailable or invalid
+ * time window (including a first run), or explicitly disabled recovery.
  */
 export async function recoverSlackMissedMentions(params: {
   ctx: SlackMonitorContext;
@@ -455,7 +449,7 @@ export async function recoverSlackMissedMentions(params: {
     return empty;
   }
   const gapMs = now - lastAliveAt;
-  if (gapMs < SLACK_RECOVERY_MIN_GAP_MS) {
+  if (!Number.isFinite(gapMs) || gapMs <= 0) {
     return empty;
   }
   // A long outage still only replays the tail: anything older is stale enough

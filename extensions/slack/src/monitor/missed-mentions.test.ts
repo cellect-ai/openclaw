@@ -160,7 +160,28 @@ describe("recoverSlackMissedMentions", () => {
     expect(dispatched[0]?.ts).toBe(slackTs(posted));
   });
 
-  it("does nothing when the socket only blipped", async () => {
+  it.each([5_000, 119_999, 120_000])(
+    "recovers a room mention and a DM across a %dms outage",
+    async (gapMs) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const posted = NOW - Math.floor(gapMs / 2);
+        const { run, dispatched } = createHarness({
+          directConversations: [{ id: "D1" }],
+          history: { C1: [lorenzoMention(posted)], D1: [gcDirectMessage(posted)] },
+        });
+        const pending = run(NOW - gapMs);
+        await vi.runAllTimersAsync();
+        expect(await pending).toMatchObject({ mentionsReplayed: 1, directMessagesReplayed: 1 });
+        expect(dispatched.map((message) => message.channel)).toEqual(["D1", "C1"]);
+        expect(dispatched.map((message) => message.ts)).toEqual([slackTs(posted), slackTs(posted)]);
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
+  it("does not replay messages older than a short outage", async () => {
     const { run, dispatched, conversationsList } = createHarness({
       history: { C1: [lorenzoMention(minutesAgo(1))] },
     });
@@ -168,14 +189,24 @@ describe("recoverSlackMissedMentions", () => {
     const result = await run(NOW - 5_000);
 
     expect(result).toEqual({
-      channelsScanned: 0,
+      channelsScanned: 1,
       mentionsReplayed: 0,
       directConversationsScanned: 0,
       directMessagesReplayed: 0,
     });
-    expect(conversationsList).not.toHaveBeenCalled();
+    expect(conversationsList).toHaveBeenCalledTimes(2);
     expect(dispatched).toHaveLength(0);
   });
+
+  it.each([NOW, NOW + 5_000, Number.NaN, Number.POSITIVE_INFINITY, Number.NEGATIVE_INFINITY])(
+    "does not read history for an invalid or nonpositive liveness gap: %s",
+    async (lastAliveAt) => {
+      const { run, conversationsList, dispatched } = createHarness();
+      await run(lastAliveAt);
+      expect(conversationsList).not.toHaveBeenCalled();
+      expect(dispatched).toEqual([]);
+    },
+  );
 
   it("does nothing on a first run, which has no outage to recover", async () => {
     const { run, dispatched, conversationsList } = createHarness({

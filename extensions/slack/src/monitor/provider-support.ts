@@ -415,6 +415,7 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
   app: { start: () => unknown };
   abortSignal?: AbortSignal;
   onStarted?: () => void | Promise<void>;
+  onDisconnected?: () => void;
 }) {
   const waiterAbortController = new AbortController();
   const relayAbort = () => waiterAbortController.abort();
@@ -423,6 +424,7 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
   const disconnected = waitForSlackSocketDisconnect(params.app, waiterAbortController.signal).then(
     (value) => {
       disconnect = value;
+      params.onDisconnected?.();
       return value;
     },
   );

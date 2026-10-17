@@ -757,7 +757,11 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
       // has run, which happens inside onStarted.
       const livenessKey = () =>
         buildSlackLivenessKey({ accountId: account.accountId, teamId: ctx.teamId });
+      let activeSocket: { live: boolean; stopped: boolean } | undefined;
       const markAlive = async () => {
+        if (!activeSocket?.live || opts.abortSignal?.aborted) {
+          return;
+        }
         try {
           await livenessStore?.register(livenessKey(), Date.now());
         } catch (error) {
@@ -769,21 +773,41 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
         slackLivenessTimer.unref?.();
       }
       while (!opts.abortSignal?.aborted) {
+        const attempt = { live: false, stopped: false };
+        activeSocket = attempt;
         try {
           const disconnect = await startSlackSocketAndWaitForDisconnect({
             app,
             abortSignal: opts.abortSignal,
+            onDisconnected: () => {
+              attempt.live = false;
+              attempt.stopped = true;
+            },
             onStarted: async () => {
+              if (attempt.stopped || opts.abortSignal?.aborted) {
+                return;
+              }
               reconnectAttempts = 0;
               socketConnectedAt = Date.now();
               await recoverSlackIdentity();
+              if (attempt.stopped || opts.abortSignal?.aborted) {
+                return;
+              }
               if (livenessStore) {
                 // Read the previous mark before overwriting it, or the gap we
                 // are about to measure is always zero.
                 const lastAliveAt = await livenessStore
                   .lookup(livenessKey())
                   .catch(() => undefined);
+                // Read the old mark before admitting connected heartbeats.
+                if (attempt.stopped || opts.abortSignal?.aborted) {
+                  return;
+                }
+                attempt.live = true;
                 await markAlive();
+                if (attempt.stopped || opts.abortSignal?.aborted) {
+                  return;
+                }
                 // Recovery re-reads Slack history, so it must never hold up the
                 // connection it just came back on.
                 void recoverSlackMissedMentions({
@@ -794,7 +818,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
                     await handleSlackMessage(message, { source: "message" });
                   },
                   ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-                }).catch((error) => {
+                }).catch((error: unknown) => {
                   runtime.error?.(
                     `slack missed-mention recovery failed: ${formatSlackError(error)}`,
                   );
@@ -811,6 +835,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
               }
             },
           });
+          attempt.live = false;
+          attempt.stopped = true;
           if (!disconnect) {
             break;
           }
@@ -849,6 +875,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts = {}) {
             break;
           }
         } catch (err) {
+          attempt.live = false;
+          attempt.stopped = true;
           if (isNonRecoverableSlackAuthError(err)) {
             publishSlackBlockedStatus(opts.setStatus, err);
             runtime.error?.(
