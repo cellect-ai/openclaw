@@ -43,6 +43,7 @@ const removeInternalSessionEffectsSession = vi.hoisted(() => vi.fn(async () => {
 const killRuntime = vi.hoisted(() => ({
   abortEmbeddedAgentRun: vi.fn(() => false),
   isEmbeddedAgentRunActive: vi.fn(() => false),
+  resolveActiveEmbeddedRunOwnerByRunId: vi.fn(() => undefined),
   clearSessionLifecycleQueues: vi.fn(() => ({ followupCleared: 0, laneCleared: 0, keys: [] })),
 }));
 const killSessionEntry = vi.hoisted(() => ({

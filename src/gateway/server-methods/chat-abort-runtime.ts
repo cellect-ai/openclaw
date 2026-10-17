@@ -26,12 +26,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isAgentEventLifecycleGenerationCurrent } from "../../infra/agent-events.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
-import {
-  abortChatRunById,
-  isChatAbortControllerEntryAbortable,
-  type ChatAbortControllerEntry,
-  type ChatAbortOps,
-} from "../chat-abort.js";
+import { abortChatRunById, isChatAbortControllerEntryAbortable } from "../chat-abort.js";
 import { abortQueuedChatTurnById } from "../chat-queued-turns.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { errorShapeFromError } from "../error-shape.js";
@@ -62,7 +57,6 @@ import {
   type AbortedPartialSnapshot,
 } from "./chat-aborted-partial.js";
 import { persistAbortedPartials } from "./chat-transcript-persistence.js";
-import type { GatewayRequestContext } from "./types.js";
 
 export async function abortControlledSubagents(params: {
   cfg: OpenClawConfig;
