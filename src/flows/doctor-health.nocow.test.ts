@@ -1,5 +1,5 @@
 import "./doctor-health.test-support.js";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDoctorNoCowToolFixture } from "../commands/doctor-sqlite-nocow.test-support.js";
