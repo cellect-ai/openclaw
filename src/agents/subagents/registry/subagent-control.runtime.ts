@@ -5,4 +5,5 @@ export { clearSessionQueues } from "../../../auto-reply/reply/queue.js";
 export {
   abortEmbeddedAgentRun,
   isEmbeddedAgentRunActive,
+  resolveActiveEmbeddedRunOwnerByRunId,
 } from "../../embedded-agent-runner/runs.js";

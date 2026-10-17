@@ -20,6 +20,7 @@ import {
 import type { SubsystemLogger } from "../../logging/subsystem.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
 import { registerChatAbortController } from "../chat-abort.js";
+import { registerQueuedChatTurn } from "../chat-queued-turns.js";
 import {
   createSessionEventSubscriberRegistry,
   createSessionMessageSubscriberRegistry,
@@ -29,6 +30,7 @@ import { handleGatewayRequest } from "../server-methods.js";
 import { startGatewayEventSubscriptions } from "../server-runtime-subscriptions.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
+import { createWorkerInferenceCancellationService } from "../worker-environments/inference-control.test-helpers.js";
 import { sessionAbortHandlers } from "./sessions-abort.js";
 
 const native = vi.hoisted(() => ({ route: vi.fn(), member: vi.fn() }));
@@ -79,7 +81,25 @@ const log: SubsystemLogger = {
   child: () => log,
 };
 
-it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
+it.each([
+  "accepted",
+  "not-member",
+  "issuer-revoked",
+  "no-active",
+  "foreign-queued-default",
+  "foreign-queued-false",
+  "same-device-queued",
+  "aliased-queued-controller",
+  "pending-only",
+  "explicit-pending",
+  "preregistered-only",
+  "clear-queued-rejected",
+  "preexecution",
+  "provider-only",
+  "explicit-provider-only",
+  "host-worker",
+  "other-provider",
+] as const)(
   "registered sessions.abort keeps its %s attribution with the actual cancellation owner",
   async (mode) => {
     resetAgentEventsForTest();
@@ -104,8 +124,80 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
     const target = { agentId: binding.agentId, sessionKey: binding.sessionKey };
     await replaceSessionEntry(target, { sessionId, updatedAt: 1_000 });
     const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
+    const providerCancel = vi.fn(() => [runId]);
+    if (
+      ["provider-only", "explicit-provider-only", "host-worker", "other-provider"].includes(mode)
+    ) {
+      Object.assign(context, {
+        workerEnvironmentService: createWorkerInferenceCancellationService(
+          sessionId,
+          [mode === "other-provider" ? "unrepresented-provider" : runId],
+          providerCancel,
+          {
+            agentId: binding.agentId,
+            sessionId,
+            sessionKey: binding.sessionKey,
+            storePath: fixture.stateDir,
+          },
+        ),
+      });
+    }
     const client = sharingPolicyClient({ deviceId, scopes: ["operator.admin", "operator.write"] });
     client.pairedClientId = "openclaw-control-ui";
+    const hasForeignQueuedSource = [
+      "foreign-queued-default",
+      "foreign-queued-false",
+      "same-device-queued",
+      "aliased-queued-controller",
+      "pending-only",
+      "explicit-pending",
+      "clear-queued-rejected",
+    ].includes(mode);
+    const foreignController = new AbortController();
+    const foreignRunId = "another-requesters-queued-source";
+    if (hasForeignQueuedSource) {
+      // The maintained legacy queue proves a distinct gateway admission owner,
+      // not a Matrix person. Do not invent participant identity on its entry.
+      expect(
+        registerQueuedChatTurn({
+          chatQueuedTurns: context.chatQueuedTurns,
+          runId: foreignRunId,
+          controller: foreignController,
+          sessionId,
+          sessionKey: binding.sessionKey,
+          agentId: binding.agentId,
+          ownerConnId:
+            mode === "same-device-queued" ? client.connId : "another-requesters-connection",
+          ownerDeviceId: mode === "same-device-queued" ? deviceId : "b".repeat(64),
+        }),
+      ).toBe(true);
+    }
+    const preRegistered = {
+      ts: 1_000,
+      ok: true,
+      payload: {
+        status: "accepted",
+        runId: foreignRunId,
+        sessionKey: binding.sessionKey,
+        sessionId,
+        agentId: binding.agentId,
+        ownerConnId: client.connId,
+      },
+    };
+    if (mode === "preregistered-only") {
+      context.dedupe.set(`agent:${foreignRunId}`, preRegistered);
+    }
+    if (mode === "aliased-queued-controller") {
+      context.chatAbortControllers.set(foreignRunId, {
+        controller: foreignController,
+        sessionKey: binding.sessionKey,
+        sessionId,
+        agentId: binding.agentId,
+        startedAtMs: 1_000,
+        expiresAtMs: Date.now() + 60_000,
+      });
+    }
+    const foreignQueuedEntry = context.chatQueuedTurns.get(foreignRunId);
     const lifetime = new AbortController();
     const subscriptions = startGatewayEventSubscriptions({
       scheduler: createTestGatewayScheduler(),
@@ -135,18 +227,23 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
       signals: () => true,
       onError: vi.fn(),
     });
-    const registration =
-      mode === "no-active"
-        ? undefined
-        : registerChatAbortController({
-            chatAbortControllers: context.chatAbortControllers,
-            runId,
-            sessionId,
-            sessionKey: binding.sessionKey,
-            agentId: binding.agentId,
-            kind: "agent",
-            timeoutMs: 60_000,
-          });
+    const registration = [
+      "no-active",
+      "pending-only",
+      "preregistered-only",
+      "provider-only",
+      "explicit-provider-only",
+    ].includes(mode)
+      ? undefined
+      : registerChatAbortController({
+          chatAbortControllers: context.chatAbortControllers,
+          runId,
+          sessionId,
+          sessionKey: binding.sessionKey,
+          agentId: binding.agentId,
+          kind: "agent",
+          timeoutMs: 60_000,
+        });
     const signals: unknown[] = [];
     const terminals: unknown[] = [];
     const stopEvents = onAgentEvent((event) => {
@@ -162,29 +259,40 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
           { sessionId, sessionKey: binding.sessionKey, agentId: binding.agentId },
           { trackOwner: true },
         );
-        registration.markExecutionStarted();
+        if (mode !== "preexecution") {
+          registration.markExecutionStarted();
+        }
         registration.controller.signal.addEventListener("abort", () => {
           signals.push(
             resolveAgentRunAbortLifecycleFields(registration.controller.signal).stopActor,
           );
         });
-        await persistGatewaySessionLifecycleEvent({
-          ...target,
-          event: {
-            runId,
-            sessionId,
-            lifecycleGeneration: getAgentEventLifecycleGeneration(),
-            ts: 1_000,
-            data: { phase: "start", startedAt: 1_000 },
-          },
-        });
+        if (mode !== "preexecution") {
+          await persistGatewaySessionLifecycleEvent({
+            ...target,
+            event: {
+              runId,
+              sessionId,
+              lifecycleGeneration: getAgentEventLifecycleGeneration(),
+              ts: 1_000,
+              data: { phase: "start", startedAt: 1_000 },
+            },
+          });
+        }
       }
       const dispatch = handleGatewayRequest({
         req: {
           type: "req",
           id: "registered-stop",
           method: "sessions.abort",
-          params: { key: binding.sessionKey, stopActor: assertion },
+          params: {
+            key: binding.sessionKey,
+            stopActor: assertion,
+            ...(mode === "foreign-queued-false" ? { clearQueued: false } : {}),
+            ...(mode === "clear-queued-rejected" ? { clearQueued: true } : {}),
+            ...(mode === "explicit-pending" ? { runId: foreignRunId } : {}),
+            ...(mode === "explicit-provider-only" ? { runId } : {}),
+          },
         },
         client,
         context,
@@ -226,10 +334,20 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
       } else {
         expect(respond).toHaveBeenCalledOnce();
       }
-      if (mode === "accepted") {
+      if (
+        mode === "accepted" ||
+        mode === "preexecution" ||
+        mode === "host-worker" ||
+        mode === "other-provider" ||
+        (hasForeignQueuedSource &&
+          !["pending-only", "explicit-pending", "clear-queued-rejected"].includes(mode))
+      ) {
         expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([
           true,
-          expect.objectContaining({ status: "aborted", abortedRunId: runId }),
+          expect.objectContaining({
+            status: "aborted",
+            abortedRunId: runId,
+          }),
         ]);
         expect(signals).toEqual([actor]);
         expect(terminals).toEqual([actor]);
@@ -237,17 +355,44 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
           state: "cancelled",
           stoppedBy: { kind: "person", userId: actor.userId },
         });
-        expect(loadSessionEntry(target)).toMatchObject({ status: "killed", abortedLastRun: true });
+        if (mode === "preexecution") {
+          expect(loadSessionEntry(target)).toMatchObject({ sessionId, updatedAt: 1_000 });
+          expect(loadSessionEntry(target)?.lifecycleRunId).toBeUndefined();
+        } else {
+          expect(loadSessionEntry(target)).toMatchObject({
+            status: "killed",
+            abortedLastRun: true,
+          });
+        }
+        if (hasForeignQueuedSource) {
+          // Session-wide active Stop must not withdraw a different admission's
+          // pending input merely because the application uses an admin issuer.
+          expect(registration?.controller.signal.aborted).toBe(true);
+          expect(foreignController.signal.aborted).toBe(false);
+          expect(context.chatQueuedTurns.get(foreignRunId)).toBe(foreignQueuedEntry);
+        }
       } else {
         expect(signals).toEqual([]);
         expect(terminals).toEqual([]);
         expect(facts.some((fact) => fact.stoppedBy !== undefined)).toBe(false);
-        if (mode === "no-active") {
+        if (
+          [
+            "no-active",
+            "pending-only",
+            "explicit-pending",
+            "preregistered-only",
+            "provider-only",
+            "explicit-provider-only",
+          ].includes(mode)
+        ) {
           expect(respond.mock.calls[0]?.slice(0, 2)).toEqual([
             true,
             expect.objectContaining({ status: "no-active-run", abortedRunId: null }),
           ]);
         } else {
+          if (mode === "clear-queued-rejected") {
+            expect(respond.mock.calls[0]?.[0]).toBe(false);
+          }
           expect(registration?.controller.signal.aborted).toBe(false);
           expect(loadSessionEntry(target)).toMatchObject({
             status: "running",
@@ -256,10 +401,23 @@ it.each(["accepted", "not-member", "issuer-revoked", "no-active"] as const)(
           });
         }
       }
+      if (mode === "host-worker") {
+        expect(providerCancel).toHaveBeenCalledOnce();
+      } else {
+        expect(providerCancel).not.toHaveBeenCalled();
+      }
+      if (hasForeignQueuedSource) {
+        expect(foreignController.signal.aborted).toBe(false);
+        expect(context.chatQueuedTurns.get(foreignRunId)).toBe(foreignQueuedEntry);
+      }
+      if (mode === "preregistered-only") {
+        expect(context.dedupe.get(`agent:${foreignRunId}`)).toBe(preRegistered);
+      }
     } finally {
       stopEvents();
       transport.stop();
       registration?.cleanup();
+      context.chatQueuedTurns.delete(foreignRunId);
       lifetime.abort();
       await subscriptions.agentUnsub();
       subscriptions.heartbeatUnsub();

@@ -215,11 +215,13 @@ export function createAgentAdmissionController(params: {
       consumeExpectedSessionWorkAdmission({
         constraint: params.expectedSession,
         scope,
+        executionRunId: params.runId,
         identities: [params.getResolvedSessionKey(), params.getResolvedSessionId()],
         onInterrupt: interrupt,
       }) ??
       (await beginSessionWorkAdmission({
         scope,
+        executionRunId: params.runId,
         identities: [params.getResolvedSessionKey(), params.getResolvedSessionId()],
         ...(params.admissionOwner ? { owner: params.admissionOwner } : {}),
         assertAllowed: () => assertAllowed(false),

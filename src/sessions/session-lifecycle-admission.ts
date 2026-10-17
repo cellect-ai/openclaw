@@ -531,6 +531,8 @@ export async function beginSessionWorkAdmission(params: {
   storeWriterIdentities?: Iterable<string | undefined>;
   /** Stable process-wide identity for owners that must be observable while still pending. */
   owner?: symbol;
+  /** Immutable host execution selection; never inferred from a transport source. */
+  executionRunId?: string;
   resolveGatewayContext?: GatewayContextResolver;
   assertAllowed: (signal: AbortSignal) => Promise<void> | void;
   /** Final writer-ordered validation; use when one-time effects must not run during the first check. */
@@ -557,6 +559,7 @@ export async function beginSessionWorkAdmission(params: {
     lifecycleGeneration: getAgentRunLifecycleGeneration(),
     phase: "pending",
     ...(params.owner ? { owner: params.owner } : {}),
+    ...(params.executionRunId !== undefined ? { executionRunId: params.executionRunId } : {}),
     handoffIds: new Set(),
     identities: new Set(identities),
     interrupted: undefined,
@@ -705,6 +708,7 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   reason?: Error;
   identities: readonly string[];
   pendingOnly?: boolean;
+  executionRunId?: string;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
   const interruptedRunIds = new Set<string>();
   const currentAdmissions = CURRENT_SESSION_WORK_ADMISSIONS.getStore();
@@ -713,7 +717,9 @@ function startNormalizedSessionWorkAdmissionInterruption(params: {
   const admissions = collectSessionWorkAdmissions(
     params.identities,
     (admission) =>
-      (!params.pendingOnly || admission.phase === "pending") && !currentAdmissions?.has(admission),
+      (!params.pendingOnly || admission.phase === "pending") &&
+      (params.executionRunId === undefined || admission.executionRunId === params.executionRunId) &&
+      !currentAdmissions?.has(admission),
   );
   for (const admission of admissions) {
     admission.interrupted ??= params.reason ?? new Error("Session work admission interrupted");
@@ -734,10 +740,13 @@ export function startSessionWorkAdmissionInterruption(params: {
   reason?: Error;
   scope: string;
   identities: Iterable<string | undefined>;
+  /** Restricts interruption and its release wait to one host-bound execution. */
+  executionRunId?: string;
 }): { released: Promise<void>; interruptedRunIds: ReadonlySet<string> } {
   return startNormalizedSessionWorkAdmissionInterruption({
     identities: normalizeSessionIdentities(params.scope, params.identities),
     reason: params.reason,
+    executionRunId: params.executionRunId,
   });
 }
 

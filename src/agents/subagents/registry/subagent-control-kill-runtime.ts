@@ -109,6 +109,8 @@ export async function killSubagentRun(params: {
   stateContext?: OpenClawStateWorkerContext;
   cancellationControl?: SubagentCancellationControl;
   suppressTaskDelivery?: boolean;
+  /** Stop the selected execution without withdrawing unrelated input custody. */
+  preservePendingInputs?: true;
   beforeSessionKill?: () => boolean;
   isCurrent?: (entry: SubagentRunRecord, requirePreparedSession?: boolean) => boolean;
   withdrawQueuedReservation: () => void;
@@ -358,6 +360,7 @@ export async function killSubagentRun(params: {
         scope: resolved.storePath,
         identities: [childSessionKey, sessionId],
         reason: createAgentRunDirectAbortError(),
+        ...(params.preservePendingInputs ? { executionRunId: params.entry.runId } : {}),
       });
       stopAccepted = interruption.interruptedRunIds.has(params.entry.runId) && killOwnerCurrent();
       const released = await waitForSessionWorkAdmissionRelease(
@@ -597,7 +600,19 @@ export async function killSubagentRun(params: {
         if (declinedBeforeAbort) {
           return stopAccepted ? await settleTargetCancellation() : declinedBeforeAbort;
         }
-        const aborted = sessionId ? runtime.abortEmbeddedAgentRun(sessionId) : false;
+        const executionOwner = params.preservePendingInputs
+          ? runtime.resolveActiveEmbeddedRunOwnerByRunId(params.entry.runId)
+          : undefined;
+        const aborted = params.preservePendingInputs
+          ? Boolean(
+              executionOwner &&
+              executionOwner.sessionId === sessionId &&
+              executionOwner.sessionKey === childSessionKey &&
+              executionOwner.abort(),
+            )
+          : sessionId
+            ? runtime.abortEmbeddedAgentRun(sessionId)
+            : false;
         stopAccepted ||= aborted;
         if (!ownsSessionIncarnation()) {
           return releaseChangedSessionKill(claimedKill);
@@ -606,11 +621,13 @@ export async function killSubagentRun(params: {
         if (declinedBeforeQueueClear) {
           return stopAccepted ? await settleTargetCancellation() : declinedBeforeQueueClear;
         }
-        const cleared = runtime.clearSessionQueues([childSessionKey, sessionId]);
-        if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-          logVerbose(
-            `subagents control kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
-          );
+        if (!params.preservePendingInputs) {
+          const cleared = runtime.clearSessionQueues([childSessionKey, sessionId]);
+          if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
+            logVerbose(
+              `subagents control kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
+            );
+          }
         }
         if (active && !stopAccepted) {
           try {
