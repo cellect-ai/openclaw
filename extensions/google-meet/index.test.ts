@@ -88,6 +88,7 @@ type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["create
 function createTestMeetVoiceProvider(
   options: {
     defaultModel?: string;
+    supportsToolResultContinuation?: true;
     handleBargeIn?: RealtimeVoiceBridge["handleBargeIn"];
     sendUserMessage?: RealtimeVoiceBridge["sendUserMessage"];
     triggerGreeting?: RealtimeVoiceBridge["triggerGreeting"];
@@ -95,6 +96,9 @@ function createTestMeetVoiceProvider(
 ) {
   let request: TestMeetVoiceBridgeRequest | undefined;
   const bridge = {
+    ...(options.supportsToolResultContinuation
+      ? { supportsToolResultContinuation: options.supportsToolResultContinuation }
+      : {}),
     connect: vi.fn(async () => {}),
     sendAudio: vi.fn(),
     ...(options.sendUserMessage ? { sendUserMessage: options.sendUserMessage } : {}),
