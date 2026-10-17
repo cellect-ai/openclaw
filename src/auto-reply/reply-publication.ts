@@ -11,6 +11,22 @@ export interface ReplyPublication {
   readonly runId?: string;
   readonly accountId?: string;
   readonly receiptRequired?: true;
+  /** Process-local host-prepended text. Never inferred from payload JSON or persisted. */
+  readonly synthesizedPrefix?: string;
+  /** Withhold the host prefix even if a modifying hook fails or times out.
+   * The returned release closes only this caller's hold, never another policy's. */
+  readonly deferSynthesizedPrefix?: () => () => void;
+}
+const synthesizedPrefixes = new WeakMap<object, string>();
+const withheldPrefixes = new WeakMap<object, string>();
+const prefixHolds = new WeakMap<ReplyPublication, Set<object>>();
+/** Core normalization records only a prefix it actually prepended. */
+export function recordReplyPublicationPrefix(payload: object, prefix: string): void {
+  synthesizedPrefixes.set(payload, prefix);
+}
+/** An already normalized payload must not regain a withheld prefix on another pass. */
+export function isReplyPublicationPrefixWithheld(payload: object, prefix: string): boolean {
+  return withheldPrefixes.get(payload) === prefix;
 }
 const identities = new WeakMap<object, { publicationId: string; publishedAtMs: number }>();
 const records = new WeakMap<object, ReplyPublication>();
@@ -26,9 +42,12 @@ export function isReplyPublicationReceiptRequired(value: unknown): boolean {
 }
 export function preparedReplyPublication(value: unknown): ReplyPublication | undefined {
   const record = resolveReplyPublication(value);
-  return record && requiredReceipts.has(record)
-    ? Object.freeze({ ...record, receiptRequired: true as const })
-    : record;
+  if (!record) return undefined;
+  const { synthesizedPrefix: _prefix, deferSynthesizedPrefix: _defer, ...stored } = record;
+  return Object.freeze({
+    ...stored,
+    ...(requiredReceipts.has(record) ? { receiptRequired: true as const } : {}),
+  });
 }
 export interface ReplyPublicationReceipt {
   readonly channel: string;
@@ -95,6 +114,10 @@ export function bindReplyPublication(
   },
 ): ReplyPublication {
   const previous = records.get(params.payload);
+  const prefix = synthesizedPrefixes.get(params.payload);
+  const holds =
+    (previous?.synthesizedPrefix === prefix && previous && prefixHolds.get(previous)) ||
+    new Set<object>();
   let identity = identities.get(params.payload);
   if (!identity) {
     // Browser-safe: this module ships in browser bundles, so use the
@@ -110,11 +133,53 @@ export function bindReplyPublication(
     sessionKey: params.sessionKey,
     runId: params.runId,
     accountId: params.context?.accountId,
+    ...(prefix !== undefined
+      ? {
+          synthesizedPrefix: prefix,
+          deferSynthesizedPrefix: () => {
+            const hold = {};
+            holds.add(hold);
+            return () => {
+              holds.delete(hold);
+            };
+          },
+        }
+      : {}),
   });
+  prefixHolds.set(record, holds);
   if (previous && requiredReceipts.has(previous)) requiredReceipts.add(record);
   records.set(event, record);
   records.set(params.payload, record);
   return record;
+}
+/** Keep host-generated addressing outside arbitrary plugin text transforms. */
+export function detachReplyPublicationPrefix(payload: ReplyPayload): ReplyPayload {
+  const record = records.get(payload);
+  const prefix = record?.synthesizedPrefix;
+  if (
+    !record ||
+    !prefix ||
+    isReplyPublicationPrefixWithheld(payload, prefix) ||
+    !payload.text?.startsWith(`${prefix} `)
+  )
+    return payload;
+  const result = { ...payload, text: payload.text.slice(prefix.length + 1) };
+  copyReplyPublication(payload, result);
+  return result;
+}
+/** Final host decision after hooks, including fail-open timeout/error paths. */
+export function finishReplyPublicationPrefix(payload: ReplyPayload): ReplyPayload {
+  const record = records.get(payload);
+  const prefix = record?.synthesizedPrefix;
+  if (!record || !prefix) return payload;
+  if (prefixHolds.get(record)?.size) {
+    withheldPrefixes.set(payload, prefix);
+    return payload;
+  }
+  if (!payload.text) return payload;
+  const result = { ...payload, text: `${prefix} ${payload.text}` };
+  copyReplyPublication(payload, result);
+  return result;
 }
 /** SDK read-only capability: exact host hook object only, never a token/id lookup. */
 export function resolveReplyPublication(event: unknown): ReplyPublication | undefined {
@@ -123,6 +188,10 @@ export function resolveReplyPublication(event: unknown): ReplyPublication | unde
 /** Host isolation creates a fresh event for each plugin without losing custody. */
 export function copyReplyPublication(source: object, target: object): void {
   const record = records.get(source);
+  const prefix = synthesizedPrefixes.get(source) ?? record?.synthesizedPrefix;
+  if (prefix !== undefined) synthesizedPrefixes.set(target, prefix);
+  const withheld = withheldPrefixes.get(source);
+  if (withheld !== undefined) withheldPrefixes.set(target, withheld);
   if (record) {
     records.set(target, record);
     identities.set(target, record);

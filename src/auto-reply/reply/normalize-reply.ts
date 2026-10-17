@@ -10,6 +10,10 @@ import {
   setReplyPayloadMetadata,
 } from "../reply-payload.js";
 import {
+  isReplyPublicationPrefixWithheld,
+  recordReplyPublicationPrefix,
+} from "../reply-publication.js";
+import {
   HEARTBEAT_TOKEN,
   isInternalFormattingArtifact,
   isSilentReplyPayloadText,
@@ -178,16 +182,21 @@ export function normalizeReplyPayloadOutcome(
       ? undefined
       : resolvedPrefix;
 
+  let synthesizedPrefix: string | undefined;
   if (
     effectivePrefix &&
     text &&
     text.trim() !== HEARTBEAT_TOKEN &&
-    !text.startsWith(effectivePrefix)
+    !text.startsWith(effectivePrefix) &&
+    !isReplyPublicationPrefixWithheld(enrichedPayload, effectivePrefix)
   ) {
+    synthesizedPrefix = effectivePrefix;
     text = `${effectivePrefix} ${text}`;
   }
 
   enrichedPayload = copyReplyPayloadMetadata(enrichedPayload, { ...enrichedPayload, text });
+  if (synthesizedPrefix !== undefined)
+    recordReplyPublicationPrefix(enrichedPayload, synthesizedPrefix);
   return { kind: "deliver", payload: enrichedPayload };
 }
 

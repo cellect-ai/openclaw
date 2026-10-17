@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { resolveReplyPublication } from "openclaw/plugin-sdk/reply-runtime";
 
 type RunObservation = {
   started: true;
@@ -203,7 +204,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
       // The native modifying-hook budget is 15 seconds. This single smaller
       // deadline covers observation settlement AND final storage read, so a
       // stalled worker cannot hit the host's fail-open timeout first.
-      return await Promise.race([
+      const result = await Promise.race([
         checked,
         new Promise<typeof incompleteReply | undefined>((resolve) => {
           timer = setTimeout(() => {
@@ -213,6 +214,9 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
           timer.unref?.();
         }),
       ]);
+      // This is a complete replacement, preserving its existing unprefixed form.
+      if (result) resolveReplyPublication(event)?.deferSynthesizedPrefix?.();
+      return result;
     } finally {
       if (timer) clearTimeout(timer);
     }

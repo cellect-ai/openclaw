@@ -117,6 +117,15 @@ Decision rules:
   delivery, including replies routed back to the originating channel.
   Handlers run sequentially and each handler sees the latest payload produced
   by higher-priority handlers.
+  Text excludes any prefix actually prepended by the host. The host keeps those
+  bytes separate from plugin text transforms and restores them to nonempty text
+  after the hooks. Model-authored matching text stays in the payload.
+  `resolveReplyPublication(event)` from `openclaw/plugin-sdk/reply-runtime` exposes
+  the optional process-local `synthesizedPrefix` and `deferSynthesizedPrefix()`.
+  Calling the latter synchronously withholds that prefix even if the hook fails
+  or times out; its returned function releases only that caller's hold. Release
+  before the hook settles to allow the prefix. A late release cannot rewrite an
+  already admitted payload. Neither field is persisted in prepared publications.
 - `reply_payload_sending` payloads do not expose runtime trust markers such as
   `trustedLocalMedia`; plugins can edit payload shape but cannot grant local
   media trust.
