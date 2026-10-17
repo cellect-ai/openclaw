@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSyntheticSourceInfo } from "../../agents/sessions/source-info.js";
 import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
@@ -79,31 +82,38 @@ describe("node-hosted skill snapshots", () => {
       ],
     });
 
-    const entries = loadWorkspaceSkills("/workspace", {
-      workspaceOnly: true,
-      eligibility: { nodeSkills: { canExec: true } },
-    });
-    const snapshot = await buildSkillSnapshot("/workspace", { entries });
-    expect(snapshot.skills.map((skill) => skill.name)).toEqual(["release-helper"]);
-    expect(snapshot.prompt).toContain("Build Mac (node-1)");
-    expect(snapshot.prompt).toContain(
-      "Read this SKILL.md with the normal read tool at its exact node:// location",
-    );
-    expect(snapshot.prompt).toContain("do not use file_fetch");
-    expect(snapshot.prompt).toContain("to run cat SKILL.md");
-    expect(snapshot.prompt).toContain("exec host=node node=node-1");
-    expect(snapshot.prompt).toContain("workdir=node://node-1/skills/release-helper");
-    expect(snapshot.prompt).toContain("node host resolves that locator");
-    expect(snapshot.prompt).toContain("node://node-1/skills/release-helper/SKILL.md");
-    expect(snapshot.resolvedSkills?.[0]?.readContent).toBe(
-      content("release-helper", "Prepare a release"),
-    );
-    expect(getSkillsSnapshotVersion()).toBeGreaterThan(before);
+    // Isolated empty fixture: the literal "/workspace" collides with the
+    // builder's source mount and discovers real archived skills.
+    const fixtureWorkspace = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-remote-skills-"));
+    try {
+      const entries = loadWorkspaceSkills(fixtureWorkspace, {
+        workspaceOnly: true,
+        eligibility: { nodeSkills: { canExec: true } },
+      });
+      const snapshot = await buildSkillSnapshot(fixtureWorkspace, { entries });
+      expect(snapshot.skills.map((skill) => skill.name)).toEqual(["release-helper"]);
+      expect(snapshot.prompt).toContain("Build Mac (node-1)");
+      expect(snapshot.prompt).toContain(
+        "Read this SKILL.md with the normal read tool at its exact node:// location",
+      );
+      expect(snapshot.prompt).toContain("do not use file_fetch");
+      expect(snapshot.prompt).toContain("to run cat SKILL.md");
+      expect(snapshot.prompt).toContain("exec host=node node=node-1");
+      expect(snapshot.prompt).toContain("workdir=node://node-1/skills/release-helper");
+      expect(snapshot.prompt).toContain("node host resolves that locator");
+      expect(snapshot.prompt).toContain("node://node-1/skills/release-helper/SKILL.md");
+      expect(snapshot.resolvedSkills?.[0]?.readContent).toBe(
+        content("release-helper", "Prepare a release"),
+      );
+      expect(getSkillsSnapshotVersion()).toBeGreaterThan(before);
 
-    const connectedVersion = getSkillsSnapshotVersion();
-    removeRemoteNodeSkills("node-1");
-    expect(mergeRemoteNodeSkillEntries([])).toEqual([]);
-    expect(getSkillsSnapshotVersion()).toBeGreaterThan(connectedVersion);
+      const connectedVersion = getSkillsSnapshotVersion();
+      removeRemoteNodeSkills("node-1");
+      expect(mergeRemoteNodeSkillEntries([])).toEqual([]);
+      expect(getSkillsSnapshotVersion()).toBeGreaterThan(connectedVersion);
+    } finally {
+      fs.rmSync(fixtureWorkspace, { recursive: true, force: true });
+    }
   });
 
   it("prefixes node skills on local and cross-node collisions", () => {
