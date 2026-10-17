@@ -5,11 +5,7 @@ import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listMatrixAccountIds, resolveMatrixAccount } from "./account-resolver-api.js";
 import { getMatrixScopedEnvVarNames } from "./src/env-vars.js";
-import {
-  clearMatrixCredentials,
-  loadMatrixCredentials,
-  saveMatrixCredentials,
-} from "./src/matrix/credentials.js";
+import { clearMatrixCredentials, saveMatrixCredentials } from "./src/matrix/credentials.js";
 import { installMatrixTestRuntime } from "./src/test-runtime.js";
 
 describe("Matrix account identity projection", () => {
@@ -24,22 +20,11 @@ describe("Matrix account identity projection", () => {
     vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
     for (const accountId of ["ops", "alerts"]) {
       vi.stubEnv(getMatrixScopedEnvVarNames(accountId).accessToken, `${accountId}-token`);
-      try {
-        await saveMatrixCredentials(
-          { homeserver, userId: `@${accountId}:example.org`, accessToken: `${accountId}-token` },
-          process.env,
-          accountId,
-        );
-      } catch (error) {
-        const chain: string[] = [];
-        let current: unknown = error;
-        while (current instanceof Error && chain.length < 6) {
-          chain.push(`${current.name}: ${current.message}`);
-          current = (current as { cause?: unknown }).cause;
-        }
-        console.log("DIAG matrix save cause chain:", JSON.stringify(chain, null, 2));
-        throw error;
-      }
+      await saveMatrixCredentials(
+        { homeserver, userId: `@${accountId}:example.org`, accessToken: `${accountId}-token` },
+        process.env,
+        accountId,
+      );
     }
   });
 
@@ -50,10 +35,6 @@ describe("Matrix account identity projection", () => {
   });
 
   it("uniquely identifies token-only accounts using persisted authenticated identities", () => {
-    console.log(
-      "DIAG matrix sync-load ops:",
-      JSON.stringify(loadMatrixCredentials(process.env, "ops")),
-    );
     const matches = listMatrixAccountIds(cfg).filter(
       (accountId) => resolveMatrixAccount({ cfg, accountId }).userId === "@ops:example.org",
     );

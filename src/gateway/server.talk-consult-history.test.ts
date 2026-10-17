@@ -282,11 +282,29 @@ async function consult(question: string, callId: string) {
 
 async function startHeldConsult() {
   const ack = await consult("Keep this task running until released.", "held-task");
-  console.log("DIAG consult ack:", JSON.stringify(ack));
-  await Promise.race([
-    modelStarted.promise,
-    getSessionWorkAdmissionRelease({ scope: storePath, identities: [canonicalKey, sessionId] }),
-  ]);
+  // getSessionWorkAdmissionRelease returns undefined when no admission is held;
+  // racing that undefined resolves immediately, before a fresh target's run
+  // starts. Wait for the actual model start instead; a held admission that
+  // releases without a model call still fails fast, and a genuine stall fails
+  // on the timeout rather than hanging the suite.
+  const pendingForever = new Promise<never>(() => {});
+  let modelStartTimeout: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      modelStarted.promise,
+      getSessionWorkAdmissionRelease({ scope: storePath, identities: [canonicalKey, sessionId] }) ??
+        pendingForever,
+      new Promise<never>((_, reject) => {
+        modelStartTimeout = setTimeout(
+          () => reject(new Error("timed out waiting for held model invocation")),
+          30_000,
+        );
+        modelStartTimeout.unref?.();
+      }),
+    ]);
+  } finally {
+    clearTimeout(modelStartTimeout);
+  }
   const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "held model invocation");
   const abortSignal = expectDefined(run.abortSignal, "admitted model cancellation signal");
   expect(abortSignal.aborted).toBe(false);

@@ -409,28 +409,19 @@ export async function consultRealtimeVoiceAgent(params: {
     timeoutMs: number;
   }) => RealtimeVoiceAgentConsultRunRegistration | void;
 }): Promise<RealtimeVoiceAgentConsultResult> {
-  console.log("DIAG consult run: entry", params.sessionKey);
   params.abortSignal?.throwIfAborted();
   const [{ beginSessionWorkAdmission }, { resolveSessionWorkStartError }] = await Promise.all([
     import("../sessions/session-lifecycle-admission.js"),
     import("../config/sessions/lifecycle.js"),
   ]);
   params.abortSignal?.throwIfAborted();
-  console.log("DIAG consult run: entered", params.sessionKey);
-  let prepared;
-  try {
-    prepared = prepareRealtimeVoiceAgentExecutionContext(params);
-  } catch (error) {
-    console.log("DIAG consult run: prepare threw", params.sessionKey, String(error));
-    throw error;
-  }
   const {
     agentId,
     agentDir,
     workspaceDir,
     storePath,
     sessionEntry: initialSessionEntry,
-  } = prepared;
+  } = prepareRealtimeVoiceAgentExecutionContext(params);
   const modelLockParams = {
     cfg: params.cfg,
     agentRuntime: params.agentRuntime,
@@ -444,7 +435,6 @@ export async function consultRealtimeVoiceAgent(params: {
   const lifecycleInterruption = new Error(
     "Realtime voice agent consult interrupted by a session lifecycle change.",
   );
-  console.log("DIAG consult run: prepared execution context", params.sessionKey);
   const sessionWorkAdmission = await beginSessionWorkAdmission({
     scope: storePath,
     identities: [params.sessionKey, initialSessionEntry?.sessionId],
@@ -478,7 +468,6 @@ export async function consultRealtimeVoiceAgent(params: {
 
   try {
     return await sessionWorkAdmission.run(async () => {
-      console.log("DIAG consult run: admission acquired", params.sessionKey);
       await params.agentRuntime.ensureAgentWorkspace({
         dir: workspaceDir,
         guard: {
@@ -528,7 +517,6 @@ export async function consultRealtimeVoiceAgent(params: {
 
       // Voice consults suppress verbose/reasoning output because the bridge needs a short,
       // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
-      console.log("DIAG consult run: invoking embedded agent", params.sessionKey);
       const runPromise = params.agentRuntime.runEmbeddedAgent({
         sessionId,
         sessionKey: params.sessionKey,
@@ -640,9 +628,6 @@ export async function consultRealtimeVoiceAgent(params: {
       }
       return { text };
     });
-  } catch (error) {
-    console.log("DIAG consult run: run failed", params.sessionKey, String(error));
-    throw error;
   } finally {
     params.abortSignal?.removeEventListener("abort", abortFromCaller);
     sessionWorkAdmission.release();
