@@ -599,7 +599,7 @@ export function emitAgentEventForRunContext(
   event: Omit<AgentEventPayload, "seq" | "ts">,
   context: AgentRunContext,
 ) {
-  dispatchAgentEvent(event, undefined, context);
+  return dispatchAgentEvent(event, undefined, context);
 }
 // Unlike observational listeners, custody failures must propagate before any
 // client observes a lifecycle transition that cannot survive a process crash.

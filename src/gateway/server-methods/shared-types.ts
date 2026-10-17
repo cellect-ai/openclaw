@@ -447,6 +447,8 @@ export type GatewayContextResolver = () => GatewayRequestContext | undefined;
 export type GatewayRequestContext = GatewayKernelContext &
   GatewayTransportContext &
   GatewayResidentBridgeContext & {
+    /** Gateway-owned terminal retries; embedded-only contexts may omit it. */
+    lifecycleScheduler?: import("../../infra/gateway-scheduler.js").GatewayScheduler;
     /** Retains original execution while callers may receive an early response. */
     trackExecution: typeof import("../../shared/async-work-scope.js").trackAsyncWork;
     /** Local commands can dispatch methods without owning a Gateway server. */
