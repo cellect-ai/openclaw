@@ -371,6 +371,67 @@ describe("registered Matrix agent entitlement hooks", () => {
     expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  it("keeps the authenticated non-selected text agent silent and retires its tool admission", async () => {
+    const hook = plugin();
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, respond: false })));
+    expect(await hook("before_agent_reply", {}, context())).toEqual({ handled: true });
+    expect(await hook("before_tool_call", { toolName: "exec", params: {} }, tools())).toMatchObject(
+      { block: true },
+    );
+    expect(fetchMock).toHaveBeenCalledOnce();
+  });
+
+  it("does not reuse prior admitted custody when a repeated admission is now silent", async () => {
+    const hook = plugin();
+    fetchMock
+      .mockResolvedValueOnce(allow())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, respond: false })));
+    expect(await hook("before_agent_reply", {}, context())).toBeUndefined();
+    expect(await hook("before_agent_reply", {}, context())).toEqual({ handled: true });
+    expect(await hook("before_tool_call", { toolName: "exec", params: {} }, tools())).toMatchObject(
+      { block: true },
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([{ ok: false }, { ok: false, respond: true }, { respond: false }])(
+    "does not interpret malformed decline %j as silence",
+    async (decision) => {
+      fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(decision)));
+      expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({
+        handled: true,
+        reply: { text: expect.stringContaining("couldn’t verify") },
+      });
+    },
+  );
+
+  it("keeps a text-only silent decision unavailable for voice", async () => {
+    fetchMock.mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, respond: false })));
+    const voice = context("cellect-main", {
+      channelContext: {
+        sender: { id: "@alex:matrix.example" },
+        chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+      },
+    });
+    expect(await plugin()("before_agent_reply", {}, voice)).toMatchObject({
+      handled: true,
+      reply: { text: expect.stringContaining("couldn’t verify") },
+    });
+  });
+
+  it("blocks tools when a previously selected text turn is no longer selected", async () => {
+    const hook = plugin();
+    fetchMock
+      .mockResolvedValueOnce(allow())
+      .mockResolvedValueOnce(new Response(JSON.stringify({ ok: false, respond: false })));
+    expect(await hook("before_agent_reply", {}, context())).toBeUndefined();
+    expect(await hook("before_tool_call", { toolName: "exec", params: {} }, tools())).toEqual({
+      block: true,
+      blockReason: "You don’t currently have access to this agent in this conversation.",
+    });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
   it.each([403, 503])("returns a visible refusal for HTTP %s", async (status) => {
     fetchMock.mockResolvedValue(new Response(null, { status }));
     expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({

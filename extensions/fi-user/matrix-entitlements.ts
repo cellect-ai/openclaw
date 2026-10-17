@@ -4,6 +4,9 @@ import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegatio
 
 const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
+// Fi intentionally declines unaddressed/non-selected text agents without a reply.
+const SILENT = Symbol("matrix-agent-not-selected");
+type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 // Not the gated set: the only sessions exempt from it. These are the source
 // sessions the Matrix channel's own reply guard supports and authorizes.
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
@@ -107,7 +110,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       }
     },
   });
-  const authorize = async (turn: Turn): Promise<string | undefined> => {
+  const authorize = async (turn: Turn): Promise<AuthorizationFailure | undefined> => {
     try {
       const config = configFromRuntime(api);
       if (!config.tenantOrgId) {
@@ -145,6 +148,17 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return UNAVAILABLE;
       }
       const result: unknown = await response.json();
+      if (
+        turn.mode === "text" &&
+        result &&
+        typeof result === "object" &&
+        "ok" in result &&
+        result.ok === false &&
+        "respond" in result &&
+        result.respond === false
+      ) {
+        return SILENT;
+      }
       return result &&
         typeof result === "object" &&
         "ok" in result &&
@@ -266,7 +280,14 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (turns.get(runId) !== turn) {
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
-      const outcome = failure ? (failure === DENIED ? "denied" : "unavailable") : "admitted";
+      const outcome =
+        failure === SILENT
+          ? "silent"
+          : failure
+            ? failure === DENIED
+              ? "denied"
+              : "unavailable"
+            : "admitted";
       logEntitlements(
         {
           phase: "admission",
@@ -282,7 +303,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       );
       if (failure) {
         turns.delete(runId);
-        return { handled: true, reply: { text: failure } };
+        return failure === SILENT ? { handled: true } : { handled: true, reply: { text: failure } };
       }
       return undefined;
     },
@@ -332,11 +353,20 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         agentId: turn.agentId,
         accountId: turn.accountId,
         mode: turn.mode,
-        outcome: failure ? (failure === DENIED ? "denied" : "unavailable") : "admitted",
+        outcome:
+          failure === SILENT
+            ? "silent"
+            : failure
+              ? failure === DENIED
+                ? "denied"
+                : "unavailable"
+              : "admitted",
         ...turnIds(turn),
         sessionThreadId: sessionThreadId(turn.sessionKey) ?? null,
       });
-      return failure ? { block: true, blockReason: failure } : undefined;
+      return failure
+        ? { block: true, blockReason: failure === SILENT ? DENIED : failure }
+        : undefined;
     });
   };
   return beforeToolCall;
