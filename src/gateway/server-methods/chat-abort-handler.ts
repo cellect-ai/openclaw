@@ -16,12 +16,7 @@ import {
   isChatAbortControllerEntryAbortable,
   type ChatAbortControllerEntry,
 } from "../chat-abort.js";
-import {
-  abortQueuedChatTurnById,
-  isQueuedChatTurnForSession,
-  type QueuedChatTurnEntry,
-} from "../chat-queued-turns.js";
-import { chatRunBelongsToAgent } from "../chat-run-owner.js";
+import { abortQueuedChatTurnById, isQueuedChatTurnForSession } from "../chat-queued-turns.js";
 import { formatStopRequest } from "../control-plane-audit.js";
 import { pendingChatSendDedupeKey, type DedupeEntry } from "../server-shared.js";
 import {
@@ -31,12 +26,14 @@ import {
 import { loadSessionEntry, resolveSessionStoreKey } from "../session-utils.js";
 import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import {
-  canRequesterAbortChatRun,
+  createChatAbortTargetAuthorizer,
+  isDetachedChatInputController,
   canRequesterAbortPreRegisteredRun,
   readPreRegisteredAgentDedupePayloadForSession,
   resolveChatAbortRequester,
   writePreRegisteredAgentAbort,
   writePreRegisteredChatAbort,
+  type ChatAbortTarget,
 } from "./chat-abort-authorization.js";
 import {
   abortChatRunsForSessionKeyWithPartials,
@@ -56,16 +53,12 @@ import type { GatewayRequestHandlerOptions } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 type ChatAbortLifecycle = {
+  preservePendingInputs?: true;
   stopActor?: VerifiedRunStopActor;
   onAuthorizedAfterQueuedAbort?: () => boolean;
   onDescendantsCancelled?: () => void;
   cascadeDescendants?: true;
 };
-
-type ChatAbortTarget = Pick<
-  ChatAbortControllerEntry | QueuedChatTurnEntry,
-  "sessionKey" | "sessionId" | "agentId" | "ownerConnId" | "ownerDeviceId"
->;
 
 export async function handleChatAbortRequestWithLifecycle(
   options: GatewayRequestHandlerOptions,
@@ -201,6 +194,7 @@ export async function handleChatAbortRequestWithLifecycle(
       abortOrigin: "rpc",
       stopReason: "rpc",
       stopActor: lifecycle.stopActor,
+      preservePendingInputs: lifecycle.preservePendingInputs,
       requester,
       assertCurrent,
       preserveSideRuns,
@@ -227,44 +221,25 @@ export async function handleChatAbortRequestWithLifecycle(
     });
     return;
   }
-  const normalizedAgentIdOverride = normalizeAgentId(abortAgentId);
-  const authorizeRunTarget = (target: ChatAbortTarget): boolean => {
-    let error: string | undefined;
-    if (
-      discardPendingInput &&
-      target.sessionKey !== rawSessionKey &&
-      target.sessionKey !== canonicalAbortSessionKey
-    ) {
-      error = "discarded input runId does not match sessionKey";
-    } else if (narrow && target.sessionId !== requiredSessionId) {
-      error = "runId does not match session incarnation";
-    } else if (
-      target.sessionKey !== rawSessionKey &&
-      target.sessionKey !== canonicalAbortSessionKey &&
-      (narrow || !canRequesterAbortChatRun(target, requester, { requireOwnerMatch: true }))
-    ) {
-      error = "runId does not match sessionKey";
-    } else if (
-      !chatRunBelongsToAgent(
-        {
-          agentId: target.agentId,
-          sessionKey: target.sessionKey,
-          defaultAgentId: compatibilityDefaultAgentId,
-        },
-        normalizedAgentIdOverride,
-      )
-    ) {
-      error = "runId does not match agentId";
-    } else if (!canRequesterAbortChatRun(target, requester)) {
-      error = "unauthorized";
-    }
-    if (error) {
-      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, error));
-    }
-    return error === undefined;
-  };
+  const authorizeRunTarget = createChatAbortTargetAuthorizer({
+    requester,
+    respond,
+    discardPendingInput,
+    narrow,
+    requiredSessionId,
+    rawSessionKey,
+    canonicalAbortSessionKey,
+    abortAgentId,
+    compatibilityDefaultAgentId,
+  });
 
-  const active = context.chatAbortControllers.get(runId);
+  const capturedActive = context.chatAbortControllers.get(runId);
+  const active =
+    lifecycle.preservePendingInputs &&
+    capturedActive &&
+    isDetachedChatInputController(context, runId, capturedActive)
+      ? undefined
+      : capturedActive;
   const withdrawalQueue = discardPendingInput ? context.chatQueuedTurns.get(runId) : undefined;
   const withdrawalScope = withdrawalQueue && {
     sessionKey: withdrawalQueue.sessionKey,
@@ -398,7 +373,7 @@ export async function handleChatAbortRequestWithLifecycle(
     if (inputWithdrawn) {
       runIds.add(runId);
     }
-    if (requester.isAdmin) {
+    if (requester.isAdmin && (!lifecycle.preservePendingInputs || localRunIds.length > 0)) {
       assertCurrent();
       await workerCancellation?.cancel({
         assertCurrent,
@@ -436,6 +411,7 @@ export async function handleChatAbortRequestWithLifecycle(
       return undefined;
     };
     const pendingChatMatch =
+      !lifecycle.preservePendingInputs &&
       !discardPendingInput &&
       readPendingRunForAbort(context.dedupe.get(pendingChatSendDedupeKey(runId)));
     if (pendingChatMatch) {
@@ -456,7 +432,10 @@ export async function handleChatAbortRequestWithLifecycle(
       return;
     }
     const pendingAgentEntry = context.dedupe.get(`agent:${runId}`);
-    const pendingAgentMatch = !discardPendingInput && readPendingRunForAbort(pendingAgentEntry);
+    const pendingAgentMatch =
+      !lifecycle.preservePendingInputs &&
+      !discardPendingInput &&
+      readPendingRunForAbort(pendingAgentEntry);
     if (pendingAgentMatch) {
       const pendingAgentPayload = pendingAgentMatch.payload;
       if (!canRequesterAbortPreRegisteredRun(pendingAgentPayload, requester)) {
@@ -469,6 +448,7 @@ export async function handleChatAbortRequestWithLifecycle(
         sessionKey: pendingAgentMatch.sessionKey ?? canonicalAbortSessionKey,
         agentId: abortAgentId,
         requesterTurnRunId: runId,
+        preservePendingInputs: lifecycle.preservePendingInputs,
         assertCurrent,
         beforeKill: () => {
           assertCurrent();
@@ -494,7 +474,7 @@ export async function handleChatAbortRequestWithLifecycle(
     // Queued followup/collect turns keep a cancel identity after chat.send
     // terminalizes; abort them here so Esc cannot report done while they run.
     const chatQueuedTurns = context.chatQueuedTurns;
-    const queued = chatQueuedTurns.get(runId);
+    const queued = !lifecycle.preservePendingInputs ? chatQueuedTurns.get(runId) : undefined;
     if (queued) {
       if (!discardPendingInput && !authorizeRunTarget(queued)) {
         return;
@@ -603,6 +583,7 @@ export async function handleChatAbortRequestWithLifecycle(
         sessionKey,
         agentId,
         requesterTurnRunId: runId,
+        preservePendingInputs: lifecycle.preservePendingInputs,
         assertCurrent,
         beforeKill: () => {
           // The descendant owner can await a reservation even when no child survives.

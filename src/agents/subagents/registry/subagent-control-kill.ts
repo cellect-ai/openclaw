@@ -146,6 +146,7 @@ async function killLatestSubagentRun(params: {
   tree: KillTree;
   scope: KillScope;
   suppressTaskDelivery?: boolean;
+  preservePendingInputs?: true;
   beforeSessionKill?: () => boolean;
   expectedGeneration?: number;
   expectedOwnerKey?: string;
@@ -245,6 +246,7 @@ type KillTraversal = {
   cfg: OpenClawConfig;
   scope: KillScope;
   suppressTaskDelivery?: boolean;
+  preservePendingInputs?: true;
 };
 
 async function visitAll(work: Promise<void>[]): Promise<void> {
@@ -356,6 +358,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
       cascade = await killSubagentRunTree({
         cfg: params.cfg,
         suppressTaskDelivery: params.suppressTaskDelivery,
+        preservePendingInputs: params.preservePendingInputs,
         suppressCompletedWakes: !stopped.result.error && !stopped.result.completedCleanupError,
         scope: params.scope,
         trees: params.tree.children,
@@ -377,6 +380,7 @@ export async function killAllControlledSubagentRuns(params: {
   runs: SubagentRunRecord[];
   assertCurrent?: () => void;
   suppressTaskDelivery?: boolean;
+  preservePendingInputs?: true;
   /** False declines traversal; the scope still releases every reservation hold. */
   beforeKill?: () => boolean | Promise<boolean>;
 }) {
@@ -420,6 +424,7 @@ export async function killSessionSubagentRuns(params: {
 async function killSelectedSubagentRuns(
   params: KillSelection & {
     suppressTaskDelivery?: boolean;
+    preservePendingInputs?: true;
     beforeKill?: () => boolean | Promise<boolean>;
   },
 ) {
@@ -433,6 +438,7 @@ async function killSelectedSubagentRuns(
     const stopped = await killSubagentRunTree({
       cfg: params.cfg,
       suppressTaskDelivery: params.suppressTaskDelivery,
+      preservePendingInputs: params.preservePendingInputs,
       trees: acceptedTrees,
       scope,
     });
@@ -457,6 +463,7 @@ export async function killSubagentRunAdmin(
     assertCurrent: () => void;
     prepareRead?: () => Promise<void> | undefined;
     beforeSessionKill?: () => boolean;
+    preservePendingInputs?: true;
     preparePublication?: KillPublicationPreparation<SubagentAdminKillResult>;
   },
 ): Promise<SubagentAdminKillResult> {
@@ -507,6 +514,7 @@ export async function killSubagentRunAdmin(
         tree,
         scope,
         beforeSessionKill: control?.beforeSessionKill,
+        preservePendingInputs: control?.preservePendingInputs,
         expectedGeneration: params.expectedGeneration,
         expectedOwnerKey: params.expectedOwnerKey?.trim() || undefined,
       });

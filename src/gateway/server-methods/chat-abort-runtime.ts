@@ -41,13 +41,14 @@ import { resolveSessionStoreKey } from "../session-utils.js";
 import type { WorkerInferenceCancellation } from "../worker-environments/inference-control-internal.js";
 import {
   canRequesterAbortChatRun,
+  isDetachedChatInputController,
   resolveAuthorizedPreRegisteredRunsForSessionKeys,
   resolveAuthorizedRunsForSessionKeys,
   resolveAuthorizedQueuedTurnsForSession,
   writePreRegisteredAgentAbort,
   writePreRegisteredChatAbort,
-  type ChatAbortRequester,
 } from "./chat-abort-authorization.js";
+import type { ChatSessionAbortParams, ChatSessionAbortResult } from "./chat-abort-runtime.types.js";
 import {
   createQueuedCollectorPublication,
   getQueuedCollectorCancellationRunId,
@@ -59,8 +60,6 @@ import {
   withQueuedCollectorWarning,
   type QueuedCollectorAbortOutcome,
   type AbortedPartialSnapshot,
-  type ChatAbortOrigin,
-  type ChatAbortSessionSnapshot,
 } from "./chat-aborted-partial.js";
 import { persistAbortedPartials } from "./chat-transcript-persistence.js";
 import type { GatewayRequestContext } from "./types.js";
@@ -70,6 +69,7 @@ export async function abortControlledSubagents(params: {
   sessionKey: string;
   agentId?: string;
   requesterTurnRunId?: string;
+  preservePendingInputs?: true;
   assertCurrent?: () => void;
   beforeKill?: Parameters<typeof killAllControlledSubagentRuns>[0]["beforeKill"];
 }) {
@@ -88,6 +88,7 @@ export async function abortControlledSubagents(params: {
     controller,
     runs,
     suppressTaskDelivery: true,
+    preservePendingInputs: params.preservePendingInputs,
     assertCurrent: params.assertCurrent,
     beforeKill: params.beforeKill,
   });
@@ -256,6 +257,7 @@ export function abortQueuedCollectorSession(
         },
         {
           assertCurrent,
+          preservePendingInputs: params.preservePendingInputs,
           preparePublication: publication,
           beforeSessionKill: () => {
             // Resolve Gateway owners under the kill runtime's session fence.
@@ -330,7 +332,6 @@ type ChatSessionAbortParams = {
   requiredSessionId?: string;
   session?: ChatAbortSessionSnapshot;
   defaultAgentId?: string;
-  abortOrigin: ChatAbortOrigin;
   stopReason?: string;
   stopActor?: import("../../infra/run-stop-actor.js").VerifiedRunStopActor;
   requester: ChatAbortRequester;
@@ -357,7 +358,6 @@ type ChatSessionAbortResult = {
   warning?: string;
   descendants?: Awaited<ReturnType<typeof abortControlledSubagents>>;
 };
-
 /** Resolve once at the cancellation boundary; persist captured partials only after Stop. */
 function prepareChatSessionAbort(
   params: ChatSessionAbortParams,
@@ -371,6 +371,7 @@ function prepareChatSessionAbort(
     agentId: params.agentId,
     defaultAgentId: params.defaultAgentId,
     requester: params.requester,
+    preservePendingInputs: params.preservePendingInputs,
   };
   const queuedPlan = resolveAuthorizedQueuedTurnsForSession({
     ...ownerScope,
@@ -385,7 +386,13 @@ function prepareChatSessionAbort(
     hasProtectedRuns: hasProtectedActiveRuns,
   } = resolveAuthorizedRunsForSessionKeys({
     ...ownerScope,
-    chatAbortControllers: params.context.chatAbortControllers,
+    chatAbortControllers: params.preservePendingInputs
+      ? new Map(
+          [...params.context.chatAbortControllers].filter(
+            ([runId, entry]) => !isDetachedChatInputController(params.context, runId, entry),
+          ),
+        )
+      : params.context.chatAbortControllers,
     sessionIds: [params.sessionId],
     preserveSideRuns: params.preserveSideRuns,
     includeProtectedRuns: params.includeProtectedRuns,
@@ -395,6 +402,7 @@ function prepareChatSessionAbort(
       ...ownerScope,
       context: params.context,
       keyPrefix,
+      preservePendingInputs: params.preservePendingInputs,
       preserveSideRuns: params.preserveSideRuns,
       includeProtectedRuns: params.includeProtectedRuns,
     });
@@ -443,6 +451,15 @@ function prepareChatSessionAbort(
     }
   };
   const cancelWorker = () => {
+    // Provider interruption is cleanup of an accepted host execution, never
+    // evidence that a different logical run has stopped. Embedded owners carry
+    // their own worker signal; this adapter only owns represented controllers.
+    if (
+      params.preservePendingInputs &&
+      workerCancellation?.runIds.some((runId) => !result.runIds.includes(runId))
+    ) {
+      return;
+    }
     workerCancellationPersistence = workerCancellation?.cancel({
       assertCurrent: params.assertCurrent,
       onCancelled: recordRun,
@@ -470,7 +487,12 @@ function prepareChatSessionAbort(
       // With no owned Gateway run, the exact persisted session is the boundary,
       // matching sessions.steer's operator.write behavior for ownerless work.
       abortAdditional();
-      if (!hasWorkerRun || !params.requester.isAdmin || !canCancelWorkerSession) {
+      if (
+        !hasWorkerRun ||
+        !params.requester.isAdmin ||
+        !canCancelWorkerSession ||
+        (params.preservePendingInputs && !result.aborted)
+      ) {
         return;
       }
       params.assertCurrent?.();
@@ -580,7 +602,11 @@ function prepareChatSessionAbort(
         recordRun(runId);
       }
     }
-    if (params.requester.isAdmin && canCancelWorkerSession) {
+    if (
+      params.requester.isAdmin &&
+      canCancelWorkerSession &&
+      (!params.preservePendingInputs || result.aborted)
+    ) {
       params.assertCurrent?.();
       cancelWorker();
     }
@@ -589,7 +615,9 @@ function prepareChatSessionAbort(
     matchedActiveRunIds.some((runId) => runId !== selectedRunId) ||
     queuedPlan.matchedRunIds.some((runId) => runId !== selectedRunId) ||
     pendingPlans.some((plan) => plan.matchedRunIds.some((runId) => runId !== selectedRunId)) ||
-    (hasWorkerRun && (!selectedRunId || !workerCancellation?.runIds.includes(selectedRunId)));
+    (hasWorkerRun &&
+      (!params.preservePendingInputs || hasControllerRepresentedWorkerRun) &&
+      (!selectedRunId || !workerCancellation?.runIds.includes(selectedRunId)));
   return {
     canCascade: canRunLifecycleCleanup && !hasUnauthorizedLifecycleOwner,
     hasOtherWork,
@@ -653,6 +681,7 @@ export async function abortChatRunsForSessionKeyWithPartials(
         cfg: params.session?.ok ? params.session.value.cfg : params.context.getRuntimeConfig(),
         sessionKey: params.sessionKey,
         agentId: params.agentId,
+        preservePendingInputs: params.preservePendingInputs,
         assertCurrent: params.assertCurrent,
         beforeKill: () => {
           plan.abort();

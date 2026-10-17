@@ -47,7 +47,10 @@ import { getSessionRowProjection } from "../session-row-projection-access.js";
 import { resolveSessionStoreKey } from "../session-store-key.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
-import { resolveChatAbortRequester } from "./chat-abort-authorization.js";
+import {
+  isDetachedChatInputController,
+  resolveChatAbortRequester,
+} from "./chat-abort-authorization.js";
 import { handleChatAbortRequestWithLifecycle } from "./chat-abort-handler.js";
 import {
   abortControlledSubagents,
@@ -322,6 +325,18 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       assertCurrent: assertAbortCurrent,
     });
     assertAbortCurrent();
+    if (stopActor && clearQueued) {
+      respond(
+        false,
+        undefined,
+        errorShape(
+          ErrorCodes.INVALID_REQUEST,
+          "Conversation Stop cannot clear pending inputs; withdraw each input through its owner.",
+        ),
+      );
+      return;
+    }
+    const preservePendingInputs = stopActor ? (true as const) : undefined;
     const queueKeys = [key, ...(requestedKeyAliases ?? []), canonicalKey, sessionEntry?.sessionId];
     const clearCapturedFollowups =
       narrow && clearQueued && !requestedRunId && requiredSessionId
@@ -362,13 +377,19 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         },
       });
     // Controller-backed runs must keep the requester checks and lifecycle cleanup below.
-    if (embeddedRun && !activeRun) {
+    if (
+      embeddedRun &&
+      (!activeRun ||
+        (preservePendingInputs &&
+          isDetachedChatInputController(context, requestedRunId!, activeRun)))
+    ) {
       let aborted = false;
       const descendants = await abortControlledSubagents({
         cfg,
         sessionKey: embeddedRun.sessionKey ?? canonicalKey,
         agentId: targetAgentId,
         requesterTurnRunId: embeddedRun.runId,
+        preservePendingInputs,
         assertCurrent: assertAbortCurrent,
         // A captured handle may decline Stop. Hold its children before signaling,
         // but authorize their cancellation only when this exact parent accepts.
@@ -543,6 +564,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       abortOrigin: "rpc",
       stopReason: "rpc",
       stopActor,
+      preservePendingInputs,
       requester,
       assertCurrent: assertAbortCurrent,
       onAuthorizedAfterQueuedAbort,
@@ -630,6 +652,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       ),
       {
         stopActor,
+        preservePendingInputs,
         ...(onAuthorizedAfterQueuedAbort ? { onAuthorizedAfterQueuedAbort } : {}),
         ...(!requestedRunId ? { cascadeDescendants: true as const } : {}),
         onDescendantsCancelled: () => {

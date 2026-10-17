@@ -4,14 +4,16 @@ import {
   normalizeTrimmedStringList,
   uniqueStrings,
 } from "@openclaw/normalization-core/string-normalization";
+import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { isPersonRunStopReason, type VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import {
   isChatAbortTerminalPersistenceSettled,
   isCurrentChatAbortExecution,
 } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
-import { listQueuedChatTurnsForSession } from "../chat-queued-turns.js";
+import { isQueuedChatTurnForSession, listQueuedChatTurnsForSession } from "../chat-queued-turns.js";
 import { chatRunBelongsToAgent, resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { ADMIN_SCOPE } from "../method-scopes.js";
 import { createChatAbortMarker } from "../server-chat-state.js";
@@ -59,6 +61,18 @@ type PreRegisteredAgentRun = {
   sessionKey: string;
   payload: PreRegisteredAgentDedupePayload;
 };
+
+/** A detached source may retain a cancel-only controller after its RPC settles. */
+export function isDetachedChatInputController(
+  context: Pick<GatewayRequestContext, "chatQueuedTurns">,
+  runId: string,
+  entry: ChatAbortControllerEntry,
+): boolean {
+  return (
+    context.chatQueuedTurns.get(runId)?.controller === entry.controller &&
+    isQueuedChatTurnForSession(context.chatQueuedTurns, runId, entry)
+  );
+}
 
 export function buildAbortedChatSendPayload(params: {
   runId: string;
@@ -376,11 +390,15 @@ export function resolveAuthorizedPreRegisteredRunsForSessionKeys(params: {
   defaultAgentId?: string;
   requester: ChatAbortRequester;
   keyPrefix: string;
+  preservePendingInputs?: true;
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
 }) {
   const sessionKeys = new Set(normalizeTrimmedStringList([...params.sessionKeys]));
   const selection = createChatAbortRunSelection<PreRegisteredAgentRun>();
+  if (params.preservePendingInputs) {
+    return selection.result();
+  }
   for (const [key, entry] of params.context.dedupe) {
     const run = readPreRegisteredRun({
       key,
@@ -506,15 +524,18 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
   agentId?: string;
   defaultAgentId?: string;
   requester: ChatAbortRequester;
+  preservePendingInputs?: true;
 }) {
-  const matches = listQueuedChatTurnsForSession({
-    chatQueuedTurns: params.context.chatQueuedTurns,
-    sessionKeys: params.sessionKeys,
-    sessionIds: [params.sessionId],
-    requiredSessionId: params.requiredSessionId,
-    agentId: params.agentId,
-    defaultAgentId: params.defaultAgentId,
-  });
+  const matches = params.preservePendingInputs
+    ? []
+    : listQueuedChatTurnsForSession({
+        chatQueuedTurns: params.context.chatQueuedTurns,
+        sessionKeys: params.sessionKeys,
+        sessionIds: [params.sessionId],
+        requiredSessionId: params.requiredSessionId,
+        agentId: params.agentId,
+        defaultAgentId: params.defaultAgentId,
+      });
   const authorized = matches
     .filter((match) => canRequesterAbortChatRun(match.entry, params.requester))
     .map((match) => ({
@@ -572,4 +593,91 @@ export function hasGatewaySessionAbortOwner(params: SessionAbortOwnerParams): bo
         }).authorizedRuns.length > 0,
     )
   );
+}
+
+export type ChatAbortTarget = Pick<
+  ChatAbortControllerEntry,
+  "sessionKey" | "sessionId" | "agentId" | "ownerConnId" | "ownerDeviceId"
+>;
+
+/** Retain exact source/session and requester checks for explicit cancellation. */
+export function createChatAbortTargetAuthorizer(params: {
+  requester: ChatAbortRequester;
+  respond: GatewayRequestHandlerOptions["respond"];
+  discardPendingInput?: boolean;
+  narrow: boolean;
+  requiredSessionId?: string;
+  rawSessionKey: string;
+  canonicalAbortSessionKey: string;
+  abortAgentId?: string;
+  compatibilityDefaultAgentId?: string;
+}) {
+  const {
+    requester,
+    respond,
+    discardPendingInput,
+    narrow,
+    requiredSessionId,
+    rawSessionKey,
+    canonicalAbortSessionKey,
+    abortAgentId,
+    compatibilityDefaultAgentId,
+  } = params;
+  const normalizedAgentIdOverride = normalizeAgentId(abortAgentId);
+  return (target: ChatAbortTarget): boolean => {
+    if (
+      discardPendingInput &&
+      target.sessionKey !== rawSessionKey &&
+      target.sessionKey !== canonicalAbortSessionKey
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "discarded input runId does not match sessionKey"),
+      );
+      return false;
+    }
+    if (narrow && target.sessionId !== requiredSessionId) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match session incarnation"),
+      );
+      return false;
+    }
+    if (
+      target.sessionKey !== rawSessionKey &&
+      target.sessionKey !== canonicalAbortSessionKey &&
+      (narrow || !canRequesterAbortChatRun(target, requester, { requireOwnerMatch: true }))
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match sessionKey"),
+      );
+      return false;
+    }
+    if (
+      !chatRunBelongsToAgent(
+        {
+          agentId: target.agentId,
+          sessionKey: target.sessionKey,
+          defaultAgentId: compatibilityDefaultAgentId,
+        },
+        normalizedAgentIdOverride,
+      )
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "runId does not match agentId"),
+      );
+      return false;
+    }
+    if (!canRequesterAbortChatRun(target, requester)) {
+      respond(false, undefined, errorShape(ErrorCodes.INVALID_REQUEST, "unauthorized"));
+      return false;
+    }
+    return true;
+  };
 }

@@ -291,6 +291,7 @@ export async function prepareInitialSessionWriter(params: {
   const admission = await beginSessionWorkAdmission({
     scope: presence.storePath,
     identities: [ownerTarget.sessionKey, presence.sessionKey, ownerTarget.sessionId],
+    executionRunId: runParams.runId,
     signal,
     assertAllowed: assertAbsent,
     onInterrupt: (reason) => {

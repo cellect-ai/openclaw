@@ -201,6 +201,7 @@ async function agentCommandInternal(
     sessionWorkAdmission = await beginSessionWorkAdmission({
       scope: storePath ?? `agent:${sessionAgentId}`,
       identities: [sessionKey, sessionId],
+      executionRunId: runId,
       signal: opts.abortSignal,
       onInterrupt: (reason) =>
         lifecycleAbortController.abort(

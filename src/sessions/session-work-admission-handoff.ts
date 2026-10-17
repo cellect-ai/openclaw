@@ -12,6 +12,8 @@ export type SessionWorkAdmissionLease = {
 };
 
 export type HandoffSessionWorkAdmission = {
+  /** Host execution owner; absent on unbound or input-only admission. */
+  executionRunId?: string;
   handoffIds: Set<string>;
   identities: ReadonlySet<string>;
   interrupt?: SessionWorkAdmissionInterrupt;
@@ -56,6 +58,7 @@ export function consumeSessionWorkAdmissionHandoff(params: {
   scope: string;
   identities: Iterable<string | undefined>;
   onInterrupt?: SessionWorkAdmissionInterrupt;
+  executionRunId?: string;
 }): SessionWorkAdmissionLease | undefined {
   const handoffId = params.handoffId.trim();
   if (!handoffId) {
@@ -68,12 +71,18 @@ export function consumeSessionWorkAdmissionHandoff(params: {
   const identities = normalizeSessionIdentities(params.scope, params.identities);
   if (
     identities.length === 0 ||
-    identities.some((identity) => !handoff.admission.identities.has(identity))
+    identities.some((identity) => !handoff.admission.identities.has(identity)) ||
+    (params.executionRunId !== undefined &&
+      handoff.admission.executionRunId !== undefined &&
+      params.executionRunId !== handoff.admission.executionRunId)
   ) {
     return undefined;
   }
   SESSION_WORK_ADMISSION_HANDOFFS.delete(handoffId);
   handoff.admission.handoffIds.delete(handoffId);
+  if (params.executionRunId !== undefined) {
+    handoff.admission.executionRunId = params.executionRunId;
+  }
   handoff.admission.interrupt = params.onInterrupt;
   if (handoff.admission.interrupted) {
     params.onInterrupt?.(handoff.admission.interrupted);

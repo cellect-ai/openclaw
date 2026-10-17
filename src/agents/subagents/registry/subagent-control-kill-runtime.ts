@@ -59,6 +59,8 @@ export async function mutateSubagentRunForKill(
     stateContext: OpenClawStateWorkerContext;
     cancellationControl: SubagentCancellationControl;
     suppressTaskDelivery?: boolean;
+    /** Stop the selected execution without withdrawing unrelated input custody. */
+    preservePendingInputs?: true;
     beforeSessionKill?: () => boolean;
     isCurrent: (entry: SubagentRunRecord, requirePreparedSession?: boolean) => boolean;
     withdrawQueuedReservation: () => void;
@@ -416,6 +418,7 @@ export async function mutateSubagentRunForKill(
         scope: resolved.storePath,
         identities: [childSessionKey, sessionId],
         reason: createAgentRunDirectAbortError(),
+        ...(params.preservePendingInputs ? { executionRunId: params.entry.runId } : {}),
       });
       const interruptedSelectedRun = () => {
         const selected = currentEntry();
@@ -619,7 +622,19 @@ export async function mutateSubagentRunForKill(
         if (!killOwnerCurrent()) {
           return { killed: false, superseded: true };
         }
-        const aborted = sessionId ? runtime.abortEmbeddedAgentRun(sessionId) : false;
+        const executionOwner = params.preservePendingInputs
+          ? runtime.resolveActiveEmbeddedRunOwnerByRunId(params.entry.runId)
+          : undefined;
+        const aborted = params.preservePendingInputs
+          ? Boolean(
+              executionOwner &&
+              executionOwner.sessionId === sessionId &&
+              executionOwner.sessionKey === childSessionKey &&
+              executionOwner.abort(),
+            )
+          : sessionId
+            ? runtime.abortEmbeddedAgentRun(sessionId)
+            : false;
         stopAcceptance.accepted ||= aborted;
         if (!ownsSessionIncarnation()) {
           return releaseChangedSessionKill(claimedKill);
@@ -630,26 +645,28 @@ export async function mutateSubagentRunForKill(
             ? await settleTargetCancellation()
             : declinedBeforeQueueClear;
         }
-        if (!killOwnerCurrent()) {
-          return { killed: false, superseded: true };
-        }
-        const cleared = runtime.clearSessionLifecycleQueues({
-          keys: [childSessionKey, sessionId],
-          agentId: resolved.agentId,
-          sessionKey: childSessionKey,
-          sessionId,
-          assertCurrent: () => {
-            assertState();
-            params.cancellationControl.assertCurrent();
-            if (!killOwnerCurrent()) {
-              throw new Error("Subagent queue cleanup lost its original kill claim.");
-            }
-          },
-        });
-        if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
-          logVerbose(
-            `subagents control kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
-          );
+        if (!params.preservePendingInputs) {
+          if (!killOwnerCurrent()) {
+            return { killed: false, superseded: true };
+          }
+          const cleared = runtime.clearSessionLifecycleQueues({
+            keys: [childSessionKey, sessionId],
+            agentId: resolved.agentId,
+            sessionKey: childSessionKey,
+            sessionId,
+            assertCurrent: () => {
+              assertState();
+              params.cancellationControl.assertCurrent();
+              if (!killOwnerCurrent()) {
+                throw new Error("Subagent queue cleanup lost its original kill claim.");
+              }
+            },
+          });
+          if (cleared.followupCleared > 0 || cleared.laneCleared > 0) {
+            logVerbose(
+              `subagents control kill: cleared followups=${cleared.followupCleared} lane=${cleared.laneCleared} keys=${cleared.keys.join(",")}`,
+            );
+          }
         }
         if (active && !stopAcceptance.accepted) {
           return stillActive();

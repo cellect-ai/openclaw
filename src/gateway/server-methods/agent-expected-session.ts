@@ -89,6 +89,7 @@ export function consumeExpectedSessionWorkAdmission(params: {
   identities: Iterable<string | undefined>;
   onInterrupt: SessionWorkAdmissionInterrupt;
   scope: string;
+  executionRunId?: string;
 }): SessionWorkAdmissionLease | undefined {
   const handoffId = params.constraint?.handoffId;
   if (!handoffId) {
@@ -99,6 +100,7 @@ export function consumeExpectedSessionWorkAdmission(params: {
     scope: params.scope,
     identities: params.identities,
     onInterrupt: params.onInterrupt,
+    executionRunId: params.executionRunId,
   });
   if (!lease) {
     throw new Error("session work admission handoff is unavailable");
