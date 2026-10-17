@@ -321,43 +321,6 @@ export function abortQueuedCollectorSession(
   })();
 }
 
-type ChatSessionAbortParams = {
-  context: GatewayRequestContext;
-  ops: ChatAbortOps;
-  sessionKey: string;
-  sessionKeyAliases?: string[];
-  agentId?: string;
-  sessionId?: string;
-  /** Supplied only by narrow admission, from its original materialized target. */
-  requiredSessionId?: string;
-  session?: ChatAbortSessionSnapshot;
-  defaultAgentId?: string;
-  stopReason?: string;
-  stopActor?: import("../../infra/run-stop-actor.js").VerifiedRunStopActor;
-  requester: ChatAbortRequester;
-  assertCurrent?: () => void;
-  preserveSideRuns?: boolean;
-  cascadeDescendants?: true;
-  /** Exact lifecycle owners may include hidden and side runs for this one session. */
-  includeProtectedRuns?: boolean;
-  /** Captures exact registrations before cancellation can remove them. */
-  onControllerTargets?: (
-    targets: Array<{ runId: string; entry: ChatAbortControllerEntry }>,
-  ) => void;
-  /** Internal session-wide cleanup after exact resolution and all matching owner checks. */
-  onAuthorizedAfterQueuedAbort?: () => boolean;
-  /** Runs after authorized synchronous abort, before terminal/partial persistence can yield. */
-  onCancellationStarted?: () => void;
-};
-
-type ChatSessionAbortResult = {
-  aborted: boolean;
-  runIds: string[];
-  unauthorized: boolean;
-  error?: ErrorShape;
-  warning?: string;
-  descendants?: Awaited<ReturnType<typeof abortControlledSubagents>>;
-};
 /** Resolve once at the cancellation boundary; persist captured partials only after Stop. */
 function prepareChatSessionAbort(
   params: ChatSessionAbortParams,

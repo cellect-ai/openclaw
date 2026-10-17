@@ -11,11 +11,7 @@ import { isIncognitoSessionKey, normalizeAgentId } from "../../routing/session-k
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
-import {
-  abortChatRunById,
-  isChatAbortControllerEntryAbortable,
-  type ChatAbortControllerEntry,
-} from "../chat-abort.js";
+import { abortChatRunById, isChatAbortControllerEntryAbortable } from "../chat-abort.js";
 import { abortQueuedChatTurnById, isQueuedChatTurnForSession } from "../chat-queued-turns.js";
 import { formatStopRequest } from "../control-plane-audit.js";
 import { pendingChatSendDedupeKey, type DedupeEntry } from "../server-shared.js";

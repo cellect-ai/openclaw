@@ -63,7 +63,7 @@ it("does not revoke an unbound pending admission while stopping an exact pending
   const identities = ["pending-session"];
   const entered = createDeferred();
   const release = createDeferred();
-  const blocker = runExclusiveSessionLifecycleMutation({
+  const blocker = runExclusiveSessionLifecycleMutation("patch", {
     scope,
     identities,
     prepare: async () => {
