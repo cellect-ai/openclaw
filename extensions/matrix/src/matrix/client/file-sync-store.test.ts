@@ -118,7 +118,6 @@ describe("SqliteBackedMatrixSyncStore", () => {
   });
 
   it("persists a large unicode sync snapshot in bounded chunks without retaining old generations", async () => {
-    const storageRoot = createStorageRoot();
     const syncResponse = createSyncResponse("large-unicode-token");
     const body = 'Matrix says "hello" 🟢 '.repeat(30_000);
     syncResponse.rooms.join!["!room:example.org"]!.timeline!.events[0]!.content = {

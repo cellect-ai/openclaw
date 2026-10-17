@@ -76,6 +76,26 @@ function disconnectWithTools(functionCalls = [{ id: "call-1", name: "lookup", ar
   });
   lastConnectParams().callbacks.onclose({ code: 1011, reason: "temporary" });
 }
+function requireFirstMockArg(mock: ReturnType<typeof vi.fn>, label: string): unknown {
+  const [call] = mock.mock.calls;
+  if (!call) {
+    throw new Error(`expected ${label}`);
+  }
+  return call[0];
+}
+
+function requireFirstError(mock: ReturnType<typeof vi.fn>): { message?: string } {
+  const error = requireFirstMockArg(mock, "Google Live error");
+  if (!error || typeof error !== "object" || Array.isArray(error)) {
+    throw new Error("expected Google Live error");
+  }
+  return error as { message?: string };
+}
+
+function requireFirstAudio(mock: ReturnType<typeof vi.fn>): unknown {
+  return requireFirstMockArg(mock, "Google Live audio");
+}
+
 function createRealtimeTool(name: string): RealtimeVoiceTool {
   return {
     type: "function",
@@ -386,6 +406,9 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
   });
 
   it("creates constrained browser sessions for Google Live Talk", async () => {
+    vi.useFakeTimers();
+    const now = Date.UTC(2026, 7, 1, 12, 34, 56, 789);
+    vi.setSystemTime(now);
     const provider = buildGoogleRealtimeVoiceProvider();
 
     const sessionLocal = await provider.createBrowserSession?.({

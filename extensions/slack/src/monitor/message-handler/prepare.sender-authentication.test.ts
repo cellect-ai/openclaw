@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { describe, expect, it } from "vitest";
 import type { SlackMessageEvent } from "../../types.js";
 import { prepareSlackMessage } from "./prepare.js";
 import {
@@ -8,8 +8,6 @@ import {
 } from "./prepare.test-helpers.js";
 
 const store = createSlackSessionStoreFixture("slack-sender-authentication-");
-beforeAll(() => store.setup());
-afterAll(() => store.cleanup());
 
 describe("Slack sender authentication on the prepared turn", () => {
   it.each(["verified", "asserted", undefined] as const)(

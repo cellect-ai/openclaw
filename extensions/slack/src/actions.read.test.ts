@@ -9,9 +9,13 @@ vi.mock("./client.js", () => ({
 }));
 function createClient() {
   return {
-    conversations: { replies: vi.fn(), history: vi.fn() },
+    conversations: { replies: vi.fn(), history: vi.fn(), info: vi.fn() },
   } as unknown as WebClient & {
-    conversations: { replies: ReturnType<typeof vi.fn>; history: ReturnType<typeof vi.fn> };
+    conversations: {
+      replies: ReturnType<typeof vi.fn>;
+      history: ReturnType<typeof vi.fn>;
+      info: ReturnType<typeof vi.fn>;
+    };
   };
 }
 type Bounds = { oldest?: string; latest?: string; inclusive?: boolean; limit?: number };
@@ -188,6 +192,40 @@ describe("Slack read actions", () => {
       limit: undefined,
       latest: "2.000001",
       oldest: "1.000001",
+    });
+
+  });
+
+  it("renders attachment tables in thread reads", async () => {
+    const client = createClient();
+    client.conversations.replies.mockResolvedValueOnce({
+      messages: [
+        { ts: "1.000", text: "parent" },
+        {
+          ts: "1.001",
+          text: "Thread data",
+          attachments: [
+            {
+              blocks: [
+                {
+                  type: "table",
+                  rows: [
+                    [{ type: "raw_text", text: "Name" }],
+                    [{ type: "raw_text", text: "Example A" }],
+                  ],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+      has_more: false,
+    });
+
+    const result = await readSlackMessages("C1", {
+      client,
+      threadId: "1.000",
+      token: "xoxb-test",
     });
 
     expect(result.messages.map((message) => message.text)).toEqual([

@@ -86,7 +86,7 @@ async function fixture(
       OriginatingTo: "channel:C1",
       MessageThreadId: "1.000",
     },
-    turn: { record: {} },
+    turn: { storePath: "/unused/slack-status-test", record: {} },
     replyToMode: "all",
     isDirectMessage: false,
     isRoomish: true,

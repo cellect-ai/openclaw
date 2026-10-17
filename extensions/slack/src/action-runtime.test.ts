@@ -383,7 +383,6 @@ describe("handleSlackAction", () => {
     expect(getSlackMemberInfo).toHaveBeenCalledWith("U999", { cfg, teamId: "T123" });
     expect(requireDetails(result)).toMatchObject({ ok: true, info: { user: { id: "U999" } } });
   });
-  });
 
   it("scopes every message and pin write to the trusted current workspace", async () => {
     await handleSlackAction({ ...send, content: "created" }, cfg, trustedContext);
@@ -485,6 +484,47 @@ describe("handleSlackAction", () => {
   }
 
   const requireRecord = createRequireRecord("object", "label-not-object");
+
+  function requireArray(value: unknown, label: string): unknown[] {
+    expect(Array.isArray(value)).toBe(true);
+    if (!Array.isArray(value)) {
+      throw new Error(`${label} was not an array`);
+    }
+    return value;
+  }
+
+  function requireMockCall(
+    source: { mock: { calls: unknown[][] } },
+    label: string,
+    index = 0,
+  ): unknown[] {
+    const call = source.mock.calls[index];
+    if (!call) {
+      throw new Error(`missing ${label} call ${index + 1}`);
+    }
+    return call;
+  }
+
+  function requireMockArg(
+    source: { mock: { calls: unknown[][] } },
+    label: string,
+    callIndex: number,
+    argIndex: number,
+  ): unknown {
+    return requireMockCall(source, label, callIndex)[argIndex];
+  }
+
+  function requireRecordArg(
+    source: { mock: { calls: unknown[][] } },
+    label: string,
+    callIndex: number,
+    argIndex: number,
+  ): Record<string, unknown> {
+    return requireRecord(
+      requireMockArg(source, label, callIndex, argIndex),
+      `${label} call ${callIndex + 1} argument ${argIndex + 1}`,
+    );
+  }
 
   function expectSlackSendCall(
     index: number,
@@ -783,6 +823,7 @@ describe("handleSlackAction", () => {
     await expect(
       handleSlackAction({ ...send, content: "", blocks: "{not json" }, cfg),
     ).rejects.toThrow(/blocks must be valid JSON/i);
+  });
 
   it("stages downloaded files into the trusted agent workspace", async () => {
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-slack-download-"));

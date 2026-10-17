@@ -448,6 +448,18 @@ function twilioJoinRequest() {
 
 const requireRecord = createRequireRecord("record", "expected-label-object-capitalized");
 
+function mockCall(mock: { mock: { calls: unknown[][] } }, callIndex = 0): unknown[] {
+  const call = mock.mock.calls.at(callIndex);
+  if (!call) {
+    throw new Error(`Expected mock call at index ${callIndex}`);
+  }
+  return call;
+}
+
+function mockCallArg(mock: { mock: { calls: unknown[][] } }, argIndex: number, callIndex = 0) {
+  return mockCall(mock, callIndex)[argIndex];
+}
+
 function requireSetupCheck(checks: unknown[] | undefined, id: string): Record<string, unknown> {
   const check = checks
     ?.map((item) => requireRecord(item, "setup check"))
@@ -3499,8 +3511,6 @@ describe("google-meet plugin", () => {
       fullConfig,
       runtime: runtime as never,
       meetingSessionId: "meet-1",
-      inputCommand: ["capture-meet"],
-      outputCommand: ["play-meet"],
       logger: noopLogger,
       providers: [provider],
       spawn: spawnMock,
@@ -3677,8 +3687,6 @@ describe("google-meet plugin", () => {
       fullConfig: { models: { providers: {} } } as never,
       runtime: {} as never,
       meetingSessionId: "meet-1",
-      inputCommand: ["capture-meet"],
-      outputCommand: ["play-meet"],
       logger: noopLogger,
       providers: [provider],
       spawn: spawnMock,

@@ -75,10 +75,7 @@ describe("WebChat completion Slack continuation", () => {
           ts: "1770408540.000000",
           ...(threadTs ? { thread_ts: threadTs, parent_user_id: "B1" } : {}),
         } as SlackMessageEvent,
-        isDirectMessage: true,
-        isGroupDm: false,
-        isRoom: false,
-        isRoomish: false,
+        chatType: "direct",
       });
 
     try {

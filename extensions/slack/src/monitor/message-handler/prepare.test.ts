@@ -125,6 +125,17 @@ function createSlackMessage(overrides: Partial<SlackMessageEvent>): SlackMessage
   };
 }
 
+type PreparedSlackMessage = NonNullable<Awaited<ReturnType<typeof prepareSlackMessage>>>;
+
+function assertPrepared(
+  prepared: Awaited<ReturnType<typeof prepareSlackMessage>>,
+  label = "Slack message",
+): asserts prepared is PreparedSlackMessage {
+  if (!prepared) {
+    throw new Error(`Expected ${label} to be prepared`);
+  }
+}
+
 describe("slack prepareSlackMessage inbound contract", () => {
   const storeFixture = createSlackSessionStoreFixture("openclaw-slack-thread-");
 
@@ -3054,28 +3065,6 @@ describe("slack implicit mention policy", () => {
 
   beforeEach(clearSlackThreadParticipationCache);
 
-  function prepareThreadMessage(
-    eventScope?: SlackEventScope,
-    options: Pick<
-      Parameters<typeof createInboundSlackTestContext>[0],
-      "channelsConfig" | "groupPolicy"
-    > = {},
-  ) {
-    const channelsConfig = options.channelsConfig ?? { C123: { requireMention: true } };
-    const ctx = createInboundSlackTestContext({
-      cfg: {
-        channels: {
-          slack: { enabled: true, channels: channelsConfig, groupPolicy: options.groupPolicy },
-        },
-        session: { store: storeFixture.makeTmpStorePath().storePath },
-      },
-      channelsConfig,
-      groupPolicy: options.groupPolicy,
-    });
-    ctx.resolveUserName = async () => ({ name: "Alice" });
-    return ctx;
-  }
-
   async function prepareThreadMessage(params: {
     ctx: SlackMonitorContext;
     message?: Partial<SlackMessageEvent>;
@@ -3089,7 +3078,7 @@ describe("slack implicit mention policy", () => {
     ).mockReturnValue(storePath);
     return await prepareSlackMessage({
       ctx: params.ctx,
-      account: params.account ?? createSlackTestAccount(),
+      account: params.account ?? createSlackAccount(),
       message: {
         type: "message",
         channel: "C123",
@@ -3120,8 +3109,8 @@ describe("slack implicit mention policy", () => {
     const fiUserContext = createInboundSlackTestContext({ cfg, accountId: "fi-user" });
     fiAdminContext.resolveUserName = async () => ({ name: "Alice" });
     fiUserContext.resolveUserName = async () => ({ name: "Alice" });
-    const fiAdminAccount = { ...createSlackTestAccount(), accountId: "fi-admin" };
-    const fiUserAccount = { ...createSlackTestAccount(), accountId: "fi-user" };
+    const fiAdminAccount = { ...createSlackAccount(), accountId: "fi-admin" };
+    const fiUserAccount = { ...createSlackAccount(), accountId: "fi-user" };
     recordSlackThreadParticipation("fi-admin", "C123", threadTs);
     recordSlackThreadParticipation("fi-user", "C123", threadTs);
 
@@ -3157,8 +3146,8 @@ describe("slack implicit mention policy", () => {
     const fiUserContext = createInboundSlackTestContext({ cfg, accountId: "fi-user" });
     fiAdminContext.resolveUserName = async () => ({ name: "Alice" });
     fiUserContext.resolveUserName = async () => ({ name: "Alice" });
-    const fiAdminAccount = { ...createSlackTestAccount(), accountId: "fi-admin" };
-    const fiUserAccount = { ...createSlackTestAccount(), accountId: "fi-user" };
+    const fiAdminAccount = { ...createSlackAccount(), accountId: "fi-admin" };
+    const fiUserAccount = { ...createSlackAccount(), accountId: "fi-user" };
     recordSlackThreadParticipation("fi-admin", "C123", threadTs);
     recordSlackThreadParticipation("fi-user", "C123", threadTs);
 
@@ -3217,11 +3206,11 @@ describe("slack implicit mention policy", () => {
     return {
       fiAdmin: {
         ctx: fiAdmin,
-        account: { ...createSlackTestAccount(), accountId: "fi-admin" },
+        account: { ...createSlackAccount(), accountId: "fi-admin" },
       },
       fiUser: {
         ctx: fiUser,
-        account: { ...createSlackTestAccount(), accountId: "fi-user" },
+        account: { ...createSlackAccount(), accountId: "fi-user" },
       },
     };
   }
