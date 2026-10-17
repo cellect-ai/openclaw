@@ -182,3 +182,148 @@ it("marks connected heartbeats but never advances the recovery watermark after s
   heartbeat();
   expect(store.register).toHaveBeenCalledTimes(2);
 });
+
+it.each([false, true])(
+  "coalesces reconnect recovery without blocking the socket when first scan rejects=%s",
+  async (rejectFirst) => {
+    const store = liveness(now - 5_000);
+    store.lookup
+      .mockResolvedValueOnce(now - 5_000)
+      .mockResolvedValueOnce(now - 20_000)
+      .mockResolvedValueOnce(now - 10_000);
+    const client = getSlackClient();
+    Object.assign(client.conversations, {
+      list: vi.fn(async ({ types }: { types: string }) => ({
+        channels: types === "im" ? [] : [{ id: "C1", name: "general", is_member: true }],
+      })),
+    });
+    const release = createDeferred();
+    const entered = createDeferred();
+    let activeReads = 0;
+    let maxActiveReads = 0;
+    let reads = 0;
+    const parentTs = "1799999940.000000";
+    client.conversations.history.mockImplementation(async () => {
+      const first = ++reads === 1;
+      activeReads += 1;
+      maxActiveReads = Math.max(maxActiveReads, activeReads);
+      entered.resolve();
+      try {
+        await release.promise;
+        if (first && rejectFirst) {
+          throw new Error("history temporarily unavailable");
+        }
+        return {
+          messages: [
+            {
+              user: "U_OTHER",
+              text: "Existing discussion",
+              ts: parentTs,
+              latest_reply: "1799999998.000000",
+            },
+          ],
+        };
+      } finally {
+        activeReads -= 1;
+      }
+    });
+    client.conversations.replies.mockResolvedValue({ messages: [] });
+    let connections = 0;
+    const monitor = startSlackMonitor(monitorSlackProvider, {
+      setStatus: (status) => {
+        if (status.connected === true) {
+          connections += 1;
+        }
+      },
+    });
+    monitors.push(monitor);
+    try {
+      await entered.promise;
+      const receiver = getSlackTestState().appConstructorArgs?.receiver as {
+        client: { emit: (event: string) => void };
+      };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        receiver.client.emit("disconnected");
+        await vi.advanceTimersByTimeAsync(2_500);
+        expect(connections).toBe(attempt + 2);
+      }
+      expect(client.conversations.history).toHaveBeenCalledOnce();
+      expect(maxActiveReads).toBe(1);
+    } finally {
+      release.resolve();
+      await vi.advanceTimersByTimeAsync(4_800);
+    }
+    expect(client.conversations.history).toHaveBeenCalledTimes(2);
+    expect(maxActiveReads).toBe(1);
+    expect(client.conversations.replies).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        channel: "C1",
+        ts: parentTs,
+        oldest: "1799999980.000000",
+      }),
+    );
+  },
+);
+
+it("does not dispatch a late history result after the monitor stops", async () => {
+  liveness(now - 5_000);
+  const client = getSlackClient();
+  Object.assign(client.conversations, {
+    list: vi.fn(async ({ types }: { types: string }) => ({
+      channels: types === "im" ? [] : [{ id: "C1", name: "general", is_member: true }],
+    })),
+  });
+  const release = createDeferred();
+  const entered = createDeferred();
+  client.conversations.history.mockImplementation(async () => {
+    entered.resolve();
+    await release.promise;
+    return {
+      messages: [
+        { user: "U_OTHER", text: "<@bot-user> stale recovery request", ts: "1799999998.000000" },
+      ],
+    };
+  });
+  const { monitor } = startConnected();
+  try {
+    await entered.promise;
+    monitor.controller.abort();
+    await monitor.run;
+  } finally {
+    release.resolve();
+    await vi.advanceTimersByTimeAsync(2_400);
+  }
+  expect(getSlackTestState().replyMock).not.toHaveBeenCalled();
+  expect(getSlackTestState().sendMock).not.toHaveBeenCalled();
+  expect(client.conversations.history).toHaveBeenCalledOnce();
+});
+
+it.each(["im", "public_channel,private_channel"])(
+  "does not continue a paginated %s directory after monitor stop",
+  async (targetType) => {
+    liveness(now - 5_000);
+    const client = getSlackClient();
+    const entered = createDeferred();
+    const release = createDeferred();
+    const list = vi.fn(async ({ types, cursor }: { types: string; cursor?: string }) => {
+      if (types === targetType && !cursor) {
+        entered.resolve();
+        await release.promise;
+        return { channels: [], response_metadata: { next_cursor: "next-page" } };
+      }
+      return { channels: [] };
+    });
+    Object.assign(client.conversations, { list });
+    const { monitor } = startConnected();
+    try {
+      await entered.promise;
+      monitor.controller.abort();
+      await monitor.run;
+    } finally {
+      release.resolve();
+      await vi.advanceTimersByTimeAsync(0);
+    }
+    expect(list.mock.calls.filter(([request]) => request.types === targetType)).toHaveLength(1);
+    expect(client.conversations.history).not.toHaveBeenCalled();
+  },
+);
