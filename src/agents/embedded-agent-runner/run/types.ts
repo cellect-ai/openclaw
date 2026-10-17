@@ -8,6 +8,7 @@ import type {
 } from "../../../config/sessions/types.js";
 import type { ContextEngine, ContextEnginePromptCacheInfo } from "../../../context-engine/types.js";
 import type { DiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
+import type { VerifiedRunStopActor } from "../../../infra/run-stop-actor.js";
 import type { AssistantMessage, Model } from "../../../llm/types.js";
 import type { CommandQueueTaskDeadline } from "../../../process/command-queue.types.js";
 import type { AcceptedSessionSpawn } from "../../accepted-session-spawn.js";
@@ -233,7 +234,10 @@ export type EmbeddedRunAttemptParams = EmbeddedRunAttemptBase & {
   /** Signals an explicit cancellation through the active native run handle. */
   onAttemptAbort?: () => void;
   onDeferredLifecycleOwner?: (owner: DeferredEmbeddedRunLifecycleOwner) => void;
-  onDeferredLifecycleAbort?: (reason?: "user_abort" | "restart" | "superseded") => void;
+  onDeferredLifecycleAbort?: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
   /** Host-requested runtime replacement takes effect after the current tool batch is persisted. */
   pluginRuntimeRefreshPending?: () => boolean;
   /** Registers the exact attempt owner able to stop before another model request. */

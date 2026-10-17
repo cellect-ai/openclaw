@@ -18,6 +18,11 @@ import {
   isAgentEventLifecycleGenerationCurrent,
 } from "../../infra/agent-events.js";
 import {
+  ConversationRunStopReason,
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../../infra/run-stop-actor.js";
+import {
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
   markDiagnosticOwnedToolActivity,
@@ -85,13 +90,18 @@ export async function createWorkerTurnRunOwner(params: {
       sessionKey,
       runId: claim.runId,
     });
-    const cancel = (reason?: "user_abort" | "restart" | "superseded") => {
+    const cancel = (
+      reason?: "user_abort" | "restart" | "superseded",
+      stopActor?: VerifiedRunStopActor,
+    ) => {
       controller.abort(
         reason === "restart"
           ? createAgentRunRestartAbortError()
           : reason === "superseded"
             ? createAgentRunSupersededAbortError()
-            : undefined,
+            : matchesVerifiedRunStopActor(stopActor, { sessionKey, agentId: turn.agentId })
+              ? new ConversationRunStopReason(stopActor)
+              : undefined,
       );
     };
     const restartSignal = getGatewayRestartDrainSignal();

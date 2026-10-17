@@ -6,6 +6,10 @@ import {
   freezeDiagnosticTraceContext,
   type DiagnosticTraceContext,
 } from "../../../infra/diagnostic-trace-context.js";
+import {
+  ConversationRunStopReason,
+  type VerifiedRunStopActor,
+} from "../../../infra/run-stop-actor.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import {
   closeDiagnosticEmbeddedRunOwner,
@@ -74,7 +78,10 @@ import type { EmbeddedRunAttemptParams, StreamRunState } from "./types.js";
 
 type AttemptStreamQueueHandle = EmbeddedAgentQueueHandle & {
   kind: "embedded";
-  cancel: (reason?: "user_abort" | "restart" | "superseded") => void;
+  cancel: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
 };
 
 type PrepareEmbeddedAttemptStreamInput = {
@@ -439,7 +446,10 @@ function prepareStream(
   });
 
   let externalAbortAccepted = false;
-  const abortActiveRunExternally = (reason?: "user_abort" | "restart" | "superseded") => {
+  const abortActiveRunExternally = (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => {
     // Reply cancellation can synchronously re-enter through this same backend.
     // Latch before callbacks so the first reason owns every abort side effect.
     if (externalAbortAccepted) {
@@ -447,14 +457,20 @@ function prepareStream(
     }
     externalAbortAccepted = true;
     input.markExternalAbort();
-    attempt.onDeferredLifecycleAbort?.(reason);
+    if (stopActor) {
+      attempt.onDeferredLifecycleAbort?.(reason, stopActor);
+    } else {
+      attempt.onDeferredLifecycleAbort?.(reason);
+    }
     attempt.onAttemptAbort?.();
     const abortReason =
       reason === "restart"
         ? createAgentRunRestartAbortError()
         : reason === "superseded"
           ? createAgentRunSupersededAbortError()
-          : undefined;
+          : stopActor
+            ? new ConversationRunStopReason(stopActor)
+            : undefined;
     input.abortRun(false, abortReason);
   };
   const hasCurrentRegistration = () => {

@@ -26,17 +26,17 @@ import {
   isConfiguredSessionStoreAgentId,
   resolveExistingAgentSessionStoreTargetsSync,
 } from "../../config/sessions.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
-import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-key.js";
+import { normalizeAgentId } from "../../routing/session-key.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { waitForChatAbortTerminalPersistence } from "../chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { resolveChatRunOwnerAgentId } from "../chat-run-owner.js";
 import { formatStopRequest } from "../control-plane-audit.js";
+import { resolveConversationStopActor } from "../conversation-stop-actor.js";
 import { resolveSessionForRun } from "../server-session-key.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 import {
@@ -44,11 +44,7 @@ import {
   tryResolveSessionCompatibilityOwnerAgentId,
 } from "../session-request-agent.js";
 import { getSessionRowProjection } from "../session-row-projection-access.js";
-import {
-  resolveSessionStoreKey,
-  resolveStoredSessionKeyForAgentStore,
-  resolveStoredSessionOwnerAgentId,
-} from "../session-store-key.js";
+import { resolveSessionStoreKey } from "../session-store-key.js";
 import { loadSessionEntry } from "../session-utils.js";
 import { getWorkerInferenceSessionControl } from "../worker-environments/inference-control-internal.js";
 import { resolveChatAbortRequester } from "./chat-abort-authorization.js";
@@ -64,6 +60,11 @@ import {
   bindGatewayRequestHandlerMutationAuthority,
   readGatewayRequestMutationAuthority,
 } from "./session-mutation-guards.js";
+import {
+  resolveSessionKeyAgentId,
+  sessionKeyBelongsToAgent,
+  resolveScopedAbortKey,
+} from "./sessions-abort-target.js";
 import { requireSessionKey } from "./sessions-shared.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
@@ -101,58 +102,6 @@ function resolveAbortSessionKey(params: {
     }
   }
   return params.requestedKey;
-}
-
-function resolveSessionKeyAgentId(
-  sessionKey: string | undefined,
-  cfg: OpenClawConfig,
-): string | undefined {
-  const key = normalizeOptionalString(sessionKey);
-  if (!key) {
-    return undefined;
-  }
-  const parsed = parseAgentSessionKey(key);
-  if (!parsed && key.toLowerCase().startsWith("agent:")) {
-    return undefined;
-  }
-  return parsed?.agentId ?? tryResolveSessionCompatibilityOwnerAgentId(cfg, key);
-}
-
-function sessionKeyBelongsToAgent(
-  sessionKey: string | undefined,
-  agentId: string,
-  cfg: OpenClawConfig,
-): boolean {
-  return resolveSessionKeyAgentId(sessionKey, cfg) === normalizeAgentId(agentId);
-}
-
-function resolveScopedAbortKey(params: {
-  cfg: OpenClawConfig;
-  key: string | undefined;
-  agentId: string | undefined;
-}): string | undefined {
-  const key = normalizeOptionalString(params.key);
-  if (!key) {
-    return undefined;
-  }
-  const requestedAgentId = normalizeOptionalString(params.agentId);
-  if (!requestedAgentId) {
-    return key;
-  }
-  const scopedAgentId = normalizeAgentId(requestedAgentId);
-  const ownerAgentId = resolveStoredSessionOwnerAgentId({
-    cfg: params.cfg,
-    agentId: scopedAgentId,
-    sessionKey: key,
-  });
-  if (ownerAgentId && ownerAgentId !== scopedAgentId) {
-    return undefined;
-  }
-  return resolveStoredSessionKeyForAgentStore({
-    cfg: params.cfg,
-    agentId: scopedAgentId,
-    sessionKey: key,
-  });
 }
 
 export const sessionAbortHandlers: GatewayRequestHandlers = {
@@ -364,6 +313,15 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       requester.sessionAuthority?.assertCurrent();
       assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
     };
+    const stopActor = await resolveConversationStopActor({
+      cfg,
+      client,
+      assertion: p.stopActor,
+      sessionKey: canonicalKey,
+      agentId: targetAgentId,
+      assertCurrent: assertAbortCurrent,
+    });
+    assertAbortCurrent();
     const queueKeys = [key, ...(requestedKeyAliases ?? []), canonicalKey, sessionEntry?.sessionId];
     const clearCapturedFollowups =
       narrow && clearQueued && !requestedRunId && requiredSessionId
@@ -397,6 +355,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             status: "cancelled",
             aborted: true,
             stopReason: "rpc",
+            ...(stopActor ? { stopActor } : {}),
             startedAt: owner.startedAtMs ?? sessionEntry?.startedAt,
             endedAt: Date.now(),
           },
@@ -415,7 +374,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         // but authorize their cancellation only when this exact parent accepts.
         beforeKill: () => {
           assertAbortCurrent();
-          return (aborted = embeddedRun.abort());
+          return (aborted = embeddedRun.abort(stopActor));
         },
       });
       if (aborted) {
@@ -546,7 +505,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
             const embeddedAborted =
               persistedSessionId && canonicalKey !== "global" && !embeddedController
                 ? sessionEmbeddedRun
-                  ? sessionEmbeddedRun.abort()
+                  ? sessionEmbeddedRun.abort(stopActor)
                   : !narrow && abortEmbeddedAgentRun(persistedSessionId)
                 : false;
             if (embeddedAborted && sessionEmbeddedRun) {
@@ -583,6 +542,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
       runId: requestedRunId,
       abortOrigin: "rpc",
       stopReason: "rpc",
+      stopActor,
       requester,
       assertCurrent: assertAbortCurrent,
       onAuthorizedAfterQueuedAbort,
@@ -669,6 +629,7 @@ export const sessionAbortHandlers: GatewayRequestHandlers = {
         undefined,
       ),
       {
+        stopActor,
         ...(onAuthorizedAfterQueuedAbort ? { onAuthorizedAfterQueuedAbort } : {}),
         ...(!requestedRunId ? { cascadeDescendants: true as const } : {}),
         onDescendantsCancelled: () => {

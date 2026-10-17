@@ -332,6 +332,7 @@ type ChatSessionAbortParams = {
   defaultAgentId?: string;
   abortOrigin: ChatAbortOrigin;
   stopReason?: string;
+  stopActor?: import("../../infra/run-stop-actor.js").VerifiedRunStopActor;
   requester: ChatAbortRequester;
   assertCurrent?: () => void;
   preserveSideRuns?: boolean;
@@ -510,6 +511,7 @@ function prepareChatSessionAbort(
           runId,
           sessionKey,
           stopReason: params.stopReason,
+          stopActor: params.stopActor,
         }).aborted
       ) {
         recordRun(runId);
@@ -532,6 +534,7 @@ function prepareChatSessionAbort(
         runId,
         sessionKey,
         stopReason: params.stopReason,
+        stopActor: params.stopActor,
         onAbortCommitted: () => {
           recordRun(runId);
           deferAbortedPartialPersistence(

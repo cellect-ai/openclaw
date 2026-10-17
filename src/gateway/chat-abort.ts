@@ -20,6 +20,12 @@ import {
   releaseAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
+import {
+  ConversationRunStopReason,
+  isPersonRunStopReason,
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../infra/run-stop-actor.js";
 import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
 import { removeChatAbortControllerEntry } from "./chat-abort-lifecycle-internal.js";
 import type { ChatAbortControllerEntry } from "./chat-abort.types.js";
@@ -490,7 +496,7 @@ function resolveDefaultGlobalAgentId(ops: ChatAbortOps): string | undefined {
 }
 
 export function isChatAbortControllerEntryAbortable(entry: ChatAbortControllerEntry): boolean {
-  if (entry.controller.signal.aborted) {
+  if (entry.abortCommitted || entry.controller.signal.aborted) {
     return false;
   }
   try {
@@ -506,6 +512,7 @@ export function abortChatRunById(
     runId: string;
     sessionKey: string;
     stopReason?: string;
+    stopActor?: VerifiedRunStopActor;
     diagnosticReason?: ChatAbortDiagnosticReason;
     onAbortCommitted?: () => void;
   },
@@ -538,10 +545,16 @@ export function abortChatRunById(
       : undefined,
     canvasBlocks,
   );
+  active.abortCommitted = true;
   ops.chatRunState.getOrCreate(runId).abortMarker = createChatAbortMarker();
   if (stopReason) {
     active.abortStopReason = stopReason;
   }
+  const stopActor =
+    isPersonRunStopReason(stopReason) && matchesVerifiedRunStopActor(params.stopActor, active)
+      ? Object.freeze({ ...params.stopActor })
+      : undefined;
+  active.stopActor = stopActor;
   active.abortDiagnosticReason = params.diagnosticReason;
   // Reserve transcript settlement while this exact producer still has authority.
   try {
@@ -565,7 +578,9 @@ export function abortChatRunById(
   } catch {
     // Approval persistence failure must not prevent the requested run abort.
   }
-  active.controller.abort(createChatAbortSignalReason(stopReason));
+  active.controller.abort(
+    stopActor ? new ConversationRunStopReason(stopActor) : createChatAbortSignalReason(stopReason),
+  );
   ops.chatRunState.clearRun(runId);
   const removed = ops.removeChatRun(runId, runId, sessionKey);
   if (active.controlUiVisible !== false) {
@@ -591,6 +606,7 @@ export function abortChatRunById(
       status: "cancelled",
       aborted: true,
       stopReason,
+      ...(stopActor ? { stopActor } : {}),
       ...(active.toolErrorSummary ? { toolErrorSummary: active.toolErrorSummary } : {}),
       // Pre-execution admission time is not an execution start.
       startedAt: active.executionStarted === false ? undefined : active.startedAtMs,

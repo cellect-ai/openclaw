@@ -1,5 +1,9 @@
 import { formatErrorMessage } from "../../../infra/errors.js";
 import {
+  ConversationRunStopReason,
+  type VerifiedRunStopActor,
+} from "../../../infra/run-stop-actor.js";
+import {
   beginDiagnosticRetryWait,
   closeDiagnosticEmbeddedRunOwner,
   createDiagnosticEmbeddedRunOwner,
@@ -124,7 +128,10 @@ export function createEmbeddedAttemptDeferredLifecycleOwner(params: {
 
 export type DeferredEmbeddedRunLifecycleManager = {
   signal: AbortSignal;
-  abort: (reason?: "user_abort" | "restart" | "superseded") => void;
+  abort: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
   adopt: (owner: DeferredEmbeddedRunLifecycleOwner) => void;
   beginRetryWait: (
     deadlineAtMs: number,
@@ -147,7 +154,10 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
     ? AbortSignal.any([params.abortSignal, controller.signal])
     : controller.signal;
   let current: DeferredEmbeddedRunLifecycleOwner | undefined;
-  const abort = (reason?: "user_abort" | "restart" | "superseded") => {
+  const abort = (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => {
     if (controller.signal.aborted) {
       return;
     }
@@ -156,7 +166,9 @@ export function createDeferredEmbeddedRunLifecycleManager(params: {
         ? createAgentRunRestartAbortError()
         : reason === "superseded"
           ? createAgentRunSupersededAbortError()
-          : createAgentRunDirectAbortError(),
+          : stopActor
+            ? new ConversationRunStopReason(stopActor)
+            : createAgentRunDirectAbortError(),
     );
   };
   let cliOwner: EmbeddedAgentQueueHandle | undefined;

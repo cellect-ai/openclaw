@@ -64,6 +64,7 @@ export function createAgentLifecycleTerminalBackstop(params: {
   onTerminalEvent?: (event: Parameters<typeof emitAgentEvent>[0]) => void;
   resolveTerminationFields: (error?: unknown) => {
     aborted?: true;
+    stopActor?: import("../../infra/run-stop-actor.js").VerifiedRunStopActor;
     stopReason?: string;
     timeoutPhase?: string;
   };
@@ -142,6 +143,9 @@ export function createAgentLifecycleTerminalBackstop(params: {
       Object.assign(data, resolveAgentLifecycleTerminalMetadata(meta));
       if (terminationFields.aborted === true) {
         data.aborted = true;
+        if (terminationFields.stopActor) {
+          data.stopActor = terminationFields.stopActor;
+        }
       }
       if (terminationFields.stopReason && !readStringValue(data.stopReason)) {
         data.stopReason = terminationFields.stopReason;

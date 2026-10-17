@@ -6,6 +6,7 @@ import {
   validateChatAbortParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { discardSessionPendingInput } from "../../config/sessions/session-pending-input-withdrawal.js";
+import type { VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import { isIncognitoSessionKey, normalizeAgentId } from "../../routing/session-key.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
@@ -55,6 +56,7 @@ import type { GatewayRequestHandlerOptions } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
 type ChatAbortLifecycle = {
+  stopActor?: VerifiedRunStopActor;
   onAuthorizedAfterQueuedAbort?: () => boolean;
   onDescendantsCancelled?: () => void;
   cascadeDescendants?: true;
@@ -198,6 +200,7 @@ export async function handleChatAbortRequestWithLifecycle(
       defaultAgentId: compatibilityDefaultAgentId,
       abortOrigin: "rpc",
       stopReason: "rpc",
+      stopActor: lifecycle.stopActor,
       requester,
       assertCurrent,
       preserveSideRuns,
@@ -333,7 +336,12 @@ export async function handleChatAbortRequestWithLifecycle(
           activeTarget.entry.sessionId === activeTarget.sessionId &&
           activeTarget.entry.agentId === activeTarget.agentId
         ) {
-          abortChatRunById(ops, { runId, sessionKey: activeTarget.sessionKey, stopReason: "rpc" });
+          abortChatRunById(ops, {
+            runId,
+            sessionKey: activeTarget.sessionKey,
+            stopReason: "rpc",
+            stopActor: lifecycle.stopActor,
+          });
         }
         if (
           !controller.signal.aborted &&
@@ -348,6 +356,7 @@ export async function handleChatAbortRequestWithLifecycle(
             runId,
             sessionKey: queuedTarget.sessionKey,
             stopReason: "rpc",
+            stopActor: lifecycle.stopActor,
           });
         }
       } finally {
@@ -391,7 +400,10 @@ export async function handleChatAbortRequestWithLifecycle(
     }
     if (requester.isAdmin) {
       assertCurrent();
-      await workerCancellation?.cancel({ assertCurrent, onCancelled: (id) => runIds.add(id) });
+      await workerCancellation?.cancel({
+        assertCurrent,
+        onCancelled: (id) => runIds.add(id),
+      });
     }
     if (!abortSession.ok) {
       throw abortSession.error;
@@ -436,6 +448,7 @@ export async function handleChatAbortRequestWithLifecycle(
         context,
         runId,
         stopReason: "rpc",
+        stopActor: lifecycle.stopActor,
         attemptId: normalizeOptionalString(pendingChatMatch.payload.attemptId),
         expectedPayload: pendingChatMatch.payload,
       });
@@ -466,6 +479,7 @@ export async function handleChatAbortRequestWithLifecycle(
             payload: pendingAgentPayload,
             expectedPayload: pendingAgentPayload,
             stopReason: "rpc",
+            stopActor: lifecycle.stopActor,
           }));
         },
       });
@@ -515,6 +529,7 @@ export async function handleChatAbortRequestWithLifecycle(
           runId,
           sessionKey: queued.sessionKey,
           stopReason: "rpc",
+          stopActor: lifecycle.stopActor,
           allowSessionMismatch: true,
         });
         await respondWithWorkerRuns(queuedRes.aborted ? [runId] : []);
@@ -607,6 +622,7 @@ export async function handleChatAbortRequestWithLifecycle(
             runId,
             sessionKey,
             stopReason: "rpc",
+            stopActor: lifecycle.stopActor,
             onAbortCommitted: () => {
               aborted = true;
               deferAbortedPartialPersistence(snapshot, context);

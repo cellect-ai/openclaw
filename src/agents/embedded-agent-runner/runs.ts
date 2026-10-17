@@ -37,6 +37,10 @@ import {
 } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../../infra/run-stop-actor.js";
+import {
   getDiagnosticSessionActivitySnapshot,
   isDiagnosticEmbeddedRunOwnerClosed,
   markDiagnosticEmbeddedRunEnded,
@@ -1181,7 +1185,7 @@ export type ActiveEmbeddedRunOwner = {
   sessionId: string;
   sessionKey?: string;
   startedAtMs?: number;
-  abort: () => boolean;
+  abort: (stopActor?: VerifiedRunStopActor) => boolean;
 };
 
 function projectActiveEmbeddedRunOwner(
@@ -1199,7 +1203,7 @@ function projectActiveEmbeddedRunOwner(
     ...(handle.startedAtMs === undefined ? {} : { startedAtMs: handle.startedAtMs }),
     // A recovered run ID is correlation only. Recheck the captured owner before
     // Stop so a stale UI action cannot abort replacement work in the session.
-    abort: () => {
+    abort: (stopActor) => {
       if (
         ACTIVE_EMBEDDED_RUNS.get(registration.sessionId) !== handle ||
         ACTIVE_EMBEDDED_RUNS_BY_RUN_ID.get(runId) !== handle ||
@@ -1208,8 +1212,22 @@ function projectActiveEmbeddedRunOwner(
         return false;
       }
       try {
+        const actor = matchesVerifiedRunStopActor(stopActor, {
+          sessionKey: registration.sessionKey,
+          agentId:
+            getAgentRunContext(runId)?.agentId ??
+            parseAgentSessionKey(registration.sessionKey ?? "")?.agentId,
+        })
+          ? stopActor
+          : undefined;
         if (handle.cancel) {
-          handle.cancel("user_abort");
+          if (actor) {
+            handle.cancel("user_abort", actor);
+          } else {
+            handle.cancel("user_abort");
+          }
+        } else if (actor) {
+          handle.abort(undefined, actor);
         } else {
           handle.abort();
         }

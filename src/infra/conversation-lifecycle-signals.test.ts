@@ -116,18 +116,14 @@ describe("what the gateway sends", () => {
     }
   });
 
-  it("with the flag on, keeps every valid signal, and only the person's id is withheld", () => {
+  it("with the flag on, keeps every valid signal accepted from the binding owner", () => {
     for (const fact of lifecycle.positive as RunLifecycle[]) {
       const sent = factForSend(fact as never, {
         signals: true,
         decisionCards: true,
       }) as RunLifecycle;
       expect(() => parseRunLifecycle(sent)).not.toThrow();
-      const expected = structuredClone(fact);
-      if (expected.stoppedBy) {
-        expected.stoppedBy = { kind: expected.stoppedBy.kind };
-      }
-      expect(sent).toEqual(expected);
+      expect(sent).toEqual(fact);
     }
   });
 

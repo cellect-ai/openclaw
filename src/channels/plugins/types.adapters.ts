@@ -135,6 +135,15 @@ export type ChannelSecretsAdapter = {
 export type ChannelGroupAdapter = {
   resolveRequireMention?: (params: ChannelGroupContext) => boolean | undefined;
   resolveToolPolicy?: (params: ChannelGroupContext) => GroupToolPolicyConfig | undefined;
+  /** Native membership proof, never inferred from a local directory cache. */
+  isJoinedMember?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    expectedAccountUserId: string;
+    groupId: string;
+    userId: string;
+    assertCurrent: () => void;
+  }) => Promise<boolean>;
 };
 export type ChannelStatusAdapter<ResolvedAccount, Probe = unknown, Audit = unknown> = {
   defaultRuntime?: ChannelAccountSnapshot;

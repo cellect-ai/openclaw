@@ -38,6 +38,22 @@ const fallbackStepEvent = (reason: string) => ({
 });
 
 describe("worker live protocol conformance", () => {
+  it("rejects a worker's attempt to supply host cancellation identity", () => {
+    const payload = { phase: "end", endedAt: 200, aborted: true, stopReason: "aborted" };
+    expect(validateLiveProtocolEvent({ kind: "lifecycle", payload })).toBe(true);
+    const stopActor = {
+      userId: "@spoof:matrix.test",
+      roomId: "!room:matrix.test",
+      threadRootEventId: "$root",
+      sessionKey: "agent:main:room",
+      agentId: "main",
+    };
+    expect(
+      validateLiveProtocolEvent({ kind: "lifecycle", payload: { ...payload, stopActor } }),
+    ).toBe(false);
+    expect(validateLiveProtocolEvent({ kind: "lifecycle", payload, stopActor })).toBe(false);
+  });
+
   it("accepts every core failover reason in live fallback schemas", () => {
     for (const reason of FAILOVER_REASONS) {
       expect(validateLiveProtocolEvent(fallbackEvent(reason))).toBe(true);

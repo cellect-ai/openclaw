@@ -5,6 +5,7 @@ import {
   queueEmbeddedAgentMessageWithOutcomeAsync,
   resolveActiveEmbeddedRunOwner,
 } from "../../agents/embedded-agent-runner/runs.js";
+import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import { resolveSessionPlacementTurnSettlementAssertion } from "../../agents/session-placement-forced-terminal-settlement.js";
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.js";
@@ -52,6 +53,7 @@ describe("cloud worker run ownership", () => {
 
   it.each([
     { cancellation: "user", firstToolDelayMs: 0 },
+    { cancellation: "person", firstToolDelayMs: 0 },
     { cancellation: "deadline", firstToolDelayMs: 10 * 60_000 },
   ] as const)(
     "keeps a bounded remote tool alive until $cancellation cancellation after a $firstToolDelayMs ms tool-start delay",
@@ -201,8 +203,19 @@ describe("cloud worker run ownership", () => {
         await expect(
           queueEmbeddedAgentMessageWithOutcomeAsync(SESSION_ID, "follow up"),
         ).resolves.toMatchObject({ queued: false, reason: "not_streaming" });
-        if (cancellation === "user") {
-          expect(resolveActiveEmbeddedRunOwner(SESSION_ID)?.abort()).toBe(true);
+        const stopActor = {
+          userId: "@reader:matrix.test",
+          roomId: "!room:matrix.test",
+          threadRootEventId: "$root",
+          sessionKey: SESSION_KEY,
+          agentId: "main",
+        };
+        if (cancellation !== "deadline") {
+          expect(
+            resolveActiveEmbeddedRunOwner(SESSION_ID)?.abort(
+              cancellation === "person" ? stopActor : undefined,
+            ),
+          ).toBe(true);
           expect(placements.validateTurnClaim(turnClaim)).toBe(true);
           await expect(turnCapability.run(async () => "late effect")).rejects.toThrow();
         } else {
@@ -236,7 +249,14 @@ describe("cloud worker run ownership", () => {
           expect(operation.result).toMatchObject({ kind: "failed", code: "run_stalled" });
         }
         expect(workerSignal?.aborted).toBe(true);
-        await attempt;
+        const result = await attempt;
+        if (cancellation === "person") {
+          expect(resolveAgentRunErrorLifecycleFields(result, operation.abortSignal)).toMatchObject({
+            aborted: true,
+            stopReason: "aborted",
+            stopActor,
+          });
+        }
         expect(isEmbeddedAgentRunHandleActive(SESSION_ID)).toBe(false);
         expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });
         expect(

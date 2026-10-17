@@ -10,6 +10,12 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { normalizeTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { createAgentRunRestartAbortError } from "../agents/run-termination.js";
 import {
+  ConversationRunStopReason,
+  isPersonRunStopReason,
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../infra/run-stop-actor.js";
+import {
   resolveChatAbortDiagnosticReason,
   type ChatAbortDiagnosticReason,
 } from "./chat-abort-diagnostics.js";
@@ -26,6 +32,7 @@ export type QueuedChatTurnEntry = {
   ownerConnId?: string;
   ownerDeviceId?: string;
   abortDiagnosticReason?: ChatAbortDiagnosticReason;
+  stopActor?: VerifiedRunStopActor;
   /** Hold this source's adoption while its explicit withdrawal is committed. */
   holdPendingInputWithdrawal?: () => (() => void) | undefined;
 };
@@ -59,7 +66,7 @@ type RegisterQueuedChatTurnParams = {
   ownerDeviceId?: string;
   holdPendingInputWithdrawal?: QueuedChatTurnEntry["holdPendingInputWithdrawal"];
   /** Record cancellation while the exact queued entry is still current. */
-  onAborted?: (reason: ChatAbortDiagnosticReason) => void;
+  onAborted?: (reason: ChatAbortDiagnosticReason, actor?: VerifiedRunStopActor) => void;
 };
 
 function createQueuedChatAbortSignalReason(stopReason: string | undefined): Error | undefined {
@@ -125,7 +132,12 @@ export function registerQueuedChatTurn(params: RegisterQueuedChatTurnParams): bo
     // Retired collect entries remain idempotency guards until aggregate completion.
     if (entry.abortable !== false && params.chatQueuedTurns.get(runId) === entry) {
       try {
-        params.onAborted?.(resolveChatAbortDiagnosticReason(params.controller.signal, entry));
+        const reason = resolveChatAbortDiagnosticReason(params.controller.signal, entry);
+        if (entry.stopActor) {
+          params.onAborted?.(reason, entry.stopActor);
+        } else {
+          params.onAborted?.(reason);
+        }
       } finally {
         deleteQueuedChatTurnEntry(params.chatQueuedTurns, runId, entry);
       }
@@ -177,6 +189,7 @@ export function abortQueuedChatTurnById(
     runId: string;
     sessionKey: string;
     stopReason?: string;
+    stopActor?: VerifiedRunStopActor;
     diagnosticReason?: ChatAbortDiagnosticReason;
     /** When true, allow abort even if sessionKey does not match (owner already authorized). */
     allowSessionMismatch?: boolean;
@@ -195,11 +208,20 @@ export function abortQueuedChatTurnById(
     return { aborted: false };
   }
   if (!entry.controller.signal.aborted) {
+    entry.stopActor =
+      isPersonRunStopReason(params.stopReason) &&
+      matchesVerifiedRunStopActor(params.stopActor, entry)
+        ? Object.freeze({ ...params.stopActor })
+        : undefined;
     entry.abortDiagnosticReason = resolveChatAbortDiagnosticReason(entry.controller.signal, {
       abortDiagnosticReason: params.diagnosticReason,
       abortStopReason: params.stopReason,
     });
-    entry.controller.abort(createQueuedChatAbortSignalReason(params.stopReason));
+    entry.controller.abort(
+      entry.stopActor
+        ? new ConversationRunStopReason(entry.stopActor)
+        : createQueuedChatAbortSignalReason(params.stopReason),
+    );
   }
   deleteQueuedChatTurnEntry(chatQueuedTurns, runId, entry);
   return { aborted: true };
