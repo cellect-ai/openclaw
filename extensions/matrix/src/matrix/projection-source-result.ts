@@ -34,7 +34,7 @@ type Reference = {
   sourceAccountId: string;
   sourceConversationId: string;
   sourceMessageId?: string;
-  notification?: { scope: NotificationPublicationScope; actorIds: string[] };
+  notification?: { scope: NotificationPublicationScope };
 };
 function store(runtime: Pick<PluginRuntime, "state"> = getMatrixRuntime()) {
   return runtime.state.openBlobStore<Record<string, never>>({
@@ -68,14 +68,13 @@ function decode(bytes: Uint8Array): Reference {
   if (
     value.notification !== undefined &&
     (!value.notification ||
-      !Array.isArray(value.notification.actorIds) ||
-      value.notification.actorIds.length < 1 ||
-      value.notification.actorIds.length > 32 ||
-      value.notification.actorIds.some(
-        (actor) => typeof actor !== "string" || !/^[UW][A-Z0-9]{8,20}$/.test(actor),
-      ) ||
       !value.notification.scope ||
-      typeof value.notification.scope !== "object")
+      typeof value.notification.scope !== "object" ||
+      !Array.isArray(value.notification.scope.source_actor_ids) ||
+      value.notification.scope.source_actor_ids.length > 32 ||
+      value.notification.scope.source_actor_ids.some(
+        (actor) => typeof actor !== "string" || !/^[UW][A-Z0-9]{8,20}$/.test(actor),
+      ))
   ) {
     throw new Error("invalid private notification-publication reference");
   }
@@ -94,7 +93,9 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
   const client = resolveNotificationPublicationClient();
   // Acquire before the first await. The host retains this decision on hook
   // failure/timeout even when private readiness or storage never responds.
-  const releasePrefix = client.status !== "disabled" ? host.deferSynthesizedPrefix?.() : undefined;
+  if (client.status !== "disabled" && /<[@!]/.test(host.synthesizedPrefix ?? "")) {
+    host.deferSynthesizedPrefix?.();
+  }
   if (client.status === "invalid") {
     requireReplyPublicationReceipt(event);
     throw new Error("notification publication producer configuration unavailable");
@@ -106,14 +107,19 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
         (match) => match[1]!,
       ),
     ),
-  ];
-  if (client.status === "ready" && actorIds.length > 0) {
+  ].toSorted();
+  if (client.status === "ready") {
     requireReplyPublicationReceipt(event);
   }
   if (actorIds.length > 32) {
     throw new Error("notification publication recipient bound exceeded");
   }
-  let hasNotification = false;
+  if (
+    client.status === "ready" &&
+    /<[@!]/.test((host.synthesizedPrefix ?? "").replaceAll(/<@[UW][A-Z0-9]{8,20}>/g, ""))
+  ) {
+    throw new Error("notification publication recipient cohort unavailable");
+  }
   const service = await import("openclaw/plugin-sdk/conversation-binding-runtime");
   for (const target of owner.bindings) {
     const binding = service.getSessionBindingService().resolveByConversation({
@@ -125,7 +131,7 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
     const source = binding?.metadata?.externalSource as { channelId?: unknown } | undefined;
     const canonicalSource = parseProjectionExternalSource(binding?.metadata?.externalSource);
     const coordinatesNotifications =
-      client.status === "ready" && canonicalSource?.provider === "slack" && actorIds.length > 0;
+      client.status === "ready" && canonicalSource?.provider === "slack";
     if (
       binding?.bindingId !== target.bindingId ||
       (!binding.metadata?.sourceReplyAuthorization && !coordinatesNotifications) ||
@@ -173,9 +179,9 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
                 source_workspace_id: canonicalSource.workspaceId,
                 source_conversation_id: canonicalSource.channelId,
                 source_root_message_id: canonicalSource.rootMessageId,
+                source_actor_ids: actorIds,
                 published_at_ms: host.publishedAtMs,
               },
-              actorIds,
             },
           }
         : {}),
@@ -190,17 +196,13 @@ export async function prepareMatrixSourceResult(event: unknown): Promise<void> {
       }
     }
     if (reference.notification && client.status === "ready") {
-      hasNotification = true;
-      for (const actor of reference.notification.actorIds) {
+      for (const actor of actorIds.length ? actorIds : [undefined]) {
         await client.prepare(reference.notification.scope, actor);
       }
     }
   }
-  // Origin-only policy has not been authorized. A route reservation is never
-  // permission to interrupt; retain the hold for every coordinated recipient.
-  if (!hasNotification && !/<[@!]/.test(host.synthesizedPrefix ?? "")) {
-    releasePrefix?.();
-  }
+  // A source reservation is exclusion, never permission to interrupt. The
+  // origin-only policy remains unresolved, so no synthesized mention is released.
 }
 export function startMatrixSourceResultReceipts(runtime: Pick<PluginRuntime, "state">) {
   return registerReplyPublicationReceiptListener(async (host, receipt) => {
@@ -235,6 +237,9 @@ export function startMatrixSourceResultReceipts(runtime: Pick<PluginRuntime, "st
           throw new Error("conflicting source-result receipt");
         }
       }
+      // The native copy may have been accepted while Slack's POST response
+      // was still in flight. Either receipt can complete the same rendezvous.
+      await joinNativeResult(accepted, storage);
     }
     if (host.receiptRequired && !matched) {
       throw new Error(
@@ -250,32 +255,69 @@ export async function noteMatrixSourceSnapshotResult(
   roomId: string,
   resultEventId: string,
 ): Promise<void> {
-  const entry = await store().lookup(`accepted-${digest(`${bindingId}\0${sourceMessageId}`)}`);
-  if (!entry) {
+  if (!bindingId || !sourceMessageId || !roomId.startsWith("!") || !resultEventId.startsWith("$")) {
     return;
   }
-  const reference = decode(entry.bytes);
+  const storage = store();
+  const entry = await storage.lookup(`accepted-${digest(`${bindingId}\0${sourceMessageId}`)}`);
+  const reference = entry ? decode(entry.bytes) : undefined;
   if (
-    reference.bindingId !== bindingId ||
-    reference.sourceMessageId !== sourceMessageId ||
-    reference.roomId !== roomId ||
-    !resultEventId.startsWith("$")
+    reference &&
+    (reference.bindingId !== bindingId ||
+      reference.sourceMessageId !== sourceMessageId ||
+      reference.roomId !== roomId)
   ) {
     return;
   }
-  const storage = store(),
-    key = `result-${digest(`${bindingId}\0${sourceMessageId}`)}`;
+  const key = nativeResultKey(bindingId, sourceMessageId, roomId);
+  // Deployed legacy result keys were written only after a matching source
+  // receipt. Preserve their first event when that owning receipt still exists.
+  const legacy = reference
+    ? await storage.lookup(`result-${digest(`${bindingId}\0${sourceMessageId}`)}`)
+    : undefined;
+  const frozen = legacy
+    ? (JSON.parse(new TextDecoder().decode(legacy.bytes)) as { resultEventId: unknown })
+    : { resultEventId };
+  if (typeof frozen.resultEventId !== "string" || !frozen.resultEventId.startsWith("$")) {
+    throw new Error("invalid source-result rendezvous");
+  }
+  await storage.deleteExpired();
   await storage.registerIfAbsent(
     key,
-    new TextEncoder().encode(JSON.stringify({ resultEventId })),
+    new TextEncoder().encode(JSON.stringify({ roomId, resultEventId: frozen.resultEventId })),
     {},
   );
-  const first = await storage.lookup(key);
-  if (!first) {
-    throw new Error("source-result rendezvous disappeared");
+  if (reference) {
+    await joinNativeResult(reference, storage);
   }
-  const accepted = JSON.parse(new TextDecoder().decode(first.bytes)) as { resultEventId?: unknown };
-  if (typeof accepted.resultEventId !== "string" || !accepted.resultEventId.startsWith("$")) {
+}
+
+function nativeResultKey(bindingId: string, sourceMessageId: string, roomId: string) {
+  return `native-${digest(`${bindingId}\0${sourceMessageId}\0${roomId}`)}`;
+}
+async function joinNativeResult(reference: Reference, storage: ReturnType<typeof store>) {
+  if (!reference.sourceMessageId) {
+    return;
+  }
+  const first =
+    (await storage.lookup(
+      nativeResultKey(reference.bindingId, reference.sourceMessageId, reference.roomId),
+    )) ??
+    (await storage.lookup(
+      `result-${digest(`${reference.bindingId}\0${reference.sourceMessageId}`)}`,
+    ));
+  if (!first) {
+    return;
+  }
+  const accepted = JSON.parse(new TextDecoder().decode(first.bytes)) as {
+    roomId?: unknown;
+    resultEventId?: unknown;
+  };
+  if (
+    (accepted.roomId !== undefined && accepted.roomId !== reference.roomId) ||
+    typeof accepted.resultEventId !== "string" ||
+    !accepted.resultEventId.startsWith("$")
+  ) {
     throw new Error("invalid source-result rendezvous");
   }
   if (reference.notification) {
@@ -286,20 +328,25 @@ export async function noteMatrixSourceSnapshotResult(
     // An earlier prepare may have failed while the ordinary source reply was
     // accepted. Retry its exact frozen identity before acknowledging the join.
     let prepared = false;
-    for (const actor of reference.notification.actorIds) {
+    const actors = reference.notification.scope.source_actor_ids;
+    for (const actor of actors.length ? actors : [undefined]) {
       const proof = await client.prepare(reference.notification.scope, actor);
       prepared ||= proof.prepared;
     }
     // A known denial has no recipient obligation or prepared bridge context.
     // Unavailable evidence throws above; it must never be treated as denial.
     if (prepared) {
-      await client.accepted(reference.notification.scope, sourceMessageId, accepted.resultEventId);
+      await client.accepted(
+        reference.notification.scope,
+        reference.sourceMessageId,
+        accepted.resultEventId,
+      );
     }
   }
   noteMatrixProjectionFinalResult({
     runId: reference.runId,
     generation: reference.generation,
-    bindingId,
+    bindingId: reference.bindingId,
     resultEventId: accepted.resultEventId,
   });
 }

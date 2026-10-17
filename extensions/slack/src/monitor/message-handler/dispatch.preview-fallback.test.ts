@@ -870,42 +870,47 @@ describe("dispatchPreparedSlackMessage preview fallback", () => {
 
   afterEach(() => resetPluginRuntimeStateForTest());
 
-  it("preserves the admitted Slack sender for projected durable final replies", async () => {
-    const bindings = vi.spyOn(getSessionBindingService(), "listBySession").mockReturnValue([
-      {
-        bindingId: "projection",
-        targetSessionKey: "agent:agent-1:slack:C123",
-        targetKind: "session",
-        conversation: { channel: "matrix", accountId: "default", conversationId: "!room:test" },
-        status: "active",
-        boundAt: 1,
-        metadata: {
-          environment: "test",
-          projectedConversationId: "!room:test",
-          sourceReplyAuthorization: "fixture",
+  it.each(["reverse-write", "read-only"] as const)(
+    "preserves the admitted Slack sender for %s projected durable finals",
+    async (sourceMode) => {
+      const bindings = vi.spyOn(getSessionBindingService(), "listBySession").mockReturnValue([
+        {
+          bindingId: "projection",
+          targetSessionKey: "agent:agent-1:slack:C123",
+          targetKind: "session",
+          conversation: { channel: "matrix", accountId: "default", conversationId: "!room:test" },
+          status: "active",
+          boundAt: 1,
+          metadata: {
+            environment: "test",
+            projectedConversationId: "!room:test",
+            ...(sourceMode === "reverse-write"
+              ? { sourceReplyAuthorization: "fixture" }
+              : { boundBy: "session-projection-read-only" }),
+          },
         },
-      },
-    ]);
-    try {
-      const cfg = { channels: { slack: { botToken: "xoxb-test" } } };
-      await dispatchPreparedSlackMessage(createPreparedSlackMessage({ cfg }));
-      const durable = capturedTurn?.delivery?.durable;
-      if (typeof durable !== "function") {
-        throw new Error("Expected a Slack durable final adapter");
+      ]);
+      try {
+        const cfg = { channels: { slack: { botToken: "xoxb-test" } } };
+        await dispatchPreparedSlackMessage(createPreparedSlackMessage({ cfg }));
+        const durable = capturedTurn?.delivery?.durable;
+        if (typeof durable !== "function") {
+          throw new Error("Expected a Slack durable final adapter");
+        }
+        const options = await durable({ text: FINAL_REPLY_TEXT }, { kind: "final" });
+        if (!options || !options.prepareRuntimeHandoff) {
+          throw new Error("Projected Slack finals must preserve their admitted sender");
+        }
+        const pinned = options.prepareRuntimeHandoff(cfg);
+        expect(pinned.channels?.slack?.accounts?.default?.botToken).toBe("xoxb-test");
+        expect(() =>
+          options.prepareRuntimeHandoff?.({ channels: { slack: { botToken: "xoxb-other" } } }),
+        ).toThrow("Slack reply sender changed");
+      } finally {
+        bindings.mockRestore();
       }
-      const options = await durable({ text: FINAL_REPLY_TEXT }, { kind: "final" });
-      if (!options || !options.prepareRuntimeHandoff) {
-        throw new Error("Projected Slack finals must preserve their admitted sender");
-      }
-      const pinned = options.prepareRuntimeHandoff(cfg);
-      expect(pinned.channels?.slack?.accounts?.default?.botToken).toBe("xoxb-test");
-      expect(() =>
-        options.prepareRuntimeHandoff?.({ channels: { slack: { botToken: "xoxb-other" } } }),
-      ).toThrow("Slack reply sender changed");
-    } finally {
-      bindings.mockRestore();
-    }
-  });
+    },
+  );
 
   it.each([
     { agents: ["alice", "bob"], withMedia: true },

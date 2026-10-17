@@ -140,6 +140,7 @@ describe("durable exact source-result rendezvous", () => {
         source_workspace_id: "T12345678",
         source_conversation_id: "C12345678",
         source_root_message_id: "1.000000",
+        source_actor_ids: ["U12345678"],
         binding_id: target.bindingId,
         generation: "owning-opaque-uuid",
       }),
@@ -148,7 +149,51 @@ describe("durable exact source-result rendezvous", () => {
     expect(m.release).not.toHaveBeenCalled();
   });
 
-  it("settles a fresh authoritative denial without inventing a prepared bridge context", async () => {
+  it("prepares a positive empty cohort without withholding an ordinary label", async () => {
+    enableNotificationRouting();
+    m.host.mockReturnValue({
+      ...host,
+      publicationId: "12345678-1234-4234-8234-123456789abc",
+      synthesizedPrefix: "Agent",
+      deferSynthesizedPrefix: m.hold,
+    });
+    await prepareMatrixSourceResult({});
+    expect(m.hold).not.toHaveBeenCalled();
+    expect(m.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({ source_actor_ids: [] }),
+      undefined,
+    );
+  });
+
+  it("joins an earlier native result when the provider receipt arrives after a restart", async () => {
+    enableNotificationRouting();
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$native-first");
+    expect(m.note).not.toHaveBeenCalled();
+    resetPluginBlobStoreForTests({ closeDatabase: false });
+    installMatrixTestRuntime({ stateDir });
+    await prepareMatrixSourceResult({});
+    await listener()(m.host.mock.results[0]?.value, { ...receipt, conversationId: "C12345678" });
+    expect(m.accepted).toHaveBeenCalledWith(
+      expect.objectContaining({ source_actor_ids: ["U12345678"] }),
+      receipt.messageId,
+      "$native-first",
+    );
+    expect(m.note).toHaveBeenCalledWith(
+      expect.objectContaining({ resultEventId: "$native-first" }),
+    );
+  });
+
+  it("does not let an unmatched native candidate from another room poison the result", async () => {
+    enableNotificationRouting();
+    await prepareMatrixSourceResult({});
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!other-room", "$foreign");
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$correct");
+    await listener()(m.host.mock.results[0]?.value, { ...receipt, conversationId: "C12345678" });
+    expect(m.accepted).toHaveBeenCalledWith(expect.anything(), receipt.messageId, "$correct");
+    expect(m.note).toHaveBeenCalledWith(expect.objectContaining({ resultEventId: "$correct" }));
+  });
+
+  it("does not invent a prepared bridge context for an invalid source", async () => {
     enableNotificationRouting();
     m.prepare.mockResolvedValue({ prepared: false, reservedRoute: "unknown", originPermit: false });
     await prepareMatrixSourceResult({});
@@ -156,6 +201,21 @@ describe("durable exact source-result rendezvous", () => {
     await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$snapshot");
     expect(m.prepare).toHaveBeenCalledTimes(2);
     expect(m.accepted).not.toHaveBeenCalled();
+    expect(m.release).not.toHaveBeenCalled();
+    expect(m.note).toHaveBeenCalledWith(expect.objectContaining({ resultEventId: "$snapshot" }));
+  });
+
+  it("joins a verified source even when every addressed recipient has no eligible route", async () => {
+    enableNotificationRouting();
+    m.prepare.mockResolvedValue({ prepared: true, reservedRoute: "unknown", originPermit: false });
+    await prepareMatrixSourceResult({});
+    await listener()(m.host.mock.results[0]?.value, { ...receipt, conversationId: "C12345678" });
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$snapshot");
+    expect(m.accepted).toHaveBeenCalledWith(
+      expect.objectContaining({ source_actor_ids: ["U12345678"] }),
+      receipt.messageId,
+      "$snapshot",
+    );
     expect(m.release).not.toHaveBeenCalled();
     expect(m.note).toHaveBeenCalledWith(expect.objectContaining({ resultEventId: "$snapshot" }));
   });

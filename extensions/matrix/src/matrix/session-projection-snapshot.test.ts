@@ -243,11 +243,37 @@ describe("v2 source reconciliation", () => {
     });
   });
   it("notes exact accepted snapshot event and retries unchanged rendezvous", async () => {
-    const params = { ...options, snapshot: { complete: true, messages: [message] } };
+    const params = {
+      ...options,
+      snapshot: { complete: true, messages: [{ ...message, role: "assistant" as const }] },
+    };
     await reconcileMatrixProjectionSnapshot(params);
     await reconcileMatrixProjectionSnapshot(params);
     expect(mocks.note).toHaveBeenNthCalledWith(1, "binding", message.messageId, "!room", "$event0");
     expect(mocks.note).toHaveBeenCalledTimes(2);
+  });
+  it("does not record user publications as assistant results, including unchanged history", async () => {
+    const params = { ...options, snapshot: { complete: true, messages: [message] } };
+    await reconcileMatrixProjectionSnapshot(params);
+    await reconcileMatrixProjectionSnapshot(params);
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.note).not.toHaveBeenCalled();
+  });
+  it("records the final accepted multipart assistant event rather than the first receipt id", async () => {
+    mocks.send.mockImplementationOnce(async (_to: string, body: string, opts: any) => {
+      const first = insert(body, opts.publication, opts.extraContent, 0, 2);
+      const last = insert(body, opts.publication, opts.extraContent, 1, 2);
+      return { messageId: first, receipt: { platformMessageIds: [first, last] } };
+    });
+    const params = {
+      ...options,
+      snapshot: { complete: true, messages: [{ ...message, role: "assistant" as const }] },
+    };
+    await reconcileMatrixProjectionSnapshot(params);
+    await reconcileMatrixProjectionSnapshot(params);
+    expect(mocks.send).toHaveBeenCalledTimes(1);
+    expect(mocks.note).toHaveBeenNthCalledWith(1, "binding", message.messageId, "!room", "$event1");
+    expect(mocks.note).toHaveBeenNthCalledWith(2, "binding", message.messageId, "!room", "$event1");
   });
   it("redacts deleted source parts without deleting unrelated history", async () => {
     await reconcileMatrixProjectionSnapshot({
