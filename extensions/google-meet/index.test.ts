@@ -3459,6 +3459,7 @@ describe("google-meet plugin", () => {
   it("pipes Chrome command-pair audio through the realtime provider", async () => {
     const { bridge, provider, requireRequest, sendAudio } = createTestMeetVoiceProvider({
       defaultModel: "gpt-realtime-2",
+      supportsToolResultContinuation: true,
       handleBargeIn: vi.fn(),
       triggerGreeting: vi.fn(),
     });
