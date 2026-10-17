@@ -195,7 +195,15 @@ export function failureKindOf(
 }
 
 /** Who stopped a run, as far as the lifecycle can tell. A person's stop is not recorded on the event. */
-export function stoppedByOf(outcomeReason: string | undefined): RunStoppedBy | undefined {
+export function stoppedByOf(
+  outcomeReason: string | undefined,
+  stopReason?: string,
+): RunStoppedBy | undefined {
+  // Normalization classifies provider credential logout as an abort while
+  // preserving its owner-recorded cause. Generic RPC cancellation names nobody.
+  if (outcomeReason === "aborted" && stopReason === "auth-revoked") {
+    return { kind: "auth_revoked" };
+  }
   // A run replaced by a newer writer, or one the gateway aborted for a restart,
   // was stopped by the system. Nothing else names its stopper.
   return outcomeReason === "superseded" ? { kind: "coordinator" } : undefined;

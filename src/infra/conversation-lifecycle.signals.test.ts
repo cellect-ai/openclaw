@@ -258,6 +258,35 @@ describe("conversation lifecycle, contract v2", () => {
     consume("aborted");
   });
 
+  it.each(["queued", "running", "waiting"])("retains revoked access after %s", async (phase) => {
+    const transport = install();
+    const terminal = { status: "cancelled", aborted: true, stopReason: "auth-revoked" };
+    const expected = { state: "cancelled", stoppedBy: { kind: "auth_revoked" } };
+    admit("revoked");
+    if (phase !== "queued") {
+      emit("revoked", "start");
+    }
+    if (phase === "waiting") {
+      approval("revoked", plugin("revoked-approval"));
+    }
+    failFacts = true;
+    emit("revoked", "end", terminal);
+    await transport.flush();
+    expect(of("revoked")).toEqual([]);
+    failFacts = false;
+    clock += 60_000;
+    await transport.flush();
+    expect(of("revoked").at(-1)).toMatchObject(expected);
+    expect(consume("revoked")).toMatchObject(expected);
+    // A fresh terminal with optional signals disabled retains the legacy shape.
+    flags.signals = false;
+    admit("legacy-revoked");
+    emit("legacy-revoked", "end", terminal);
+    await transport.flush();
+    expect(of("legacy-revoked").at(-1)!.state).toBe("cancelled");
+    expect(of("legacy-revoked").at(-1)!.stoppedBy).toBeUndefined();
+  });
+
   it("keeps the failure kind when the terminal fact is restated with its result", async () => {
     const transport = install();
     admit("restated");
