@@ -37,10 +37,14 @@ function createHarness(options?: {
   const directConversations = options?.directConversations ?? [];
   const history = options?.history ?? {};
   const replies = options?.replies ?? {};
-  const conversationsHistory = vi.fn(async ({ channel }: { channel: string }) => ({
-    ok: true,
-    messages: history[channel] ?? [],
-  }));
+  const conversationsHistory = vi.fn(
+    async ({ channel, oldest }: { channel: string; oldest?: string }) => ({
+      ok: true,
+      messages: (history[channel] ?? []).filter(
+        (message) => oldest === undefined || Number(message.ts) > Number(oldest),
+      ),
+    }),
+  );
   const conversationsReplies = vi.fn(async ({ channel, ts }: { channel: string; ts: string }) => ({
     ok: true,
     messages: replies[`${channel}:${ts}`] ?? [],

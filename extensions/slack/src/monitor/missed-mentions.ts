@@ -334,9 +334,12 @@ async function collectMissedMentionsInChannel(params: {
   const { channelId, kind } = params.conversation;
   const oldest = (oldestMs / 1_000).toFixed(6);
   const recovered: SlackMessageEvent[] = [];
+  // History filters on the parent timestamp, not latest_reply. Discover recent
+  // parents without a time filter so an older thread can reveal an outage reply.
+  // The bounded page is not complete old-thread discovery; each recovered input
+  // still passes the actual outage window below, and replies keep their cutoff.
   const history = await client.conversations.history({
     channel: channelId,
-    oldest,
     inclusive: false,
     limit: SLACK_RECOVERY_MAX_MESSAGES_PER_CHANNEL,
   });
