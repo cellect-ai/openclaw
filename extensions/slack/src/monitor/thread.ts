@@ -30,13 +30,36 @@ export type SlackThreadStarter = {
 };
 
 type SlackThreadStarterCacheEntry = {
-  value: SlackThreadStarter;
+  value: SlackThreadStarter | null;
+  pending?: Promise<SlackThreadStarter | null>;
   expiresAt: number;
 };
 
 const THREAD_STARTER_CACHE = new Map<string, SlackThreadStarterCacheEntry>();
 const THREAD_STARTER_CACHE_TTL_MS = 6 * 60 * 60_000;
 const THREAD_STARTER_CACHE_MAX = 2000;
+
+function threadStarterCacheKey(params: {
+  channelId: string;
+  threadTs: string;
+  workspaceScope: { accountId: string; teamId: string };
+}): string {
+  return JSON.stringify([
+    params.workspaceScope.accountId,
+    params.workspaceScope.teamId,
+    params.channelId,
+    params.threadTs,
+  ]);
+}
+
+/** An authorized edit/delete invalidates only the original message's root slot. */
+export function invalidateSlackThreadStarter(params: {
+  channelId: string;
+  messageTs: string;
+  workspaceScope: { accountId: string; teamId: string };
+}): void {
+  THREAD_STARTER_CACHE.delete(threadStarterCacheKey({ ...params, threadTs: params.messageTs }));
+}
 
 function evictThreadStarterCache(): void {
   const now = asDateTimestampMs(Date.now());
@@ -133,61 +156,70 @@ export async function resolveSlackThreadStarter(params: {
   refresh?: boolean;
 }): Promise<SlackThreadStarter | null> {
   evictThreadStarterCache();
-  const cacheKey = JSON.stringify([
-    params.workspaceScope.accountId,
-    params.workspaceScope.teamId,
-    params.channelId,
-    params.threadTs,
-  ]);
+  const cacheKey = threadStarterCacheKey(params);
   const cached = THREAD_STARTER_CACHE.get(cacheKey);
   if (cached && !params.refresh) {
     const now = asDateTimestampMs(Date.now());
     if (now !== undefined && cached.expiresAt > now) {
-      return cached.value;
+      const value = cached.pending ? await cached.pending : cached.value;
+      return THREAD_STARTER_CACHE.get(cacheKey) === cached ? value : null;
     }
     THREAD_STARTER_CACHE.delete(cacheKey);
   }
-  if (params.refresh) {
-    THREAD_STARTER_CACHE.delete(cacheKey);
-  }
-  try {
-    const response = await params.client.conversations.replies({
-      channel: params.channelId,
-      ts: params.threadTs,
-      limit: 1,
-      inclusive: true,
-    });
-    const message = response?.messages?.[0];
-    const text = message ? resolveSlackMessageText(message) : undefined;
-    const files = message?.files?.length ? message.files : undefined;
-    if (!message || (!text && !files)) {
-      return null;
-    }
-    const starter: SlackThreadStarter = {
-      text: text || formatSlackFilePlaceholder(files),
-      userId: message.user,
-      botId: message.bot_id,
-      ts: message.ts,
-      files,
-    };
-    const expiresAt = resolveExpiresAtMsFromDurationMs(THREAD_STARTER_CACHE_TTL_MS);
-    if (expiresAt !== undefined) {
-      if (THREAD_STARTER_CACHE.has(cacheKey)) {
+  // The slot itself owns the read. A refresh, invalidation or eviction retires
+  // it, so an older awaited response can neither return nor reinstall stale text.
+  const owner: SlackThreadStarterCacheEntry = {
+    value: null,
+    expiresAt: resolveExpiresAtMsFromDurationMs(THREAD_STARTER_CACHE_TTL_MS) ?? 0,
+  };
+  THREAD_STARTER_CACHE.set(cacheKey, owner);
+  evictThreadStarterCache();
+  const pending = (async (): Promise<SlackThreadStarter | null> => {
+    try {
+      const response = await params.client.conversations.replies({
+        channel: params.channelId,
+        ts: params.threadTs,
+        limit: 1,
+        inclusive: true,
+      });
+      if (THREAD_STARTER_CACHE.get(cacheKey) !== owner) {
+        return null;
+      }
+      const message = response?.messages?.[0];
+      const text = message ? resolveSlackMessageText(message) : undefined;
+      const files = message?.files?.length ? message.files : undefined;
+      if (!message || message.ts !== params.threadTs || (!text && !files)) {
+        THREAD_STARTER_CACHE.delete(cacheKey);
+        return null;
+      }
+      const starter: SlackThreadStarter = {
+        text: text || formatSlackFilePlaceholder(files),
+        userId: message.user,
+        botId: message.bot_id,
+        ts: message.ts,
+        files,
+      };
+      const expiresAt = resolveExpiresAtMsFromDurationMs(THREAD_STARTER_CACHE_TTL_MS);
+      if (expiresAt !== undefined) {
+        owner.value = starter;
+        owner.expiresAt = expiresAt;
+        delete owner.pending;
+        evictThreadStarterCache();
+      }
+      return THREAD_STARTER_CACHE.get(cacheKey) === owner ? starter : null;
+    } catch (err) {
+      if (THREAD_STARTER_CACHE.get(cacheKey) === owner) {
         THREAD_STARTER_CACHE.delete(cacheKey);
       }
-      THREAD_STARTER_CACHE.set(cacheKey, {
-        value: starter,
-        expiresAt,
-      });
-      evictThreadStarterCache();
+      logVerbose(
+        `slack thread starter fetch failed channel=${params.channelId} ts=${params.threadTs}: ${formatErrorMessage(err)}`,
+      );
+      return null;
     }
-    return starter;
-  } catch (err) {
-    logVerbose(
-      `slack thread starter fetch failed channel=${params.channelId} ts=${params.threadTs}: ${formatErrorMessage(err)}`,
-    );
-    return null;
-  }
+  })();
+  owner.pending = pending;
+  const value = await pending;
+  return THREAD_STARTER_CACHE.get(cacheKey) === owner ? value : null;
 }
 
 type SlackRepliesPageMessage = NonNullable<ConversationsRepliesResponse["messages"]>[number];

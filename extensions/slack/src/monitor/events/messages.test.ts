@@ -1,8 +1,9 @@
-// Slack tests cover messages plugin behavior.
 import type { App } from "@slack/bolt";
+// Slack tests cover messages plugin behavior.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createInboundSlackTestContext } from "../message-handler/prepare.test-helpers.js";
 import { createSlackSystemEventRouteResolver } from "../system-event-session.js";
+import { registerSlackEditContextTests } from "./messages.edit-context.test-support.js";
 import {
   createSlackSystemEventTestHarness,
   type SlackSystemEventTestOverrides,
@@ -105,6 +106,7 @@ function createEnterpriseHandlers(eventName: RegisteredEventName) {
   const handleSlackMessage = vi.fn(async () => {});
   registerSlackMessageEvents({ ctx: harness.ctx, handleSlackMessage });
   return {
+    ctx: harness.ctx,
     handler: requireMessageHandler(harness.getHandler(eventName) as MessageHandler | null),
     handleSlackMessage,
   };
@@ -406,6 +408,15 @@ describe("registerSlackMessageEvents", () => {
     expect(messageQueueMock).not.toHaveBeenCalled();
   });
 
+  registerSlackEditContextTests({
+    createHandlers: () => createEnterpriseHandlers("message"),
+    makeEvent: (subtype) =>
+      subtype === "message_changed"
+        ? makeChangedEvent({ channel: "C123", user: "U123" })
+        : makeDeletedEvent({ channel: "C123", user: "U123" }),
+    messageQueueMock,
+  });
+
   it("drops bot-authored enterprise app_mention events in favor of the message event", async () => {
     const { handler, handleSlackMessage } = createEnterpriseHandlers("app_mention");
     await handler({
@@ -445,7 +456,7 @@ describe("registerSlackMessageEvents", () => {
 
       expect(handleSlackMessage).not.toHaveBeenCalled();
       expect(messageQueueMock).toHaveBeenCalledOnce();
-      expect(messageQueueMock).toHaveBeenCalledWith(expectedText, {
+      expect(messageQueueMock).toHaveBeenCalledWith(expect.stringContaining(expectedText), {
         contextKey: expectedContextKey,
         sessionKey: "agent:main:main",
       });
@@ -689,10 +700,13 @@ describe("registerSlackMessageEvents", () => {
 
     expect(handleSlackMessage).not.toHaveBeenCalled();
     expect(messageQueueMock).toHaveBeenCalledTimes(1);
-    expect(messageQueueMock).toHaveBeenCalledWith("Slack message edited in #general.", {
-      sessionKey: "agent:main:main",
-      contextKey: "slack:message:changed:C1:123.456:Ev-message-change-1",
-    });
+    expect(messageQueueMock).toHaveBeenCalledWith(
+      expect.stringContaining("Slack message edited in #general."),
+      {
+        sessionKey: "agent:main:main",
+        contextKey: "slack:message:changed:C1:123.456:Ev-message-change-1",
+      },
+    );
   });
 
   it.each([
