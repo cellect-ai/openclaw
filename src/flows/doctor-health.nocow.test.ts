@@ -1,5 +1,5 @@
 import "./doctor-health.test-support.js";
-import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDoctorNoCowToolFixture } from "../commands/doctor-sqlite-nocow.test-support.js";
@@ -46,9 +46,9 @@ it.skipIf(process.platform !== "linux")(
         },
       },
       async (state) => {
-        const native =
-          await vi.importActual<typeof import("node:child_process")>("node:child_process");
-        const tools = createDoctorNoCowToolFixture(state.root, native.spawnSync);
+        // Hermetic tool fixture: never fall through to ambient host binaries
+        // (the builder image has no fuser; upstream CI happens to).
+        const tools = createDoctorNoCowToolFixture(state.root);
         const cfg = {
           agents: {
             ownership: "explicit" as const,
@@ -115,11 +115,6 @@ it.skipIf(process.platform !== "linux")(
           { repair: true, nonInteractive: true, workspaceSuggestions: false },
         );
         expect(readerClosed).toBe(true);
-        if (tools.exchanges !== 2) {
-          console.log(
-            `DIAG exchanges=${tools.exchanges} spawn=${JSON.stringify(vi.mocked(spawnSync).mock.calls.map(([c, a]) => `${c} ${(a ?? []).join(" ")}`))} log=${JSON.stringify(log.mock.calls.flat().map(String))}`,
-          );
-        }
         expect(tools.exchanges).toBe(2);
         expect(log.mock.calls.flat().join("\n")).not.toContain("SQLite NOCOW repair refused");
         for (const [index, pathname] of paths.entries()) {
