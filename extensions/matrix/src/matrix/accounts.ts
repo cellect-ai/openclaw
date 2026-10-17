@@ -211,8 +211,10 @@ export function resolveMatrixAccount(params: {
   env?: NodeJS.ProcessEnv;
 }): ResolvedMatrixAccount {
   const prepared = prepareMatrixAccount(params);
+  // Mirror the async resolver: a token-only account without a configured userId
+  // learns its MXID from the credential store, so load it for projection.
   const stored =
-    prepared.hasHomeserver && !prepared.hasConfiguredAuth
+    prepared.hasHomeserver && (!prepared.hasConfiguredAuth || !prepared.authView.userId)
       ? loadMatrixCredentials(params.env ?? process.env, prepared.account.accountId)
       : null;
   return {

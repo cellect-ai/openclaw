@@ -409,6 +409,7 @@ export async function consultRealtimeVoiceAgent(params: {
     timeoutMs: number;
   }) => RealtimeVoiceAgentConsultRunRegistration | void;
 }): Promise<RealtimeVoiceAgentConsultResult> {
+  console.log("DIAG consult run: entry", params.sessionKey);
   params.abortSignal?.throwIfAborted();
   const [{ beginSessionWorkAdmission }, { resolveSessionWorkStartError }] = await Promise.all([
     import("../sessions/session-lifecycle-admission.js"),
