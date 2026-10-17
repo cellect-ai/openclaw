@@ -13,6 +13,7 @@ import {
   type BusinessApprovalConversation,
 } from "./business-approval-conversation.js";
 import { formatErrorMessage } from "./errors.js";
+import { isRunStopUserId } from "./run-stop-actor.js";
 
 /** The optional fields of a lifecycle fact. A consumer built before them rejects the whole fact. */
 const LIFECYCLE_SIGNAL_KEYS = [
@@ -37,7 +38,7 @@ const RUN_WAITING_ON_KINDS = ["question", "confirmation", "workflowApproval"] as
 export type RunWaitingOn = { kind: (typeof RUN_WAITING_ON_KINDS)[number]; ref: string };
 
 const RUN_STOPPED_BY_KINDS = ["person", "coordinator", "auth_revoked"] as const;
-export type RunStoppedBy = { kind: (typeof RUN_STOPPED_BY_KINDS)[number] };
+export type RunStoppedBy = { kind: (typeof RUN_STOPPED_BY_KINDS)[number]; userId?: string };
 
 export type LifecycleSignals = {
   atMs?: number;
@@ -114,10 +115,14 @@ function validSignals(state: string, signals: LifecycleSignals): LifecycleSignal
     state === "cancelled" &&
     signals.stoppedBy &&
     RUN_STOPPED_BY_KINDS.includes(signals.stoppedBy.kind)
-  ) // Only the kind: the person's Matrix id may be published for a member of
-  // the room, and membership is not known here.
-  {
-    out.stoppedBy = { kind: signals.stoppedBy.kind };
+  ) {
+    const userId = signals.stoppedBy.userId;
+    // Identity reaches this serializer only after the lifecycle owner matches
+    // the admitted room/thread proof against this exact publication binding.
+    out.stoppedBy = {
+      kind: signals.stoppedBy.kind,
+      ...(signals.stoppedBy.kind === "person" && isRunStopUserId(userId) ? { userId } : {}),
+    };
   }
   return out;
 }

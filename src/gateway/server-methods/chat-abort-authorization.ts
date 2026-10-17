@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 // Authorization and pending-run state transitions for chat cancellation.
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
+import { isPersonRunStopReason, type VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import { setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import { listQueuedChatTurnsForSession } from "../chat-queued-turns.js";
@@ -52,12 +53,16 @@ export function buildAbortedChatSendPayload(params: {
   runId: string;
   endedAt: number;
   stopReason?: string;
+  stopActor?: VerifiedRunStopActor;
 }) {
   return {
     runId: params.runId,
     status: "timeout" as const,
     summary: "aborted",
     ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+    ...(isPersonRunStopReason(params.stopReason) && params.stopActor
+      ? { stopActor: params.stopActor }
+      : {}),
     endedAt: params.endedAt,
   };
 }
@@ -235,6 +240,7 @@ export function writePreRegisteredAgentAbort(params: {
   sessionKey?: string;
   payload: PreRegisteredAgentDedupePayload;
   stopReason: string;
+  stopActor?: VerifiedRunStopActor;
   endedAt?: number;
   expectedPayload?: PreRegisteredAgentDedupePayload;
 }) {
@@ -267,6 +273,9 @@ export function writePreRegisteredAgentAbort(params: {
           status: "timeout" as const,
           summary: "aborted",
           stopReason: params.stopReason,
+          ...(isPersonRunStopReason(params.stopReason) && params.stopActor
+            ? { stopActor: params.stopActor }
+            : {}),
           endedAt,
         },
       },
@@ -279,6 +288,7 @@ export function writePreRegisteredChatAbort(params: {
   context: GatewayRequestContext;
   runId: string;
   stopReason: string;
+  stopActor?: VerifiedRunStopActor;
   endedAt?: number;
   attemptId?: string;
   expectedPayload?: PreRegisteredAgentDedupePayload;
@@ -294,6 +304,7 @@ export function writePreRegisteredChatAbort(params: {
   const payload = buildAbortedChatSendPayload({
     runId: params.runId,
     stopReason: params.stopReason,
+    stopActor: params.stopActor,
     endedAt,
   });
   params.context.chatRunState.getOrCreate(params.runId).abortMarker =

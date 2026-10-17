@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { resolveAgentRunAbortLifecycleFields } from "../../agents/run-termination.js";
 import type { TurnAdoptionLifecycle } from "../../auto-reply/get-reply-options.types.js";
 import type { QueuedFollowupReplyDelivery } from "../../auto-reply/reply/queue/types.js";
+import type { VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import { createDeferredCore, type Deferred } from "../../shared/deferred.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
@@ -58,7 +59,10 @@ export function createChatSendTurnAdoptionLifecycle(params: {
   let adoptionStarted = false;
   let withdrawalHold: Deferred | undefined;
   let releaseWorkAdmission: (() => void) | undefined;
-  const recordQueuedTerminal = (status: "completed" | "aborted") => {
+  const recordQueuedTerminal = (
+    status: "completed" | "aborted",
+    stopActor?: VerifiedRunStopActor,
+  ) => {
     // An active source dispatch still owns terminal recording after its work settles.
     if (
       !params.suppressReplies &&
@@ -79,6 +83,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
             ? buildAbortedChatSendPayload({
                 runId: params.runId,
                 endedAt: now,
+                stopActor,
                 stopReason: resolveAgentRunAbortLifecycleFields(params.controller.signal)
                   .stopReason,
               })
@@ -145,9 +150,9 @@ export function createChatSendTurnAdoptionLifecycle(params: {
           };
         },
         // Queue cancellation supersedes the source run's earlier custody acknowledgement.
-        onAborted: (reason) => {
+        onAborted: (reason, actor) => {
           params.sessionBinding.abortDiagnosticReason = reason;
-          recordQueuedTerminal("aborted");
+          recordQueuedTerminal("aborted", actor);
         },
       });
       if (enqueued && !releaseWorkAdmission) {

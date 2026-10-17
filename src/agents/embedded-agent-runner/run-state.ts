@@ -21,6 +21,7 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../../infra/agent-run-registry.js";
+import type { VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import type { DiagnosticEmbeddedRunOwner } from "../../logging/diagnostic-run-activity.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import type { OperationalRunInstanceRef } from "../admitted-run-context.js";
@@ -70,8 +71,11 @@ export type EmbeddedAgentQueueHandle = {
   supportsTranscriptCommitWait?: boolean;
   /** True only when queueMessage preserves images supplied in its options. */
   supportsQueueMessageImages?: boolean;
-  cancel?: (reason?: "user_abort" | "restart" | "superseded") => void;
-  abort: (reason?: "restart") => void;
+  cancel?: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
+  abort: (reason?: "restart", stopActor?: VerifiedRunStopActor) => void;
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   terminalReplyExpectation?: ReplyExpectation;
   taskSuggestionDeliveryMode?: TaskSuggestionDeliveryMode;

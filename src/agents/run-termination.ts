@@ -8,6 +8,7 @@ import {
 } from "@openclaw/normalization-core/agent-run-terminal-outcome";
 import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
 import { createAbortError } from "../infra/abort-signal.js";
+import { ConversationRunStopReason, type VerifiedRunStopActor } from "../infra/run-stop-actor.js";
 import {
   type FailoverError,
   findErrorProperty,
@@ -56,7 +57,10 @@ function hasAgentRunAbortCode(value: unknown, code: string): boolean {
 }
 
 export function isAgentRunDirectAbortReason(value: unknown): boolean {
-  return hasAgentRunAbortCode(value, AGENT_RUN_DIRECT_ABORT_ERROR_CODE);
+  return (
+    value instanceof ConversationRunStopReason ||
+    hasAgentRunAbortCode(value, AGENT_RUN_DIRECT_ABORT_ERROR_CODE)
+  );
 }
 
 export function createAgentRunRestartAbortError(): Error {
@@ -106,6 +110,7 @@ export function isSessionPlacementSettlementClosedError(value: unknown): boolean
 
 export function resolveAgentRunAbortLifecycleFields(signal: AbortSignal | undefined): {
   aborted?: true;
+  stopActor?: VerifiedRunStopActor;
   stopReason?:
     | typeof AGENT_RUN_ABORTED_STOP_REASON
     | typeof AGENT_RUN_RESTART_ABORT_STOP_REASON
@@ -114,6 +119,13 @@ export function resolveAgentRunAbortLifecycleFields(signal: AbortSignal | undefi
 } {
   if (!signal?.aborted) {
     return {};
+  }
+  if (signal.reason instanceof ConversationRunStopReason) {
+    return {
+      aborted: true,
+      stopReason: AGENT_RUN_ABORTED_STOP_REASON,
+      stopActor: signal.reason.actor,
+    };
   }
   const stopReason = isAgentRunRestartAbortReason(signal.reason)
     ? AGENT_RUN_RESTART_ABORT_STOP_REASON
@@ -166,6 +178,9 @@ export function resolveAgentRunErrorLifecycleFields(
   const abortFields = resolveAgentRunAbortLifecycleFields(signal);
   if (abortFields.aborted) {
     return abortFields;
+  }
+  if (error instanceof ConversationRunStopReason) {
+    return { aborted: true, stopReason: AGENT_RUN_ABORTED_STOP_REASON, stopActor: error.actor };
   }
   // A run-owned controller can stop work without aborting its caller's signal.
   if (isAgentRunDirectAbortReason(error)) {

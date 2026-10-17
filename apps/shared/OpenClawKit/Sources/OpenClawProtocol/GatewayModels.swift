@@ -16449,17 +16449,20 @@ public struct SessionsAbortParams: Codable, Sendable {
     public let runid: String?
     public let agentid: String?
     public let clearqueued: Bool?
+    public let stopactor: [String: AnyCodable]?
 
     public init(
         key: String? = nil,
         runid: String? = nil,
         agentid: String? = nil,
-        clearqueued: Bool? = nil)
+        clearqueued: Bool? = nil,
+        stopactor: [String: AnyCodable]? = nil)
     {
         self.key = key
         self.runid = runid
         self.agentid = agentid
         self.clearqueued = clearqueued
+        self.stopactor = stopactor
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -16467,6 +16470,7 @@ public struct SessionsAbortParams: Codable, Sendable {
         case runid = "runId"
         case agentid = "agentId"
         case clearqueued = "clearQueued"
+        case stopactor = "stopActor"
     }
 }
 

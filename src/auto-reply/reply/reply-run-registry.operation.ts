@@ -7,6 +7,10 @@ import {
 } from "../../agents/run-termination.js";
 import { createAbortError } from "../../infra/abort-signal.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import {
+  ConversationRunStopReason,
+  matchesVerifiedRunStopActor,
+} from "../../infra/run-stop-actor.js";
 import { markDiagnosticRunProgress } from "../../logging/diagnostic-run-activity.js";
 import { diagnosticLogger as diag } from "../../logging/diagnostic-runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -217,7 +221,12 @@ export function createReplyOperation(params: {
     // Cancellation may throw, but lifecycle cleanup still must run. Pre-backend
     // non-retained owners release now; retained/running owners await terminal settle.
     try {
-      getAttachedBackend(operation)?.cancel(reason);
+      const backend = getAttachedBackend(operation);
+      if (abortReason instanceof ConversationRunStopReason) {
+        backend?.cancel(reason, abortReason.actor);
+      } else {
+        backend?.cancel(reason);
+      }
     } finally {
       if (
         isReplyOperationPreBackendPhase(phaseBeforeAbort) &&
@@ -486,13 +495,18 @@ export function createReplyOperation(params: {
         scheduleTerminalSettle();
       }
     },
-    abortByUser() {
+    abortByUser(stopActor) {
       if (!isReplyOperationAbortable(operation)) {
         return false;
       }
       abortOperation(
         "user_abort",
-        createAbortError("Reply operation aborted by user"),
+        matchesVerifiedRunStopActor(stopActor, {
+          sessionKey: currentSessionKey,
+          agentId: currentAgentId,
+        })
+          ? new ConversationRunStopReason(stopActor)
+          : createAbortError("Reply operation aborted by user"),
         "aborted_by_user",
       );
       return true;

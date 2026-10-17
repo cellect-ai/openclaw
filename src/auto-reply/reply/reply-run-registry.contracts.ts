@@ -7,6 +7,7 @@ import type { ChatType } from "../../channels/chat-type.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import type { GroupToolPolicyConfig } from "../../config/types.tools.js";
 import type { GatewayUiCommandTarget } from "../../gateway/ui-command-target.types.js";
+import type { VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import type { ImageContent } from "../../llm/types.js";
 import type { MediaFact } from "../../media/media-facts.js";
 import type { PromptImageOrderEntry } from "../../media/prompt-image-order.js";
@@ -190,7 +191,7 @@ export type ReplyBackendHandle = {
     options?: ReplyBackendQueueMessageOptions,
   ) => Promise<boolean>;
   cancelPendingUserInput?: (resolvedBy: string) => Promise<boolean>;
-  cancel(reason?: ReplyBackendCancelReason): void;
+  cancel(reason?: ReplyBackendCancelReason, stopActor?: VerifiedRunStopActor): void;
   readonly messageInjection?: ReplyBackendMessageInjection;
   /** V1 remains compatible with v2026.8.1; source-bound input requires V2. */
   readonly messageInjectionV2?: ReplyBackendMessageInjectionV2;
@@ -418,7 +419,7 @@ export type ReplyOperation = {
     timeout?: number | ReplyFollowupAdmissionBarrierTimeoutPolicy,
   ): void;
   fail(code: Exclude<ReplyOperationFailureCode, "aborted_by_user">, cause?: unknown): void;
-  abortByUser(): boolean;
+  abortByUser(stopActor?: VerifiedRunStopActor): boolean;
   abortForRestart(): boolean;
   supersede(beforeSupersede?: () => void): boolean;
 };

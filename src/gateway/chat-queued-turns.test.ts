@@ -1,6 +1,7 @@
 import { getEventListeners } from "node:events";
 import { describe, expect, it, vi } from "vitest";
 import { isAgentRunRestartAbortReason } from "../agents/run-termination.js";
+import { ConversationRunStopReason } from "../infra/run-stop-actor.js";
 import {
   abortQueuedChatTurnById,
   abortQueuedChatTurns,
@@ -71,6 +72,75 @@ describe("chat-queued-turns", () => {
     expect(observedController).toBe(controller);
     expect(map.get("run-abort")).toBeUndefined();
   });
+
+  it.each(["main", "foreign"])("captures a %s actor before the queued owner signals", (key) => {
+    const map = emptyMap();
+    const controller = new AbortController();
+    const actor = Object.freeze({
+      userId: "@reader:matrix.test",
+      roomId: "!room:matrix.test",
+      threadRootEventId: "$root",
+      sessionKey: key,
+      agentId: "example",
+    });
+    const observed: unknown[] = [];
+    registerQueuedChatTurn({
+      chatQueuedTurns: map,
+      runId: "actor-turn",
+      controller,
+      sessionId: "actor-session",
+      sessionKey: "main",
+      agentId: "example",
+      onAborted: (_, actual) => observed.push(actual),
+    });
+    expect(
+      abortQueuedChatTurnById(map, {
+        runId: "actor-turn",
+        sessionKey: "main",
+        stopReason: "rpc",
+        stopActor: actor,
+      }).aborted,
+    ).toBe(true);
+    expect(observed).toEqual([key === "main" ? actor : undefined]);
+  });
+
+  it.each(["timeout", "restart", "auth-revoked", "superseded", undefined])(
+    "keeps a queued %s cause separate from a matching person assertion",
+    (stopReason) => {
+      const map = emptyMap();
+      const controller = new AbortController();
+      const actor = {
+        userId: "@reader:matrix.test",
+        roomId: "!room:matrix.test",
+        threadRootEventId: "$root",
+        sessionKey: "main",
+        agentId: "example",
+      };
+      const onAborted = vi.fn();
+      registerQueuedChatTurn({
+        chatQueuedTurns: map,
+        runId: "actor-turn",
+        controller,
+        sessionId: "actor-session",
+        sessionKey: "main",
+        agentId: "example",
+        onAborted,
+      });
+      expect(
+        abortQueuedChatTurnById(map, {
+          runId: "actor-turn",
+          sessionKey: "main",
+          stopReason,
+          stopActor: actor,
+        }).aborted,
+      ).toBe(true);
+      expect(controller.signal.reason).not.toBeInstanceOf(ConversationRunStopReason);
+      expect(onAborted.mock.calls[0]).toHaveLength(1);
+      if (stopReason === "restart") {
+        expect(isAgentRunRestartAbortReason(controller.signal.reason)).toBe(true);
+      }
+    },
+  );
 
   it("does not publish cancellation from a replaced owner", () => {
     const map = emptyMap();

@@ -83,6 +83,32 @@ describe("deferred logical-turn lifecycle", () => {
     expect(matchesReason(manager.signal.reason)).toBe(true);
   });
 
+  it("retains the winning verified person across the deferred caller boundary", () => {
+    const caller = new AbortController();
+    const manager = createDeferredEmbeddedRunLifecycleManager({
+      runId: "person-stop",
+      sessionId,
+      sessionKey,
+      abortSignal: caller.signal,
+    });
+    const actor = Object.freeze({
+      userId: "@reader:matrix.test",
+      roomId: "!room:matrix.test",
+      threadRootEventId: "$root",
+      agentId: "main",
+      sessionKey,
+    });
+    manager.abort("user_abort", actor);
+    manager.abort("user_abort", { ...actor, userId: "@late:matrix.test" });
+    expect(caller.signal.aborted).toBe(false);
+    expect(resolveReplyOperationAbortReason(undefined, manager.signal.reason)).toBe("user");
+    expect(resolveAgentRunErrorLifecycleFields(manager.signal.reason, caller.signal)).toEqual({
+      aborted: true,
+      stopReason: "aborted",
+      stopActor: actor,
+    });
+  });
+
   it("preserves an earlier caller timeout when a user abort arrives later", () => {
     const caller = new AbortController();
     const manager = createDeferredEmbeddedRunLifecycleManager({

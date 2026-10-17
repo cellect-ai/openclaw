@@ -1,5 +1,6 @@
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
+import type { VerifiedRunStopActor } from "../infra/run-stop-actor.js";
 import type { ChatAbortDiagnosticReason } from "./chat-abort-diagnostics.js";
 import type { WebchatCompletionDeliveryState } from "./webchat-completion-delivery.js";
 
@@ -31,6 +32,9 @@ export type ChatAbortControllerEntry = {
   providerId?: string;
   authProviderId?: string;
   abortStopReason?: string;
+  /** Reserved before callbacks can synchronously re-enter cancellation. */
+  abortCommitted?: true;
+  stopActor?: VerifiedRunStopActor;
   /** Owner-recorded diagnostic cause; does not change terminal lifecycle semantics. */
   abortDiagnosticReason?: ChatAbortDiagnosticReason;
   /** Latest argument-free validation diagnostic for operator-initiated aborts. */

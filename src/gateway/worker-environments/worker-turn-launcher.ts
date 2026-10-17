@@ -7,6 +7,7 @@ import type {
 } from "../../agents/session-placement-admission.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
+import { ConversationRunStopReason } from "../../infra/run-stop-actor.js";
 import { markDiagnosticRunProgress } from "../../logging/diagnostic-run-activity.js";
 import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
@@ -514,7 +515,13 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
             runLocal,
             assertRunCurrent: remoteExec ? assertRunCurrent : assertAdmissionCurrent,
           });
-        } catch (error) {
+        } catch (caughtError) {
+          // A transport shutdown can throw a generic error after this exact
+          // host logical-turn owner has already accepted a person's Stop.
+          const error =
+            activeWorkerTurn?.signal.reason instanceof ConversationRunStopReason
+              ? activeWorkerTurn.signal.reason
+              : caughtError;
           const abortReason = turn.abortSignal?.reason;
           if (!remoteExec && restartSignal.aborted && isAgentRunRestartAbortReason(abortReason)) {
             // Keep the exact claim and pending result for startup's stop-and-recover owner.
@@ -594,7 +601,7 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                       ) {
                         throw new Error(
                           "Worker placement changed while waiting for node admission",
-                          { cause: error },
+                          { cause: caughtError },
                         );
                       }
                     },

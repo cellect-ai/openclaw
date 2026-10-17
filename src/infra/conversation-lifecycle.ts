@@ -51,6 +51,11 @@ import {
   resolveDeliveryQueueStateEnv,
 } from "./delivery-queue-state-context.js";
 import { executeDeliveryQueueOperation } from "./delivery-queue-worker-store.js";
+import {
+  isPersonRunStopReason,
+  matchesVerifiedRunStopActor,
+  readRunStopActor,
+} from "./run-stop-actor.js";
 import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
 
 export type ConversationLifecycleState =
@@ -311,6 +316,7 @@ function transition(
 function terminalSignalsOf(
   event: AgentEventRuntimePayload,
   state: ConversationLifecycleState,
+  binding: ConversationProjectionBinding,
 ): { failureKind?: RunFailureKind; stoppedBy?: RunStoppedBy } | undefined {
   if (state !== "failed" && state !== "cancelled") {
     return undefined;
@@ -322,6 +328,14 @@ function terminalSignalsOf(
   const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({ phase, data: event.data });
   if (state === "failed") {
     return { failureKind: failureKindOf(outcome, event.data) };
+  }
+  const actor = readRunStopActor(event.data.stopActor);
+  if (
+    (outcome.reason === "aborted" || outcome.reason === "cancelled") &&
+    isPersonRunStopReason(event.data.stopReason) &&
+    matchesVerifiedRunStopActor(actor, binding)
+  ) {
+    return { stoppedBy: { kind: "person", userId: actor.userId } };
   }
   const stoppedBy = stoppedByOf(outcome.reason, outcome.stopReason);
   return stoppedBy ? { stoppedBy } : undefined;
@@ -652,7 +666,6 @@ export function registerConversationLifecycleTransport(options: {
       return;
     const sessionId = context.sessionId;
     // With the switch off none of this runs and the row holds what it always held.
-    const terminal = signalsOn() ? terminalSignalsOf(event, incomingState) : undefined;
     const ownerKey = `${generation}:${event.runId}`;
     let bindings = owners.get(ownerKey);
     if (!bindings) {
@@ -777,7 +790,12 @@ export function registerConversationLifecycleTransport(options: {
             signalsOn() &&
             waitingOnOf(row.pendingApprovals, row.confirmations)?.ref !== row.waitingRef;
           if (!existing || existing.state !== state || waitMoved) {
-            append(row, state, cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP, terminal);
+            append(
+              row,
+              state,
+              cappedRooms.has(binding.roomId) ? 1 : RUN_PENDING_CAP,
+              signalsOn() ? terminalSignalsOf(event, incomingState, binding) : undefined,
+            );
           }
           if (cardsOn()) {
             noteDecisionCards(row, event, state);
