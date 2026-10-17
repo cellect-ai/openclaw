@@ -1,5 +1,11 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import {
+  createHookRunner,
+  createMockPluginRegistry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
+import { runReplyPayloadSendingHook } from "openclaw/plugin-sdk/reply-payload-testing";
+import { createReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
 import { beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { registerGeneratedArtifactCompletion } from "./generated-artifact-completion.js";
 import fiUserPlugin from "./index.js";
@@ -99,6 +105,46 @@ const incomplete = () =>
   });
 
 describe("registered generated-artifact completion hooks", () => {
+  it("keeps a complete incomplete-delivery replacement unprefixed through the real host hooks", async () => {
+    await register();
+    const handler = hooks.get("reply_payload_sending")!;
+    const runner = createHookRunner(
+      createMockPluginRegistry([
+        {
+          hookName: "reply_payload_sending",
+          handler: (event, context) => handler(event as never, context as never),
+        },
+      ]),
+    );
+    const deliverReply = vi.fn(async (_payload: { text?: string }) => {});
+    const dispatcher = createReplyDispatcher({
+      responsePrefix: "<@UFIXTURE01>",
+      beforeDeliver: (payload, info) =>
+        runReplyPayloadSendingHook(
+          {
+            payload,
+            kind: info.kind,
+            channel: "slack",
+            sessionKey,
+            runId,
+            context: { channelId: "slack" },
+          },
+          runner,
+        ),
+      deliver: deliverReply,
+    });
+    expect(dispatcher.sendFinalReply({ text: "Your workbook is ready" })).toBe(true);
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+    expect(deliverReply).toHaveBeenCalledOnce();
+    expect(deliverReply.mock.calls[0]?.[0]).toMatchObject({
+      text: expect.stringContaining("this task is incomplete"),
+    });
+    expect(deliverReply.mock.calls[0]?.[0]).toMatchObject({
+      text: expect.not.stringContaining("<@UFIXTURE01>"),
+    });
+  });
+
   it("awaits concurrent fire-and-forget delivery through the registered production hooks", async () => {
     const registered = new Map<string, Hook[]>();
     fiUserPlugin.register?.(

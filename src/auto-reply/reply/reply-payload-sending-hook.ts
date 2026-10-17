@@ -6,7 +6,11 @@ import type {
 } from "../../plugins/hook-types.js";
 import { copyReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../reply-payload.js";
-import { bindReplyPublication } from "../reply-publication.js";
+import {
+  bindReplyPublication,
+  detachReplyPublicationPrefix,
+  finishReplyPublicationPrefix,
+} from "../reply-publication.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 
 /** Runs plugin hooks that may rewrite or cancel an outbound reply payload. */
@@ -35,6 +39,8 @@ export async function runReplyPayloadSendingHook(
     usageState: params.usageState,
   };
   const publication = bindReplyPublication(event, params);
+  const detached = detachReplyPublicationPrefix(params.payload);
+  event.payload = copyReplyPayloadMetadata(params.payload, detached);
   const publishedEvent = Object.assign(event, {
     publicationId: publication.publicationId,
     publishedAtMs: publication.publishedAtMs,
@@ -44,6 +50,9 @@ export async function runReplyPayloadSendingHook(
   if (result?.cancel) {
     return null;
   }
-  const payload = (result?.payload as ReplyPayload | undefined) ?? params.payload;
-  return copyReplyPayloadMetadata(params.payload, payload);
+  const payload = (result?.payload as ReplyPayload | undefined) ?? event.payload;
+  const ownedPayload = copyReplyPayloadMetadata(params.payload, payload);
+  return detached === params.payload
+    ? ownedPayload
+    : copyReplyPayloadMetadata(ownedPayload, finishReplyPublicationPrefix(ownedPayload));
 }
