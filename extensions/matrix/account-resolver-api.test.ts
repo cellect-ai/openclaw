@@ -5,7 +5,11 @@ import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { listMatrixAccountIds, resolveMatrixAccount } from "./account-resolver-api.js";
 import { getMatrixScopedEnvVarNames } from "./src/env-vars.js";
-import { clearMatrixCredentials, saveMatrixCredentials } from "./src/matrix/credentials.js";
+import {
+  clearMatrixCredentials,
+  loadMatrixCredentials,
+  saveMatrixCredentials,
+} from "./src/matrix/credentials.js";
 import { installMatrixTestRuntime } from "./src/test-runtime.js";
 
 describe("Matrix account identity projection", () => {
@@ -46,6 +50,10 @@ describe("Matrix account identity projection", () => {
   });
 
   it("uniquely identifies token-only accounts using persisted authenticated identities", () => {
+    console.log(
+      "DIAG matrix sync-load ops:",
+      JSON.stringify(loadMatrixCredentials(process.env, "ops")),
+    );
     const matches = listMatrixAccountIds(cfg).filter(
       (accountId) => resolveMatrixAccount({ cfg, accountId }).userId === "@ops:example.org",
     );

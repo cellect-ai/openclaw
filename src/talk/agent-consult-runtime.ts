@@ -415,13 +415,21 @@ export async function consultRealtimeVoiceAgent(params: {
     import("../config/sessions/lifecycle.js"),
   ]);
   params.abortSignal?.throwIfAborted();
+  console.log("DIAG consult run: entered", params.sessionKey);
+  let prepared;
+  try {
+    prepared = prepareRealtimeVoiceAgentExecutionContext(params);
+  } catch (error) {
+    console.log("DIAG consult run: prepare threw", params.sessionKey, String(error));
+    throw error;
+  }
   const {
     agentId,
     agentDir,
     workspaceDir,
     storePath,
     sessionEntry: initialSessionEntry,
-  } = prepareRealtimeVoiceAgentExecutionContext(params);
+  } = prepared;
   const modelLockParams = {
     cfg: params.cfg,
     agentRuntime: params.agentRuntime,
