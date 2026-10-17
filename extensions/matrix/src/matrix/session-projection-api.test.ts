@@ -1,6 +1,6 @@
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { expect, it, vi } from "vitest";
-import { registerMatrixSessionProjection } from "./session-projection-api.js";
+import { registerMatrixSessionProjection } from "../../session-projection-api.js";
 
 const mocks = vi.hoisted(() => ({
   prepare: vi.fn(),
@@ -8,14 +8,14 @@ const mocks = vi.hoisted(() => ({
   start: vi.fn(() => ({ stop: vi.fn() })),
   reply: vi.fn(async () => {}),
 }));
-vi.mock("./src/matrix/projection-source-result.js", () => ({
+vi.mock("./projection-source-result.js", () => ({
   prepareMatrixSourceResult: mocks.prepare,
   startMatrixSourceResultReceipts: mocks.receipts,
 }));
-vi.mock("./src/matrix/projection-lifecycle.js", () => ({
+vi.mock("./projection-lifecycle.js", () => ({
   startMatrixProjectionLifecycle: mocks.start,
 }));
-vi.mock("./src/matrix/session-projection.js", () => ({
+vi.mock("./session-projection.js", () => ({
   handleMatrixSessionProjectionReplyPayloadSending: mocks.reply,
 }));
 
