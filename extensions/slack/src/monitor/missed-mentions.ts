@@ -37,11 +37,6 @@ export const SLACK_LIVENESS_HEARTBEAT_MS = 60_000;
  */
 const SLACK_LIVENESS_TTL_MS = 30 * 24 * 60 * 60 * 1_000;
 const SLACK_LIVENESS_MAX_ENTRIES = 1_000;
-/**
- * Below this the socket only blipped; Slack had nowhere to drop a message, so a
- * sweep would re-read history for nothing.
- */
-const SLACK_RECOVERY_MIN_GAP_MS = 2 * SLACK_LIVENESS_HEARTBEAT_MS;
 /** Default ceiling on how far back a reconnect will look. */
 export const SLACK_RECOVERY_DEFAULT_WITHIN_MINUTES = 12 * 60;
 /** Bounds on one sweep, so a long outage cannot turn into an unbounded API run. */
@@ -254,9 +249,15 @@ function toRecoveredEvent(params: {
 async function listRecoverableChannels(params: {
   client: WebClient;
   ctx: SlackMonitorContext;
+  abortSignal?: AbortSignal;
 }): Promise<SlackRecoverableConversation[]> {
   const listed = await collectSlackCursorPages({
-    fetchPage: (cursor) => fetchSlackChannelListPage(params.client, cursor),
+    fetchPage: async (cursor) => {
+      params.abortSignal?.throwIfAborted();
+      const response = await fetchSlackChannelListPage(params.client, cursor);
+      params.abortSignal?.throwIfAborted();
+      return response;
+    },
     collectPageItems: (response) => response.channels ?? [],
   });
   const channels: SlackRecoverableConversation[] = [];
@@ -297,9 +298,15 @@ async function listRecoverableChannels(params: {
 async function listRecoverableDirectConversations(params: {
   client: WebClient;
   ctx: SlackMonitorContext;
+  abortSignal?: AbortSignal;
 }): Promise<SlackRecoverableConversation[]> {
   const listed = await collectSlackCursorPages({
-    fetchPage: (cursor) => fetchSlackDirectListPage(params.client, cursor),
+    fetchPage: async (cursor) => {
+      params.abortSignal?.throwIfAborted();
+      const response = await fetchSlackDirectListPage(params.client, cursor);
+      params.abortSignal?.throwIfAborted();
+      return response;
+    },
     collectPageItems: (response) => response.channels ?? [],
   });
   const conversations: SlackRecoverableConversation[] = [];
@@ -334,17 +341,24 @@ async function collectMissedMentionsInChannel(params: {
   ctx: SlackMonitorContext;
   conversation: SlackRecoverableConversation;
   oldestMs: number;
+  abortSignal?: AbortSignal;
 }): Promise<SlackMessageEvent[]> {
   const { client, ctx, oldestMs } = params;
   const { channelId, kind } = params.conversation;
   const oldest = (oldestMs / 1_000).toFixed(6);
   const recovered: SlackMessageEvent[] = [];
+  // History filters on the parent timestamp, not latest_reply. Discover recent
+  // parents without a time filter so an older thread can reveal an outage reply.
+  // The bounded page is not complete old-thread discovery; each recovered input
+  // still passes the actual outage window below, and replies keep their cutoff.
   const history = await client.conversations.history({
     channel: channelId,
-    oldest,
     inclusive: false,
     limit: SLACK_RECOVERY_MAX_MESSAGES_PER_CHANNEL,
   });
+  if (params.abortSignal?.aborted) {
+    return recovered;
+  }
   const messages = history.messages ?? [];
   // Scoped to the rows just read, so a thread's own replies decide that thread.
   const qualifies = (
@@ -386,10 +400,16 @@ async function collectMissedMentionsInChannel(params: {
     })
     .slice(0, SLACK_RECOVERY_MAX_THREADS_PER_CHANNEL);
   for (const parent of activeThreads) {
+    if (params.abortSignal?.aborted) {
+      break;
+    }
     if (!parent.ts) {
       continue;
     }
     await sleep(SLACK_RECOVERY_CALL_SPACING_MS);
+    if (params.abortSignal?.aborted) {
+      break;
+    }
     const replies = await client.conversations.replies({
       channel: channelId,
       ts: parent.ts,
@@ -397,6 +417,9 @@ async function collectMissedMentionsInChannel(params: {
       inclusive: false,
       limit: SLACK_RECOVERY_MAX_MESSAGES_PER_CHANNEL,
     });
+    if (params.abortSignal?.aborted) {
+      break;
+    }
     const replyMessages = replies.messages ?? [];
     const isMissedReply = qualifies(replyMessages);
     for (const reply of replyMessages) {
@@ -430,9 +453,8 @@ export type SlackMissedMentionRecoveryResult = {
  * Replays the mentions and direct messages that arrived while this account's
  * socket was down.
  *
- * Returns without reading anything when the socket was only briefly away, when
- * there is no previous liveness mark (a first run has no outage to recover), or
- * when recovery is switched off.
+ * Every positive outage can lose a message. Skip only an unavailable or invalid
+ * time window (including a first run), or explicitly disabled recovery.
  */
 export async function recoverSlackMissedMentions(params: {
   ctx: SlackMonitorContext;
@@ -455,7 +477,7 @@ export async function recoverSlackMissedMentions(params: {
     return empty;
   }
   const gapMs = now - lastAliveAt;
-  if (gapMs < SLACK_RECOVERY_MIN_GAP_MS) {
+  if (!Number.isFinite(gapMs) || gapMs <= 0) {
     return empty;
   }
   // A long outage still only replays the tail: anything older is stale enough
@@ -471,8 +493,14 @@ export async function recoverSlackMissedMentions(params: {
     label: string,
   ): Promise<SlackRecoverableConversation[]> => {
     try {
+      if (params.abortSignal?.aborted) {
+        return [];
+      }
       return await list();
     } catch (error) {
+      if (params.abortSignal?.aborted) {
+        return [];
+      }
       ctx.runtime.error?.(
         `slack missed-mention recovery could not list ${label}: ${formatSlackError(error)}`,
       );
@@ -482,10 +510,23 @@ export async function recoverSlackMissedMentions(params: {
   // DMs first: they are the ones that vanish without a trace.
   const conversations = [
     ...(await listConversations(
-      () => listRecoverableDirectConversations({ client, ctx }),
+      () =>
+        listRecoverableDirectConversations({
+          client,
+          ctx,
+          ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+        }),
       "direct conversations",
     )),
-    ...(await listConversations(() => listRecoverableChannels({ client, ctx }), "conversations")),
+    ...(await listConversations(
+      () =>
+        listRecoverableChannels({
+          client,
+          ctx,
+          ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
+        }),
+      "conversations",
+    )),
   ];
   let mentionsReplayed = 0;
   let channelsScanned = 0;
@@ -503,6 +544,7 @@ export async function recoverSlackMissedMentions(params: {
         ctx,
         conversation,
         oldestMs,
+        ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
       });
       if (isDirect) {
         directConversationsScanned += 1;
@@ -510,6 +552,9 @@ export async function recoverSlackMissedMentions(params: {
         channelsScanned += 1;
       }
       for (const message of missed) {
+        if (params.abortSignal?.aborted) {
+          break;
+        }
         missedMentionLog().warn(
           `${isDirect ? "Missed direct message" : "Missed mention"} recovered account=${ctx.accountId} channel=${channelId} user=${message.user ?? "unknown"} ts=${message.ts ?? "unknown"} reason=socket-offline`,
         );
@@ -527,6 +572,9 @@ export async function recoverSlackMissedMentions(params: {
       logVerbose(
         `slack missed-mention recovery failed for channel ${channelId}: ${formatSlackError(error)}`,
       );
+    }
+    if (params.abortSignal?.aborted) {
+      break;
     }
     await sleep(SLACK_RECOVERY_CALL_SPACING_MS);
   }

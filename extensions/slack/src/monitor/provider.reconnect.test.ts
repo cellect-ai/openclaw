@@ -1,5 +1,6 @@
 import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
 import {
   gracefulStopSlackApp,
   publishSlackDisconnectedStatus,
@@ -82,6 +83,30 @@ describe("slack socket reconnect helpers", () => {
 
     expect(app.start).toHaveBeenCalledTimes(1);
     expect(onStarted).toHaveBeenCalledTimes(1);
+  });
+
+  it("reports disconnect while asynchronous startup is still settling", async () => {
+    const client = new EventEmitter();
+    const entered = createDeferred();
+    const release = createDeferred();
+    let startupFinished = false;
+    const disconnected = vi.fn(() => startupFinished);
+    const run = startSlackSocketAndWaitForDisconnect({
+      app: { receiver: { client }, start: async () => {} },
+      onStarted: async () => {
+        entered.resolve();
+        await release.promise;
+        startupFinished = true;
+      },
+      onDisconnected: disconnected,
+    });
+    await entered.promise;
+    client.emit("disconnected");
+    await Promise.resolve();
+    release.resolve();
+    await expect(run).resolves.toEqual({ event: "disconnect" });
+    expect(disconnected).toHaveBeenCalledOnce();
+    expect(disconnected.mock.results[0]?.value).toBe(false);
   });
 
   it("cancels the disconnect waiter when onStarted throws", async () => {

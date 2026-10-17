@@ -307,6 +307,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
   });
   const monitorContextRef: { current?: SlackMonitorContext } = {};
   let slackLivenessTimer: ReturnType<typeof setInterval> | undefined;
+  let slackRecoveryAbort: AbortController | undefined;
   // Socket Mode drops what happens while disconnected. Projection readers use
   // this to re-snapshot DMs after a reconnect instead of waiting for rotation.
   let socketConnectedAt: number | undefined;
@@ -751,7 +752,98 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
       // has run, which happens inside onStarted.
       const livenessKey = () =>
         buildSlackLivenessKey({ accountId: account.accountId, teamId: ctx.teamId });
+      // Recovery is owned by this monitor, not an individual socket attempt.
+      // One pending window coalesces reconnects while the current sweep settles.
+      slackRecoveryAbort = new AbortController();
+      const recoverySignal = opts.abortSignal
+        ? AbortSignal.any([opts.abortSignal, slackRecoveryAbort.signal])
+        : slackRecoveryAbort.signal;
+      const recoveryKey = () => {
+        const identity = ctx.installationIdentity;
+        if (
+          identity.kind === "degraded" ||
+          ctx.identityHealth.lifecycle === "blocked" ||
+          !ctx.botUserId
+        ) {
+          return undefined;
+        }
+        const installationId =
+          identity.kind === "workspace" ? identity.teamId : identity.enterpriseId;
+        if (!installationId.trim()) {
+          return undefined;
+        }
+        return JSON.stringify([
+          account.accountId,
+          identity.kind,
+          installationId,
+          identity.apiAppId ?? "",
+          ctx.botUserId,
+          ctx.botId ?? "",
+        ]);
+      };
+      let pendingRecovery: { key: string; lastAliveAt: number } | undefined;
+      let recoveryRunning = false;
+      recoverySignal.addEventListener(
+        "abort",
+        () => {
+          pendingRecovery = undefined;
+        },
+        { once: true },
+      );
+      const drainRecovery = async () => {
+        try {
+          while (pendingRecovery && !recoverySignal.aborted) {
+            const window = pendingRecovery;
+            pendingRecovery = undefined;
+            if (window.key !== recoveryKey()) {
+              continue;
+            }
+            try {
+              await recoverSlackMissedMentions({
+                ctx: { ...ctx },
+                client: app.client,
+                lastAliveAt: window.lastAliveAt,
+                dispatch: async (message) => {
+                  if (recoverySignal.aborted || window.key !== recoveryKey()) {
+                    throw new Error("Slack recovery monitor or identity retired");
+                  }
+                  await handleSlackMessage(message, { source: "message" });
+                },
+                abortSignal: recoverySignal,
+              });
+            } catch (error: unknown) {
+              runtime.error?.(`slack missed-mention recovery failed: ${formatSlackError(error)}`);
+            }
+          }
+        } finally {
+          recoveryRunning = false;
+        }
+      };
+      const requestRecovery = (lastAliveAt: number | undefined) => {
+        if (lastAliveAt === undefined || !Number.isFinite(lastAliveAt) || recoverySignal.aborted) {
+          return;
+        }
+        const key = recoveryKey();
+        if (key === undefined) {
+          return;
+        }
+        pendingRecovery = {
+          key,
+          lastAliveAt:
+            pendingRecovery?.key === key
+              ? Math.min(pendingRecovery.lastAliveAt, lastAliveAt)
+              : lastAliveAt,
+        };
+        if (!recoveryRunning) {
+          recoveryRunning = true;
+          void drainRecovery();
+        }
+      };
+      let activeSocket: { live: boolean; stopped: boolean } | undefined;
       const markAlive = async () => {
+        if (!activeSocket?.live || opts.abortSignal?.aborted) {
+          return;
+        }
         try {
           await livenessStore?.register(livenessKey(), Date.now());
         } catch (error) {
@@ -763,36 +855,43 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
         slackLivenessTimer.unref?.();
       }
       while (!opts.abortSignal?.aborted) {
+        const attempt = { live: false, stopped: false };
+        activeSocket = attempt;
         try {
           const disconnect = await startSlackSocketAndWaitForDisconnect({
             app,
             abortSignal: opts.abortSignal,
+            onDisconnected: () => {
+              attempt.live = false;
+              attempt.stopped = true;
+            },
             onStarted: async () => {
+              if (attempt.stopped || opts.abortSignal?.aborted) {
+                return;
+              }
               reconnectAttempts = 0;
               socketConnectedAt = Date.now();
               await recoverSlackIdentity();
+              if (attempt.stopped || opts.abortSignal?.aborted) {
+                return;
+              }
               if (livenessStore) {
                 // Read the previous mark before overwriting it, or the gap we
                 // are about to measure is always zero.
                 const lastAliveAt = await livenessStore
                   .lookup(livenessKey())
                   .catch(() => undefined);
+                // Read the old mark before admitting connected heartbeats.
+                if (attempt.stopped || opts.abortSignal?.aborted) {
+                  return;
+                }
+                attempt.live = true;
                 await markAlive();
-                // Recovery re-reads Slack history, so it must never hold up the
-                // connection it just came back on.
-                void recoverSlackMissedMentions({
-                  ctx,
-                  client: app.client,
-                  lastAliveAt,
-                  dispatch: async (message) => {
-                    await handleSlackMessage(message, { source: "message" });
-                  },
-                  ...(opts.abortSignal ? { abortSignal: opts.abortSignal } : {}),
-                }).catch((error) => {
-                  runtime.error?.(
-                    `slack missed-mention recovery failed: ${formatSlackError(error)}`,
-                  );
-                });
+                if (attempt.stopped || opts.abortSignal?.aborted) {
+                  return;
+                }
+                // Recovery must not hold up the socket it just came back on.
+                requestRecovery(lastAliveAt);
               }
               publishSlackConnectedStatus(opts.setStatus, ctx.identityHealth);
               if (!hasLoggedSocketConnected) {
@@ -805,6 +904,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
               }
             },
           });
+          attempt.live = false;
+          attempt.stopped = true;
           if (!disconnect) {
             break;
           }
@@ -843,6 +944,8 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
             break;
           }
         } catch (err) {
+          attempt.live = false;
+          attempt.stopped = true;
           if (isNonRecoverableSlackAuthError(err)) {
             publishSlackBlockedStatus(opts.setStatus, err);
             runtime.error?.(
@@ -897,6 +1000,7 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
       await waitUntilAbort(opts.abortSignal);
     }
   } finally {
+    slackRecoveryAbort?.abort();
     if (slackLivenessTimer) {
       clearInterval(slackLivenessTimer);
     }
