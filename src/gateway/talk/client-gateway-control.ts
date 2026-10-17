@@ -158,7 +158,13 @@ export function createTalkClientGatewayControlOwner(params: {
     args: unknown,
     consultSignal: AbortSignal,
   ) => {
-    assertActive();
+    console.log("DIAG admitConsult: voiceSessionId", params.voiceSessionId);
+    try {
+      assertActive();
+    } catch (error) {
+      console.log("DIAG admitConsult: assertActive threw", String(error));
+      throw error;
+    }
     consultSignal.throwIfAborted();
     await params.flushTranscript();
     // Admit in the same continuation as the liveness check: another await
@@ -243,6 +249,7 @@ export function createTalkClientGatewayControlOwner(params: {
       }
       await submit(event.callId, { result: result.text });
     } catch (error) {
+      console.log("DIAG runConsult caught:", String(error));
       if (signal.aborted) {
         return;
       }
