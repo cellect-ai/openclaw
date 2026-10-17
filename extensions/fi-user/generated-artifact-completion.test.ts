@@ -31,8 +31,9 @@ beforeEach(() => {
   });
   observe = vi.fn(async (key: string) => current(key));
   compareAndApply = vi.fn(async (key: string, comparison: string, intent: { value: unknown }) => {
-    if (comparison !== current(key).comparison)
+    if (comparison !== current(key).comparison) {
       return { status: "conflict", current: current(key) };
+    }
     rows.set(key, intent.value);
     revisions.set(key, (revisions.get(key) ?? 0) + 1);
     return { status: "applied" };
@@ -160,7 +161,9 @@ describe("registered generated-artifact completion hooks", () => {
       }),
     );
     const producer = registered.get("after_tool_call")![0];
-    if (!producer) throw new Error("Expected the registered production observation hook");
+    if (!producer) {
+      throw new Error("Expected the registered production observation hook");
+    }
     const context = {
       agentId: "cellect-fi-user",
       sessionKey,
@@ -493,7 +496,9 @@ describe("registered generated-artifact completion hooks", () => {
   it("does not turn corrupt stored observations into successful completion", async () => {
     await register();
     const runKey = [...rows.keys()][0];
-    if (!runKey) throw new Error("Expected a stored run observation");
+    if (!runKey) {
+      throw new Error("Expected a stored run observation");
+    }
     rows.set(runKey, { started: true, pending: "corrupt" });
     await deliver();
     expect(await final()).toEqual(incomplete());

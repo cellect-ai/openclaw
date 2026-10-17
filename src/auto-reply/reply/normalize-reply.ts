@@ -195,8 +195,9 @@ export function normalizeReplyPayloadOutcome(
   }
 
   enrichedPayload = copyReplyPayloadMetadata(enrichedPayload, { ...enrichedPayload, text });
-  if (synthesizedPrefix !== undefined)
+  if (synthesizedPrefix !== undefined) {
     recordReplyPublicationPrefix(enrichedPayload, synthesizedPrefix);
+  }
   return { kind: "deliver", payload: enrichedPayload };
 }
 

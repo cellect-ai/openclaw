@@ -34,15 +34,19 @@ const requiredReceipts = new WeakSet<ReplyPublication>();
 /** An operational consumer can require custody only for this exact host publication. */
 export function requireReplyPublicationReceipt(value: unknown): void {
   const record = resolveReplyPublication(value);
-  if (record) requiredReceipts.add(record);
+  if (record) {
+    requiredReceipts.add(record);
+  }
 }
 export function isReplyPublicationReceiptRequired(value: unknown): boolean {
   const record = resolveReplyPublication(value);
-  return !!record && requiredReceipts.has(record);
+  return record !== undefined && requiredReceipts.has(record);
 }
 export function preparedReplyPublication(value: unknown): ReplyPublication | undefined {
   const record = resolveReplyPublication(value);
-  if (!record) return undefined;
+  if (!record) {
+    return undefined;
+  }
   const { synthesizedPrefix: _prefix, deferSynthesizedPrefix: _defer, ...stored } = record;
   return Object.freeze({
     ...stored,
@@ -64,7 +68,9 @@ export async function emitReplyPublicationAccepted(
   receipt: ReplyPublicationReceipt,
 ): Promise<void> {
   const publication = records.get(payload);
-  if (!publication) return;
+  if (!publication) {
+    return;
+  }
   await emitStoredReplyPublicationAccepted(publication, receipt);
 }
 /** Core-private prepared queue reference, never exposed as an SDK JSON custody setter. */
@@ -81,17 +87,21 @@ export async function emitStoredReplyPublicationAccepted(
     (publication.accountId && publication.accountId !== receipt.accountId) ||
     !receipt.messageId?.trim() ||
     !receipt.conversationId?.trim()
-  )
+  ) {
     return;
+  }
   const frozen = Object.freeze({ ...receipt });
   const requiredPublication = requiredReceipts.has(publication)
     ? Object.freeze({ ...publication, receiptRequired: true as const })
     : publication;
-  if (requiredPublication.receiptRequired && receiptListeners.size === 0)
+  if (requiredPublication.receiptRequired && receiptListeners.size === 0) {
     throw new Error(
       "required publication receipt listener unavailable; preserving producer custody",
     );
-  for (const listener of receiptListeners) await listener(requiredPublication, frozen);
+  }
+  for (const listener of receiptListeners) {
+    await listener(requiredPublication, frozen);
+  }
 }
 export function registerReplyPublicationReceiptListener(
   listener: (publication: ReplyPublication, receipt: ReplyPublicationReceipt) => Promise<void>,
@@ -147,7 +157,9 @@ export function bindReplyPublication(
       : {}),
   });
   prefixHolds.set(record, holds);
-  if (previous && requiredReceipts.has(previous)) requiredReceipts.add(record);
+  if (previous && requiredReceipts.has(previous)) {
+    requiredReceipts.add(record);
+  }
   records.set(event, record);
   records.set(params.payload, record);
   return record;
@@ -161,8 +173,9 @@ export function detachReplyPublicationPrefix(payload: ReplyPayload): ReplyPayloa
     !prefix ||
     isReplyPublicationPrefixWithheld(payload, prefix) ||
     !payload.text?.startsWith(`${prefix} `)
-  )
+  ) {
     return payload;
+  }
   const result = { ...payload, text: payload.text.slice(prefix.length + 1) };
   copyReplyPublication(payload, result);
   return result;
@@ -171,12 +184,16 @@ export function detachReplyPublicationPrefix(payload: ReplyPayload): ReplyPayloa
 export function finishReplyPublicationPrefix(payload: ReplyPayload): ReplyPayload {
   const record = records.get(payload);
   const prefix = record?.synthesizedPrefix;
-  if (!record || !prefix) return payload;
+  if (!record || !prefix) {
+    return payload;
+  }
   if (prefixHolds.get(record)?.size) {
     withheldPrefixes.set(payload, prefix);
     return payload;
   }
-  if (!payload.text) return payload;
+  if (!payload.text) {
+    return payload;
+  }
   const result = { ...payload, text: `${prefix} ${payload.text}` };
   copyReplyPublication(payload, result);
   return result;
@@ -189,9 +206,13 @@ export function resolveReplyPublication(event: unknown): ReplyPublication | unde
 export function copyReplyPublication(source: object, target: object): void {
   const record = records.get(source);
   const prefix = synthesizedPrefixes.get(source) ?? record?.synthesizedPrefix;
-  if (prefix !== undefined) synthesizedPrefixes.set(target, prefix);
+  if (prefix !== undefined) {
+    synthesizedPrefixes.set(target, prefix);
+  }
   const withheld = withheldPrefixes.get(source);
-  if (withheld !== undefined) withheldPrefixes.set(target, withheld);
+  if (withheld !== undefined) {
+    withheldPrefixes.set(target, withheld);
+  }
   if (record) {
     records.set(target, record);
     identities.set(target, record);

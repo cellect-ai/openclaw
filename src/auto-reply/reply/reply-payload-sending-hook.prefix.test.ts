@@ -13,7 +13,9 @@ function normalized(text = "The answer", responsePrefix = prefix) {
     { text, mediaUrl: "https://example.test/file" },
     { responsePrefix },
   );
-  if (!payload) throw new Error("fixture unexpectedly suppressed");
+  if (!payload) {
+    throw new Error("fixture unexpectedly suppressed");
+  }
   return payload;
 }
 
@@ -69,15 +71,20 @@ describe("host prefix policy at the modifying hook boundary", () => {
           {
             hookName: "reply_payload_sending",
             handler: (event) => {
-              if (outcome === "released")
+              if (outcome === "released") {
                 resolveReplyPublication(event)?.deferSynthesizedPrefix?.()();
-              if (outcome === "empty")
+              }
+              if (outcome === "empty") {
                 return { payload: { text: "", mediaUrl: "https://example.test/file" } };
-              if (outcome === "cancelled") return { cancel: true };
+              }
+              if (outcome === "cancelled") {
+                return { cancel: true };
+              }
               if (outcome === "forged") {
-                const clone = JSON.parse(JSON.stringify(event));
+                const clone = structuredClone(event);
                 expect(resolveReplyPublication(clone)).toBeUndefined();
               }
+              return undefined;
             },
           },
         ]),
@@ -86,8 +93,11 @@ describe("host prefix policy at the modifying hook boundary", () => {
         { payload, kind: "final", context: { channelId: "slack" } },
         runner,
       );
-      if (outcome === "cancelled") expect(result).toBeNull();
-      else expect(result?.text).toBe(outcome === "empty" ? "" : `${prefix} The answer`);
+      if (outcome === "cancelled") {
+        expect(result).toBeNull();
+      } else {
+        expect(result?.text).toBe(outcome === "empty" ? "" : `${prefix} The answer`);
+      }
     },
   );
 
@@ -112,7 +122,9 @@ describe("host prefix policy at the modifying hook boundary", () => {
             handler: async (event) => {
               release = resolveReplyPublication(event)?.deferSynthesizedPrefix?.();
               entered.resolve();
-              if (failure === "error") throw new Error("private authority unavailable");
+              if (failure === "error") {
+                throw new Error("private authority unavailable");
+              }
               await finish.promise;
               release?.();
             },
@@ -131,7 +143,9 @@ describe("host prefix policy at the modifying hook boundary", () => {
       );
       try {
         await entered.promise;
-        if (failure === "timeout") await vi.advanceTimersByTimeAsync(10);
+        if (failure === "timeout") {
+          await vi.advanceTimersByTimeAsync(10);
+        }
         const result = await pending;
         expect(result?.text).toBe("The answer");
         expect(result?.mediaUrl).toBe("https://example.test/file");

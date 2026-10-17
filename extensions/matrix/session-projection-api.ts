@@ -51,21 +51,26 @@ export function registerMatrixSessionProjection(api: OpenClawPluginApi): void {
   );
   let lifecycle: { stop: () => void } | undefined;
   let stopSourceReceipts: (() => void) | undefined;
+  let prepareSourceResult:
+    | typeof import("./src/matrix/projection-source-result.js").prepareMatrixSourceResult
+    | undefined;
   api.registerService({
     id: "matrix-projection-lifecycle",
     async start() {
       const { startMatrixProjectionLifecycle } =
         await import("./src/matrix/projection-lifecycle.js");
+      const sourceResults = await import("./src/matrix/projection-source-result.js");
       lifecycle?.stop();
-      lifecycle = startMatrixProjectionLifecycle(api);
       stopSourceReceipts?.();
-      const { startMatrixSourceResultReceipts } =
-        await import("./src/matrix/projection-source-result.js");
-      stopSourceReceipts = startMatrixSourceResultReceipts(api.runtime);
+      prepareSourceResult = sourceResults.prepareMatrixSourceResult;
+      stopSourceReceipts = sourceResults.startMatrixSourceResultReceipts(api.runtime);
+      // Install the synchronous hold entry point before native runs can start.
+      lifecycle = startMatrixProjectionLifecycle(api);
     },
     stop() {
       lifecycle?.stop();
       lifecycle = undefined;
+      prepareSourceResult = undefined;
       stopSourceReceipts?.();
       stopSourceReceipts = undefined;
     },
@@ -210,8 +215,14 @@ export function registerMatrixSessionProjection(api: OpenClawPluginApi): void {
   });
 
   api.on("reply_payload_sending", async (event, context) => {
-    const { prepareMatrixSourceResult } = await import("./src/matrix/projection-source-result.js");
-    await prepareMatrixSourceResult(event);
+    if (prepareSourceResult) {
+      await prepareSourceResult(event);
+    } else {
+      // Minimal tooling hosts have no active native lifecycle transport.
+      const { prepareMatrixSourceResult } =
+        await import("./src/matrix/projection-source-result.js");
+      await prepareMatrixSourceResult(event);
+    }
     const { handleMatrixSessionProjectionReplyPayloadSending } =
       await loadSessionProjectionModule();
     runInBackground(

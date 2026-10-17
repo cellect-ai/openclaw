@@ -477,10 +477,12 @@ async function dispatchSlackMessageWithSetup(
                   binding.conversation.channel === "matrix" &&
                   binding.metadata?.environment &&
                   binding.metadata.projectedConversationId &&
-                  binding.metadata.sourceReplyAuthorization,
+                  (binding.metadata.sourceReplyAuthorization ||
+                    binding.metadata.boundBy === "session-projection-read-only"),
               )
-          )
+          ) {
             return false;
+          }
           return {
             prepareRuntimeHandoff: (currentConfig) =>
               prepareSlackFinalDeliveryConfig(currentConfig, account, ctx.botToken),
