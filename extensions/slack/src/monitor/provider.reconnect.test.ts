@@ -91,8 +91,9 @@ describe("slack socket reconnect helpers", () => {
     const release = createDeferred();
     let startupFinished = false;
     const disconnected = vi.fn(() => startupFinished);
+    const app = { receiver: { client }, start: async () => {} };
     const run = startSlackSocketAndWaitForDisconnect({
-      app: { receiver: { client }, start: async () => {} },
+      app,
       onStarted: async () => {
         entered.resolve();
         await release.promise;
