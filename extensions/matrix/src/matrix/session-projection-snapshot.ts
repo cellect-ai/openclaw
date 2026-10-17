@@ -368,7 +368,7 @@ export async function applyProjectionPlan(params: {
         })
       : undefined;
     if (action.kind === "unchanged") {
-      if (binding && publication && action.finalEventId) {
+      if (binding && publication && message.role === "assistant" && action.finalEventId) {
         await noteMatrixSourceSnapshotResult(
           binding.bindingId,
           message.messageId,
@@ -425,10 +425,10 @@ export async function applyProjectionPlan(params: {
         deliveryPartIndex: 0,
         deliveryPartCount: 1,
       });
-      acceptedMessageId = sent.messageId;
       const partIds = sent.receipt?.platformMessageIds?.length
         ? sent.receipt.platformMessageIds
         : [sent.messageId];
+      acceptedMessageId = partIds.at(-1)!;
       partIds.forEach((eventId, partIndex) =>
         applied.push({
           kind: "publish",
@@ -440,7 +440,7 @@ export async function applyProjectionPlan(params: {
         }),
       );
     }
-    if (binding && publication) {
+    if (binding && publication && message.role === "assistant") {
       await noteMatrixSourceSnapshotResult(
         binding.bindingId,
         message.messageId,

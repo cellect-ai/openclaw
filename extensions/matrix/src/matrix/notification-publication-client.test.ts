@@ -18,6 +18,7 @@ const scope: NotificationPublicationScope = {
   source_workspace_id: "T0123456789",
   source_conversation_id: "C0123456789",
   source_root_message_id: "1800000000.123456",
+  source_actor_ids: ["U0123456789"],
   published_at_ms: 1_800_000_000_000,
 };
 const actor = "U0123456789";
@@ -45,6 +46,40 @@ function setup(response: unknown = prepared) {
 }
 
 describe("private notification publication producer client", () => {
+  it("prepares an explicit empty cohort without pretending to select a recipient", async () => {
+    const empty = { ...scope, source_actor_ids: [] };
+    const { client, fetchImpl } = setup({
+      publicationId: scope.publication_id,
+      prepared: true,
+      reservedRoute: "unknown",
+      originPermit: false,
+    });
+    await expect(client.prepare(empty)).resolves.toEqual({
+      publicationId: scope.publication_id,
+      prepared: true,
+      reservedRoute: "unknown",
+      originPermit: false,
+    });
+    const body = fetchImpl.mock.calls[0]?.[1]?.body;
+    expect(JSON.parse(String(body))).toEqual({ scope: empty });
+    await expect(client.prepare(empty, actor)).rejects.toThrow("evidence unavailable");
+  });
+
+  it.each(
+    [
+      [actor, actor],
+      ["W0123456789", actor],
+      ["invalid"],
+      Array.from({ length: 33 }, (_, index) => `U${String(index).padStart(8, "0")}`),
+    ].map((actors) => ({ actors })),
+  )("rejects a noncanonical complete cohort $actors", async ({ actors }) => {
+    const { client, fetchImpl } = setup();
+    await expect(client.prepare({ ...scope, source_actor_ids: actors }, actor)).rejects.toThrow(
+      "evidence unavailable",
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
   it("distinguishes absent capability from partial/invalid configuration without borrowing the registry credential", () => {
     expect(resolveNotificationPublicationClient({})).toEqual({ status: "disabled" });
     expect(
@@ -146,10 +181,12 @@ describe("private notification publication producer client", () => {
     };
     const { client, fetchImpl } = setup(response);
     await client.accepted(scope, "1800000001.123456", "$accepted");
-    expect(fetchImpl.mock.calls[0][0]).toBe(
-      "http://private-bridge.test/v2/notification-publications/accepted",
-    );
-    expect(JSON.parse(String(fetchImpl.mock.calls[0][1]?.body))).toEqual({
+    const call = fetchImpl.mock.calls[0];
+    if (!call) {
+      throw new Error("Expected the accepted-publication request");
+    }
+    expect(call[0]).toBe("http://private-bridge.test/v2/notification-publications/accepted");
+    expect(JSON.parse(String(call[1]?.body))).toEqual({
       scope,
       source_message_id: "1800000001.123456",
       result_event_id: "$accepted",

@@ -14,6 +14,7 @@ export type NotificationPublicationScope = {
   source_workspace_id: string;
   source_conversation_id: string;
   source_root_message_id: string;
+  source_actor_ids: readonly string[];
   published_at_ms: number;
 };
 export type NotificationPublicationPrepared = {
@@ -29,7 +30,7 @@ export type NotificationPublicationClient =
       status: "ready";
       prepare(
         scope: NotificationPublicationScope,
-        sourceActorId: string,
+        sourceActorId?: string,
       ): Promise<NotificationPublicationPrepared>;
       accepted(
         scope: NotificationPublicationScope,
@@ -48,6 +49,9 @@ const record = (value: unknown): value is Record<string, unknown> =>
 const failure = () => new Error("notification publication evidence unavailable");
 
 function snapshot(scope: NotificationPublicationScope): NotificationPublicationScope {
+  if (!Array.isArray(scope.source_actor_ids)) {
+    throw failure();
+  }
   // Explicit fields keep unexpected caller properties out of the private API.
   const frozen: NotificationPublicationScope = {
     environment: scope.environment,
@@ -62,10 +66,18 @@ function snapshot(scope: NotificationPublicationScope): NotificationPublicationS
     source_workspace_id: scope.source_workspace_id,
     source_conversation_id: scope.source_conversation_id,
     source_root_message_id: scope.source_root_message_id,
+    source_actor_ids: Object.freeze([...scope.source_actor_ids]),
     published_at_ms: scope.published_at_ms,
   };
   if (
-    Object.entries(frozen).some(([key, value]) => key !== "published_at_ms" && !reference(value)) ||
+    Object.entries(frozen).some(
+      ([key, value]) =>
+        key !== "published_at_ms" && key !== "source_actor_ids" && !reference(value),
+    ) ||
+    frozen.source_actor_ids.length > 32 ||
+    frozen.source_actor_ids.some(
+      (actor, index, actors) => !slackId(actor, "UW") || (index > 0 && actor <= actors[index - 1]!),
+    ) ||
     frozen.provider !== "slack" ||
     !frozen.room_id.startsWith("!") ||
     !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(frozen.publication_id) ||
@@ -175,12 +187,19 @@ export function resolveNotificationPublicationClient(
     status: "ready",
     async prepare(scope, sourceActorId) {
       const frozen = snapshot(scope);
-      if (!slackId(sourceActorId, "UW")) {
+      if (
+        frozen.source_actor_ids.length
+          ? !slackId(sourceActorId, "UW") || !frozen.source_actor_ids.includes(sourceActorId)
+          : sourceActorId !== undefined
+      ) {
         throw failure();
       }
-      const expectedKey = createHash("sha256")
-        .update(JSON.stringify(["slack", frozen.source_workspace_id, sourceActorId]))
-        .digest("hex");
+      const expectedKey =
+        sourceActorId === undefined
+          ? undefined
+          : createHash("sha256")
+              .update(JSON.stringify(["slack", frozen.source_workspace_id, sourceActorId]))
+              .digest("hex");
       const result = await post("prepare", { scope: frozen, source_actor_id: sourceActorId });
       if (
         !record(result) ||
@@ -192,6 +211,8 @@ export function resolveNotificationPublicationClient(
           result.reservedRoute !== "origin") ||
         (result.recipientKey !== undefined && result.recipientKey !== expectedKey) ||
         (result.prepared && result.recipientKey !== expectedKey) ||
+        (expectedKey === undefined &&
+          (result.reservedRoute !== "unknown" || result.originPermit)) ||
         (!result.prepared && (result.reservedRoute !== "unknown" || result.originPermit)) ||
         (result.originPermit && result.reservedRoute !== "origin")
       ) {
@@ -200,7 +221,9 @@ export function resolveNotificationPublicationClient(
       return {
         publicationId: frozen.publication_id,
         prepared: result.prepared,
-        ...(result.recipientKey === expectedKey ? { recipientKey: expectedKey } : {}),
+        ...(expectedKey !== undefined && result.recipientKey === expectedKey
+          ? { recipientKey: expectedKey }
+          : {}),
         reservedRoute: result.reservedRoute,
         originPermit: result.originPermit,
       };
