@@ -3459,13 +3459,15 @@ describe("talk realtime gateway relay", () => {
       bridgeRequest.onAudio(Buffer.alloc(960));
       playbackTurnId = relay.harness.talk.activeTurnId;
       bridgeRequest.onMark?.("audio-1");
-      bridgeRequest.onResponseDone?.({ status: "completed", responseId: "response-a" });
-      bridgeRequest.onEvent?.({
-        direction: "server",
-        type: "response.done",
-        responseId: "response-a",
-      });
-      expect(relay.harness.talk.activeTurnId).toBeUndefined();
+      if (phase !== "active response") {
+        bridgeRequest.onResponseDone?.({ status: "completed", responseId: "response-a" });
+        bridgeRequest.onEvent?.({
+          direction: "server",
+          type: "response.done",
+          responseId: "response-a",
+        });
+        expect(relay.harness.talk.activeTurnId).toBeUndefined();
+      }
       // The client still owns buffered audio, regardless of provider completion.
       expect(bridge.acknowledgeMark).not.toHaveBeenCalled();
     }
@@ -3560,7 +3562,11 @@ describe("talk realtime gateway relay", () => {
       "talk.event",
       expect.objectContaining({
         type: "audio",
-        responseId: resetting ? "response-c" : "response-b",
+        responseId: resetting
+          ? "response-c"
+          : phase === "active response"
+            ? "response-a"
+            : "response-b",
         audioBase64: "AQI=",
       }),
       new Set(["conn-1"]),

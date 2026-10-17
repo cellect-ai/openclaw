@@ -435,6 +435,7 @@ export async function consultRealtimeVoiceAgent(params: {
   const lifecycleInterruption = new Error(
     "Realtime voice agent consult interrupted by a session lifecycle change.",
   );
+  console.log("DIAG consult run: prepared execution context", params.sessionKey);
   const sessionWorkAdmission = await beginSessionWorkAdmission({
     scope: storePath,
     identities: [params.sessionKey, initialSessionEntry?.sessionId],
@@ -468,6 +469,7 @@ export async function consultRealtimeVoiceAgent(params: {
 
   try {
     return await sessionWorkAdmission.run(async () => {
+      console.log("DIAG consult run: admission acquired", params.sessionKey);
       await params.agentRuntime.ensureAgentWorkspace({
         dir: workspaceDir,
         guard: {
@@ -517,6 +519,7 @@ export async function consultRealtimeVoiceAgent(params: {
 
       // Voice consults suppress verbose/reasoning output because the bridge needs a short,
       // speakable answer, not agent-run diagnostics or hidden reasoning artifacts.
+      console.log("DIAG consult run: invoking embedded agent", params.sessionKey);
       const runPromise = params.agentRuntime.runEmbeddedAgent({
         sessionId,
         sessionKey: params.sessionKey,
@@ -628,6 +631,9 @@ export async function consultRealtimeVoiceAgent(params: {
       }
       return { text };
     });
+  } catch (error) {
+    console.log("DIAG consult run: run failed", params.sessionKey, String(error));
+    throw error;
   } finally {
     params.abortSignal?.removeEventListener("abort", abortFromCaller);
     sessionWorkAdmission.release();

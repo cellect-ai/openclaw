@@ -3106,6 +3106,7 @@ describe("slack implicit mention policy", () => {
           type: "message",
           channel: "C123",
           channel_type: "channel",
+          user: "U1",
           text: "hello",
           ts: "1700000001.000001",
           thread_ts: "1700000000.000000",

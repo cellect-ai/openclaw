@@ -21,10 +21,19 @@ vi.mock("./talk/relay/index.js", () => ({
   prepareTalkRealtimeRelayAgentRunRegistration: () => mocks.register,
 }));
 
+import { mkdtempSync, rmSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { createChatAbortContext } from "./server-methods/chat.abort.test-helpers.js";
 import { startTalkRealtimeAgentConsult } from "./talk/agent-consult.js";
 import { relaySessions, type RelaySession } from "./talk/relay/state.js";
 import { RelayToolCallLedger } from "./talk/relay/tool-call-ledger.js";
+import {
+  closeOpenClawAgentDatabasesForTest,
+  openOpenClawAgentDatabase,
+} from "../state/openclaw-agent-db.js";
+import { readOpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
+import type { CapturedSessionEntryReadSource } from "../config/sessions/session-entry-read-source.types.js";
 
 const sessionKey = "agent:cellect-fi-user:matrix:channel:!private:example.test:thread:$root";
 const route = {
@@ -117,19 +126,40 @@ async function dispatchedContext() {
 }
 
 describe("Matrix voice consult requester", () => {
+  // The 10.4 projection guard requires an entry-carrying load to capture its
+  // physical source. Seed a GENUINE captured source from a real temporary
+  // agent database so the guard exercises its real retain/assert path.
+  let stateDir = "";
   beforeEach(() => {
     vi.clearAllMocks();
+    stateDir = mkdtempSync(path.join(os.tmpdir(), "openclaw-matrix-speaker-"));
+    const agentDbPath = path.join(stateDir, "agent.sqlite");
+    const database = openOpenClawAgentDatabase({ agentId: "cellect-fi-user", path: agentDbPath });
+    const { identity, birthtime } = readOpenClawAgentDatabaseIdentity(database);
+    const capturedReadSource: CapturedSessionEntryReadSource = {
+      agentId: "cellect-fi-user",
+      path: agentDbPath,
+      databaseIdentity: identity,
+      ...(birthtime ? { databaseBirthtime: birthtime } : {}),
+    };
     mocks.load.mockReturnValue({
       cfg,
       storePath: "/test/sessions.json",
       entry: { sessionId: "existing" },
       canonicalKey: sessionKey,
+      capturedReadSource,
+      capturedReadSources: [capturedReadSource],
     });
     mocks.register.mockReturnValue("registered");
     mocks.preAdmission.mockResolvedValue(true);
   });
   afterEach(() => {
     relaySessions.delete("owned-relay");
+    closeOpenClawAgentDatabasesForTest();
+    if (stateDir) {
+      rmSync(stateDir, { recursive: true, force: true });
+      stateDir = "";
+    }
   });
 
   it("runs as the speaker the app server attested for the binding", async () => {
