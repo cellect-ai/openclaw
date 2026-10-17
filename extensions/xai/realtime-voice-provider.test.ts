@@ -805,24 +805,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     const { bridge, socket } = await connect({ onTranscript });
     socket.emitServer({ type: "response.created" });
     bridge.sendUserMessage?.("Continue.");
-    socket.emitServer({
-      type: "response.done",
-      response: {
-        status: "completed",
-        output: [
-          null,
-          {
-            type: "message",
-            role: "assistant",
-            content: [
-              null,
-              { type: "output_text", text: "Valid text " },
-              { type: "output_audio", transcript: "and audio" },
-            ],
-          },
-        ],
-      },
-    });
+    socket.emitServer({ type: "response.done", response: { status: "completed", output } });
     expect(parseSent(socket).slice(-2)).toEqual([
       userMessageEvent("Continue."),
       { type: "response.create" },
@@ -1643,8 +1626,8 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     socket.emitServer({ type: "response.created", response: { id: "response-B" } });
     responseDone(socket, "response-B");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Again", true, { textMode: "snapshot" }],
-      ["user", "Again", true, { textMode: "snapshot" }],
+      ["user", "Again", true, { itemId: "late-A", textMode: "snapshot" }],
+      ["user", "Again", true, { itemId: "B", textMode: "snapshot" }],
     ]);
   });
 
@@ -1676,7 +1659,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     expect(onError).toHaveBeenCalledOnce();
     responseDone(socket, "one");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Read the gauge", true, { textMode: "snapshot" }],
+      ["user", "Read the gauge", true, { itemId: "b", textMode: "snapshot" }],
     ]);
   });
 
@@ -1693,7 +1676,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([]);
     vi.advanceTimersByTime(500);
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "Check the sensor", true, { textMode: "snapshot" }],
+      ["user", "Check the sensor", true, { itemId: "u1", textMode: "snapshot" }],
     ]);
     vi.useRealTimers();
   });

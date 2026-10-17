@@ -36,8 +36,20 @@ describe("tool terminal outcome observer", () => {
 
   it.each([
     { firstOutcome: "success", error: undefined, warnings: [] },
-    { firstOutcome: "failure", error: "Original tool failure", warnings: ["⚠️ Exec failed"] },
-    { firstOutcome: "blocked", error: "Original admission failure", warnings: ["⚠️ Exec blocked"] },
+    {
+      firstOutcome: "failure",
+      error: "Original tool failure",
+      warnings: [
+        "⚠️ Exec failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      ],
+    },
+    {
+      firstOutcome: "blocked",
+      error: "Original admission failure",
+      warnings: [
+        "⚠️ Exec blocked. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      ],
+    },
   ])(
     "classifies a steering skip after $firstOutcome through the registered subscription",
     async ({ firstOutcome, error, warnings }) => {
@@ -174,7 +186,11 @@ describe("tool terminal outcome observer", () => {
     expect(terminal.lastToolError).toMatchObject({ error: "Original failure", executionStarted });
     expect(
       buildPayloads({ lastToolError: terminal.lastToolError }).map((payload) => payload.text),
-    ).toEqual([executionStarted ? "⚠️ Exec failed" : "⚠️ Exec blocked"]);
+    ).toEqual([
+      executionStarted
+        ? "⚠️ Exec failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route."
+        : "⚠️ Exec blocked. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+    ]);
   });
 
   it("retains a genuine message failure across suppression until a real send succeeds", () => {
@@ -442,35 +458,40 @@ describe("tool terminal outcome observer", () => {
       timedOut: true,
       timeoutMs: 30_000,
       results: [{ path: "memory/one.md" }, { path: "memory/two.md" }],
-      expected: "⚠️ Memory Search timed out after 30s; 2 partial results are available. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      expected:
+        "⚠️ Memory Search timed out after 30s; 2 partial results are available. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
     },
     {
       name: "one keyword match",
       timedOut: true,
       timeoutMs: 30_000,
       results: [{ path: "memory/one.md" }],
-      expected: "⚠️ Memory Search timed out after 30s; 1 partial result is available. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      expected:
+        "⚠️ Memory Search timed out after 30s; 1 partial result is available. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
     },
     {
       name: "no fallback",
       timedOut: true,
       timeoutMs: 30_000,
       results: [],
-      expected: "⚠️ Memory Search timed out after 30s. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      expected:
+        "⚠️ Memory Search timed out after 30s. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
     },
     {
       name: "provider error with timeout wording",
       timedOut: false,
       timeoutMs: 30_000,
       results: [],
-      expected: "⚠️ Memory Search failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      expected:
+        "⚠️ Memory Search failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
     },
     {
       name: "invalid timeout metadata",
       timedOut: true,
       timeoutMs: -1,
       results: [],
-      expected: "⚠️ Memory Search failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      expected:
+        "⚠️ Memory Search failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
     },
   ])(
     "preserves $name in the final timeout warning",

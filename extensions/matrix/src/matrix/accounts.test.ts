@@ -685,8 +685,13 @@ describe("resolveMatrixAccountAsync token-only identity", () => {
     } as MatrixStoredCredentials);
     const account = await resolveMatrixAccountAsync({ cfg, accountId: "fiadmin", env });
     expect(account.userId).toBe("@admin:example.org");
-    // The synchronous hook stays non-blocking and does not read the store.
-    expect(resolveMatrixAccount({ cfg, accountId: "fiadmin", env }).userId).toBeUndefined();
+    // Sync/async contract (deliberate alignment): the synchronous hook reads
+    // the same stored identity as the async resolver for a token-matching
+    // env account, so real sync operational callers resolve the stored MXID.
+    // A stored MXID for a different token is never adopted (next case).
+    expect(resolveMatrixAccount({ cfg, accountId: "fiadmin", env }).userId).toBe(
+      "@admin:example.org",
+    );
   });
 
   it("does not adopt an MXID stored for a different token", async () => {

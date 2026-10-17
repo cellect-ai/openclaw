@@ -424,7 +424,19 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
       silenceDurationMs: 650,
       language: "en",
       instructions: "Speak briefly.",
-      tools: [createRealtimeTool(CONSULT)],
+      // The browser session must declare the consult question parameter the
+      // model needs to invoke the tool; a bare properties:{} contract cannot
+      // carry the delegation (mirrors the shared consult descriptor).
+      tools: [
+        {
+          ...createRealtimeTool(CONSULT),
+          parameters: {
+            type: "object",
+            properties: { question: { type: "string" } },
+            required: ["question"],
+          },
+        },
+      ],
     });
     expect(createGoogleGenAIMock).toHaveBeenCalledWith({
       apiKey: "gemini-key",
@@ -447,7 +459,15 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
             tools: [
               {
                 functionDeclarations: [
-                  { ...createRealtimeToolDeclaration(CONSULT), behavior: "NON_BLOCKING" },
+                  {
+                    ...createRealtimeToolDeclaration(CONSULT),
+                    parameters: {
+                      type: "object",
+                      properties: { question: { type: "string" } },
+                      required: ["question"],
+                    },
+                    behavior: "NON_BLOCKING",
+                  },
                 ],
               },
             ],
@@ -512,6 +532,7 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
       properties: {
         question: { type: "string" },
       },
+      required: ["question"],
     });
     expect(declaration?.parametersJsonSchema).toBeUndefined();
     expect(sessionLocal?.provider).toBe("google");
