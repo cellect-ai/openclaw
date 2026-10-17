@@ -115,6 +115,11 @@ it.skipIf(process.platform !== "linux")(
           { repair: true, nonInteractive: true, workspaceSuggestions: false },
         );
         expect(readerClosed).toBe(true);
+        if (tools.exchanges !== 2) {
+          console.log(
+            `DIAG exchanges=${tools.exchanges} spawn=${JSON.stringify(vi.mocked(spawnSync).mock.calls.map(([c, a]) => `${c} ${(a ?? []).join(" ")}`))} log=${JSON.stringify(log.mock.calls.flat().map(String))}`,
+          );
+        }
         expect(tools.exchanges).toBe(2);
         expect(log.mock.calls.flat().join("\n")).not.toContain("SQLite NOCOW repair refused");
         for (const [index, pathname] of paths.entries()) {
