@@ -323,7 +323,7 @@ function terminalSignalsOf(
   if (state === "failed") {
     return { failureKind: failureKindOf(outcome, event.data) };
   }
-  const stoppedBy = stoppedByOf(outcome.reason);
+  const stoppedBy = stoppedByOf(outcome.reason, outcome.stopReason);
   return stoppedBy ? { stoppedBy } : undefined;
 }
 

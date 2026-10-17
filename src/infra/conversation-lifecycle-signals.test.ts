@@ -288,6 +288,16 @@ describe("failure, stopper and wait", () => {
     expect(stoppedByOf(undefined)).toBeUndefined();
   });
 
+  it("names revoked access only from its cancellation outcome and preserved cause", () => {
+    expect(stoppedByOf("aborted", "auth-revoked")).toEqual({ kind: "auth_revoked" });
+    for (const reason of ["completed", "failed", "timed_out", "cancelled", undefined]) {
+      expect(stoppedByOf(reason, "auth-revoked")).toBeUndefined();
+    }
+    for (const reason of ["rpc", "stop", "auth_revoked", undefined]) {
+      expect(stoppedByOf("aborted", reason)).toBeUndefined();
+    }
+  });
+
   it("names the first open approval a person may decide, and nothing for a command", () => {
     expect(waitingOnOf(["exec-1", "plugin-1", "plugin-2"], ["plugin-1", "plugin-2"])).toEqual({
       kind: "confirmation",
