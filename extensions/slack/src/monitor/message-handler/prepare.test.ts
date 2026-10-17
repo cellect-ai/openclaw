@@ -3070,26 +3070,76 @@ describe("slack implicit mention policy", () => {
     message?: Partial<SlackMessageEvent>;
     eventScope?: SlackEventScope;
     account?: ResolvedSlackAccount;
-  }) {
-    const { storePath } = storeFixture.makeTmpStorePath();
-    vi.spyOn(
-      await import("openclaw/plugin-sdk/session-store-runtime"),
-      "resolveStorePath",
-    ).mockReturnValue(storePath);
-    return await prepareSlackMessage({
-      ctx: params.ctx,
-      account: params.account ?? createSlackAccount(),
-      message: {
-        type: "message",
+  }): Promise<PreparedSlackMessage | null>;
+  async function prepareThreadMessage(
+    eventScope?: SlackEventScope,
+    options?: Pick<
+      Parameters<typeof createInboundSlackTestContext>[0],
+      "channelsConfig" | "groupPolicy"
+    >,
+  ): Promise<PreparedSlackMessage | null>;
+  async function prepareThreadMessage(
+    eventScopeOrParams?:
+      | SlackEventScope
+      | {
+          ctx: SlackMonitorContext;
+          message?: Partial<SlackMessageEvent>;
+          eventScope?: SlackEventScope;
+          account?: ResolvedSlackAccount;
+        },
+    options: Pick<
+      Parameters<typeof createInboundSlackTestContext>[0],
+      "channelsConfig" | "groupPolicy"
+    > = {},
+  ): Promise<PreparedSlackMessage | null> {
+    if (eventScopeOrParams !== undefined && "ctx" in eventScopeOrParams) {
+      const params = eventScopeOrParams;
+      const { storePath } = storeFixture.makeTmpStorePath();
+      vi.spyOn(
+        await import("openclaw/plugin-sdk/session-store-runtime"),
+        "resolveStorePath",
+      ).mockReturnValue(storePath);
+      return await prepareSlackMessage({
+        ctx: params.ctx,
+        account: params.account ?? createSlackAccount(),
+        message: {
+          type: "message",
+          channel: "C123",
+          channel_type: "channel",
+          text: "hello",
+          ts: "1700000001.000001",
+          thread_ts: "1700000000.000000",
+          parent_user_id: "U2",
+          ...params.message,
+        },
+        opts: { source: "message", eventScope: params.eventScope },
+      });
+    }
+    const channelsConfig = options.channelsConfig ?? { C123: { requireMention: true } };
+    const ctx = createInboundSlackTestContext({
+      cfg: {
+        channels: {
+          slack: { enabled: true, channels: channelsConfig, groupPolicy: options.groupPolicy },
+        },
+        session: { store: storeFixture.makeTmpStorePath().storePath },
+      },
+      channelsConfig,
+      groupPolicy: options.groupPolicy,
+    });
+    ctx.resolveUserName = async () => ({ name: "Alice" });
+    return prepareMessageWith(
+      ctx,
+      createSlackAccount(),
+      createSlackMessage({
         channel: "C123",
         channel_type: "channel",
         text: "hello",
         ts: "1700000001.000001",
         thread_ts: "1700000000.000000",
         parent_user_id: "U2",
-      },
-      opts: { source: "message", eventScope: params.eventScope },
-    });
+      }),
+      { source: "message", eventScope: eventScopeOrParams },
+    );
   }
 
   it("admits only the preferred participating account in a shared unmentioned thread", async () => {
