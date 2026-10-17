@@ -18,11 +18,17 @@ const m = vi.hoisted(() => ({
   binding: vi.fn(),
   subscribe: vi.fn(),
   publication: vi.fn(),
+  client: vi.fn(),
+  prepare: vi.fn(),
+  accepted: vi.fn(),
+  hold: vi.fn(),
+  release: vi.fn(),
+  requireReceipt: vi.fn(),
 }));
 vi.mock("openclaw/plugin-sdk/reply-runtime", () => ({
   resolveReplyPublication: m.host,
   registerReplyPublicationReceiptListener: m.subscribe,
-  requireReplyPublicationReceipt: vi.fn(),
+  requireReplyPublicationReceipt: m.requireReceipt,
 }));
 vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", () => ({
   getSessionBindingService: () => ({ resolveByConversation: m.binding }),
@@ -31,7 +37,13 @@ vi.mock("./projection-lifecycle.js", () => ({
   resolveMatrixProjectionRun: m.owner,
   noteMatrixProjectionFinalResult: m.note,
 }));
-vi.mock("./projection-publication.js", () => ({ resolveMatrixReplyPublication: m.publication }));
+vi.mock("./projection-publication.js", () => ({
+  resolveMatrixReplyPublication: m.publication,
+  sourcePublicationAccountId: () => "projection-account",
+}));
+vi.mock("./notification-publication-client.js", () => ({
+  resolveNotificationPublicationClient: m.client,
+}));
 const target = {
   environment: "test",
   conversationId: "conversation",
@@ -54,6 +66,10 @@ let stateDir = "",
   stop: (() => void) | undefined;
 beforeEach(() => {
   vi.clearAllMocks();
+  m.client.mockReturnValue({ status: "disabled" });
+  m.prepare.mockResolvedValue({ prepared: true, reservedRoute: "mobile", originPermit: false });
+  m.accepted.mockResolvedValue(undefined);
+  m.hold.mockReturnValue(m.release);
   stateDir = fs.mkdtempSync(path.join(os.tmpdir(), "openclaw-source-result-"));
   installMatrixTestRuntime({ stateDir });
   m.host.mockReturnValue(host);
@@ -79,13 +95,95 @@ const receipt = {
 };
 const listener = () => {
   const subscription = m.subscribe.mock.calls[0];
-  if (!subscription) throw new Error("Expected source receipt subscription");
+  if (!subscription) {
+    throw new Error("Expected source receipt subscription");
+  }
   return subscription[0] as (
     publication: typeof host & { receiptRequired?: true },
     accepted: typeof receipt,
   ) => Promise<void>;
 };
 describe("durable exact source-result rendezvous", () => {
+  function enableNotificationRouting() {
+    m.client.mockReturnValue({ status: "ready", prepare: m.prepare, accepted: m.accepted });
+    m.host.mockReturnValue({
+      ...host,
+      publicationId: "12345678-1234-4234-8234-123456789abc",
+      synthesizedPrefix: "<@U12345678>",
+      deferSynthesizedPrefix: m.hold,
+    });
+    m.binding.mockReturnValue({
+      bindingId: target.bindingId,
+      metadata: {
+        boundBy: "session-projection-read-only",
+        externalSource: {
+          provider: "slack",
+          workspaceId: "T12345678",
+          channelId: "C12345678",
+          rootMessageId: "1.000000",
+        },
+      },
+    });
+  }
+
+  it("withholds synchronously and prepares a read-only source without reverse-write permission", async () => {
+    enableNotificationRouting();
+    const pending = prepareMatrixSourceResult({});
+    expect(m.hold).toHaveBeenCalledOnce();
+    expect(m.requireReceipt).toHaveBeenCalledOnce();
+    await pending;
+    expect(m.prepare).toHaveBeenCalledWith(
+      expect.objectContaining({
+        publication_id: "12345678-1234-4234-8234-123456789abc",
+        published_at_ms: host.publishedAtMs,
+        source_account_id: "projection-account",
+        source_workspace_id: "T12345678",
+        source_conversation_id: "C12345678",
+        source_root_message_id: "1.000000",
+        binding_id: target.bindingId,
+        generation: "owning-opaque-uuid",
+      }),
+      "U12345678",
+    );
+    expect(m.release).not.toHaveBeenCalled();
+  });
+
+  it("settles a fresh authoritative denial without inventing a prepared bridge context", async () => {
+    enableNotificationRouting();
+    m.prepare.mockResolvedValue({ prepared: false, reservedRoute: "unknown", originPermit: false });
+    await prepareMatrixSourceResult({});
+    await listener()(m.host.mock.results[0]?.value, { ...receipt, conversationId: "C12345678" });
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$snapshot");
+    expect(m.prepare).toHaveBeenCalledTimes(2);
+    expect(m.accepted).not.toHaveBeenCalled();
+    expect(m.release).not.toHaveBeenCalled();
+    expect(m.note).toHaveBeenCalledWith(expect.objectContaining({ resultEventId: "$snapshot" }));
+  });
+
+  it("retains frozen custody after failed prepare and retries it before native result acknowledgment", async () => {
+    enableNotificationRouting();
+    m.prepare.mockRejectedValueOnce(new Error("authority unavailable"));
+    await expect(prepareMatrixSourceResult({})).rejects.toThrow("authority unavailable");
+    expect(m.release).not.toHaveBeenCalled();
+    const admittedHost = m.host.mock.results[0]?.value;
+    await listener()(admittedHost, { ...receipt, conversationId: "C12345678" });
+    m.accepted.mockRejectedValueOnce(new Error("accepted native result still unavailable"));
+    await expect(
+      noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$snapshot"),
+    ).rejects.toThrow("still unavailable");
+    expect(m.note).not.toHaveBeenCalled();
+    await noteMatrixSourceSnapshotResult("binding", receipt.messageId, "!room", "$later-snapshot");
+    expect(m.accepted).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        publication_id: "12345678-1234-4234-8234-123456789abc",
+        published_at_ms: host.publishedAtMs,
+      }),
+      receipt.messageId,
+      "$snapshot",
+    );
+    expect(m.note).toHaveBeenCalledWith(expect.objectContaining({ resultEventId: "$snapshot" }));
+  });
+
   it("does not acknowledge a required source receipt whose ownership write was unavailable", async () => {
     await expect(listener()({ ...host, receiptRequired: true }, receipt)).rejects.toThrow(
       "preserving producer custody",

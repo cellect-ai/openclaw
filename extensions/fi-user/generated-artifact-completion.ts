@@ -25,7 +25,9 @@ const string = (value: unknown) =>
 const validHash = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
 function key(sessionKey?: string, runId?: string) {
-  if (!sessionKey?.startsWith("agent:cellect-fi-user:") || !runId) return undefined;
+  if (!sessionKey?.startsWith("agent:cellect-fi-user:") || !runId) {
+    return undefined;
+  }
   return createHash("sha256")
     .update(JSON.stringify([sessionKey, runId]))
     .digest("hex");
@@ -37,11 +39,11 @@ function validObservation(value: unknown): value is RunObservation {
     typeof row.prepared === "boolean" &&
     Array.isArray(row.failedFiles) &&
     row.failedFiles.every((entry) => typeof entry === "string") &&
-    !!record(row.pending) &&
+    record(row.pending) !== undefined &&
     Object.values(row.pending as Record<string, unknown>).every((entry) => {
       const artifact = record(entry);
       return (
-        !!artifact &&
+        artifact !== undefined &&
         (artifact.sha256 === undefined || validHash(artifact.sha256)) &&
         (artifact.sessionId === undefined || typeof artifact.sessionId === "string")
       );
@@ -72,22 +74,29 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
     }
   };
   api.on("after_tool_call", async (event, context) => {
-    if (context.agentId && context.agentId !== "cellect-fi-user") return;
+    if (context.agentId && context.agentId !== "cellect-fi-user") {
+      return;
+    }
     const runKey = key(context.sessionKey, event.runId ?? context.runId);
-    if (!runKey) return;
+    if (!runKey) {
+      return;
+    }
     const action = string(event.params.action);
     const artifactId = string(event.params.artifactId);
     const isDelivery =
       event.toolName === "fi_user_deliver_file" &&
-      (action === "prepare" || action === "register" || !!artifactId);
+      (action === "prepare" || action === "register" || artifactId !== undefined);
     const isFiling =
       event.toolName === "fi_user_dataroom" &&
-      !!artifactId &&
+      artifactId !== undefined &&
       (action === "upload_generated_artifact" || action === "upload_to_project_library");
-    if (!isDelivery && !isFiling) return;
+    if (!isDelivery && !isFiling) {
+      return;
+    }
     witness(runKey);
     const details = record(record(event.result)?.details);
-    const successful = !event.error && record(event.result)?.isError !== true && !!details;
+    const successful =
+      !event.error && record(event.result)?.isError !== true && details !== undefined;
     if (inFlight.size >= 4096 && !inFlight.has(runKey)) {
       failedObservations.add(runKey);
       return;
@@ -96,19 +105,25 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
     const pending = (async () => {
       // Native embedded after-tool hooks are fire-and-forget. Serialize this
       // projection in tool-observation order, not worker response order.
-      if (preceding) await preceding;
+      if (preceding) {
+        await preceding;
+      }
       try {
         const store = observations();
-        if (!store.observe || !store.compareAndApply)
+        if (!store.observe || !store.compareAndApply) {
           throw new Error("Data-only run observations are unavailable");
+        }
         let observation = await store.observe(runKey);
         for (let attempt = 0; attempt < 8; attempt++) {
           const prior = observation.value;
           // Invalid stored facts are not repaired into success by this projection.
-          if (prior !== undefined && !validObservation(prior))
+          if (prior !== undefined && !validObservation(prior)) {
             throw new Error("Invalid generated-file run observation");
+          }
           const next = prior === undefined ? initial() : structuredClone(prior);
-          if (action === "prepare") next.prepared = true;
+          if (action === "prepare") {
+            next.prepared = true;
+          }
           if (action === "register") {
             const filename = string(event.params.fileName) ?? "unidentified output";
             const id = string(details?.artifactId);
@@ -124,7 +139,9 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
                 sha256: details.sha256,
                 sessionId: string(context.sessionId),
               };
-            } else if (!next.failedFiles.includes(filename)) next.failedFiles.push(filename);
+            } else if (!next.failedFiles.includes(filename)) {
+              next.failedFiles.push(filename);
+            }
           }
           if (artifactId) {
             next.pending[artifactId] ??= {};
@@ -132,7 +149,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               successful &&
               details?.delivered === "slack_dm" &&
               details.artifactId === artifactId &&
-              !!string(details.messageId);
+              string(details.messageId) !== undefined;
             const receipt = record(details?.filingReceipt);
             const provenance = record(receipt?.provenance);
             const documentId =
@@ -140,7 +157,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
             const filed =
               successful &&
               isFiling &&
-              !!documentId &&
+              documentId !== undefined &&
               receipt?.documentId === documentId &&
               validHash(receipt?.sha256) &&
               provenance?.source === "generated_artifact" &&
@@ -149,14 +166,18 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               provenance.sessionId === next.pending[artifactId].sessionId &&
               (!next.pending[artifactId].sha256 ||
                 next.pending[artifactId].sha256 === receipt.sha256);
-            if (delivered || filed) delete next.pending[artifactId];
+            if (delivered || filed) {
+              delete next.pending[artifactId];
+            }
           }
           const applied = await store.compareAndApply(runKey, observation.comparison, {
             operation: "update",
             action: "set",
             value: next,
           });
-          if (applied.status !== "conflict") return;
+          if (applied.status !== "conflict") {
+            return;
+          }
           observation = applied.current;
         }
         throw new Error("Generated-file observation changed repeatedly");
@@ -170,33 +191,50 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
     try {
       await pending;
     } finally {
-      if (inFlight.get(runKey) === pending) inFlight.delete(runKey);
+      if (inFlight.get(runKey) === pending) {
+        inFlight.delete(runKey);
+      }
     }
   });
   api.on("reply_payload_sending", async (event, context) => {
-    if (event.kind !== "final") return;
+    if (event.kind !== "final") {
+      return;
+    }
     const runKey = key(event.sessionKey ?? context.sessionKey, event.runId ?? context.runId);
-    if (!runKey) return;
+    if (!runKey) {
+      return;
+    }
     const pending = inFlight.get(runKey);
     const incompleteReply = { payload: { ...event.payload, text: incomplete } };
     let expired = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     const checked = (async () => {
-      if (pending) await pending;
-      if (expired) return incompleteReply;
-      if (failedObservations.has(runKey)) return incompleteReply;
+      if (pending) {
+        await pending;
+      }
+      if (expired) {
+        return incompleteReply;
+      }
+      if (failedObservations.has(runKey)) {
+        return incompleteReply;
+      }
       try {
         const row = await observations().lookup(runKey);
-        if (!row && !witnessed.has(runKey)) return;
+        if (!row && !witnessed.has(runKey)) {
+          return;
+        }
         if (
           validObservation(row) &&
           !row.prepared &&
           !row.failedFiles.length &&
           !Object.keys(row.pending).length
-        )
+        ) {
           return;
+        }
       } catch {
-        if (!witnessed.has(runKey)) return;
+        if (!witnessed.has(runKey)) {
+          return;
+        }
       }
       return incompleteReply;
     })();
@@ -215,10 +253,14 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
         }),
       ]);
       // This is a complete replacement, preserving its existing unprefixed form.
-      if (result) resolveReplyPublication(event)?.deferSynthesizedPrefix?.();
+      if (result) {
+        resolveReplyPublication(event)?.deferSynthesizedPrefix?.();
+      }
       return result;
     } finally {
-      if (timer) clearTimeout(timer);
+      if (timer) {
+        clearTimeout(timer);
+      }
     }
   });
 }

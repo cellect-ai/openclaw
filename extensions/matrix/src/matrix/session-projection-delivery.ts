@@ -129,6 +129,7 @@ async function projectToMatrix(params: {
     bindings.map(async (binding) => {
       if (
         binding.metadata?.boundBy === "session-projection-slack-direct" ||
+        binding.metadata?.boundBy === "session-projection-read-only" ||
         binding.metadata?.sourceReplyAuthorization
       ) {
         return;
