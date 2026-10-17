@@ -1,10 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { renderAgentHarnessPreflightUserMessage } from "../../agents/embedded-agent-helpers/user-facing-text.js";
 import { describeFailoverError } from "../../agents/failover-error.js";
 import { renderFailoverCodeUserCopy } from "../../agents/failover/user-copy.js";
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
-import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
+import { emitAgentEventForRunContext } from "../../infra/agent-events.js";
+import {
+  clearAgentRunContext,
+  getAgentRunContext,
+  getAgentRunLifecycleGeneration,
+} from "../../infra/agent-run-registry.js";
 import { resolveStateContentionPresentation } from "../../sessions/session-run-error-presentation.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
@@ -19,6 +25,10 @@ import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import { broadcastChatError, broadcastChatFinal } from "./chat-broadcast.js";
 import type { RestartSafeChatTerminalState } from "./chat-restart-recovery.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
+import {
+  persistDispatchTerminal,
+  type DispatchTerminalReceipt,
+} from "./chat-send-dispatch-terminal.js";
 import {
   classifyAcceptedChatSendFailure,
   shouldRetainAcceptedChatSendRetryIdentity,
@@ -197,12 +207,44 @@ export function createChatSendDispatchErrorLifecycle(params: {
   // Cleanup releases the run context before delayed failure publication. Keep
   // the original projection policy so maintenance cannot become a visible turn.
   const visibility = getAgentRunContext(clientRunId);
+  const originalIdentity = visibility && {
+    sessionId: visibility.sessionId,
+    sessionKey: visibility.sessionKey,
+    agentId: visibility.agentId,
+    lifecycleGeneration: visibility.lifecycleGeneration,
+  };
+  const ownsOriginalContext = () =>
+    visibility !== undefined &&
+    getAgentRunLifecycleGeneration() === lifecycleGeneration &&
+    getAgentRunContext(clientRunId) === visibility &&
+    visibility.sessionId === originalIdentity?.sessionId &&
+    visibility.sessionKey === originalIdentity?.sessionKey &&
+    visibility.agentId === originalIdentity?.agentId &&
+    visibility.lifecycleGeneration === originalIdentity?.lifecycleGeneration;
   const hidden = visibility?.projectSessionMessages === false;
   const suppressLifecycle = visibility?.projectSessionLifecycle === false;
   let abortedDispatchMarker: ChatAbortMarker | undefined;
   let pendingDispatchLifecycleError: PendingDispatchLifecycleError | undefined;
   let persistDispatchErrorUserTurn: (() => Promise<void>) | undefined;
   let publishDispatchError: (() => void) | undefined;
+  let terminalPublication: Promise<DispatchTerminalReceipt> | undefined;
+  let retiredWithoutPublication = false;
+  let ownedDispatchFailure: PendingDispatchLifecycleError | undefined;
+  const terminalJobId = `chat-dispatch-terminal:${randomUUID()}`;
+  const terminalOwnerWasReplaced = () => {
+    if (!terminalPublication) {
+      return false;
+    }
+    const current = getAgentRunContext(clientRunId);
+    const registration = context.chatAbortControllers.get(clientRunId);
+    return (
+      getAgentRunLifecycleGeneration() !== lifecycleGeneration ||
+      (current !== undefined && (current !== visibility || !ownsOriginalContext())) ||
+      (activeRunAbort.entry !== undefined &&
+        registration !== undefined &&
+        registration !== activeRunAbort.entry)
+    );
+  };
 
   const handleError = async (err: unknown) => {
     const errorMessage = formatChatSendError(err);
@@ -274,7 +316,78 @@ export function createChatSendDispatchErrorLifecycle(params: {
 
     // Retire abortability before asynchronous terminal persistence. Otherwise
     // a later chat.abort can publish a second terminal for a rejected run.
+    if (
+      visibility &&
+      !hidden &&
+      !suppressLifecycle &&
+      !agentTerminalPersistenceOwnedAtDispatchReject &&
+      abortMarkerAtDispatchReject === undefined &&
+      !ownsOriginalContext()
+    ) {
+      terminalPublication = Promise.resolve("stale");
+      retiredWithoutPublication = true;
+      return;
+    }
     context.chatRunState.deleteAbortMarker(clientRunId);
+    if (
+      visibility &&
+      !hidden &&
+      !suppressLifecycle &&
+      !agentTerminalPersistenceOwnedAtDispatchReject &&
+      abortMarkerAtDispatchReject === undefined
+    ) {
+      if (activeRunAbort.entry) {
+        activeRunAbort.entry.isAbortable = () => false;
+      }
+      const frozen = (ownedDispatchFailure ??= {
+        startedAt: activeRunAbort.entry?.startedAtMs ?? now,
+        endedAt: Date.now(),
+        error: errorMessage,
+        errorKind,
+        sessionId: visibility.sessionId ?? backingSessionId ?? clientRunId,
+      });
+      const terminal = {
+        phase: "error",
+        executionSettled: true,
+        startedAt: frozen.startedAt,
+        endedAt: frozen.endedAt,
+        error: frozen.error,
+        errorKind: frozen.errorKind,
+      };
+      terminalPublication ??= persistDispatchTerminal({
+        id: terminalJobId,
+        scheduler: context.lifecycleScheduler,
+        publish: () =>
+          ownsOriginalContext() &&
+          emitAgentEventForRunContext(
+            {
+              runId: clientRunId,
+              lifecycleGeneration,
+              sessionKey,
+              sessionId: originalIdentity?.sessionId,
+              agentId: originalIdentity?.agentId,
+              stream: "lifecycle",
+              data: terminal,
+            },
+            visibility,
+          ),
+        onFailure: (attempt) => {
+          if ((attempt & (attempt - 1)) === 0) {
+            context.logGateway.warn("Native dispatch terminal persistence remains pending.");
+          }
+        },
+      });
+      const receipt = await terminalPublication;
+      if (receipt !== "accepted" || terminalOwnerWasReplaced()) {
+        retiredWithoutPublication = true;
+        if (receipt === "closed") {
+          context.logGateway.warn(
+            "Native dispatch terminal remains unresolved at Gateway shutdown.",
+          );
+        }
+        return;
+      }
+    }
     if (agentTerminalPersistenceOwnedAtDispatchReject && activeRunAbort.entry) {
       activeRunAbort.entry.isAbortable = () => false;
     }
@@ -295,6 +408,10 @@ export function createChatSendDispatchErrorLifecycle(params: {
         );
         return false;
       });
+      if (terminalOwnerWasReplaced()) {
+        retiredWithoutPublication = true;
+        return;
+      }
       if (restartSafeDispatchFailureTerminalized) {
         emitSessionsChanged(context, {
           sessionKey,
@@ -315,7 +432,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
       abortMarkerAtDispatchReject === undefined &&
       !agentTerminalPersistenceOwnedAtDispatchReject
     ) {
-      pendingDispatchLifecycleError = {
+      pendingDispatchLifecycleError = ownedDispatchFailure ?? {
         endedAt: Date.now(),
         error: errorMessage,
         errorKind,
@@ -327,6 +444,9 @@ export function createChatSendDispatchErrorLifecycle(params: {
       // Native lifecycle owns its replay result; dispatched runtimes leave
       // failure projection to this owner, including transcript-write failures.
       const publish = () => {
+        if (terminalOwnerWasReplaced()) {
+          return;
+        }
         const error = errorShapeFromError(ErrorCodes.UNAVAILABLE, err, { message: errorMessage });
         setGatewayDedupeEntry({
           dedupe: context.dedupe,
@@ -365,10 +485,24 @@ export function createChatSendDispatchErrorLifecycle(params: {
   };
 
   const finalize = async () => {
+    // A failed enqueue cannot fall through the unconditional cleanup below.
+    if (terminalPublication) {
+      await terminalPublication;
+    }
+    if (retiredWithoutPublication || terminalOwnerWasReplaced()) {
+      if (ownsOriginalContext()) {
+        clearAgentRunContext(clientRunId, lifecycleGeneration);
+      }
+      cleanupAdmittedRun();
+      return;
+    }
     const dispatchError = pendingDispatchLifecycleError;
     // Commands and reply-dispatch runtimes have already published their terminal.
     // Native agent events keep ownership until their own terminal delivery completes.
     const clearRun = () => {
+      if (terminalOwnerWasReplaced()) {
+        return;
+      }
       if (!params.isAgentRunStarted() || params.isReplyDispatchRun?.()) {
         context.chatRunState.clearRun(clientRunId);
         context.agentRunSeq.delete(clientRunId);
@@ -406,8 +540,10 @@ export function createChatSendDispatchErrorLifecycle(params: {
     }
     // Stop exposing the rejected run before projecting its terminal state, but keep the
     // admitted root until persistence settles so restart drain still observes this work.
-    clearAgentRunContext(clientRunId, lifecycleGeneration);
-    context.removeChatRun(clientRunId, clientRunId, sessionKey);
+    if (!terminalOwnerWasReplaced()) {
+      clearAgentRunContext(clientRunId, lifecycleGeneration);
+      context.removeChatRun(clientRunId, clientRunId, sessionKey);
+    }
     try {
       // The lifecycle owner may append a failure notice; keep its input first.
       await persistDispatchErrorUserTurn?.().catch((transcriptErr: unknown) => {
