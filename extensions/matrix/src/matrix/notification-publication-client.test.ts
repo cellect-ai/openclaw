@@ -129,7 +129,9 @@ describe("private notification publication producer client", () => {
     const pending = client.prepare(input, actor);
     input.run_id = "changed-after-call";
     expect(await pending).toEqual(prepared);
-    const [url, init] = fetchImpl.mock.calls[0];
+    const call = fetchImpl.mock.calls[0];
+    if (!call) throw new Error("expected prepare request");
+    const [url, init] = call;
     expect(url).toBe("http://private-bridge.test/v2/notification-publications/prepare");
     expect(JSON.parse(String(init?.body))).toEqual({ scope, source_actor_id: actor });
     expect(init).toMatchObject({
