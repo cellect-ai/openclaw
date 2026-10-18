@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { adminActionSessions } from "./admin-action.js";
 import {
@@ -57,6 +59,21 @@ const SANDBOX_TOOLS = new Set([
 ]);
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UNPROVEN = "unproven";
+type DelegationDiagnosticReason =
+  | "turn-context-incomplete"
+  | "turn-already-observed"
+  | "turn-not-user"
+  | "turn-admitted"
+  | "turn-unproven"
+  | "mint-ineligible"
+  | "mint-run-unproven"
+  | "mint-unsupported-requester"
+  | "mint-connection-unavailable"
+  | "mint-budget-exhausted"
+  | "mint-reply-invalid"
+  | "mint-held"
+  | "mint-issued"
+  | "mint-request-failed";
 /** The parameters OpenClaw's own exec tool takes; a native harness shell names others. */
 const EXEC_PARAMS = new Set([
   "title",
@@ -203,6 +220,49 @@ export function registerAdminDelegation(
   api: OpenClawPluginApi,
   admittedVoiceTurn: MatrixEntitlements["admittedVoiceTurn"] = () => undefined,
 ) {
+  // Existing diagnostic flags/logging own activation and retention. Only an
+  // opaque host run id, a closed reason, and booleans cross this boundary.
+  const diagnose = (
+    context: { runId?: string; sessionKey?: string },
+    reason: DelegationDiagnosticReason,
+    facts: () => Record<string, boolean> = () => ({}),
+  ): void => {
+    const { runId, sessionKey } = context;
+    if (!runId || !/^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/i.test(runId)) {
+      return;
+    }
+    try {
+      const cfg = api.runtime.config?.current?.() ?? api.config;
+      const runFlag = `fi-user.admin-delegation.${runId.toLowerCase()}`;
+      const sessionFlag = sessionKey
+        ? `fi-user.admin-delegation.session.${createHash("sha256").update(sessionKey.toLowerCase()).digest("hex")}`
+        : undefined;
+      // Broad existing diagnostics must not opt a new run into collection.
+      const flag = cfg.diagnostics?.flags?.find(
+        (value) => value === runFlag || value === sessionFlag,
+      );
+      if (!flag || !isDiagnosticFlagEnabled(flag, cfg)) {
+        return;
+      }
+      // The existing SDK run owner bounds delivery and clears its two bits on
+      // settlement. No diagnostic map, timer, writer, or token state is added.
+      const namespace = "admin-delegation-diagnostics";
+      const previous = api.runContext.getRunContext({ runId, namespace });
+      const delivered = typeof previous === "number" ? previous : 0;
+      const bit = reason.startsWith("turn-") ? 1 : 2;
+      if (
+        (delivered & bit) !== 0 ||
+        !api.runContext.setRunContext({ runId, namespace, value: delivered | bit })
+      ) {
+        return;
+      }
+      api.logger.info(
+        JSON.stringify({ event: "fi-user.admin-delegation", runId, reason, ...facts() }),
+      );
+    } catch {
+      // A diagnostic failure cannot change whether a requester token is issued.
+    }
+  };
   const arrivals = new Map<string, Arrivals>();
   const runs = new Map<string, Run>();
   const custody = new Map<string, Custody>();
@@ -315,7 +375,17 @@ export function registerAdminDelegation(
       const config = configFromRuntime(api);
       const sessionKey = context.sessionKey?.toLowerCase();
       const runId = context.runId;
-      if (!isAdminAgent(config, context.agentId) || !sessionKey || !runId || runs.has(runId)) {
+      if (!isAdminAgent(config, context.agentId)) {
+        return undefined;
+      }
+      if (!sessionKey || !runId || runs.has(runId)) {
+        diagnose(
+          { runId, sessionKey },
+          runs.has(runId ?? "") ? "turn-already-observed" : "turn-context-incomplete",
+          () => ({
+            sessionPresent: Boolean(sessionKey),
+          }),
+        );
         return undefined;
       }
       // Remembered whether admitted or not, so a second attempt of the same
@@ -325,6 +395,10 @@ export function registerAdminDelegation(
       // Only a run that carries a message takes up what arrived; a heartbeat
       // or inter-session run in between must not clear a queued message.
       if (context.trigger !== "user" || !context.senderId) {
+        diagnose({ runId, sessionKey }, "turn-not-user", () => ({
+          userTriggered: context.trigger === "user",
+          senderPresent: Boolean(context.senderId),
+        }));
         return undefined;
       }
       if (context.channelContext?.chat?.talkThreadRootEventId !== undefined) {
@@ -352,6 +426,12 @@ export function registerAdminDelegation(
             run.voice = voice;
           }
         }
+        diagnose({ runId, sessionKey }, run.sender ? "turn-admitted" : "turn-unproven", () => ({
+          voiceTurn: true,
+          ownerAdmitted: Boolean(voice),
+          senderIsBot: context.channelContext?.sender?.isBot === true,
+          requesterPresent: Boolean(run.sender),
+        }));
         return undefined;
       }
       const arrived = arrivals.get(sessionKey);
@@ -394,6 +474,16 @@ export function registerAdminDelegation(
       ) {
         run.sender = sender;
       }
+      diagnose({ runId, sessionKey }, run.sender ? "turn-admitted" : "turn-unproven", () => ({
+        requesterPresent: Boolean(sender),
+        arrivalPresent: Boolean(arrived),
+        dispatchProven: arrived?.proven === true,
+        arrivalFresh: Boolean(arrived && arrived.at > Date.now() - ARRIVAL_TTL_MS),
+        singleSender: arrived?.senders.size === 1,
+        senderMatchesArrival: Boolean(sender && arrived?.senders.has(sender)),
+        originEventMatches: startedByArrival,
+        senderIsBot: origin?.sender?.isBot === true,
+      }));
       return undefined;
     },
     { priority: 10_000 },
@@ -522,6 +612,16 @@ export function registerAdminDelegation(
       adminActionSessions.has(ctx.sessionKey) ||
       !posture(config.adminAgentId).pinIsHarmless
     ) {
+      if (isAdminAgent(config, ctx.agentId) && ON_BEHALF_OF_TOOLS.has(event.toolName)) {
+        diagnose(ctx, "mint-ineligible", () => ({
+          tenantConfigured: Boolean(config.tenantOrgId),
+          toolKindPresent: Boolean(event.toolKind || ctx.toolKind),
+          sandboxParameters: runsInSandbox(event.params),
+          sessionPresent: Boolean(ctx.sessionKey),
+          approvedActionSession: Boolean(ctx.sessionKey && adminActionSessions.has(ctx.sessionKey)),
+          safePosture: posture(config.adminAgentId).pinIsHarmless,
+        }));
+      }
       return undefined;
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
@@ -536,6 +636,14 @@ export function registerAdminDelegation(
       run.sender !== sender ||
       (run.voice && admittedVoiceTurn(ctx) !== run.voice)
     ) {
+      diagnose(ctx, "mint-run-unproven", () => ({
+        runPresent: Boolean(run),
+        requesterPresent: Boolean(requester),
+        runAdmitted: Boolean(run?.sender),
+        sameSession: run?.sessionKey === sessionKey,
+        sameSender: Boolean(sender && run?.sender === sender),
+        voiceProofCurrent: !run?.voice || admittedVoiceTurn(ctx) === run.voice,
+      }));
       return undefined;
     }
     let body: Record<string, string>;
@@ -547,15 +655,23 @@ export function registerAdminDelegation(
       body = { requesterMatrixUserId: requester.requester_matrix_user_id };
       connection = matrixConnection(config, ctx.requester?.accountId);
     } else {
+      diagnose(ctx, "mint-unsupported-requester");
       return undefined;
     }
     // The command chooses where its bearer goes; this is not a control over it.
     // A call that names another Fi is simply not this Fi's to give a token to.
     if (!connection || namesAnotherFi(event.params, connection.baseUrl.replace(/\/+$/, ""))) {
+      diagnose(ctx, "mint-connection-unavailable", () => ({
+        connectionConfigured: Boolean(connection),
+        sameFiOrigin: Boolean(
+          connection && !namesAnotherFi(event.params, connection.baseUrl.replace(/\/+$/, "")),
+        ),
+      }));
       return undefined;
     }
     const budget = Math.min(MAX_MINT_MS, HOOK_BUDGET_MS - (Date.now() - enteredAt));
     if (budget < MIN_MINT_MS) {
+      diagnose(ctx, "mint-budget-exhausted");
       return undefined;
     }
     const sandbox = sandboxKey(config.adminAgentId, sessionKey);
@@ -578,22 +694,41 @@ export function registerAdminDelegation(
           run.sender !== sender ||
           (run.voice && admittedVoiceTurn(ctx) !== run.voice)
         ) {
+          diagnose(ctx, "mint-reply-invalid", () => ({
+            tokenShapeValid: typeof token === "string" && JWT.test(token),
+            expiryNumeric: typeof expiresAt === "number",
+            lifetimeEnough:
+              typeof expiresAt === "number" &&
+              expiresAt * 1000 - now >= MIN_REMAINING_SECONDS * 1000,
+            lifetimeBounded: typeof expiresAt === "number" && expiresAt * 1000 - now <= MAX_HOLD_MS,
+            runAborted: ctx.abortSignal?.aborted === true,
+            currentRun: runs.get(ctx.runId ?? "") === run,
+            sameSender: run.sender === sender,
+            voiceProofCurrent: !run.voice || admittedVoiceTurn(ctx) === run.voice,
+          }));
           return undefined;
         }
         // Someone else's token may have reached this sandbox while Fi answered:
         // the call must then wait like any other, not run without a token.
         const blocked = held(config, event.toolName, ctx);
         if (blocked) {
+          diagnose(ctx, "mint-held");
           return blocked;
         }
         // From here the token is in the sandbox: it is this person's until it expires.
         const heldUntil = Math.max(custody.get(sandbox)?.expiresAt ?? 0, expiresAt * 1000);
         remember(custody, sandbox, { sender, expiresAt: Math.min(heldUntil, now + MAX_HOLD_MS) });
+        diagnose(ctx, "mint-issued");
         return token;
       },
       (error: unknown) => {
         // Status only: the failure may quote the request, which carries the credential.
         const status = /\((\d{3})\)$/.exec(error instanceof Error ? error.message : "")?.[1];
+        diagnose(ctx, "mint-request-failed", () => ({
+          httpStatusPresent: Boolean(status),
+          httpUnauthorized: status === "401",
+          httpForbidden: status === "403",
+        }));
         api.logger.warn(
           `fi-user: admin delegation not issued (${status ? `status ${status}` : "unavailable"})`,
         );
