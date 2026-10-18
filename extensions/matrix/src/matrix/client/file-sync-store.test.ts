@@ -550,7 +550,13 @@ describe("SqliteBackedMatrixSyncStore", () => {
       await firstBarrierStarted.promise;
       await store.setSyncData(createSyncResponse("newer-unsettled-prefix"));
       firstBarrier.resolve();
-      expect(await firstPersisted.promise).toBe("first-durable-prefix");
+      const firstCursor = await Promise.race([
+        firstPersisted.promise,
+        flushing.then(() => {
+          throw new Error("Flush completed without publishing its first prefix");
+        }),
+      ]);
+      expect(firstCursor).toBe("first-durable-prefix");
       await secondBarrierStarted.promise;
       const first = await readPersistedStoreFromStore({
         storageRootDir: storageRoot,

@@ -106,6 +106,12 @@ type MatrixSyncCacheChunk = {
   data: string;
 };
 
+function uncleanSyncCacheMeta(meta: MatrixSyncCacheMeta): MatrixSyncCacheMeta {
+  const unclean = { ...meta, cleanShutdown: false };
+  delete unclean.checkpoint;
+  return unclean;
+}
+
 export type MatrixSyncCacheRecord = MatrixSyncCacheMeta | MatrixSyncCacheChunk;
 
 type MatrixSyncCacheAsyncStore = Pick<
@@ -213,7 +219,7 @@ export async function readAndClaimPersistedStoreFromStore(params: {
     const key = metaKey(SYNC_CACHE_STATE_KEY);
     const meta = await params.store.lookup(key);
     if (isSyncCacheMeta(meta) && meta.cleanShutdown) {
-      await params.store.register(key, { ...meta, cleanShutdown: false, checkpoint: undefined });
+      await params.store.register(key, uncleanSyncCacheMeta(meta));
     }
     return persisted;
   });
@@ -328,9 +334,9 @@ function buildSyncCacheRows(
         ...(syncJson ? { syncDigest: digestText(syncJson) } : {}),
         ...(payload.clientOptions ? { clientOptions: payload.clientOptions } : {}),
         cleanShutdown: payload.cleanShutdown === true,
-        storeId: payload.storeId,
-        identity: payload.identity,
-        checkpoint: payload.cleanShutdown ? payload.checkpoint : undefined,
+        ...(payload.storeId ? { storeId: payload.storeId } : {}),
+        ...(payload.identity ? { identity: payload.identity } : {}),
+        ...(payload.cleanShutdown && payload.checkpoint ? { checkpoint: payload.checkpoint } : {}),
       },
     },
   };
@@ -376,7 +382,7 @@ export async function writeMatrixSyncCacheStateToStore(params: {
         ...rows,
         meta: {
           ...rows.meta,
-          value: { ...rows.meta.value, cleanShutdown: false, checkpoint: undefined },
+          value: uncleanSyncCacheMeta(rows.meta.value),
         },
       },
       chunkKeyPrefix(stateKey),

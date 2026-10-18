@@ -982,11 +982,25 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
         undefined,
       );
       client = { ...client, connId: "foreign-physical-connection" };
+      // Relay RPCs resolve their opaque owner during pre-dispatch authorization,
+      // before suspension admission. Browser steering resolves by session key,
+      // then the retained-call admission rejects the foreign physical connection.
       expect(await dispatch(method, args)).toHaveBeenCalledWith(
         false,
         undefined,
-        expect.objectContaining({ code: "UNAVAILABLE" }),
+        expect.objectContaining(
+          browser
+            ? {
+                code: "UNAVAILABLE",
+                message: "talk.client.steer unavailable during gateway suspension",
+              }
+            : {
+                code: "INVALID_REQUEST",
+                message: "Talk session is not owned by this connection",
+              },
+        ),
       );
+      expect(mocks.runEmbeddedAgent).toHaveBeenCalledOnce();
       client = { ...original, connect: { ...original.connect, scopes: ["operator.read"] } };
       expect(await dispatch(method, args)).toHaveBeenCalledWith(
         false,
