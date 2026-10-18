@@ -166,7 +166,10 @@ export const createTalkClient: GatewayRequestHandler = async ({
           authorizedByBinding: false,
         }))
     ) {
-      rejectRequest(ErrorCodes.INVALID_REQUEST, "Matrix Talk sessions require an authorized binding");
+      rejectRequest(
+        ErrorCodes.INVALID_REQUEST,
+        "Matrix Talk sessions require an authorized binding",
+      );
       return;
     }
     assertSecretOwnerAvailable("capability", "talk:realtime");
@@ -344,6 +347,7 @@ export const createTalkClient: GatewayRequestHandler = async ({
         ...controlRequest,
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
+        transcriptionHints: params.transcriptionHints,
       };
       const assertCommitAllowed = () => {
         sessionMutationCommitGuard?.();

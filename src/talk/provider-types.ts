@@ -267,6 +267,7 @@ export type RealtimeVoiceBridgeCreateRequest = RealtimeVoiceBridgeCallbacks & {
   audioFormat?: RealtimeVoiceAudioFormat;
   instructions?: string;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   autoRespondToAudio?: boolean;
   interruptResponseOnInputAudio?: boolean;
   tools?: RealtimeVoiceTool[];
@@ -285,6 +286,7 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   silenceDurationMs?: number;
   prefixPaddingMs?: number;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;

@@ -180,6 +180,7 @@ async function createOpenAIRealtimeBrowserSession(
       instructions: req.instructions,
       interruptResponseOnInputAudio: config.interruptResponseOnInputAudio,
       language: req.language,
+      transcriptionHints: req.transcriptionHints,
       model,
       noiseReduction: { type: "near_field" },
       prefixPaddingMs: req.prefixPaddingMs ?? config.prefixPaddingMs,

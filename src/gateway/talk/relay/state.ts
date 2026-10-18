@@ -491,6 +491,7 @@ export type CreateTalkRealtimeRelaySessionParams = {
   sessionTarget: PreparedTalkSessionTarget;
   voice?: string;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   sessionCapsule?: string;
   forceAgentConsultOnFinalTranscript?: boolean;
   speakerMxid?: string;

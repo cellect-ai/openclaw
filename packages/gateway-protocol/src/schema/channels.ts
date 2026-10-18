@@ -206,6 +206,17 @@ export const TalkClientCreateParamsSchema = closedObject({
   ),
   /** Bounded, app-supplied metadata for the provider's initial realtime session. */
   sessionCapsule: Type.Optional(Type.String({ minLength: 1, maxLength: 6000 })),
+  /** Literal transcription hints, separate from speaking-model instructions. */
+  transcriptionHints: Type.Optional(
+    closedObject({
+      prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
+      keywords: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, maxLength: 50, pattern: "^[^<>\\r\\n]+$" }), {
+          maxItems: 100,
+        }),
+      ),
+    }),
+  ),
 });
 
 export const TalkClientToolCallParamsSchema = closedObject({
@@ -293,6 +304,17 @@ export const TalkSessionCreateParamsSchema = closedObject({
   brain: Type.Optional(TalkBrainSchema),
   /** Bounded, app-supplied metadata for the provider's initial realtime session. */
   sessionCapsule: Type.Optional(Type.String({ minLength: 1, maxLength: 6000 })),
+  /** Literal transcription hints, separate from speaking-model instructions. */
+  transcriptionHints: Type.Optional(
+    closedObject({
+      prompt: Type.Optional(Type.String({ minLength: 1, maxLength: 300 })),
+      keywords: Type.Optional(
+        Type.Array(Type.String({ minLength: 1, maxLength: 50, pattern: "^[^<>\\r\\n]+$" }), {
+          maxItems: 100,
+        }),
+      ),
+    }),
+  ),
   ttlMs: Type.Optional(Type.Integer({ minimum: 1000, maximum: 3600000 })),
 });
 

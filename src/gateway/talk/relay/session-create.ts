@@ -247,6 +247,7 @@ export function createTalkRealtimeRelaySession(
     audioFormat: REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ,
     instructions: params.instructions,
     language: params.language,
+    transcriptionHints: params.transcriptionHints,
     autoRespondToAudio: params.forceAgentConsultOnFinalTranscript !== true,
     // Forced consults suppress automatic audio turns, but barge-in stays provider-owned:
     // consult replies are long, so interruption matters more here, not less.

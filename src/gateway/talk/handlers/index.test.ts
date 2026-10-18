@@ -1976,6 +1976,7 @@ describe("talk.session unified handlers", () => {
         voice: "alloy",
         language: "de",
         sessionCapsule: "Fi session metadata\n- Project: 305 Third Street SPE LLC",
+        transcriptionHints: { prompt: "Real estate.", keywords: ["Example Project"] },
       },
       respond: createRespond,
       client: { connId: "conn-1", connect: { scopes: ["operator.talk"] } },
@@ -2024,6 +2025,7 @@ describe("talk.session unified handlers", () => {
         { role: "assistant", text: "Earlier answer" },
       ],
       sessionCapsule: "Fi session metadata\n- Project: 305 Third Street SPE LLC",
+      transcriptionHints: { prompt: "Real estate.", keywords: ["Example Project"] },
       consultAuthority: {
         senderIsOwner: false,
         replyCaller: expect.objectContaining({

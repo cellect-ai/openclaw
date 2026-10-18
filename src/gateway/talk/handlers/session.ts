@@ -19,8 +19,8 @@ import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-contr
 import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session.js";
 import { projectInternalRealtimeVoicePublicConfig } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProvider } from "../../../talk/provider-resolver.js";
-import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
 import { isUnauthorizedRawMatrixBrowserSession } from "../../matrix-browser-session-authorization.js";
+import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import type { GatewayRequestHandlers, RespondFn } from "../../server-methods/types.js";
 import { defineValidatedGatewayHandler } from "../../server-methods/validation.js";
@@ -355,7 +355,10 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             });
             replacement?.assertCurrent(target);
           };
-          const initialItems = await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent);
+          const initialItems = await readTalkRealtimeInitialItems(
+            target,
+            assertEnsuredTargetCurrent,
+          );
           assertEnsuredTargetCurrent();
           const model =
             normalizeOptionalString(relayLaunch.providerConfig.model) ??
@@ -391,6 +394,7 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             sessionTarget: target,
             voice: launchOptions.voice,
             language: normalizeOptionalLowercaseString(params.language) ?? "en",
+            transcriptionHints: params.transcriptionHints,
             sessionCapsule: params.sessionCapsule,
             forceAgentConsultOnFinalTranscript: relayLaunch.forceAgentConsultOnFinalTranscript,
             speakerMxid: bound?.speakerMxid,
