@@ -47,6 +47,8 @@ const qaFlowImportLoaders: Record<string, QaFlowImportLoader> = {
     import("./live-transports/matrix/scenarios/scenario-runtime-e2ee-cli-verification.js"),
   "./live-transports/matrix/scenarios/scenario-runtime-e2ee-messages.js": () =>
     import("./live-transports/matrix/scenarios/scenario-runtime-e2ee-messages.js"),
+  "./live-transports/matrix/scenarios/scenario-runtime-e2ee-graceful-restart.js": () =>
+    import("./live-transports/matrix/scenarios/scenario-runtime-e2ee-graceful-restart.js"),
   "./live-transports/matrix/scenarios/scenario-runtime-e2ee-recovery.js": () =>
     import("./live-transports/matrix/scenarios/scenario-runtime-e2ee-recovery.js"),
   "./live-transports/matrix/scenarios/scenario-runtime-e2ee-verification.js": () =>

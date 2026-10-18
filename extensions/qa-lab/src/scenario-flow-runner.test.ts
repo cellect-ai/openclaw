@@ -717,11 +717,18 @@ describe("scenario-flow-runner", () => {
                 value: { expr: 'await qaImport("./gateway-log-redaction.js")' },
               },
               {
+                set: "matrixGraceful",
+                value: {
+                  expr: 'await qaImport("./live-transports/matrix/scenarios/scenario-runtime-e2ee-graceful-restart.js")',
+                },
+              },
+              {
                 assert: {
                   expr:
                     'typeof plugin.evaluateCodexPluginLifecycle === "function" && ' +
                     'typeof artifacts.publishQaSuiteArtifactFiles === "function" && ' +
-                    'typeof redaction.redactQaGatewayDebugText === "function"',
+                    'typeof redaction.redactQaGatewayDebugText === "function" && ' +
+                    'typeof matrixGraceful.runMatrixQaE2eeGracefulRestartResumeScenario === "function"',
                 },
               },
             ],

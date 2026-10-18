@@ -65,6 +65,61 @@ function healthyMatrixStatus(lastStartAt: number) {
 }
 
 describe("matrix scenario environment", () => {
+  it("forwards the real optional natural-exit owner through the Matrix preparation contract", async () => {
+    let configReads = 0;
+    const order: string[] = [];
+    const exit = { pid: 123, exitCode: 0 as const, signalCode: null };
+    const gateway = {
+      ...gatewayPaths,
+      restartAfterOwnedExit: vi.fn(
+        async (commit: () => Promise<void>, whileOffline?: () => Promise<void>) => {
+          await commit();
+          order.push("owned natural exit");
+          await whileOffline?.();
+          order.push("replacement ready");
+          return exit;
+        },
+      ),
+      call: vi.fn(async (method: string) => {
+        if (method === "config.get") {
+          const phase = configReads++ % 3;
+          if (phase === 0) return { config: {} };
+          if (phase === 1) return { hash: "config-hash" };
+          return {
+            appliedConfigHash: "config-hash",
+            configRevisionHash: "config-hash",
+            hash: "config-hash",
+          };
+        }
+        if (method === "config.patch")
+          return { hash: "config-hash", changedPaths: [], noop: true, ok: true };
+        if (method === "channels.status") return healthyMatrixStatus(100);
+        throw new Error(`unexpected gateway method ${method}`);
+      }),
+    };
+    const prepared = await createEnvironment().prepareFlow({
+      config: {},
+      gateway,
+      outputDir: "/tmp/matrix-qa/output",
+      scenarioId: "matrix-owned-exit",
+      scenarioTitle: "Matrix owned exit",
+      timeoutMs: 2_000,
+      waitForConfigRestartSettle: vi.fn(),
+    });
+    const commit = vi.fn(async () => {
+      order.push("commit");
+    });
+    const offline = vi.fn(async () => {
+      order.push("offline");
+    });
+    await expect(
+      prepared.scenarioContext.restartGatewayAfterOwnedExit?.(commit, offline),
+    ).resolves.toEqual(exit);
+    expect(gateway.restartAfterOwnedExit).toHaveBeenCalledExactlyOnceWith(commit, offline);
+    expect(order).toEqual(["commit", "owned natural exit", "offline", "replacement ready"]);
+    expect(gateway.call.mock.calls.at(-1)?.[0]).toBe("channels.status");
+  });
+
   it("restores ordered override-heavy config to defaults from fresh current config", async () => {
     buildMatrixQaConfig.mockClear();
     const execApprovalOverrides = {

@@ -106,6 +106,11 @@ type QaRunnerTransportFlowPreparationInput = {
         tempRoot: string;
       }) => Promise<void>,
     ) => Promise<void>;
+    /** Private QA owner waits for natural exit before offline work and replacement. */
+    restartAfterOwnedExit?: (
+      commit: () => Promise<void>,
+      whileOffline?: () => Promise<void>,
+    ) => Promise<{ pid: number; exitCode: 0; signalCode: null }>;
     stop?: (options?: { preserveToDir?: string }) => Promise<void>;
   };
   waitForConfigRestartSettle: (options?: {
