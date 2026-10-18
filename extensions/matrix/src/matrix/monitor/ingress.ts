@@ -6,6 +6,7 @@ import type {
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getMatrixRuntime } from "../../runtime.js";
 import type { MatrixRawEvent } from "../sdk.js";
+import { isMatrixApplicationEventType } from "./event-types.js";
 
 type MatrixIngressEvent = { roomId: string; event: MatrixRawEvent };
 type MatrixIngressPayload = { version: 1; rawEvent: string };
@@ -49,10 +50,13 @@ export function createMatrixIngressMonitor(options: {
         getMatrixRuntime().state.openChannelIngressQueue<MatrixIngressPayload>({
           accountId: options.accountId,
         })),
-    inspect: (raw: MatrixIngressEvent) => ({
-      eventId: JSON.stringify([raw.roomId, raw.event.event_id]),
-      laneKey: raw.roomId,
-    }),
+    inspect: (raw: MatrixIngressEvent) =>
+      isMatrixApplicationEventType(raw.event.type)
+        ? {
+            eventId: JSON.stringify([raw.roomId, raw.event.event_id]),
+            laneKey: raw.roomId,
+          }
+        : null,
     payload: {
       serialize: (raw) => JSON.stringify(raw),
       deserialize: (rawEvent) => decode(rawEvent),

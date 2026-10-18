@@ -22,6 +22,7 @@ import type { LocationMessageEventContent } from "../sdk.js";
 import { normalizeMatrixUserId } from "./allowlist.js";
 import { resolveMatrixMonitorLiveUserAllowlist } from "./config.js";
 import { createMatrixEventContextResolver } from "./event-context.js";
+import { isMatrixApplicationEventType } from "./event-types.js";
 import { resolveMatrixInboundContext } from "./handler-context.js";
 import { createMatrixDraftController } from "./handler-draft-controller.js";
 import {
@@ -135,12 +136,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       const isLocationEvent =
         eventType === EventType.Location ||
         (eventType === EventType.RoomMessage && locationContent.msgtype === EventType.Location);
-      if (
-        eventType !== EventType.RoomMessage &&
-        !isPollEvent &&
-        !isLocationEvent &&
-        !isReactionEvent
-      ) {
+      if (!isMatrixApplicationEventType(eventType)) {
         return;
       }
       logVerboseMessage(
