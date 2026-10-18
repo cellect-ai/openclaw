@@ -16,6 +16,17 @@ export type MatrixQaCanaryArtifact = {
 };
 
 type MatrixQaScenarioArtifacts = {
+  gracefulCheckpoint?: {
+    requestId: string;
+    suspensionId: string;
+    predecessorProcessInstanceId: string;
+    accountId: string;
+    storeId: string;
+    generation: string;
+    naturalExitPid: number;
+    naturalExitCode: 0;
+    drainArrivalDurablyRetained: true;
+  };
   accepted?: MatrixQaScenarioArtifacts;
   approval?: MatrixQaObservedEvent["approval"] & {
     eventId: string;

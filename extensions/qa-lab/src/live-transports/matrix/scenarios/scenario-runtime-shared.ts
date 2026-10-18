@@ -59,6 +59,10 @@ export type MatrixQaScenarioContext = {
   outputDir?: string;
   registrationToken?: string;
   restartGateway?: () => Promise<void>;
+  restartGatewayAfterOwnedExit?: (
+    commit: () => Promise<void>,
+    whileOffline: () => Promise<void>,
+  ) => Promise<{ pid: number; exitCode: 0; signalCode: null }>;
   restartGatewayAfterStateMutation?: (
     mutateState: (context: { stateDir: string }) => Promise<void>,
     opts?: { timeoutMs?: number; waitAccountId?: string },

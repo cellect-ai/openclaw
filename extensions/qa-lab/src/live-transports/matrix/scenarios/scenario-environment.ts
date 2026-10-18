@@ -398,6 +398,13 @@ export function createMatrixQaScenarioEnvironment(params: MatrixQaScenarioEnviro
         await restart(async () => undefined);
         await waitGatewayAccountReady(params.accountId);
       },
+      restartGatewayAfterOwnedExit: async (commit, whileOffline) => {
+        if (!input.gateway.restartAfterOwnedExit)
+          throw new Error("Matrix graceful restart requires owned natural-exit support");
+        const exit = await input.gateway.restartAfterOwnedExit(commit, whileOffline);
+        await waitGatewayAccountReady(params.accountId);
+        return exit;
+      },
       restartGatewayAfterStateMutation: async (
         mutateState: (context: { stateDir: string }) => Promise<void>,
         opts?: { timeoutMs?: number; waitAccountId?: string },

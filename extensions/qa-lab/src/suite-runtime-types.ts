@@ -21,6 +21,7 @@ type QaRuntimeGatewayClient = Pick<
       | "restart"
       | "stop"
       | "restartAfterStateMutation"
+      | "restartAfterOwnedExit"
     >
   > & {
     cliCommand?: {

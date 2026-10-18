@@ -2,6 +2,14 @@
 export { MatrixClient } from "./src/matrix/sdk.js";
 export { SqliteBackedMatrixSyncStore } from "./src/matrix/client/file-sync-store.js";
 export {
+  readPersistedStoreFromStore,
+  openMatrixSyncCacheStoreOptions,
+} from "./src/matrix/client/sync-cache-state.js";
+export type {
+  MatrixSyncCacheRecord,
+  MatrixShutdownCheckpoint,
+} from "./src/matrix/client/sync-cache-state.js";
+export {
   openMatrixIdbSnapshotStoreOptions,
   openMatrixRecoveryKeyStoreOptions,
 } from "./src/matrix/crypto-state-store.js";

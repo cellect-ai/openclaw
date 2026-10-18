@@ -9,6 +9,7 @@ import {
   formatQaGatewayProcessBoundaryStartupFailure,
   monitorQaGatewayChildFailure,
   throwQaGatewayChildFailure,
+  waitForQaGatewayNaturalExit,
   type QaChildFailure,
 } from "./gateway-child-process.js";
 import {
@@ -320,6 +321,21 @@ async function startOwnedGatewayChild(
           stdoutLog.write(retryBuffer);
           await launchReady(false);
         }
+      });
+    },
+    restartAfterOwnedExit(commit: () => Promise<void>, whileOffline?: () => Promise<void>) {
+      return lifetime.run(async () => {
+        throwActiveChildFailure();
+        const predecessor = active;
+        await commit();
+        const exit = await waitForQaGatewayNaturalExit(predecessor.child, predecessor.closed);
+        if (active !== predecessor) throw new Error("Gateway process owner changed during handoff");
+        // Cleanup is allowed only after natural exit has already been proved;
+        // its ordinary SIGTERM/SIGKILL fallback cannot manufacture this result.
+        await stopAttempt();
+        await whileOffline?.();
+        await launchReady(false);
+        return exit;
       });
     },
     async call(

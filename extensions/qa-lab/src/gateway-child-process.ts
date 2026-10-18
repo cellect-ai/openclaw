@@ -5,6 +5,7 @@ import { StringDecoder } from "node:string_decoder";
 import { setTimeout as sleep } from "node:timers/promises";
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { sliceUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
+import { withTimeout } from "openclaw/plugin-sdk/time-runtime";
 import { QaSuiteInfraError } from "./errors.js";
 import { formatQaGatewayLogsForError, redactQaGatewayDebugText } from "./gateway-log-redaction.js";
 import {
@@ -219,6 +220,31 @@ function isQaGatewayChildProcessTreeAlive(
     return !hasQaGatewayChildExited(child);
   }
   return isQaPosixProcessGroupAlive(child.pid, inspectLinuxProcessGroupFn);
+}
+
+/** Observe the exact owned child; unlike cleanup, this never sends a signal. */
+export async function waitForQaGatewayNaturalExit(
+  child: Pick<ChildProcess, "pid" | "exitCode" | "signalCode">,
+  closed: Promise<void>,
+  options: { timeoutMs?: number; isProcessGroupAlive?: (pid: number) => boolean } = {},
+) {
+  const pid = child.pid;
+  if (!pid) throw new Error("Natural gateway exit requires a captured process identity");
+  if (process.platform === "win32" && !options.isProcessGroupAlive) {
+    throw new Error(
+      "Natural gateway exit proof is unsupported on Windows without a process-tree inspector",
+    );
+  }
+  await withTimeout(closed, options.timeoutMs ?? 360_000, {
+    createError: () =>
+      new Error("Owned gateway did not exit naturally before the shutdown deadline"),
+  });
+  if (child.pid !== pid || child.exitCode !== 0 || child.signalCode !== null) {
+    throw new Error("Owned gateway did not exit naturally with status zero");
+  }
+  const groupAlive = options.isProcessGroupAlive ?? isQaPosixProcessGroupAlive;
+  if (groupAlive(pid)) throw new Error("Owned gateway process group is still alive after exit");
+  return { pid, exitCode: 0 as const, signalCode: null };
 }
 
 function signalQaGatewayChildProcessTree(child: ChildProcess, signal: NodeJS.Signals) {

@@ -6,8 +6,10 @@ import type {
 } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateSyncKeyedStoreForTests,
+  createPluginStateKeyedStoreForTests,
   resetPluginStateStoreForTests,
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { loadMatrixQaE2eeRuntime } from "../substrate/e2ee-client.js";
 import { requestMatrixJson } from "../substrate/request.js";
 import type { MatrixQaCliRuntime } from "./scenario-runtime-e2ee-destructive-recovery.js";
@@ -24,7 +26,8 @@ function withMatrixQaStateStore<T>(
   }
 }
 
-async function findMatrixQaCliAccountRoot(params: {
+export async function findMatrixQaCliAccountRoot(params: {
+  accountId?: string;
   deviceId: string;
   runtime: Pick<MatrixQaCliRuntime, "stateDir">;
   userId: string;
@@ -51,13 +54,22 @@ async function findMatrixQaCliAccountRoot(params: {
     accountRoots.add(path.dirname(metadataPath));
   }
   for (const accountRoot of [...accountRoots].toSorted()) {
-    let metadata: { deviceId?: unknown; userId?: unknown } | null = null;
+    let metadata: { deviceId?: unknown; userId?: unknown; accountId?: unknown } | null = null;
     try {
       await access(path.join(accountRoot, "state", "openclaw.sqlite"));
-      metadata = withMatrixQaStateStore(
+      const store = createPluginStateKeyedStoreForTests<unknown>(
+        "matrix",
         storageMetadataRuntime.openMatrixStorageMetaStoreOptions(accountRoot),
-        (store) => storageMetadataRuntime.normalizeMatrixStorageMetadata(store.lookup("current")),
       );
+      try {
+        metadata = storageMetadataRuntime.normalizeMatrixStorageMetadata(
+          await store.lookup("current"),
+        );
+      } finally {
+        await closeOpenClawStateDatabaseByPathAsync(
+          path.join(accountRoot, "state", "openclaw.sqlite"),
+        );
+      }
     } catch {
       // Fall through to the legacy sidecar for pre-SQLite fixtures.
     }
@@ -73,7 +85,11 @@ async function findMatrixQaCliAccountRoot(params: {
         continue;
       }
     }
-    if (metadata.userId === params.userId && metadata.deviceId === params.deviceId) {
+    if (
+      metadata.userId === params.userId &&
+      metadata.deviceId === params.deviceId &&
+      (params.accountId === undefined || metadata.accountId === params.accountId)
+    ) {
       return accountRoot;
     }
   }
