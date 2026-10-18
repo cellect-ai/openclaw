@@ -375,7 +375,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   };
   // Share identity already proved by this owner, never a cached grant decision.
   // The normal tool hook still checks Fi's current grants before delegation.
-  const admittedVoiceTurn = (context: PluginHookToolContext) => {
+  const admittedVoiceTurn = (
+    context: Pick<
+      PluginHookToolContext,
+      "runId" | "agentId" | "sessionKey" | "requester" | "abortSignal"
+    >,
+  ) => {
     const turn = context.runId ? turns.get(context.runId) : undefined;
     return turn?.admitted &&
       turn.mode === "voice" &&
