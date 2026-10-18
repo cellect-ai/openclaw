@@ -268,8 +268,8 @@ describe("Talk client agent consult admission", () => {
     creating.release();
     const suspended = tryBeginGatewaySuspendAdmission(() => {})!;
     expect(suspended.drain()).toBe(true);
-    const started = deferred();
-    const finish = deferred();
+    const started = deferred<void>();
+    const finish = deferred<void>();
     mocks.runEmbeddedAgentCore.mockImplementationOnce(async () => {
       expect(isGatewaySubordinateWorkAdmissionClosed()).toBe(false);
       started.resolve();

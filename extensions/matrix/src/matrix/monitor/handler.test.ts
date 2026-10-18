@@ -1232,7 +1232,12 @@ describe("matrix monitor handler pairing account scope", () => {
   });
 
   it("does not cold-drop a previously retained ingress event after successor startup", async () => {
-    const { handler, dispatchInboundMessage } = createMatrixHandlerTestHarness({
+    const dispatchInboundMessage = vi.fn(async () => ({
+      queuedFinal: false,
+      counts: { final: 0, block: 0, tool: 0 },
+    }));
+    const { handler } = createMatrixHandlerTestHarness({
+      dispatchInboundMessage,
       isDirectMessage: true,
       startupMs: 1_000,
       startupGraceMs: 0,

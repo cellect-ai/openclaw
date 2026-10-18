@@ -81,7 +81,7 @@ const mocks = vi.hoisted(() => ({
     supportsToolCalls: false,
   } satisfies RealtimeVoiceProviderCapabilities,
   resolveProvider: vi.fn(),
-  closeProvider: vi.fn(async () => undefined),
+  closeProvider: vi.fn(async (): Promise<void> => undefined),
   runEmbeddedAgent: vi.fn(async (_params: RunEmbeddedAgentParams) => ({
     payloads: [{ text: "Synthetic consult answer" }],
     meta: { durationMs: 0 },

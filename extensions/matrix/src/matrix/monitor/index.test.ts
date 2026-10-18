@@ -1,4 +1,12 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { setImmediate } from "node:timers/promises";
+import {
+  createChannelIngressQueueForTests,
+  closeOpenClawStateDatabaseForTest,
+} from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { MatrixConfig, MatrixStreamingMode } from "../../types.js";
 import {
@@ -267,8 +275,22 @@ describe("monitorMatrixProvider", () => {
     }
   });
 
-  it("contains room-message handler rejections inside monitor task tracking", async () => {
+  it("contains room-message handler rejection and retains the durable event for retry", async () => {
     const abortController = new AbortController();
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rejected-ingress-"));
+    const queue = createChannelIngressQueueForTests<{ version: 1; rawEvent: string }>({
+      channelId: "matrix",
+      accountId: "default",
+      stateDir,
+    });
+    hoisted.ingressQueue = queue;
+    const released = createDeferred<void>();
+    const release = queue.release.bind(queue);
+    vi.spyOn(queue, "release").mockImplementation(async (...args) => {
+      const result = await release(...args);
+      released.resolve();
+      return result;
+    });
     const unhandled: unknown[] = [];
     const onUnhandled = (reason: unknown) => {
       unhandled.push(reason);
@@ -281,25 +303,39 @@ describe("monitorMatrixProvider", () => {
     );
 
     process.on("unhandledRejection", onUnhandled);
+    let monitorPromise: Promise<void> | undefined;
     try {
-      const monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+      monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
       await waitForCallOrderEntry("start-client");
 
       const onRoomMessage = registeredRoomMessageHandler();
 
-      await onRoomMessage("!room:example.org", { event_id: "$event" });
-      await Promise.resolve();
+      await onRoomMessage("!room:example.org", {
+        event_id: "$event",
+        sender: "@person:example.org",
+        type: "m.room.message",
+        origin_server_ts: Date.now(),
+        content: { body: "retry me", msgtype: "m.text" },
+      });
+      await released.promise;
 
       expect(unhandled).toHaveLength(0);
-      expect(mockCallArg(hoisted.logger.warn, 0, 0)).toBe("matrix background task failed");
-      const warningMetadata = mockCallArg(hoisted.logger.warn, 0, 1) as Record<string, unknown>;
-      expect(warningMetadata.task).toBe("test room message");
-      expect(warningMetadata.error).toBe("Error: room handler exploded");
+      const pending = await queue.listPending();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        attempts: 1,
+        lastError: expect.stringContaining("room handler exploded"),
+      });
 
       abortController.abort();
       await monitorPromise;
     } finally {
+      abortController.abort();
+      await monitorPromise;
       process.off("unhandledRejection", onUnhandled);
+      hoisted.ingressQueue = null;
+      closeOpenClawStateDatabaseForTest();
+      await fs.rm(stateDir, { recursive: true, force: true });
     }
   });
 
