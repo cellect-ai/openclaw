@@ -685,6 +685,173 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
+  describe("a verified Matrix-bound voice consult", () => {
+    const voice = () => ({
+      ...thread().start,
+      channelContext: {
+        sender: { id: "@admin:matrix.example" },
+        chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+      },
+    });
+    beforeEach(() => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+    });
+
+    it("mints for the admitted speaker without inventing a text dispatch, then admits later text", async () => {
+      const turn = plugin();
+      expect(await turn.start(voice())).toBeUndefined();
+      expect((await turn.exec(thread().exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(mintBody()).toMatchObject({ requesterMatrixUserId: "@admin:matrix.example" });
+      await turn.settle();
+      const text = thread("@admin:matrix.example", "$later");
+      await turn.arrive(text.arrive);
+      await turn.start({ ...text.start, runId: "text-after-voice" });
+      expect(
+        (await turn.exec({ ...text.exec, runId: "text-after-voice" }))?.params.env
+          ?.FI_DELEGATED_USER_TOKEN,
+      ).toBe(TOKEN);
+    });
+
+    it.each([
+      [
+        "sender",
+        {
+          requester: {
+            channel: "matrix",
+            senderId: "@other:matrix.example",
+            accountId: "adminprod",
+          },
+        },
+      ],
+      [
+        "account",
+        {
+          requester: {
+            channel: "matrix",
+            senderId: "@admin:matrix.example",
+            accountId: "admindev",
+          },
+        },
+      ],
+      ["run", { runId: "different-run" }],
+      ["session", { sessionKey: THREAD + ":other" }],
+      ["aborted call", { abortSignal: AbortSignal.abort() }],
+    ])("does not reuse voice proof for another %s", async (_name, overrides) => {
+      const turn = plugin();
+      await turn.start(voice());
+      const result = await turn.exec({ ...thread().exec, ...overrides });
+      expect(JSON.stringify(result)).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it.each([
+      [
+        "text event mixed with voice",
+        { chat: { id: "!room:matrix.example", eventId: "$event", talkThreadRootEventId: "$root" } },
+      ],
+      ["another thread", { chat: { id: "!room:matrix.example", talkThreadRootEventId: "$other" } }],
+      [
+        "another speaker",
+        {
+          sender: { id: "@other:matrix.example" },
+          chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+        },
+      ],
+    ])("does not mint with %s", async (_name, channelContext) => {
+      const turn = plugin();
+      await turn.start({ ...voice(), channelContext });
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it("requires current Fi grants even after successful voice admission", async () => {
+      const turn = plugin();
+      await turn.start(voice());
+      fetchMock.mockResolvedValue(new Response("Forbidden", { status: 403 }));
+      expect((await turn.exec(thread().exec))?.block).toBe(true);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it("does not delegate from pending or denied initial voice authorization", async () => {
+      let answer!: (response: Response) => void;
+      const pending = new Promise<Response>((resolve) => (answer = resolve));
+      fetchMock.mockImplementationOnce(() => pending);
+      const turn = plugin();
+      const start = turn.start(voice());
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(0);
+      answer(new Response("Forbidden", { status: 403 }));
+      expect(await start).toMatchObject({ handled: true });
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it("drops a pending mint when another speaker starts a voice run", async () => {
+      const turn = plugin();
+      await turn.start(voice());
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === MINT_URL) {
+          await turn.start({
+            ...voice(),
+            runId: "other-voice",
+            senderId: "@other:matrix.example",
+            channelContext: {
+              sender: { id: "@other:matrix.example" },
+              chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+            },
+          });
+        }
+        return url === AUTHORIZE_URL
+          ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }))
+          : minted();
+      });
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(1);
+    });
+
+    it("drops the voice proof if its run settles while the token is being minted", async () => {
+      const turn = plugin();
+      await turn.start(voice());
+      fetchMock.mockImplementation(async (url: string) => {
+        if (url === MINT_URL) await turn.settle();
+        return url === AUTHORIZE_URL
+          ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }))
+          : minted();
+      });
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(1);
+    });
+
+    it("does not consume queued text proof", async () => {
+      const turn = plugin();
+      const text = thread("@admin:matrix.example", "$queued");
+      await turn.arrive(text.arrive);
+      await turn.start(voice());
+      await turn.settle();
+      await turn.start({ ...text.start, runId: "queued-text" });
+      expect(
+        (await turn.exec({ ...text.exec, runId: "queued-text" }))?.params.env
+          ?.FI_DELEGATED_USER_TOKEN,
+      ).toBe(TOKEN);
+    });
+
+    it("invalidates voice after foreign steering", async () => {
+      const turn = plugin();
+      const text = thread("@admin:matrix.example", "$queued");
+      await turn.arrive(text.arrive);
+      await turn.start(voice());
+      await turn.inject({ ...thread("@other:matrix.example").arrive });
+      expect(JSON.stringify(await turn.exec(thread().exec))).not.toContain(TOKEN);
+      await turn.settle();
+      // Fresh text must stand on its own event, not on the prior voice identity.
+      await turn.arrive(text.arrive);
+      await turn.start({ ...text.start, runId: "text-2" });
+      expect(JSON.stringify(await turn.exec({ ...text.exec, runId: "text-2" }))).not.toContain(
+        TOKEN,
+      );
+    });
+  });
+
   it("admits a Matrix direct message only for the run of that very event", async () => {
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
     const turn = plugin();
@@ -1267,7 +1434,7 @@ describe("the admin agent's delegated user token", () => {
       await refused(turn.exec({ runId: "run-2" }));
     });
 
-    it("a session a Talk consult has run on, from then on", async () => {
+    it("an unproved Talk consult does not poison later verified text", async () => {
       const turn = plugin();
       await turn.arrive();
       await turn.start();
@@ -1277,12 +1444,23 @@ describe("the admin agent's delegated user token", () => {
         senderId: "@admin:matrix.example",
         channelContext: { chat: { id: "!r:matrix.example", talkThreadRootEventId: "$root" } },
       });
-      await refused(turn.exec());
+      await refused(
+        turn.exec({
+          runId: "consult",
+          requester: {
+            channel: "matrix",
+            senderId: "@admin:matrix.example",
+            accountId: "adminprod",
+          },
+        }),
+      );
       await turn.settle();
       await turn.settle("consult");
       await turn.arrive();
       await turn.start({ runId: "run-2" });
-      await refused(turn.exec({ runId: "run-2" }));
+      expect((await turn.exec({ runId: "run-2" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
+        TOKEN,
+      );
     });
 
     it("a tool call whose requester, session or run is not the admitted turn's", async () => {

@@ -11,6 +11,7 @@ type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 // sessions the Matrix channel's own reply guard supports and authorizes.
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 type Turn = {
+  admitted: boolean;
   agentId: string;
   accountId: string;
   roomId: string;
@@ -263,6 +264,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const turn: Turn = {
+        admitted: false,
         agentId: context.agentId,
         accountId: context.accountId,
         roomId,
@@ -305,6 +307,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         turns.delete(runId);
         return failure === SILENT ? { handled: true } : { handled: true, reply: { text: failure } };
       }
+      turn.admitted = true;
       return undefined;
     },
     { priority: 10_000 },
@@ -347,6 +350,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (turns.get(runId) !== turn || context.abortSignal?.aborted) {
         return { block: true, blockReason: UNAVAILABLE };
       }
+      turn.admitted = !failure;
       logEntitlements({
         phase: "tool",
         roomId: turn.roomId,
@@ -369,5 +373,23 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         : undefined;
     });
   };
-  return beforeToolCall;
+  // Share identity already proved by this owner, never a cached grant decision.
+  // The normal tool hook still checks Fi's current grants before delegation.
+  const admittedVoiceTurn = (context: PluginHookToolContext) => {
+    const turn = context.runId ? turns.get(context.runId) : undefined;
+    return turn?.admitted &&
+      turn.mode === "voice" &&
+      sessionThreadId(turn.sessionKey) === turn.threadRootEventId &&
+      !context.abortSignal?.aborted &&
+      turn.agentId === context.agentId &&
+      turn.sessionKey === context.sessionKey &&
+      context.requester?.channel === "matrix" &&
+      turn.senderId === context.requester.senderId &&
+      turn.accountId === context.requester.accountId
+      ? turn
+      : undefined;
+  };
+  return { beforeToolCall, admittedVoiceTurn };
 }
+
+export type MatrixEntitlements = ReturnType<typeof registerMatrixEntitlements>;

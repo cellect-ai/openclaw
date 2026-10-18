@@ -9,6 +9,7 @@ import {
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
+import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import { ON_BEHALF_OF_TOOLS, onBehalfOfRequester } from "./on-behalf-of.js";
 
 /**
@@ -96,7 +97,11 @@ function remember<V>(tracked: Map<string, V>, key: string, value: V): void {
     tracked.delete(oldest);
   }
 }
-type Run = { sessionKey: string; sender?: string };
+type Run = {
+  sessionKey: string;
+  sender?: string;
+  voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
+};
 type Inbound = {
   channel?: string;
   senderId?: string;
@@ -189,20 +194,21 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * to that person until the token expires: what the command printed or left
  * behind is still there for the agent's next tool call.
  *
- * Voice is not observable here: a Talk consult is dispatched by the Gateway
- * without these hooks. A session is refused from the first consult this
- * process sees on it; a binding that has not yet produced a consult is
- * invisible to a plugin.
+ * Matrix-bound voice consults use the Matrix entitlement owner's admitted
+ * speaker/run identity, not synthetic message arrivals or a session-wide flag.
+ * Accepted consults may outlive their audio relay; the host retains their run
+ * authority and checks it again at tool execution, including after awaited hooks.
  */
-export function registerAdminDelegation(api: OpenClawPluginApi) {
+export function registerAdminDelegation(
+  api: OpenClawPluginApi,
+  admittedVoiceTurn: MatrixEntitlements["admittedVoiceTurn"] = () => undefined,
+) {
   const arrivals = new Map<string, Arrivals>();
   const runs = new Map<string, Run>();
-  const voiced = new Set<string>();
   const custody = new Map<string, Custody>();
   const reset = () => {
     arrivals.clear();
     runs.clear();
-    voiced.clear();
   };
   /**
    * What this runtime's configuration says about the admin agent's commands,
@@ -293,7 +299,6 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       } else if (sessionKey) {
         const key = sessionKey.toLowerCase();
         arrivals.delete(key);
-        voiced.delete(key);
         for (const [id, run] of runs) {
           if (run.sessionKey === key) {
             runs.delete(id);
@@ -313,9 +318,6 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       if (!isAdminAgent(config, context.agentId) || !sessionKey || !runId || runs.has(runId)) {
         return undefined;
       }
-      if (context.channelContext?.chat?.talkThreadRootEventId !== undefined) {
-        voiced.add(sessionKey);
-      }
       // Remembered whether admitted or not, so a second attempt of the same
       // run does not take up what arrived for the next one.
       const run: Run = { sessionKey };
@@ -323,6 +325,33 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       // Only a run that carries a message takes up what arrived; a heartbeat
       // or inter-session run in between must not clear a queued message.
       if (context.trigger !== "user" || !context.senderId) {
+        return undefined;
+      }
+      if (context.channelContext?.chat?.talkThreadRootEventId !== undefined) {
+        const voice = admittedVoiceTurn({
+          agentId: context.agentId,
+          runId,
+          sessionKey: context.sessionKey,
+          requester: {
+            channel: context.channel,
+            senderId: context.senderId,
+            accountId: context.accountId,
+          },
+        });
+        if (voice && context.channelContext.sender?.isBot !== true) {
+          const requester = onBehalfOfRequester({ channel: "matrix", senderId: voice.senderId });
+          const sender = requester && JSON.stringify(requester);
+          if (sender) {
+            // A new speaker invalidates other people's in-flight command proof.
+            // Do not consume queued text arrivals: their event proves their own run.
+            for (const active of runs.values()) {
+              if (active.sessionKey === sessionKey && active.sender !== sender)
+                delete active.sender;
+            }
+            run.sender = sender;
+            run.voice = voice;
+          }
+        }
         return undefined;
       }
       const arrived = arrivals.get(sessionKey);
@@ -361,8 +390,7 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
         arrived.senders.has(sender) &&
         startedByArrival &&
         // Another agent's account is a proven sender but not a person.
-        origin?.sender?.isBot !== true &&
-        !voiced.has(sessionKey)
+        origin?.sender?.isBot !== true
       ) {
         run.sender = sender;
       }
@@ -497,13 +525,17 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
       return undefined;
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
-    if (voiced.has(sessionKey)) {
-      return undefined;
-    }
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     const requester = onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
-    if (!run || !requester || !sender || run.sessionKey !== sessionKey || run.sender !== sender) {
+    if (
+      !run ||
+      !requester ||
+      !sender ||
+      run.sessionKey !== sessionKey ||
+      run.sender !== sender ||
+      (run.voice && admittedVoiceTurn(ctx) !== run.voice)
+    ) {
       return undefined;
     }
     let body: Record<string, string>;
@@ -544,7 +576,7 @@ export function registerAdminDelegation(api: OpenClawPluginApi) {
           ctx.abortSignal?.aborted ||
           runs.get(ctx.runId ?? "") !== run ||
           run.sender !== sender ||
-          voiced.has(run.sessionKey)
+          (run.voice && admittedVoiceTurn(ctx) !== run.voice)
         ) {
           return undefined;
         }

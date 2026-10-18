@@ -529,7 +529,7 @@ export default definePluginEntry({
       return content === event.content ? undefined : { content };
     });
     const matrixEntitlements = registerMatrixEntitlements(api);
-    const adminDelegation = registerAdminDelegation(api);
+    const adminDelegation = registerAdminDelegation(api, matrixEntitlements.admittedVoiceTurn);
     const projectionConnection = () => {
       const config = configFromRuntime(api);
       return {
@@ -637,7 +637,7 @@ export default definePluginEntry({
               )
             : { params: withOnBehalfOfEnv(event.params, assertion) };
         };
-        const authorized = matrixEntitlements(ctx);
+        const authorized = matrixEntitlements.beforeToolCall(ctx);
         return authorized instanceof Promise
           ? authorized.then((denied) => denied ?? authorizeAndAttribute())
           : (authorized ?? authorizeAndAttribute());
