@@ -9,6 +9,17 @@ import { isMatrixVerificationRoomMessage } from "./verification-utils.js";
 
 type ReplayClaimHandle = import("openclaw/plugin-sdk/persistent-dedupe").ChannelReplayClaimHandle;
 
+export function isMatrixPreStartupEvent(params: {
+  eventTs?: number;
+  eventAge?: number;
+  startupMs: number;
+  startupGraceMs: number;
+}): boolean {
+  return typeof params.eventTs === "number"
+    ? params.eventTs < params.startupMs - params.startupGraceMs
+    : typeof params.eventAge === "number" && params.eventAge > params.startupGraceMs;
+}
+
 type MatrixIngressPrefixConfig = {
   client: { getUserId: () => Promise<string> };
   senderId: string;
@@ -55,14 +66,11 @@ export async function readMatrixIngressPrefix(config: MatrixIngressPrefixConfig)
   if (senderId === selfUserId) {
     return undefined;
   }
-  if (dropPreStartupMessages) {
-    if (typeof eventTs === "number" && eventTs < startupMs - startupGraceMs) {
-      return undefined;
-    }
-    if (typeof eventTs !== "number" && typeof eventAge === "number" && eventAge > startupGraceMs) {
-      return undefined;
-    }
-  }
+  if (
+    dropPreStartupMessages &&
+    isMatrixPreStartupEvent({ eventTs, eventAge, startupMs, startupGraceMs })
+  )
+    return undefined;
 
   const content = event.content as RoomMessageEventContent;
 

@@ -24,11 +24,16 @@ describe("gateway suspension protocol", () => {
     const params = { suspensionId: "held-lease", target };
     expect(validateGatewaySuspendHandoffParams(params)).toBe(true);
     expect(validateGatewaySuspendHandoffParams({ ...params, commit: true })).toBe(true);
+    expect(
+      validateGatewaySuspendHandoffParams({ ...params, commit: true, requireIdle: true }),
+    ).toBe(true);
     for (const rejected of [
       { ...params, target: undefined },
       { ...params, force: true },
       { ...params, waitMs: 0 },
       { ...params, commit: false },
+      { ...params, requireIdle: false },
+      { ...params, requireIdle: "true" },
       { ...params, commit: "true" },
       { ...params, target: { ...target, processInstanceId: " " } },
       { ...params, target: { ...target, pid: 0 } },
@@ -43,6 +48,13 @@ describe("gateway suspension protocol", () => {
     );
     expect(
       Value.Check(GatewaySuspendHandoffResultSchema, { ...receipt, status: "committed" }),
+    ).toBe(true);
+    expect(
+      Value.Check(GatewaySuspendHandoffResultSchema, {
+        ...receipt,
+        status: "busy",
+        reason: "active-work",
+      }),
     ).toBe(true);
     expect(
       Value.Check(GatewaySuspendHandoffResultSchema, { ...receipt, status: "scheduled" }),

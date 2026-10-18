@@ -11,8 +11,10 @@ import {
 import { withGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-context.js";
 import {
   isGatewaySubordinateWorkAdmissionClosed,
+  getActiveGatewayRootWorkCount,
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
+  tryBeginGatewaySuspendAdmission,
 } from "../../process/gateway-work-admission.js";
 import {
   authorizeClientVoiceConfirmation,
@@ -52,6 +54,7 @@ import {
   resolveTalkAgentConsultAuthority,
   type TalkAgentConsultAuthority,
 } from "./client-gateway-control.js";
+import { registerTalkVoiceSession } from "./voice-selection.js";
 
 function createConsultRunner(
   overrides: Partial<Parameters<typeof createTalkClientAgentConsultRunner>[0]> = {},
@@ -240,6 +243,56 @@ describe("Talk client agent consult admission", () => {
       }),
     );
     expect(mocks.close).toHaveBeenCalledOnce();
+  });
+
+  it("admits a fresh consult on a retained call during suspension and lets it finish after audio detaches", async () => {
+    const creating = tryBeginGatewayRootWorkAdmission("talk-call-fixture")!;
+    let runner!: ReturnType<typeof createRunner>;
+    let close!: () => void;
+    await creating.run(async () => {
+      runner = createRunner();
+      close = registerTalkVoiceSession({
+        voiceSessionId: "voice-session",
+        connId: "voice-fixture",
+        sessionTarget: {
+          agentId: "researcher",
+          sessionKey: "main",
+          canonicalKey: "agent:researcher:talk",
+          storePath: "/tmp/sessions",
+        },
+        selection: { provider: "fixture", voices: [], canChange: false },
+        launch: { provider: "fixture" },
+        providerReady: true,
+      });
+    });
+    creating.release();
+    const suspended = tryBeginGatewaySuspendAdmission(() => {})!;
+    expect(suspended.drain()).toBe(true);
+    const started = deferred();
+    const finish = deferred();
+    mocks.runEmbeddedAgentCore.mockImplementationOnce(async () => {
+      expect(isGatewaySubordinateWorkAdmissionClosed()).toBe(false);
+      started.resolve();
+      await finish.promise;
+      return { payloads: [] };
+    });
+    const consult = runner.runPrompt({ prompt: "A new question after drain started" });
+    try {
+      await started.promise;
+      close();
+      expect(getActiveGatewayRootWorkCount()).toBeGreaterThan(0);
+      finish.resolve();
+      await expect(consult).resolves.toEqual({ text: "done" });
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+      await expect(runner.runPrompt({ prompt: "Stale callback" })).rejects.toThrow(
+        /continuation is no longer active/,
+      );
+    } finally {
+      close();
+      finish.resolve();
+      await consult.catch(() => undefined);
+      suspended.release();
+    }
   });
 
   it("preserves full agent authority for administrator consults", async () => {

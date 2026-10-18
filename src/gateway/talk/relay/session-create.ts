@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { resolveExpiresAtMsFromDurationMs } from "@openclaw/normalization-core/number-coercion";
+import { retainGatewayRootWorkAdmissionContinuationScope } from "../../../process/gateway-work-admission.js";
 import { REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME } from "../../../talk/agent-consult-tool.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
 import { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
@@ -702,6 +703,7 @@ export function createTalkRealtimeRelaySession(
     void closeRelaySession(active, "error");
   };
   const relay: RelaySession = {
+    cleanupAdmission: retainGatewayRootWorkAdmissionContinuationScope() ?? undefined,
     getToolAuthorityOverlay: consultRunner.getToolAuthorityOverlay,
     id: relaySessionId,
     connId: params.connId,

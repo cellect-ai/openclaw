@@ -238,12 +238,14 @@ export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
   }
   session.voiceTranscriptQueue.seal();
   if (!ensureRelayVoiceSession(session)) {
-    session.voiceSessionClose = Promise.resolve();
+    session.voiceSessionClose = Promise.reject(
+      new Error("Realtime relay final voice record could not be created"),
+    );
     return session.voiceSessionClose;
   }
   const { agentId, sessionKey } = session.sessionTarget;
   session.voiceSessionClose = session.voiceTranscriptQueue
-    .flush()
+    .flush({ requireSuccess: true })
     .then(async () => {
       const config = session.voiceConfig ?? session.context.getRuntimeConfig();
       await closeRelayVoiceSessionRecord({
@@ -255,10 +257,17 @@ export function closeRelayVoiceSession(session: RelaySession): Promise<void> {
     })
     .catch((error: unknown) => {
       logRelayVoiceFailure(session, "realtime relay voice session close failed", error);
+      throw error;
     });
   drainingRelaySessions.add(session);
-  void session.voiceSessionClose.finally(() => {
+  const releaseDraining = () => {
     drainingRelaySessions.delete(session);
+  };
+  // A failed final prefix remains owned for diagnosis; completion is not success.
+  void session.voiceSessionClose.then(releaseDraining, () => {
+    if (!session.cleanupAdmission) {
+      releaseDraining();
+    }
   });
   return session.voiceSessionClose;
 }

@@ -13,3 +13,9 @@ export {
 export { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
 export { observeChannelIngressQueueWrite } from "../channels/message/ingress-drain.test-helpers.js";
 export { withRegisteredChannelIngress } from "./test-helpers/registered-channel-ingress.js";
+export {
+  prepareGatewaySuspend as prepareGatewaySuspendForTest,
+  resumeGatewaySuspend as resumeGatewaySuspendForTest,
+  resetGatewaySuspendCoordinatorForLifecycleRestart as resetGatewaySuspendForTest,
+} from "../infra/gateway-suspend-coordinator.js";
+export { resetGatewayWorkAdmission as resetGatewayWorkAdmissionForTest } from "../process/gateway-work-admission.js";

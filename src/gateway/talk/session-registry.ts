@@ -4,6 +4,10 @@
  */
 import { isPromiseLike } from "@openclaw/normalization-core/promise-like";
 import { formatErrorMessage as formatError } from "../../infra/errors.js";
+import {
+  retainGatewayRootWorkAdmissionContinuationScope,
+  type GatewayRootWorkAdmissionContinuationScope,
+} from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import type { PreparedTalkSessionTarget } from "./session-target.types.js";
@@ -25,6 +29,7 @@ type UnifiedTalkSessionRecord =
       kind: "transcription-relay";
       connId: string;
       transcriptionSessionId: string;
+      admission?: GatewayRootWorkAdmissionContinuationScope;
     }
   | {
       kind: "managed-room";
@@ -173,6 +178,16 @@ export function rememberUnifiedTalkSession(
   sessionId: string,
   session: UnifiedTalkSessionRecord,
 ): void {
+  if (session.kind === "transcription-relay") {
+    const previous = unifiedTalkSessions.get(sessionId);
+    if (previous?.kind === "transcription-relay") {
+      previous.admission?.release();
+    }
+    session = {
+      ...session,
+      admission: retainGatewayRootWorkAdmissionContinuationScope() ?? undefined,
+    };
+  }
   unifiedTalkSessions.set(sessionId, session);
 }
 
@@ -202,7 +217,33 @@ export function resolveUnifiedTalkSessionTarget(sessionId: string, connId: strin
 }
 
 export function forgetUnifiedTalkSession(sessionId: string): void {
+  const session = unifiedTalkSessions.get(sessionId);
+  if (session?.kind === "transcription-relay") {
+    session.admission?.release();
+  }
   unifiedTalkSessions.delete(sessionId);
+}
+
+/** Transcription retains its creating owner through provider-final drain, not just stop RPC. */
+export function runTalkTranscriptionSessionContinuation<T>(params: {
+  sessionId: string;
+  connId: string;
+  run: () => Promise<T>;
+}): Promise<T> | null {
+  const session = unifiedTalkSessions.get(params.sessionId);
+  if (
+    session?.kind !== "transcription-relay" ||
+    session.connId !== params.connId ||
+    !session.admission
+  ) {
+    return null;
+  }
+  return session.admission.run(async () => {
+    if (unifiedTalkSessions.get(params.sessionId) !== session) {
+      throw new Error("Transcription call is no longer active");
+    }
+    return await params.run();
+  });
 }
 
 export function requireUnifiedTalkSessionConn(

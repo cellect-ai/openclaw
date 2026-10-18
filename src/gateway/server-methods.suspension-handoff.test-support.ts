@@ -184,6 +184,151 @@ export function registerSuspensionHandoffLifecycleTests() {
 }
 
 export function registerSuspensionHandoffAuthorizationTests() {
+  it("binds initial/reclaimed preparation and lifecycle status to the exact resident without system.info admission", async () => {
+    const cron = {
+      pauseScheduling: vi.fn(),
+      resumeScheduling: vi.fn(),
+      getSuspensionBlockerCount: () => 0,
+    };
+    const context = {
+      cron,
+      logGateway: { warn: vi.fn() },
+      chatAbortControllers: new Map(),
+      chatQueuedTurns: new Map(),
+    } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"];
+    const rpc = async (method: keyof typeof suspendHandlers, requestParams: unknown) => {
+      const result = dispatch({
+        method,
+        requestParams,
+        scope: "operator.admin",
+        core: true,
+        handler: suspendHandlers[method]!,
+        context,
+      });
+      await result.request;
+      return result.respond;
+    };
+    const target = { pid: process.pid, processInstanceId: getGatewayProcessInstanceId() };
+    const wrong = await rpc("gateway.suspend.prepare", {
+      requestId: "bound-reclaim",
+      drain: true,
+      target: { ...target, processInstanceId: "old-resident" },
+    });
+    expect(wrong).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ code: "UNAVAILABLE" }),
+    );
+    expect(cron.pauseScheduling).not.toHaveBeenCalled();
+    const prepared = await rpc("gateway.suspend.prepare", {
+      requestId: "bound-reclaim",
+      drain: true,
+      target,
+    });
+    const lease = prepared.mock.calls[0]?.[1] as { suspensionId: string };
+    expect(lease.suspensionId).toBeTruthy();
+    expect(
+      await rpc("gateway.suspend.prepare", { requestId: "bound-reclaim", drain: true, target }),
+    ).toHaveBeenCalledWith(true, expect.objectContaining({ suspensionId: lease.suspensionId }));
+    const status = await rpc("gateway.suspend.status", {
+      suspensionId: lease.suspensionId,
+      includeLifecycle: true,
+    });
+    expect(status).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ ...target, status: "ready" }),
+    );
+    expect(validateGatewaySuspendStatusResult(status.mock.calls[0]?.[1])).toBe(true);
+    await rpc("gateway.suspend.resume", { suspensionId: lease.suspensionId });
+    expect(
+      await rpc("gateway.suspend.status", {
+        suspensionId: lease.suspensionId,
+        includeLifecycle: true,
+      }),
+    ).toHaveBeenCalledWith(true, { status: "running", ...target });
+    expect(
+      await rpc("gateway.suspend.status", { suspensionId: lease.suspensionId }),
+    ).toHaveBeenCalledWith(true, { status: "running" });
+  });
+  it.each(["idle-required", "explicit-interrupt", "forced-final-write"] as const)(
+    "enforces the atomic handoff policy through registered RPC after READY: %s",
+    async (mode) => {
+      let lateWork = 0;
+      let finalWrites = 0;
+      const stop = vi.fn();
+      const host = createGatewayHostLifecycle({
+        processOwner: { ownsProcessLifecycle: true, supervisor: "external" },
+        isCurrent: () => true,
+        isServing: () => true,
+        acceptStop: () => {},
+        commitExternalStop: () => {
+          const consumed = consumeGatewaySuspendHandoff(host.capability.externalRestart);
+          if (!consumed.ok || !consumed.value) {
+            throw new Error("Missing handoff");
+          }
+          stop();
+          markGatewayRestartDraining("stop (SIGTERM)");
+        },
+      });
+      const lease = prepareGatewaySuspend({
+        requestId: "atomic-release",
+        drain: true,
+        pauseScheduling: () => {},
+        resumeScheduling: () => {},
+        inspect: { getRootRequests: () => lateWork, getTerminalPersistence: () => finalWrites },
+      });
+      if (lease.status !== "ready") {
+        throw new Error("Expected READY");
+      }
+      lateWork = 1;
+      if (mode === "forced-final-write") {
+        finalWrites = 1;
+      }
+      try {
+        const result = dispatch({
+          method: "gateway.suspend.handoff",
+          scope: "operator.admin",
+          core: true,
+          handler: suspendHandlers["gateway.suspend.handoff"]!,
+          requestParams: {
+            suspensionId: lease.suspensionId,
+            commit: true,
+            ...(mode === "idle-required" ? { requireIdle: true } : {}),
+            target: { pid: process.pid, processInstanceId: getGatewayProcessInstanceId() },
+          },
+          context: {
+            hostLifecycle: host.capability,
+            logGateway: { warn: vi.fn() },
+          } as unknown as Parameters<typeof handleGatewayRequest>[0]["context"],
+        });
+        await result.request;
+        if (mode === "explicit-interrupt") {
+          expect(result.respond).toHaveBeenCalledWith(
+            true,
+            expect.objectContaining({ status: "committed" }),
+          );
+          expect(stop).toHaveBeenCalledOnce();
+        } else {
+          if (mode === "idle-required") {
+            expect(result.respond).toHaveBeenCalledWith(
+              true,
+              expect.objectContaining({ status: "busy", reason: "active-work" }),
+            );
+          } else {
+            expect(result.respond).toHaveBeenCalledWith(
+              false,
+              undefined,
+              expect.objectContaining({ code: "UNAVAILABLE" }),
+            );
+          }
+          expect(stop).not.toHaveBeenCalled();
+          expect(resumeGatewaySuspend(lease.suspensionId)).toMatchObject({ ok: true });
+        }
+      } finally {
+        await host.retire();
+      }
+    },
+  );
   it.each([
     "armed",
     "committed",

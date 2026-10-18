@@ -13,8 +13,10 @@ import {
 import { createPluginRuntime } from "../../plugins/runtime/index.js";
 import {
   GatewayDrainingError,
+  captureGatewayRootWorkAdmissionContinuationScope,
+  isGatewayRestartDraining,
   runOutsideGatewayRootWorkAdmission,
-  runWithGatewayIndependentRootWorkAdmission,
+  runWithGatewayIndependentRootWorkContinuation,
   tryBeginGatewayRootWorkAdmission,
 } from "../../process/gateway-work-admission.js";
 import {
@@ -121,7 +123,7 @@ function createTalkClientAgentRuntime(params: {
       // already-released root lease, which makes healthy subordinate work look as
       // though the gateway is draining. Re-enter process admission for each
       // delayed consult while retaining the normal restart/suspension fence.
-      return await runWithGatewayIndependentRootWorkAdmission(
+      return await runWithGatewayIndependentRootWorkContinuation(
         async () =>
           await execution.runEmbeddedAgent({
             ...runParams,
@@ -216,6 +218,9 @@ export function createTalkClientAgentConsultRunner(params: {
   registerRun?: (params: { runId: string }) => void;
   isRunCurrent?: (runId: string) => boolean;
 }) {
+  // The call registry retains this exact creating root until audio closes.
+  // Each admitted consult then receives its own root and can outlive that call.
+  const callAdmission = captureGatewayRootWorkAdmissionContinuationScope();
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
   const authority = params.authority ?? resolveTalkAgentConsultAuthority(undefined);
   let agentRuntime: ReturnType<typeof createPluginRuntime>["agent"] | undefined;
@@ -312,15 +317,28 @@ export function createTalkClientAgentConsultRunner(params: {
           })
         : getAgentRuntime();
     const talkConfig = normalizeTalkSection(params.config.talk);
-    // A voice turn outlives offer setup and must drain under its own root,
-    // while new turns still respect suspension and restart admission.
-    const admission = runOutsideGatewayRootWorkAdmission(tryBeginGatewayRootWorkAdmission);
-    if (!admission) {
+    if (isGatewayRestartDraining()) {
       throw new GatewayDrainingError();
     }
+    // A voice turn outlives offer setup and must drain under its own root,
+    // while new turns still respect suspension and restart admission.
+    const admission = callAdmission
+      ? null
+      : runOutsideGatewayRootWorkAdmission(tryBeginGatewayRootWorkAdmission);
+    if (!callAdmission && !admission) {
+      throw new GatewayDrainingError();
+    }
+    const runAdmitted = {
+      run: <T>(run: () => Promise<T>): Promise<T> =>
+        callAdmission
+          ? callAdmission.run(() =>
+              runWithGatewayIndependentRootWorkContinuation(run, "talk-consult"),
+            )
+          : admission!.run(run),
+    };
     let confirmationObservation: ReturnType<typeof observeClientVoiceConfirmationRun> | undefined;
     let yielded = false;
-    return await admission
+    return await runAdmitted
       .run(() =>
         consultRealtimeVoiceAgent({
           cfg: params.config,
@@ -455,7 +473,7 @@ export function createTalkClientAgentConsultRunner(params: {
         if (!yielded) {
           confirmationObservation?.release();
         }
-        admission.release();
+        admission?.release();
       });
   };
   const isOwnerCurrent = (owner: PromptOwner, sessionId?: string): boolean =>

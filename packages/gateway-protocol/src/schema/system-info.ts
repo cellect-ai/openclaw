@@ -40,6 +40,16 @@ export const SystemInfoResultSchema = closedObject({
   pid: Type.Integer(),
   /** Process-start identity for invalidating work that cannot survive a Gateway restart. */
   processInstanceId: Type.Optional(Type.String({ minLength: 1 })),
+  /** Resident lifecycle support; absence means unknown, not an unsafe fallback. */
+  lifecycle: Type.Optional(
+    closedObject({
+      idleRequiredHandoff: Type.Literal(true),
+      boundSuspension: Type.Literal(true),
+      voiceCallDrain: Type.Literal(true),
+      shutdownTimeoutMs: Type.Integer({ minimum: 1 }),
+      serviceStopTimeoutMs: Type.Integer({ minimum: 1 }),
+    }),
+  ),
   uptimeMs: Type.Integer(),
   cpuCount: Type.Integer(),
   cpuModel: Type.Optional(Type.String()),

@@ -49,8 +49,10 @@ import { registerMatrixAutoJoin } from "./auto-join.js";
 import { resolveMatrixMonitorConfig } from "./config.js";
 import { createDirectRoomTracker } from "./direct.js";
 import { registerMatrixMonitorEvents } from "./events.js";
+import { isMatrixPreStartupEvent } from "./handler-ingress-prefix.js";
 import { createMatrixRoomMessageHandler } from "./handler.js";
 import { createMatrixInboundEventDeduper } from "./inbound-dedupe.js";
+import { createMatrixIngressMonitor } from "./ingress.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
@@ -213,6 +215,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   let disposeAutoJoin = () => {};
   let disposeMonitorEvents = () => {};
   let syncLifecycle: ReturnType<typeof createMatrixMonitorSyncLifecycle> | null = null;
+  let ingress: ReturnType<typeof createMatrixIngressMonitor> | undefined;
+  let ingressAdmissionError: Error | undefined;
   let monitorSetupClosed = false;
   const cleanup = (mode: "persist" | "stop" = "persist"): Promise<void> => {
     if (cleanupPromise) {
@@ -301,7 +305,11 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       client?.off("sync.state", onSyncState);
       syncLifecycle?.dispose();
     },
-    waitForTasks: monitorTaskRunner.waitForIdle,
+    waitForTasks: async () => {
+      await monitorTaskRunner.waitForIdle();
+      await ingress?.stop();
+      if (ingressAdmissionError) throw ingressAdmissionError;
+    },
     cleanup: () => threadBindingManager?.stop(),
   };
 
@@ -315,6 +323,11 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       role: "monitor",
     });
     client = clientLease.client;
+    statusController.noteSyncCheckpoint(client.getSyncCheckpointStatus());
+    client.setSyncPersistenceBarrier(async () => {
+      await monitorTaskRunner.waitForIdle();
+      if (ingressAdmissionError) throw ingressAdmissionError;
+    });
     monitorLifecycleSignal = opts.abortSignal
       ? AbortSignal.any([opts.abortSignal, clientLease.abortSignal])
       : clientLease.abortSignal;
@@ -443,6 +456,14 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       `matrix: thread bindings ready account=${threadBindingManager.accountId} idleMs=${threadBindingIdleTimeoutMs} maxAgeMs=${threadBindingMaxAgeMs}`,
     );
 
+    const monitorIngress = createMatrixIngressMonitor({
+      accountId: auth.accountId,
+      dispatch: handleRoomMessage,
+      onError: (error) => runtime.error?.(`matrix ingress drain failed: ${String(error)}`),
+    });
+    ingress = monitorIngress;
+    monitorIngress.start();
+
     disposeMonitorEvents = registerMatrixMonitorEvents({
       cfg,
       client,
@@ -471,7 +492,28 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       startupGraceMs,
       getHealthySyncSinceMs: () => healthySyncSinceMs,
       formatNativeDependencyHint: core.system.formatNativeDependencyHint,
-      onRoomMessage: handleRoomMessage,
+      onRoomMessage: async (roomId, event) => {
+        // Apply cold-start history policy at first intake, never again to a
+        // previously retained event replayed by a successor process.
+        if (
+          dropPreStartupMessages &&
+          isMatrixPreStartupEvent({
+            eventTs: event.origin_server_ts,
+            eventAge: event.unsigned?.age,
+            startupMs,
+            startupGraceMs,
+          })
+        )
+          return;
+        try {
+          await monitorIngress.receive({ roomId, event });
+        } catch (error) {
+          // A failed append poisons this generation's cursor. Retirement must
+          // discard it rather than certify a token beyond an unretained event.
+          ingressAdmissionError ??= error instanceof Error ? error : new Error(String(error));
+          throw error;
+        }
+      },
       runDetachedTask: monitorTaskRunner.runDetachedTask,
     });
 

@@ -59,6 +59,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       suspensionId: params.suspensionId.trim(),
       owner,
       commit: params.commit,
+      requireIdle: params.requireIdle,
     });
     if (!result.ok) {
       respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, result.error));
@@ -69,6 +70,18 @@ export const suspendHandlers: GatewayRequestHandlers = {
   "gateway.suspend.prepare": async ({ respond, params, context }) => {
     if (!validateGatewaySuspendPrepareParams(params)) {
       respond(false, undefined, invalidParams("gateway.suspend.prepare"));
+      return;
+    }
+    if (
+      params.target &&
+      (params.target.pid !== process.pid ||
+        params.target.processInstanceId !== getGatewayProcessInstanceId())
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "gateway process changed after preflight"),
+      );
       return;
     }
     const requestId = params.requestId.trim();
@@ -122,7 +135,16 @@ export const suspendHandlers: GatewayRequestHandlers = {
       respond(false, undefined, schedulerRecoveryError(result.retryAfterMs));
       return;
     }
-    respond(true, result);
+    respond(
+      true,
+      params.includeLifecycle === true
+        ? {
+            ...result,
+            pid: process.pid,
+            processInstanceId: getGatewayProcessInstanceId(),
+          }
+        : result,
+    );
   },
   "gateway.suspend.resume": async ({ respond, params }) => {
     if (!validateGatewaySuspendResumeParams(params)) {

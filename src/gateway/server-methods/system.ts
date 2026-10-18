@@ -27,6 +27,10 @@ import { resolveAdvertisedLanHostCore } from "../../infra/advertised-lan-host.js
 import { loadOrCreateProcessDeviceIdentityAsync } from "../../infra/device-identity-async.js";
 import { publicKeyRawBase64UrlFromPem } from "../../infra/device-identity.js";
 import { tryReadDiskSpace } from "../../infra/disk-space.js";
+import {
+  GATEWAY_SHUTDOWN_TIMEOUT_MS,
+  GATEWAY_SERVICE_STOP_TIMEOUT_MS,
+} from "../../infra/gateway-shutdown-budget.js";
 import { getLastHeartbeatEvent } from "../../infra/heartbeat-events.js";
 import { requestHeartbeat, setHeartbeatsEnabled } from "../../infra/heartbeat-wake.js";
 import { getMachineDisplayName } from "../../infra/machine-name.js";
@@ -156,6 +160,13 @@ async function collectSystemInfo(context: GatewayRequestContext): Promise<System
     nodeVersion: process.version,
     pid: process.pid,
     processInstanceId: getGatewayProcessInstanceId(),
+    lifecycle: {
+      idleRequiredHandoff: true,
+      boundSuspension: true,
+      voiceCallDrain: true,
+      shutdownTimeoutMs: GATEWAY_SHUTDOWN_TIMEOUT_MS,
+      serviceStopTimeoutMs: GATEWAY_SERVICE_STOP_TIMEOUT_MS,
+    },
     uptimeMs: Math.round(process.uptime() * 1000),
     cpuCount,
     ...(cpuModel ? { cpuModel } : {}),

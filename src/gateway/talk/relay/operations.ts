@@ -1,5 +1,6 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { formatErrorMessage as formatError } from "../../../infra/errors.js";
+import { beginLifecycleWriteCustody } from "../../../infra/lifecycle-write-custody.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { buildRealtimeVoiceAgentCancelProviderResult } from "../../../talk/agent-run-control-shared.js";
 import {
@@ -144,6 +145,12 @@ export function closeRelaySession(
   }
   const closing: NonNullable<RelaySession["closing"]> = { reason };
   session.closing = closing;
+  // Provider shutdown can emit final speech before transcript flush. Keep this
+  // complete closing prefix owned even when socket cleanup has no admitted root.
+  const releaseFinalPersistence = session.cleanupAdmission
+    ? beginLifecycleWriteCustody("talk-final-persistence")
+    : undefined;
+  let providerCloseFailed = false;
   const disposition =
     options?.disposition ??
     (session.speakerMxid ||
@@ -166,15 +173,30 @@ export function closeRelaySession(
   const finish = () => {
     const voiceClose = closeRelayVoiceSession(session);
     void voiceClose.then(
-      () => drainingRelaySessions.delete(session),
-      () => drainingRelaySessions.delete(session),
+      () => {
+        drainingRelaySessions.delete(session);
+        // A failed provider close remains uncertain, even if record close succeeded.
+        if (!providerCloseFailed) {
+          releaseFinalPersistence?.();
+          session.cleanupAdmission?.release();
+        }
+      },
+      () => {
+        if (!session.cleanupAdmission) {
+          drainingRelaySessions.delete(session);
+        }
+      },
     );
     broadcastRelaySessionClosed(session, closing.reason, options?.eventReason);
     return voiceClose;
   };
   const failClose = async (error: unknown): Promise<never> => {
+    providerCloseFailed = true;
     closing.reason = "error";
     await finish();
+    if (session.cleanupAdmission) {
+      drainingRelaySessions.add(session);
+    }
     throw error;
   };
   let providerClose: void | Promise<void> = undefined;

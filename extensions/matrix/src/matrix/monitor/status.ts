@@ -142,5 +142,9 @@ export function createMatrixMonitorStatusController(params: {
       }
       emit();
     },
+    noteSyncCheckpoint(checkpoint: unknown) {
+      status.application = { matrixCheckpoint: checkpoint };
+      emit();
+    },
   };
 }

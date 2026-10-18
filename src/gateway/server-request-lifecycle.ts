@@ -18,6 +18,8 @@ import {
 import { AsyncWorkScope, getAsyncWorkSignal } from "../shared/async-work-scope.js";
 import { canSelectQuestion } from "./question-access.js";
 import type { GatewayRequestContext, GatewayRequestOptions } from "./server-methods/types.js";
+import { runTalkTranscriptionSessionContinuation } from "./talk/session-registry.js";
+import { runTalkVoiceSessionContinuation } from "./talk/voice-selection.js";
 
 const SUSPEND_CONTROL_METHODS = new Set([
   "gateway.suspend.prepare",
@@ -47,6 +49,47 @@ export function runGatewayPendingWorkContinuation<T>(params: {
     return null;
   }
   const request = params.requestParams;
+  // Authentication and method scope checks still run in the ordinary router.
+  // Only operations on an already-owned call may enter its retained root.
+  if (
+    !isGatewayRestartDraining() &&
+    params.client?.connect.role === "operator" &&
+    params.client.connId &&
+    [
+      "talk.session.appendAudio",
+      "talk.session.cancelOutput",
+      "talk.session.acknowledgeMark",
+      "talk.session.submitToolResult",
+      "talk.session.steer",
+      "talk.session.close",
+      "talk.client.toolCall",
+      "talk.client.transcript",
+      "talk.client.close",
+      "talk.client.steer",
+      "talk.voice.get",
+      "talk.voice.set",
+      "talk.voice.complete",
+    ].includes(params.method)
+  ) {
+    const voiceSessionId = request.sessionId ?? request.relaySessionId ?? request.voiceSessionId;
+    const voiceContinuation = runTalkVoiceSessionContinuation({
+      connId: params.client.connId,
+      ...(typeof voiceSessionId === "string" ? { voiceSessionId } : {}),
+      ...(typeof request.sessionKey === "string" ? { sessionKey: request.sessionKey } : {}),
+      run: params.run,
+    });
+    if (voiceContinuation) {
+      return voiceContinuation;
+    }
+    return typeof request.sessionId === "string" &&
+      ["talk.session.appendAudio", "talk.session.close"].includes(params.method)
+      ? runTalkTranscriptionSessionContinuation({
+          sessionId: request.sessionId,
+          connId: params.client.connId,
+          run: params.run,
+        })
+      : null;
+  }
   if (params.client?.connect.role === "node") {
     if (
       params.admission !== "continuation" &&

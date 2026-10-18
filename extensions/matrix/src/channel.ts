@@ -514,6 +514,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
           configured: account.configured,
           extra: {
             baseUrl: account.homeserver,
+            application: runtime?.application,
             lastProbeAt: runtime?.lastProbeAt ?? null,
             lastInboundAt: runtime?.lastInboundAt ?? null,
             lastOutboundAt: runtime?.lastOutboundAt ?? null,

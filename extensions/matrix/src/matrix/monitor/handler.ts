@@ -38,6 +38,7 @@ import { createMatrixReplyDispatcher } from "./handler-reply-dispatcher.js";
 import { loadMatrixSendModule } from "./handler-runtime.js";
 import { createMatrixHandlerState } from "./handler-state.js";
 import type { MatrixHandlerRuntimeConfig, MatrixMonitorHandlerParams } from "./handler-types.js";
+import type { MatrixIngressLifecycle } from "./ingress.js";
 import { createRoomHistoryTracker } from "./room-history.js";
 import type { MatrixRawEvent } from "./types.js";
 import { EventType } from "./types.js";
@@ -111,7 +112,11 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
   const roomIngressQueue = new KeyedAsyncQueue();
   const sharedDmContextNoticeRooms = new Set<string>();
 
-  return async (roomId: string, event: MatrixRawEvent) => {
+  return async (
+    roomId: string,
+    event: MatrixRawEvent,
+    ingressLifecycle?: MatrixIngressLifecycle,
+  ) => {
     const eventId = typeof event.event_id === "string" ? event.event_id.trim() : "";
     let inboundReplayClaim:
       | import("openclaw/plugin-sdk/persistent-dedupe").ChannelReplayClaimHandle
@@ -164,7 +169,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         readMatrixIngressPrefix({
           client,
           senderId,
-          dropPreStartupMessages,
+          dropPreStartupMessages: !ingressLifecycle && dropPreStartupMessages,
           eventTs: eventTs ?? undefined,
           eventAge: eventAge ?? undefined,
           startupMs,
@@ -386,7 +391,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       const replayClaimAtDispatch = inboundReplayClaim;
       // Active-run deferral outlives this handler. Transfer the exact replay claim to the
       // reply lane so adoption commits it and abandonment reopens it for Matrix replay.
-      const turnAdoptionLifecycle = replayClaimAtDispatch
+      const replayLifecycle = replayClaimAtDispatch
         ? {
             admission: "exclusive" as const,
             onDeferred: () => {
@@ -410,6 +415,24 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
             },
           }
         : undefined;
+      const turnAdoptionLifecycle = ingressLifecycle
+        ? {
+            ...ingressLifecycle,
+            onDeferred: () => {
+              if (replayLifecycle?.onDeferred() === false) return false;
+              ingressLifecycle.onDeferred();
+              return undefined;
+            },
+            onAdopted: async () => {
+              await ingressLifecycle.onAdopted();
+              await replayLifecycle?.onAdopted();
+            },
+            onAbandoned: async () => {
+              replayLifecycle?.onAbandoned();
+              await ingressLifecycle.onAbandoned();
+            },
+          }
+        : replayLifecycle;
 
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",
@@ -614,6 +637,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         draftController.previewLifecycle.retainPreview();
       }
       runtime.error?.(`matrix handler failed: ${String(err)}`);
+      if (ingressLifecycle) throw err;
     } finally {
       // Stop the draft stream timer so partial drafts don't leak if the
       // model run throws or times out mid-stream.

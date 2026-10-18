@@ -139,6 +139,13 @@ describe("system.info", () => {
     expect(payload.processInstanceId).toBe(getGatewayProcessInstanceId());
     expect(payload.uptimeMs).toBeGreaterThanOrEqual(0);
     expect(payload.defaultAgentUtilityModel).toEqual({ status: "unavailable" });
+    expect(payload.lifecycle).toEqual({
+      idleRequiredHandoff: true,
+      boundSuspension: true,
+      voiceCallDrain: true,
+      shutdownTimeoutMs: 325_000,
+      serviceStopTimeoutMs: 330_000,
+    });
     expect(payload.eventLoop?.cpuCoreRatio).toBe(0.3);
     expect(payload.eventLoop?.cpuBreakdown).toEqual(eventLoop.cpuBreakdown);
     expect(payload.processMemory?.rssBytes).toBeGreaterThan(0);

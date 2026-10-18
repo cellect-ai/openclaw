@@ -8,6 +8,7 @@ import type {
   GatewaySuspendResumeResult as GatewaySuspendResumeWireResult,
   GatewaySuspendStatusResult as GatewaySuspendStatusWireResult,
 } from "../../packages/gateway-protocol/src/index.js";
+import { getGatewayProcessInstanceId } from "../gateway/process-instance.js";
 import {
   getGatewayRestartDrainSignal,
   getGatewaySuspendAdmissionPhase,
@@ -68,6 +69,7 @@ type HeldGatewaySuspension = GatewaySuspendCoordinatorEntryBase & {
   deadlineAtMs: number;
   inspect?: Partial<GatewayActiveWorkInspectors>;
   handoff?: GatewaySuspendHandoffOwner;
+  handoffRequiresIdle?: boolean;
   committedStopOwner?: GatewaySuspendHandoffOwner;
   shutdown?: { signal: AbortSignal; phase: "interrupting" | "exiting" };
   commitAdmission?: () => boolean;
@@ -423,7 +425,11 @@ export function prepareGatewaySuspend(params: {
   }
 }
 
-function handoffRefusal(held: HeldGatewaySuspension, owner: GatewaySuspendHandoffOwner) {
+function handoffRefusal(
+  held: HeldGatewaySuspension,
+  owner: GatewaySuspendHandoffOwner,
+  inspectPending = true,
+) {
   if (
     COORDINATOR_STATE.current !== held ||
     held.nowMs() >= held.expiresAtMs ||
@@ -437,7 +443,7 @@ function handoffRefusal(held: HeldGatewaySuspension, owner: GatewaySuspendHandof
   if (!held.inspect?.getTerminalPersistence) {
     return "gateway terminal persistence inspection is unavailable";
   }
-  if (held.inspect.getTerminalPersistence() > 0) {
+  if (inspectPending && held.inspect.getTerminalPersistence() > 0) {
     return "gateway terminal persistence is still pending";
   }
   return undefined;
@@ -448,6 +454,7 @@ export function armGatewaySuspendHandoff(params: {
   suspensionId: string;
   owner: GatewaySuspendHandoffOwner;
   commit?: true;
+  requireIdle?: true;
 }): Result<GatewaySuspendHandoffResult, string> {
   const committed = params.commit ? getRestartingSuspension() : undefined;
   if (
@@ -464,12 +471,27 @@ export function armGatewaySuspendHandoff(params: {
   if (held?.kind !== "held" || held.suspensionId !== params.suspensionId) {
     return resultError("gateway suspension id does not match");
   }
-  const refusal = handoffRefusal(held, params.owner);
+  const refusal = handoffRefusal(held, params.owner, !params.requireIdle);
   if (refusal) {
     return resultError(refusal);
   }
   if (held.handoff && held.handoff !== params.owner) {
     return resultError("gateway suspension already belongs to another host iteration");
+  }
+  if (params.requireIdle) {
+    const snapshot = createGatewayActiveWorkSnapshot(held.inspect, {
+      ignoreTerminalSessions: held.terminalPolicy === "terminate",
+    });
+    if (!snapshot.idle) {
+      return ok({
+        status: "busy",
+        suspensionId: held.suspensionId,
+        expiresAtMs: held.expiresAtMs,
+        reason: snapshot.writeCustody.some(({ count }) => count > 0)
+          ? "write-custody"
+          : "active-work",
+      });
+    }
   }
   if (params.commit) {
     if (!params.owner.commitStop) {
@@ -481,11 +503,15 @@ export function armGatewaySuspendHandoff(params: {
     if (snapshot.writeCustody.some(({ count }) => count > 0)) {
       return resultError("gateway write custody is still pending");
     }
+    if (params.requireIdle && !snapshot.idle) {
+      return resultError("gateway active work is still pending");
+    }
     const changed = handoffRefusal(held, params.owner);
     if (changed) {
       return resultError(changed);
     }
     held.handoff = params.owner;
+    held.handoffRequiresIdle = params.requireIdle === true;
     try {
       params.owner.commitStop();
     } catch {
@@ -510,6 +536,7 @@ export function armGatewaySuspendHandoff(params: {
     });
   }
   held.handoff = params.owner;
+  held.handoffRequiresIdle = params.requireIdle === true;
   return ok({ status: "armed", suspensionId: held.suspensionId, expiresAtMs: held.expiresAtMs });
 }
 
@@ -523,7 +550,18 @@ export function consumeGatewaySuspendHandoff(
   }
   held.handoff = undefined;
   const refusal = handoffRefusal(held, owner);
-  return refusal ? resultError(refusal) : ok(true);
+  if (refusal) {
+    return resultError(refusal);
+  }
+  if (
+    held.handoffRequiresIdle &&
+    !createGatewayActiveWorkSnapshot(held.inspect, {
+      ignoreTerminalSessions: held.terminalPolicy === "terminate",
+    }).idle
+  ) {
+    return resultError("gateway active work is still pending");
+  }
+  return ok(true);
 }
 
 export function disarmGatewaySuspendHandoff(owner: GatewaySuspendHandoffOwner): void {
@@ -537,6 +575,24 @@ function getRestartingSuspension(): HeldGatewaySuspension | undefined {
   const retired = COORDINATOR_STATE.retiredForLifecycleReset;
   return retired?.kind === "held" && retired.shutdown?.signal === getGatewayRestartDrainSignal()
     ? retired
+    : undefined;
+}
+
+/** Sanitized correlation from the exact committed predecessor, never a reversible lease. */
+export function getGatewaySuspendLifecycleIdentity():
+  | {
+      requestId: string;
+      suspensionId: string;
+      processInstanceId: string;
+    }
+  | undefined {
+  const held = getRestartingSuspension();
+  return held && held.committedStopOwner
+    ? {
+        requestId: held.requestId,
+        suspensionId: held.suspensionId,
+        processInstanceId: getGatewayProcessInstanceId(),
+      }
     : undefined;
 }
 

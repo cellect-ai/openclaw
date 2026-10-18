@@ -625,7 +625,11 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           events: result.events,
         });
       }
-      forgetUnifiedTalkSession(params.sessionId);
+      // Transcription retains its owner until the provider's final-frame window
+      // closes, rather than releasing deployment custody at the stop ACK.
+      if (session.kind !== "transcription-relay") {
+        forgetUnifiedTalkSession(params.sessionId);
+      }
       respondOk(respond);
     },
     talkSessionError,

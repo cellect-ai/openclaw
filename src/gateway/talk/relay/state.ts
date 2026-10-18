@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
+import type { GatewayRootWorkAdmissionContinuationScope } from "../../../process/gateway-work-admission.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
 import type { RealtimeVoiceAgentControlResult } from "../../../talk/agent-run-control.js";
 import type { createClientVoiceConfirmationReadiness } from "../../../talk/client-voice-confirmation-readiness.js";
@@ -422,6 +423,8 @@ export class TalkRealtimeRelayOutputOwnership {
 }
 
 export type RelaySession = {
+  /** Teardown custody is separate from live call/presentation authority. */
+  cleanupAdmission?: GatewayRootWorkAdmissionContinuationScope;
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",

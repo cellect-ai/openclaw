@@ -10,6 +10,7 @@ import {
 } from "matrix-js-sdk/lib/matrix.js";
 import { VerificationMethod } from "matrix-js-sdk/lib/types.js";
 import { captureChannelReadAuthority } from "openclaw/plugin-sdk/fetch-runtime";
+import { getGatewaySuspendLifecycleIdentity } from "openclaw/plugin-sdk/gateway-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
@@ -545,6 +546,14 @@ export abstract class MatrixClientBase {
     return this.syncStore?.hasSavedSyncFromCleanShutdown() === true;
   }
 
+  getSyncCheckpointStatus() {
+    return this.syncStore?.getCheckpointStatus() ?? null;
+  }
+
+  setSyncPersistenceBarrier(barrier: () => Promise<void>): void {
+    this.syncStore?.setPersistenceBarrier(barrier);
+  }
+
   protected async ensureStartedForCryptoControlPlane(): Promise<void> {
     if (this.started) {
       return;
@@ -621,7 +630,7 @@ export abstract class MatrixClientBase {
           strict: true,
           stateRuntime: this.stateRuntime,
         });
-        this.syncStore?.markCleanShutdown();
+        this.syncStore?.markCleanShutdown(getGatewaySuspendLifecycleIdentity());
         await this.syncStore?.flush();
       }
     } finally {

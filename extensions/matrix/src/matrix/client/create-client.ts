@@ -78,7 +78,12 @@ export async function createMatrixClient(params: {
     : undefined;
 
   const syncStore = storagePaths
-    ? await SqliteBackedMatrixSyncStore.create(storagePaths.rootDir)
+    ? await SqliteBackedMatrixSyncStore.create(storagePaths.rootDir, {
+        accountId: params.accountId?.trim() || "default",
+        homeserver,
+        userId,
+        deviceId: params.deviceId ?? null,
+      })
     : undefined;
 
   return new MatrixClient(homeserver, params.accessToken, {

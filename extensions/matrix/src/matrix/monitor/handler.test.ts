@@ -1230,6 +1230,32 @@ describe("matrix monitor handler pairing account scope", () => {
 
     expect(resolveAgentRoute).not.toHaveBeenCalled();
   });
+
+  it("does not cold-drop a previously retained ingress event after successor startup", async () => {
+    const { handler, dispatchInboundMessage } = createMatrixHandlerTestHarness({
+      isDirectMessage: true,
+      startupMs: 1_000,
+      startupGraceMs: 0,
+      dropPreStartupMessages: true,
+    });
+    await handler(
+      "!room:example.org",
+      createMatrixTextMessageEvent({
+        eventId: "$durable-before-restart",
+        body: "retained before restart",
+        originServerTs: 999,
+      }),
+      {
+        admission: "exclusive",
+        abortSignal: new AbortController().signal,
+        onAdopted: vi.fn(async () => {}),
+        onDeferred: vi.fn(),
+        onAdoptionFinalizing: vi.fn(),
+        onAbandoned: vi.fn(async () => {}),
+      },
+    );
+    expect(dispatchInboundMessage).toHaveBeenCalledOnce();
+  });
 });
 
 describe("matrix monitor handler live allowlist reload", () => {

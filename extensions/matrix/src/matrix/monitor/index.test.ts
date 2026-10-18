@@ -89,6 +89,7 @@ describe("monitorMatrixProvider", () => {
   }
 
   beforeEach(() => {
+    hoisted.ingressQueue = null;
     hoisted.callOrder.length = 0;
     hoisted.state.leaseAbortController = new AbortController();
     hoisted.state.monitorRetirement = null;

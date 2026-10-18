@@ -8,6 +8,7 @@ import {
 import { testing as embeddedRunTesting } from "../../../agents/embedded-agent-runner/runs.test-support.js";
 import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS } from "../../../agents/realtime-bootstrap-context.test-support.js";
 import { replyRunRegistry } from "../../../auto-reply/reply/reply-run-registry.js";
+import { createGatewayHostLifecycle } from "../../../cli/gateway-cli/host-lifecycle.js";
 import {
   listSessionEntriesReadOnly,
   loadSessionEntry,
@@ -17,9 +18,15 @@ import {
 } from "../../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { emitTrustedDiagnosticEvent } from "../../../infra/diagnostic-events.js";
+import {
+  prepareGatewaySuspend,
+  getGatewaySuspendStatus,
+  resetGatewaySuspendCoordinatorForLifecycleRestart,
+} from "../../../infra/gateway-suspend-coordinator.js";
 import { createEmptyPluginRegistry } from "../../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../../plugins/runtime.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
+import { resetGatewayWorkAdmission } from "../../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../../shared/deferred.js";
 import { ensureProfileForEmail } from "../../../state/user-profiles.js";
 import { controlRealtimeVoiceAgentRun } from "../../../talk/agent-run-control.js";
@@ -28,6 +35,7 @@ import {
   registerClientVoiceConsultRun,
   resolveClientVoiceRunBinding,
 } from "../../../talk/client-voice-session.js";
+import * as voiceSessionWrites from "../../../talk/client-voice-session.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
 import type {
   RealtimeVoiceAgentConsultRunner,
@@ -41,12 +49,14 @@ import {
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
 import { registerChatAbortController } from "../../chat-abort.js";
+import { getGatewayProcessInstanceId } from "../../process-instance.js";
 import { handleGatewayRequest } from "../../server-methods.js";
+import { suspendHandlers } from "../../server-methods/suspend.js";
 import type { GatewayRequestContext, GatewayRequestHandlers } from "../../server-methods/types.js";
 import { resolveSessionMutationAuthorization } from "../../session-sharing.js";
 import { sharingPolicyClient } from "../../session-sharing.test-utils.js";
 import { closeTalkClientGatewayControlSession } from "../client-gateway-control.js";
-import { drainingRelaySessions } from "../relay/state.js";
+import { drainingRelaySessions, relaySessions } from "../relay/state.js";
 import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
 import {
   cleanupTalkConnection,
@@ -58,6 +68,7 @@ import {
   completeTalkVoiceChange,
   requestTalkVoiceChange,
   resolveTalkVoiceSession,
+  unregisterTalkVoiceSession,
 } from "../voice-selection.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
@@ -70,6 +81,7 @@ const mocks = vi.hoisted(() => ({
     supportsToolCalls: false,
   } satisfies RealtimeVoiceProviderCapabilities,
   resolveProvider: vi.fn(),
+  closeProvider: vi.fn(async () => undefined),
   runEmbeddedAgent: vi.fn(async (_params: RunEmbeddedAgentParams) => ({
     payloads: [{ text: "Synthetic consult answer" }],
     meta: { durationMs: 0 },
@@ -127,6 +139,8 @@ async function dispatch(
 }
 
 beforeEach(async () => {
+  resetGatewaySuspendCoordinatorForLifecycleRestart();
+  resetGatewayWorkAdmission();
   state = await createOpenClawTestState({ label: "talk-native-consult" });
   config = {
     agents: {
@@ -144,6 +158,7 @@ beforeEach(async () => {
   browserVoiceSessionIds.clear();
   browserControl = undefined;
   vi.clearAllMocks();
+  mocks.closeProvider.mockReset().mockResolvedValue(undefined);
   mocks.runEmbeddedAgent.mockReset().mockResolvedValue({
     payloads: [{ text: "Synthetic consult answer" }],
     meta: { durationMs: 0 },
@@ -166,7 +181,7 @@ beforeEach(async () => {
         handleBargeIn: () => undefined,
         submitToolResult: submitProviderResult,
         acknowledgeMark: () => undefined,
-        close: () => undefined,
+        close: mocks.closeProvider,
         isConnected: () => true,
       });
       return {
@@ -186,13 +201,13 @@ beforeEach(async () => {
         handleBargeIn: () => undefined,
         submitToolResult: () => undefined,
         acknowledgeMark: () => undefined,
-        close: () => undefined,
+        close: mocks.closeProvider,
         isConnected: () => true,
       };
     },
   };
   Object.defineProperty(provider, Symbol.for("openclaw.internal.realtime-voice-provider.v1"), {
-    value: { isBrowserSessionConfigured: () => true, cancelBrowserSession: async () => undefined },
+    value: { isBrowserSessionConfigured: () => true, cancelBrowserSession: mocks.closeProvider },
   });
   mocks.resolveProvider.mockReturnValue({
     provider,
@@ -221,6 +236,8 @@ afterEach(async () => {
       ),
     );
   } finally {
+    resetGatewaySuspendCoordinatorForLifecycleRestart();
+    resetGatewayWorkAdmission();
     clientVoiceSessionTesting.reset();
     embeddedRunTesting.resetActiveEmbeddedRuns();
     setActivePluginRegistry(createEmptyPluginRegistry());
@@ -330,32 +347,46 @@ it("rejects retained relay mapping changes even when the physical store is uncha
   );
 });
 
-it("fences an opaque relay record replaced after authorization", async () => {
-  const { sessionId } = await createRelayCall();
-  const entered = createDeferredCore();
-  const release = createDeferredCore();
-  const pending = dispatch(
-    "talk.session.steer",
-    { sessionId, text: "status", mode: "status" },
-    {
-      "talk.session.steer": async (request) => {
-        entered.resolve();
-        await release.promise;
-        await talkSessionHandlers["talk.session.steer"]!(request);
+it.each([false, true])(
+  "fences an opaque relay record replaced after awaited authorization (draining=%s)",
+  async (draining) => {
+    const { sessionId } = await createRelayCall();
+    if (draining) {
+      expect(
+        prepareGatewaySuspend({
+          requestId: "stale-call-deploy",
+          drain: true,
+          pauseScheduling: () => {},
+          resumeScheduling: () => {},
+          inspect: { getTerminalPersistence: () => 0 },
+        }).status,
+      ).toBe("draining");
+    }
+    const entered = createDeferredCore();
+    const release = createDeferredCore();
+    const pending = dispatch(
+      "talk.session.steer",
+      { sessionId, text: "status", mode: "status" },
+      {
+        "talk.session.steer": async (request) => {
+          entered.resolve();
+          await release.promise;
+          await talkSessionHandlers["talk.session.steer"]!(request);
+        },
       },
-    },
-  );
-  await entered.promise;
-  rememberUnifiedTalkSession(sessionId, { ...getUnifiedTalkSession(sessionId) });
-  release.resolve();
-  expect(await pending).toHaveBeenCalledWith(
-    false,
-    undefined,
-    expect.objectContaining({
-      details: expect.objectContaining({ code: "SESSION_MUTATION_AUTHORIZATION_CHANGED" }),
-    }),
-  );
-});
+    );
+    await entered.promise;
+    rememberUnifiedTalkSession(sessionId, { ...getUnifiedTalkSession(sessionId) });
+    release.resolve();
+    expect(await pending).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({
+        details: expect.objectContaining({ code: "SESSION_MUTATION_AUTHORIZATION_CHANGED" }),
+      }),
+    );
+  },
+);
 
 function registerOwnedEmbeddedRun(runId: string, sessionId: string) {
   const registration = registerChatAbortController({
@@ -773,6 +804,204 @@ it("restores bounded relay history after the original voice provider finishes cl
 });
 
 describe.each(["browser", "relay"] as const)("native %s Talk consultation", (transport) => {
+  it.each(["provider", "transcript"] as const)(
+    "keeps rootless disconnect %s finalization in native drain custody after presentation ownership is retired",
+    async (blocked) => {
+      const browser = transport === "browser";
+      const created = await dispatch(browser ? "talk.client.create" : "talk.session.create", {
+        sessionKey: "main",
+        mode: "realtime",
+        transport: browser ? "webrtc" : "gateway-relay",
+        brain: "agent-consult",
+        ...(browser ? { capabilities: ["gateway-control-v1"] } : {}),
+      });
+      expect(created).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+      const call = created.mock.calls[0]?.[1] as { voiceSessionId: string; sessionId: string };
+      const closeStarted = createDeferredCore();
+      const finishClose = createDeferredCore();
+      const waitForFinalization = async () => {
+        closeStarted.resolve();
+        await finishClose.promise;
+      };
+      let restoreFlush = () => {};
+      if (blocked === "provider") {
+        mocks.closeProvider.mockImplementation(waitForFinalization);
+      } else if (browser) {
+        const flush = voiceSessionWrites.flushClientVoiceSessionWrites;
+        const spy = vi
+          .spyOn(voiceSessionWrites, "flushClientVoiceSessionWrites")
+          .mockImplementation(async (params) => {
+            await waitForFinalization();
+            await flush(params);
+          });
+        restoreFlush = () => {
+          spy.mockRestore();
+        };
+      } else {
+        const queue = relaySessions.get(call.sessionId)!.voiceTranscriptQueue;
+        const flush = queue.flush.bind(queue);
+        const spy = vi.spyOn(queue, "flush").mockImplementation(async (options) => {
+          await waitForFinalization();
+          await flush(options);
+        });
+        restoreFlush = () => {
+          spy.mockRestore();
+        };
+      }
+      // Socket cleanup can retire the presentation callback before the provider
+      // owner sees disconnect. The independent teardown reference must survive it.
+      unregisterTalkVoiceSession(call.voiceSessionId ?? call.sessionId, client.connId, "voice");
+      cleanupTalkConnection(client.connId, context.logGateway);
+      await closeStarted.promise;
+      const lease = prepareGatewaySuspend({
+        requestId: "disconnect-finalization",
+        drain: true,
+        pauseScheduling: () => {},
+        resumeScheduling: () => {},
+        inspect: { getTerminalPersistence: () => 0 },
+      });
+      if (lease.status !== "draining") {
+        throw new Error("Expected provider finalization to block deployment");
+      }
+      const stop = vi.fn();
+      const host = createGatewayHostLifecycle({
+        processOwner: { ownsProcessLifecycle: true, supervisor: "external" },
+        isCurrent: () => true,
+        isServing: () => true,
+        acceptStop: () => {},
+        commitExternalStop: stop,
+      });
+      context.hostLifecycle = host.capability;
+      const original = client;
+      client = { ...client, connect: { ...client.connect, scopes: ["operator.admin"] } };
+      try {
+        const request = {
+          suspensionId: lease.suspensionId,
+          commit: true,
+          requireIdle: true,
+          target: { pid: process.pid, processInstanceId: getGatewayProcessInstanceId() },
+        };
+        expect(
+          await dispatch("gateway.suspend.handoff", request, suspendHandlers),
+        ).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({ status: "busy", reason: "write-custody" }),
+        );
+        expect(
+          await dispatch(
+            "gateway.suspend.handoff",
+            { suspensionId: request.suspensionId, commit: true, target: request.target },
+            suspendHandlers,
+          ),
+        ).toHaveBeenCalledWith(false, undefined, expect.any(Object));
+        expect(stop).not.toHaveBeenCalled();
+        finishClose.resolve();
+        if (browser) {
+          await closeTalkClientGatewayControlSession({
+            voiceSessionId: call.voiceSessionId,
+            sessionKey: "main",
+            connId: client.connId,
+          });
+        } else {
+          await Promise.all(
+            [...drainingRelaySessions].map((session) => session.closing?.completion),
+          );
+        }
+        expect(getGatewaySuspendStatus(lease.suspensionId).status).toBe("ready");
+      } finally {
+        client = original;
+        finishClose.resolve();
+        restoreFlush();
+        await host.retire();
+        delete context.hostLifecycle;
+      }
+    },
+  );
+  it("keeps a fresh consult and registered same-call control working during drain without widening connection or scope authority", async () => {
+    const browser = transport === "browser";
+    const createMethod = browser ? "talk.client.create" : "talk.session.create";
+    const created = await dispatch(createMethod, {
+      sessionKey: "main",
+      mode: "realtime",
+      transport: browser ? "webrtc" : "gateway-relay",
+      brain: "agent-consult",
+      ...(browser ? { capabilities: ["gateway-control-v1"] } : {}),
+    });
+    expect(created).toHaveBeenCalledWith(true, expect.any(Object), undefined);
+    const call = created.mock.calls[0]?.[1] as { voiceSessionId: string; sessionId: string };
+    expect(
+      prepareGatewaySuspend({
+        requestId: "live-call-deploy",
+        drain: true,
+        pauseScheduling: () => {},
+        resumeScheduling: () => {},
+        inspect: { getTerminalPersistence: () => 0 },
+      }).status,
+    ).toBe("draining");
+    expect(
+      await dispatch(createMethod, {
+        sessionKey: "main",
+        mode: "realtime",
+        transport: browser ? "webrtc" : "gateway-relay",
+        brain: "agent-consult",
+      }),
+    ).toHaveBeenCalledWith(false, undefined, expect.objectContaining({ code: "UNAVAILABLE" }));
+    const entered = createDeferredCore();
+    const finish = createDeferredCore();
+    mocks.runEmbeddedAgent.mockImplementationOnce(async (params) => {
+      const handle = {
+        runId: params.runId,
+        queueMessage: async () => undefined,
+        isStreaming: () => true,
+        isCompacting: () => false,
+        abort: () => finish.resolve(),
+      };
+      setActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+      entered.resolve();
+      try {
+        await finish.promise;
+        return { payloads: [{ text: "Completed through drain" }], meta: { durationMs: 0 } };
+      } finally {
+        clearActiveEmbeddedRun(params.sessionId, handle, params.sessionKey);
+      }
+    });
+    const consult = callback!({ prompt: "A fresh request after draining began" });
+    const original = client;
+    try {
+      await entered.promise;
+      const method = browser ? "talk.client.steer" : "talk.session.steer";
+      const args = {
+        sessionKey: "main",
+        ...(browser ? {} : { sessionId: call.sessionId }),
+        text: "status",
+        mode: "status",
+      };
+      expect(await dispatch(method, args)).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ active: true }),
+        undefined,
+      );
+      client = { ...client, connId: "foreign-physical-connection" };
+      expect(await dispatch(method, args)).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ code: "UNAVAILABLE" }),
+      );
+      client = { ...original, connect: { ...original.connect, scopes: ["operator.read"] } };
+      expect(await dispatch(method, args)).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.any(Object),
+      );
+      client = original;
+      finish.resolve();
+      await expect(consult).resolves.toEqual({ text: "Completed through drain" });
+    } finally {
+      client = original;
+      finish.resolve();
+      await consult.catch(() => undefined);
+    }
+  });
   it.each([
     { name: "custom main", scope: "per-sender" as const, canonicalKey: "agent:voice:home" },
     { name: "global", scope: "global" as const, canonicalKey: "global" },

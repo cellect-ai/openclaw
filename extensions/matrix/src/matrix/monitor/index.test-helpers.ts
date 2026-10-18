@@ -1,3 +1,4 @@
+import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { vi } from "vitest";
 import type { MatrixRoomInfo } from "./room-info.js";
 
@@ -71,6 +72,8 @@ const hoisted = vi.hoisted(() => {
   const client = Object.assign(createEmitter(), {
     id: "matrix-client",
     hasPersistedSyncState: vi.fn(() => false),
+    getSyncCheckpointStatus: vi.fn(() => null),
+    setSyncPersistenceBarrier: vi.fn(),
     drainPendingDecryptions: vi.fn(async () => undefined),
   });
   const createMatrixRoomMessageHandler = vi.fn(() => vi.fn());
@@ -178,6 +181,7 @@ const hoisted = vi.hoisted(() => {
   >(async () => undefined);
   const setStatus = vi.fn();
   return {
+    ingressQueue: null as ChannelIngressQueue<{ version: 1; rawEvent: string }> | null,
     accountConfig,
     acquireSharedMatrixClient,
     acquireSharedMatrixClientImpl,
@@ -211,6 +215,32 @@ const hoisted = vi.hoisted(() => {
     setStatus,
     state,
     stopThreadBindingManager,
+  };
+});
+
+vi.mock("./ingress.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ingress.js")>();
+  return {
+    ...actual,
+    createMatrixIngressMonitor: (
+      options: Parameters<typeof actual.createMatrixIngressMonitor>[0],
+    ) => {
+      if (hoisted.ingressQueue)
+        return actual.createMatrixIngressMonitor({ ...options, queue: hoisted.ingressQueue });
+      return {
+        start() {},
+        stop: async () => {},
+        receive: async ({
+          roomId,
+          event,
+        }: {
+          roomId: string;
+          event: import("../sdk.js").MatrixRawEvent;
+        }) => {
+          await options.dispatch(roomId, event);
+        },
+      };
+    },
   };
 });
 

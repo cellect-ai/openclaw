@@ -78,6 +78,16 @@ describe("gateway suspend coordinator", () => {
         consume: () => consumeGatewaySuspendHandoff(owner),
         commit: () =>
           armGatewaySuspendHandoff({ suspensionId: "external-lease", owner, commit: true }),
+        commitIdle: () =>
+          armGatewaySuspendHandoff({
+            suspensionId: "external-lease",
+            owner,
+            commit: true,
+            requireIdle: true,
+          }),
+        addWork: () => {
+          work = 1;
+        },
         mutate: () => {
           mutations = 1;
         },
@@ -98,6 +108,36 @@ describe("gateway suspend coordinator", () => {
         },
       };
     };
+
+    it("rechecks all work at idle-required commitment after READY, while explicit interruption remains available", () => {
+      const fixture = setup(false);
+      expect(getGatewaySuspendStatus("external-lease").status).toBe("ready");
+      fixture.addWork();
+      expect(fixture.commitIdle()).toMatchObject({
+        ok: true,
+        value: { status: "busy", reason: "active-work" },
+      });
+      expect(fixture.commitStop).not.toHaveBeenCalled();
+      expect(fixture.commit().ok).toBe(true);
+      expect(fixture.commitStop).toHaveBeenCalledOnce();
+    });
+
+    it.each(["normal", "forced"])(
+      "never overrides final-write custody for %s commitment",
+      (mode) => {
+        const fixture = setup(false);
+        fixture.persist();
+        if (mode === "normal") {
+          expect(fixture.commitIdle()).toMatchObject({
+            ok: true,
+            value: { status: "busy", reason: "write-custody" },
+          });
+        } else {
+          expect(fixture.commit().ok).toBe(false);
+        }
+        expect(fixture.commitStop).not.toHaveBeenCalled();
+      },
+    );
 
     it.each([false, true])(
       "commits the host's one-way shutdown before acknowledging and preserves it after expiry (draining: %s)",

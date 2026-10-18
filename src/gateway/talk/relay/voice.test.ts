@@ -224,4 +224,25 @@ describe("realtime relay voice transcript persistence", () => {
     expect(voiceSessionMocks.closeRelayVoiceSessionRecord).toHaveBeenCalledOnce();
     expect(enqueueRelayVoiceTranscript(session, "user", "too late")).toBe(false);
   });
+
+  it("propagates failed accepted final writes instead of certifying a clean close", async () => {
+    const { session } = createRelaySession();
+    const failure = new Error("final append failed");
+    const admitted = session.voiceTranscriptQueue.enqueue(async () => {
+      throw failure;
+    });
+    if (!admitted.accepted) {
+      throw new Error("Expected final write acceptance");
+    }
+    await admitted.completion.catch(() => undefined);
+    await expect(closeRelayVoiceSession(session)).rejects.toBe(failure);
+    expect(voiceSessionMocks.closeRelayVoiceSessionRecord).not.toHaveBeenCalled();
+  });
+
+  it("does not turn failed final record persistence into success", async () => {
+    const { session } = createRelaySession();
+    const failure = new Error("record close failed");
+    voiceSessionMocks.closeRelayVoiceSessionRecord.mockRejectedValueOnce(failure);
+    await expect(closeRelayVoiceSession(session)).rejects.toBe(failure);
+  });
 });

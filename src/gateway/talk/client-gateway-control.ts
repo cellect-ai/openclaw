@@ -2,6 +2,8 @@ import { randomUUID } from "node:crypto";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
 import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import { formatErrorMessage as formatError, readErrorName } from "../../infra/errors.js";
+import { beginLifecycleWriteCustody } from "../../infra/lifecycle-write-custody.js";
+import { retainGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import {
   REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME,
   resolveRealtimeVoiceAgentConsultToolsAllow,
@@ -104,6 +106,7 @@ export function createTalkClientGatewayControlOwner(params: {
   let commands: GatewayControlCommands | undefined;
   let closeProvider: (() => Promise<void>) | undefined;
   let closing: Promise<void> | undefined;
+  let cleanupAdmission: ReturnType<typeof retainGatewayRootWorkAdmissionContinuationScope>;
   const lifetime = new AbortController();
   const { signal } = lifetime;
   let transcriptSequence = 0;
@@ -544,6 +547,9 @@ export function createTalkClientGatewayControlOwner(params: {
       if (closing) {
         return closing;
       }
+      const releaseFinalPersistence = cleanupAdmission
+        ? beginLifecycleWriteCustody("talk-final-persistence")
+        : undefined;
       const preserveRuns =
         options?.preserveRuns ??
         isTalkVoiceSessionReplacing(
@@ -593,9 +599,19 @@ export function createTalkClientGatewayControlOwner(params: {
             throw transcriptResult.reason;
           }
         })
-        .finally(() => {
-          pendingOwners.delete(owner);
-        });
+        .then(
+          () => {
+            releaseFinalPersistence?.();
+            cleanupAdmission?.release();
+            pendingOwners.delete(owner);
+          },
+          (error: unknown) => {
+            if (!cleanupAdmission) {
+              pendingOwners.delete(owner);
+            }
+            throw error;
+          },
+        );
       // preserveRuns keeps accepted work alive, not a retired transport's presentation authority.
       params.runAgentConsult.revokeRequesterFinal?.();
       lifetime.abort(new Error("Realtime voice session closed"));
@@ -606,6 +622,7 @@ export function createTalkClientGatewayControlOwner(params: {
   // Track creation before the provider resolves. Replacement activates only after
   // startup succeeds, so a failed new transport cannot evict the current one.
   owner.assertOpen();
+  cleanupAdmission = retainGatewayRootWorkAdmissionContinuationScope();
   pendingOwners.add(owner);
   registerTalkConnectionCleanup(params.connId, "browser-control", async () => {
     const pendingCloses: Promise<void>[] = [];
