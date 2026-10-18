@@ -18,7 +18,6 @@ import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/secur
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { prepareMatrixReplyPayload } from "../../outbound.js";
 import { isPollEventType } from "../poll-types.js";
-import type { LocationMessageEventContent } from "../sdk.js";
 import { normalizeMatrixUserId } from "./allowlist.js";
 import { resolveMatrixMonitorLiveUserAllowlist } from "./config.js";
 import { createMatrixEventContextResolver } from "./event-context.js";
@@ -132,10 +131,6 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
 
       const isPollEvent = isPollEventType(eventType);
       const isReactionEvent = eventType === EventType.Reaction;
-      const locationContent = event.content as LocationMessageEventContent;
-      const isLocationEvent =
-        eventType === EventType.Location ||
-        (eventType === EventType.RoomMessage && locationContent.msgtype === EventType.Location);
       if (!isMatrixApplicationEventType(eventType)) {
         return;
       }
