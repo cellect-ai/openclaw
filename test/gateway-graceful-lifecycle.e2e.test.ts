@@ -292,7 +292,7 @@ it.skipIf(!controllerPath || !adapterPath)(
           sessionKey: "agent:main:unrelated-new-call",
           provider: provider.id,
         }),
-      ).rejects.toThrow(/suspend/i);
+      ).rejects.toThrow("talk.client.create unavailable during gateway suspension");
       await expect(
         relayClient.request("talk.session.appendAudio", {
           sessionId: relay.sessionId,

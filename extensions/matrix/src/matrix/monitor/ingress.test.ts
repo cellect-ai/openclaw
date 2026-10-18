@@ -2,7 +2,10 @@ import "openclaw/plugin-sdk/compiled-subprocess-testing";
 import { EventEmitter } from "node:events";
 import path from "node:path";
 import { ClientEvent, MatrixEvent, createClient } from "matrix-js-sdk/lib/matrix.js";
-import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import {
+  createChannelIngressQueueForTests,
+  observeChannelIngressQueueWrite,
+} from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -97,13 +100,13 @@ it("does not retain SDK protocol receipts or block the following application mes
 
 it("retains a malformed supported message and rejects its dispatch rather than ignoring it", async () => {
   const queue = createQueue();
-  const rejected = createDeferred<unknown>();
+  const released = observeChannelIngressQueueWrite(queue, "release");
   const dispatch = vi.fn(async () => {});
   const monitor = createMatrixIngressMonitor({
     accountId: "sut",
     queue,
     dispatch,
-    onError: (error) => rejected.resolve(error),
+    onError: vi.fn(),
   });
   monitor.start();
   try {
@@ -119,7 +122,7 @@ it("retains a malformed supported message and rejects its dispatch rather than i
         ),
       }),
     ).toEqual({ kind: "durable" });
-    expect(await rejected.promise).toEqual(new Error("Invalid Matrix durable ingress event"));
+    expect(await released).toBe(true);
     await monitor.waitForIdle();
     expect(dispatch).not.toHaveBeenCalled();
     expect(await queue.listPending()).toEqual([
