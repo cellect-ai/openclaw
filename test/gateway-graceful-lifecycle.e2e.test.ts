@@ -342,31 +342,33 @@ it.skipIf(!controllerPath || !adapterPath)(
           provider.events.filter((event) => event === "consult-completed").length,
         ).toBeGreaterThan(consultsBefore);
       }, waitOptions);
-      await vi.waitFor(async () => {
-        const history = await client!.request("chat.history", {
-          sessionKey: browserKey,
-          limit: 10,
-        });
-        expect(JSON.stringify(history)).toContain("LIFECYCLE_CONSULT_COMPLETED");
-      }, waitOptions);
+      // Chat-backed Talk intentionally hides clean consult scaffolding/finals:
+      // speech owns visible history. Native exact-run completion remains authoritative.
+      await expect(
+        client.request("agent.wait", {
+          runId: browserConsult.runId,
+          timeoutMs: 30_000,
+        }),
+      ).resolves.toMatchObject({ runId: browserConsult.runId, status: "ok" });
+      expect(
+        await client.request("chat.history", { sessionKey: browserKey, limit: 10 }),
+      ).toMatchObject({ sessionInfo: { lastRunId: browserConsult.runId, status: "done" } });
 
       // A real accepted provider consult remains native work after audio disconnect.
       provider.hold();
       const modelBefore = provider.events.filter((event) => event === "model-start").length;
+      const heldModelMarker = `LIFECYCLE_CONSULT_COMPLETED_${modelBefore + 1}`;
       await relayClient.request("talk.session.appendAudio", {
         sessionId: relay.sessionId,
         audioBase64: Buffer.from([0, 0, 0, 0]).toString("base64"),
       });
       await vi.waitFor(
         () =>
-          expect(provider.events.filter((event) => event === "model-start").length).toBeGreaterThan(
-            modelBefore,
+          expect(provider.events.filter((event) => event === "model-start").length).toBe(
+            modelBefore + 1,
           ),
         waitOptions,
       );
-      const completionBefore = provider.events.filter(
-        (event) => event === "consult-completed",
-      ).length;
       const finalObservation = observations.length;
       const completedPromise = runController(120);
       void completedPromise.catch(() => undefined);
@@ -412,12 +414,10 @@ it.skipIf(!controllerPath || !adapterPath)(
         expect(status.activeCount).toBeGreaterThan(0);
         expect(status.writeCustody ?? []).toEqual([]);
       }, waitOptions);
+      expect(provider.consultResults).not.toContain(heldModelMarker);
       provider.releaseModels();
       await vi.waitFor(
-        () =>
-          expect(
-            provider.events.filter((event) => event === "consult-completed").length,
-          ).toBeGreaterThan(completionBefore),
+        () => expect(provider.consultResults).toContain(heldModelMarker),
         waitOptions,
       );
       expect(provider.events).not.toContain("consult-failed");

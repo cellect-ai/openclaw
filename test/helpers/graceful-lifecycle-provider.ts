@@ -11,6 +11,7 @@ export async function createGracefulLifecycleProvider() {
   const root = await mkdtemp(path.join(tmpdir(), "openclaw-lifecycle-provider-"));
   const pluginDir = path.join(root, "plugin");
   const events: string[] = [];
+  const consultResults: string[] = [];
   let models = 0;
   let releaseModel = () => {};
   let releaseClose = () => {};
@@ -34,7 +35,16 @@ export async function createGracefulLifecycleProvider() {
         events.push("model-response");
         return;
       }
-      const event = request.url?.slice(1) ?? "unknown";
+      let event = request.url?.slice(1) ?? "unknown";
+      if (event.startsWith("consult-completed/")) {
+        const marker = event.slice("consult-completed/".length);
+        if (/^LIFECYCLE_CONSULT_COMPLETED_[1-9]\d*$/.test(marker)) {
+          consultResults.push(marker);
+          event = "consult-completed";
+        } else {
+          event = "consult-failed";
+        }
+      }
       events.push(event);
       if (event === "provider-close") {
         await closeGate;
@@ -107,7 +117,11 @@ export async function createGracefulLifecycleProvider() {
           void notify('audio').catch(() => {});
           if (!request.runAgentConsult) return;
           void request.runAgentConsult({ prompt: 'Complete the isolated lifecycle consult' }).then(
-            () => notify('consult-completed'), () => notify('consult-failed')
+            (result) => {
+              const text = typeof result?.text === 'string' ? result.text.trim() : '';
+              return /^LIFECYCLE_CONSULT_COMPLETED_[1-9]\\d*$/.test(text)
+                ? notify('consult-completed/' + text) : notify('consult-failed');
+            }, () => notify('consult-failed')
           ).catch(() => {});
         },
         setMediaTimestamp() {}, submitToolResult() {}, acknowledgeMark() {},
@@ -189,6 +203,7 @@ export async function createGracefulLifecycleProvider() {
       id,
       config,
       events,
+      consultResults,
       hold() {
         modelGate = new Promise<void>((resolve) => {
           releaseModel = resolve;
