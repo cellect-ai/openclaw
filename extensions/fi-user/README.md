@@ -4,6 +4,20 @@ Requester-bound Fi, Gmail, Drive, data-room and e-sign tools for the Fi user
 agent, the Matrix admission gate, admin-action approvals, and requester
 attribution for the admin agent's shell work.
 
+## Generated files stay in the conversation
+
+`fi_user_deliver_file` registers validated, requester/session-bound outputs and
+delivers them to the originating Slack channel or thread. An existing DM stays
+in that DM. `via=dm` is reserved for an explicit requester instruction; missing
+source routing never falls back to a new DM. Existing Fi documents use an
+authenticated link outside DMs, preserving their access checks.
+
+Delivery receipts identify their destination. Recovery checks the matching bot
+attachment and bytes in that destination, including later thread reply pages.
+Reconciling an old DM from a collaborative thread is recovery only; completion
+still requires delivery to the requested destination. Uncertain sends stay
+blocked until reconciled, and retain the registered file for recovery.
+
 ## The admin agent's delegated user token
 
 For a shell command of this runtime's admin agent (`adminAgentId`, default

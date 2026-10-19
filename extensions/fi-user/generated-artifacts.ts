@@ -10,6 +10,7 @@ import {
   downloadSlackFile,
   MAX_SLACK_FILE_BYTES,
   slackBotToken,
+  slackConversation,
   type SlackFileInfo,
 } from "./slack-files.js";
 
@@ -230,9 +231,37 @@ export async function generatedFileAction(
   const artifact = await readGeneratedArtifact(api, context, input.artifactId ?? "");
   if (current.identity.channel !== "slack" || input.via === "link") {
     throw new Error(
-      "Generated artifacts can be attached by Slack DM. For a Fi link, file the artifact in an authorized Library/room first.",
+      "Generated artifacts can be attached in the current Slack conversation. For a Fi link, file the artifact in an authorized Library/room first.",
     );
   }
+  const inDirect = /^agent:[^:]+:slack:direct:/i.test(context.sessionKey ?? "");
+  const toDm = input.via === "dm" || inDirect;
+  const conversation = toDm ? null : slackConversation(context);
+  if (!toDm && (!conversation || conversation.kind === "direct")) {
+    throw new Error(
+      "The current Slack conversation is unavailable; no file was sent. Do not fall back to a DM.",
+    );
+  }
+  const target: {
+    delivered: "slack_dm" | "slack_channel" | "slack_thread";
+    to: string;
+    channelId?: string;
+    threadId?: string;
+  } = toDm
+    ? { delivered: "slack_dm", to: `user:${current.identity.requesterSenderId}` }
+    : {
+        delivered: conversation!.threadTs ? "slack_thread" : "slack_channel",
+        to: `channel:${conversation!.channelId}`,
+        channelId: conversation!.channelId,
+        ...(conversation!.threadTs ? { threadId: conversation!.threadTs } : {}),
+      };
+  const recovery =
+    input.action === "reconcile" && !inDirect && toDm
+      ? {
+          recoveryOnly: true,
+          next: "The prior DM is reconciled. Deliver the retained artifact in the originating conversation; use via=dm only if the requester explicitly asked for DM delivery.",
+        }
+      : {};
   const deliveryStore = api.runtime.state.openKeyedStore<Delivery>({
     namespace: "generated-artifact-deliveries",
     retention: "retained",
@@ -241,17 +270,35 @@ export async function generatedFileAction(
     throw new Error("Generated-file delivery requires action-bound durable storage");
   }
   const deliveries = deliveryStore.withCurrent({ assertCurrent: () => assertCurrent(context) });
-  const key = createHash("sha256")
+  const dmKey = createHash("sha256")
     .update(`${current.owner}:${artifact.sha256}:${artifact.fileName}`)
     .digest("hex");
+  // Preserve receipts for the shipped DM path. A receipt from that destination
+  // must never count as delivery to the collaborative source conversation.
+  const key = toDm
+    ? dmKey
+    : createHash("sha256")
+        .update(`${dmKey}:${target.to}:${target.threadId ?? ""}`)
+        .digest("hex");
+  if (!toDm) {
+    const previousDm = await deliveries.lookup(dmKey);
+    if (previousDm && previousDm.status !== "delivered") {
+      throw new Error(
+        "A prior DM delivery remains uncertain. Reconcile it with via=dm before sending this artifact to the conversation.",
+      );
+    }
+  }
   const receipt = await deliveries.lookup(key);
   if (receipt?.status === "delivered") {
     return jsonResult({
-      delivered: "slack_dm",
+      delivered: target.delivered,
+      ...(target.channelId ? { channelId: target.channelId } : {}),
+      ...(target.threadId ? { threadId: target.threadId } : {}),
       artifactId: input.artifactId,
       file: artifact.fileName,
       messageId: receipt.messageId,
       reusedReceipt: true,
+      ...recovery,
     });
   }
   if (input.action === "reconcile") {
@@ -274,52 +321,76 @@ export async function generatedFileAction(
       }
       return body;
     }
-    const opened = await slackRead<{ channel?: { id?: string } }>("conversations.open", {
-      users: current.identity.requesterSenderId,
-    });
-    if (!opened.channel?.id) {
-      throw new Error("Slack returned no requester DM");
+    let channelId = target.channelId;
+    if (toDm) {
+      const opened = await slackRead<{ channel?: { id?: string } }>("conversations.open", {
+        users: current.identity.requesterSenderId,
+      });
+      if (!opened.channel?.id) {
+        throw new Error("Slack returned no requester DM");
+      }
+      channelId = opened.channel.id;
     }
     const sender = await slackRead<{ user_id?: string }>("auth.test", {});
     if (!sender.user_id) {
       throw new Error("Slack did not identify the current account for delivery reconciliation");
     }
-    const history = await slackRead<{
-      messages?: Array<{ ts?: string; user?: string; files?: SlackFileInfo[] }>;
-    }>("conversations.history", {
-      channel: opened.channel.id,
-      limit: "100",
-    });
     let checked = 0;
-    for (const message of history.messages ?? []) {
-      // A requester can upload the same bytes and filename to this DM. Only a
-      // message authored by the bot account whose token is being reconciled can
-      // prove our earlier send completed.
-      if (message.user !== sender.user_id) continue;
-      for (const file of message.files ?? []) {
+    let cursor: string | undefined;
+    for (let page = 0; page < 10 && checked <= 5; page++) {
+      assertCurrent(context);
+      const history = await slackRead<{
+        messages?: Array<{
+          ts?: string;
+          thread_ts?: string;
+          user?: string;
+          files?: SlackFileInfo[];
+        }>;
+        response_metadata?: { next_cursor?: string };
+      }>(target.threadId ? "conversations.replies" : "conversations.history", {
+        channel: channelId!,
+        ...(target.threadId ? { ts: target.threadId } : {}),
+        ...(cursor ? { cursor } : {}),
+        limit: "100",
+      });
+      for (const message of history.messages ?? []) {
+        // A matching requester upload or another thread is not evidence of our send.
+        if (message.user !== sender.user_id) continue;
         if (
-          file.name !== artifact.fileName ||
-          file.size !== artifact.bytes.length ||
-          ++checked > 5
+          target.threadId &&
+          message.ts !== target.threadId &&
+          message.thread_ts !== target.threadId
         ) {
           continue;
         }
-        const bytes = await downloadSlackFile(token, file);
-        if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256) {
-          continue;
+        for (const file of message.files ?? []) {
+          if (
+            file.name !== artifact.fileName ||
+            file.size !== artifact.bytes.length ||
+            ++checked > 5
+          ) {
+            continue;
+          }
+          const bytes = await downloadSlackFile(token, file);
+          if (createHash("sha256").update(bytes).digest("hex") !== artifact.sha256 || !message.ts) {
+            continue;
+          }
+          await deliveries.register(key, { status: "delivered", messageId: message.ts });
+          return jsonResult({
+            delivered: target.delivered,
+            channelId,
+            ...(target.threadId ? { threadId: target.threadId } : {}),
+            artifactId: input.artifactId,
+            file: artifact.fileName,
+            messageId: message.ts,
+            reconciled: true,
+            ...recovery,
+          });
         }
-        if (!message.ts) {
-          continue;
-        }
-        await deliveries.register(key, { status: "delivered", messageId: message.ts });
-        return jsonResult({
-          delivered: "slack_dm",
-          artifactId: input.artifactId,
-          file: artifact.fileName,
-          messageId: message.ts,
-          reconciled: true,
-        });
       }
+      const next = history.response_metadata?.next_cursor?.trim();
+      if (!next || next === cursor) break;
+      cursor = next;
     }
     return jsonResult({
       status: receipt?.status ?? "not_delivered",
@@ -346,7 +417,8 @@ export async function generatedFileAction(
     assertCurrent(context);
     const sent = await adapter.sendMedia({
       cfg,
-      to: `user:${current.identity.requesterSenderId}`,
+      to: target.to,
+      ...(target.threadId ? { threadId: target.threadId } : {}),
       // One physical attachment send: a later caption chunk failure must not
       // erase the claim for a file Slack has already accepted.
       text: "",
@@ -361,7 +433,9 @@ export async function generatedFileAction(
     }
     await deliveries.register(key, { status: "delivered", messageId: sent.messageId });
     return jsonResult({
-      delivered: "slack_dm",
+      delivered: target.delivered,
+      ...(target.channelId ? { channelId: target.channelId } : {}),
+      ...(target.threadId ? { threadId: target.threadId } : {}),
       artifactId: input.artifactId,
       file: artifact.fileName,
       bytes: artifact.bytes.length,

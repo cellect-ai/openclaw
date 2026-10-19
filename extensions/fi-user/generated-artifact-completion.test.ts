@@ -106,6 +106,99 @@ const incomplete = () =>
   });
 
 describe("registered generated-artifact completion hooks", () => {
+  it.each([
+    { delivered: "slack_thread", channelId: "CCHANNEL1", threadId: "1791917000.123456" },
+    { delivered: "slack_channel", channelId: "CCHANNEL1" },
+  ])("accepts a provider receipt in the current conversation ($delivered)", async (destination) => {
+    const session = `agent:cellect-fi-user:slack:channel:CCHANNEL1${"threadId" in destination ? ":thread:1791917000.123456" : ""}`;
+    await after(
+      { action: "register", fileName: "Budget.xlsx" },
+      { status: "generated_not_delivered", artifactId, sha256 },
+      undefined,
+      { session },
+    );
+    await after(
+      { action: "deliver", artifactId },
+      { ...destination, artifactId, messageId: "1791918000.123456" },
+      undefined,
+      { session },
+    );
+    expect(await final({ session })).toBeUndefined();
+  });
+
+  it.each([
+    { delivered: "slack_thread", channelId: "CCHANNEL1" },
+    { delivered: "slack_thread", threadId: "1791917000.123456" },
+    { delivered: "slack_channel" },
+  ])(
+    "keeps completion pending when a conversation receipt lacks its destination",
+    async (destination) => {
+      await register();
+      await after(
+        { action: "deliver", artifactId },
+        { ...destination, artifactId, messageId: "receipt" },
+      );
+      expect(await final()).toEqual(incomplete());
+    },
+  );
+
+  it("keeps collaborative delivery pending after a recovery-only DM reconciliation", async () => {
+    const session = "agent:cellect-fi-user:slack:channel:CCHANNEL1:thread:1791917000.123456";
+    await after(
+      { action: "register", fileName: "Budget.xlsx" },
+      { status: "generated_not_delivered", artifactId, sha256 },
+      undefined,
+      { session },
+    );
+    await after(
+      { action: "reconcile", artifactId, via: "dm" },
+      {
+        delivered: "slack_dm",
+        artifactId,
+        messageId: "old-dm-receipt",
+        reconciled: true,
+        recoveryOnly: true,
+      },
+      undefined,
+      { session },
+    );
+    expect(await final({ session })).toEqual(incomplete());
+    await after(
+      { action: "deliver", artifactId },
+      {
+        delivered: "slack_thread",
+        artifactId,
+        channelId: "CCHANNEL1",
+        threadId: "1791917000.123456",
+        messageId: "thread-receipt",
+      },
+      undefined,
+      { session },
+    );
+    expect(await final({ session })).toBeUndefined();
+  });
+
+  it.each([
+    { delivered: "slack_dm" },
+    { delivered: "slack_thread", channelId: "COTHER001", threadId: "1791917000.123456" },
+    { delivered: "slack_thread", channelId: "CCHANNEL1", threadId: "1791917000.999999" },
+  ])("rejects an unsolicited DM or a receipt for another conversation", async (destination) => {
+    const session = "agent:cellect-fi-user:slack:channel:CCHANNEL1:thread:1791917000.123456";
+    await after(
+      { action: "register", fileName: "Budget.xlsx" },
+      { status: "generated_not_delivered", artifactId, sha256 },
+      undefined,
+      { session },
+    );
+    await after(
+      { action: "deliver", artifactId },
+      { ...destination, artifactId, messageId: "receipt" },
+      undefined,
+      { session },
+    );
+    expect(await final({ session })).toEqual(incomplete());
+  });
+
   it("keeps a complete incomplete-delivery replacement unprefixed through the real host hooks", async () => {
     await register();
     const handler = hooks.get("reply_payload_sending")!;

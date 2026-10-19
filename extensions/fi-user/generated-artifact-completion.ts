@@ -97,6 +97,17 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
     const details = record(record(event.result)?.details);
     const successful =
       !event.error && record(event.result)?.isError !== true && details !== undefined;
+    const source =
+      /^agent:cellect-fi-user:slack:(?:channel|group):([a-z0-9]+)(?::thread:(\d+\.\d+))?$/i.exec(
+        context.sessionKey ?? "",
+      );
+    const inSourceConversation =
+      source !== null &&
+      string(details?.channelId) !== undefined &&
+      source[1]?.toUpperCase() === string(details?.channelId)?.toUpperCase() &&
+      (source[2]
+        ? details?.delivered === "slack_thread" && details.threadId === source[2]
+        : details?.delivered === "slack_channel");
     if (inFlight.size >= 4096 && !inFlight.has(runKey)) {
       failedObservations.add(runKey);
       return;
@@ -147,7 +158,11 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
             next.pending[artifactId] ??= {};
             const delivered =
               successful &&
-              details?.delivered === "slack_dm" &&
+              details?.recoveryOnly !== true &&
+              ((details?.delivered === "slack_dm" &&
+                (event.params.via === "dm" ||
+                  /^agent:[^:]+:slack:direct:/i.test(context.sessionKey ?? ""))) ||
+                inSourceConversation) &&
               details.artifactId === artifactId &&
               string(details.messageId) !== undefined;
             const receipt = record(details?.filingReceipt);

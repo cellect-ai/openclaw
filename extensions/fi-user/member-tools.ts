@@ -50,7 +50,7 @@ const DeliverSchema = Type.Object(
     via: Type.Optional(
       stringEnum(["dm", "link"] as const, {
         description:
-          "dm: attach the file in the requester's Slack DM. link: a Fi link that opens only after sign-in, for people who can read the document. Default: dm in a Slack DM, link elsewhere.",
+          "dm: use only when the requester explicitly asks for a DM. link: an authenticated Fi document link with existing access checks. Generated files default to the current Slack channel/thread; existing documents default to link outside a DM. Never switch a collaborative conversation to DM on your own.",
       }),
     ),
     message: Type.Optional(
@@ -107,7 +107,7 @@ export function createDeliverFileTool(
     name: "fi_user_deliver_file",
     label: "Send me a file",
     description:
-      "Deliver a file to the verified requester. For a new workbook/PDF/CSV: action=prepare returns this session's outputDirectory; generate and validate the file there; action=register with fileName returns artifactId; action=deliver with artifactId attaches it in the requester's Slack DM and returns a receipt. action=inspect with fileName displays a PNG/JPEG preview generated in that directory. A local /workspace path is never a download link. Existing Fi documents use documentId + project; own Drive files use driveFileId. via=link requires an existing Fi document. Do not claim delivery before a successful receipt; retain generated artifacts for retry.",
+      "Deliver a file in the current conversation. For a new workbook/PDF/CSV: action=prepare returns this session's outputDirectory; generate and validate the file there; action=register with fileName returns artifactId; action=deliver with artifactId attaches it in the current Slack channel/thread and returns a receipt. An existing DM stays in that DM. Use via=dm only after an explicit requester instruction. action=inspect with fileName displays a PNG/JPEG preview generated in that directory. Existing Fi documents use documentId + project and default to an authenticated link outside a DM; own Drive files use driveFileId. via=link requires an existing Fi document. Never silently switch destinations, expose internal paths as downloads, or claim delivery before a successful receipt. Retain artifacts for retry.",
     parameters: DeliverSchema,
     async execute(_toolCallId, raw) {
       const input = raw as DeliverInput;

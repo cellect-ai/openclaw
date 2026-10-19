@@ -143,7 +143,219 @@ async function register(name = "Budget.csv", bytes = csv) {
   return String(details(result).artifactId);
 }
 
+async function useCollaborativeThread() {
+  context.sessionKey = "agent:cellect-fi-user:slack:channel:CCHANNEL1:thread:1791917000.123456";
+  context.nativeChannelId = "CCHANNEL1";
+  const prepared = await generatedFileAction(api, context, { action: "prepare" });
+  output = path.join(
+    directory,
+    String(details(prepared).outputDirectory).replace(/^\/workspace\//, ""),
+  );
+}
+
 describe("requester-bound generated artifact delivery", () => {
+  it("delivers a generated file to the originating collaborative thread by default", async () => {
+    await useCollaborativeThread();
+    const artifactId = await register();
+    const tool = createDeliverFileTool(api, context);
+    const delivered = await tool.execute("thread-delivery", { action: "deliver", artifactId });
+    expect(details(delivered)).toMatchObject({
+      delivered: "slack_thread",
+      channelId: "CCHANNEL1",
+      threadId: "1791917000.123456",
+      messageId: "1791918000.123456",
+    });
+    const send = mocks.sendMedia.mock.calls[0]?.[0];
+    expect(send).toMatchObject({ to: "channel:CCHANNEL1", threadId: "1791917000.123456" });
+    expect(await send.mediaReadFile(send.mediaUrl)).toEqual(csv);
+    expect(details(await tool.execute("again", { action: "deliver", artifactId }))).toMatchObject({
+      delivered: "slack_thread",
+      reusedReceipt: true,
+    });
+    expect(mocks.sendMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses the requester DM only for an explicit DM selection and keeps destination receipts separate", async () => {
+    await useCollaborativeThread();
+    const artifactId = await register();
+    const tool = createDeliverFileTool(api, context);
+    expect(
+      details(await tool.execute("explicit-dm", { action: "deliver", artifactId, via: "dm" })),
+    ).toMatchObject({
+      delivered: "slack_dm",
+    });
+    expect(mocks.sendMedia.mock.calls[0]?.[0]).toMatchObject({ to: "user:UNICHOLAS" });
+    expect(details(await tool.execute("thread", { action: "deliver", artifactId }))).toMatchObject({
+      delivered: "slack_thread",
+    });
+    expect(mocks.sendMedia.mock.calls[1]?.[0]).toMatchObject({ to: "channel:CCHANNEL1" });
+  });
+
+  it("does not fall back to a DM when the source conversation cannot be resolved", async () => {
+    context.sessionKey = "agent:cellect-fi-user:operator-unrouted";
+    const prepared = await generatedFileAction(api, context, { action: "prepare" });
+    output = path.join(
+      directory,
+      String(details(prepared).outputDirectory).replace(/^\/workspace\//, ""),
+    );
+    const artifactId = await register();
+    await expect(
+      createDeliverFileTool(api, context).execute("unrouted", { action: "deliver", artifactId }),
+    ).rejects.toThrow(/Do not fall back to a DM/);
+    expect(mocks.sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an uncertain file only against the originating thread", async () => {
+    await useCollaborativeThread();
+    const artifactId = await register();
+    mocks.sendMedia.mockRejectedValueOnce(new Error("timeout"));
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/timeout/);
+    const file = {
+      id: "FFILE001",
+      name: "Budget.csv",
+      size: csv.length,
+      url_private_download: "https://files.slack.com/file",
+    };
+    let replyPage = 0;
+    const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
+      if (url.endsWith("auth.test"))
+        return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
+      if (url.endsWith("conversations.replies") && replyPage++ === 0)
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            response_metadata: { next_cursor: "page-two" },
+            messages: [
+              {
+                ts: "1791918000.000001",
+                user: "UBOT",
+                thread_ts: "1791917000.999999",
+                files: [file],
+              },
+              {
+                ts: "1791918000.000002",
+                user: "UNICHOLAS",
+                thread_ts: "1791917000.123456",
+                files: [file],
+              },
+            ],
+          }),
+        );
+      if (url.endsWith("conversations.replies"))
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            messages: [
+              {
+                ts: "1791918000.000003",
+                user: "UBOT",
+                thread_ts: "1791917000.123456",
+                files: [file],
+              },
+            ],
+          }),
+        );
+      if (url.startsWith("https://files.slack.com/")) return new Response(csv);
+      throw new Error(`Unexpected Slack request: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetch);
+    expect(
+      details(await generatedFileAction(api, context, { action: "reconcile", artifactId })),
+    ).toMatchObject({
+      delivered: "slack_thread",
+      reconciled: true,
+      messageId: "1791918000.000003",
+      channelId: "CCHANNEL1",
+      threadId: "1791917000.123456",
+    });
+    const request = fetch.mock.calls.find(([url]) => url.endsWith("conversations.replies"));
+    expect(String(request?.[1]?.body)).toContain("channel=CCHANNEL1");
+    expect(String(request?.[1]?.body)).toContain("ts=1791917000.123456");
+    expect(replyPage).toBe(2);
+    expect(
+      fetch.mock.calls.some(
+        ([url, init]) =>
+          url.endsWith("conversations.replies") && String(init?.body).includes("cursor=page-two"),
+      ),
+    ).toBe(true);
+    expect(fetch.mock.calls.some(([url]) => url.endsWith("conversations.open"))).toBe(false);
+    expect(mocks.sendMedia).toHaveBeenCalledTimes(1);
+  });
+
+  it("recovers a prior uncertain DM before delivering the same artifact to the source thread", async () => {
+    await useCollaborativeThread();
+    const artifactId = await register();
+    mocks.sendMedia.mockRejectedValueOnce(new Error("timeout"));
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId, via: "dm" }),
+    ).rejects.toThrow(/timeout/);
+    await expect(
+      generatedFileAction(api, context, { action: "deliver", artifactId }),
+    ).rejects.toThrow(/prior DM/);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (url: string) => {
+        if (url.endsWith("conversations.open"))
+          return new Response(JSON.stringify({ ok: true, channel: { id: "DREQUESTER" } }));
+        if (url.endsWith("auth.test"))
+          return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
+        if (url.endsWith("conversations.history"))
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              messages: [
+                {
+                  ts: "1791918000.123456",
+                  user: "UBOT",
+                  files: [
+                    {
+                      id: "FFILE001",
+                      name: "Budget.csv",
+                      size: csv.length,
+                      url_private_download: "https://files.slack.com/file",
+                    },
+                  ],
+                },
+              ],
+            }),
+          );
+        return new Response(csv);
+      }),
+    );
+    expect(
+      details(
+        await generatedFileAction(api, context, { action: "reconcile", artifactId, via: "dm" }),
+      ),
+    ).toMatchObject({
+      delivered: "slack_dm",
+      recoveryOnly: true,
+      reconciled: true,
+    });
+    expect(
+      details(
+        await generatedFileAction(api, context, { action: "reconcile", artifactId, via: "dm" }),
+      ),
+    ).toMatchObject({
+      delivered: "slack_dm",
+      recoveryOnly: true,
+      reusedReceipt: true,
+    });
+    expect(
+      details(await generatedFileAction(api, context, { action: "deliver", artifactId })),
+    ).toMatchObject({
+      delivered: "slack_thread",
+      channelId: "CCHANNEL1",
+      threadId: "1791917000.123456",
+    });
+    expect(mocks.sendMedia).toHaveBeenCalledTimes(2);
+    expect(mocks.sendMedia.mock.calls[1]?.[0]).toMatchObject({
+      to: "channel:CCHANNEL1",
+      threadId: "1791917000.123456",
+    });
+  });
+
   it("exposes generated delivery through the plugin's host-bound context-v2 registration", async () => {
     let factory:
       | { contextVersion: 2; create: (context: OpenClawPluginToolContext) => AnyAgentTool[] | null }
