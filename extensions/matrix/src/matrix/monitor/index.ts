@@ -56,6 +56,7 @@ import { createMatrixIngressMonitor } from "./ingress.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
+import { DEFAULT_MATRIX_HISTORY_LIMIT } from "./shared-history.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorSyncLifecycle } from "./sync-lifecycle.js";
@@ -270,7 +271,7 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   const dmSessionScope = dmConfig?.sessionScope ?? "per-user";
   const historyLimit = resolvePromptHistoryLimit(
     accountConfig.historyLimit ?? cfg.messages?.groupChat?.historyLimit,
-    0,
+    DEFAULT_MATRIX_HISTORY_LIMIT,
   );
   const mediaMaxMb = opts.mediaMaxMb ?? accountConfig.mediaMaxMb ?? DEFAULT_MEDIA_MAX_MB;
   const mediaMaxBytes = Math.max(1, mediaMaxMb) * 1024 * 1024;

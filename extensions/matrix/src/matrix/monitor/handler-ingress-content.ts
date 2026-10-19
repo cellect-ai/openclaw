@@ -485,7 +485,7 @@ export async function resolveMatrixIngressContent(config: {
           roomId,
           historyLimit,
           {
-            sender: senderName,
+            sender: senderId,
             body: bodyText,
             timestamp: eventTs ?? undefined,
             messageId,

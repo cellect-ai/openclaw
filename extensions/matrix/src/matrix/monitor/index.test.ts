@@ -106,6 +106,7 @@ describe("monitorMatrixProvider", () => {
     hoisted.accountConfig.dm = {};
     delete (hoisted.accountConfig as { streaming?: unknown }).streaming;
     delete (hoisted.accountConfig as { rooms?: Record<string, unknown> }).rooms;
+    delete (hoisted.accountConfig as { historyLimit?: number }).historyLimit;
     hoisted.acquireSharedMatrixClient
       .mockReset()
       .mockImplementation(hoisted.acquireSharedMatrixClientImpl);
@@ -182,6 +183,21 @@ describe("monitorMatrixProvider", () => {
       };
       expect(handlerParams.streaming).toBe(expectedMode);
       expect(handlerParams.previewToolProgressEnabled).toBe(expectedPreviewToolProgressEnabled);
+    },
+  );
+
+  it.each([
+    [undefined, 20],
+    [0, 0],
+    [3, 3],
+  ])(
+    "passes configured historyLimit=%s to the actual handler as %s",
+    async (historyLimit, expectedLimit) => {
+      (hoisted.accountConfig as { historyLimit?: number }).historyLimit = historyLimit;
+      await startMonitorAndAbortAfterStartup();
+      expect(mockCallArg(hoisted.createMatrixRoomMessageHandler)).toEqual(
+        expect.objectContaining({ historyLimit: expectedLimit }),
+      );
     },
   );
 

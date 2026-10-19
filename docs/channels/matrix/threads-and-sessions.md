@@ -94,8 +94,9 @@ Matrix thread-bound session spawns default on. Set `threadBindings.spawnSessions
 
 ## History context
 
-- `channels.matrix.historyLimit` controls how many recent room messages are included as `InboundHistory` when a room message triggers the agent. Falls back to `messages.groupChat.historyLimit`; effective default `0` if both are unset (disabled).
+- `channels.matrix.historyLimit` controls how many recent room messages are included as `InboundHistory` when a room message triggers the agent. Falls back to `messages.groupChat.historyLimit`; effective default `20` if both are unset. Explicit `0` disables room history.
 - Matrix room history is room-only; DMs keep using normal session history.
-- Room history is pending-only: OpenClaw buffers room messages that did not trigger a reply yet, then snapshots that window when a mention or other trigger arrives.
+- After room and sender admission, OpenClaw reads one bounded homeserver context page anchored before the triggering event, using the receiving account. This includes other agents' visible replies when switching agents or after a restart, without copying private agent sessions. The homeserver's membership and history-visibility rules and OpenClaw's supplemental-context policy still apply. Redacted, undecryptable, later, and other-thread messages are excluded.
+- The page examines at most 100 timeline events; busy rooms can return fewer matching thread messages. DMs keep their existing session-history behavior. If the history request is temporarily unavailable, admitted pending ingress provides the bounded fallback; it is not merged into successful reads that may reflect redactions. An explicit permission, authentication, or missing-resource error omits history instead of reusing cached content.
 - The current trigger message is not included in `InboundHistory`; it stays in the main inbound body for that turn.
-- Retries of the same Matrix event reuse the original history snapshot instead of drifting forward to newer room messages.
+- Retries remain anchored before the same Matrix event rather than drifting forward to newer room messages. Homeserver reads can reflect redactions; pending fallback snapshots remain fixed for that event.

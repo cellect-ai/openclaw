@@ -13,6 +13,7 @@ import { resolveMatrixSharedDmContextNotice } from "./handler-helpers.js";
 import type { MatrixIngressContent } from "./handler-ingress-content.js";
 import { loadMatrixSendModule } from "./handler-runtime.js";
 import type { MatrixHandlerRuntimeConfig } from "./handler-types.js";
+import { readMatrixSharedHistory } from "./shared-history.js";
 import type { MatrixRawEvent, RoomMessageEventContent } from "./types.js";
 
 export async function resolveMatrixInboundContext(config: {
@@ -113,6 +114,24 @@ export async function resolveMatrixInboundContext(config: {
       kind,
       senderAllowed: isRoomContextSenderAllowed(contextSenderId),
     }).include;
+  const sharedHistory =
+    isRoom && historyLimit > 0
+      ? await readMatrixSharedHistory({
+          client,
+          roomId,
+          event,
+          threadRootId,
+          limit: historyLimit,
+          includeSender: (sender) => shouldIncludeRoomContextSender("history", sender),
+          logVerboseMessage,
+        })
+      : undefined;
+  // A successful homeserver read is authoritative, including an empty/redacted window.
+  // Pending ingress is a fallback only when history cannot be read, not a second cache
+  // that can resurrect a deleted message or duplicate the shared transcript.
+  const visibleHistory =
+    sharedHistory ??
+    inboundHistory?.filter((entry) => shouldIncludeRoomContextSender("history", entry.sender));
   let threadContext =
     ingress.threadContext ??
     (threadRootId ? await resolveThreadContext({ roomId, eventId: threadRootId }) : undefined);
@@ -262,7 +281,7 @@ export async function resolveMatrixInboundContext(config: {
       rawBody: bodyText,
       commandBody: commandBodyText,
       bodyForAgent: bodyText,
-      inboundHistory: inboundHistory && inboundHistory.length > 0 ? inboundHistory : undefined,
+      inboundHistory: visibleHistory && visibleHistory.length > 0 ? visibleHistory : undefined,
     },
     sessionTranscript: { historyLimit: isRoom ? historyLimit : 0 },
     access: {
