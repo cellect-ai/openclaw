@@ -51,6 +51,18 @@ export async function readMatrixIngressPrefix(config: MatrixIngressPrefixConfig)
     directTracker,
     claimInboundReplay,
   } = config;
+  const content = event.content as RoomMessageEventContent;
+  // The bridge owns invitation publication and notification authority. Even a
+  // forged marker is control-plane data, never a human prompt or a new run.
+  if (
+    eventType === EventType.RoomMessage &&
+    content &&
+    typeof content === "object" &&
+    Object.hasOwn(content, "ai.cellect.invitation")
+  ) {
+    logVerboseMessage(`matrix: skip invitation publication room=${roomId}`);
+    return undefined;
+  }
   const selfUserId = await client.getUserId();
   if (senderId === selfUserId) {
     return undefined;
@@ -63,8 +75,6 @@ export async function readMatrixIngressPrefix(config: MatrixIngressPrefixConfig)
       return undefined;
     }
   }
-
-  const content = event.content as RoomMessageEventContent;
 
   if (
     eventType === EventType.RoomMessage &&
