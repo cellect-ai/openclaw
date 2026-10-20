@@ -6,6 +6,7 @@ import { resolvePluginCandidateInstallOwner } from "./candidate-install-owner.js
 import type { PluginCapabilityCatalogHostContext } from "./capability-catalog-context.types.js";
 import { resolveEffectivePluginActivationState } from "./config-state.js";
 import { isPluginEnabledByDefaultForPlatform } from "./default-enablement.js";
+import { hashStableJson } from "./installed-plugin-index-hash.js";
 import { isPluginRegistryCacheEnabled } from "./loader-cache.js";
 import { resolvePluginLoadDiscovery } from "./loader-discovery.js";
 import {
@@ -38,6 +39,7 @@ import {
   isPluginRecordActive,
   isPluginRecordBorrowed,
   isPluginRegistryActivated,
+  isPluginRegistryRetired,
   markPluginRecordBorrowed,
   withPluginRegistryPreparationScope,
 } from "./registry-lifecycle.js";
@@ -55,7 +57,7 @@ import { hasKind } from "./slots.js";
 type PluginLoadInput = {
   source: string;
   signature: string | undefined;
-  /** Load-mode-free identity recorded by side-effect runtime loads for non-activating borrowers. */
+  /** Full-runtime provenance; borrowing still requires the lender's live instance authority. */
   borrowSignature?: string;
   config: PreparedPluginConfig;
 };
@@ -98,6 +100,7 @@ function resolvePluginRecordRetention(
   const lent = borrowRegistry?.plugins.find((record) => record.id === pluginId);
   const lentInput = borrowRegistry && registryInputs.get(borrowRegistry)?.get(pluginId);
   return borrowRegistry &&
+    !isPluginRegistryRetired(borrowRegistry) &&
     lent &&
     lentInput?.borrowSignature !== undefined &&
     isPluginRecordActive(borrowRegistry, lent) &&
@@ -177,6 +180,7 @@ export function loadOpenClawPluginsCore(
   }
 
   const context = resolvePluginLoadCacheContext(options);
+  const borrowEnvironment = hashStableJson(context.env);
   const logger = options.logger ?? createSubsystemLogger("plugins");
   const validateOnly = options.mode === "validate";
   const onlyPluginIdSet = createPluginIdScopeSet(context.onlyPluginIds);
@@ -356,10 +360,11 @@ export function loadOpenClawPluginsCore(
         context.forceSetupOnlyChannelPlugins,
         validateOnly,
       ];
-      // Side-effect runtime loads lend their records; non-activating runtime loads borrow them.
+      // Both Gateway and retained prepared owners can lend exact live instances.
+      // Recording provenance grants nothing: retention must activate the lender
+      // before resolvePluginRecordRetention admits any borrower.
       const runtimeRegistration =
         !validateOnly && options.mode !== "cli-metadata" && options.toolDiscovery !== true;
-      const lends = runtimeRegistration && context.runtimeSideEffects;
       const borrows =
         runtimeRegistration && !context.runtimeSideEffects && options.borrowRegistry !== undefined;
       let signature: string | undefined;
@@ -372,7 +377,9 @@ export function loadOpenClawPluginsCore(
           options.toolDiscovery === true,
           options.mode,
         ]);
-        borrowSignature = lends || borrows ? JSON.stringify(identityInputs) : undefined;
+        borrowSignature = runtimeRegistration
+          ? JSON.stringify([identityInputs, options.workspaceDir, borrowEnvironment])
+          : undefined;
       } catch (error) {
         // A malformed external schema must reach the validation diagnostic, not abort
         // sibling loading while preparing an optional runtime-retention signature.
@@ -392,7 +399,7 @@ export function loadOpenClawPluginsCore(
       inputs.set(manifest.id, {
         source: candidate.source,
         signature,
-        ...(lends ? { borrowSignature } : {}),
+        ...(runtimeRegistration ? { borrowSignature } : {}),
         config: preparedConfig,
       });
       const retention = resolvePluginRecordRetention(options, manifest.id, {

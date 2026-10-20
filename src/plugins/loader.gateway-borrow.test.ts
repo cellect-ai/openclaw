@@ -11,6 +11,7 @@ import {
   writePlugin,
 } from "./loader.test-fixtures.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
+import { revokePluginRecord } from "./registry-lifecycle.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { clearActivePluginRegistry, disposePluginRegistryInstances } from "./runtime.js";
 import { bindPluginToolCallbacks } from "./tool-factory-runtime.js";
@@ -100,6 +101,65 @@ function bindProbe(registry: PluginRegistry, pluginId: string) {
 }
 
 const firstGeneration = { content: [{ type: "text", text: "1" }] };
+
+it.each([
+  "unretained",
+  "retained",
+  "revoked",
+  "retired",
+  "workspace",
+  "environment",
+  "policy",
+] as const)(
+  "borrows a non-activating prepared instance only under its retained unchanged authority: %s",
+  async (mode) => {
+    const { borrowOptions } = setupLender();
+    const options = { ...borrowOptions, borrowRegistry: undefined, onlyPluginIds: [freshId] };
+    const inbound = loadOpenClawPlugins(options);
+    registries.push(inbound);
+    const record = inbound.plugins.find((entry) => entry.id === freshId)!;
+    const instance = getPluginInstance(record)!;
+    const releaseInbound =
+      mode === "unretained" ? undefined : retainPreparedPluginRegistry(inbound);
+    if (mode === "revoked") revokePluginRecord(inbound, record);
+    if (mode === "retired") await releaseInbound?.();
+    const selected = loadOpenClawPlugins({
+      ...options,
+      borrowRegistry: inbound,
+      ...(mode === "workspace" ? { workspaceDir: "/different-prepared-workspace" } : {}),
+      ...(mode === "environment" ? { env: { ...process.env, PREPARED_PROOF_SCOPE: "other" } } : {}),
+      ...(mode === "policy"
+        ? {
+            config: {
+              ...options.config,
+              plugins: {
+                ...options.config?.plugins,
+                entries: { [freshId]: { hooks: { allowConversationAccess: false } } },
+              },
+            },
+          }
+        : {}),
+    });
+    registries.push(selected);
+    const releaseSelected = retainPreparedPluginRegistry(selected);
+    try {
+      expect(selected.plugins.find((entry) => entry.id === freshId) === record).toBe(
+        mode === "retained",
+      );
+      await releaseSelected?.();
+      if (mode === "retained") {
+        // A borrowing view does not own the dispatched sender's instance or its cleanup.
+        expect(instance.acceptingCalls).toBe(true);
+        await expect(
+          bindProbe(inbound, freshId).execute("after-borrower", {}),
+        ).resolves.toMatchObject(firstGeneration);
+      }
+    } finally {
+      await releaseSelected?.();
+      await releaseInbound?.();
+    }
+  },
+);
 
 it("borrows unchanged Gateway instances and keeps them through prepared registry retirement", async () => {
   const { gateway, gatewayRecord, gatewayInstance, borrowOptions } = setupLender();

@@ -234,7 +234,12 @@ export function prepareWorkspacePluginRegistries(
             ...(purpose ? { purpose } : {}),
             ...(purpose === "model-catalog"
               ? {}
-              : { borrowRegistry: resolveLendingGatewayRegistry(input, metadataSnapshot) }),
+              : {
+                  // Inbound dispatch already selected this exact retained owner.
+                  // Adding a provider must not replace its stateful hook closures.
+                  borrowRegistry:
+                    baseRegistry ?? resolveLendingGatewayRegistry(input, metadataSnapshot),
+                }),
           },
           (source) => {
             loadedPrimaryRegistry =
