@@ -241,7 +241,12 @@ export function registerAdminDelegation(
       const flag = cfg.diagnostics?.flags?.find(
         (value) => value === runFlag || value === sessionFlag,
       );
-      if (!flag || !isDiagnosticFlagEnabled(flag, cfg)) {
+      if (
+        !flag ||
+        !isDiagnosticFlagEnabled(flag, {
+          diagnostics: { flags: [...(cfg.diagnostics?.flags ?? [])] },
+        })
+      ) {
         return;
       }
       // The existing SDK run owner bounds delivery and clears its two bits on
