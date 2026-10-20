@@ -434,6 +434,136 @@ describe("opt-in admin delegation diagnostics", () => {
 });
 
 describe("the admin agent's delegated user token", () => {
+  describe("Superadmin requester handoff", () => {
+    const main = () => {
+      const original = thread();
+      const sessionKey = THREAD.replace("agent:cellect-fi-admin:", "agent:cellect-main:");
+      return {
+        arrive: { ...original.arrive, sessionKey },
+        start: {
+          ...original.start,
+          agentId: "cellect-main",
+          sessionKey,
+          accountId: "superadminprod",
+        },
+        exec: {
+          ...original.exec,
+          agentId: "cellect-main",
+          sessionKey,
+          requester: { ...original.exec.requester, accountId: "superadminprod" },
+        },
+      };
+    };
+    beforeEach(() => {
+      vi.stubEnv(
+        "FI_THREADS_ENV_BY_ACCOUNT",
+        JSON.stringify({ adminprod: "prod", superadminprod: "prod" }),
+      );
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url !== AUTHORIZE_URL) return minted();
+        const body = JSON.parse(String(init?.body)) as { agentId: string };
+        return new Response(JSON.stringify({ ok: true, agentId: body.agentId, orgId: "org-a" }));
+      });
+    });
+
+    it("hands the proven Superadmin requester the same bounded command-class token", async () => {
+      const turn = plugin(),
+        message = main();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      expect((await turn.exec(message.exec))?.params).toMatchObject({
+        host: "sandbox",
+        elevated: false,
+        env: { FI_DELEGATED_USER_TOKEN: TOKEN },
+      });
+      expect(mintBody()).toMatchObject({
+        agentId: "cellect-fi-admin",
+        requesterMatrixUserId: "@admin:matrix.example",
+      });
+    });
+
+    it("does not mint for an unproven Superadmin resume", async () => {
+      const turn = plugin(),
+        message = main();
+      await turn.start(message.start);
+      expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it("does not borrow another agent's admitted session", async () => {
+      const turn = plugin(),
+        message = thread();
+      await turn.arrive(message.arrive);
+      await turn.start({ ...message.start, agentId: "cellect-main" });
+      expect(
+        (await turn.exec({ ...message.exec, agentId: "cellect-main" }))?.params.env
+          ?.FI_DELEGATED_USER_TOKEN,
+      ).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it("uses Superadmin's own sandbox posture rather than Fi Admin's", async () => {
+      const turn = plugin(
+        {},
+        {
+          ...SANDBOXED,
+          agents: {
+            ...SANDBOXED.agents,
+            entries: { "cellect-main": { sandbox: { mode: "off" } } },
+          },
+        },
+      );
+      const message = main();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
+    it("does not share token custody between the two agents", async () => {
+      const turn = plugin(),
+        first = thread(),
+        second = main();
+      await turn.arrive(first.arrive);
+      await turn.start({ ...first.start, runId: "admin-run" });
+      expect(
+        (await turn.exec({ ...first.exec, runId: "admin-run" }))?.params.env
+          ?.FI_DELEGATED_USER_TOKEN,
+      ).toBe(TOKEN);
+      const other = "@other:matrix.example";
+      await turn.arrive({ ...second.arrive, senderId: other });
+      await turn.start({
+        ...second.start,
+        runId: "main-run",
+        senderId: other,
+        channelContext: { ...second.start.channelContext, sender: { id: other } },
+      });
+      const result = await turn.exec({
+        ...second.exec,
+        runId: "main-run",
+        requester: { ...second.exec.requester, senderId: other },
+      });
+      expect(result?.block).not.toBe(true);
+      expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    });
+
+    it("does not inject a Superadmin token after the admitted run settles during mint", async () => {
+      const turn = plugin(),
+        message = main();
+      await turn.arrive(message.arrive);
+      await turn.start(message.start);
+      const original = fetchMock.getMockImplementation();
+      fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+        if (url === MINT_URL) {
+          await turn.settle();
+          return minted();
+        }
+        return await original?.(url, init);
+      });
+      expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    });
+  });
+
   describe("verified Slack channel requests", () => {
     it.each([SLACK_THREAD, "agent:cellect-fi-admin:slack:channel:c0channel1"])(
       "mints only for the dispatched sender and event in %s",
@@ -1758,7 +1888,7 @@ describe("the admin agent's delegated user token", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
 
-    it.each(["cellect-main", "cellect-fi-user"])("%s", async (agentId) => {
+    it.each(["cellect-fi-user"])("%s", async (agentId) => {
       const session = `agent:${agentId}:slack:direct:u0admin001`;
       const turn = plugin();
       await turn.arrive({ sessionKey: session });

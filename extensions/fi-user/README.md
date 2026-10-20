@@ -21,7 +21,7 @@ blocked until reconciled, and retain the registered file for recovery.
 ## The admin agent's delegated user token
 
 For a shell command of this runtime's admin agent (`adminAgentId`, default
-`cellect-fi-admin`) the plugin asks Fi for the requester's own short-lived token
+`cellect-fi-admin`) or Cellect Superadmin (`cellect-main`), the plugin asks Fi for the requester's own short-lived token
 (`POST {baseUrl}/api/openclaw-user-delegation`, `agentId: "cellect-fi-admin"`)
 and sets it on that one call as `FI_DELEGATED_USER_TOKEN`. Fi's CLI prefers it
 to `FI_SERVICE_TOKEN` + `FI_ON_BEHALF_OF`. `FI_ON_BEHALF_OF` is injected as
@@ -34,6 +34,12 @@ command runs exactly as it did before there was a token.
 
 The runtime's configuration, read the way the host reads it (the admin agent's
 own setting, then the default):
+
+Runtime ownership and Fi's protocol command class are separate. Both tiers use
+the `cellect-fi-admin` delegation command class, but each retains its own host
+agent/session identity, sandbox posture, and token custody. A Superadmin command
+cannot borrow Fi Admin's sandbox or admitted run. The token still carries only
+the verified person's current grants in the broker credential's tenant.
 
 - `sandbox.mode` is `all`.
 - `sandbox.scope` is `session` or `agent`, not `shared`.
@@ -54,15 +60,18 @@ The message and the run:
     dispatched `messageId` and sender equal the run's
     `channelContext.chat.eventId` and `channelContext.sender.id`). A room
     thread is how Fi web chat reaches the admin agent.
-  - Slack channels and threads, Discord, webchat and every other session kind
-    get no token.
+  - Slack channels and threads require the same exact native sender, channel,
+    and dispatched message event as the admitted run.
+  - Discord, webchat and every other session kind get no token.
 - Every input observed for the session since a message run last took it up
   came from that one person, within the last six hours.
 - The run is a `user` turn by that same sender. Cron, heartbeat, system-event,
   webhook, sub-agent, inter-session, tool-injected and resumed runs get no
   token, nor does a run started by one of this Gateway's own Matrix bot accounts.
 - Nobody else wrote into the session while the run was active.
-- No Talk consult has run on the session in this process.
+- A Matrix-bound voice consultation instead uses the entitlement owner's
+  admitted speaker/run proof, rechecked when the command executes. A synthetic
+  voice prompt or a remembered session sender is not that proof.
 - The session is not an approved admin action (those keep `FI_ON_BEHALF_OF` only).
 
 The call:

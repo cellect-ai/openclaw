@@ -115,6 +115,7 @@ function remember<V>(tracked: Map<string, V>, key: string, value: V): void {
   }
 }
 type Run = {
+  agentId: string;
   sessionKey: string;
   sender?: string;
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
@@ -130,12 +131,17 @@ type Inbound = {
   sessionKey?: string;
 };
 
-/** Agent ids are compared as the host normalizes them: without regard to case. */
+/**
+ * Requester handoff applies to the configured admin and the existing Cellect
+ * Superadmin. This is not a grant: native sender proof, sandbox posture, the
+ * tenant broker and Fi's current member permissions still decide each call.
+ */
 export function isAdminAgent(
   config: Pick<ResolvedPluginConfig, "adminAgentId">,
   agentId: string | undefined,
 ): boolean {
-  return agentId?.toLowerCase() === config.adminAgentId.toLowerCase();
+  const id = agentId?.toLowerCase();
+  return id === config.adminAgentId.toLowerCase() || id === "cellect-main";
 }
 
 /**
@@ -380,10 +386,11 @@ export function registerAdminDelegation(
       const config = configFromRuntime(api);
       const sessionKey = context.sessionKey?.toLowerCase();
       const runId = context.runId;
-      if (!isAdminAgent(config, context.agentId)) {
+      const agentId = context.agentId?.toLowerCase();
+      if (!agentId || !isAdminAgent(config, agentId)) {
         return undefined;
       }
-      if (!sessionKey || !runId || runs.has(runId)) {
+      if (!sessionKey || !sessionKey.startsWith(`agent:${agentId}:`) || !runId || runs.has(runId)) {
         diagnose(
           { runId, sessionKey },
           runs.has(runId ?? "") ? "turn-already-observed" : "turn-context-incomplete",
@@ -395,7 +402,7 @@ export function registerAdminDelegation(
       }
       // Remembered whether admitted or not, so a second attempt of the same
       // run does not take up what arrived for the next one.
-      const run: Run = { sessionKey };
+      const run: Run = { agentId, sessionKey };
       remember(runs, runId, run);
       // Only a run that carries a message takes up what arrived; a heartbeat
       // or inter-session run in between must not clear a queued message.
@@ -451,7 +458,7 @@ export function registerAdminDelegation(
       // by that same sender. Never reuse the stored sender on a synthetic wake.
       const origin = context.channelContext;
       const slackChannel = /^slack:(?:channel|group):([cg][a-z0-9]+)(?::thread:\d+\.\d+)?$/.exec(
-        sessionKey.slice(`agent:${config.adminAgentId.toLowerCase()}:`.length),
+        sessionKey.slice(`agent:${agentId}:`.length),
       );
       const requiresEvent = requester && ("requester_matrix_user_id" in requester || slackChannel);
       const nativeSender =
@@ -522,9 +529,10 @@ export function registerAdminDelegation(
     }
   };
   const adminSession = (message: Inbound) => {
-    const { adminAgentId } = configFromRuntime(api);
+    const config = configFromRuntime(api);
     const sessionKey = message.sessionKey?.toLowerCase();
-    return sessionKey?.startsWith(`agent:${adminAgentId.toLowerCase()}:`)
+    const adminAgentId = /^agent:([^:]+):/.exec(sessionKey ?? "")?.[1];
+    return sessionKey && adminAgentId && isAdminAgent(config, adminAgentId)
       ? { adminAgentId, sessionKey }
       : undefined;
   };
@@ -575,11 +583,17 @@ export function registerAdminDelegation(
     if (custody.size === 0) {
       return undefined;
     }
-    if (!isAdminAgent(config, ctx.agentId) || !SANDBOX_TOOLS.has(toolName) || !ctx.sessionKey) {
+    const agentId = ctx.agentId?.toLowerCase();
+    if (
+      !agentId ||
+      !isAdminAgent(config, agentId) ||
+      !SANDBOX_TOOLS.has(toolName) ||
+      !ctx.sessionKey
+    ) {
       return undefined;
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
-    const sandbox = sandboxKey(config.adminAgentId, sessionKey);
+    const sandbox = sandboxKey(agentId, sessionKey);
     const holder = custody.get(sandbox);
     if (!holder) {
       return undefined;
@@ -589,7 +603,7 @@ export function registerAdminDelegation(
       return undefined;
     }
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    return run?.sessionKey === sessionKey && run.sender === holder.sender
+    return run?.agentId === agentId && run.sessionKey === sessionKey && run.sender === holder.sender
       ? undefined
       : { block: true, blockReason: HELD };
   };
@@ -606,9 +620,11 @@ export function registerAdminDelegation(
     /** When the host entered this tool call's hook; its deadline runs from then. */
     enteredAt: number,
   ): Promise<string | Held | undefined> | undefined => {
+    const agentId = ctx.agentId?.toLowerCase();
     if (
+      !agentId ||
       !config.tenantOrgId ||
-      !isAdminAgent(config, ctx.agentId) ||
+      !isAdminAgent(config, agentId) ||
       !ON_BEHALF_OF_TOOLS.has(event.toolName) ||
       event.toolKind ||
       ctx.toolKind ||
@@ -616,7 +632,7 @@ export function registerAdminDelegation(
       !ctx.sessionKey ||
       // An approved admin action keeps today's attribution; it is not this turn's requester.
       adminActionSessions.has(ctx.sessionKey) ||
-      !posture(config.adminAgentId).pinIsHarmless
+      !posture(agentId).pinIsHarmless
     ) {
       if (isAdminAgent(config, ctx.agentId) && ON_BEHALF_OF_TOOLS.has(event.toolName)) {
         diagnose(ctx, "mint-ineligible", () => ({
@@ -625,7 +641,7 @@ export function registerAdminDelegation(
           sandboxParameters: runsInSandbox(event.params),
           sessionPresent: Boolean(ctx.sessionKey),
           approvedActionSession: Boolean(ctx.sessionKey && adminActionSessions.has(ctx.sessionKey)),
-          safePosture: posture(config.adminAgentId).pinIsHarmless,
+          safePosture: posture(agentId ?? config.adminAgentId).pinIsHarmless,
         }));
       }
       return undefined;
@@ -638,7 +654,9 @@ export function registerAdminDelegation(
       !run ||
       !requester ||
       !sender ||
+      run.agentId !== agentId ||
       run.sessionKey !== sessionKey ||
+      !sessionKey.startsWith(`agent:${agentId}:`) ||
       run.sender !== sender ||
       (run.voice && admittedVoiceTurn(ctx) !== run.voice)
     ) {
@@ -680,7 +698,7 @@ export function registerAdminDelegation(
       diagnose(ctx, "mint-budget-exhausted");
       return undefined;
     }
-    const sandbox = sandboxKey(config.adminAgentId, sessionKey);
+    const sandbox = sandboxKey(agentId, sessionKey);
     return lookupDelegation({ ...config, ...connection }, body, {
       agentId: FI_ADMIN_DELEGATION_AGENT_ID,
       signal: AbortSignal.timeout(budget),
