@@ -53,6 +53,7 @@ import { isMatrixPreStartupEvent } from "./handler-ingress-prefix.js";
 import { createMatrixRoomMessageHandler } from "./handler.js";
 import { createMatrixInboundEventDeduper } from "./inbound-dedupe.js";
 import { createMatrixIngressMonitor } from "./ingress.js";
+import { resolveMatrixInboundMediaMaxBytes } from "./media.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
@@ -94,8 +95,6 @@ function resolveMatrixPreviewToolProgressEnabled(streaming: MatrixStreamingInput
   }
   return streaming?.preview?.toolProgress ?? true;
 }
-
-const DEFAULT_MEDIA_MAX_MB = 20;
 
 export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promise<void> {
   // Fast-cancel callers should not pay the full Matrix startup/import cost.
@@ -273,8 +272,9 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     accountConfig.historyLimit ?? cfg.messages?.groupChat?.historyLimit,
     DEFAULT_MATRIX_HISTORY_LIMIT,
   );
-  const mediaMaxMb = opts.mediaMaxMb ?? accountConfig.mediaMaxMb ?? DEFAULT_MEDIA_MAX_MB;
-  const mediaMaxBytes = Math.max(1, mediaMaxMb) * 1024 * 1024;
+  const mediaMaxBytes = resolveMatrixInboundMediaMaxBytes(
+    opts.mediaMaxMb ?? accountConfig.mediaMaxMb,
+  );
   const streaming = resolveMatrixStreamingMode(accountConfig.streaming);
   const previewToolProgressEnabled = resolveMatrixPreviewToolProgressEnabled(
     accountConfig.streaming,

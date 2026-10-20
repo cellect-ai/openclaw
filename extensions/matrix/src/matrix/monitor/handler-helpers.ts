@@ -1,7 +1,7 @@
 import { getSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
-import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { truncateUtf16Safe } from "openclaw/plugin-sdk/text-utility-runtime";
 import type { CoreConfig } from "../../types.js";
+import { resolveMatrixInboundMediaContent } from "../media-content.js";
 import { formatMatrixMessageText } from "../media-text.js";
 import { formatPollAsText, isPollStartType, parsePollStart } from "../poll-types.js";
 import { RelationType } from "../send/types.js";
@@ -145,24 +145,6 @@ export function resolveMatrixPendingHistoryText(params: {
     typeof params.content.filename === "string" ? params.content.filename : undefined;
   const msgtype = typeof params.content.msgtype === "string" ? params.content.msgtype : undefined;
   return formatMatrixMessageText({ body, filename, msgtype }) ?? params.mentionPrecheckText;
-}
-
-export function resolveMatrixInboundMediaContent(content: RoomMessageEventContent) {
-  const file = content.file && typeof content.file === "object" ? content.file : undefined;
-  const info =
-    content.info && typeof content.info === "object"
-      ? (content.info as { mimetype?: string; size?: number })
-      : undefined;
-  const body = normalizeOptionalString(content.body);
-
-  return {
-    url: normalizeOptionalString(content.url) ?? normalizeOptionalString(file?.url),
-    file,
-    body: body ?? "",
-    contentType: info?.mimetype,
-    sizeBytes: typeof info?.size === "number" ? info.size : undefined,
-    originalFilename: normalizeOptionalString(content.filename) ?? body,
-  };
 }
 
 export function isMatrixAudioMediaEnabled(cfg: CoreConfig): boolean {

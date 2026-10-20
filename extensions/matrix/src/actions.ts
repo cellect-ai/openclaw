@@ -21,6 +21,7 @@ const MATRIX_PLUGIN_HANDLED_ACTIONS = new Set<ChannelMessageActionName>([
   "reactions",
   "emoji-list",
   "read",
+  "download-file",
   "edit",
   "delete",
   "pin",
@@ -68,6 +69,7 @@ function createMatrixExposedActions(params: {
   if (params.gate("messages")) {
     actions.add("send");
     actions.add("read");
+    actions.add("download-file");
     actions.add("edit");
     actions.add("delete");
   }
@@ -130,6 +132,7 @@ export const matrixMessageActions: ChannelMessageActionAdapter = {
   providerOwnedReadGates: true,
   readAuthorityActions: [
     "read",
+    "download-file",
     "reactions",
     "list-pins",
     "emoji-list",
@@ -150,6 +153,24 @@ export const matrixMessageActions: ChannelMessageActionAdapter = {
     });
     const listedActions = Array.from(actions);
     const schema: ChannelMessageToolSchemaContribution[] = [];
+    if (actions.has("download-file")) {
+      schema.push({
+        actions: ["download-file"],
+        properties: {
+          messageId: Type.Optional(
+            Type.String({
+              description:
+                "Matrix event ID ($...) of an attachment in the authorized target room. Read it with action=read, then use action=download-file to reopen an earlier image or file.",
+            }),
+          ),
+          original: Type.Optional(
+            Type.Boolean({
+              description: "Stage the original file without an inline image preview.",
+            }),
+          ),
+        },
+      });
+    }
     if (actions.has("set-profile")) {
       schema.push(buildMatrixProfileToolSchema());
     }

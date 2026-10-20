@@ -31,6 +31,49 @@ const mediaLocalRoots = ["/tmp/openclaw-matrix-test"];
 describe("Matrix public message actions", () => {
   beforeEach(resetMatrixActionMocks);
 
+  it("retrieves attachments through the same current-room read policy", async () => {
+    await runMatrixAction(
+      "download-file",
+      { ...target, original: true, mediaUrl: "mxc://forged/other" },
+      cfg,
+      account,
+    );
+    expect(mocks.withAuthorizedMatrixReadTarget).toHaveBeenCalledWith(
+      expect.objectContaining({ roomId, accountId: "ops" }),
+    );
+    expect(mocks.downloadMatrixMessageAttachment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: mocks.matrixClient,
+        roomId,
+        messageId: "$msg",
+        original: true,
+      }),
+    );
+    expect(mocks.downloadMatrixMessageAttachment.mock.calls[0]?.[0]).not.toHaveProperty("mediaUrl");
+  });
+
+  it("does not read or download media from a denied room", async () => {
+    mocks.withAuthorizedMatrixReadTarget.mockRejectedValueOnce(
+      new Error("Matrix read target is not allowed."),
+    );
+    await expect(runMatrixAction("download-file", target, cfg, account)).rejects.toThrow(
+      "not allowed",
+    );
+    expect(mocks.downloadMatrixMessageAttachment).not.toHaveBeenCalled();
+  });
+
+  it("does not expose downloads when messages are disabled", async () => {
+    await expect(
+      runMatrixAction(
+        "download-file",
+        target,
+        { channels: { matrix: { actions: { messages: false } } } },
+        account,
+      ),
+    ).rejects.toThrow("messages are disabled");
+    expect(mocks.withAuthorizedMatrixReadTarget).not.toHaveBeenCalled();
+  });
+
   it("parses snake_case vote params and forwards normalized selectors", async () => {
     const result = await runMatrixAction(
       "poll-vote",

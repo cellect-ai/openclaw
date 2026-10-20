@@ -1,4 +1,5 @@
 import type { AgentToolResult } from "openclaw/plugin-sdk/agent-core";
+import { readBooleanParam } from "openclaw/plugin-sdk/boolean-param";
 import {
   createActionGate,
   jsonResult,
@@ -15,6 +16,7 @@ import {
   normalizeOptionalLowercaseString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMatrixAccountConfig } from "./matrix/accounts.js";
+import { downloadMatrixMessageAttachment } from "./matrix/actions/media.js";
 import {
   deleteMatrixMessage,
   editMatrixMessage,
@@ -259,6 +261,23 @@ export async function handleMatrixAction(
       }),
     );
     return jsonResult({ ok: true, emojis });
+  }
+
+  if (action === "download-file") {
+    const roomId = readRoomId(params);
+    const messageId = readStringParam(params, "messageId", { required: true });
+    const original = readBooleanParam(params, "original") ?? false;
+    const { accountId, withReadTarget } = prepareAction("messages");
+    return await withReadTarget(roomId, async (resolvedRoom, opts) =>
+      downloadMatrixMessageAttachment({
+        client: opts.client,
+        roomId: resolvedRoom,
+        messageId,
+        mediaMaxMb: resolveMatrixAccountConfig({ cfg, accountId }).mediaMaxMb,
+        context: ctx,
+        original,
+      }),
+    );
   }
 
   if (action === "read") {

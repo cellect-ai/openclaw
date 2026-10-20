@@ -50,6 +50,9 @@ describe("matrixMessageActions", () => {
     const actions = discovery.actions;
     expect(actions).toContain("poll");
     expect(actions).toContain("poll-vote");
+    expect(actions).toContain("download-file");
+    expect(supportsAction({ action: "download-file" } as never)).toBe(true);
+    expect(matrixMessageActions.readAuthorityActions).toContain("download-file");
     expect(discovery.capabilities).toEqual(["presentation"]);
     expect(supportsAction({ action: "poll" } as never)).toBe(false);
     expect(supportsAction({ action: "poll-vote" } as never)).toBe(true);
@@ -107,7 +110,10 @@ describe("matrixMessageActions", () => {
 
     expect(enabled?.actions).toContain("emoji-list");
     expect(matrixMessageActions.supportsAction?.({ action: "emoji-list" } as never)).toBe(true);
-    expect(enabled?.schema).toMatchObject({
+    const reactionSchema = Array.isArray(enabled?.schema)
+      ? enabled.schema.find((item) => item.actions?.includes("react"))
+      : enabled?.schema;
+    expect(reactionSchema).toMatchObject({
       actions: ["react", "reactions"],
       properties: {
         emoji: {
@@ -117,7 +123,7 @@ describe("matrixMessageActions", () => {
     });
     expect(disabled?.actions).not.toContain("emoji-list");
     expect(disabled?.actions).not.toContain("react");
-    expect(disabled?.schema).toBeNull();
+    expect(disabled?.schema).toMatchObject({ actions: ["download-file"] });
   });
 
   it("hides self-profile updates without owner identity context", () => {

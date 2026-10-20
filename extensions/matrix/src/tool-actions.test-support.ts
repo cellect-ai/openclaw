@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   deleteMatrixMessage: vi.fn(),
   readMatrixMessage: vi.fn(),
   readMatrixMessages: vi.fn(),
+  downloadMatrixMessageAttachment: vi.fn(),
   listMatrixEmojis: vi.fn(),
   listMatrixReactions: vi.fn(),
   removeMatrixReactions: vi.fn(),
@@ -27,6 +28,9 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock("./matrix/read-policy.js", () => ({
   withAuthorizedMatrixReadTarget: mocks.withAuthorizedMatrixReadTarget,
+}));
+vi.mock("./matrix/actions/media.js", () => ({
+  downloadMatrixMessageAttachment: mocks.downloadMatrixMessageAttachment,
 }));
 
 vi.mock("./matrix/actions/messages.js", () => ({
@@ -104,6 +108,10 @@ export function resetMatrixActionMocks() {
   mocks.readMatrixMessages.mockResolvedValue({
     messages: [{ eventId: "$message" }],
     nextBatch: "next",
+  });
+  mocks.downloadMatrixMessageAttachment.mockResolvedValue({
+    content: [{ type: "text", text: "staged" }],
+    details: { ok: true },
   });
   mocks.sendMatrixMessage.mockResolvedValue({
     messageId: "$sent",

@@ -3,6 +3,7 @@ import { resolveBotThreadMentionPolicy } from "openclaw/plugin-sdk/channel-menti
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { formatAudioTranscriptForAgent } from "openclaw/plugin-sdk/media-understanding-runtime";
 import { buildInboundHistoryFromEntries } from "openclaw/plugin-sdk/reply-history";
+import { resolveMatrixInboundMediaContent } from "../media-content.js";
 import { isMatrixMediaSizeLimitError } from "../media-errors.js";
 import { isLikelyBareFilename } from "../media-text.js";
 import { fetchMatrixPollSnapshot, type MatrixPollSnapshot } from "../poll-summary.js";
@@ -17,7 +18,6 @@ import type { createMatrixEventContextResolver } from "./event-context.js";
 import {
   isMatrixAudioMediaEnabled,
   resolveMatrixInboundBodyText,
-  resolveMatrixInboundMediaContent,
   resolveMatrixMentionPrecheckText,
   resolveMatrixPendingHistoryText,
 } from "./handler-helpers.js";

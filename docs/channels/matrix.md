@@ -158,6 +158,12 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 
 ### Tooling and per-room overrides
 
+- `message` with `action: "download-file"` reopens an earlier attachment by its
+  `messageId` in the authorized target room. Use `action: "read"` to find that
+  event ID. Images return an inline preview and stage the original file for
+  agent workspace access; `original: true` skips the preview. Downloads use the
+  same room-read policy, `actions.messages` gate, and `mediaMaxMb` cap as normal
+  inbound media. Tool arguments cannot supply an arbitrary media URL.
 - `actions`: per-action tool gating (`messages`, `reactions`, `pins`, `profile`, `memberInfo`, `channelInfo`, `verification`).
 - `groups`: per-room policy map. Session identity uses the stable room ID after resolution. (`rooms` is a legacy alias.)
   - `groups.<room>.account`: restrict one inherited room entry to a specific account.
