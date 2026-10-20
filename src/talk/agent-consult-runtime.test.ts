@@ -10,6 +10,11 @@ import {
   emitTrustedDiagnosticEvent,
   waitForDiagnosticEventsDrained,
 } from "../infra/diagnostic-events.js";
+import { runBeforeAgentReplyForTurn } from "../plugins/before-agent-reply.js";
+import {
+  buildAgentHookContextChannelFields,
+  buildAgentHookContextIdentityFields,
+} from "../plugins/hook-agent-context.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { runExclusiveSessionLifecycleMutation } from "../sessions/session-lifecycle-admission.js";
 import { captureEnv, setTestEnvValue } from "../test-utils/env.js";
@@ -35,6 +40,13 @@ type ForkSessionEntryFromParentResult = Awaited<ReturnType<ForkSessionEntryFromP
 
 const sessionForkMocks = vi.hoisted(() => ({
   forkSessionEntryFromParent: vi.fn<ForkSessionEntryFromParent>(),
+}));
+const replyHooks = vi.hoisted(() => ({
+  hasHooks: vi.fn(() => true),
+  runBeforeAgentReply: vi.fn(async () => undefined),
+}));
+vi.mock("../plugins/hook-runner-global.js", () => ({
+  getGlobalHookRunner: () => replyHooks,
 }));
 
 vi.mock("../auto-reply/reply/session-fork.js", async (importOriginal) => {
@@ -196,6 +208,73 @@ describe("realtime voice agent consult runtime", () => {
 
   it("exposes the supported sender authentication revision", () => {
     expect(REALTIME_VOICE_AGENT_CONSULT_SENDER_AUTH_VERSION).toBe(1);
+  });
+
+  it("carries host-attested Matrix speaker and thread facts into the embedded run", async () => {
+    const { runtime, runEmbeddedAgent } = createAgentRuntime();
+    replyHooks.runBeforeAgentReply.mockClear();
+    runEmbeddedAgent.mockImplementationOnce(async (params) => {
+      if (!params) {
+        throw new Error("Expected embedded voice run");
+      }
+      // Use the same host context builders and trigger gate as the embedded
+      // orchestrator: an object-only assertion misses skipped entitlement hooks.
+      await runBeforeAgentReplyForTurn({
+        runId: params.runId,
+        trigger: params.trigger,
+        event: { cleanedBody: params.prompt },
+        context: {
+          runId: params.runId,
+          agentId: params.agentId,
+          sessionKey: params.sessionKey,
+          ...buildAgentHookContextChannelFields(params),
+          ...buildAgentHookContextIdentityFields(params),
+        },
+      });
+      return { payloads: [{ text: "Checked." }], meta: {} };
+    });
+    const channelContext = {
+      sender: { id: "@speaker:example.test" },
+      chat: { id: "!room:example.test", talkThreadRootEventId: "$thread" },
+    };
+    await runConsult({
+      agentRuntime: runtime as never,
+      sessionKey: "agent:main:matrix:channel:!room:example.test:thread:$thread",
+      runIdPrefix: "bound-voice",
+      args: { question: "Read my latest email", senderId: "@forged:example.test" },
+      senderId: "@speaker:example.test",
+      trigger: "user",
+      senderIsOwner: false,
+      channelContext,
+      deliveryContext: {
+        channel: "matrix",
+        accountId: "test-admin",
+        to: "room:!room:example.test",
+        threadId: "$thread",
+      },
+    });
+    expect(runEmbeddedAgent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senderId: "@speaker:example.test",
+        trigger: "user",
+        senderIsOwner: false,
+        channelContext,
+        messageProvider: "matrix",
+        agentAccountId: "test-admin",
+        messageTo: "room:!room:example.test",
+        messageThreadId: "$thread",
+      }),
+    );
+    expect(replyHooks.runBeforeAgentReply).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        trigger: "user",
+        channel: "matrix",
+        accountId: "test-admin",
+        senderId: "@speaker:example.test",
+        channelContext,
+      }),
+    );
   });
 
   it("does not start a consult after its caller has closed", async () => {

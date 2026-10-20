@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { GATEWAY_CLIENT_CAPS } from "../../../packages/gateway-protocol/src/client-info.js";
+import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { ReplyToolAuthorityOverlay } from "../../auto-reply/reply/reply-run-registry.contracts.js";
 import { formatErrorMessage as formatError, readErrorName } from "../../infra/errors.js";
 import { beginLifecycleWriteCustody } from "../../infra/lifecycle-write-custody.js";
@@ -26,6 +27,7 @@ import {
   handleRealtimeVoiceHarnessBridgeEvent,
 } from "../../talk/realtime-session-harness.js";
 import type { TalkEvent } from "../../talk/talk-events.js";
+import type { DeliveryContext } from "../../utils/delivery-context.shared.js";
 import { ADMIN_SCOPE, WRITE_SCOPE } from "../operator-scopes.js";
 import { resolveChatSendCallerContext } from "../server-methods/gateway-client-identity.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
@@ -52,6 +54,10 @@ const pendingOwners = new Set<GatewayControlOwner>();
 
 export type TalkAgentConsultAuthority = {
   senderIsOwner: boolean;
+  senderId?: string;
+  channelContext?: RunEmbeddedAgentParams["channelContext"];
+  deliveryContext?: DeliveryContext;
+  trigger?: RunEmbeddedAgentParams["trigger"];
   toolsAllow?: string[];
   replyCaller?: ReturnType<typeof resolveChatSendCallerContext>;
 };

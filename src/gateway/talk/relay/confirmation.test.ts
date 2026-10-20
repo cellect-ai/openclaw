@@ -23,17 +23,20 @@ import { createTalkRealtimeRelaySession, stopTalkRealtimeRelaySession } from "./
 import { closeRelaySession } from "./operations.js";
 import { relaySessions, type RelaySession } from "./state.js";
 
-const mocks = vi.hoisted(() => ({ run: vi.fn(), steer: vi.fn() }));
+const mocks = vi.hoisted(() => ({ run: vi.fn(), steer: vi.fn(), createRunner: vi.fn() }));
 vi.mock("../client-agent-consult.js", () => ({
-  createTalkClientAgentConsultRunner: () => ({
-    runPrompt: Object.assign(mocks.run, {
-      adoptCompletionClaims: vi.fn(),
-      claimAppend: vi.fn(() => true),
-      claimFailureAppend: vi.fn(() => true),
-      steer: mocks.steer,
-    }),
-    getToolAuthorityOverlay: vi.fn(),
-  }),
+  createTalkClientAgentConsultRunner: (params: unknown) => {
+    mocks.createRunner(params);
+    return {
+      runPrompt: Object.assign(mocks.run, {
+        adoptCompletionClaims: vi.fn(),
+        claimAppend: vi.fn(() => true),
+        claimFailureAppend: vi.fn(() => true),
+        steer: mocks.steer,
+      }),
+      getToolAuthorityOverlay: vi.fn(),
+    };
+  },
 }));
 
 describe("native relay confirmation transcript admission", () => {
@@ -45,6 +48,7 @@ describe("native relay confirmation transcript admission", () => {
     state = await createOpenClawTestState({ label: "relay-confirmation", applyEnv: true });
     await ensureClientVoiceAgentSessionEntry({ agentId: "main", sessionKey: "agent:main:main" });
     mocks.run.mockReset().mockResolvedValue({ text: "Read result." });
+    mocks.createRunner.mockClear();
     mocks.steer.mockReset().mockResolvedValue({ text: "Read result." });
   });
 
@@ -58,7 +62,7 @@ describe("native relay confirmation transcript admission", () => {
     await state.cleanup();
   });
 
-  function createHarness(challenge = true) {
+  function createHarness(challenge = true, matrixSpeaker?: string) {
     const cfg = { agents: { entries: { main: {} } } };
     let request: RealtimeVoiceBridgeCreateRequest | undefined;
     const session = createTalkRealtimeRelaySession({
@@ -79,6 +83,18 @@ describe("native relay confirmation transcript admission", () => {
       providerConfig: {},
       instructions: "Answer briefly.",
       tools: [],
+      ...(matrixSpeaker
+        ? {
+            speakerMxid: matrixSpeaker,
+            matrixRoute: {
+              channel: "matrix" as const,
+              accountId: "test-admin",
+              roomId: "!room:example.test",
+              threadRootEventId: "$thread",
+            },
+            consultAuthority: { senderIsOwner: true },
+          }
+        : {}),
     });
     const { relaySessionId } = session;
     const relay = relaySessions.get(relaySessionId);
@@ -103,6 +119,30 @@ describe("native relay confirmation transcript admission", () => {
     }
     return { request, run, relay };
   }
+
+  it("uses the bound human speaker instead of the operator connection for native consults", async () => {
+    const h = createHarness(false, "@speaker:example.test");
+    expect((await h.run({ prompt: "Read current status" })).text).toBe("Read result.");
+    expect(mocks.createRunner).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authority: {
+          senderIsOwner: false,
+          senderId: "@speaker:example.test",
+          trigger: "user",
+          deliveryContext: {
+            channel: "matrix",
+            accountId: "test-admin",
+            to: "room:!room:example.test",
+            threadId: "$thread",
+          },
+          channelContext: {
+            sender: { id: "@speaker:example.test" },
+            chat: { id: "!room:example.test", talkThreadRootEventId: "$thread" },
+          },
+        },
+      }),
+    );
+  });
 
   it.each(["run", "steer"] as const)(
     "waits for a future user transcript and durable append before native %s",

@@ -182,7 +182,30 @@ export function createTalkRealtimeRelaySession(
     context: params.context,
     sessionTarget: params.sessionTarget,
     ownerConnId: params.connId,
-    authority: params.consultAuthority,
+    // Only the app-attested binding identifies a Matrix speaker. The hosting
+    // Gateway connection is an operator, not the human making this request.
+    authority:
+      params.matrixRoute && params.speakerMxid
+        ? {
+            ...params.consultAuthority,
+            senderIsOwner: false,
+            senderId: params.speakerMxid,
+            trigger: "user",
+            deliveryContext: {
+              channel: params.matrixRoute.channel,
+              accountId: params.matrixRoute.accountId,
+              to: `room:${params.matrixRoute.roomId}`,
+              threadId: params.matrixRoute.threadRootEventId,
+            },
+            channelContext: {
+              sender: { id: params.speakerMxid },
+              chat: {
+                id: params.matrixRoute.roomId,
+                talkThreadRootEventId: params.matrixRoute.threadRootEventId,
+              },
+            },
+          }
+        : params.consultAuthority,
     getVoiceSessionId: () => relaySessionId,
     initialItems: params.initialItems ?? [],
     sessionCapsule: params.sessionCapsule,

@@ -148,7 +148,13 @@ function resolveRealtimeVoiceAgentDeliveryContext(params: {
   storePath: string;
   sessionKey: string;
   spawnedBy?: string | null;
+  deliveryContext?: DeliveryContext;
 }): DeliveryContext | undefined {
+  // A live bound transport is authoritative even before the first text turn
+  // has populated routing metadata in this session.
+  if (hasDeliveryTargetFields(params.deliveryContext)) {
+    return normalizeDeliveryContext(params.deliveryContext);
+  }
   const requesterSessionKey = params.spawnedBy?.trim();
   try {
     // Prefer the live requester session, then its base thread, then the voice consult session.
@@ -196,6 +202,7 @@ export function prepareRealtimeVoiceAgentExecutionContext(params: {
   senderIsOwner?: boolean;
   toolsAllow?: string[];
   messageProvider: string;
+  deliveryContext?: DeliveryContext;
   sessionEntry?: SessionEntry;
 }) {
   const agentId =
@@ -393,6 +400,12 @@ export async function consultRealtimeVoiceAgent(params: {
   senderId?: string | null;
   /** Trusted owner bit established by the caller's ingress authorization boundary. */
   senderIsOwner?: boolean;
+  /** Host-attested channel identity; never supplied by model tool arguments. */
+  channelContext?: RunEmbeddedAgentParams["channelContext"];
+  /** Routing attested by the host binding, independent of historical metadata. */
+  deliveryContext?: DeliveryContext;
+  /** Ingress-owned trigger; bound human voice uses the normal user hook path. */
+  trigger?: RunEmbeddedAgentParams["trigger"];
   contextMode?: RealtimeVoiceAgentConsultContextMode;
   provider?: RunEmbeddedAgentParams["provider"];
   model?: RunEmbeddedAgentParams["model"];
@@ -489,6 +502,7 @@ export async function consultRealtimeVoiceAgent(params: {
         storePath,
         sessionKey: params.sessionKey,
         spawnedBy: params.spawnedBy,
+        deliveryContext: params.deliveryContext,
       });
       const sessionEntry = await resolveRealtimeVoiceAgentConsultSessionEntry({
         agentId,
@@ -529,6 +543,8 @@ export async function consultRealtimeVoiceAgent(params: {
         sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
         agentId,
         ...toolAuthorityOverlay,
+        channelContext: params.channelContext,
+        trigger: params.trigger,
         // ASR voice ingress has no trace/client-tool or privileged handoff capability.
         messageProvider: toolAuthorityOverlay.messageProvider,
         messageTo: consultDeliveryContext?.to,
