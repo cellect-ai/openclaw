@@ -51,6 +51,7 @@ function setup() {
         allow: [plugin.id],
         load: { paths: [plugin.file] },
         slots: { memory: "none" },
+        entries: { [plugin.id]: { enabled: true, hooks: { allowConversationAccess: true } } },
       },
     },
     cache: false,
@@ -58,6 +59,11 @@ function setup() {
   });
   registries.push(registry);
   expect(registry.plugins.find((record) => record.id === plugin.id)?.status).toBe("loaded");
+  expect(registry.typedHooks).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({ pluginId: plugin.id, hookName: "before_agent_reply" }),
+    ]),
+  );
   const state = Reflect.get(globalThis, fixtureKey) as {
     api: OpenClawPluginApi;
     observations: Observation[];
