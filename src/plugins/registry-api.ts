@@ -15,11 +15,13 @@ import {
   schedulePluginSessionTurn,
   unschedulePluginSessionTurnsByTag,
 } from "./host-hook-scheduled-turns.js";
+import { getPluginInstance } from "./plugin-instance-scope.js";
 import { getPluginRuntimeEntrySource } from "./plugin-runtime-artifact-binding.js";
 import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
   isPluginRecordActive,
+  isPluginRegistryPreparing,
 } from "./registry-lifecycle.js";
 import type { PluginRegistrars } from "./registry-registrars.js";
 import type { PluginRuntimeResolver } from "./registry-runtime.js";
@@ -75,6 +77,19 @@ export function createPluginApiFactory(
       capturePluginLifecycleAuthority(getPluginRecordRegistry(registry, record), record, {
         registration: true,
       })?.() === true;
+    const shouldAccessRunContext = () => {
+      if (registryParams.activateGlobalSideEffects !== false) {
+        return shouldCommitWorkflowSideEffect();
+      }
+      const owner = getPluginRecordRegistry(registry, record);
+      // Run-local state is not a global workflow side effect, but an inspection
+      // may access it only inside an admitted call of its exact live instance.
+      return (
+        getPluginInstance(record)?.hasActiveCall === true &&
+        !isPluginRegistryPreparing(owner) &&
+        capturePluginLifecycleAuthority(owner, record, { admittedRuntime: true })?.() === true
+      );
+    };
     const boundRegistrars = Object.fromEntries(
       Object.entries(registrars).map(([name, register]) => [
         name,
@@ -181,20 +196,15 @@ export function createPluginApiFactory(
                 });
               },
               setRunContext: (patch) =>
-                registryParams.activateGlobalSideEffects !== false &&
-                shouldCommitWorkflowSideEffect()
+                shouldAccessRunContext()
                   ? setPluginRunContext({ pluginId: record.id, patch })
                   : false,
               getRunContext: (get) =>
-                registryParams.activateGlobalSideEffects !== false &&
-                shouldCommitWorkflowSideEffect()
+                shouldAccessRunContext()
                   ? getPluginRunContext({ pluginId: record.id, get })
                   : undefined,
               clearRunContext: (paramsLocal) => {
-                if (
-                  registryParams.activateGlobalSideEffects === false ||
-                  !shouldCommitWorkflowSideEffect()
-                ) {
+                if (!shouldAccessRunContext()) {
                   return;
                 }
                 clearPluginRunContext({
