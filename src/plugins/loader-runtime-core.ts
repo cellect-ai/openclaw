@@ -40,6 +40,7 @@ import {
   isPluginRecordBorrowed,
   isPluginRegistryActivated,
   isPluginRegistryRetired,
+  getPluginRegistryResourceOwner,
   markPluginRecordBorrowed,
   withPluginRegistryPreparationScope,
 } from "./registry-lifecycle.js";
@@ -98,7 +99,11 @@ function resolvePluginRecordRetention(
     return { registry: previousRegistry, record: previous, input: previousInput };
   }
   const lent = borrowRegistry?.plugins.find((record) => record.id === pluginId);
-  const lentInput = borrowRegistry && registryInputs.get(borrowRegistry)?.get(pluginId);
+  // Tool/channel adoption can return a composed view. Admission provenance is
+  // owned by its original registration source, not the view object.
+  const lentInput =
+    borrowRegistry &&
+    registryInputs.get(getPluginRegistryResourceOwner(borrowRegistry))?.get(pluginId);
   return borrowRegistry &&
     !isPluginRegistryRetired(borrowRegistry) &&
     lent &&
