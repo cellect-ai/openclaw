@@ -147,12 +147,16 @@ it("keeps dispatched native-event proof in the same hook instance when a prepare
       );
       const inbound = prepared.inboundPluginRegistry,
         selected = prepared.runtimePluginRegistry;
-      if (!inbound || !selected) throw new Error("Expected both prepared registries");
+      if (!inbound || !selected) {
+        throw new Error("Expected both prepared registries");
+      }
       expect(inbound).not.toBe(root);
       // Like Fi-user, this plugin also has Gateway-owned tools; adoption returns
       // a composed view while its stateful hooks still belong to the raw source.
       expect(inbound).not.toBe(getPluginRegistryResourceOwner(inbound));
-      expect(selected.providers.map(({ provider }) => provider.id)).toEqual(["selected"]);
+      expect(
+        selected.providers.map(({ provider: selectedProvider }) => selectedProvider.id),
+      ).toEqual(["selected"]);
       const context = {
         agentId: "test-agent",
         runId: "native-run",
