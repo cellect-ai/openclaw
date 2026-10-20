@@ -424,8 +424,9 @@ export function registerAdminDelegation(
             // A new speaker invalidates other people's in-flight command proof.
             // Do not consume queued text arrivals: their event proves their own run.
             for (const active of runs.values()) {
-              if (active.sessionKey === sessionKey && active.sender !== sender)
+              if (active.sessionKey === sessionKey && active.sender !== sender) {
                 delete active.sender;
+              }
             }
             run.sender = sender;
             run.voice = voice;
