@@ -75,8 +75,8 @@ function samePluginLoadInput(left: string | undefined, right: string | undefined
 }
 
 /**
- * Same-mode predecessors transfer to the candidate at publication. A live side-effect
- * runtime lends active records to a non-activating load and keeps their custody.
+ * Same-mode predecessors transfer to the candidate at publication. A live admitted
+ * runtime owner lends active records to a non-activating load and keeps their custody.
  */
 function resolvePluginRecordRetention(
   { previousRegistry, borrowRegistry }: PluginLoadOptions,

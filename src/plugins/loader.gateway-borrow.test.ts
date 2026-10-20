@@ -121,8 +121,12 @@ it.each([
     const instance = getPluginInstance(record)!;
     const releaseInbound =
       mode === "unretained" ? undefined : retainPreparedPluginRegistry(inbound);
-    if (mode === "revoked") revokePluginRecord(inbound, record);
-    if (mode === "retired") await releaseInbound?.();
+    if (mode === "revoked") {
+      revokePluginRecord(inbound, record);
+    }
+    if (mode === "retired") {
+      await releaseInbound?.();
+    }
     const selected = loadOpenClawPlugins({
       ...options,
       borrowRegistry: inbound,
