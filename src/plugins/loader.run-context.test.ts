@@ -1,4 +1,5 @@
 import { afterEach, expect, it } from "vitest";
+import { retainPreparedPluginRegistry } from "../agents/prepared-model-runtime.plugin-lifetime.js";
 import { createHookRunner } from "./hooks.js";
 import {
   dispatchPluginAgentEventSubscriptions,
@@ -123,6 +124,41 @@ it("admits borrowed hooks only while their exact lending instance remains live",
   expect(
     state.api.runContext.setRunContext({ runId, namespace: "diagnostic-bits", value: 1 }),
   ).toBe(false);
+});
+
+it("shares run context through a retained non-activating prepared lender", async () => {
+  const { registry: lender, state } = setup();
+  const release = retainPreparedPluginRegistry(lender);
+  try {
+    const borrower = loadPluginRegistryHandle({
+      config: state.api.config,
+      cache: false,
+      runtimeSideEffects: false,
+      borrowRegistry: lender,
+    });
+    registries.push(borrower);
+    expect(borrower.plugins[0]).toBe(lender.plugins[0]);
+    const runner = createHookRunner(borrower);
+    const invoke = () =>
+      withPluginRuntimeRegistryScope(borrower, () =>
+        runner.runBeforeAgentReply(
+          { cleanedBody: "Synthetic prepared diagnostic probe" },
+          {
+            runId,
+            sessionKey: "agent:fixture:matrix:direct:synthetic",
+            agentId: "fixture",
+            trigger: "user",
+          },
+        ),
+      );
+    await invoke();
+    expect(state.observations).toEqual([{ wrote: true, value: 3, cleared: undefined }]);
+    await release?.();
+    await invoke();
+    expect(state.observations).toHaveLength(1);
+  } finally {
+    await release?.();
+  }
 });
 
 it("keeps settled runs and retired scoped plugin APIs unable to create run state", async () => {
