@@ -17,6 +17,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   bindPluginRegistryGatewayOwner,
   getPluginRegistryGatewayOwner,
+  getPluginRegistryResourceOwner,
 } from "../plugins/registry-lifecycle.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import {
@@ -50,7 +51,9 @@ it("keeps dispatched native-event proof in the same hook instance when a prepare
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-prepared-proof-state-"));
   const hook = writePlugin({
     id: "native-proof",
-    registration: `const arrivals = new Map();
+    registration: `api.registerTool({ name: "native_proof_probe", description: "Read-only fixture",
+        parameters: { type: "object", properties: {} }, async execute() { return { content: [] }; } });
+      const arrivals = new Map();
       const runs = new Map();
       api.on("before_dispatch", (event) => {
         if (event.senderAuthentication === "verified") arrivals.set(event.sessionKey, event);
@@ -66,6 +69,14 @@ it("keeps dispatched native-event proof in the same hook instance when a prepare
         params: { provenNativeEvent: runs.get(context.runId) ?? null }
       }));`,
   });
+  const hookManifest = path.join(hook.dir, "openclaw.plugin.json");
+  fs.writeFileSync(
+    hookManifest,
+    JSON.stringify({
+      ...JSON.parse(fs.readFileSync(hookManifest, "utf8")),
+      contracts: { tools: ["native_proof_probe"] },
+    }),
+  );
   const provider = writePlugin({
     id: "selected-provider",
     registration: 'api.registerProvider({ id: "selected", label: "Selected", auth: [] });',
@@ -137,6 +148,9 @@ it("keeps dispatched native-event proof in the same hook instance when a prepare
       const inbound = prepared.inboundPluginRegistry!,
         selected = prepared.runtimePluginRegistry!;
       expect(inbound).not.toBe(root);
+      // Like Fi-user, this plugin also has Gateway-owned tools; adoption returns
+      // a composed view while its stateful hooks still belong to the raw source.
+      expect(inbound).not.toBe(getPluginRegistryResourceOwner(inbound));
       expect(selected.providers.map(({ provider }) => provider.id)).toEqual(["selected"]);
       const context = {
         agentId: "test-agent",
