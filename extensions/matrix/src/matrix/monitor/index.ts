@@ -37,6 +37,7 @@ import {
   resolveMatrixAuthContext,
   type SharedMatrixClientLease,
 } from "../client.js";
+import { restoreMatrixProjectionExecutions } from "../projection-execution.js";
 import type { MatrixClient } from "../sdk.js";
 import { isMatrixStartupAbortError } from "../startup-abort.js";
 import {
@@ -45,7 +46,6 @@ import {
   type MatrixSyncState,
 } from "../sync-state.js";
 import { createMatrixThreadBindingManager } from "../thread-bindings.js";
-import { restoreMatrixProjectionExecutions } from "../projection-execution.js";
 import { registerMatrixAutoJoin } from "./auto-join.js";
 import { resolveMatrixMonitorConfig } from "./config.js";
 import { createDirectRoomTracker } from "./direct.js";

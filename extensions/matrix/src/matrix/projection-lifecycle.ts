@@ -38,20 +38,28 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
           status: "active",
           boundAt: 0,
           conversation: {
-            channel: "matrix", accountId: execution.accountId,
-            conversationId: execution.threadRootEventId, parentConversationId: execution.roomId,
+            channel: "matrix",
+            accountId: execution.accountId,
+            conversationId: execution.threadRootEventId,
+            parentConversationId: execution.roomId,
           },
           metadata: {
-            agentId: execution.agentId, environment: execution.environment,
+            agentId: execution.agentId,
+            environment: execution.environment,
             projectedConversationId: execution.conversationId,
           },
         }),
       );
       // The canonical owner still has its direct binding. Its admitted relation
       // must not create duplicate frozen lifecycle delivery obligations.
-      const bindings = [...direct, ...native].filter((binding, index, all) =>
-        all.findIndex((other) => other.bindingId === binding.bindingId &&
-          other.conversation.accountId === binding.conversation.accountId) === index);
+      const bindings = [...direct, ...native].filter(
+        (binding, index, all) =>
+          all.findIndex(
+            (other) =>
+              other.bindingId === binding.bindingId &&
+              other.conversation.accountId === binding.conversation.accountId,
+          ) === index,
+      );
       return bindings.flatMap((binding) => {
         const metadata = binding.metadata;
         const roomId = binding.conversation.parentConversationId;

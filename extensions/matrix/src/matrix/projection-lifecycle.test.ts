@@ -1,7 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import "openclaw/plugin-sdk/compiled-subprocess-testing";
-import { createPluginStateKeyedStoreForTests, resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
+import {
+  createPluginStateKeyedStoreForTests,
+  resetPluginStateStoreForTests,
+} from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -10,8 +13,11 @@ import {
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  admitMatrixProjectionExecution,
+  restoreMatrixProjectionExecutions,
+} from "./projection-execution.js";
 import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
-import { admitMatrixProjectionExecution, restoreMatrixProjectionExecutions } from "./projection-execution.js";
 import {
   toSessionBindingRecord,
   type MatrixThreadBindingRecord,
@@ -85,7 +91,12 @@ describe("native Matrix participant lifecycle adapter", () => {
   }
   function admit(agent = "main", accountId = agent, threadRootEventId = root) {
     return admitMatrixProjectionExecution({
-      core: runtime, cfg, accountId, agentId: agent, roomId, threadRootEventId,
+      core: runtime,
+      cfg,
+      accountId,
+      agentId: agent,
+      roomId,
+      threadRootEventId,
       sessionKey: sessionKey(agent),
       client: {
         getUserId: async () => `@${accountId}:example.org`,
@@ -241,11 +252,18 @@ describe("native Matrix participant lifecycle adapter", () => {
   });
   it("fails closed before dispatch for an incorrect thread root or non-joined producer", async () => {
     await expect(admit("main", "main", "$wrong")).rejects.toThrow("identity_mismatch");
-    await expect(admitMatrixProjectionExecution({
-      core: runtime, cfg, accountId: "main", agentId: "main", roomId,
-      threadRootEventId: root, sessionKey: sessionKey("main"),
-      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [] },
-    })).rejects.toThrow("producer_not_joined");
+    await expect(
+      admitMatrixProjectionExecution({
+        core: runtime,
+        cfg,
+        accountId: "main",
+        agentId: "main",
+        roomId,
+        threadRootEventId: root,
+        sessionKey: sessionKey("main"),
+        client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [] },
+      }),
+    ).rejects.toThrow("producer_not_joined");
     expect(saved.size).toBe(0);
   });
   it("does not publish an acknowledged relationship after its live manager is replaced", async () => {
@@ -262,7 +280,8 @@ describe("native Matrix participant lifecycle adapter", () => {
     // Account startup order must not matter: the canonical account can load last.
     mocks.rows = [];
     await restoreMatrixProjectionExecutions({
-      core: runtime, accountId: "main",
+      core: runtime,
+      accountId: "main",
       client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
     });
     expect(resolve("main")).toEqual([]);
@@ -270,18 +289,21 @@ describe("native Matrix participant lifecycle adapter", () => {
     expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main" })]);
   });
   it("recovers an execution from the actual worker-backed plugin SQLite namespace", async () => {
-    runtime.state.openKeyedStore = (options) => createPluginStateKeyedStoreForTests("matrix", options);
+    runtime.state.openKeyedStore = (options) =>
+      createPluginStateKeyedStoreForTests("matrix", options);
     await admit();
     mocks.managers.set("main", {});
     expect(resolve("main")).toEqual([]);
     await restoreMatrixProjectionExecutions({
-      core: runtime, accountId: "main",
+      core: runtime,
+      accountId: "main",
       client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
     });
     expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main", roomId })]);
   });
   it.each(["not-joined", "wrong-producer", "wrong-key"])(
-    "refuses restored publication for %s", async (scenario) => {
+    "refuses restored publication for %s",
+    async (scenario) => {
       await admit();
       mocks.managers.set("main", {});
       if (scenario === "wrong-key") {
@@ -290,17 +312,20 @@ describe("native Matrix participant lifecycle adapter", () => {
         saved.set("incorrect-key", value);
       }
       await restoreMatrixProjectionExecutions({
-        core: runtime, accountId: "main",
+        core: runtime,
+        accountId: "main",
         client: {
-          getUserId: async () => scenario === "wrong-producer" ? "@other:example.org" : "@main:example.org",
-          getJoinedRooms: async () => scenario === "not-joined" ? [] : [roomId],
+          getUserId: async () =>
+            scenario === "wrong-producer" ? "@other:example.org" : "@main:example.org",
+          getJoinedRooms: async () => (scenario === "not-joined" ? [] : [roomId]),
         },
       });
       expect(resolve("main")).toEqual([]);
     },
   );
   it.each(["environment", "projectedConversationId"] as const)(
-    "refuses a relationship when canonical %s changes", async (field) => {
+    "refuses a relationship when canonical %s changes",
+    async (field) => {
       await admit();
       mocks.rows[0]![field] = "another-tenant-conversation";
       expect(resolve("main")).toEqual([]);

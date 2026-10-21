@@ -427,8 +427,14 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         : replayLifecycle;
 
       await admitMatrixProjectionExecution({
-        core, cfg, client, roomId, threadRootEventId: threadTarget,
-        accountId, agentId: _route.agentId, sessionKey: _route.sessionKey,
+        core,
+        cfg,
+        client,
+        roomId,
+        threadRootEventId: threadTarget,
+        accountId,
+        agentId: _route.agentId,
+        sessionKey: _route.sessionKey,
       });
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",

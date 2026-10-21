@@ -187,8 +187,13 @@ describe("Codex source-bound pending input", () => {
         const delivery = handle!
           .messageInjectionV2!.queueMessage(
             "controlled answer",
-            { isInboundUserMessage: true, expectedQuestionId: transition === "stale-question"
-              ? "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" : "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+            {
+              isInboundUserMessage: true,
+              expectedQuestionId:
+                transition === "stale-question"
+                  ? "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                  : "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            },
             () => {
               if (!sourceCurrent) {
                 throw new Error("source closed");

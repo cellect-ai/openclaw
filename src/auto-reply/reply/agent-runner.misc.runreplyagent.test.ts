@@ -112,50 +112,60 @@ const { runReplyAgent } = await import("./agent-runner.js");
 setupAgentRunnerTestHooks();
 
 describe("runReplyAgent pending operator input", () => {
-  it.each(["unbound", "stale"])("refuses a %s question without falling through to active-run queueing", async (kind) => {
-    const gatewayCall = vi.fn(async () => ({ status: "answered" }));
-    const reservation = registerPendingAgentQuestion({
-      questionId: "ask_direct_cli_answer",
-      sessionKey: "main",
-      questions: [
-        {
-          id: "color",
-          header: "Color",
-          question: "Which color?",
-          options: [{ label: "Blue" }, { label: "Green" }],
-        },
-      ],
-      gatewayCall,
-      answer: Promise.resolve({ status: "pending" }),
-    });
-    reservation.attachRegistration(Promise.resolve({ id: "ask_direct_cli_answer" }));
-    const replyOperationRunState = {};
-    const testRun = createBaseRun({
-      context: { agentText: "Green" },
-      followup: { transcriptPrompt: "Green", ...(kind === "stale" ? { expectedQuestionId: "ask_older_question" } : {}) },
-      reply: {
-        commandBody: "Green",
-        transcriptCommandBody: "Green",
+  it.each(["unbound", "stale"])(
+    "refuses a %s question without falling through to active-run queueing",
+    async (kind) => {
+      const gatewayCall = vi.fn(async () => ({ status: "answered" }));
+      const reservation = registerPendingAgentQuestion({
+        questionId: "ask_direct_cli_answer",
         sessionKey: "main",
-        isActive: true,
-        shouldSteer: true,
-        opts: { [REPLY_OPERATION_RUN_STATE]: replyOperationRunState },
-      },
-    });
-
-    try {
-      await expect(testRun.run()).resolves.toEqual({
-        text: expect.stringContaining(kind === "stale" ? "selected question is no longer current" : "pending question has no prepared creator authority"),
-        isError: true,
+        questions: [
+          {
+            id: "color",
+            header: "Color",
+            question: "Which color?",
+            options: [{ label: "Blue" }, { label: "Green" }],
+          },
+        ],
+        gatewayCall,
+        answer: Promise.resolve({ status: "pending" }),
       });
-      expect(gatewayCall).not.toHaveBeenCalled();
-      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
-      expect(runCliAgentMock).not.toHaveBeenCalled();
-      expect(testRun.typing.cleanup).toHaveBeenCalledOnce();
-    } finally {
-      reservation.dispose();
-    }
-  });
+      reservation.attachRegistration(Promise.resolve({ id: "ask_direct_cli_answer" }));
+      const replyOperationRunState = {};
+      const testRun = createBaseRun({
+        context: { agentText: "Green" },
+        followup: {
+          transcriptPrompt: "Green",
+          ...(kind === "stale" ? { expectedQuestionId: "ask_older_question" } : {}),
+        },
+        reply: {
+          commandBody: "Green",
+          transcriptCommandBody: "Green",
+          sessionKey: "main",
+          isActive: true,
+          shouldSteer: true,
+          opts: { [REPLY_OPERATION_RUN_STATE]: replyOperationRunState },
+        },
+      });
+
+      try {
+        await expect(testRun.run()).resolves.toEqual({
+          text: expect.stringContaining(
+            kind === "stale"
+              ? "selected question is no longer current"
+              : "pending question has no prepared creator authority",
+          ),
+          isError: true,
+        });
+        expect(gatewayCall).not.toHaveBeenCalled();
+        expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+        expect(runCliAgentMock).not.toHaveBeenCalled();
+        expect(testRun.typing.cleanup).toHaveBeenCalledOnce();
+      } finally {
+        reservation.dispose();
+      }
+    },
+  );
 });
 
 describe("runReplyAgent auto-compaction token update", () => {

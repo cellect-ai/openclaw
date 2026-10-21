@@ -30,19 +30,24 @@ export type MatrixProjectionExecution = {
 const admissionQueue = new KeyedAsyncQueue();
 const admitted = new Map<
   string,
-  { execution: MatrixProjectionExecution; manager: ReturnType<typeof getMatrixThreadBindingManager> }
+  {
+    execution: MatrixProjectionExecution;
+    manager: ReturnType<typeof getMatrixThreadBindingManager>;
+  }
 >();
 
 function key(execution: MatrixProjectionExecution) {
   return createHash("sha256")
-    .update(JSON.stringify([
-      execution.environment,
-      execution.conversationId,
-      execution.roomId,
-      execution.threadRootEventId,
-      execution.accountId,
-      execution.agentId,
-    ]))
+    .update(
+      JSON.stringify([
+        execution.environment,
+        execution.conversationId,
+        execution.roomId,
+        execution.threadRootEventId,
+        execution.accountId,
+        execution.agentId,
+      ]),
+    )
     .digest("hex");
 }
 
@@ -56,18 +61,29 @@ function decode(value: unknown): MatrixProjectionExecution | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const row = value as Record<string, unknown>;
   if (row.version !== 1) return undefined;
-  for (const field of ["environment", "conversationId", "roomId", "canonicalBindingId",
-    "threadRootEventId", "accountId", "agentId", "sessionKey", "producerMxid"]) {
+  for (const field of [
+    "environment",
+    "conversationId",
+    "roomId",
+    "canonicalBindingId",
+    "threadRootEventId",
+    "accountId",
+    "agentId",
+    "sessionKey",
+    "producerMxid",
+  ]) {
     const text = row[field];
     if (typeof text !== "string" || !text || text.length > 1024 || /[\u0000-\u001f]/.test(text)) {
       return undefined;
     }
   }
   const execution = value as MatrixProjectionExecution;
-  return execution.roomId.startsWith("!") && execution.threadRootEventId.startsWith("$") &&
+  return execution.roomId.startsWith("!") &&
+    execution.threadRootEventId.startsWith("$") &&
     execution.producerMxid.startsWith("@") &&
     parseAgentSessionKey(execution.sessionKey)?.agentId === execution.agentId
-      ? execution : undefined;
+    ? execution
+    : undefined;
 }
 
 /** Account startup restores persisted relationships, not routing or run authority.
@@ -81,17 +97,27 @@ export async function restoreMatrixProjectionExecutions(params: {
   const manager = getMatrixThreadBindingManager(params.accountId);
   if (!manager) return;
   const [producer, joinedRooms, entries] = await Promise.all([
-    params.client.getUserId(), params.client.getJoinedRooms(),
-    params.core.state.openKeyedStore<MatrixProjectionExecution>({
-      namespace: "projection-executions-v1", maxEntries: 10_000, overflowPolicy: "reject-new",
-    }).entries(),
+    params.client.getUserId(),
+    params.client.getJoinedRooms(),
+    params.core.state
+      .openKeyedStore<MatrixProjectionExecution>({
+        namespace: "projection-executions-v1",
+        maxEntries: 10_000,
+        overflowPolicy: "reject-new",
+      })
+      .entries(),
   ]);
   if (manager !== getMatrixThreadBindingManager(params.accountId)) return;
   const joined = new Set(joinedRooms);
   for (const entry of entries) {
     const execution = decode(entry.value);
-    if (execution && execution.accountId === params.accountId &&
-      execution.producerMxid === producer && joined.has(execution.roomId) && key(execution) === entry.key) {
+    if (
+      execution &&
+      execution.accountId === params.accountId &&
+      execution.producerMxid === producer &&
+      joined.has(execution.roomId) &&
+      key(execution) === entry.key
+    ) {
       admitted.set(entry.key, { execution, manager });
     }
   }
@@ -106,12 +132,18 @@ function canonical(roomId: string) {
   // Source-backed rooms keep their existing source owner; this relation cannot
   // transfer Slack/source custody to a seated native Matrix account.
   if (
-    rows.length !== 1 || !row || row.boundBy !== "session-projection" ||
-    row.externalSource || row.sourceReplyAuthorization ||
+    rows.length !== 1 ||
+    !row ||
+    row.boundBy !== "session-projection" ||
+    row.externalSource ||
+    row.sourceReplyAuthorization ||
     !parseAgentSessionKey(row.targetSessionKey)?.rest.startsWith("matrix:") ||
-    !row.environment || !row.projectedConversationId ||
-    row.parentConversationId !== roomId || !row.conversationId.startsWith("$")
-  ) return undefined;
+    !row.environment ||
+    !row.projectedConversationId ||
+    row.parentConversationId !== roomId ||
+    !row.conversationId.startsWith("$")
+  )
+    return undefined;
   return row;
 }
 
@@ -119,15 +151,18 @@ function matchesCurrent(execution: MatrixProjectionExecution, cfg: CoreConfig) {
   const row = canonical(execution.roomId);
   const account = resolveMatrixAccountConfig({ cfg, accountId: execution.accountId });
   if (
-    !row || resolveBindingKey(row) !== execution.canonicalBindingId ||
+    !row ||
+    resolveBindingKey(row) !== execution.canonicalBindingId ||
     row.environment !== execution.environment ||
     row.projectedConversationId !== execution.conversationId ||
     row.conversationId !== execution.threadRootEventId ||
-    cfg.channels?.matrix?.enabled === false || account.enabled === false ||
+    cfg.channels?.matrix?.enabled === false ||
+    account.enabled === false ||
     !listMatrixAccountIds(cfg).includes(execution.accountId) ||
     !getMatrixThreadBindingManager(execution.accountId) ||
     (account.userId && account.userId !== execution.producerMxid)
-  ) return false;
+  )
+    return false;
   const resolved = resolveMatrixInboundRoute({
     cfg,
     accountId: execution.accountId,
@@ -135,12 +170,18 @@ function matchesCurrent(execution: MatrixProjectionExecution, cfg: CoreConfig) {
     senderId: "",
     isDirectMessage: false,
     threadId: execution.threadRootEventId,
-    resolveAgentRoute: (input) => resolveAgentRoute({ ...input, defaultAgentId: execution.agentId }),
+    resolveAgentRoute: (input) =>
+      resolveAgentRoute({ ...input, defaultAgentId: execution.agentId }),
   });
-  return resolved.bindingOwnerAvailable && !resolved.configuredBinding && !resolved.pluginId &&
+  return (
+    resolved.bindingOwnerAvailable &&
+    !resolved.configuredBinding &&
+    !resolved.pluginId &&
     resolved.route.matchedBy !== "default" &&
     (!resolved.runtimeBindingId || resolved.runtimeBindingId === execution.canonicalBindingId) &&
-    resolved.route.agentId === execution.agentId && resolved.route.sessionKey === execution.sessionKey;
+    resolved.route.agentId === execution.agentId &&
+    resolved.route.sessionKey === execution.sessionKey
+  );
 }
 
 /** Called only by authenticated native ingress, after access/mention routing and before dispatch. */
@@ -156,10 +197,18 @@ export async function admitMatrixProjectionExecution(params: {
 }): Promise<void> {
   const row = canonical(params.roomId);
   if (!row) {
-    if (listAllBindings().some((binding) => binding.parentConversationId === params.roomId &&
-      binding.boundBy === "session-projection" && binding.environment &&
-      binding.projectedConversationId && !binding.externalSource && !binding.sourceReplyAuthorization &&
-      parseAgentSessionKey(binding.targetSessionKey)?.rest.startsWith("matrix:"))) {
+    if (
+      listAllBindings().some(
+        (binding) =>
+          binding.parentConversationId === params.roomId &&
+          binding.boundBy === "session-projection" &&
+          binding.environment &&
+          binding.projectedConversationId &&
+          !binding.externalSource &&
+          !binding.sourceReplyAuthorization &&
+          parseAgentSessionKey(binding.targetSessionKey)?.rest.startsWith("matrix:"),
+      )
+    ) {
       throw new Error("Matrix execution admission refused: canonical_binding_conflict");
     }
     return;
@@ -182,15 +231,22 @@ export async function admitMatrixProjectionExecution(params: {
   };
   const currentCfg = () => (params.core.config.current?.() ?? params.cfg) as CoreConfig;
   const assertCurrent = () => {
-    if (!manager || manager !== getMatrixThreadBindingManager(params.accountId) ||
-      !execution.producerMxid.startsWith("@") || !matchesCurrent(execution, currentCfg())) {
+    if (
+      !manager ||
+      manager !== getMatrixThreadBindingManager(params.accountId) ||
+      !execution.producerMxid.startsWith("@") ||
+      !matchesCurrent(execution, currentCfg())
+    ) {
       throw new Error("Matrix execution admission refused: identity_mismatch");
     }
     for (const { execution: other, manager: otherManager } of admitted.values()) {
-      if (other.sessionKey === execution.sessionKey && other.agentId === execution.agentId &&
+      if (
+        other.sessionKey === execution.sessionKey &&
+        other.agentId === execution.agentId &&
         other.accountId !== execution.accountId &&
         otherManager === getMatrixThreadBindingManager(other.accountId) &&
-        matchesCurrent(other, currentCfg())) {
+        matchesCurrent(other, currentCfg())
+      ) {
         throw new Error("Matrix execution admission refused: execution_owner_conflict");
       }
     }
@@ -207,7 +263,9 @@ export async function admitMatrixProjectionExecution(params: {
     // Plugin KV is already worker-backed SQLite. This namespace stores only
     // independently typed execution relationships, not a second room registry.
     const store = params.core.state.openKeyedStore<MatrixProjectionExecution>({
-      namespace: "projection-executions-v1", maxEntries: 10_000, overflowPolicy: "reject-new",
+      namespace: "projection-executions-v1",
+      maxEntries: 10_000,
+      overflowPolicy: "reject-new",
     });
     const saved = await store.lookup(key(execution));
     assertCurrent();
@@ -227,15 +285,19 @@ export async function admitMatrixProjectionExecution(params: {
 }
 
 export function resolveMatrixProjectionExecutions(
-  owner: { agentId: string; sessionKey: string }, cfg: CoreConfig,
+  owner: { agentId: string; sessionKey: string },
+  cfg: CoreConfig,
 ): MatrixProjectionExecution[] {
   for (const [id, { execution, manager }] of admitted) {
     if (manager !== getMatrixThreadBindingManager(execution.accountId)) admitted.delete(id);
   }
   const matching = [...admitted.values()].flatMap(({ execution, manager }) =>
-    execution.agentId === owner.agentId && execution.sessionKey === owner.sessionKey &&
-    manager === getMatrixThreadBindingManager(execution.accountId) && matchesCurrent(execution, cfg)
-      ? [execution] : [],
+    execution.agentId === owner.agentId &&
+    execution.sessionKey === owner.sessionKey &&
+    manager === getMatrixThreadBindingManager(execution.accountId) &&
+    matchesCurrent(execution, cfg)
+      ? [execution]
+      : [],
   );
   // A restored contradictory relationship cannot select two senders for one
   // native session. Native ingress reports execution_owner_conflict on retry.

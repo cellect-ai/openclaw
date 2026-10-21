@@ -102,7 +102,9 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
     run.originatingReplyToMode ?? "",
     normalizeChatType(run.originatingChatType) ?? "",
     resolveFollowupAuthorizationKey(run),
-    run.expectedQuestionId ? [run.expectedQuestionId, run.messageId ?? run.sourceTurnId ?? ""] : null,
+    run.expectedQuestionId
+      ? [run.expectedQuestionId, run.messageId ?? run.sourceTurnId ?? ""]
+      : null,
     run.turnAdoptionLifecycle?.ownerKey ?? "",
     normalizeOptionalString(execution.runtimePolicySessionKey ?? execution.sessionKey) ?? "",
     execution.provider,

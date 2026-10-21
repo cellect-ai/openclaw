@@ -156,8 +156,10 @@ export async function resolveMatrixInboundContext(config: {
   }
   const replySenderAllowed =
     !replyContext?.senderId || isRoomContextSenderAllowed(replyContext.senderId);
-  const questionReply = replyContext?.questionReply && replyContext.questionReply.issuer === await client.getUserId()
-    ? replyContext.questionReply : undefined;
+  const questionReply =
+    replyContext?.questionReply && replyContext.questionReply.issuer === (await client.getUserId())
+      ? replyContext.questionReply
+      : undefined;
   if (questionReply && questionReply.threadRootEventId !== threadTarget) {
     throw new Error("Matrix question reply refused: thread_mismatch");
   }

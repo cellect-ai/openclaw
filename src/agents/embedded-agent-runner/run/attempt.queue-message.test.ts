@@ -3,7 +3,10 @@ import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-tr
 import { createTestUserTurnTranscriptTarget } from "../../../sessions/user-turn-transcript.test-support.js";
 import { createDeferredCore as deferred } from "../../../shared/deferred.js";
 import type { AgentHarnessQuestionGatewayCall } from "../../harness/gateway-question-dispatch.js";
-import { registerPendingAgentQuestion, runAgentHarnessGatewayQuestion } from "../../harness/gateway-question.js";
+import {
+  registerPendingAgentQuestion,
+  runAgentHarnessGatewayQuestion,
+} from "../../harness/gateway-question.js";
 import { registerQueuedUserMessageRetirement } from "../../sessions/queued-user-message-retirement.js";
 import {
   reportSteeringMessagePersistenceFailure,
@@ -74,25 +77,43 @@ describe("embedded OpenClaw queued steering cancellation", () => {
     const sessionKey = "agent:main:question-fence";
     const gatewayCall = vi.fn(async () => ({ status: "answered" }));
     const reservation = registerPendingAgentQuestion({
-      sessionKey, questionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      sessionKey,
+      questionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       questions: [{ id: "mode", header: "Mode", question: "Continue?", options: [] }],
-      gatewayCall, answer: Promise.resolve({ status: "pending" }),
+      gatewayCall,
+      answer: Promise.resolve({ status: "pending" }),
     });
     reservation.attachRegistration(Promise.resolve());
     const steer = vi.fn(async () => undefined);
     const session = { steer, subscribe: () => () => {} };
     try {
-      await expect(steerActiveSessionWithOptionalDeliveryWait(session, "Continue", {
-        isInboundUserMessage: true, expectedQuestionId: "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-      }, sessionKey)).rejects.toThrow("selected question is no longer current");
+      await expect(
+        steerActiveSessionWithOptionalDeliveryWait(
+          session,
+          "Continue",
+          {
+            isInboundUserMessage: true,
+            expectedQuestionId: "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          },
+          sessionKey,
+        ),
+      ).rejects.toThrow("selected question is no longer current");
       expect(gatewayCall).not.toHaveBeenCalled();
       expect(steer).not.toHaveBeenCalled();
-      await steerActiveSessionWithOptionalDeliveryWait(session, "Continue", {
-        isInboundUserMessage: true, expectedQuestionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      }, sessionKey);
+      await steerActiveSessionWithOptionalDeliveryWait(
+        session,
+        "Continue",
+        {
+          isInboundUserMessage: true,
+          expectedQuestionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        },
+        sessionKey,
+      );
       expect(gatewayCall).toHaveBeenCalledOnce();
       expect(steer).not.toHaveBeenCalled();
-    } finally { reservation.dispose(); }
+    } finally {
+      reservation.dispose();
+    }
   });
   it.each(["message_end", "agent_settled", "agent_handoff"])(
     "keeps admission-only steering owned until %s",

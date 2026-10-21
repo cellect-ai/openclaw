@@ -302,10 +302,17 @@ async function claimQuestionAnswer(
   const state = sessionKey ? pendingAgentQuestions.get(sessionKey) : undefined;
   // This is a narrowing fence, not authorization. The ordinary creator/source
   // authority and reservation below still own acceptance and final dispatch.
-  if (params.expectedQuestionId &&
-    (!state || state.kind !== "gateway" || state.resolving || state.cancelRequested ||
-      state.questionId !== params.expectedQuestionId)) {
-    throw new QuestionDispatchRefusedError("The selected question is no longer current; refresh its controls.");
+  if (
+    params.expectedQuestionId &&
+    (!state ||
+      state.kind !== "gateway" ||
+      state.resolving ||
+      state.cancelRequested ||
+      state.questionId !== params.expectedQuestionId)
+  ) {
+    throw new QuestionDispatchRefusedError(
+      "The selected question is no longer current; refresh its controls.",
+    );
   }
   if (!state || state.resolving || (state.kind === "gateway" && state.cancelRequested)) {
     return false;
