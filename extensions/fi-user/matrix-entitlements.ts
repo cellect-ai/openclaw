@@ -1,5 +1,5 @@
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import type { OpenClawPluginToolContext, PluginHookToolContext } from "openclaw/plugin-sdk/types";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegation.js";
 
 const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";

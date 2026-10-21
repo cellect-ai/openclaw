@@ -140,7 +140,7 @@ describe("registered Fi admitted-turn capability", () => {
     await cap.authorizeRequester("own-accounts");
     await cap.authorizeRequester("own-accounts");
     expect(fetchMock).toHaveBeenCalledTimes(3);
-    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({
+    expect(JSON.parse(fetchMock.mock.calls[1]?.[1]?.body)).toEqual({
       roomId: "!room:matrix.test",
       agentId: "cellect-fi-admin",
       mode: "voice",
