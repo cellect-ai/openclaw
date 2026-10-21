@@ -15,8 +15,8 @@ import {
 import { getMatrixRuntime } from "../runtime.js";
 import { claimCurrentTokenStorageState, resolveMatrixStateFilePath } from "./client/storage.js";
 import type { MatrixAuth } from "./client/types.js";
-import { assertMatrixSupportedStateFile } from "./retired-state.js";
 import { parseProjectionBindingMetadata } from "./projection-source.js";
+import { assertMatrixSupportedStateFile } from "./retired-state.js";
 import type { MatrixClient } from "./sdk.js";
 import { sendMessageMatrix } from "./send.js";
 import { resolveMatrixSqliteStateEnv, resolveMatrixSqliteStateKey } from "./sqlite-state.js";
@@ -107,12 +107,10 @@ function normalizeBindingRecord(
 
 async function loadBindingsFromPluginState(params: {
   accountId: string;
-  env?: NodeJS.ProcessEnv;
-  stateDir?: string;
+  store: ReturnType<typeof createThreadBindingStore>;
 }): Promise<MatrixThreadBindingRecord[]> {
-  const store = createThreadBindingStore(params);
   const loaded: MatrixThreadBindingRecord[] = [];
-  for (const entry of await store.entries()) {
+  for (const entry of await params.store.entries()) {
     const record = normalizeBindingRecord(entry.value, params.accountId);
     if (record) {
       loaded.push(record);
@@ -129,10 +127,9 @@ function toPluginJsonValue<T>(value: T): T {
 async function persistBindingsSnapshot(params: {
   accountId: string;
   bindings: MatrixThreadBindingRecord[];
-  env?: NodeJS.ProcessEnv;
-  stateDir?: string;
+  store: ReturnType<typeof createThreadBindingStore>;
 }): Promise<void> {
-  const store = createThreadBindingStore(params);
+  const { store } = params;
   const liveKeys = new Set(params.bindings.map((record) => buildThreadBindingStoreKey(record)));
   for (const entry of await store.entries()) {
     const record = normalizeBindingRecord(entry.value, params.accountId);
@@ -260,11 +257,13 @@ export async function createMatrixThreadBindingManager(params: {
     }
     await existingEntry.manager.stop();
   }
-  const loaded = await loadBindingsFromPluginState({
-    accountId: params.accountId,
+  // Final persistence may run from native retirement without the registration's
+  // invocation context. Keep this manager's already-admitted physical store.
+  const store = createThreadBindingStore({
     env: params.env,
     stateDir: sqliteStateDir,
   });
+  const loaded = await loadBindingsFromPluginState({ accountId: params.accountId, store });
   for (const record of loaded) {
     setBindingRecord(record);
   }
@@ -278,8 +277,7 @@ export async function createMatrixThreadBindingManager(params: {
         await persistBindingsSnapshot({
           accountId: params.accountId,
           bindings: snapshot,
-          env: params.env,
-          stateDir: sqliteStateDir,
+          store,
         });
         await claimCurrentTokenStorageState({ rootDir: sqliteStateDir });
       });
