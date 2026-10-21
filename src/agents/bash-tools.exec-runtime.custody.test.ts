@@ -1,5 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { onAgentEvent } from "../infra/agent-events.js";
 import { markBackgrounded } from "./bash-process-registry.js";
 import { resetProcessRegistryForTests } from "./bash-process-registry.test-support.js";
 import { runExecProcess } from "./bash-tools.exec-runtime.js";
@@ -9,15 +10,22 @@ const mocks = vi.hoisted(() => ({ spawn: vi.fn(), emit: vi.fn() }));
 vi.mock("../process/supervisor/index.js", () => ({
   getProcessSupervisor: () => ({ spawn: mocks.spawn }),
 }));
-vi.mock("../infra/agent-events.js", () => ({ emitAgentEvent: mocks.emit }));
 vi.mock("../infra/heartbeat-wake.js", () => ({ requestHeartbeat: vi.fn() }));
 vi.mock("../infra/system-events.js", () => ({ enqueueSystemEventWithReceipt: vi.fn() }));
 
+let unsubscribe: (() => void) | undefined;
 beforeEach(() => {
   resetProcessRegistryForTests();
   mocks.emit.mockReset();
   mocks.spawn.mockReset();
   mocks.spawn.mockImplementation(async (input) => runtimeManagedRun(input));
+  unsubscribe = onAgentEvent((event) => {
+    if (event.stream === "sandbox_process") mocks.emit(event);
+  });
+});
+afterEach(() => {
+  unsubscribe?.();
+  resetProcessRegistryForTests();
 });
 
 function fixture() {
@@ -85,16 +93,18 @@ describe("native sandbox credential-custody completion", () => {
       cleanup.resolve();
       await expect(process.promise).resolves.toMatchObject({ status: "completed" });
       expect(finalizeExec).toHaveBeenCalledOnce();
-      expect(mocks.emit).toHaveBeenCalledExactlyOnceWith({
-        runId: "run-1",
-        stream: "sandbox_process",
-        data: {
-          phase: "cleanup-complete",
-          toolCallId: "call-1",
-          sessionKey: "agent:admin:fixture",
-          agentId: "admin",
-        },
-      });
+      expect(mocks.emit).toHaveBeenCalledExactlyOnceWith(
+        expect.objectContaining({
+          runId: "run-1",
+          stream: "sandbox_process",
+          data: {
+            phase: "cleanup-complete",
+            toolCallId: "call-1",
+            sessionKey: "agent:admin:fixture",
+            agentId: "admin",
+          },
+        }),
+      );
     },
   );
 
