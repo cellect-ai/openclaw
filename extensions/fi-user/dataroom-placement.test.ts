@@ -55,7 +55,7 @@ describe("bounded requester placement inventory", () => {
       tasks: [],
     });
     expect(page.documents[0]).toMatchObject({ detailsTruncated: true });
-    expect(page.documents[0].displayName).toHaveLength(300);
+    expect(page.documents[0]?.displayName).toHaveLength(300);
     expect(() => roomPlacementPage("room-1", { documents: [] })).toThrow(/incomplete/);
   });
 });
