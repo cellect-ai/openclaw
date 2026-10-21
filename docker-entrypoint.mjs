@@ -71,14 +71,16 @@ function gatewayInvocation(program) {
 
 // The image names a seed that distrusts compromised CAs in $HOME/.pki/nssdb for
 // the runtime user; a retained HOME volume never receives the image's copy.
-// Fail open and report it: the managed browser policy still applies.
+// Headless-shell does not load the managed policy: failed seeding must stop
+// activation before the original wrapper can start an unprotected runtime.
 const nssSeed = process.env.OPENCLAW_NSS_DISTRUST_SEED;
 if (nssSeed) {
   const seeded = spawnSync(nssSeed, [], { stdio: "inherit" });
   if (seeded.status !== 0) {
     console.error(
-      `OPENCLAW_NSS_SEED_DEGRADED: ${nssSeed} ${seeded.error?.message ?? `exited ${seeded.status ?? seeded.signal}`}`,
+      `OPENCLAW_NSS_SEED_FAILED: ${nssSeed} ${seeded.error?.message ?? `exited ${seeded.status ?? seeded.signal}`}`,
     );
+    process.exit(78);
   }
 }
 

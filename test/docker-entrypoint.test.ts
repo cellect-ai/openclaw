@@ -144,11 +144,11 @@ describe.skipIf(process.platform === "win32")("Docker image activation", () => {
   });
 
   it.for([
-    { exit: 0, degraded: false },
-    { exit: 3, degraded: true },
+    { exit: 0, status: 0 },
+    { exit: 3, status: 78 },
   ])(
-    "seeds NSS distrust first and still starts when the seed exits $exit",
-    async ({ exit, degraded }, { command }) => {
+    "requires successful NSS seeding before starting: seed exits $exit",
+    async ({ exit, status }, { command }) => {
       const f = fixture(command);
       const seed = path.join(f.root, "nss-seed");
       fs.writeFileSync(
@@ -159,15 +159,39 @@ describe.skipIf(process.platform === "win32")("Docker image activation", () => {
       const result = await f.run(["openclaw.mjs", "gateway"], {
         OPENCLAW_NSS_DISTRUST_SEED: seed,
       });
-      expect(result, result.stderr).toMatchObject({ status: 0, signal: null, error: undefined });
-      expect(f.read().map((row) => row.args)).toEqual([
-        ["nss-seed"],
-        ["doctor", "--fix", "--non-interactive"],
-        ["gateway"],
-      ]);
-      expect(result.stderr.includes("OPENCLAW_NSS_SEED_DEGRADED")).toBe(degraded);
+      expect(result, result.stderr).toMatchObject({ status, signal: null, error: undefined });
+      expect(f.read().map((row) => row.args)).toEqual(
+        exit === 0
+          ? [["nss-seed"], ["doctor", "--fix", "--non-interactive"], ["gateway"]]
+          : [["nss-seed"]],
+      );
+      expect(result.stderr.includes("OPENCLAW_NSS_SEED_FAILED")).toBe(exit !== 0);
     },
   );
+
+  it("does not start the wrapper when the configured NSS seed is unavailable", async ({
+    command,
+  }) => {
+    const f = fixture(command);
+    const result = await f.run(["openclaw.mjs", "gateway"], {
+      OPENCLAW_NSS_DISTRUST_SEED: path.join(f.root, "missing-nss-seed"),
+    });
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("OPENCLAW_NSS_SEED_FAILED");
+    expect(fs.existsSync(path.join(f.root, "calls.jsonl"))).toBe(false);
+  });
+
+  it("does not start the wrapper when NSS seeding is terminated", async ({ command }) => {
+    const f = fixture(command);
+    const seed = path.join(f.root, "nss-seed");
+    fs.writeFileSync(seed, '#!/bin/sh\nkill -TERM "$$"\n', { mode: 0o755 });
+    const result = await f.run(["openclaw.mjs", "gateway"], {
+      OPENCLAW_NSS_DISTRUST_SEED: seed,
+    });
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("OPENCLAW_NSS_SEED_FAILED");
+    expect(fs.existsSync(path.join(f.root, "calls.jsonl"))).toBe(false);
+  });
 
   it("does not start Gateway after Doctor refuses repair", async ({ command }) => {
     const f = fixture(command);
