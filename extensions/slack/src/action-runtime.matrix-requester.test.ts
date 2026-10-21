@@ -3,7 +3,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackActionContext } from "./action-context.js";
 import { handleSlackAction, slackActionRuntime } from "./action-runtime.js";
 
-const requesterSlackIdentity = vi.hoisted(() => vi.fn());
+const { requesterSlackIdentity, authTest, getClient } = vi.hoisted(() => ({
+  requesterSlackIdentity: vi.fn(),
+  authTest: vi.fn(),
+  getClient: vi.fn(),
+}));
+vi.mock("./actions.js", () => ({ getClient }));
 vi.mock("./runtime.js", () => ({
   getOptionalSlackRuntime: () => ({
     channel: { runtimeContexts: { get: () => ({ resolveSender: requesterSlackIdentity }) } },
@@ -19,6 +24,8 @@ const allowlisted = () =>
   slackConfig({ groupPolicy: "allowlist", channels: { C_CURRENT: { enabled: true } } });
 beforeEach(() => {
   requesterSlackIdentity.mockReset().mockResolvedValue("U123");
+  authTest.mockReset().mockResolvedValue({ ok: true, team_id: "T12345678" });
+  getClient.mockReset().mockResolvedValue({ auth: { test: authTest } });
   readSlackMessages.mockReset().mockResolvedValue({ messages: [], hasMore: false });
   isSlackConversationMember.mockReset().mockResolvedValue(false);
   Object.assign(slackActionRuntime, {
@@ -53,10 +60,102 @@ describe("Matrix requester Slack reads", () => {
         sessionKey: matrixRequester.sessionKey,
         accountId: "fi-user",
         senderId: "@member:example.test",
+        workspaceId: "T12345678",
       });
       expect(readSlackMessages).toHaveBeenCalled();
     },
   );
+
+  it("allows different Slack bot accounts in the same authenticated workspace", async () => {
+    const config = slackConfig({
+      groupPolicy: "allowlist",
+      accounts: {
+        readerone: { botToken: "fixture-reader-one" },
+        readertwo: { botToken: "fixture-reader-two" },
+      },
+    });
+    isSlackConversationMember.mockResolvedValue(true);
+    for (const accountId of ["readerone", "readertwo"]) {
+      await handleSlackAction(
+        { action: "readMessages", channelId: "C_OTHER", accountId },
+        config,
+        matrixRequester,
+      );
+      expect(getClient).toHaveBeenLastCalledWith(expect.objectContaining({ accountId }));
+      expect(requesterSlackIdentity).toHaveBeenLastCalledWith({
+        sessionKey: matrixRequester.sessionKey,
+        accountId: "fi-user",
+        senderId: matrixRequester.requesterSenderId,
+        workspaceId: "T12345678",
+      });
+    }
+    expect(readSlackMessages).toHaveBeenCalledTimes(2);
+  });
+
+  it("uses the selected read token's authenticated workspace", async () => {
+    authTest.mockResolvedValueOnce({ ok: true, team_id: "T99999999" });
+    isSlackConversationMember.mockResolvedValueOnce(true);
+    await handleSlackAction(
+      { action: "readMessages", channelId: "C_OTHER" },
+      slackConfig({ groupPolicy: "allowlist", userToken: "fixture-user-token" }),
+      matrixRequester,
+    );
+    expect(getClient).toHaveBeenCalledWith(
+      expect.objectContaining({ token: "fixture-user-token" }),
+    );
+    expect(requesterSlackIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "T99999999" }),
+    );
+    expect(readSlackMessages).toHaveBeenCalled();
+  });
+
+  it("uses an Enterprise installation's explicit target workspace", async () => {
+    authTest.mockResolvedValueOnce({
+      ok: true,
+      is_enterprise_install: true,
+      enterprise_id: "E12345678",
+    });
+    isSlackConversationMember.mockResolvedValueOnce(true);
+    await handleSlackAction(
+      { action: "readMessages", channelId: "team:T12345678:channel:C_OTHER" },
+      allowlisted(),
+      matrixRequester,
+    );
+    expect(getClient).toHaveBeenCalledWith(expect.objectContaining({ teamId: "T12345678" }));
+    expect(requesterSlackIdentity).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaceId: "T12345678" }),
+    );
+    expect(readSlackMessages).toHaveBeenCalled();
+  });
+
+  it.each([
+    { auth: { ok: true, team_id: "T99999999" }, channelId: "team:T12345678:channel:C_OTHER" },
+    {
+      auth: { ok: true, is_enterprise_install: true, enterprise_id: "E12345678" },
+      channelId: "C_OTHER",
+    },
+    { auth: { ok: false }, channelId: "C_OTHER" },
+  ])("refuses an unproven effective target workspace: %j", async ({ auth, channelId }) => {
+    authTest.mockResolvedValueOnce(auth);
+    isSlackConversationMember.mockResolvedValueOnce(true);
+    await expect(
+      handleSlackAction({ action: "readMessages", channelId }, allowlisted(), matrixRequester),
+    ).rejects.toThrow("Slack read target channel is not allowed");
+    expect(requesterSlackIdentity).not.toHaveBeenCalled();
+    expect(isSlackConversationMember).not.toHaveBeenCalled();
+    expect(readSlackMessages).not.toHaveBeenCalled();
+  });
+
+  it("keeps configured read policy independent of Matrix mapping", async () => {
+    await handleSlackAction(
+      { action: "readMessages", channelId: "C_CURRENT" },
+      allowlisted(),
+      matrixRequester,
+    );
+    expect(authTest).not.toHaveBeenCalled();
+    expect(requesterSlackIdentity).not.toHaveBeenCalled();
+    expect(readSlackMessages).toHaveBeenCalled();
+  });
 
   it.each([false, true])("retains requester membership for Matrix reads (DM=%s)", async (dm) => {
     requesterSlackIdentity.mockResolvedValueOnce("U999");
@@ -97,6 +196,24 @@ describe("Matrix requester Slack reads", () => {
         assertDirectAdapterHandoff: assertCurrent,
       }),
     ).rejects.toThrow("request retired");
+    expect(readSlackMessages).not.toHaveBeenCalled();
+  });
+
+  it("stops when authority retires during workspace authentication", async () => {
+    const assertCurrent = vi.fn();
+    authTest.mockImplementationOnce(async () => {
+      assertCurrent.mockImplementation(() => {
+        throw new Error("request retired");
+      });
+      return { ok: true, team_id: "T12345678" };
+    });
+    await expect(
+      handleSlackAction({ action: "readMessages", channelId: "C_OTHER" }, allowlisted(), {
+        ...matrixRequester,
+        assertDirectAdapterHandoff: assertCurrent,
+      }),
+    ).rejects.toThrow("request retired");
+    expect(requesterSlackIdentity).not.toHaveBeenCalled();
     expect(readSlackMessages).not.toHaveBeenCalled();
   });
 

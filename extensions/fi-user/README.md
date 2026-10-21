@@ -211,9 +211,18 @@ Native Slack message and file reads can resolve an admitted Matrix requester,
 including a Matrix-bound voice speaker, through Fi's existing private admin
 requester mapping. The `matrix/requester-slack-identity` runtime capability
 revalidates the exact admitted turn using its configured Matrix environment and
-returns Fi's unique active tenant member's linked Slack actor. This existing
+returns Fi's unique active tenant member's linked Slack actor only when the
+authenticated Slack read workspace matches Fi's canonical tenant workspace.
+Enterprise installations use the explicitly qualified target workspace; multiple
+Slack bot accounts in the same workspace remain supported. This existing
 mapping requires a private admin or Superadmin conversation without a mixed
 audience. Other conversations receive no fallback identity.
+
+This lookup requests `googleRequester: true` with `slackRequesterWorkspace: true`
+from Fi, which adds `googleRequester.workspaceId` only for this path. Deploy the
+Fi response support before this OpenClaw consumer. Missing or mismatched workspace
+scope refuses the membership fallback; ordinary admission and existing Google
+requester responses remain unchanged.
 
 Slack still checks conversation membership and platform visibility. The mapping
 is read-only and uncached; it does not change the source provider, allow writes,

@@ -113,7 +113,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   });
   const authorize = async (
     turn: Turn,
-    onRequester?: (senderId: string) => void,
+    requester?: { workspaceId: string; resolve: (senderId: string) => void },
   ): Promise<AuthorizationFailure | undefined> => {
     try {
       const config = configFromRuntime(api);
@@ -142,7 +142,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
                   threadRootEventId: turn.threadRootEventId,
                 }
               : { eventId: turn.eventId }),
-            ...(onRequester ? { googleRequester: true } : {}),
+            ...(requester ? { googleRequester: true, slackRequesterWorkspace: true } : {}),
           }),
         },
       );
@@ -176,20 +176,22 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ) {
         return UNAVAILABLE;
       }
-      if (onRequester) {
-        const requester = "googleRequester" in result ? result.googleRequester : undefined;
+      if (requester) {
+        const identity = "googleRequester" in result ? result.googleRequester : undefined;
         if (
-          !requester ||
-          typeof requester !== "object" ||
-          !("matrixUserId" in requester) ||
-          requester.matrixUserId !== turn.senderId ||
-          !("slackUserId" in requester) ||
-          typeof requester.slackUserId !== "string" ||
-          !/^[UW][A-Z0-9]+$/.test(requester.slackUserId)
+          !identity ||
+          typeof identity !== "object" ||
+          !("matrixUserId" in identity) ||
+          identity.matrixUserId !== turn.senderId ||
+          !("slackUserId" in identity) ||
+          typeof identity.slackUserId !== "string" ||
+          !/^[UW][A-Z0-9]+$/.test(identity.slackUserId) ||
+          !("workspaceId" in identity) ||
+          identity.workspaceId !== requester.workspaceId
         ) {
           return UNAVAILABLE;
         }
-        onRequester(requester.slackUserId);
+        requester.resolve(identity.slackUserId);
       }
       return undefined;
     } catch {
@@ -204,7 +206,11 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         sessionKey: string;
         accountId: string;
         senderId: string;
+        workspaceId: string;
       }) => {
+        if (!/^T[A-Z0-9]+$/.test(requester.workspaceId)) {
+          return undefined;
+        }
         let selected: [string, Turn] | undefined;
         for (const entry of turns) {
           const [, turn] = entry;
@@ -227,8 +233,11 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         let senderId: string | undefined;
         // Fi's existing requester mapping rechecks the actual sender's current
         // private-conversation grants; the mapping is never retained on a turn.
-        const failure = await authorize(turn, (resolved) => {
-          senderId = resolved;
+        const failure = await authorize(turn, {
+          workspaceId: requester.workspaceId,
+          resolve: (resolved) => {
+            senderId = resolved;
+          },
         });
         return !failure && turns.get(runId) === turn && turn.admitted ? senderId : undefined;
       },

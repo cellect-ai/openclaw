@@ -1,6 +1,6 @@
 import { normalizeAccountId } from "openclaw/plugin-sdk/account-resolution";
 import { normalizeOptionalLowercaseString } from "openclaw/plugin-sdk/string-coerce-runtime";
-import type { SlackActionContext } from "./action-context.js";
+import type { SlackActionClientOpts, SlackActionContext } from "./action-context.js";
 import { getOptionalSlackRuntime } from "./runtime.js";
 
 /**
@@ -30,6 +30,7 @@ function resolveTrustedSlackRequesterId(
 export async function resolveSlackReadRequester(
   accountId: string,
   context: SlackActionContext | undefined,
+  readOpts: SlackActionClientOpts,
 ): Promise<string | undefined> {
   if (normalizeOptionalLowercaseString(context?.currentChannelProvider) === "slack") {
     return resolveTrustedSlackRequesterId(accountId, context);
@@ -42,6 +43,25 @@ export async function resolveSlackReadRequester(
   ) {
     return undefined;
   }
+  // Authenticate the token actually used for this read. A companion bot's
+  // installation identity cannot establish the workspace of a user read token.
+  const { getClient } = await import("./actions.js");
+  const { resolveSlackInstallationIdentity } = await import("./monitor/enterprise-install.js");
+  const auth = await (await getClient(readOpts)).auth.test();
+  context.assertDirectAdapterHandoff?.();
+  if (!auth.ok) {
+    return undefined;
+  }
+  const installation = resolveSlackInstallationIdentity({ auth });
+  const workspaceId =
+    installation.kind === "enterprise"
+      ? readOpts.teamId?.trim().toUpperCase()
+      : installation.kind === "workspace"
+        ? installation.teamId.trim().toUpperCase()
+        : undefined;
+  if (!workspaceId || (readOpts.teamId && readOpts.teamId.toUpperCase() !== workspaceId)) {
+    return undefined;
+  }
   // Fi revalidates the admitted Matrix turn and its unique linked Slack actor.
   // Never use model params, MXID localparts, or display names.
   const resolver = getOptionalSlackRuntime()?.channel.runtimeContexts.get<{
@@ -49,12 +69,14 @@ export async function resolveSlackReadRequester(
       sessionKey: string;
       accountId: string;
       senderId: string;
+      workspaceId: string;
     }) => Promise<string | undefined>;
   }>({ channelId: "matrix", capability: "requester-slack-identity" });
   const senderId = await resolver?.resolveSender({
     sessionKey: context.sessionKey,
     accountId: context.requesterAccountId,
     senderId: context.requesterSenderId,
+    workspaceId,
   });
   context.assertDirectAdapterHandoff?.();
   return senderId && /^[UW][A-Z0-9]+$/i.test(senderId) ? senderId.toUpperCase() : undefined;
