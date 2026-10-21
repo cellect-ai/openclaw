@@ -1,8 +1,13 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import {
+  isTransientNetworkError,
+  retryAsync,
+  sleepWithAbort,
+} from "openclaw/plugin-sdk/retry-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegation.js";
 
-const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";
+const UNAVAILABLE = "Access verification is temporarily unavailable. Please retry shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
 // Fi intentionally declines unaddressed/non-selected text agents without a reply.
 const SILENT = Symbol("matrix-agent-not-selected");
@@ -12,6 +17,7 @@ type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 type Turn = {
   admitted: boolean;
+  authorization: AbortController;
   agentId: string;
   accountId: string;
   roomId: string;
@@ -79,6 +85,14 @@ function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: strin
  */
 export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const turns = new Map<string, Turn>();
+  const retireTurn = (runId: string) => {
+    const turn = turns.get(runId);
+    turn?.authorization.abort();
+    turns.delete(runId);
+  };
+  const retireAll = () => {
+    for (const runId of turns.keys()) retireTurn(runId);
+  };
   // agent_end closes one model attempt, not the admitted turn: recovery and
   // fallback can still execute tools under the same run. The outer lifecycle
   // owner publishes executionSettled only after all attempts have finished.
@@ -90,27 +104,27 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         event.data.executionSettled === true &&
         (event.data.phase === "end" || event.data.phase === "error")
       ) {
-        turns.delete(event.runId);
+        retireTurn(event.runId);
       }
     },
   });
   api.lifecycle.registerRuntimeLifecycle({
     id: "matrix-entitlement-identities",
     dispose: () => {
-      turns.clear();
+      retireAll();
       turnRuntime?.dispose();
     },
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
-        turns.delete(runId);
+        retireTurn(runId);
       } else if (sessionKey) {
         for (const [id, turn] of turns) {
           if (turn.sessionKey === sessionKey) {
-            turns.delete(id);
+            retireTurn(id);
           }
         }
       } else {
-        turns.clear();
+        retireAll();
       }
     },
   });
@@ -124,9 +138,17 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     const connection = matrixConnection(config, turn.accountId);
     const token = connection && brokerToken(connection);
     if (!config.tenantOrgId || !connection || !token) throw new Error(UNAVAILABLE);
-    return fetch(`${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`, {
+    // This POST only verifies current grants. Reuse the exact source and one
+    // total budget; never retry a tool/business effect or refresh the deadline.
+    const signal = AbortSignal.any([
+      AbortSignal.timeout(12_000),
+      turn.authorization.signal,
+      ...(abortSignal ? [abortSignal] : []),
+    ]);
+    const url = `${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`;
+    const init = {
       method: "POST",
-      signal: AbortSignal.any([AbortSignal.timeout(12_000), ...(abortSignal ? [abortSignal] : [])]),
+      signal,
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
       body: JSON.stringify({
         roomId: turn.roomId,
@@ -137,7 +159,39 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         ...(policy ? { recheck: true, googleRequester: policy } : {}),
         ...(slackRequesterWorkspace ? { slackRequesterWorkspace: true } : {}),
       }),
-    });
+    };
+    const transientResponse = new Error("Fi authorization temporarily unavailable");
+    return retryAsync(
+      async () => {
+        signal.throwIfAborted();
+        const response = await fetch(url, init);
+        signal.throwIfAborted();
+        if ([500, 502, 503, 504].includes(response.status)) {
+          await response.body?.cancel();
+          throw transientResponse;
+        }
+        return response;
+      },
+      {
+        attempts: 2,
+        minDelayMs: 3_000,
+        maxDelayMs: 3_000,
+        jitter: 0,
+        shouldRetry: (error) =>
+          !signal.aborted && (error === transientResponse || isTransientNetworkError(error)),
+        onRetry: ({ err, attempt }) =>
+          logEntitlements({
+            phase: "verification",
+            agentId: turn.agentId,
+            accountId: turn.accountId,
+            outcome: "retrying",
+            reason: err === transientResponse ? "service_unavailable" : "transport_unavailable",
+            attempt,
+            ...turnIds(turn),
+          }),
+        sleep: (ms) => sleepWithAbort(ms, signal),
+      },
+    );
   };
   const turnRuntime = api.runtime.channel.runtimeContexts.register({
     channelId: "matrix",
@@ -204,6 +258,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const authorize = async (
     turn: Turn,
     requester?: { workspaceId: string; resolve: (senderId: string) => void },
+    abortSignal?: AbortSignal,
   ): Promise<AuthorizationFailure | undefined> => {
     try {
       const config = configFromRuntime(api);
@@ -213,7 +268,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const response = await requestAuthorization(
         turn,
         requester ? true : undefined,
-        undefined,
+        abortSignal,
         Boolean(requester),
       );
       if (response.status === 403) {
@@ -323,6 +378,25 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (SOURCE_SESSION.test(context.sessionKey ?? "")) {
         return undefined;
       }
+      if (
+        context.inputProvenance?.kind === "internal_system" &&
+        context.inputProvenance.sourceTool === "exec"
+      ) {
+        // The heartbeat producer retains the completed command result, but
+        // supplies no live human/event custody for a new Matrix turn. Do not
+        // infer a principal from session history or report a human denial.
+        if (context.runId) retireTurn(context.runId);
+        logEntitlements({
+          phase: "admission",
+          agentId: context.agentId ?? null,
+          accountId: context.accountId ?? null,
+          outcome: "silent",
+          reason: "orphan_exec_completion",
+          sourceKind: context.inputProvenance.kind,
+          sourceTool: context.inputProvenance.sourceTool,
+        });
+        return { handled: true };
+      }
       const roomId = context.channelContext?.chat?.id;
       const eventId = context.channelContext?.chat?.eventId;
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
@@ -403,6 +477,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       }
       const turn: Turn = {
         admitted: false,
+        authorization: new AbortController(),
         agentId: context.agentId,
         accountId: context.accountId,
         roomId,
@@ -415,6 +490,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           ? "session_thread"
           : undefined;
       const runId = context.runId;
+      retireTurn(runId);
       turns.set(runId, turn);
       const failure = await authorize(turn);
       if (turns.get(runId) !== turn) {
@@ -442,7 +518,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         voiceMismatch,
       );
       if (failure) {
-        turns.delete(runId);
+        retireTurn(runId);
         return failure === SILENT ? { handled: true } : { handled: true, reply: { text: failure } };
       }
       turn.admitted = true;
@@ -482,7 +558,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       );
       return { block: true, blockReason: UNAVAILABLE };
     }
-    return authorize(turn).then((failure) => {
+    return authorize(turn, undefined, context.abortSignal).then((failure) => {
       // A terminal publication or replacement can arrive while Fi checks live
       // grants. A successful response cannot resurrect a retired admission.
       if (turns.get(runId) !== turn || context.abortSignal?.aborted) {

@@ -7,6 +7,13 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fiUserPlugin from "./index.js";
 
+// These existing policy cases do not exercise backoff timing. The dedicated
+// recovery suite uses the real abortable scheduler with a fake clock.
+vi.mock("openclaw/plugin-sdk/retry-runtime", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("openclaw/plugin-sdk/retry-runtime")>()),
+  sleepWithAbort: async (_ms: number, signal?: AbortSignal) => signal?.throwIfAborted(),
+}));
+
 function plugin(configOverrides: Record<string, unknown> = {}) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
   const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
@@ -400,7 +407,7 @@ describe("registered Matrix agent entitlement hooks", () => {
       fetchMock.mockResolvedValueOnce(new Response(JSON.stringify(decision)));
       expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({
         handled: true,
-        reply: { text: expect.stringContaining("couldn’t verify") },
+        reply: { text: expect.stringContaining("verification is temporarily unavailable") },
       });
     },
   );
@@ -415,7 +422,7 @@ describe("registered Matrix agent entitlement hooks", () => {
     });
     expect(await plugin()("before_agent_reply", {}, voice)).toMatchObject({
       handled: true,
-      reply: { text: expect.stringContaining("couldn’t verify") },
+      reply: { text: expect.stringContaining("verification is temporarily unavailable") },
     });
   });
 
@@ -525,7 +532,7 @@ describe("registered Matrix agent entitlement hooks", () => {
       fetchMock.mockRejectedValueOnce(new TypeError("fetch failed"));
       expect(await hook("before_agent_reply", {}, personal())).toMatchObject({
         handled: true,
-        reply: { text: expect.stringContaining("couldn’t verify") },
+        reply: { text: expect.stringContaining("verification is temporarily unavailable") },
       });
       fetchMock.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
       expect(await hook("before_agent_reply", {}, personal())).toMatchObject({ handled: true });
