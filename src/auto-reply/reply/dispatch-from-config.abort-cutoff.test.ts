@@ -22,9 +22,13 @@ beforeEach(() => {
   setNoAbort();
 });
 
-it.each(["discord", "matrix"])(
-  "settles a typed conversation Stop on %s without a failure reply",
-  async (provider) => {
+it.each(
+  ["discord", "matrix"].flatMap((provider) =>
+    (["aborted", "live", "absent"] as const).map((signalState) => ({ provider, signalState })),
+  ),
+)(
+  "settles a typed conversation Stop on $provider without a failure reply (dispatch signal=$signalState)",
+  async ({ provider, signalState }) => {
     const controller = new AbortController();
     const dispatcher = createDispatcher();
     const reason = new ConversationRunStopReason({
@@ -43,9 +47,11 @@ it.each(["discord", "matrix"])(
       }),
       cfg: emptyConfig,
       dispatcher,
-      replyOptions: { abortSignal: controller.signal },
+      replyOptions: { abortSignal: signalState === "absent" ? undefined : controller.signal },
       replyResolver: async () => {
-        controller.abort(reason);
+        if (signalState === "aborted") {
+          controller.abort(reason);
+        }
         throw reason;
       },
     });
@@ -73,7 +79,6 @@ it.each(["genuine failure", "ConversationRunStopReason"])(
         dispatcher,
         replyOptions: { abortSignal: controller.signal },
         replyResolver: async () => {
-          controller.abort(error);
           throw error;
         },
       }),
