@@ -52,15 +52,17 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
               other !== row &&
               (other.parentConversationId === roomId || other.conversationId === roomId),
           )
-        )
+        ) {
           return [];
+        }
         const accounts = listMatrixAccountIds(cfg).filter((accountId) => {
           if (
             cfg.channels?.matrix?.enabled === false ||
             resolveMatrixAccountConfig({ cfg, accountId }).enabled === false ||
             !getMatrixThreadBindingManager(accountId)
-          )
+          ) {
             return false;
+          }
           const resolved = resolveMatrixInboundRoute({
             cfg,
             accountId,
@@ -84,7 +86,9 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
           );
         });
         const accountId = accounts[0];
-        if (accounts.length !== 1 || !accountId) return [];
+        if (accounts.length !== 1 || !accountId) {
+          return [];
+        }
         const binding = toSessionBindingRecord(row, { idleTimeoutMs: 0, maxAgeMs: 0 });
         return [
           {
@@ -108,8 +112,9 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
           // listBySession already selected this Slack/Matrix owner. A
           // source-authorized bind can omit agentId; skip only a mismatch.
           (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
-        )
+        ) {
           return [];
+        }
         return [
           {
             environment: metadata.environment,
@@ -212,7 +217,9 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
   activeLifecycle = handle;
   return {
     stop: () => {
-      if (activeLifecycle === handle) activeLifecycle = undefined;
+      if (activeLifecycle === handle) {
+        activeLifecycle = undefined;
+      }
       handle.stop();
     },
   };

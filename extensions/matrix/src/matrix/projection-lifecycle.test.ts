@@ -62,8 +62,9 @@ describe("native Matrix participant lifecycle adapter", () => {
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
       lifecycle.stop();
-      for (const accountId of accounts)
+      for (const accountId of accounts) {
         unregisterSessionBindingAdapter({ channel: "matrix", accountId });
+      }
       cleanup();
       vi.unstubAllEnvs();
     });
@@ -132,7 +133,9 @@ describe("native Matrix participant lifecycle adapter", () => {
         },
       ]);
       const binding = bindings[0];
-      if (!binding) throw new Error("Expected native participant destination");
+      if (!binding) {
+        throw new Error("Expected native participant destination");
+      }
       await transport.publish(
         binding,
         {
@@ -192,21 +195,34 @@ describe("native Matrix participant lifecycle adapter", () => {
     "competing-binding",
   ])("does not infer a participant destination for %s", (scenario) => {
     const row = mocks.rows[0]!;
-    if (scenario === "source") row.targetSessionKey = "agent:admin:slack:channel:c1";
-    if (scenario === "source-authorization") row.sourceReplyAuthorization = "source-protocol";
-    if (scenario === "other-root") row.conversationId = "$different-root";
-    if (scenario === "other-agent")
+    if (scenario === "source") {
+      row.targetSessionKey = "agent:admin:slack:channel:c1";
+    }
+    if (scenario === "source-authorization") {
+      row.sourceReplyAuthorization = "source-protocol";
+    }
+    if (scenario === "other-root") {
+      row.conversationId = "$different-root";
+    }
+    if (scenario === "other-agent") {
       cfg.bindings = [{ agentId: "other", match: { channel: "matrix", accountId: "main" } }];
-    if (scenario === "default-route")
+    }
+    if (scenario === "default-route") {
       cfg.bindings = [{ agentId: "admin", match: { channel: "matrix", accountId: "admin" } }];
-    if (scenario === "disabled") cfg.channels!.matrix!.accounts!.main!.enabled = false;
-    if (scenario === "stopped") mocks.stoppedAccounts.add("main");
+    }
+    if (scenario === "disabled") {
+      cfg.channels!.matrix!.accounts!.main!.enabled = false;
+    }
+    if (scenario === "stopped") {
+      mocks.stoppedAccounts.add("main");
+    }
     if (scenario === "ambiguous") {
       cfg.channels!.matrix!.accounts!.duplicate = {};
       cfg.bindings!.push({ agentId: "main", match: { channel: "matrix", accountId: "duplicate" } });
     }
-    if (scenario === "competing-binding")
+    if (scenario === "competing-binding") {
       mocks.rows.push({ ...canonical, conversationId: "$other" });
+    }
     expect(resolve("main")).toEqual([]);
   });
 });
