@@ -28,28 +28,70 @@ CB6E15165AC802E9B3F993F16C25D41F4E81C21EBDE71AE1B012AC00BF9C7C3F
 E7568FE6E12331F4FD7DE61DA4C7559D0F8EB192A218D4741A3BA75184333838
 FD9D5C2DBBD4995AB69B8D50C439D9527B00529199C2FD01B2174EB58F07021F'
 
-# Certificates sharing a subject share one NSS nickname, so read every
-# certificate under each p,p,p nickname, not just the first.
-coverage() {
-  [ -e "$db/cert9.db" ] || { echo 0; return; }
-  tmp=$(mktemp -d)
-  certutil -L -d "sql:$db" | sed -n 's/[[:space:]]*p,p,p$//p' | sort -u | while IFS= read -r nick; do
-    certutil -L -d "sql:$db" -n "$nick" -a
-  done | awk -v d="$tmp" '/BEGIN CERTIFICATE/ { n++ } n { print > (d "/" n ".pem") }'
-  for pem in "$tmp"/*.pem; do
-    [ -e "$pem" ] && openssl x509 -in "$pem" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g'
-  done | sort -u | grep -c -x -F "$expected" || true
-  rm -rf "$tmp"
+# A nickname can name several certificates with different trust. Read each
+# certificate's own fingerprint and flags, never the nickname's summary row.
+state() {
+  [ -e "$db/cert9.db" ] || return 0
+  certutil -L -d "sql:$db" \
+    | sed -n -E 's/[[:space:]]+[^[:space:]]*,[^[:space:]]*,[^[:space:]]*[[:space:]]*$//p' \
+    | sort -u \
+    | while IFS= read -r nick; do
+        [ -n "$nick" ] || continue
+        printf 'NICK:%s\n' "$nick"
+        certutil -L -d "sql:$db" -n "$nick"
+      done \
+    | awk '
+        function flush() {
+          if (fp != "") print fp, ((s == "Terminal Record;" && e == "Terminal Record;" && o == "Terminal Record;") ? "ppp" : "other"), nick
+          fp = ""; s = ""; e = ""; o = ""; sec = ""; trust = 0
+        }
+        /^NICK:/ { flush(); nick = substr($0, 6); next }
+        /^Certificate:/ { flush(); next }
+        /Fingerprint \(SHA-256\):/ { getline; gsub(/[[:space:]:]/, ""); fp = toupper($0); next }
+        /Certificate Trust Flags:/ { trust = 1; next }
+        trust && /SSL Flags:/ { sec = "s"; next }
+        trust && /Email Flags:/ { sec = "e"; next }
+        trust && /Object Signing Flags:/ { sec = "o"; next }
+        trust && sec != "" && NF {
+          v = $0; sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v)
+          if (sec == "s") s = s v ";"; else if (sec == "e") e = e v ";"; else o = o v ";"
+        }
+        END { flush() }'
 }
 
-if [ "${1:-}" != --check ] && [ "$(coverage)" -ne 17 ]; then
+coverage() {
+  awk -v want="$expected" '
+    BEGIN { n = split(want, w, /[[:space:]]+/); for (i = 1; i <= n; i++) if (w[i] != "") expected[w[i]] = 1 }
+    $2 == "ppp" && ($1 in expected) && !($1 in seen) { seen[$1] = 1; c++ }
+    END { print c + 0 }'
+}
+
+command -v certutil >/dev/null
+command -v openssl >/dev/null
+current=$(state)
+have=$(printf '%s\n' "$current" | coverage)
+failed=0
+if [ "${1:-}" != --check ] && [ "$have" -ne 17 ]; then
   mkdir -p "$db"
   chmod 0700 "$HOME/.pki" "$db"
-  [ -e "$db/cert9.db" ] || certutil -N -d "sql:$db" --empty-password
+  [ -e "$db/cert9.db" ] || certutil -N -d "sql:$db" --empty-password >/dev/null
   for pem in "$pems"/*.pem; do
-    certutil -A -a -d "sql:$db" -n "cellect-distrust-$(basename "$pem" .pem)" -t p,p,p -i "$pem"
+    [ -f "$pem" ] || continue
+    fp=$(openssl x509 -in "$pem" -noout -fingerprint -sha256 | sed 's/.*=//; s/://g; y/abcdef/ABCDEF/')
+    if [ -z "$fp" ] || ! printf '%s\n' "$expected" | grep -q -x -F "$fp"; then
+      failed=1
+      continue
+    fi
+    line=$(printf '%s\n' "$current" | awk -v f="$fp" '$1 == f { print; exit }')
+    [ "$(printf '%s\n' "$line" | awk '{ print $2 }')" != ppp ] || continue
+    if [ -n "$line" ]; then
+      nick=$(printf '%s\n' "$line" | cut -d' ' -f3-)
+    else
+      nick="cellect-distrust-$(printf '%s' "$fp" | cut -c1-16)"
+    fi
+    certutil -A -a -d "sql:$db" -n "$nick" -t p,p,p -i "$pem" >/dev/null || failed=1
   done
+  have=$(state | coverage)
 fi
-have=$(coverage)
-echo "NSS distrust coverage $have/17 in $db (uid $(id -u))"
-[ "$have" -eq 17 ]
+echo "NSS distrust coverage $have/17 in $db (uid $(id -u))" >&2
+[ "$have" -eq 17 ] && [ "$failed" -eq 0 ]
