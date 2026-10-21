@@ -26,7 +26,8 @@ const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
 export function pinInstalledFiCliCommand(params: Record<string, unknown>): string | undefined {
   if (
     typeof params.command !== "string" ||
-    /[\x00\r\n;&|<>()`$\\]/.test(params.command) ||
+    params.command.includes("\0") ||
+    /[\r\n;&|<>()`$\\]/.test(params.command) ||
     (params.env !== undefined &&
       (typeof params.env !== "object" ||
         params.env === null ||
