@@ -1,6 +1,7 @@
 // Stopped queued input must not become a missing-reply warning at finalization.
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { ConversationRunStopReason } from "../../infra/run-stop-actor.js";
 import type { TemplateContext } from "../templating.js";
 import { buildNoVisibleReplyFallbackText } from "./dispatch-from-config.payloads.js";
 import { createDispatcher, emptyConfig } from "./dispatch-from-config.shared.test-harness.js";
@@ -20,6 +21,66 @@ beforeEach(() => {
   describe0BeforeEach0();
   setNoAbort();
 });
+
+it.each(["discord", "matrix"])(
+  "settles a typed conversation Stop on %s without a failure reply",
+  async (provider) => {
+    const controller = new AbortController();
+    const dispatcher = createDispatcher();
+    const reason = new ConversationRunStopReason({
+      userId: "@reader:matrix.test",
+      roomId: "!room:matrix.test",
+      threadRootEventId: "$root",
+      agentId: "main",
+      sessionKey: "agent:main:conversation-stop",
+    });
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: provider,
+        Surface: provider,
+        ChatType: "direct",
+        SessionKey: reason.actor.sessionKey,
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyOptions: { abortSignal: controller.signal },
+      replyResolver: async () => {
+        controller.abort(reason);
+        throw reason;
+      },
+    });
+    expect(result.queuedFinal).toBe(false);
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+    expect(result.noVisibleReplyFallbackDelivered).toBeUndefined();
+  },
+);
+
+it.each(["genuine failure", "ConversationRunStopReason"])(
+  "preserves %s as a dispatch error",
+  async (name) => {
+    const controller = new AbortController();
+    const error = Object.assign(new Error("dispatch failure"), { name });
+    const dispatcher = createDispatcher();
+    await expect(
+      dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          Provider: "matrix",
+          Surface: "matrix",
+          ChatType: "direct",
+          SessionKey: "agent:main:dispatch-failure",
+        }),
+        cfg: emptyConfig,
+        dispatcher,
+        replyOptions: { abortSignal: controller.signal },
+        replyResolver: async () => {
+          controller.abort(error);
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  },
+);
 
 it.each([
   { name: "cutoff message ID", message: { MessageSid: "42" }, cancelled: true },
