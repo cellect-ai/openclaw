@@ -45,7 +45,9 @@ const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
  */
 const MAX_HOLD_MS = 15 * 60 * 1000;
 /** Shown to whoever reaches a sandbox that still holds another person's token. */
-const HELD = "Another admin's command is still finishing here. Try again in a few minutes.";
+const HELD = "This sandbox still holds another requester's command state. Retry after its requester token expires.";
+const UNPROVEN_HOLD =
+  "This run has no verified requester proof for the sandbox's retained command state. A fresh authenticated message is required; this does not indicate another command is running.";
 /**
  * The tools that reach the sandbox's processes or files: the host's sandbox
  * tool list (`DEFAULT_TOOL_ALLOW` in src/agents/sandbox/constants.ts) without
@@ -653,7 +655,7 @@ export function registerAdminDelegation(
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     return run?.agentId === agentId && run.sessionKey === sessionKey && run.sender === holder.sender
       ? undefined
-      : { block: true, blockReason: HELD };
+      : { block: true, blockReason: run?.sender ? HELD : UNPROVEN_HOLD };
   };
 
   /**

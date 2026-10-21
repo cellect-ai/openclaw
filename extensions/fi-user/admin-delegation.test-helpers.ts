@@ -80,7 +80,7 @@ export type Env = Record<string, string>;
 export type Rewrite =
   | { params: { env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
   | undefined;
-export const HELD = "Another admin's command is still finishing here. Try again in a few minutes.";
+export const HELD = "This sandbox still holds another requester's command state. Retry after its requester token expires.";
 /** A runtime whose admin agent always runs in the sandbox, with elevation off. */
 export const SANDBOXED = {
   agents: { defaults: { sandbox: { mode: "all" as const } } },

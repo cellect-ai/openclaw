@@ -278,6 +278,27 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
+  it("keeps simultaneous Matrix and Slack requester custody independent with session sandboxes", async () => {
+    const turn = plugin({}, {
+      ...SANDBOXED,
+      agents: { defaults: { sandbox: { mode: "all", scope: "session" } } },
+    });
+    const first = thread();
+    await turn.arrive(first.arrive);
+    await turn.start(first.start);
+    expect((await turn.exec(first.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    const second = slackThread();
+    await turn.arrive(second.arrive);
+    await turn.start({ ...second.start, runId: "run-2" });
+    expect((await turn.exec({ ...second.exec, runId: "run-2" }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    // Neither concurrent dispatch retires or changes the first run's identity.
+    expect((await turn.exec(first.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    await turn.settle("run-2");
+    const stale = await turn.exec({ ...second.exec, runId: "run-2" });
+    expect(stale?.block).toBe(true);
+    expect(stale).toMatchObject({ blockReason: expect.stringContaining("no verified requester proof") });
+  });
+
   describe("verified Slack channel requests", () => {
     it.each([SLACK_THREAD, "agent:cellect-fi-admin:slack:channel:c0channel1"])(
       "mints only for the dispatched sender and event in %s",
