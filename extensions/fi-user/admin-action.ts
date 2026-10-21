@@ -5,8 +5,11 @@ import type {
   OpenClawPluginApi,
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
+import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
+import { publishAdminActionCard, prepareAdminActionOrigin } from "./admin-action-card.js";
+import { prepareRoomFiling, type PreparedRoomFiling } from "./admin-action-filing.js";
 import {
   configFromRuntime,
   delegatedJson,
@@ -68,6 +71,17 @@ export type AdminActionFields = {
   targetType?: "org" | "project" | "company";
   targetId?: string;
   reason?: string;
+  displayName?: string;
+  roomName?: string;
+  order?: string;
+  noOrder?: boolean;
+  visibility?: "shared" | "internal";
+  acknowledgeRestricted?: boolean;
+  taskIds?: string[];
+  noTask?: boolean;
+  completeTaskIds?: string[];
+  tags?: string[];
+  highlight?: boolean;
 };
 
 export type FilingDestination = "data_room" | "project_library";
@@ -98,108 +112,82 @@ export type AdminActionRecord = {
   sessionKey?: string;
   delivery?: { channel?: string; to?: string; accountId?: string; threadId?: string | number };
   createdAt: number;
-  status: "pending" | "approved" | "denied" | "done" | "failed";
+  status: "pending" | "held" | "approved" | "denied" | "done" | "failed";
   decidedBy?: string;
+  revision?: number;
+  origin?: { orgId: string; roomId: string; threadRootEventId: string; agentMxid: string };
+  publicationEventId?: string;
+  preparedFiling?: PreparedRoomFiling;
+  execution?: {
+    state: "not_executed" | "unknown" | "done";
+    operationId: string;
+    message: string;
+    receipt?: { roomId: string; documentId: string; roomVersion: number; taskIds: string[] };
+  };
 };
 
-const RECORD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const ADMIN_RUN_TIMEOUT_MS = 20 * 60 * 1000;
+export const RECORD_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 // Leading mentions ("@Cellect Fi approve X") are allowed; the decision word must come first.
 const APPROVAL =
-  /^\s*(?:(?:<@[A-Z0-9]+>|@[^\s]+(?:\s+Fi)?)[\s,:]*)*(approve|approved|deny|denied|reject|rejected)\b[\s:#-]*([A-Z0-9]{6})?\b/i;
+  /^\s*(?:(?:<@[A-Z0-9]+>|@[^\s]+(?:\s+Fi)?)[\s,:]*)*(approve|approved|deny|denied|reject|rejected)\b(?:[\s:#-]+([A-Z0-9]{6}))?\s*[.!]?\s*$/i;
 
-/** Pending requests; persisted when the runtime grants a keyed store. */
-const records = new Map<string, AdminActionRecord>();
-type Store = {
-  register(key: string, value: AdminActionRecord, opts?: { ttlMs?: number }): Promise<void>;
-  lookup(key: string): Promise<AdminActionRecord | undefined>;
-  entries(): Promise<Array<{ key: string; value: AdminActionRecord }>>;
-};
-let store: Store | null | undefined;
-
-function openStore(api: OpenClawPluginApi): Store | null {
-  if (store !== undefined) {
-    return store;
-  }
-  try {
-    store = api.runtime.state.openKeyedStore<AdminActionRecord>({
-      namespace: "admin-actions",
-      maxEntries: 1_000,
-      defaultTtlMs: RECORD_TTL_MS,
-    }) as Store;
-  } catch {
-    store = null;
-  }
-  return store;
+/** Durable owner only: a missing store is not permission to proceed in memory. */
+export function adminActionStore(api: OpenClawPluginApi): PluginStateKeyedStore<AdminActionRecord> {
+  return api.runtime.state.openKeyedStore<AdminActionRecord>({
+    namespace: "admin-actions",
+    maxEntries: 1_000,
+    defaultTtlMs: RECORD_TTL_MS,
+    overflowPolicy: "reject-new",
+  });
 }
 
-async function save(api: OpenClawPluginApi, record: AdminActionRecord) {
-  records.set(record.id, record);
-  await openStore(api)
-    ?.register(record.id, record, { ttlMs: RECORD_TTL_MS })
-    .catch(() => undefined);
+export function remainingAdminActionTtl(record: AdminActionRecord): number {
+  const ttl = record.createdAt + RECORD_TTL_MS - Date.now();
+  if (ttl <= 0) throw new Error("The approval request expired; prepare a new request.");
+  return ttl;
 }
 
-async function load(api: OpenClawPluginApi, id: string): Promise<AdminActionRecord | undefined> {
-  return (
-    records.get(id) ??
-    (await openStore(api)
-      ?.lookup(id)
-      .catch(() => undefined))
-  );
-}
-
-type DecisionClaim = { decision: "approved" | "denied"; decidedBy: string; at: number };
-type ClaimStore = {
-  registerIfAbsent(key: string, value: DecisionClaim, opts?: { ttlMs?: number }): Promise<boolean>;
-};
-let claimStore: ClaimStore | null | undefined;
-/** Requests decided in this process; checked and set with no await in between. */
-const claimed = new Set<string>();
-
-function openClaimStore(api: OpenClawPluginApi): ClaimStore | null {
-  if (claimStore !== undefined) {
-    return claimStore;
-  }
-  try {
-    claimStore = api.runtime.state.openKeyedStore<DecisionClaim>({
+export async function loadAdminAction(
+  api: OpenClawPluginApi,
+  id: string,
+): Promise<AdminActionRecord | undefined> {
+  const record = await adminActionStore(api).lookup(id);
+  if (!record) return undefined;
+  // Old versions could commit the claim and fail to update the request. Those
+  // decisions remain authoritative; never resurrect them as pending requests.
+  const legacy = await api.runtime.state
+    .openKeyedStore<{ decision: "approved" | "denied"; decidedBy: string }>({
       namespace: "admin-action-claims",
       maxEntries: 1_000,
       defaultTtlMs: RECORD_TTL_MS,
-    }) as ClaimStore;
-  } catch {
-    claimStore = null;
-  }
-  return claimStore;
+    })
+    .lookup(id);
+  return legacy && record.status === "pending" && !record.revision
+    ? { ...record, status: legacy.decision, decidedBy: legacy.decidedBy }
+    : record;
 }
 
-/**
- * Take the one decision a request gets. The in-process set is the atomic
- * step; the durable compare-and-set carries it across restarts. A decision
- * that cannot be recorded durably is released so the approver can retry.
- */
-async function claimDecision(
+/** All transports share this exact durable revision/decision commit boundary. */
+export async function transitionAdminAction(
   api: OpenClawPluginApi,
   record: AdminActionRecord,
-  claim: DecisionClaim,
-): Promise<"claimed" | "taken" | "unrecorded"> {
-  const current = records.get(record.id) ?? record;
-  if (current.status !== "pending" || claimed.has(record.id)) {
-    return "taken";
-  }
-  claimed.add(record.id);
-  const durable = openClaimStore(api);
-  if (!durable) {
-    return "claimed";
-  }
-  try {
-    return (await durable.registerIfAbsent(record.id, claim, { ttlMs: RECORD_TTL_MS }))
-      ? "claimed"
-      : "taken";
-  } catch {
-    claimed.delete(record.id);
-    return "unrecorded";
-  }
+  next: AdminActionRecord,
+  assertCurrent: () => void,
+): Promise<boolean> {
+  const owner = adminActionStore(api);
+  if (!owner.withCurrent) throw new Error("Durable approval authority is unavailable.");
+  const durable = owner.withCurrent({ assertCurrent });
+  const observed = await durable.observe(record.id);
+  if (!observed.value || JSON.stringify(observed.value) !== JSON.stringify(record)) return false;
+  const ttlMs = remainingAdminActionTtl(record);
+  assertCurrent();
+  const result = await durable.compareAndApply(record.id, observed.comparison, {
+    operation: "update",
+    action: "set",
+    value: next,
+    ttlMs,
+  });
+  return result.status === "applied";
 }
 
 /**
@@ -208,46 +196,28 @@ async function claimDecision(
  * Decisions are taken only from members of the tenant this runtime serves: Fi
  * must resolve the approver, and `lookupDelegation` refuses any other org and
  * a runtime with no tenant at all. Being listed as an approver is not
- * membership, so a decline is checked too. Nobody approves their own request,
- * on any channel; withdrawing it by declining stays allowed. Throws when Fi
+ * membership, so a decline is checked too. Current administrators may approve
+ * their own requests; an ordinary member cannot escalate themselves. Throws when Fi
  * cannot answer or this runtime has no tenant.
  */
 async function approverRefusal(
   config: ResolvedPluginConfig,
-  record: AdminActionRecord,
+  _record: AdminActionRecord,
   sender: string,
-  approve: boolean,
-): Promise<"own_request" | "not_a_member" | undefined> {
-  const identity = record.requester.identity;
-  const sameSender =
-    identity.channel === "slack" &&
-    identity.requesterSenderId.toLowerCase() === sender.toLowerCase();
+  _approve: boolean,
+): Promise<"not_a_member" | undefined> {
   const approver = await lookupDelegation(config, { requesterSenderId: sender.toUpperCase() });
-  if (!approver) {
+  if (!approver || !["admin", "owner"].includes(approver.user.role)) {
     return "not_a_member";
   }
-  if (!approve) {
-    return undefined;
-  }
-  // The same person may have filed on another channel: compare Fi identities.
-  return sameSender ||
-    approver.user.email.trim().toLowerCase() === record.requester.email.trim().toLowerCase()
-    ? "own_request"
-    : undefined;
+  return undefined;
 }
 
 async function pendingInSession(api: OpenClawPluginApi, sessionKey: string) {
-  const all = new Map(records);
-  for (const entry of (await openStore(api)
-    ?.entries()
-    .catch(() => [])) ?? []) {
-    if (!all.has(entry.key)) {
-      all.set(entry.key, entry.value);
-    }
-  }
-  return [...all.values()].filter(
-    (record) => record.status === "pending" && record.sessionKey === sessionKey,
-  );
+  const all = await adminActionStore(api).entries();
+  return all
+    .map((entry) => entry.value)
+    .filter((record) => record.status === "pending" && record.sessionKey === sessionKey);
 }
 
 /**
@@ -255,13 +225,6 @@ async function pendingInSession(api: OpenClawPluginApi, sessionKey: string) {
  * The on-behalf-of hook reads it; the handoff guard confines these sessions.
  */
 export const adminActionSessions = new Map<string, AdminActionRecord>();
-
-export function adminActionSessionKey(
-  config: Pick<ResolvedPluginConfig, "adminAgentId">,
-  id: string,
-) {
-  return `agent:${config.adminAgentId}:admin-action:${id.toLowerCase()}`;
-}
 
 function describe(record: AdminActionRecord): string {
   const f = record.fields;
@@ -290,6 +253,9 @@ function requesterMention(record: AdminActionRecord): string {
 }
 
 export function approvalCardText(record: AdminActionRecord, config: ResolvedPluginConfig): string {
+  if (record.origin) {
+    return `${ADMIN_TASKS[record.task].label}\n${describe(record)}\nUse the decision card to Approve, Hold, or Decline. Approval does not itself mean the action completed.`;
+  }
   const principals = config.adminPrincipals.map((id) =>
     /^U[A-Z0-9]+$/i.test(id) ? `<@${id}>` : id,
   );
@@ -299,29 +265,10 @@ export function approvalCardText(record: AdminActionRecord, config: ResolvedPlug
   return [
     `Admin action ${record.id} requested by ${requesterMention(record)} (${record.requester.email}): ${ADMIN_TASKS[record.task].label}`,
     describe(record),
-    `${principals.join(" ")}${principals.length ? " — " : ""}reply \`approve ${record.id}\` or \`deny ${record.id}\` ${where}. On approval Cellect Fi Admin carries out only this request.`,
+    `${principals.join(" ")}${principals.length ? " — " : ""}reply \`approve ${record.id}\` or \`deny ${record.id}\` ${where}. Approval is recorded separately from execution; unsupported actions are not executed.`,
   ]
     .filter(Boolean)
     .join("\n");
-}
-
-/** The fi-admin brief: exactly one task, no follow-on work, no handoff. */
-export function adminActionBrief(record: AdminActionRecord): string {
-  return [
-    `Approved admin action ${record.id}: ${ADMIN_TASKS[record.task].label}.`,
-    `Requested by ${record.requester.email}; approved by ${record.decidedBy ?? "an administrator"}.`,
-    describe(record),
-    ...(record.task === "restricted_filing"
-      ? [
-          record.fields.destination === "project_library"
-            ? "File it into that project's document library as a restricted document, under the category/section given (if any); do not add it to any data room."
-            : "File it into the data room named above as a restricted document.",
-        ]
-      : []),
-    "",
-    "Carry out ONLY this task, as specified above, attributed to the requester. Do not widen it, do not start other work, and do not hand it or any part of it to another agent or session. If it cannot be done exactly as specified, stop and say why.",
-    "Finish with one short message stating what you did and the result the requester should see (links or ids), or why you stopped.",
-  ].join("\n");
 }
 
 async function post(api: OpenClawPluginApi, record: AdminActionRecord, text: string) {
@@ -345,79 +292,18 @@ async function post(api: OpenClawPluginApi, record: AdminActionRecord, text: str
   });
 }
 
-function lastAssistantText(messages: unknown[]): string | undefined {
-  for (const message of messages.toReversed()) {
-    const entry = message as {
-      role?: unknown;
-      content?: unknown;
-      message?: { role?: unknown; content?: unknown };
-    };
-    const item = entry.message ?? entry;
-    if (item.role !== "assistant") {
-      continue;
-    }
-    if (typeof item.content === "string" && item.content.trim()) {
-      return item.content.trim();
-    }
-    if (Array.isArray(item.content)) {
-      const text = item.content
-        .map((part) => {
-          const value = (part as { type?: unknown; text?: unknown } | null) ?? {};
-          return value.type === "text" && typeof value.text === "string" ? value.text : "";
-        })
-        .join("")
-        .trim();
-      if (text) {
-        return text;
-      }
-    }
-  }
-  return undefined;
-}
-
-/** Start the single approved fi-admin turn and report its outcome in the thread. */
+/** Legacy requests have no enforceable typed effect. Never run their model brief. */
 export async function runApprovedAdminAction(api: OpenClawPluginApi, record: AdminActionRecord) {
-  const config = configFromRuntime(api);
-  const sessionKey = adminActionSessionKey(config, record.id);
-  adminActionSessions.set(sessionKey, record);
-  try {
-    const run = await api.runtime.subagent.run({
-      sessionKey,
-      message: adminActionBrief(record),
-      extraSystemPrompt:
-        "This session carries out one administrator-approved request from a Fi user. Do only that request. Never hand off, message other agents, or spawn sessions.",
-      deliver: false,
-      idempotencyKey: `fi-admin-action-${record.id.toLowerCase()}`,
-    });
-    const waited = await api.runtime.subagent.waitForRun({
-      runId: run.runId,
-      timeoutMs: ADMIN_RUN_TIMEOUT_MS,
-    });
-    const { messages } = await api.runtime.subagent.getSessionMessages({ sessionKey, limit: 20 });
-    const outcome =
-      lastAssistantText(messages) ??
-      `Run finished (${(waited as { status?: string }).status ?? "unknown"}) without a summary.`;
-    await save(api, { ...record, status: "done" });
-    await post(
-      api,
-      record,
-      `Admin action ${record.id} — requested by ${requesterMention(record)}, approved by ${record.decidedBy}:\n${outcome}`,
-    );
-  } catch (error) {
-    await save(api, { ...record, status: "failed" });
-    await post(
-      api,
-      record,
-      `Admin action ${record.id} could not be completed: ${error instanceof Error ? error.message : String(error)}`,
-    ).catch(() => undefined);
-  } finally {
-    adminActionSessions.delete(sessionKey);
-  }
+  await post(
+    api,
+    record,
+    "Approval recorded. Not executed: this request has no supported exact-target operation. Prepare the specific document and destination in Fi; no unrestricted administrator agent was started.",
+  );
 }
 
 /**
  * Handle an approver's reply. Only a configured approver's own message counts,
- * never the requester's own approval, and each request is decided once: later
+ * including a current administrator's own request, and each request is decided once: later
  * or concurrent decisions are ignored with a note in the thread.
  *
  * The reply must be a Slack message whose sender Slack itself named
@@ -441,7 +327,7 @@ export async function decideAdminApproval(
   context: { channelId?: string; sessionKey?: string },
   run: (record: AdminActionRecord) => Promise<void> = (record) =>
     runApprovedAdminAction(api, record),
-): Promise<{ claimed: boolean; decided?: AdminActionRecord }> {
+): Promise<{ claimed: boolean; decided?: AdminActionRecord; text?: string }> {
   const unclaimed = { claimed: false };
   const refused = { claimed: true };
   const config = configFromRuntime(api);
@@ -455,15 +341,37 @@ export async function decideAdminApproval(
   }
   const approve = /^approve/i.test(match[1] ?? "");
   const code = match[2]?.toUpperCase();
-  let record: AdminActionRecord | undefined = code ? await load(api, code) : undefined;
-  // A word after "approve" that is not a request id falls back to the thread.
-  if (!record) {
-    const sessionKey = event.sessionKey ?? context.sessionKey;
-    const pending = sessionKey ? await pendingInSession(api, sessionKey) : [];
-    record = pending.length === 1 ? pending[0] : undefined;
+  let record: AdminActionRecord | undefined;
+  try {
+    record = code ? await loadAdminAction(api, code) : undefined;
+    // An explicit unknown id must never select a different pending request.
+    if (!code) {
+      const sessionKey = event.sessionKey ?? context.sessionKey;
+      const pending = sessionKey ? await pendingInSession(api, sessionKey) : [];
+      record = pending.length === 1 ? pending[0] : undefined;
+    }
+  } catch {
+    api.logger.warn(
+      "fi-user: approval storage unavailable; decision text consumed without execution",
+    );
+    return {
+      claimed: true,
+      text: "The approval store is temporarily unavailable. Nothing was executed; please retry the decision in this conversation.",
+    };
   }
-  if (!record || Date.now() - record.createdAt > RECORD_TTL_MS) {
-    return unclaimed;
+  if (!record) {
+    return code
+      ? {
+          claimed: true,
+          text: "That approval request was not found or has expired. Nothing was executed; use the current request in its original conversation.",
+        }
+      : unclaimed;
+  }
+  if (Date.now() - record.createdAt > RECORD_TTL_MS) {
+    return {
+      claimed: true,
+      text: "This approval request expired. Nothing was executed; prepare a new exact request.",
+    };
   }
   const found = record;
   const note = (text: string) => post(api, found, text).catch(() => undefined);
@@ -474,7 +382,13 @@ export async function decideAdminApproval(
     );
     return refused;
   }
-  if (found.status !== "pending" || claimed.has(found.id)) {
+  if (found.origin) {
+    await note(
+      "Use this request's decision card in its originating Fi conversation; a Slack reply cannot decide it.",
+    );
+    return refused;
+  }
+  if (found.status !== "pending") {
     await note(alreadyDecided);
     return refused;
   }
@@ -491,9 +405,9 @@ export async function decideAdminApproval(
     );
     return refused;
   }
-  if (refusal === "own_request") {
+  if (!found.sessionKey || found.sessionKey !== (event.sessionKey ?? context.sessionKey)) {
     await note(
-      `Admin action ${found.id} cannot be approved by the person who requested it; another administrator must approve it.`,
+      "Reply in the original Slack thread for this approval request; this conversation cannot decide it.",
     );
     return refused;
   }
@@ -501,22 +415,30 @@ export async function decideAdminApproval(
     ...found,
     status: approve ? "approved" : "denied",
     decidedBy: sender,
+    revision: (found.revision ?? 1) + 1,
+    ...(approve
+      ? {
+          execution: {
+            state: "not_executed" as const,
+            operationId: `fi-admin-action-${found.id}`,
+            message: "No supported exact-target operation.",
+          },
+        }
+      : {}),
   };
-  const claim = await claimDecision(api, found, {
-    decision: decided.status as DecisionClaim["decision"],
-    decidedBy: sender,
-    at: Date.now(),
-  });
-  if (claim === "taken") {
+  let applied: boolean;
+  try {
+    applied = await transitionAdminAction(api, found, decided, () => {});
+  } catch {
+    await note(
+      `Admin action ${found.id}: the decision could not be recorded; retry in this thread.`,
+    );
+    return refused;
+  }
+  if (!applied) {
     await note(alreadyDecided);
     return refused;
   }
-  if (claim === "unrecorded") {
-    await note(`Admin action ${found.id}: the decision could not be recorded; reply again.`);
-    return refused;
-  }
-  records.set(decided.id, decided);
-  await save(api, decided);
   if (!approve) {
     await post(api, decided, `Admin action ${decided.id} was declined by an administrator.`).catch(
       () => undefined,
@@ -568,6 +490,23 @@ const RequestSchema = Type.Object(
     targetType: Type.Optional(stringEnum(["org", "project", "company"] as const)),
     targetId: Type.Optional(Type.String({ maxLength: 200 })),
     reason: Type.Optional(Type.String({ maxLength: 1_000 })),
+    displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
+    roomName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
+    order: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
+    noOrder: Type.Optional(Type.Boolean()),
+    visibility: Type.Optional(stringEnum(["shared", "internal"] as const)),
+    acknowledgeRestricted: Type.Optional(Type.Boolean()),
+    taskIds: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 30 }),
+    ),
+    noTask: Type.Optional(Type.Boolean()),
+    completeTaskIds: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 30 }),
+    ),
+    tags: Type.Optional(
+      Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 30 }),
+    ),
+    highlight: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
@@ -585,7 +524,7 @@ export function createRequestAdminActionTool(
     name: "request_admin_action",
     label: "Ask an administrator",
     description:
-      "Ask Alex or Lorenzo to approve one administrator action you cannot do as the requester: esign_change_recipient, esign_prepare_template, external_share_link, document_outside_grants, restricted_filing (into a data room with roomId, or into a project's document library with no roomId and optional category/section), or access_request. Posts an approval card in this conversation; after approval Cellect Fi Admin carries out only that task and reports back here. access_request files a Fi access request that an administrator approves in Fi. Never tag or message the admin agent yourself.",
+      "Request a current administrator's decision in this conversation. Continue ordinary work under existing grants without approval. Supported privileged execution: restricted_filing of an exact existing documentId into an exact roomId, with recipient-facing displayName, roomName, section, order or explicit noOrder, visibility, taskIds or explicit noTask, and explicit completion targets. Resolve document/room/checklist targets first; never guess. Unsupported or ambiguous approved requests are not executed. access_request uses Fi's existing access-request workflow. Never tag or message the admin agent yourself.",
     parameters: RequestSchema,
     async execute(_toolCallId, raw) {
       const input = raw as AdminActionFields & { task: AdminTask };
@@ -663,32 +602,60 @@ export function createRequestAdminActionTool(
           : {}),
         createdAt: Date.now(),
         status: "pending",
+        revision: 1,
+        ...(identity.channel === "matrix"
+          ? { origin: prepareAdminActionOrigin(api, context, config) }
+          : {}),
       };
-      await save(api, record);
+      if (record.origin) {
+        if (
+          record.task !== "restricted_filing" ||
+          !["admin", "owner"].includes(delegation.user.role)
+        ) {
+          return jsonResult({
+            status: "not_executable",
+            cardPosted: false,
+            tellRequester:
+              "This action needs exact preparation by a current administrator through a supported operation. Nothing was executed and no actionable approval card was posted.",
+          });
+        }
+        record.preparedFiling = await prepareRoomFiling(
+          config,
+          record,
+          context.assertInvocationCurrent ?? (() => {}),
+        );
+      }
+      context.assertInvocationCurrent?.();
+      const owner = adminActionStore(api);
+      const durable = context.assertInvocationCurrent
+        ? owner.withCurrent?.({ assertCurrent: context.assertInvocationCurrent })
+        : owner;
+      if (
+        !durable ||
+        !(await durable.registerIfAbsent(record.id, record, {
+          ttlMs: remainingAdminActionTtl(record),
+        }))
+      ) {
+        throw new Error("The approval request could not be recorded; nothing was executed.");
+      }
       const text = approvalCardText(record, config);
-      if (context.delivery) {
+      if (record.origin) {
+        await publishAdminActionCard(api, record, context.assertInvocationCurrent);
+      } else if (context.delivery) {
         await context.delivery.send({ text });
       }
       return jsonResult({
         requestId: record.id,
         status: "pending_approval",
-        ...(context.delivery
+        ...(record.origin || context.delivery
           ? { cardPosted: true }
           : { cardPosted: false, postThisVerbatim: text }),
         tellRequester:
-          "Pending approval by Alex or Lorenzo; the result will be posted in this thread.",
+          "Pending a current administrator's decision in this conversation. Approval and verified execution are separate outcomes.",
       });
     },
   };
 }
-
-/** Tools through which an agent could pass work to another agent or session. */
-const HANDOFF_TOOLS = new Set([
-  "sessions_send",
-  "sessions_spawn",
-  "subagents",
-  "request_admin_action",
-]);
 
 /**
  * fi-admin never hands work off. An approved admin-action session is confined
@@ -706,11 +673,11 @@ export function adminHandoffBlock(
   const inAdminAction =
     Boolean(ctx.sessionKey && adminActionSessions.has(ctx.sessionKey)) ||
     Boolean(ctx.sessionKey?.startsWith(`agent:${config.adminAgentId}:admin-action:`));
-  if (inAdminAction && (HANDOFF_TOOLS.has(event.toolName) || event.toolName === "message")) {
+  if (inAdminAction) {
     return {
       block: true,
       blockReason:
-        "An approved admin action runs only its own task; it cannot hand off or message elsewhere.",
+        "Approved actions execute only through their exact typed operation owner. Generic agent tools cannot mutate or widen an approved request.",
     };
   }
   if (event.toolName === "sessions_send") {

@@ -11,6 +11,7 @@ import { extractDocumentContent } from "openclaw/plugin-sdk/document-extractor";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { jsonResult, type AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
+import { registerAdminActionRpc } from "./admin-action-rpc.js";
 import {
   adminActionSessions,
   adminHandoffBlock,
@@ -513,6 +514,7 @@ export default definePluginEntry({
   name: "Fi User Delegation",
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
+    registerAdminActionRpc(api);
     registerGeneratedArtifactCompletion(api);
     registerFileArtifactRuntime(api);
     api.on("reply_payload_sending", (event, context) => {
@@ -580,7 +582,7 @@ export default definePluginEntry({
             { channelId: channel, sessionKey: context.sessionKey },
           );
           if (outcome.claimed) {
-            return { handled: true };
+            return { handled: true, ...(outcome.text ? { text: outcome.text } : {}) };
           }
         } catch {
           api.logger.warn("fi-user: admin approval handling failed");

@@ -24,9 +24,51 @@ vi.mock("./runtime.js", () => ({
   }),
 }));
 
-import { matrixOutbound } from "./outbound.js";
+import { matrixOutbound, resolveMatrixExtraContent } from "./outbound.js";
 
 type MockCallSource = { mock: { calls: Array<Array<unknown>> } };
+
+describe("native business decision-card transport", () => {
+  const card = {
+    type: "m.cellect.decision",
+    version: 1,
+    kind: "workflowApproval",
+    id: "ABC234",
+    revision: 1,
+    status: "pending",
+    title: "File document",
+    summary: "Review the exact destination.",
+    decisions: ["approve", "hold", "decline"],
+    expiresAtMs: 1_900_000_000_000,
+    workflowRef: "admin-action:ABC234",
+  };
+  it("preserves the existing Fi card envelope and strips unrelated event content", () => {
+    expect(
+      resolveMatrixExtraContent({
+        channelData: {
+          matrix: {
+            extraContent: {
+              "ai.cellect.card": { ...card, untrusted: "drop" },
+              "m.room.power_levels": { users_default: 100 },
+            },
+          },
+        },
+      }),
+    ).toEqual({ "ai.cellect.card": card });
+  });
+  it("rejects mismatched workflows, malformed controls and the obsolete content key", () => {
+    for (const extraContent of [
+      { "m.cellect.decision": card },
+      { "ai.cellect.card": { ...card, workflowRef: "admin-action:OTHER1" } },
+      { "ai.cellect.card": { ...card, decisions: ["run-shell"] } },
+      { "ai.cellect.card": { ...card, title: "Invisible\u200btitle" } },
+    ]) {
+      expect(
+        resolveMatrixExtraContent({ channelData: { matrix: { extraContent } } }),
+      ).toBeUndefined();
+    }
+  });
+});
 
 function mockCall(source: MockCallSource, label: string, callIndex = 0): Array<unknown> {
   const call = source.mock.calls[callIndex];

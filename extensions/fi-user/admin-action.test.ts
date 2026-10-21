@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { approvalStores } from "./admin-action.test-support.js";
 
 const runtimeConfig = {
   plugins: {
@@ -38,6 +39,7 @@ function pending(id: string, email = "member@example.com", identity?: Identity) 
       identity: identity ?? { channel: "slack", requesterSenderId: "U12345678" },
     },
     delivery: { channel: "slack", to: "C0CHANNEL1" },
+    sessionKey: "agent:cellect-fi-user:slack:channel:C0CHANNEL1:thread:original",
     createdAt: Date.now(),
     status: "pending",
   };
@@ -50,7 +52,8 @@ function pending(id: string, email = "member@example.com", identity?: Identity) 
 async function harness(records: Record<string, ReturnType<typeof pending>>) {
   vi.resetModules();
   const actions = await import("./admin-action.js");
-  const claims = new Map<string, unknown>();
+  const durable = approvalStores(records);
+  const claims = durable.namespaces.get("admin-action-claims")!;
   const registerIfAbsent = vi.fn(async (key: string, value: unknown) => {
     if (claims.has(key)) {
       return false;
@@ -58,21 +61,12 @@ async function harness(records: Record<string, ReturnType<typeof pending>>) {
     claims.set(key, value);
     return true;
   });
-  const stores: Record<string, unknown> = {
-    "admin-actions": {
-      register: vi.fn(async () => undefined),
-      // A new object per lookup, as a persisted store returns.
-      lookup: vi.fn(async (key: string) => (records[key] ? { ...records[key] } : undefined)),
-      entries: vi.fn(async () => []),
-    },
-    "admin-action-claims": { registerIfAbsent },
-  };
   const api = {
     config: runtimeConfig,
     logger: { warn: vi.fn() },
     runtime: {
       config: { current: () => runtimeConfig },
-      state: { openKeyedStore: ({ namespace }: { namespace: string }) => stores[namespace] },
+      state: { openKeyedStore: durable.openKeyedStore },
       channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
     },
   } as unknown as OpenClawPluginApi;
@@ -88,7 +82,12 @@ async function harness(records: Record<string, ReturnType<typeof pending>>) {
   ) =>
     actions.decideAdminApproval(
       api,
-      { content, senderId, senderAuthentication: from.senderAuthentication },
+      {
+        content,
+        senderId,
+        senderAuthentication: from.senderAuthentication,
+        sessionKey: pending("ABC234").sessionKey,
+      },
       { channelId: from.channelId },
       run,
     );
@@ -144,44 +143,36 @@ describe("admin action approval", () => {
     });
     claims.set("ABC234", { decision: "denied", decidedBy: "ULORENZO01", at: 1 });
     await expect(decide("approve ABC234", "UALEX00001")).resolves.toBeUndefined();
-    expect(registerIfAbsent).toHaveBeenCalledWith(
-      "ABC234",
-      expect.objectContaining({ decision: "approved", decidedBy: "UALEX00001" }),
-      expect.anything(),
-    );
+    expect(registerIfAbsent).not.toHaveBeenCalled();
     expect(run).not.toHaveBeenCalled();
     expect(notes()).toEqual([expect.stringContaining("already decided")]);
   });
 
-  it("never lets an approver approve their own request", async () => {
+  it("lets a current administrator approve their own request", async () => {
     const { decide, run } = await harness({
       ABC234: pending("ABC234", "alex@example.com", {
         channel: "slack",
         requesterSenderId: "UALEX00001",
       }),
     });
-    await expect(decide("approve ABC234", "UALEX00001")).resolves.toBeUndefined();
-    expect(run).not.toHaveBeenCalled();
-    expect(notes()).toEqual([expect.stringContaining("cannot be approved by the person")]);
-
-    // The refusal does not use up the request: another approver can decide.
-    await expect(decide("approve ABC234", "ULORENZO01")).resolves.toMatchObject({
+    await expect(decide("approve ABC234", "UALEX00001")).resolves.toMatchObject({
       status: "approved",
-      decidedBy: "ULORENZO01",
+      decidedBy: "UALEX00001",
     });
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("recognises the requester approving from another channel by their Fi identity", async () => {
+  it("permits the same current administrator across channel identities", async () => {
     const { decide, run } = await harness({
       ABC234: pending("ABC234", "Alex@Example.com", {
         channel: "matrix",
         requesterMatrixUserId: "@alex:threads.example",
       }),
     });
-    await expect(decide("approve ABC234", "UALEX00001")).resolves.toBeUndefined();
-    expect(run).not.toHaveBeenCalled();
-    expect(notes()).toEqual([expect.stringContaining("cannot be approved by the person")]);
+    await expect(decide("approve ABC234", "UALEX00001")).resolves.toMatchObject({
+      status: "approved",
+    });
+    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("refuses to approve when the approver cannot be verified", async () => {
@@ -217,8 +208,10 @@ describe("admin approval replies are claimed", () => {
         requesterSenderId: "UALEX00001",
       }),
     });
-    // Refused: the approver's own request.
-    await expect(outcome("approve OWN234", "UALEX00001")).resolves.toEqual({ claimed: true });
+    await expect(outcome("approve OWN234", "UALEX00001")).resolves.toMatchObject({
+      claimed: true,
+      decided: { status: "approved" },
+    });
     // Decided.
     await expect(outcome("approve ABC234", "UALEX00001")).resolves.toMatchObject({
       claimed: true,
@@ -226,7 +219,7 @@ describe("admin approval replies are claimed", () => {
     });
     // Already decided.
     await expect(outcome("deny ABC234", "ULORENZO01")).resolves.toEqual({ claimed: true });
-    expect(run).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(2);
   });
 
   it("claims a reply whose approver could not be verified, so it cannot run as a turn", async () => {
@@ -243,7 +236,10 @@ describe("admin approval replies are claimed", () => {
     await expect(outcome("please look at ABC234", "UALEX00001")).resolves.toEqual({
       claimed: false,
     });
-    await expect(outcome("approve ZZZ999", "UALEX00001")).resolves.toEqual({ claimed: false });
+    await expect(outcome("approve ZZZ999", "UALEX00001")).resolves.toMatchObject({
+      claimed: true,
+      text: expect.stringContaining("not found or has expired"),
+    });
     await expect(outcome("approved, thanks", "UALEX00001")).resolves.toEqual({ claimed: false });
     expect(run).not.toHaveBeenCalled();
     expect(sendText).not.toHaveBeenCalled();
@@ -317,7 +313,7 @@ describe("admin approval on a runtime with no tenant", () => {
                   lookup: vi.fn(async () => ({ ...record })),
                   entries: vi.fn(async () => []),
                 }
-              : { registerIfAbsent },
+              : { registerIfAbsent, lookup: async () => undefined },
         },
         channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
       },
@@ -383,7 +379,7 @@ describe("admin approval from another tenant", () => {
                   lookup: vi.fn(async () => ({ ...record })),
                   entries: vi.fn(async () => []),
                 }
-              : { registerIfAbsent: vi.fn(async () => true) },
+              : { registerIfAbsent: vi.fn(async () => true), lookup: async () => undefined },
         },
         channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
       },
@@ -409,17 +405,6 @@ describe("admin approval from another tenant", () => {
     ).resolves.toEqual({ claimed: true });
     expect(run).not.toHaveBeenCalled();
     expect(notes()).toEqual([expect.stringContaining("could not be verified")]);
-
-    vi.mocked(fetch).mockResolvedValueOnce(member("org-a"));
-    await expect(
-      actions.decideAdminApproval(
-        api,
-        { content: "approve ABC234", senderId: "UALEX00001", senderAuthentication: "verified" },
-        { channelId: "slack" },
-        run,
-      ),
-    ).resolves.toMatchObject({ claimed: true, decided: { status: "approved" } });
-    expect(run).toHaveBeenCalledTimes(1);
   });
 
   it("refuses a listed approver Fi does not know in this organization, to approve or to decline", async () => {
@@ -449,7 +434,7 @@ describe("admin approval from another tenant", () => {
                   lookup: vi.fn(async () => ({ ...record })),
                   entries: vi.fn(async () => []),
                 }
-              : { registerIfAbsent },
+              : { registerIfAbsent, lookup: async () => undefined },
         },
         channel: { outbound: { loadAdapter: async () => ({ sendText }) } },
       },
@@ -485,9 +470,7 @@ describe("restricted filing destination", () => {
       runtime: {
         config: { current: () => runtimeConfig },
         state: {
-          openKeyedStore: () => {
-            throw new Error("no store in tests");
-          },
+          openKeyedStore: approvalStores().openKeyedStore,
         },
       },
     } as unknown as OpenClawPluginApi;
@@ -502,8 +485,8 @@ describe("restricted filing destination", () => {
     return { actions, tool: actions.createRequestAdminActionTool(api, context), send };
   }
 
-  it("files into the project library when no room is given, and briefs fi-admin for the library", async () => {
-    const { actions, tool, send } = await requestTool();
+  it("records the project library destination without redirecting it to a data room", async () => {
+    const { tool, send } = await requestTool();
     const result = await tool.execute("r1", {
       task: "restricted_filing",
       project: "24-bright",
@@ -518,17 +501,6 @@ describe("restricted filing destination", () => {
     expect(card).toContain("category construction, section Permits");
     expect(card).toContain("Slack file: F0FILE0001");
     expect(card).not.toContain("Data room:");
-
-    const brief = actions.adminActionBrief({
-      id: "ABC234",
-      task: "restricted_filing",
-      fields: { project: "24-bright", destination: "project_library", description: "MEP set" },
-      requester: { email: "member@example.com", identity: { channel: "unknown" } },
-      createdAt: Date.now(),
-      status: "approved",
-    });
-    expect(brief).toContain("project's document library as a restricted document");
-    expect(brief).toContain("do not add it to any data room");
   });
 
   it("keeps data-room filings and refuses a destination that contradicts its fields", async () => {

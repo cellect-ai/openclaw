@@ -23,6 +23,7 @@ vi.mock("node:util", async (importOriginal) => ({
 vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentContent: vi.fn() }));
 
 import { adminActionSessions } from "./admin-action.js";
+import { approvalStores } from "./admin-action.test-support.js";
 import { fiUserApiPath } from "./fi-api-tool.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
@@ -62,6 +63,7 @@ const runtimeConfig = {
 function plugin() {
   const tools: ToolRegistration[] = [];
   const hooks = new Map<string, Hook[]>();
+  const stores = approvalStores();
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -82,9 +84,7 @@ function plugin() {
           deleteSession: vi.fn(),
         },
         state: {
-          openKeyedStore: () => {
-            throw new Error("no store in tests");
-          },
+          openKeyedStore: stores.openKeyedStore,
         },
       } as unknown as OpenClawPluginApi["runtime"],
       registerTool: (tool: unknown) => tools.push(tool as ToolRegistration),
@@ -102,6 +102,7 @@ function plugin() {
         : () => registration
   ) as ToolFactory;
   return {
+    stores,
     tool(name: string, toolContext: OpenClawPluginToolContext) {
       const result = factory(toolContext);
       const tool = (Array.isArray(result) ? result : result ? [result] : []).find(
@@ -1088,7 +1089,76 @@ describe("fi_user_budget_import", () => {
 });
 
 describe("request_admin_action", () => {
-  it("posts an approval card, and runs fi-admin once an approver approves", async () => {
+  it("never redirects an explicit unknown code or lets another Slack thread decide", async () => {
+    const instance = plugin();
+    const ctx = context({
+      delivery: { send: vi.fn() },
+      deliveryContext: {
+        channel: "slack",
+        to: "C0CHANNEL1",
+        accountId: "fi-user",
+        threadId: "1710000000.000100",
+      },
+    });
+    const result = await instance.tool("request_admin_action", ctx).execute("request", {
+      task: "external_share_link",
+      project: "project",
+      documentId: "doc",
+      recipientEmail: "recipient@example.test",
+    });
+    const requestId = (result.details as { requestId: string }).requestId;
+    const hook = instance.hook("before_dispatch");
+    await expect(
+      hook(
+        {
+          content: "approve ZZZ999",
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+          sessionKey: ctx.sessionKey,
+        } as never,
+        { channelId: "slack", sessionKey: ctx.sessionKey } as never,
+      ),
+    ).resolves.toMatchObject({
+      handled: true,
+      text: expect.stringContaining("not found or has expired"),
+    });
+    await expect(
+      hook(
+        {
+          content: `approve ${requestId}`,
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+          sessionKey: "another-thread",
+        } as never,
+        { channelId: "slack", sessionKey: "another-thread" } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
+    const row = instance.stores.namespaces.get("admin-actions")!.get(requestId) as Record<
+      string,
+      unknown
+    >;
+    expect(row.status).toBe("pending");
+    row.origin = {
+      orgId: "org-shape",
+      roomId: "!room:example.test",
+      threadRootEventId: "$root",
+      agentMxid: "@bot:example.test",
+    };
+    await expect(
+      hook(
+        {
+          content: `approve ${requestId}`,
+          senderId: "UALEX00001",
+          senderAuthentication: "verified",
+          sessionKey: ctx.sessionKey,
+        } as never,
+        { channelId: "slack", sessionKey: ctx.sessionKey } as never,
+      ),
+    ).resolves.toEqual({ handled: true });
+    expect(row.status).toBe("pending");
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
+  });
+  it("posts an approval card and records approval without an unrestricted admin run", async () => {
     const send = vi.fn();
     const instance = plugin();
     const ctx = context({
@@ -1127,7 +1197,9 @@ describe("request_admin_action", () => {
         },
       ],
     });
-    const received = instance.hook("before_dispatch");
+    const dispatch = instance.hook("before_dispatch");
+    const received = (event: never, hookContext: never) =>
+      dispatch(event, { sessionKey: ctx.sessionKey, ...(hookContext as object) } as never);
     // Not an approver: ignored, and left to the conversation as an ordinary turn.
     await expect(
       received(
@@ -1180,16 +1252,12 @@ describe("request_admin_action", () => {
       ),
     ).resolves.toEqual({ handled: true });
     await vi.waitFor(() => expect(mocks.sendText).toHaveBeenCalled());
-    expect(mocks.subagentRun).toHaveBeenCalledTimes(1);
-    const run = mocks.subagentRun.mock.calls[0]![0];
-    expect(run.sessionKey).toBe(`agent:cellect-fi-admin:admin-action:${requestId.toLowerCase()}`);
-    expect(run.message).toContain("Carry out ONLY this task");
-    expect(run.message).toContain("asorc@example.com");
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
     expect(mocks.sendText).toHaveBeenCalledWith(
       expect.objectContaining({
         to: "C0CHANNEL1",
         threadId: "1710000000.000100",
-        text: expect.stringContaining("approved by UALEX00001"),
+        text: expect.stringContaining("Not executed"),
       }),
     );
 
@@ -1210,7 +1278,7 @@ describe("request_admin_action", () => {
         expect.objectContaining({ text: expect.stringContaining("already decided") }),
       ),
     );
-    expect(mocks.subagentRun).toHaveBeenCalledTimes(1);
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
   });
 
   it("records a denial from an approver who mentions the bot first, and runs nothing", async () => {
@@ -1237,6 +1305,7 @@ describe("request_admin_action", () => {
           content: `<@UFIUSERBOT> deny ${requestId}`,
           senderId: "UALEX00001",
           senderAuthentication: "verified",
+          sessionKey: ctx.sessionKey,
         } as never,
         { channelId: "slack" } as never,
       ),
@@ -1379,7 +1448,7 @@ describe("before_tool_call", () => {
     ).toMatchObject({ block: true });
   });
 
-  it("attributes an approved admin action's exec to the original requester", () => {
+  it("blocks unrestricted exec even after administrator approval", () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
     adminActionSessions.set(sessionKey, {
       id: "ZZZ222",
@@ -1396,10 +1465,8 @@ describe("before_tool_call", () => {
       const result = plugin().hook("before_tool_call")(
         { toolName: "exec", params: { command: "x" } } as never,
         { agentId: "cellect-fi-admin", sessionKey } as never,
-      ) as { params: { env: Record<string, string> } };
-      expect(verify(result.params.env.FI_ON_BEHALF_OF!)).toMatchObject({
-        requester_matrix_user_id: "@member:threads.example",
-      });
+      );
+      expect(result).toMatchObject({ block: true });
     } finally {
       adminActionSessions.delete(sessionKey);
     }

@@ -134,12 +134,58 @@ export function resolveMatrixExtraContent(
     typeof voice.id === "string"
       ? voice
       : undefined;
-  if (!presentation && !trustedVoice) {
+  // Decision transport only. The application/business owner verifies the
+  // authenticated reviewer and immutable target before accepting any action.
+  const decision = asOptionalRecord(raw?.["ai.cellect.card"]);
+  const trustedDecision =
+    decision?.type === "m.cellect.decision" &&
+    decision.version === 1 &&
+    decision.kind === "workflowApproval" &&
+    typeof decision.id === "string" &&
+    /^[A-Z0-9]{6}$/.test(decision.id) &&
+    decision.workflowRef === `admin-action:${decision.id}` &&
+    Number.isSafeInteger(decision.revision) &&
+    Number(decision.revision) > 0 &&
+    typeof decision.title === "string" &&
+    decision.title.length > 0 &&
+    decision.title.length <= 80 &&
+    !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(decision.title) &&
+    typeof decision.summary === "string" &&
+    decision.summary.trim().length > 0 &&
+    decision.summary.length <= 280 &&
+    !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(decision.summary) &&
+    Number.isSafeInteger(decision.expiresAtMs) &&
+    typeof decision.status === "string" &&
+    ["pending", "held", "approved", "declined", "expired", "cancelled"].includes(decision.status) &&
+    Array.isArray(decision.decisions) &&
+    decision.decisions.length > 0 &&
+    decision.decisions.length <= 3 &&
+    decision.decisions.every((item) => ["approve", "hold", "decline", "resume"].includes(item))
+      ? {
+          type: decision.type,
+          version: decision.version,
+          kind: decision.kind,
+          id: decision.id,
+          revision: decision.revision,
+          status: decision.status,
+          title: decision.title,
+          summary: decision.summary,
+          decisions: decision.decisions,
+          expiresAtMs: decision.expiresAtMs,
+          workflowRef: decision.workflowRef,
+          ...(typeof decision.decidedByUserId === "string" &&
+          /^@[^\s:]+:[^\s]+$/.test(decision.decidedByUserId)
+            ? { decidedByUserId: decision.decidedByUserId }
+            : {}),
+        }
+      : undefined;
+  if (!presentation && !trustedVoice && !trustedDecision) {
     return undefined;
   }
   return {
     ...(presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : {}),
     ...(trustedVoice ? { [MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]: trustedVoice } : {}),
+    ...(trustedDecision ? { "ai.cellect.card": trustedDecision } : {}),
   };
 }
 
