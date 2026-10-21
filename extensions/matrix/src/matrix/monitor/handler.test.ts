@@ -881,7 +881,7 @@ describe("matrix monitor handler pairing account scope", () => {
       const { handler, finalizeInboundContext, recordInboundSession } =
         createMatrixHandlerTestHarness({
           isDirectMessage: false,
-          runtime: { error },
+          runtime: { error, log: vi.fn(), exit: vi.fn() },
           client: {
             getEvent: async (_room, eventId) =>
               eventId === "$root"

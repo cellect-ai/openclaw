@@ -307,7 +307,9 @@ describe("native Matrix participant lifecycle adapter", () => {
       await admit();
       mocks.managers.set("main", {});
       if (scenario === "wrong-key") {
-        const [[key, value]] = [...saved];
+        const entry = [...saved][0];
+        if (!entry) throw new Error("Expected a persisted execution relationship");
+        const [key, value] = entry;
         saved.delete(key);
         saved.set("incorrect-key", value);
       }

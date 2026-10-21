@@ -1,8 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
-import {
-  getSessionBindingService,
-  type SessionBindingRecord,
-} from "openclaw/plugin-sdk/conversation-binding-runtime";
+import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import type { CoreConfig } from "../types.js";
 import { resolveMatrixProjectionExecutions } from "./projection-execution.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
@@ -26,69 +23,59 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
   const handle = api.runtime.events.registerConversationLifecycleTransport({
     transportId: "matrix-conversation-v2",
     resolveBindings: (owner) => {
-      const direct = getSessionBindingService().listBySession(owner.sessionKey);
       // SAFETY: The admitted runtime config is borrowed only for read-only account
       // and route selection; these legacy helpers type their config as mutable.
       const cfg = (api.runtime.config.current?.() ?? api.config) as CoreConfig;
-      const native = resolveMatrixProjectionExecutions(owner, cfg).map(
-        (execution): SessionBindingRecord => ({
-          bindingId: execution.canonicalBindingId,
-          targetSessionKey: execution.sessionKey,
-          targetKind: "session",
-          status: "active",
-          boundAt: 0,
-          conversation: {
-            channel: "matrix",
-            accountId: execution.accountId,
-            conversationId: execution.threadRootEventId,
-            parentConversationId: execution.roomId,
-          },
-          metadata: {
-            agentId: execution.agentId,
-            environment: execution.environment,
-            projectedConversationId: execution.conversationId,
-          },
-        }),
-      );
-      // The canonical owner still has its direct binding. Its admitted relation
-      // must not create duplicate frozen lifecycle delivery obligations.
-      const bindings = [...direct, ...native].filter(
+      const direct = getSessionBindingService()
+        .listBySession(owner.sessionKey)
+        .flatMap((binding) => {
+          const metadata = binding.metadata;
+          const roomId = binding.conversation.parentConversationId;
+          if (
+            binding.conversation.channel !== "matrix" ||
+            !roomId ||
+            typeof metadata?.environment !== "string" ||
+            !metadata.environment ||
+            typeof metadata.projectedConversationId !== "string" ||
+            !metadata.projectedConversationId ||
+            // listBySession already selected this Slack/Matrix owner. A
+            // source-authorized bind can omit agentId; skip only a mismatch.
+            (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
+          ) {
+            return [];
+          }
+          return [
+            {
+              environment: metadata.environment,
+              conversationId: metadata.projectedConversationId,
+              roomId,
+              bindingId: binding.bindingId,
+              accountId: binding.conversation.accountId,
+              threadRootEventId: binding.conversation.conversationId,
+              sessionKey: owner.sessionKey,
+              agentId: owner.agentId,
+            },
+          ];
+        });
+      const native = resolveMatrixProjectionExecutions(owner, cfg).map((execution) => ({
+        environment: execution.environment,
+        conversationId: execution.conversationId,
+        roomId: execution.roomId,
+        bindingId: execution.canonicalBindingId,
+        accountId: execution.accountId,
+        threadRootEventId: execution.threadRootEventId,
+        sessionKey: execution.sessionKey,
+        agentId: execution.agentId,
+      }));
+      // The canonical owner's direct binding and admitted relation describe one
+      // destination, never two frozen lifecycle delivery obligations.
+      return [...direct, ...native].filter(
         (binding, index, all) =>
           all.findIndex(
             (other) =>
-              other.bindingId === binding.bindingId &&
-              other.conversation.accountId === binding.conversation.accountId,
+              other.bindingId === binding.bindingId && other.accountId === binding.accountId,
           ) === index,
       );
-      return bindings.flatMap((binding) => {
-        const metadata = binding.metadata;
-        const roomId = binding.conversation.parentConversationId;
-        if (
-          binding.conversation.channel !== "matrix" ||
-          !roomId ||
-          typeof metadata?.environment !== "string" ||
-          !metadata.environment ||
-          typeof metadata.projectedConversationId !== "string" ||
-          !metadata.projectedConversationId ||
-          // listBySession already selected this Slack/Matrix owner. A
-          // source-authorized bind can omit agentId; skip only a mismatch.
-          (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
-        ) {
-          return [];
-        }
-        return [
-          {
-            environment: metadata.environment,
-            conversationId: metadata.projectedConversationId,
-            roomId,
-            bindingId: binding.bindingId,
-            accountId: binding.conversation.accountId,
-            threadRootEventId: binding.conversation.conversationId,
-            sessionKey: owner.sessionKey,
-            agentId: owner.agentId,
-          },
-        ];
-      });
     },
     publish: async (binding, event, transactionId) => {
       await withResolvedMatrixSendClient(
