@@ -624,6 +624,7 @@ describe("fi_user_dataroom", () => {
       "upload_slack_file",
       "upload_drive_file",
       "upload_generated_artifact",
+      "upload_file",
       "upload_to_project_library",
     ]);
     expect(JSON.stringify(schema)).not.toMatch(/"method"|"path"|jsonBody/);

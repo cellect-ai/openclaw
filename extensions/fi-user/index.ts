@@ -48,7 +48,10 @@ import {
   type DriveFileMetadata,
 } from "./gam.js";
 import { registerGeneratedArtifactCompletion } from "./generated-artifact-completion.js";
-import { withoutInternalDownloadLinks } from "./generated-artifacts.js";
+import {
+  registerFileArtifactRuntime,
+  withoutInternalDownloadLinks,
+} from "./generated-artifacts.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "./member-tools.js";
 import {
@@ -511,6 +514,7 @@ export default definePluginEntry({
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
     registerGeneratedArtifactCompletion(api);
+    registerFileArtifactRuntime(api);
     api.on("reply_payload_sending", (event, context) => {
       if (
         !(event.sessionKey ?? context.sessionKey)?.startsWith("agent:cellect-fi-user:") ||
