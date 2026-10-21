@@ -39,6 +39,7 @@ import { resolveSlackMediaMaxBytes, SLACK_TEXT_LIMIT } from "./limits.js";
 import { resolveSlackChannelConfig } from "./monitor/channel-config.js";
 import { isSlackChannelAllowedByPolicy } from "./monitor/policy.js";
 import { hasSlackNativeDataBlock } from "./native-data-blocks.js";
+import { readSlackPlatformErrorCode, resolveSlackReadRequester } from "./read-requester.js";
 import { mergeSlackSendResults } from "./send-results.js";
 import type { SlackSendResult } from "./send.js";
 import { formatSlackTarget } from "./target-parsing.js";
@@ -332,6 +333,8 @@ function resolveSlackChannelReadPolicy(params: {
   return {
     channelAllowed: baseChannelAllowed,
     channelExplicitlyDisabled,
+    channelReadsDisabled:
+      groupPolicy === "disabled" || channelExplicitlyDisabled || channelWildcardDisabled,
     groupDmAllowed:
       params.account.config.dm?.enabled !== false &&
       params.account.config.dm?.groupEnabled === true &&
@@ -339,38 +342,6 @@ function resolveSlackChannelReadPolicy(params: {
         isSlackGroupDmTargetConfigured(params.account, params.channelId, params.teamId)),
     shouldResolveName,
   };
-}
-
-/**
- * Returns the host-verified Slack sender for this action when it came from a
- * live Slack conversation on the same account; undefined for delegated,
- * detached, or cross-account callers.
- */
-function resolveTrustedSlackRequesterId(
-  account: ResolvedSlackAccount,
-  context?: SlackActionContext,
-): string | undefined {
-  const requesterAccountId = context?.requesterAccountId?.trim();
-  const requesterSenderId = context?.requesterSenderId?.trim();
-  if (
-    normalizeOptionalLowercaseString(context?.currentChannelProvider) !== "slack" ||
-    !requesterAccountId ||
-    normalizeAccountId(requesterAccountId) !== normalizeAccountId(account.accountId) ||
-    !requesterSenderId ||
-    !/^[UW][A-Z0-9]+$/i.test(requesterSenderId)
-  ) {
-    return undefined;
-  }
-  return requesterSenderId.toUpperCase();
-}
-
-function readSlackPlatformErrorCode(error: unknown): string | undefined {
-  const data = (error as { data?: { error?: unknown } } | undefined)?.data;
-  if (typeof data?.error === "string") {
-    return data.error;
-  }
-  const message = error instanceof Error ? error.message : undefined;
-  return message?.match(/An API error occurred: ([a-z_]+)/)?.[1];
 }
 
 async function assertSlackReadTargetAllowed(params: {
@@ -391,12 +362,13 @@ async function assertSlackReadTargetAllowed(params: {
   const deny = () => {
     throw new Error("Slack read target channel is not allowed.");
   };
-  const requesterId = params.requesterMembership
-    ? resolveTrustedSlackRequesterId(params.account, params.context)
-    : undefined;
   // Policy said no. Admit the target only when the trusted requester is a
   // member of it; explicit channel or DM disables never reach this path.
   const denyUnlessRequesterMember = async (info?: SlackConversationInfo): Promise<void> => {
+    const requesterId = params.requesterMembership
+      ? await resolveSlackReadRequester(params.account.accountId, params.context)
+      : undefined;
+    params.context?.assertDirectAdapterHandoff?.();
     if (!requesterId || !params.requesterMembership) {
       deny();
       return;
@@ -467,11 +439,18 @@ async function assertSlackReadTargetAllowed(params: {
     ...params,
     currentConversation,
   });
-  if (preliminary.channelExplicitlyDisabled) {
+  if (
+    preliminary.channelExplicitlyDisabled ||
+    (preliminary.channelReadsDisabled &&
+      !preliminary.shouldResolveName &&
+      /^C/i.test(params.channelId))
+  ) {
     deny();
   }
   const needsMetadata =
-    preliminary.shouldResolveName || preliminary.channelAllowed !== preliminary.groupDmAllowed;
+    preliminary.shouldResolveName ||
+    preliminary.channelAllowed !== preliminary.groupDmAllowed ||
+    preliminary.channelReadsDisabled;
   if (!needsMetadata) {
     if (!preliminary.channelAllowed) {
       await denyUnlessRequesterMember();
@@ -494,7 +473,10 @@ async function assertSlackReadTargetAllowed(params: {
     metadataResolved: true,
     currentConversation,
   });
-  if (resolved.channelExplicitlyDisabled) {
+  if (
+    resolved.channelExplicitlyDisabled ||
+    (resolved.channelReadsDisabled && (info.type === "channel" || info.type === "unknown"))
+  ) {
     deny();
   }
   if (
@@ -520,6 +502,13 @@ async function assertSlackReadTargetAllowed(params: {
       await denyUnlessRequesterMember(info);
     }
     return;
+  }
+  if (
+    info.type === "group" &&
+    (params.account.config.dm?.enabled === false ||
+      params.account.config.dm?.groupEnabled === false)
+  ) {
+    deny();
   }
   const allowed =
     info.type === "channel"

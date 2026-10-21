@@ -111,7 +111,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       }
     },
   });
-  const authorize = async (turn: Turn): Promise<AuthorizationFailure | undefined> => {
+  const authorize = async (
+    turn: Turn,
+    onRequester?: (senderId: string) => void,
+  ): Promise<AuthorizationFailure | undefined> => {
     try {
       const config = configFromRuntime(api);
       if (!config.tenantOrgId) {
@@ -139,6 +142,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
                   threadRootEventId: turn.threadRootEventId,
                 }
               : { eventId: turn.eventId }),
+            ...(onRequester ? { googleRequester: true } : {}),
           }),
         },
       );
@@ -160,21 +164,76 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ) {
         return SILENT;
       }
-      return result &&
-        typeof result === "object" &&
-        "ok" in result &&
-        result.ok === true &&
-        "agentId" in result &&
-        result.agentId === turn.agentId &&
-        "orgId" in result &&
-        typeof result.orgId === "string" &&
-        result.orgId === config.tenantOrgId
-        ? undefined
-        : UNAVAILABLE;
+      if (
+        !result ||
+        typeof result !== "object" ||
+        !("ok" in result) ||
+        result.ok !== true ||
+        !("agentId" in result) ||
+        result.agentId !== turn.agentId ||
+        !("orgId" in result) ||
+        result.orgId !== config.tenantOrgId
+      ) {
+        return UNAVAILABLE;
+      }
+      if (onRequester) {
+        const requester = "googleRequester" in result ? result.googleRequester : undefined;
+        if (
+          !requester ||
+          typeof requester !== "object" ||
+          !("matrixUserId" in requester) ||
+          requester.matrixUserId !== turn.senderId ||
+          !("slackUserId" in requester) ||
+          typeof requester.slackUserId !== "string" ||
+          !/^[UW][A-Z0-9]+$/.test(requester.slackUserId)
+        ) {
+          return UNAVAILABLE;
+        }
+        onRequester(requester.slackUserId);
+      }
+      return undefined;
     } catch {
       return UNAVAILABLE;
     }
   };
+  api.runtime.channel?.runtimeContexts?.register({
+    channelId: "matrix",
+    capability: "requester-slack-identity",
+    context: {
+      resolveSender: async (requester: {
+        sessionKey: string;
+        accountId: string;
+        senderId: string;
+      }) => {
+        let selected: [string, Turn] | undefined;
+        for (const entry of turns) {
+          const [, turn] = entry;
+          if (
+            turn.admitted &&
+            turn.sessionKey === requester.sessionKey &&
+            turn.accountId === requester.accountId &&
+            turn.senderId === requester.senderId
+          ) {
+            if (selected) {
+              return undefined;
+            }
+            selected = entry;
+          }
+        }
+        if (!selected) {
+          return undefined;
+        }
+        const [runId, turn] = selected;
+        let senderId: string | undefined;
+        // Fi's existing requester mapping rechecks the actual sender's current
+        // private-conversation grants; the mapping is never retained on a turn.
+        const failure = await authorize(turn, (resolved) => {
+          senderId = resolved;
+        });
+        return !failure && turns.get(runId) === turn && turn.admitted ? senderId : undefined;
+      },
+    },
+  });
   api.on(
     "before_agent_reply",
     async (_event, context) => {

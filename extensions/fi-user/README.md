@@ -204,3 +204,18 @@ the `FI_THREADS_ENV_BY_ACCOUNT` environment variable. No key was added.
   gets no token; the one after does.
 - At most 5,000 sessions with unanswered messages are remembered; past that
   the oldest is forgotten, and a run for a forgotten message gets no token.
+
+### Reading Slack from Matrix and voice
+
+Native Slack message and file reads can resolve an admitted Matrix requester,
+including a Matrix-bound voice speaker, through Fi's existing private admin
+requester mapping. The `matrix/requester-slack-identity` runtime capability
+revalidates the exact admitted turn using its configured Matrix environment and
+returns Fi's unique active tenant member's linked Slack actor. This existing
+mapping requires a private admin or Superadmin conversation without a mixed
+audience. Other conversations receive no fallback identity.
+
+Slack still checks conversation membership and platform visibility. The mapping
+is read-only and uncached; it does not change the source provider, allow writes,
+or override explicit disables. Existing configured conversation access remains
+governed by Slack's read policy.
