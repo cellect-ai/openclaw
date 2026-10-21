@@ -86,7 +86,7 @@ describe("tools.effective sandbox admission parity", () => {
             label: "Ask",
             description: "Question",
             parameters: { type: "object", properties: {} },
-            execute: async () => ({ content: [] }),
+            execute: async () => ({ content: [], details: null }),
           },
         ],
         config: params.cfg,
