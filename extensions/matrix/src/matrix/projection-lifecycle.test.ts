@@ -1,3 +1,4 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -6,30 +7,16 @@ import {
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { bindReplyPublication } from "../../../../src/auto-reply/reply-publication.js";
-import {
-  emitAgentEvent,
-  resetAgentEventsForTest,
-  rotateAgentEventLifecycleGeneration,
-} from "../../../../src/infra/agent-events.js";
-import { registerAgentRunContext } from "../../../../src/infra/agent-run-registry.js";
-import { registerConversationLifecycleTransport } from "../../../../src/infra/conversation-lifecycle.js";
-import { closeOpenClawStateDatabaseAsync } from "../../../../src/state/openclaw-state-db.js";
 import type { CoreConfig } from "../types.js";
-import {
-  startMatrixProjectionLifecycle,
-  resolveMatrixProjectionRun,
-} from "./projection-lifecycle.js";
-import {
-  matrixPublicationContent,
-  noteMatrixPublicationAccepted,
-  resolveMatrixReplyPublication,
-} from "./projection-publication.js";
+import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
 import {
   toSessionBindingRecord,
   type MatrixThreadBindingRecord,
 } from "./thread-bindings-shared.js";
 
+type RegisterTransport =
+  OpenClawPluginApi["runtime"]["events"]["registerConversationLifecycleTransport"];
+type TransportOptions = Parameters<RegisterTransport>[0];
 const mocks = vi.hoisted(() => ({
   rows: [] as MatrixThreadBindingRecord[],
   stoppedAccounts: new Set<string>(),
@@ -65,50 +52,31 @@ const canonical: MatrixThreadBindingRecord = {
   lastActivityAt: 1,
 };
 
-// The Matrix adapter runs with real native route resolution and durable lifecycle
-// custody. Only the homeserver wire and the already-loaded binding inventory are fixtures.
-describe("native Matrix participant lifecycle publication", () => {
-  let stateDir: string;
+// Exercise the callbacks installed at the host transport boundary with real
+// native routing and registered binding adapters. Core owns run admission/replay.
+describe("native Matrix participant lifecycle adapter", () => {
   let cfg: CoreConfig;
-  let transport: ReturnType<typeof registerConversationLifecycleTransport>;
+  let transport: TransportOptions;
   let lifecycle: ReturnType<typeof startMatrixProjectionLifecycle>;
   const accounts = ["admin", "main", "duplicate"];
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
-    afterEach(async () => {
+    afterEach(() => {
       lifecycle.stop();
       for (const accountId of accounts)
         unregisterSessionBindingAdapter({ channel: "matrix", accountId });
-      resetAgentEventsForTest();
-      await closeOpenClawStateDatabaseAsync();
       cleanup();
-      vi.restoreAllMocks();
       vi.unstubAllEnvs();
     });
   });
-  function install() {
-    const runtime = createPluginRuntimeMock();
-    runtime.config.current = () => cfg;
-    runtime.events.registerConversationLifecycleTransport = (options) => {
-      transport = registerConversationLifecycleTransport({ ...options, stateDir });
-      return transport;
-    };
-    lifecycle = startMatrixProjectionLifecycle(createTestPluginApi({ config: cfg, runtime }));
-  }
-  function admit(agent: string, key = sessionKey(agent)) {
-    registerAgentRunContext(agent, {
+  function resolve(agent: string) {
+    return transport.resolveBindings({
       agentId: agent,
       sessionId: `session-${agent}`,
-      sessionKey: key,
+      sessionKey: sessionKey(agent),
     });
   }
-  function emit(agent: string, phase: string) {
-    emitAgentEvent({ runId: agent, stream: "lifecycle", data: { phase, startedAt: 1 } });
-  }
   beforeEach(() => {
-    stateDir = tempDirs.make("matrix-participant-lifecycle-");
-    vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
-    resetAgentEventsForTest();
-    rotateAgentEventLifecycleGeneration();
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("matrix-participant-lifecycle-"));
     mocks.send.mockReset().mockResolvedValue("$accepted");
     mocks.stoppedAccounts.clear();
     mocks.rows = [{ ...canonical }];
@@ -140,68 +108,65 @@ describe("native Matrix participant lifecycle publication", () => {
         },
       });
     }
-    install();
+    const runtime = createPluginRuntimeMock();
+    runtime.config.current = () => cfg;
+    runtime.events.registerConversationLifecycleTransport = (options) => {
+      transport = options;
+      return { stop() {}, flush: async () => {}, noteResult() {}, resolveRun: () => undefined };
+    };
+    lifecycle = startMatrixProjectionLifecycle(createTestPluginApi({ config: cfg, runtime }));
   });
-  it("publishes Admin and main under one canonical identity, with separate run and wire owners", async () => {
-    // No execution has been admitted yet.
-    await transport.flush();
-    expect(mocks.send).not.toHaveBeenCalled();
+  it("resolves Admin and main to one canonical identity with their own execution and wire accounts", async () => {
     for (const agent of ["admin", "main"]) {
-      admit(agent);
-      emit(agent, "start");
-    }
-    await transport.flush();
-    for (const agent of ["admin", "main"]) {
-      expect(
-        mocks.send.mock.calls.filter((call) => call[0] === agent).map((call) => call[3]),
-      ).toEqual([
+      const bindings = resolve(agent);
+      expect(bindings).toEqual([
+        {
+          environment: "test",
+          conversationId: "conversation",
+          roomId,
+          bindingId: `admin:${roomId}:${root}`,
+          accountId: agent,
+          threadRootEventId: root,
+          sessionKey: sessionKey(agent),
+          agentId: agent,
+        },
+      ]);
+      const binding = bindings[0];
+      if (!binding) throw new Error("Expected native participant destination");
+      await transport.publish(
+        binding,
+        {
+          version: 2,
+          environment: "test",
+          conversationId: "conversation",
+          roomId,
+          bindingId: `admin:${roomId}:${root}`,
+          runId: `run-${agent}`,
+          generation: "host-generation",
+          revision: 1,
+          state: "running",
+        },
+        `transaction-${agent}`,
+      );
+      expect(mocks.send).toHaveBeenLastCalledWith(
+        agent,
+        roomId,
+        "m.cellect.conversation.lifecycle",
         expect.objectContaining({
           bindingId: `admin:${roomId}:${root}`,
-          runId: agent,
-          state: "queued",
-        }),
-        expect.objectContaining({
-          bindingId: `admin:${roomId}:${root}`,
-          runId: agent,
+          runId: `run-${agent}`,
           state: "running",
         }),
-      ]);
-      const payload = { text: "Synthetic final result" };
-      bindReplyPublication(payload, {
-        payload,
-        kind: "final",
-        channel: "matrix",
-        sessionKey: sessionKey(agent),
-        runId: agent,
-        context: { accountId: agent },
-      });
-      const publication = resolveMatrixReplyPublication(payload, agent, roomId, root);
-      expect(publication).toBeDefined();
-      if (!publication) throw new Error("Expected admitted participant publication");
-      expect(matrixPublicationContent(publication, roomId, 0, 1)).toMatchObject({
-        bindingId: `admin:${roomId}:${root}`,
-        origin: { accountId: agent, actorId: agent },
-      });
-      noteMatrixPublicationAccepted(publication, roomId, `$result-${agent}`);
-      emit(agent, "end");
+        `transaction-${agent}`,
+      );
     }
-    await transport.flush();
-    expect(
-      mocks.send.mock.calls.filter((call) => call[3].state === "completed").map((call) => call[3]),
-    ).toEqual(
-      expect.arrayContaining(
-        ["admin", "main"].map((agent) =>
-          expect.objectContaining({
-            runId: agent,
-            resultEventId: `$result-${agent}`,
-            bindingId: `admin:${roomId}:${root}`,
-          }),
-        ),
-      ),
-    );
     expect(mocks.rows).toEqual([canonical]);
   });
-  it("keeps the native destination when main also has a direct binding in another room", async () => {
+  it("ignores an unrelated unbound account without requiring an ambient agent owner", () => {
+    cfg.channels!.matrix!.accounts!.duplicate = {};
+    expect(resolve("main")).toEqual([expect.objectContaining({ roomId, accountId: "main" })]);
+  });
+  it("keeps the native destination when main also has a direct binding in another room", () => {
     mocks.rows.push({
       ...canonical,
       accountId: "main",
@@ -210,37 +175,9 @@ describe("native Matrix participant lifecycle publication", () => {
       conversationId: "$other",
       targetSessionKey: sessionKey("main"),
     });
-    admit("main");
-    emit("main", "start");
-    await transport.flush();
-    expect(
-      mocks.send.mock.calls.filter((call) => call[1] === roomId).map((call) => call[3].state),
-    ).toEqual(["queued", "running"]);
-  });
-  it("replays main's persisted destination after the adapter restarts without route state", async () => {
-    mocks.send.mockRejectedValueOnce(new Error("temporary network failure"));
-    admit("main");
-    emit("main", "start");
-    await transport.flush();
-    expect(mocks.send).toHaveBeenCalled();
-    const transactionId = mocks.send.mock.calls[0]?.[4];
-    lifecycle.stop();
-    resetAgentEventsForTest();
-    mocks.rows = [];
-    cfg.bindings = [];
-    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
-    install();
-    await transport.flush();
-    expect(mocks.send.mock.calls[1]).toEqual([
-      "main",
+    expect(resolve("main").map((binding) => binding.roomId)).toEqual([
+      "!other:example.org",
       roomId,
-      "m.cellect.conversation.lifecycle",
-      expect.objectContaining({
-        bindingId: `admin:${roomId}:${root}`,
-        runId: "main",
-        state: "queued",
-      }),
-      transactionId,
     ]);
   });
   it.each([
@@ -253,7 +190,7 @@ describe("native Matrix participant lifecycle publication", () => {
     "stopped",
     "ambiguous",
     "competing-binding",
-  ])("does not infer a participant destination for %s", async (scenario) => {
+  ])("does not infer a participant destination for %s", (scenario) => {
     const row = mocks.rows[0]!;
     if (scenario === "source") row.targetSessionKey = "agent:admin:slack:channel:c1";
     if (scenario === "source-authorization") row.sourceReplyAuthorization = "source-protocol";
@@ -270,11 +207,6 @@ describe("native Matrix participant lifecycle publication", () => {
     }
     if (scenario === "competing-binding")
       mocks.rows.push({ ...canonical, conversationId: "$other" });
-    admit("main");
-    emit("main", "start");
-    emit("main", "end");
-    await transport.flush();
-    expect(resolveMatrixProjectionRun("main", sessionKey("main"))).toBeUndefined();
-    expect(mocks.send).not.toHaveBeenCalled();
+    expect(resolve("main")).toEqual([]);
   });
 });

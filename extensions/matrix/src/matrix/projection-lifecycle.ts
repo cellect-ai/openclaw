@@ -68,7 +68,10 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
             senderId: "",
             isDirectMessage: false,
             threadId: row.conversationId,
-            resolveAgentRoute,
+            // Default routes are rejected below. Supply a fallback only so an
+            // unrelated unbound account cannot require an ambient agent owner.
+            resolveAgentRoute: (input) =>
+              resolveAgentRoute({ ...input, defaultAgentId: owner.agentId }),
           });
           return (
             resolved.bindingOwnerAvailable &&
