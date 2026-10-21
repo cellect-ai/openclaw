@@ -1,4 +1,8 @@
-import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import type {
+  OpenClawConfig,
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/core";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
   ADMIN_TASKS,
@@ -127,7 +131,9 @@ export async function publishAdminActionCard(
   assertCurrent();
   const card = adminActionCard(record);
   const result = await adapter.sendPayload({
-    cfg: api.runtime.config.current(),
+    // SAFETY: Matrix outbound only reads this host-validated immutable snapshot;
+    // its adapter contract still accepts the mutable OpenClawConfig type.
+    cfg: api.runtime.config.current() as OpenClawConfig,
     to: record.origin.roomId,
     accountId: record.delivery.accountId,
     threadId: record.origin.threadRootEventId,
