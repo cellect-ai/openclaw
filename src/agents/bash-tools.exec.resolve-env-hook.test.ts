@@ -198,7 +198,9 @@ describe("exec resolve_exec_env hook wiring", () => {
     });
     const completed = vi.fn();
     const unsubscribe = onAgentEvent((event) => {
-      if (event.stream === "sandbox_process") completed(event);
+      if (event.stream === "sandbox_process") {
+        completed(event);
+      }
     });
     try {
       const result = await executeWrapped(

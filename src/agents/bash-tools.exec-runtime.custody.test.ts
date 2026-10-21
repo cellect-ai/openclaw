@@ -20,7 +20,9 @@ beforeEach(() => {
   mocks.spawn.mockReset();
   mocks.spawn.mockImplementation(async (input) => runtimeManagedRun(input));
   unsubscribe = onAgentEvent((event) => {
-    if (event.stream === "sandbox_process") mocks.emit(event);
+    if (event.stream === "sandbox_process") {
+      mocks.emit(event);
+    }
   });
 });
 afterEach(() => {
