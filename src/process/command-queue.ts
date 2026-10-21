@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { clampPositiveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { formatErrorMessage, readErrorName, toErrorObject } from "../infra/errors.js";
+import { ConversationRunStopReason } from "../infra/run-stop-actor.js";
 import {
   diagnosticLogger as diag,
   logLaneDequeue,
@@ -100,7 +101,10 @@ export function isCommandLaneTaskTimeoutError(err: unknown, lane?: string): bool
 }
 
 function isExpectedNonErrorLaneFailure(err: unknown): boolean {
-  return err instanceof Error && err.name === "LiveSessionModelSwitchError";
+  return (
+    err instanceof ConversationRunStopReason ||
+    (err instanceof Error && err.name === "LiveSessionModelSwitchError")
+  );
 }
 
 function isQuietProbeLane(lane: string): boolean {

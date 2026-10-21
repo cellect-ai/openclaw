@@ -1,4 +1,5 @@
 import { isAbortError, racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
+import { ConversationRunStopReason } from "../../infra/run-stop-actor.js";
 import type { ReplyPayload } from "../reply-payload.js";
 import type { ReplyDispatcher } from "./reply-dispatcher.types.js";
 
@@ -26,7 +27,7 @@ export function runWithDispatchAbortSignal<T>(
   const work = Promise.resolve().then(run);
   onWorkStarted?.(work);
   return racePromiseWithAbortSignal(work, signal).catch((error: unknown) => {
-    if (signal?.aborted && isAbortError(error)) {
+    if (signal?.aborted && (isAbortError(error) || error instanceof ConversationRunStopReason)) {
       throw new DispatchReplyOperationAbortedError();
     }
     throw error;

@@ -23,10 +23,95 @@ function isSameTranscriptStore(left: string, right: string): boolean {
 
 type QuestionAnswerScope = {
   recorder: UserTurnTranscriptRecorder | undefined;
+  workerOriginal?: UserTurnTranscriptAdmissionReceipt;
   assertActive: () => void;
   inputs: Map<string, UserTurnTranscriptAdmissionReceipt>;
 };
 const questionAnswerStorage = new AsyncLocalStorage<QuestionAnswerScope>();
+
+/** Facts cross the worker boundary; the creator's live authority remains on the host. */
+export type SessionTranscriptQuestionAnswerWorkerFacts = Readonly<{
+  original: UserTurnTranscriptAdmissionReceipt;
+  answers: readonly UserTurnTranscriptAdmissionReceipt[];
+}>;
+
+function currentQuestionCreator(scope: QuestionAnswerScope) {
+  scope.assertActive();
+  if (scope.workerOriginal) {
+    return scope.workerOriginal;
+  }
+  const owner = scope.recorder && getUserTurnTranscriptAdmissionOwner(scope.recorder);
+  return owner && !owner.blocked() ? owner.receipt() : undefined;
+}
+
+function sameAdmission(
+  left: UserTurnTranscriptAdmissionReceipt,
+  right: UserTurnTranscriptAdmissionReceipt,
+) {
+  return (
+    left.agentId === right.agentId &&
+    left.sessionId === right.sessionId &&
+    left.sessionKey === right.sessionKey &&
+    isSameTranscriptStore(left.storePath, right.storePath) &&
+    left.generation === right.generation &&
+    left.entryId === right.entryId &&
+    left.rawSeq === right.rawSeq &&
+    left.effectiveParentId === right.effectiveParentId &&
+    left.activeMessagePosition === right.activeMessagePosition &&
+    left.idempotencyKey === right.idempotencyKey &&
+    left.logicalTurnId === right.logicalTurnId &&
+    left.role === right.role
+  );
+}
+
+export function captureSessionTranscriptQuestionAnswerWorkerCustody() {
+  const scope = questionAnswerStorage.getStore();
+  if (!scope || scope.inputs.size === 0) {
+    return undefined;
+  }
+  const original = currentQuestionCreator(scope);
+  if (!original) {
+    throw new Error("Question transcript creator is no longer active");
+  }
+  const facts: SessionTranscriptQuestionAnswerWorkerFacts = Object.freeze({
+    original: Object.freeze({ ...original }),
+    answers: Object.freeze([...scope.inputs.values()].map((input) => Object.freeze({ ...input }))),
+  });
+  return {
+    facts,
+    assertCurrent() {
+      const current = currentQuestionCreator(scope);
+      if (
+        !current ||
+        !sameAdmission(current, facts.original) ||
+        facts.answers.some((answer) => {
+          const admitted = scope.inputs.get(answer.entryId);
+          return !admitted || !sameAdmission(admitted, answer);
+        })
+      ) {
+        throw new Error("Question transcript creator or answer is no longer active");
+      }
+    },
+  };
+}
+
+/** The worker must consult the captured host owner whenever these facts are used. */
+export function runWithSessionTranscriptQuestionAnswerWorkerCustody<T>(
+  facts: SessionTranscriptQuestionAnswerWorkerFacts,
+  assertCurrent: () => void,
+  run: () => T,
+): T {
+  assertCurrent();
+  return questionAnswerStorage.run(
+    {
+      recorder: undefined,
+      workerOriginal: facts.original,
+      assertActive: assertCurrent,
+      inputs: new Map(facts.answers.map((answer) => [answer.entryId, answer])),
+    },
+    run,
+  );
+}
 
 /** Answer custody outlives question registration, but never the creator's admitted run. */
 export function withSessionTranscriptQuestionAnswers<T>(
@@ -73,11 +158,8 @@ export function resolveSessionTranscriptQuestionAnswer(
   ) {
     return undefined;
   }
-  scope.assertActive();
-  const creator = scope.recorder && getUserTurnTranscriptAdmissionOwner(scope.recorder);
-  const original = creator?.receipt();
+  const original = currentQuestionCreator(scope);
   return original &&
-    !creator?.blocked() &&
     original.agentId === input.agentId &&
     original.sessionId === input.sessionId &&
     original.sessionKey === input.sessionKey &&

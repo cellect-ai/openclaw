@@ -47,7 +47,11 @@ import {
   isReadableSessionMessage,
   parseOpaqueLeafEntry,
 } from "../../config/sessions/session-entry-codec.js";
-import { runWithSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
+import {
+  runWithSessionTranscriptReadFence,
+  runWithSessionTranscriptQuestionAnswerWorkerCustody,
+  type SessionTranscriptQuestionAnswerWorkerFacts,
+} from "../../config/sessions/session-transcript-read-fence.js";
 import { prepareTranscriptPayloadForReuse } from "../../config/sessions/transcript-payload.js";
 import { SessionTranscriptWriterClaimReboundError } from "../../config/sessions/transcript-write-context.js";
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
@@ -91,6 +95,7 @@ type MetadataTarget = Omit<SessionTranscriptWriteScope, "env"> & SessionTranscri
 export type SessionMetadataMessageControl = {
   pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
   freshMessageCheck?: true;
+  questionAnswers?: SessionTranscriptQuestionAnswerWorkerFacts;
 };
 
 type MetadataWorkerAdmission = (
@@ -105,7 +110,7 @@ function runWithMetadataMessageAdmission<T>(
 ): { value: T; pendingInputReceipt?: SessionPendingInputWorkerReceipt } {
   let transactionFacts: unknown;
   let pendingAuthorityChecked = false;
-  const requestMessageCheck = (check: "pending" | "fresh") => {
+  const requestMessageCheck = (check: "pending" | "fresh" | "question") => {
     requestSqliteWorkerOperationAdmission({
       stage: "prepare",
       facts: { kind: "session-message", domainFacts: transactionFacts, check },
@@ -126,7 +131,15 @@ function runWithMetadataMessageAdmission<T>(
         },
       });
     });
-  const write = () => run(admit, () => requestMessageCheck("fresh"));
+  const append = () => run(admit, () => requestMessageCheck("fresh"));
+  const write = () =>
+    controls?.questionAnswers
+      ? runWithSessionTranscriptQuestionAnswerWorkerCustody(
+          controls.questionAnswers,
+          () => requestMessageCheck("question"),
+          append,
+        )
+      : append();
   const pending = controls?.pendingInput;
   if (!pending) {
     return { value: write() };
@@ -431,21 +444,6 @@ export function bindSqliteWorkerBackend(
         persistedMessage: event.message,
         physicalPayload: prepareTranscriptPayloadForReuse(context.database, eventJson, event),
       };
-      if (message.validateTurn) {
-        const mutationAt = validatePreparedAssistantAppendSync(
-          scope,
-          event.parentId,
-          command.input.view?.admission?.entryId,
-        );
-        if (mutationAt === undefined) {
-          const error = new Error(
-            `SQLite transcript changed while preparing rewrite for ${scope.sessionId}`,
-          );
-          error.name = "SqliteTranscriptMutationConflictError";
-          throw error;
-        }
-        command.input.options.expectedMutationAt = mutationAt;
-      }
     }
     const messageControl =
       command.type === "session.metadata.append" ? command.input.message : undefined;
@@ -485,6 +483,21 @@ export function bindSqliteWorkerBackend(
               throw new Error("Session metadata append requires a serialized event");
             }
             const { message } = command.input;
+            if (event.type === "message" && message?.validateTurn) {
+              const mutationAt = validatePreparedAssistantAppendSync(
+                scope,
+                event.parentId,
+                command.input.view?.admission?.entryId,
+              );
+              if (mutationAt === undefined) {
+                const error = new Error(
+                  `SQLite transcript changed while preparing rewrite for ${scope.sessionId}`,
+                );
+                error.name = "SqliteTranscriptMutationConflictError";
+                throw error;
+              }
+              command.input.options.expectedMutationAt = mutationAt;
+            }
             const snapshot =
               event.type === "message" && message
                 ? appendTranscriptMessageSnapshotSync(

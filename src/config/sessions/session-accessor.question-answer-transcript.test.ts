@@ -36,6 +36,7 @@ const questionScenarios = [
   "partial-then-complete",
   "unrelated-user",
   "closed-authority",
+  "closed-before-commit",
   "changed-branch",
   "rewritten-source",
   "missing-generation",
@@ -43,7 +44,9 @@ const questionScenarios = [
 ] as const;
 it.each(
   questionScenarios.flatMap((scenario) =>
-    (["sync", "worker"] as const).map((writerMode) => ({ scenario, writerMode })),
+    (["sync", "worker"] as const)
+      .filter((writerMode) => scenario !== "closed-before-commit" || writerMode === "worker")
+      .map((writerMode) => ({ scenario, writerMode })),
   ),
 )(
   "fences the waiting question's transcript append: $scenario ($writerMode)",
@@ -99,6 +102,7 @@ it.each(
       const writer = SessionManager.open(target, dir);
       const releaseAppend = createDeferred();
       const providerResumed = vi.fn();
+      const beforeCommit = vi.fn(() => host.closeHost());
       const resolved = vi.fn();
       gateway.onResolved(resolved);
       const run = withPreparedEmbeddedRunToolAuthority(
@@ -121,7 +125,12 @@ it.each(
           };
           const entryId =
             writerMode === "worker"
-              ? await writer.appendMessageAsync(message)
+              ? await writer.appendMessageAsync(
+                  message,
+                  scenario === "closed-before-commit"
+                    ? { beforeFreshMessageCommit: beforeCommit }
+                    : undefined,
+                )
               : writer.appendMessage(message);
           providerResumed(answer);
           return entryId;
@@ -233,13 +242,18 @@ it.each(
           expect(result.error).toBeInstanceOf(Error);
           expect(result.error).toMatchObject({
             message: expect.stringMatching(
-              scenario === "closed-authority" || scenario === "cancelled"
+              scenario === "closed-authority" ||
+                scenario === "closed-before-commit" ||
+                scenario === "cancelled"
                 ? /no longer active|SQLite transcript changed while preparing rewrite/
                 : /SQLite transcript changed while preparing rewrite/,
             ),
           });
           expect(toolResults).toHaveLength(0);
           expect(providerResumed).not.toHaveBeenCalled();
+          if (scenario === "closed-before-commit") {
+            expect(beforeCommit).toHaveBeenCalledOnce();
+          }
           if (scenario === "missing-generation") {
             expect(messages.filter((message) => message.role === "user")).toHaveLength(2);
           }
