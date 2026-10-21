@@ -134,6 +134,7 @@ export async function publishAdminActionCard(
   }
   assertCurrent();
   const card = adminActionCard(record);
+  const text = `${card.title}\n${card.summary}`;
   const result = await adapter.sendPayload({
     // SAFETY: Matrix outbound only reads this host-validated immutable snapshot;
     // its adapter contract still accepts the mutable OpenClawConfig type.
@@ -141,9 +142,10 @@ export async function publishAdminActionCard(
     to: record.origin.roomId,
     accountId: record.delivery.accountId,
     threadId: record.origin.threadRootEventId,
+    text,
     assertDirectAdapterHandoff: assertCurrent,
     payload: {
-      text: `${card.title}\n${card.summary}`,
+      text,
       channelData: {
         matrix: {
           ...(record.publicationEventId ? { editEventId: record.publicationEventId } : {}),

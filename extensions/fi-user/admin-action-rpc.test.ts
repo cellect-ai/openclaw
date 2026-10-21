@@ -1,3 +1,4 @@
+import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-contract";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import type { GatewayRequestHandlerOptions } from "openclaw/plugin-sdk/gateway-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -61,7 +62,13 @@ function harness(value = record()) {
   };
   const handlers = new Map<string, (options: GatewayRequestHandlerOptions) => unknown>();
   const scopes = new Map<string, unknown>();
-  const sendPayload = vi.fn(async () => ({ messageId: "$edit" }));
+  const sendPayload = vi.fn(
+    async (input: Parameters<NonNullable<ChannelOutboundAdapter["sendPayload"]>>[0]) => {
+      expect(input.text).toBeTypeOf("string");
+      expect(input.text).toBe(input.payload.text);
+      return { messageId: "$edit" };
+    },
+  );
   const subagentRun = vi.fn();
   let current = true;
   const api = {
