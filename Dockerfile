@@ -13,9 +13,9 @@ ARG OPENCLAW_BUNDLED_PLUGIN_DIR=extensions
 ARG OPENCLAW_DOCKER_BUILD_NODE_OPTIONS="--max-old-space-size=8192"
 ARG OPENCLAW_DOCKER_BUILD_TSDOWN_MAX_OLD_SPACE_MB=""
 ARG OPENCLAW_DOCKER_BUILD_SKIP_DTS=1
-ARG OPENCLAW_NODE_BOOKWORM_IMAGE="docker.io/library/node:24-bookworm@sha256:64af3819f9275802414d7cdc38c27e9d82bd564dec4d4da87d008255d36c63b4"
-ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="docker.io/library/node:24-bookworm-slim@sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6"
-ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:0e0ff40c39bc087845bfb27465a0df4ea419520094bc35842ff83dd8cbe6f9b6"
+ARG OPENCLAW_NODE_BOOKWORM_IMAGE="docker.io/library/node:24.22.1-bookworm@sha256:5630d96570d4ca4a8523fda3d169d0114554d0f48293e1ae3db6be7c79b42a17"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_IMAGE="docker.io/library/node:24.22.1-bookworm-slim@sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d"
+ARG OPENCLAW_NODE_BOOKWORM_SLIM_DIGEST="sha256:1681862882da07ee5476fee047bcf34138833f1df42633bb25bcb0f438d5bf3d"
 # Keep in sync with .github/actions/setup-node-env/action.yml bun-version.
 # To update: docker buildx imagetools inspect docker.io/oven/bun:<version> and use the manifest-list digest.
 ARG OPENCLAW_BUN_IMAGE="docker.io/oven/bun:1.4.2@sha256:9114c058aeae42162ee16dd5084b95fe9473970bb6bcb5b232ab1630f0546895"
@@ -263,7 +263,21 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
     DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       ca-certificates curl git hostname libgomp1 lsof openssh-client openssl procps python3 tini && \
-    update-ca-certificates
+    update-ca-certificates && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2
+
+# eMudhra distrust (2026-10-21): Node and OpenSSL clients read the patched OS
+# store explicitly, and every Chromium the gateway can launch distrusts the 16
+# compromised intermediates plus emSign ECC Root CA - G3 by managed policy.
+# The Playwright Chromium lives in the openclaw_home volume, which an image
+# rebuild does not replace, so the policy ships here, outside /home/node.
+# Chrome for Testing reads /etc/opt/chrome_for_testing; the other two cover
+# Google Chrome and Debian Chromium.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_DIR=/etc/ssl/certs
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome_for_testing/policies/managed/cellect-emudhra-distrust.json
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome/policies/managed/cellect-emudhra-distrust.json
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/chromium/policies/managed/cellect-emudhra-distrust.json
 
 # The Cellect runtime entrypoint hydrates role-scoped secrets through Infisical
 # before starting OpenClaw. Keep this operator/runtime dependency in the image;
