@@ -365,17 +365,13 @@ async function assertSlackReadTargetAllowed(params: {
   // Policy said no. Admit the target only when the trusted requester is a
   // member of it; explicit channel or DM disables never reach this path.
   const denyUnlessRequesterMember = async (info?: SlackConversationInfo): Promise<void> => {
-    const requesterId = params.requesterMembership
-      ? await resolveSlackReadRequester(
-          params.account.accountId,
-          params.context,
-          params.requesterMembership.readOpts,
-        )
+    const read = params.requesterMembership;
+    const requesterId = read
+      ? await resolveSlackReadRequester(params.account.accountId, params.context, read.readOpts)
       : undefined;
     params.context?.assertDirectAdapterHandoff?.();
-    if (!requesterId || !params.requesterMembership) {
-      deny();
-      return;
+    if (!requesterId || !read) {
+      return deny();
     }
     let member: boolean;
     if (info?.type === "dm") {
@@ -385,7 +381,7 @@ async function assertSlackReadTargetAllowed(params: {
         member = await slackActionRuntime.isSlackConversationMember(
           params.channelId,
           requesterId,
-          params.requesterMembership.readOpts,
+          read.readOpts,
         );
       } catch (error) {
         const code = readSlackPlatformErrorCode(error) ?? "unknown_error";

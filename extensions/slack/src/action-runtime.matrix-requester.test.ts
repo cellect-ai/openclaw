@@ -117,7 +117,7 @@ describe("Matrix requester Slack reads", () => {
     });
     isSlackConversationMember.mockResolvedValueOnce(true);
     await handleSlackAction(
-      { action: "readMessages", channelId: "team:T12345678:channel:C_OTHER" },
+      { action: "readMessages", channelId: "team:T12345678:channel:C0123456789" },
       allowlisted(),
       matrixRequester,
     );
@@ -129,7 +129,7 @@ describe("Matrix requester Slack reads", () => {
   });
 
   it.each([
-    { auth: { ok: true, team_id: "T99999999" }, channelId: "team:T12345678:channel:C_OTHER" },
+    { auth: { ok: true, team_id: "T99999999" }, channelId: "team:T12345678:channel:C0123456789" },
     {
       auth: { ok: true, is_enterprise_install: true, enterprise_id: "E12345678" },
       channelId: "C_OTHER",
