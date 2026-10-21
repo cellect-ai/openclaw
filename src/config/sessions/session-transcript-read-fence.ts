@@ -101,7 +101,6 @@ export function runWithSessionTranscriptQuestionAnswerWorkerCustody<T>(
   assertCurrent: () => void,
   run: () => T,
 ): T {
-  assertCurrent();
   return questionAnswerStorage.run(
     {
       recorder: undefined,
