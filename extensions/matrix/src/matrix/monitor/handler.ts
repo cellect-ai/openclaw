@@ -18,6 +18,7 @@ import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/secur
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { prepareMatrixReplyPayload } from "../../outbound.js";
 import { isPollEventType } from "../poll-types.js";
+import { admitMatrixProjectionExecution } from "../projection-execution.js";
 import { normalizeMatrixUserId } from "./allowlist.js";
 import { resolveMatrixMonitorLiveUserAllowlist } from "./config.js";
 import { createMatrixEventContextResolver } from "./event-context.js";
@@ -425,6 +426,10 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           }
         : replayLifecycle;
 
+      await admitMatrixProjectionExecution({
+        core, cfg, client, roomId, threadRootEventId: threadTarget,
+        accountId, agentId: _route.agentId, sessionKey: _route.sessionKey,
+      });
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",
         accountId: _route.accountId,

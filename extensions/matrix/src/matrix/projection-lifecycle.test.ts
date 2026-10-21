@@ -9,6 +9,7 @@ import {
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
+import { admitMatrixProjectionExecution } from "./projection-execution.js";
 import {
   toSessionBindingRecord,
   type MatrixThreadBindingRecord,
@@ -20,13 +21,14 @@ type TransportOptions = Parameters<RegisterTransport>[0];
 const mocks = vi.hoisted(() => ({
   rows: [] as MatrixThreadBindingRecord[],
   stoppedAccounts: new Set<string>(),
+  managers: new Map<string, object>(),
   send: vi.fn(),
 }));
 vi.mock("./thread-bindings-shared.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./thread-bindings-shared.js")>()),
   listAllBindings: () => mocks.rows,
   getMatrixThreadBindingManager: (accountId: string) =>
-    mocks.stoppedAccounts.has(accountId) ? undefined : {},
+    mocks.stoppedAccounts.has(accountId) ? undefined : mocks.managers.get(accountId),
 }));
 vi.mock("./send/client.js", () => ({
   withResolvedMatrixSendClient: (
@@ -58,6 +60,8 @@ describe("native Matrix participant lifecycle adapter", () => {
   let cfg: OpenClawConfig;
   let transport: TransportOptions;
   let lifecycle: ReturnType<typeof startMatrixProjectionLifecycle>;
+  let runtime: ReturnType<typeof createPluginRuntimeMock>;
+  let saved: Map<string, unknown>;
   const accounts = ["admin", "main", "duplicate"];
   const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
     afterEach(() => {
@@ -76,10 +80,22 @@ describe("native Matrix participant lifecycle adapter", () => {
       sessionKey: sessionKey(agent),
     });
   }
+  function admit(agent = "main", accountId = agent, threadRootEventId = root) {
+    return admitMatrixProjectionExecution({
+      core: runtime, cfg, accountId, agentId: agent, roomId, threadRootEventId,
+      sessionKey: sessionKey(agent),
+      client: {
+        getUserId: async () => `@${accountId}:example.org`,
+        getJoinedRooms: async () => [roomId],
+      },
+    });
+  }
   beforeEach(() => {
     vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("matrix-participant-lifecycle-"));
     mocks.send.mockReset().mockResolvedValue("$accepted");
     mocks.stoppedAccounts.clear();
+    mocks.managers.clear();
+    for (const accountId of accounts) mocks.managers.set(accountId, {});
     mocks.rows = [{ ...canonical }];
     cfg = {
       agents: { entries: { admin: {}, main: {}, other: {} } },
@@ -109,7 +125,16 @@ describe("native Matrix participant lifecycle adapter", () => {
         },
       });
     }
-    const runtime = createPluginRuntimeMock();
+    runtime = createPluginRuntimeMock();
+    saved = new Map();
+    runtime.state.openKeyedStore = vi.fn().mockReturnValue({
+      lookup: async (key: string) => saved.get(key),
+      registerIfAbsent: async (key: string, value: unknown) => {
+        if (saved.has(key)) return false;
+        saved.set(key, value);
+        return true;
+      },
+    });
     runtime.config.current = () => cfg;
     runtime.events.registerConversationLifecycleTransport = (options) => {
       transport = options;
@@ -118,6 +143,7 @@ describe("native Matrix participant lifecycle adapter", () => {
     lifecycle = startMatrixProjectionLifecycle(createTestPluginApi({ config: cfg, runtime }));
   });
   it("resolves Admin and main to one canonical identity with their own execution and wire accounts", async () => {
+    await Promise.all([admit("admin"), admit("main")]);
     for (const agent of ["admin", "main"]) {
       const bindings = resolve(agent);
       expect(bindings).toEqual([
@@ -165,11 +191,13 @@ describe("native Matrix participant lifecycle adapter", () => {
     }
     expect(mocks.rows).toEqual([canonical]);
   });
-  it("ignores an unrelated unbound account without requiring an ambient agent owner", () => {
+  it("ignores an unrelated unbound account without requiring an ambient agent owner", async () => {
     cfg.channels!.matrix!.accounts!.duplicate = {};
+    await admit();
     expect(resolve("main")).toEqual([expect.objectContaining({ roomId, accountId: "main" })]);
   });
-  it("keeps the native destination when main also has a direct binding in another room", () => {
+  it("keeps the native destination when main also has a direct binding in another room", async () => {
+    await admit();
     mocks.rows.push({
       ...canonical,
       accountId: "main",
@@ -183,6 +211,53 @@ describe("native Matrix participant lifecycle adapter", () => {
       roomId,
     ]);
   });
+  it("admits the actual account when production and dev accounts route to the same native session", async () => {
+    cfg.channels!.matrix!.accounts!.duplicate = {};
+    cfg.bindings!.push({ agentId: "main", match: { channel: "matrix", accountId: "duplicate" } });
+    // The prior resolver inferred accounts from config and returned nothing here.
+    expect(resolve("main")).toEqual([]);
+    await admit("main", "main");
+    expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main" })]);
+    expect(mocks.rows).toEqual([canonical]);
+    await expect(admit("main", "duplicate")).rejects.toThrow("execution_owner_conflict");
+    expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main" })]);
+  });
+  it("requires native admission rather than treating seating/configuration as publication authority", () => {
+    expect(resolve("main")).toEqual([]);
+    expect(runtime.state.openKeyedStore).not.toHaveBeenCalled();
+  });
+  it("reconciles an existing durable relationship idempotently and refuses contradictory identity", async () => {
+    await admit();
+    const original = [...saved.values()];
+    await admit();
+    expect([...saved.values()]).toEqual(original);
+    const [key, value] = [...saved.entries()][0]!;
+    saved.set(key, { ...(value as Record<string, unknown>), producerMxid: "@other:example.org" });
+    await expect(admit()).rejects.toThrow("relation_conflict");
+  });
+  it("fails closed before dispatch for an incorrect thread root or non-joined producer", async () => {
+    await expect(admit("main", "main", "$wrong")).rejects.toThrow("identity_mismatch");
+    await expect(admitMatrixProjectionExecution({
+      core: runtime, cfg, accountId: "main", agentId: "main", roomId,
+      threadRootEventId: root, sessionKey: sessionKey("main"),
+      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [] },
+    })).rejects.toThrow("producer_not_joined");
+    expect(saved.size).toBe(0);
+  });
+  it("does not publish an acknowledged relationship after its live manager is replaced", async () => {
+    await admit();
+    mocks.managers.set("main", {});
+    expect(resolve("main")).toEqual([]);
+    await admit();
+    expect(resolve("main")).toHaveLength(1);
+  });
+  it.each(["environment", "projectedConversationId"] as const)(
+    "refuses a relationship when canonical %s changes", async (field) => {
+      await admit();
+      mocks.rows[0]![field] = "another-tenant-conversation";
+      expect(resolve("main")).toEqual([]);
+    },
+  );
   it.each([
     "source",
     "source-authorization",
@@ -191,9 +266,9 @@ describe("native Matrix participant lifecycle adapter", () => {
     "default-route",
     "disabled",
     "stopped",
-    "ambiguous",
     "competing-binding",
-  ])("does not infer a participant destination for %s", (scenario) => {
+  ])("does not retain an admitted participant destination for %s", async (scenario) => {
+    await admit();
     const row = mocks.rows[0]!;
     if (scenario === "source") {
       row.targetSessionKey = "agent:admin:slack:channel:c1";
@@ -215,10 +290,6 @@ describe("native Matrix participant lifecycle adapter", () => {
     }
     if (scenario === "stopped") {
       mocks.stoppedAccounts.add("main");
-    }
-    if (scenario === "ambiguous") {
-      cfg.channels!.matrix!.accounts!.duplicate = {};
-      cfg.bindings!.push({ agentId: "main", match: { channel: "matrix", accountId: "duplicate" } });
     }
     if (scenario === "competing-binding") {
       mocks.rows.push({ ...canonical, conversationId: "$other" });

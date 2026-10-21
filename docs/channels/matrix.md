@@ -205,6 +205,19 @@ The method does not replay prior transcript. A trusted product bridge may includ
 
 For a conversation projected into a Matrix room, the gateway publishes each run's status as `m.cellect.conversation.lifecycle` events. Two environment switches, both off unless set, add to them. Each is read when a fact or card is sent, so turning one off stops it at once, including for facts already queued.
 
+Native rooms retain one canonical conversation binding even when several agents
+are present. After access and addressing checks, native ingress admits each
+executing account against that binding, its exact thread root, configured agent
+route, and authenticated joined Matrix producer. The separately typed execution
+relationship is persisted in the Matrix plugin's SQLite state before dispatch;
+it neither reroutes the conversation nor grants source-publication authority.
+The lifecycle event retains the canonical binding identity while the executing
+account sends it. Configuring or joining an additional account alone cannot
+make it a lifecycle publisher. In particular, production and development
+accounts routed to the same agent do not make the executing account ambiguous.
+Contradictory relationships refuse admission rather than silently omitting status.
+Lifecycle delivery already in durable custody keeps its original frozen target.
+
 | Switch                                    | Effect                                                                                                                                                                                                                                                                 |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS` | Adds `atMs`, `admittedAtMs`, `waitingOn`, `failureKind` and `stoppedBy` to each fact and sends a heartbeat for a run whose executor still holds its claim. The heartbeat does not keep a silent run out of the 30 minute silence sweep, and stops an hour into a wait. |

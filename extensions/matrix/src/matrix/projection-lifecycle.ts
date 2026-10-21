@@ -3,17 +3,9 @@ import {
   getSessionBindingService,
   type SessionBindingRecord,
 } from "openclaw/plugin-sdk/conversation-binding-runtime";
-import { resolveAgentRoute, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import type { CoreConfig } from "../types.js";
-import { resolveMatrixAccountConfig } from "./account-config.js";
-import { listMatrixAccountIds } from "./accounts.js";
-import { resolveMatrixInboundRoute } from "./monitor/route.js";
+import { resolveMatrixProjectionExecutions } from "./projection-execution.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
-import {
-  listAllBindings,
-  getMatrixThreadBindingManager,
-  toSessionBindingRecord,
-} from "./thread-bindings-shared.js";
 
 type LifecycleHandle = ReturnType<
   OpenClawPluginApi["runtime"]["events"]["registerConversationLifecycleTransport"]
@@ -35,76 +27,32 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
     transportId: "matrix-conversation-v2",
     resolveBindings: (owner) => {
       const direct = getSessionBindingService().listBySession(owner.sessionKey);
-      // Native rooms keep one durable conversation identity. A seated bot uses
-      // its own execution session/account, but publishes under that same identity.
-      // Derive participants from the real route so restart needs no second store.
       // SAFETY: The admitted runtime config is borrowed only for read-only account
       // and route selection; these legacy helpers type their config as mutable.
       const cfg = (api.runtime.config.current?.() ?? api.config) as CoreConfig;
-      const rows = listAllBindings();
-      const native = rows.flatMap((row): SessionBindingRecord[] => {
-        const roomId = row.parentConversationId;
-        if (
-          !roomId ||
-          row.boundBy !== "session-projection" ||
-          row.externalSource ||
-          row.sourceReplyAuthorization ||
-          !row.conversationId.startsWith("$") ||
-          !parseAgentSessionKey(row.targetSessionKey)?.rest.startsWith("matrix:") ||
-          // Native bootstrap admits exactly one binding per room, across accounts.
-          rows.some(
-            (other) =>
-              other !== row &&
-              (other.parentConversationId === roomId || other.conversationId === roomId),
-          )
-        ) {
-          return [];
-        }
-        const accounts = listMatrixAccountIds(cfg).filter((accountId) => {
-          if (
-            cfg.channels?.matrix?.enabled === false ||
-            resolveMatrixAccountConfig({ cfg, accountId }).enabled === false ||
-            !getMatrixThreadBindingManager(accountId)
-          ) {
-            return false;
-          }
-          const resolved = resolveMatrixInboundRoute({
-            cfg,
-            accountId,
-            roomId,
-            senderId: "",
-            isDirectMessage: false,
-            threadId: row.conversationId,
-            // Default routes are rejected below. Supply a fallback only so an
-            // unrelated unbound account cannot require an ambient agent owner.
-            resolveAgentRoute: (input) =>
-              resolveAgentRoute({ ...input, defaultAgentId: owner.agentId }),
-          });
-          return (
-            resolved.bindingOwnerAvailable &&
-            resolved.route.matchedBy !== "default" &&
-            !resolved.pluginId &&
-            !resolved.configuredBinding &&
-            !resolved.runtimeBindingId &&
-            resolved.route.sessionKey === owner.sessionKey &&
-            resolved.route.agentId === owner.agentId
-          );
-        });
-        const accountId = accounts[0];
-        if (accounts.length !== 1 || !accountId) {
-          return [];
-        }
-        const binding = toSessionBindingRecord(row, { idleTimeoutMs: 0, maxAgeMs: 0 });
-        return [
-          {
-            ...binding,
-            targetSessionKey: owner.sessionKey,
-            conversation: { ...binding.conversation, accountId },
-            metadata: { ...binding.metadata, agentId: owner.agentId },
+      const native = resolveMatrixProjectionExecutions(owner, cfg).map(
+        (execution): SessionBindingRecord => ({
+          bindingId: execution.canonicalBindingId,
+          targetSessionKey: execution.sessionKey,
+          targetKind: "session",
+          status: "active",
+          boundAt: 0,
+          conversation: {
+            channel: "matrix", accountId: execution.accountId,
+            conversationId: execution.threadRootEventId, parentConversationId: execution.roomId,
           },
-        ];
-      });
-      return [...direct, ...native].flatMap((binding) => {
+          metadata: {
+            agentId: execution.agentId, environment: execution.environment,
+            projectedConversationId: execution.conversationId,
+          },
+        }),
+      );
+      // The canonical owner still has its direct binding. Its admitted relation
+      // must not create duplicate frozen lifecycle delivery obligations.
+      const bindings = [...direct, ...native].filter((binding, index, all) =>
+        all.findIndex((other) => other.bindingId === binding.bindingId &&
+          other.conversation.accountId === binding.conversation.accountId) === index);
+      return bindings.flatMap((binding) => {
         const metadata = binding.metadata;
         const roomId = binding.conversation.parentConversationId;
         if (
