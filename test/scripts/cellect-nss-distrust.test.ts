@@ -73,7 +73,9 @@ function fixture(command: CommandFixture, options: { rows?: string[]; missing?: 
   const bin = path.join(root, "bin");
   const home = path.join(root, "home");
   const pems = path.join(root, "pems");
-  for (const directory of [bin, home, pems]) fs.mkdirSync(directory);
+  for (const directory of [bin, home, pems]) {
+    fs.mkdirSync(directory);
+  }
   for (const [name, body] of [
     ["certutil", certutil],
     ["openssl", openssl],
@@ -81,8 +83,9 @@ function fixture(command: CommandFixture, options: { rows?: string[]; missing?: 
     fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
   }
   for (const [index, fp] of fingerprints.entries()) {
-    if (fp !== options.missing)
+    if (fp !== options.missing) {
       fs.writeFileSync(path.join(pems, `${String(index).padStart(2, "0")}.pem`), fp);
+    }
   }
   const script = path.join(root, "seed.sh");
   fs.writeFileSync(
@@ -132,8 +135,9 @@ describe.skipIf(process.platform === "win32")(
       expect(result, result.stderr).toMatchObject({ status: 0, stdout: "" });
       expect(result.stderr).toContain("coverage 17/17");
       expect(f.rows()).toContain(user);
-      for (const fp of fingerprints)
+      for (const fp of fingerprints) {
         expect(f.rows()).toContain(`${fp}|ppp|cellect-distrust-${fp.slice(0, 16)}`);
+      }
       const before = f.rows();
       expect(f.writes()).toHaveLength(17);
       expect((await f.run()).status).toBe(0);
