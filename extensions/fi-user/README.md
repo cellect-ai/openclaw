@@ -23,14 +23,21 @@ blocked until reconciled, and retain the registered file for recovery.
 For a shell command of this runtime's admin agent (`adminAgentId`, default
 `cellect-fi-admin`) or Cellect Superadmin (`cellect-main`), the plugin asks Fi for the requester's own short-lived token
 (`POST {baseUrl}/api/openclaw-user-delegation`, `agentId: "cellect-fi-admin"`)
-and sets it on that one call as `FI_DELEGATED_USER_TOKEN`. Fi's CLI prefers it
-to `FI_SERVICE_TOKEN` + `FI_ON_BEHALF_OF`. `FI_ON_BEHALF_OF` is injected as
-before, whether or not a token is issued.
+and sets it on that one call as `FI_DELEGATED_USER_TOKEN`, paired with the
+issuing connection's `FI_APP_URL`. For Matrix this is the environment selected
+by the host-proven inbound account, even when the sandbox inherits another
+environment's default URL. Fi's CLI prefers it
+to `FI_SERVICE_TOKEN` + `FI_ON_BEHALF_OF`. For calls that proceed,
+`FI_ON_BEHALF_OF` is injected as before, whether or not a token is issued.
 
 ### When a token is issued
 
-All of these must hold; otherwise nothing is set, nothing is pinned, and the
-command runs exactly as it did before there was a token.
+All of these must hold to issue a token. Same-environment calls retain their
+existing assertion-only operator fallback. An eligible, proven Matrix turn
+that selects another environment is blocked if its token cannot be issued:
+request failure, invalid reply, exhausted hook budget, expired run/speaker
+proof, or an explicitly different `FI_APP_URL` cannot fall back to the
+sandbox's default Fi.
 
 The runtime's configuration, read the way the host reads it (the admin agent's
 own setting, then the default):
@@ -78,16 +85,20 @@ The call:
 
 - It is OpenClaw's own `exec` (`sandbox_exec` included) with no `host` other
   than `sandbox`, no `node`, not `elevated`, not `pty` and not `background`.
-- Its own `FI_APP_URL`, if it passes one, equals the plugin `baseUrl`.
+- Its own `FI_APP_URL`, if it passes one, equals the selected connection's
+  `baseUrl` (the host-proven Matrix account selects that connection).
 - At least half a second is left of the time the host gives the tool hook.
   Fi is given what remains of 13 seconds after the Matrix grant check, and
   never more than 8.
 - Fi answers 200 for this runtime's organization with a token that has at
-  least 60 seconds left. Fi decides who is an admin; a refusal is no token.
+  least 60 seconds left. Fi decides who is an admin; a refusal is no token,
+  and blocks an eligible turn selecting a different environment.
 
 A call that gets a token is returned with `host: "sandbox"` and
 `elevated: false`. Because of the configuration checks above that is what the
-command would have got anyway.
+command would have got anyway. Only an actually issued token rewrites
+`FI_APP_URL`; model-supplied case variants are removed and the normalized
+issuing URL is set with that token. An assertion alone never retargets Fi.
 
 ### Rooms and threads: one message, one run
 
@@ -163,7 +174,7 @@ Not visible to the plugin; infra must assert these for a runtime that issues tok
 | Setting                                                              | Why                                                                                                                                                                                                                 |
 | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | No per-session `sandboxMode` or exec host override on admin sessions | The plugin reads configuration, not a session's stored override. With one, the pinned call is refused or the command was not in the sandbox to begin with.                                                          |
-| Sandbox `FI_APP_URL` equals the plugin `baseUrl`                     | The plugin does not set `FI_APP_URL`. The CLI sends the bearer wherever the sandbox says.                                                                                                                           |
+| Assertion-only operator fallback has the intended sandbox Fi origin  | Issued tokens bind their own `FI_APP_URL`; calls without an issued token retain the sandbox default. Eligible cross-environment mint failures block instead of using that default.                                  |
 | Sandbox egress limited to the Fi origin                              | The model writes the command. Nothing in the Gateway stops it sending the token elsewhere.                                                                                                                          |
 | Codex exec-server off for the admin agent                            | It takes its environment from Codex and drops `*_TOKEN` keys; the token would not arrive and the call is not this plugin's to pin.                                                                                  |
 | Admin agent not on a CLI backend; Codex native shell not relied on   | A native shell is seen as `exec` but takes no `env`. The host refuses any rewrite of a Codex native shell call, so such a call is blocked whenever an assertion or token is set; the token never reaches the model. |

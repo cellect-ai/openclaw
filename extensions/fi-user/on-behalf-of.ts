@@ -14,6 +14,8 @@ import type { AdminActionRecord } from "./admin-action.js";
 export const ON_BEHALF_OF_ENV = "FI_ON_BEHALF_OF";
 /** Where Fi's CLI reads the requester's own delegated token; it prefers it to the assertion. */
 export const DELEGATED_USER_TOKEN_ENV = "FI_DELEGATED_USER_TOKEN";
+/** One issued credential and the Fi origin that issued it; never split at the tool boundary. */
+export type CommandDelegation = { token: string; baseUrl: string };
 export const ON_BEHALF_OF_AGENTS = new Set(["cellect-fi-admin", "cellect-main"]);
 export const ON_BEHALF_OF_TOOLS = new Set(["exec", "sandbox_exec"]);
 const ASSERTION_TTL_SECONDS = 10 * 60;
@@ -97,28 +99,32 @@ export function onBehalfOfRequester(
 export function withOnBehalfOfEnv(
   params: Record<string, unknown>,
   assertion: string | undefined,
-  delegatedToken?: string,
+  delegation?: CommandDelegation,
 ): Record<string, unknown> {
   const env =
     params.env && typeof params.env === "object" && !Array.isArray(params.env)
       ? { ...(params.env as Record<string, unknown>) }
       : {};
   for (const key of Object.keys(env)) {
-    if ([ON_BEHALF_OF_ENV, DELEGATED_USER_TOKEN_ENV].includes(key.toUpperCase())) {
+    if (
+      [ON_BEHALF_OF_ENV, DELEGATED_USER_TOKEN_ENV].includes(key.toUpperCase()) ||
+      (delegation && key.toUpperCase() === "FI_APP_URL")
+    ) {
       delete env[key];
     }
   }
   if (assertion) {
     env[ON_BEHALF_OF_ENV] = assertion;
   }
-  if (delegatedToken) {
-    env[DELEGATED_USER_TOKEN_ENV] = delegatedToken;
+  if (delegation) {
+    env[DELEGATED_USER_TOKEN_ENV] = delegation.token;
+    env.FI_APP_URL = delegation.baseUrl;
   }
   const next = { ...params };
   if (Object.keys(env).length > 0 || "env" in params) {
     next.env = env;
   }
-  if (delegatedToken) {
+  if (delegation) {
     // With no host named the effective one is configuration's, and a default
     // elevated level moves the command to the Gateway. Naming both makes the
     // host run it in the sandbox or refuse it; it never falls back.

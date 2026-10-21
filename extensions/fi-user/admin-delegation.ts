@@ -12,13 +12,14 @@ import {
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
-import { ON_BEHALF_OF_TOOLS, onBehalfOfRequester } from "./on-behalf-of.js";
+import { ON_BEHALF_OF_TOOLS, onBehalfOfRequester, type CommandDelegation } from "./on-behalf-of.js";
 
 /**
  * The host gives every before_tool_call handler 15 s in all, and the Matrix
  * grant check that runs first may take 12 s of it. Fi is asked only with what
  * is left of 13 s, never for more than 8 s, and not at all with under half a
- * second: the command then runs without a token instead of being denied.
+ * second. A selected Matrix environment that differs from the sandbox default
+ * cannot fall back to that default when its token cannot be issued.
  */
 const HOOK_BUDGET_MS = 13_000;
 const MAX_MINT_MS = 8_000;
@@ -187,7 +188,8 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * Fi mints it for the person the host proved sent the message that started
  * this turn, and it reaches only the commands Fi lists for the admin agent. It
  * is asked for per call and returned to the caller for that call's `env`:
- * nothing here keeps a token, and a failure of any kind yields none.
+ * nothing here keeps a token. Failure yields none for the existing same-Fi
+ * operator path; an eligible turn selecting another Fi must instead block.
  *
  * A tool call names its requester but not what started its run, and the host
  * reuses a stored sender when it resumes a run. So a turn is admitted only by
@@ -619,7 +621,7 @@ export function registerAdminDelegation(
     ctx: PluginHookToolContext,
     /** When the host entered this tool call's hook; its deadline runs from then. */
     enteredAt: number,
-  ): Promise<string | Held | undefined> | undefined => {
+  ): Promise<CommandDelegation | Held | undefined> | undefined => {
     const agentId = ctx.agentId?.toLowerCase();
     if (
       !agentId ||
@@ -682,8 +684,17 @@ export function registerAdminDelegation(
       diagnose(ctx, "mint-unsupported-requester");
       return undefined;
     }
-    // The command chooses where its bearer goes; this is not a control over it.
-    // A call that names another Fi is simply not this Fi's to give a token to.
+    connection = connection && { ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
+    const crossEnvironmentFailure: Held | undefined =
+      connection && connection.baseUrl.replace(/\/+$/, "") !== config.baseUrl.replace(/\/+$/, "")
+        ? {
+            block: true,
+            blockReason:
+              "The requester could not be verified for this Matrix environment. Start a fresh command; this call cannot fall back to the sandbox default Fi.",
+          }
+        : undefined;
+    // An explicit different origin cannot receive this Fi's token. A selected
+    // environment must not fall through to the sandbox's ambient Fi either.
     if (!connection || namesAnotherFi(event.params, connection.baseUrl.replace(/\/+$/, ""))) {
       diagnose(ctx, "mint-connection-unavailable", () => ({
         connectionConfigured: Boolean(connection),
@@ -691,13 +702,14 @@ export function registerAdminDelegation(
           connection && !namesAnotherFi(event.params, connection.baseUrl.replace(/\/+$/, "")),
         ),
       }));
-      return undefined;
+      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
     }
     const budget = Math.min(MAX_MINT_MS, HOOK_BUDGET_MS - (Date.now() - enteredAt));
     if (budget < MIN_MINT_MS) {
       diagnose(ctx, "mint-budget-exhausted");
-      return undefined;
+      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
     }
+    const baseUrl = connection.baseUrl;
     const sandbox = sandboxKey(agentId, sessionKey);
     return lookupDelegation({ ...config, ...connection }, body, {
       agentId: FI_ADMIN_DELEGATION_AGENT_ID,
@@ -730,7 +742,7 @@ export function registerAdminDelegation(
             sameSender: run.sender === sender,
             voiceProofCurrent: !run.voice || admittedVoiceTurn(ctx) === run.voice,
           }));
-          return undefined;
+          return crossEnvironmentFailure;
         }
         // Someone else's token may have reached this sandbox while Fi answered:
         // the call must then wait like any other, not run without a token.
@@ -743,7 +755,7 @@ export function registerAdminDelegation(
         const heldUntil = Math.max(custody.get(sandbox)?.expiresAt ?? 0, expiresAt * 1000);
         remember(custody, sandbox, { sender, expiresAt: Math.min(heldUntil, now + MAX_HOLD_MS) });
         diagnose(ctx, "mint-issued");
-        return token;
+        return { token, baseUrl };
       },
       (error: unknown) => {
         // Status only: the failure may quote the request, which carries the credential.
@@ -756,7 +768,7 @@ export function registerAdminDelegation(
         api.logger.warn(
           `fi-user: admin delegation not issued (${status ? `status ${status}` : "unavailable"})`,
         );
-        return undefined;
+        return crossEnvironmentFailure;
       },
     );
   };

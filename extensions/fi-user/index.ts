@@ -516,14 +516,14 @@ export default definePluginEntry({
         !(event.sessionKey ?? context.sessionKey)?.startsWith("agent:cellect-fi-user:") ||
         !event.payload.text
       ) {
-        return;
+        return undefined;
       }
       const text = withoutInternalDownloadLinks(event.payload.text);
       return text === event.payload.text ? undefined : { payload: { ...event.payload, text } };
     });
     api.on("message_sending", (event, context) => {
       if (!context.sessionKey?.startsWith("agent:cellect-fi-user:")) {
-        return;
+        return undefined;
       }
       const content = withoutInternalDownloadLinks(event.content);
       return content === event.content ? undefined : { content };
@@ -625,13 +625,12 @@ export default definePluginEntry({
             attributed && secret && requester && ctx.agentId
               ? signOnBehalfOf({ secret, agentId: ctx.agentId, requester })
               : undefined;
-          // The assertion stands on its own: a command still runs with it when
-          // Fi issues no delegated token for this call.
+          // Same-environment operator calls retain the assertion-only fallback.
+          // A selected different environment must either get its token or block.
           const delegated = adminDelegation.mint(config, event, ctx, enteredAt);
           return delegated
             ? delegated.then((minted) =>
-                // Another person's token reached the sandbox while Fi answered.
-                typeof minted === "object"
+                minted && "block" in minted
                   ? minted
                   : { params: withOnBehalfOfEnv(event.params, assertion, minted) },
               )
