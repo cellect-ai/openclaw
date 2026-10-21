@@ -103,6 +103,19 @@ describe("Dockerfile", () => {
     expect(collapsed).toContain("update-ca-certificates");
   });
 
+  it("seeds NSS distrust for root, node, and the runtime HOME", async () => {
+    const dockerfile = collapseDockerContinuations(await readFile(dockerfilePath, "utf8"));
+    const userNode = dockerfile.indexOf("\nUSER node");
+    const rootSeed = dockerfile.indexOf("HOME=/root cellect-nss-distrust");
+    const nodeSeed = dockerfile.lastIndexOf("cellect-nss-distrust\n");
+    expect(rootSeed).toBeGreaterThan(-1);
+    expect(rootSeed).toBeLessThan(userNode);
+    expect(nodeSeed).toBeGreaterThan(userNode);
+    expect(dockerfile).toContain(
+      "ENV OPENCLAW_NSS_DISTRUST_SEED=/usr/local/bin/cellect-nss-distrust",
+    );
+  });
+
   it("installs Python, tini, and the llama-server OpenMP runtime in the slim stage", async () => {
     const dockerfile = collapseDockerContinuations(await readFile(dockerfilePath, "utf8"));
     const runtimeIndex = dockerfile.indexOf(

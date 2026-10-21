@@ -1,5 +1,5 @@
 // Image activation owns unattended retained-volume repair; ordinary CLI startup only admits state.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -67,6 +67,19 @@ function gatewayInvocation(program) {
   });
   // Reset owns deletion before initialization; do not migrate state it will discard.
   return options && !options.commandOptions.includes("--reset") ? options : undefined;
+}
+
+// The image names a seed that distrusts compromised CAs in $HOME/.pki/nssdb for
+// the runtime user; a retained HOME volume never receives the image's copy.
+// Fail open and report it: the managed browser policy still applies.
+const nssSeed = process.env.OPENCLAW_NSS_DISTRUST_SEED;
+if (nssSeed) {
+  const seeded = spawnSync(nssSeed, [], { stdio: "inherit" });
+  if (seeded.status !== 0) {
+    console.error(
+      `OPENCLAW_NSS_SEED_DEGRADED: ${nssSeed} ${seeded.error?.message ?? `exited ${seeded.status ?? seeded.signal}`}`,
+    );
+  }
 }
 
 try {

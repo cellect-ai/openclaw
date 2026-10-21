@@ -143,6 +143,32 @@ describe.skipIf(process.platform === "win32")("Docker image activation", () => {
     expect(result).toMatchObject({ status: 0, stdout: "unchanged", error: undefined });
   });
 
+  it.for([
+    { exit: 0, degraded: false },
+    { exit: 3, degraded: true },
+  ])(
+    "seeds NSS distrust first and still starts when the seed exits $exit",
+    async ({ exit, degraded }, { command }) => {
+      const f = fixture(command);
+      const seed = path.join(f.root, "nss-seed");
+      fs.writeFileSync(
+        seed,
+        `#!/bin/sh\necho '{"args":["nss-seed"]}' >> "$RECORD"\nexit ${exit}\n`,
+        { mode: 0o755 },
+      );
+      const result = await f.run(["openclaw.mjs", "gateway"], {
+        OPENCLAW_NSS_DISTRUST_SEED: seed,
+      });
+      expect(result, result.stderr).toMatchObject({ status: 0, signal: null, error: undefined });
+      expect(f.read().map((row) => row.args)).toEqual([
+        ["nss-seed"],
+        ["doctor", "--fix", "--non-interactive"],
+        ["gateway"],
+      ]);
+      expect(result.stderr.includes("OPENCLAW_NSS_SEED_DEGRADED")).toBe(degraded);
+    },
+  );
+
   it("does not start Gateway after Doctor refuses repair", async ({ command }) => {
     const f = fixture(command);
     expect((await f.run(["openclaw.mjs", "gateway"], { DOCTOR_EXIT: "78" })).status).toBe(78);

@@ -282,6 +282,21 @@ RUN install -d -m 0755 /etc/opt/chrome_for_testing/policies/managed \
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome_for_testing/policies/managed/cellect-emudhra-distrust.json
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome/policies/managed/cellect-emudhra-distrust.json
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/chromium/policies/managed/cellect-emudhra-distrust.json
+# chrome-headless-shell (Playwright's default for headless launches) has no
+# managed-policy loader, so the same 17 certificates are also distrusted in
+# the user's NSS DB: here for root and (below) node, and again at container
+# start for the runtime HOME, because /home/node is a retained volume in
+# Compose deployments and the image layer never reaches it.
+RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnss3-tools
+COPY --chmod=0755 scripts/docker/cellect-nss-distrust.sh /usr/local/bin/cellect-nss-distrust
+RUN install -d -m 0755 /etc/cellect /etc/cellect/emudhra-distrust && \
+    node -e 'const fs = require("node:fs"); const { X509Certificate } = require("node:crypto"); JSON.parse(fs.readFileSync(process.argv[1], "utf8")).CADistrustedCertificates.forEach((der, i) => fs.writeFileSync(`/etc/cellect/emudhra-distrust/${String(i).padStart(2, "0")}.pem`, new X509Certificate(Buffer.from(der, "base64")).toString(), { mode: 0o644 }))' \
+      /etc/chromium/policies/managed/cellect-emudhra-distrust.json && \
+    HOME=/root cellect-nss-distrust
+ENV OPENCLAW_NSS_DISTRUST_SEED=/usr/local/bin/cellect-nss-distrust
 
 # The Cellect runtime entrypoint hydrates role-scoped secrets through Infisical
 # before starting OpenClaw. Keep this operator/runtime dependency in the image;
@@ -474,7 +489,8 @@ RUN COREPACK_ENABLE_NETWORK=0 PNPM_CONFIG_OFFLINE=true pnpm --version
 # The Chromium distrust policy must be readable by the unprivileged user too.
 RUN for d in /etc/opt/chrome_for_testing /etc/opt/chrome /etc/chromium; do \
       test -r "$d/policies/managed/cellect-emudhra-distrust.json" || exit 1; \
-    done
+    done && \
+    cellect-nss-distrust
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
