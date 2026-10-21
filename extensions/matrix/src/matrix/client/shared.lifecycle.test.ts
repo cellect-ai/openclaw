@@ -3,9 +3,13 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import { getSessionBindingService } from "openclaw/plugin-sdk/session-binding-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMatrixFullRuntime } from "../../../index.js";
 import { getOptionalMatrixRuntime, setMatrixRuntime } from "../../runtime.js";
+import { installMatrixTestRuntime, resetMatrixTestStores } from "../../test-runtime.js";
+import { createMatrixThreadBindingManager } from "../thread-bindings.js";
 import { acquireSharedMatrixClient, stopSharedClientForAccount } from "./shared.js";
 import { authFor, createMockClient } from "./shared.test-support.js";
 
@@ -34,10 +38,14 @@ const leases: SharedLease[] = [];
 const releaseBlockedIo: Array<() => void> = [];
 let previousRuntime: PluginRuntime | null;
 
-function registerOwner(onDisposeRegistered?: () => void): RegisteredOwner {
+function registerOwner(onDisposeRegistered?: () => void, runtime?: PluginRuntime): RegisteredOwner {
   const controller = new AbortController();
   const disposers = new Set<Disposer>();
-  const api = createTestPluginApi({ id: "matrix", name: "Matrix" });
+  const api = createTestPluginApi({
+    id: "matrix",
+    name: "Matrix",
+    ...(runtime ? { runtime } : {}),
+  });
   api.lifecycle = {
     ...api.lifecycle,
     signal: controller.signal,
@@ -102,6 +110,53 @@ afterEach(async () => {
 });
 
 describe("shared Matrix plugin lifecycle", () => {
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+  it("persists the sync checkpoint after a pending binding flush loses ambient registration scope", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const stateDir = tempDirs.make("matrix-checkpoint-binding-flush-");
+    installMatrixTestRuntime({ stateDir });
+    const owner = registerOwner(undefined, getOptionalMatrixRuntime()!);
+    const client = createMockClient("checkpoint");
+    createMatrixClientMock.mockResolvedValue(client);
+    const auth = authFor("checkpoint-binding-flush");
+    const monitor = await acquire(owner.runtime, { auth, startClient: false, role: "monitor" });
+    const manager = await createMatrixThreadBindingManager({
+      cfg: {},
+      accountId: auth.accountId,
+      auth,
+      client: {} as never,
+      stateDir,
+      idleTimeoutMs: 0,
+      maxAgeMs: 0,
+      enableSweeper: false,
+    });
+    const binding = await getSessionBindingService().bind({
+      targetSessionKey: "agent:main:subagent:fixture",
+      targetKind: "subagent",
+      conversation: { channel: "matrix", accountId: auth.accountId, conversationId: "$fixture" },
+      placement: "current",
+      metadata: { introText: false },
+    });
+    manager.touchBinding(binding.bindingId, binding.boundAt + 1000);
+    monitor.registerMonitorRetirement({
+      closeTaskAdmission: () => {},
+      detachListeners: () => {},
+      waitForTasks: async () => {},
+      cleanup: () => manager.stop(),
+    });
+    // Native instance abort listeners run without the registering invocation;
+    // the real PluginInstance composition is covered in the core regression.
+    clearMatrixRuntime();
+    try {
+      await expect(owner.dispose()).resolves.toBeUndefined();
+      expect(client.stopAndPersist).toHaveBeenCalledOnce();
+      expect(client.stopWithoutPersist).not.toHaveBeenCalled();
+    } finally {
+      await resetMatrixTestStores();
+    }
+  });
+
   it("retires the disposed owner's shared client while another runtime stays live", async () => {
     const firstOwner = registerOwner();
     const otherOwner = registerOwner();
