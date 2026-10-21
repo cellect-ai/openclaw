@@ -51,8 +51,9 @@ export function requestedRoomFiling(
     Boolean(f.order) === Boolean(f.noOrder) ||
     Boolean(f.taskIds?.length) === Boolean(f.noTask) ||
     (f.completeTaskIds ?? []).some((id) => !f.taskIds?.includes(id))
-  )
+  ) {
     return undefined;
+  }
   return {
     actor,
     room: f.roomId,
@@ -114,7 +115,9 @@ export async function prepareRoomFiling(
   assertCurrent: () => void,
 ): Promise<PreparedRoomFiling> {
   const identity = record.requester.identity;
-  if (identity.channel !== "matrix") throw new Error("Fi conversation preparation is required.");
+  if (identity.channel !== "matrix") {
+    throw new Error("Fi conversation preparation is required.");
+  }
   const delegation = await lookupDelegation(
     config,
     { requesterMatrixUserId: identity.requesterMatrixUserId },
@@ -130,10 +133,11 @@ export async function prepareRoomFiling(
     );
   }
   const input = requestedRoomFiling(record, delegation.user.email);
-  if (!input)
+  if (!input) {
     throw new Error(
       "Resolve the exact document, room, placement and checklist targets before requesting approval.",
     );
+  }
   assertCurrent();
   const response = await delegatedFetch(
     config,
@@ -146,10 +150,11 @@ export async function prepareRoomFiling(
       signal: AbortSignal.timeout(30_000),
     },
   );
-  if (!response.ok)
+  if (!response.ok) {
     throw new Error(
       "The exact filing could not be prepared. Nothing was executed and no approval card was posted.",
     );
+  }
   const envelope = (await response.json()) as { ok?: boolean; result?: FilingReceipt };
   assertCurrent();
   const result = envelope.result;
@@ -213,7 +218,8 @@ export async function prepareRoomFiling(
     roomName: target.room.name,
     documentFilename: target.document.filename,
     tasks: target.tasks.map((task) => ({
-      ...task,
+      id: task.id,
+      title: task.title,
       complete: input.completeTask.includes(task.id),
     })),
   };
@@ -286,10 +292,17 @@ export async function executeApprovedRoomFiling(
         signal: AbortSignal.timeout(60_000),
       },
     );
-    if (!response.ok) return unknown;
-    const envelope = (await response.json()) as { ok?: boolean; result?: FilingReceipt };
-    if (envelope.ok !== true || !envelope.result || !verifiedFilingReceipt(input, envelope.result))
+    if (!response.ok) {
       return unknown;
+    }
+    const envelope = (await response.json()) as { ok?: boolean; result?: FilingReceipt };
+    if (
+      envelope.ok !== true ||
+      !envelope.result ||
+      !verifiedFilingReceipt(input, envelope.result)
+    ) {
+      return unknown;
+    }
     return {
       state: "done",
       operationId,

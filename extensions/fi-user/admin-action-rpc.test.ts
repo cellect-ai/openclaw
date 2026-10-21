@@ -116,7 +116,10 @@ beforeEach(() => {
   vi.stubGlobal(
     "fetch",
     vi.fn(async (_url: unknown, init: RequestInit) => {
-      const input = JSON.parse(String(init.body));
+      if (typeof init.body !== "string") {
+        throw new Error("Expected a JSON-string authorization request body.");
+      }
+      const input = JSON.parse(init.body);
       return Response.json({
         ok: input.gatewayDeviceId === "real-fi-device",
         orgId: origin.orgId,
@@ -311,9 +314,11 @@ describe("registered native business approval boundary", () => {
       )[0],
     ).toBe(false);
     expect(h.sendPayload).not.toHaveBeenCalled();
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[0]![1]!.body)).gatewayDeviceId).toBe(
-      "other-device",
-    );
+    const body = vi.mocked(fetch).mock.calls[0]![1]!.body;
+    if (typeof body !== "string") {
+      throw new Error("Expected a JSON-string authorization request body.");
+    }
+    expect(JSON.parse(body).gatewayDeviceId).toBe("other-device");
   });
 
   it("lets a current administrator approve their own exact request without generic execution", async () => {

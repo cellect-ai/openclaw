@@ -117,7 +117,11 @@ describe("one exact typed filing effect", () => {
         () => {},
       ),
     ).rejects.toThrow("room name does not match");
-    expect(JSON.parse(String(vi.mocked(fetch).mock.calls[1]![1]!.body)).dryRun).toBe(true);
+    const body = vi.mocked(fetch).mock.calls[1]![1]!.body;
+    if (typeof body !== "string") {
+      throw new Error("Expected a JSON-string filing request body.");
+    }
+    expect(JSON.parse(body).dryRun).toBe(true);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
   it("requires the canonical order and tags frozen before approval", () => {
@@ -167,7 +171,10 @@ describe("one exact typed filing effect", () => {
     });
     const [url, init] = vi.mocked(fetch).mock.calls[0]!;
     expect(url).toBe("https://fi.example.test/api/test/admin-room-filing");
-    expect(JSON.parse(String(init!.body))).toEqual({
+    if (typeof init?.body !== "string") {
+      throw new Error("Expected a JSON-string filing request body.");
+    }
+    expect(JSON.parse(init.body)).toEqual({
       input: { ...input, preparation },
       dryRun: false,
     });

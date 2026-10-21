@@ -107,7 +107,9 @@ async function authorize(
   }
   const config = { ...base, ...connection };
   const token = brokerToken(config);
-  if (!token) throw new Error("Approval verifier unavailable.");
+  if (!token) {
+    throw new Error("Approval verifier unavailable.");
+  }
   const response = await fetch(
     `${config.baseUrl.replace(/\/+$/, "")}/api/threads/admin-action-authorize`,
     {
@@ -119,8 +121,9 @@ async function authorize(
         : AbortSignal.timeout(10_000),
     },
   );
-  if (!response.ok)
+  if (!response.ok) {
     throw new Error("The current Fi administrator and conversation could not be verified.");
+  }
   const result = (await response.json()) as {
     ok?: boolean;
     orgId?: string;
@@ -155,13 +158,16 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
           if (method === "describe") {
             const current = await loadAdminAction(api, target.requestId);
             assertCurrent();
-            if (!current || !matches(current, target)) throw new Error("Approval request changed.");
+            if (!current || !matches(current, target)) {
+              throw new Error("Approval request changed.");
+            }
             options.respond(true, adminActionView(current));
             return;
           }
           const decision = options.params.decision as Decision;
-          if (!["approve", "hold", "decline", "resume"].includes(decision))
+          if (!["approve", "hold", "decline", "resume"].includes(decision)) {
             throw new Error("Invalid decision.");
+          }
           if (
             target.revision !== (record.revision ?? 1) ||
             record.createdAt + RECORD_TTL_MS <= Date.now()
@@ -245,8 +251,9 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
             // If receipt persistence becomes uncertain, the committed owner stays
             // unknown. Neither a repeat decision nor restart repeats the effect.
             try {
-              if (await transitionAdminAction(api, next, completed, assertCurrent))
+              if (await transitionAdminAction(api, next, completed, assertCurrent)) {
                 next = completed;
+              }
             } catch {
               api.logger.warn(
                 "fi-user: filing receipt could not be recorded; outcome remains unconfirmed",

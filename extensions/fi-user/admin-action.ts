@@ -143,7 +143,9 @@ export function adminActionStore(api: OpenClawPluginApi): PluginStateKeyedStore<
 
 export function remainingAdminActionTtl(record: AdminActionRecord): number {
   const ttl = record.createdAt + RECORD_TTL_MS - Date.now();
-  if (ttl <= 0) throw new Error("The approval request expired; prepare a new request.");
+  if (ttl <= 0) {
+    throw new Error("The approval request expired; prepare a new request.");
+  }
   return ttl;
 }
 
@@ -152,7 +154,9 @@ export async function loadAdminAction(
   id: string,
 ): Promise<AdminActionRecord | undefined> {
   const record = await adminActionStore(api).lookup(id);
-  if (!record) return undefined;
+  if (!record) {
+    return undefined;
+  }
   // Old versions could commit the claim and fail to update the request. Those
   // decisions remain authoritative; never resurrect them as pending requests.
   const legacy = await api.runtime.state
@@ -175,10 +179,14 @@ export async function transitionAdminAction(
   assertCurrent: () => void,
 ): Promise<boolean> {
   const owner = adminActionStore(api);
-  if (!owner.withCurrent) throw new Error("Durable approval authority is unavailable.");
+  if (!owner.withCurrent) {
+    throw new Error("Durable approval authority is unavailable.");
+  }
   const durable = owner.withCurrent({ assertCurrent });
   const observed = await durable.observe(record.id);
-  if (!observed.value || JSON.stringify(observed.value) !== JSON.stringify(record)) return false;
+  if (!observed.value || JSON.stringify(observed.value) !== JSON.stringify(record)) {
+    return false;
+  }
   const ttlMs = remainingAdminActionTtl(record);
   assertCurrent();
   const result = await durable.compareAndApply(record.id, observed.comparison, {

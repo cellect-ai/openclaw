@@ -125,9 +125,13 @@ export async function publishAdminActionCard(
   record: AdminActionRecord,
   assertCurrent: () => void = () => {},
 ): Promise<void> {
-  if (!record.origin || !record.delivery?.accountId) throw new Error("Missing approval origin.");
+  if (!record.origin || !record.delivery?.accountId) {
+    throw new Error("Missing approval origin.");
+  }
   const adapter = await api.runtime.channel.outbound.loadAdapter("matrix");
-  if (!adapter?.sendPayload) throw new Error("Decision-card delivery is unavailable.");
+  if (!adapter?.sendPayload) {
+    throw new Error("Decision-card delivery is unavailable.");
+  }
   assertCurrent();
   const card = adminActionCard(record);
   const result = await adapter.sendPayload({

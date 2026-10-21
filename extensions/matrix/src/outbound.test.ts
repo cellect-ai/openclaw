@@ -357,13 +357,6 @@ describe("matrixOutbound cfg threading", () => {
   });
 
   it("redacts the previous voice transcript after a threaded replacement is accepted", async () => {
-    const cfg = {
-      channels: {
-        matrix: {
-          accessToken: "resolved-token",
-        },
-      },
-    } as OpenClawConfig;
     mocks.sendMessageMatrix.mockResolvedValue({ messageId: "$revised", roomId: "!room:example" });
 
     await matrixOutbound.sendPayload!({
@@ -405,7 +398,6 @@ describe("matrixOutbound cfg threading", () => {
   it("keeps a revised voice transcript when redaction fails", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     mocks.redactMessageMatrix.mockRejectedValue(new Error("homeserver rejected the redaction"));
-    const cfg = { channels: { matrix: { accessToken: "resolved-token" } } } as OpenClawConfig;
 
     const result = await matrixOutbound.sendPayload!({
       cfg,

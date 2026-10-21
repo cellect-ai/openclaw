@@ -16,13 +16,19 @@ export function approvalStores(initial: Record<string, unknown> = {}) {
         entries: async () => [...values].map(([key, value]) => ({ key, value, createdAt: 1 })),
         register: async (key: string, value: T) => {
           assertCurrent();
-          if (failWrites) throw new Error("storage unavailable");
+          if (failWrites) {
+            throw new Error("storage unavailable");
+          }
           values.set(key, structuredClone(value));
         },
         registerIfAbsent: async (key: string, value: T) => {
           assertCurrent();
-          if (failWrites) throw new Error("storage unavailable");
-          if (values.has(key)) return false;
+          if (failWrites) {
+            throw new Error("storage unavailable");
+          }
+          if (values.has(key)) {
+            return false;
+          }
           values.set(key, structuredClone(value));
           return true;
         },
@@ -32,8 +38,12 @@ export function approvalStores(initial: Record<string, unknown> = {}) {
         }),
         compareAndApply: async (key: string, comparison: string, intent: { value: T }) => {
           assertCurrent();
-          if (failWrites) throw new Error("storage unavailable");
-          if (JSON.stringify(values.get(key)) !== comparison) return { status: "conflict" };
+          if (failWrites) {
+            throw new Error("storage unavailable");
+          }
+          if (JSON.stringify(values.get(key)) !== comparison) {
+            return { status: "conflict" };
+          }
           values.set(key, structuredClone(intent.value));
           return { status: "applied" };
         },
