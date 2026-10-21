@@ -1,5 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
-import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
+import {
+  getSessionBindingService,
+  type SessionBindingRecord,
+} from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { resolveAgentRoute, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import type { CoreConfig } from "../types.js";
 import { resolveMatrixAccountConfig } from "./account-config.js";
@@ -35,9 +38,11 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
       // Native rooms keep one durable conversation identity. A seated bot uses
       // its own execution session/account, but publishes under that same identity.
       // Derive participants from the real route so restart needs no second store.
-      const cfg = api.runtime.config.current?.() ?? api.config;
+      // SAFETY: The admitted runtime config is borrowed only for read-only account
+      // and route selection; these legacy helpers type their config as mutable.
+      const cfg = (api.runtime.config.current?.() ?? api.config) as CoreConfig;
       const rows = listAllBindings();
-      const native = rows.flatMap((row) => {
+      const native = rows.flatMap((row): SessionBindingRecord[] => {
         const roomId = row.parentConversationId;
         if (
           !roomId ||
