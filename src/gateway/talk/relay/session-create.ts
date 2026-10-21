@@ -225,7 +225,13 @@ export function createTalkRealtimeRelaySession(
     isRunCurrent: (runId) => getActiveRelay()?.activeAgentRuns.get(runId) === canonicalKey,
   });
   const runAgentConsult = bindTalkRealtimeRelayAgentConsult(
-    consultRunner.runPrompt,
+    Object.assign((request: Parameters<typeof consultRunner.runPrompt>[0]) => {
+      // Provider-owned delegation bypasses onToolCall. Once admitted, it owns
+      // this utterance even when its prompt differs from the ASR transcript.
+      pendingTranscriptQuestions.clear();
+      harness.forcedConsults.clearPending();
+      return consultRunner.runPrompt(request);
+    }, consultRunner.runPrompt),
     () => getActiveRelay() !== undefined,
     (signal) => confirmationReadiness.wait(signal),
   );
