@@ -226,11 +226,11 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
   });
   api.on("reply_payload_sending", async (event, context) => {
     if (event.kind !== "final") {
-      return;
+      return undefined;
     }
     const runKey = key(event.sessionKey ?? context.sessionKey, event.runId ?? context.runId);
     if (!runKey) {
-      return;
+      return undefined;
     }
     const pending = inFlight.get(runKey);
     const incompleteReply = { payload: { ...event.payload, text: incomplete } };
@@ -249,7 +249,7 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
       try {
         const row = await observations().lookup(runKey);
         if (!row && !witnessed.has(runKey)) {
-          return;
+          return undefined;
         }
         if (
           validObservation(row) &&
@@ -257,11 +257,11 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
           !row.failedFiles.length &&
           !Object.keys(row.pending).length
         ) {
-          return;
+          return undefined;
         }
       } catch {
         if (!witnessed.has(runKey)) {
-          return;
+          return undefined;
         }
       }
       return incompleteReply;
