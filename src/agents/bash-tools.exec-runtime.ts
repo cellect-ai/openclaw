@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
+import { emitAgentEvent } from "../infra/agent-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import {
@@ -567,6 +568,15 @@ export async function runExecProcess({
   notifyDeliveryContext?: DeliveryContext;
   /** Agent run that started this command; binds its completion to that run. */
   originRunId?: string;
+  /** Exact tool execution owner, distinct from completion-notification routing. */
+  executionOwner?: {
+    agentId?: string;
+    sessionKey?: string;
+    runId?: string;
+    toolCallId: string;
+  };
+  /** Restrict this sandbox command's descendants to its native process lifetime. */
+  closeProcessTree?: boolean;
   timeoutSec: number | null;
   /** Whether exec may return a supervised session for later continuation. */
   processContinuationAvailable?: boolean;
@@ -580,6 +590,11 @@ export async function runExecProcess({
   /** Rechecks host policy at the supervisor's final synchronous spawn boundary. */
   assertCurrent?: () => void;
 }): Promise<ExecProcessHandle> {
+  if (opts.closeProcessTree && (!opts.sandbox?.prepareProcessCleanup || opts.usePty)) {
+    throw registerTrustedToolNoStartError(
+      new Error("Sandbox process-tree cleanup is unavailable for this command."),
+    );
+  }
   let assertSourceActive: (() => void) | undefined =
     captureAgentToolSourceExecutionGuard(initialStartupSignal);
   let operatorAuthority = getGatewayToolCallerIdentity()?.operatorAuthority;
@@ -719,7 +734,7 @@ export async function runExecProcess({
         managedRun.cancel();
         await managedRun.waitForExtinction();
       }
-      if (outcome.exitReason !== "exit") {
+      if (outcome.exitReason !== "exit" || opts.closeProcessTree) {
         beginSandboxTermination();
       }
       await sandboxTermination;
@@ -738,6 +753,21 @@ export async function runExecProcess({
       }
       if (errors.length > 0) {
         throw new AggregateError(errors, errors.map(formatErrorMessage).join("\n"));
+      }
+      const owner = opts.executionOwner;
+      if (opts.closeProcessTree && owner?.runId && owner.sessionKey && owner.agentId) {
+        // Native cleanup proof, not a model-visible tool result or a turn-end guess.
+        // Emit before releasing this process's owner; background exits use this same path.
+        emitAgentEvent({
+          runId: owner.runId,
+          stream: "sandbox_process",
+          data: {
+            phase: "cleanup-complete",
+            toolCallId: owner.toolCallId,
+            sessionKey: owner.sessionKey,
+            agentId: owner.agentId,
+          },
+        });
       }
     } catch (error) {
       session.finalizationFailed = true;

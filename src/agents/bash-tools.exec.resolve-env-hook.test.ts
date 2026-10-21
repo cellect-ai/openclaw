@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { onAgentEvent } from "../infra/agent-events.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import type { ExecuteNodeHostCommandParams } from "./bash-tools.exec-host-node.types.js";
 import { createRunExit } from "./bash-tools.exec-runtime.test-support.js";
@@ -172,6 +173,64 @@ describe("exec resolve_exec_env hook wiring", () => {
     mocks.gatewayParams.length = 0;
     mocks.nodeHostParams.length = 0;
     mocks.spawnInputs.length = 0;
+  });
+
+  it("carries hook-required cleanup and the actual caller through native execution", async () => {
+    const terminate = vi.fn(async () => {});
+    const finalizeExec = vi.fn(async () => {});
+    installWrappedHooks(
+      vi.fn(async (event: { params: Record<string, unknown> }) => ({
+        params: { ...event.params, closeProcessTree: true },
+      })),
+    );
+    const tool = createTestExecTool({
+      host: "sandbox",
+      agentId: "actual-agent",
+      sessionKey: "agent:actual-agent:execution",
+      notifySessionKey: "agent:actual-agent:parent-notifications",
+      runId: "actual-run",
+      sandbox: backendSandboxConfig({
+        validateWorkdir: async (workdir) => workdir,
+        prepareProcessCleanup: (env) => ({ env, terminate, interrupt: async () => false }),
+        buildExecSpec: async () => ({ argv: ["fixture"], env: {}, stdinMode: "pipe-closed" }),
+        finalizeExec,
+      }),
+    });
+    const completed = vi.fn();
+    const unsubscribe = onAgentEvent((event) => {
+      if (event.stream === "sandbox_process") completed(event);
+    });
+    try {
+      const result = await executeWrapped(
+        tool,
+        {
+          command: "echo ok",
+          workdir: "/remote/workspace",
+          closeProcessTree: false,
+        },
+        {
+          agentId: "actual-agent",
+          sessionKey: "agent:actual-agent:execution",
+          runId: "actual-run",
+        },
+      );
+      expect(result.details).toMatchObject({ status: "completed" });
+      expect(terminate).toHaveBeenCalledOnce();
+      expect(finalizeExec).toHaveBeenCalledOnce();
+      expect(completed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runId: "actual-run",
+          data: {
+            phase: "cleanup-complete",
+            toolCallId: "wrapped-call",
+            agentId: "actual-agent",
+            sessionKey: "agent:actual-agent:execution",
+          },
+        }),
+      );
+    } finally {
+      unsubscribe();
+    }
   });
 
   it("merges filtered plugin env into gateway execution and approval-visible requested env", async () => {

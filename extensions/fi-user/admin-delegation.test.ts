@@ -27,6 +27,61 @@ import { configFromRuntime } from "./fi-delegation.js";
 installDelegationFixtures();
 
 describe("the admin agent's delegated user token", () => {
+  describe("native process custody release", () => {
+    async function reserved() {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const result = await turn.exec({ toolCallId: "command-1" });
+      expect(result?.params).toMatchObject({ closeProcessTree: true });
+      return turn;
+    }
+    const unproven = { runId: "other-run" };
+
+    it("releases before token expiry only after exact native cleanup", async () => {
+      const turn = await reserved();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+      await turn.cleanup();
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
+    });
+
+    it.each([
+      { phase: "completed" },
+      { phase: "cleanup-failed" },
+      { toolCallId: "other-call" },
+      { sessionKey: "agent:cellect-fi-admin:other" },
+      { agentId: "cellect-main" },
+    ])("keeps custody without matching cleanup: %j", async (fields) => {
+      const turn = await reserved();
+      await turn.cleanup(fields);
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    });
+
+    it("turn settlement cannot release an unfinished or uncertain command", async () => {
+      const turn = await reserved();
+      await turn.settle();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+      await turn.cleanup();
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
+    });
+
+    it("one cleanup cannot release sibling commands or replay a release", async () => {
+      const turn = await reserved();
+      await turn.exec({ toolCallId: "command-2" });
+      await turn.cleanup();
+      await turn.cleanup();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+      await turn.cleanup({ toolCallId: "command-2" });
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
+    });
+
+    it("retains conservative expiry for calls without unique identity", async () => {
+      const turn = await reserved();
+      await turn.exec();
+      await turn.cleanup();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    });
+  });
   describe("Superadmin requester handoff", () => {
     const main = () => {
       const original = thread();

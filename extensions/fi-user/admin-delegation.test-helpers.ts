@@ -224,6 +224,27 @@ export function plugin(
         );
       }
     },
+    cleanup: async (overrides: Record<string, unknown> = {}) => {
+      for (const subscription of subscriptions) {
+        if (!subscription.streams?.includes("sandbox_process")) {
+          continue;
+        }
+        await subscription.handle(
+          {
+            runId: "run-1",
+            stream: "sandbox_process",
+            data: {
+              phase: "cleanup-complete",
+              toolCallId: "command-1",
+              agentId: "cellect-fi-admin",
+              sessionKey: SESSION,
+              ...overrides,
+            },
+          } as never,
+          {} as never,
+        );
+      }
+    },
   };
 }
 

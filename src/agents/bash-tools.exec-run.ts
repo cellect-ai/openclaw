@@ -613,6 +613,13 @@ export function createExecTool(
           eventRouting: defaults?.eventRouting,
           notifyDeliveryContext,
           originRunId: defaults?.runId,
+          executionOwner: {
+            toolCallId,
+            sessionKey: hookContext?.sessionKey ?? defaults?.runSessionKey ?? defaults?.sessionKey,
+            agentId: hookContext?.agentId ?? agentId,
+            runId: hookContext?.runId ?? defaults?.runId,
+          },
+          closeProcessTree: params.closeProcessTree === true,
           timeoutSec: effectiveTimeout,
           processContinuationAvailable: allowBackground,
           startupSignal: signal,

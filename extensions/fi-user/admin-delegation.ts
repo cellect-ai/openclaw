@@ -83,6 +83,7 @@ const EXEC_PARAMS = new Set([
   "env",
   "yieldMs",
   "background",
+  "closeProcessTree",
   "timeoutSeconds",
   "pty",
   "elevated",
@@ -101,7 +102,13 @@ type Arrivals = {
 };
 type Proof = { sender: string; eventId?: string };
 /** Who a sandbox last ran a token-bearing command for, and until when that token lives. */
-type Custody = { sender: string; expiresAt: number };
+type Custody = {
+  sender: string;
+  expiresAt: number;
+  /** Missing/duplicate call identities retain the conservative expiry fallback. */
+  untrackedUntil: number;
+  calls: Map<string, { sessionKey: string; agentId: string; expiresAt: number }>;
+};
 type Held = { block: true; blockReason: string };
 
 /** Set `key` as the newest entry, dropping the oldest ones past the cap. */
@@ -215,9 +222,11 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * A token is issued only where pinning its command to the sandbox changes
  * nothing for the deployment: the admin agent always runs sandboxed, its exec
  * host is the sandbox, and elevation is off. Elsewhere nothing is issued and
- * nothing is pinned. The sandbox that ran a token-bearing command is then kept
- * to that person until the token expires: what the command printed or left
- * behind is still there for the agent's next tool call.
+ * nothing is pinned. Credential-bearing commands require native process-tree
+ * cleanup. The sandbox is reserved until each exact command's cleanup is proven,
+ * with token expiry as the fallback for missing or failed proof. This relies on
+ * the installed CLI's no-credential-persistence contract; process extinction is
+ * not a claim that arbitrary shell writes to shared files have been erased.
  *
  * Matrix-bound voice consults use the Matrix entitlement owner's admitted
  * speaker/run identity, not synthetic message arrivals or a session-wide flag.
@@ -353,8 +362,34 @@ export function registerAdminDelegation(
   };
   api.agent.events.registerAgentEventSubscription({
     id: "admin-delegation-turn-retirement",
-    streams: ["lifecycle"],
+    streams: ["lifecycle", "sandbox_process"],
     handle(event) {
+      if (event.stream === "sandbox_process" && event.data.phase === "cleanup-complete") {
+        const callId = event.data.toolCallId;
+        if (typeof callId !== "string") {
+          return;
+        }
+        const key = JSON.stringify([event.runId, callId]);
+        for (const [sandbox, holder] of custody) {
+          const call = holder.calls.get(key);
+          if (
+            !call ||
+            event.data.sessionKey !== call.sessionKey ||
+            event.data.agentId !== call.agentId
+          ) {
+            continue;
+          }
+          holder.calls.delete(key);
+          holder.expiresAt = Math.max(
+            holder.untrackedUntil,
+            ...[...holder.calls.values()].map((pending) => pending.expiresAt),
+          );
+          if (holder.expiresAt <= Date.now()) {
+            custody.delete(sandbox);
+          }
+        }
+        return;
+      }
       if (
         event.data.executionSettled === true &&
         (event.data.phase === "end" || event.data.phase === "error")
@@ -573,7 +608,7 @@ export function registerAdminDelegation(
 
   /**
    * Why this tool call may not reach the sandbox now, or nothing. While a
-   * token issued into a sandbox is alive, only runs proven to be its owner's
+   * token issued into a sandbox has unclosed execution custody, only runs proven to be its owner's
    * may use the tools that reach that sandbox: anyone else's run, and a run
    * nobody proved (cron, heartbeat, an approved action), waits it out.
    */
@@ -751,9 +786,23 @@ export function registerAdminDelegation(
           diagnose(ctx, "mint-held");
           return blocked;
         }
-        // From here the token is in the sandbox: it is this person's until it expires.
-        const heldUntil = Math.max(custody.get(sandbox)?.expiresAt ?? 0, expiresAt * 1000);
-        remember(custody, sandbox, { sender, expiresAt: Math.min(heldUntil, now + MAX_HOLD_MS) });
+        // Expiry is a fallback, not a minimum hold: native descendant cleanup
+        // releases only this exact call, never another still-running command.
+        const holder = custody.get(sandbox) ?? {
+          sender,
+          expiresAt: 0,
+          untrackedUntil: 0,
+          calls: new Map(),
+        };
+        const expiry = Math.min(expiresAt * 1000, now + MAX_HOLD_MS);
+        const key = ctx.runId && ctx.toolCallId && JSON.stringify([ctx.runId, ctx.toolCallId]);
+        if (key && !holder.calls.has(key) && holder.calls.size < MAX_TRACKED) {
+          holder.calls.set(key, { agentId, sessionKey: ctx.sessionKey!, expiresAt: expiry });
+        } else {
+          holder.untrackedUntil = Math.max(holder.untrackedUntil, expiry);
+        }
+        holder.expiresAt = Math.max(holder.expiresAt, expiry);
+        remember(custody, sandbox, holder);
         diagnose(ctx, "mint-issued");
         return { token, baseUrl };
       },

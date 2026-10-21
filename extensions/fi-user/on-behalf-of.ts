@@ -130,6 +130,8 @@ export function withOnBehalfOfEnv(
     // host run it in the sandbox or refuse it; it never falls back.
     next.host = "sandbox";
     next.elevated = false;
+    // Credential custody ends only after the native owner has reaped descendants.
+    next.closeProcessTree = true;
   }
   return next;
 }

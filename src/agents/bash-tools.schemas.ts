@@ -51,6 +51,11 @@ export const execSchema = Type.Object({
       description: "Background now; timeoutSeconds applies.",
     }),
   ),
+  closeProcessTree: Type.Optional(
+    Type.Boolean({
+      description: "Sandbox only: reap command descendants before reporting final completion.",
+    }),
+  ),
   timeoutSeconds: Type.Optional(
     Type.Number({
       description: "Process lifetime in seconds; 0 disables.",
