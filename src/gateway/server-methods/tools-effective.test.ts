@@ -410,7 +410,11 @@ describe("tools.effective handler", () => {
             conversationCapabilityProfile: params.conversationCapabilityProfile,
             warn: () => {},
           });
-          const inventory = makeCoreInventory({ id: "ask_user", label: "Ask", description: "Question" });
+          const inventory = makeCoreInventory({
+            id: "ask_user",
+            label: "Ask",
+            description: "Question",
+          });
           if (tools.length === 0) inventory.groups = [];
           return inventory;
         },
@@ -419,8 +423,11 @@ describe("tools.effective handler", () => {
       await invoke();
       expectResponsesOk(respond);
       const payload = firstRespondCall(respond)?.[1] as ToolsEffectivePayload;
-      expect(payload.groups?.flatMap(group => group.tools ?? []).some(tool => tool.id === "ask_user"))
-        .toBe(allowed);
+      expect(
+        payload.groups
+          ?.flatMap((group) => group.tools ?? [])
+          .some((tool) => tool.id === "ask_user"),
+      ).toBe(allowed);
       // Only the handler's canonical read is used; classification must not
       // fall back to a second session lookup or start a sandbox/MCP runtime.
       expect(runtimeMocks.loadSessionEntry).toHaveBeenCalledTimes(1);
@@ -445,10 +452,12 @@ describe("tools.effective handler", () => {
     });
     await request.invoke();
     expect(runtimeMocks.resolveEffectiveToolInventory).toHaveBeenCalledTimes(2);
-    const first = resolveEffectiveToolInventoryArg(0)?.conversationCapabilityProfile as
-      Parameters<typeof applyFinalEffectiveToolPolicy>[0]["conversationCapabilityProfile"];
-    const second = resolveEffectiveToolInventoryArg(1)?.conversationCapabilityProfile as
-      Parameters<typeof applyFinalEffectiveToolPolicy>[0]["conversationCapabilityProfile"];
+    const first = resolveEffectiveToolInventoryArg(0)?.conversationCapabilityProfile as Parameters<
+      typeof applyFinalEffectiveToolPolicy
+    >[0]["conversationCapabilityProfile"];
+    const second = resolveEffectiveToolInventoryArg(1)?.conversationCapabilityProfile as Parameters<
+      typeof applyFinalEffectiveToolPolicy
+    >[0]["conversationCapabilityProfile"];
     expect(first?.policy.sandboxPolicy?.allow).not.toContain("ask_user");
     expect(second?.policy.sandboxPolicy?.allow).toContain("ask_user");
   });
