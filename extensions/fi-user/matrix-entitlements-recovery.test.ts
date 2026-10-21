@@ -32,7 +32,9 @@ function fixture() {
         channel: { runtimeContexts: { register: vi.fn() } },
       } as unknown as OpenClawPluginApi["runtime"],
       on(name, handler) {
-        if (name === "before_agent_reply") admission = handler as typeof admission;
+        if (name === "before_agent_reply") {
+          admission = handler as typeof admission;
+        }
       },
       registerAgentEventSubscription: (entry) => {
         subscription = entry;
@@ -119,20 +121,27 @@ describe("Matrix authorization recovery at registered admission", () => {
     "rechecks the identical genuine event once after %s",
     async (kind) => {
       const f = fixture();
-      if (kind === "503") fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
-      else
+      if (kind === "503") {
+        fetchMock.mockResolvedValueOnce(new Response(null, { status: 503 }));
+      } else {
         fetchMock.mockRejectedValueOnce(
           new TypeError("fetch failed", {
             cause: Object.assign(new Error("connection refused"), { code: "ECONNREFUSED" }),
           }),
         );
+      }
       fetchMock.mockResolvedValueOnce(allow());
       const pending = f.admit();
       await vi.advanceTimersByTimeAsync(3_000);
       expect(await pending).toBeUndefined();
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(fetchMock.mock.calls[1]).toEqual(fetchMock.mock.calls[0]);
-      expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body))).toEqual({
+      const body = fetchMock.mock.calls[1]?.[1]?.body;
+      expect(typeof body).toBe("string");
+      if (typeof body !== "string") {
+        throw new Error("Expected the original JSON authorization request");
+      }
+      expect(JSON.parse(body)).toEqual({
         roomId: "!room:matrix.example",
         agentId: "cellect-fi-user",
         eventId: "$human-event",
@@ -177,9 +186,13 @@ describe("Matrix authorization recovery at registered admission", () => {
     fetchMock.mockImplementationOnce(
       (_url, init) =>
         new Promise((_resolve, reject) => {
-          init?.signal?.addEventListener("abort", () => reject(init.signal?.reason), {
-            once: true,
-          });
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("timed out", "TimeoutError")),
+            {
+              once: true,
+            },
+          );
         }),
     );
     const pending = f.admit();
@@ -259,7 +272,12 @@ describe("Matrix authorization recovery at registered admission", () => {
     expect(await pending).toMatchObject({ handled: true });
     expect(f.tool()).toMatchObject({ block: true });
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    expect(JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body)).eventId).toBe("$other-event");
+    const body = fetchMock.mock.calls[1]?.[1]?.body;
+    expect(typeof body).toBe("string");
+    if (typeof body !== "string") {
+      throw new Error("Expected the replacement JSON authorization request");
+    }
+    expect(JSON.parse(body).eventId).toBe("$other-event");
   });
 
   it("silently consumes the heartbeat producer's orphan exec wake, never granting tools", async () => {

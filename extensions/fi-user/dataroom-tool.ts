@@ -10,7 +10,7 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
-import { roomPlacementPage } from "./dataroom-placement.js";
+import { ROOM_READ_FIELDS, roomReadView } from "./dataroom-placement.js";
 import {
   delegatedJson,
   exchange,
@@ -84,18 +84,7 @@ const DataRoomSchema = Type.Object(
   {
     action: stringEnum(DATAROOM_ACTIONS),
     roomId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
-    view: Type.Optional(
-      stringEnum(["full", "placement"] as const, {
-        description:
-          "For get: placement returns a bounded inventory; follow nextCursor until complete before choosing a section. Full preserves the complete room response.",
-      }),
-    ),
-    cursor: Type.Optional(
-      Type.String({
-        maxLength: 512,
-        description: "For get view=placement: nextCursor from the previous page of this same room.",
-      }),
-    ),
+    ...ROOM_READ_FIELDS,
     documentId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     documentIds: Type.Optional(
       Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 50 }),
@@ -590,20 +579,7 @@ export function createDataRoomTool(
       }
       if (input.action === "get") {
         const room = await snapshot(ctx, roomId);
-        if (input.view === "placement") {
-          return jsonResult(roomPlacementPage(decodeURIComponent(roomId), room, input.cursor));
-        }
-        if (input.cursor) throw new Error("cursor requires get with view=placement");
-        return jsonResult(
-          input.documentId
-            ? {
-                roomVersion: roomVersion(room),
-                document:
-                  room.documents?.find((document) => document.documentId === input.documentId) ??
-                  null,
-              }
-            : room,
-        );
+        return jsonResult(roomReadView(decodeURIComponent(roomId), room, input));
       }
       if (input.action === "tasks") {
         const tasks = await roomTasks(ctx, roomId);

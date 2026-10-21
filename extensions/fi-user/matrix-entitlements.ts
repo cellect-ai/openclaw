@@ -91,7 +91,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     turns.delete(runId);
   };
   const retireAll = () => {
-    for (const runId of turns.keys()) retireTurn(runId);
+    for (const runId of turns.keys()) {
+      retireTurn(runId);
+    }
   };
   // agent_end closes one model attempt, not the admitted turn: recovery and
   // fallback can still execute tools under the same run. The outer lifecycle
@@ -137,7 +139,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     const config = configFromRuntime(api);
     const connection = matrixConnection(config, turn.accountId);
     const token = connection && brokerToken(connection);
-    if (!config.tenantOrgId || !connection || !token) throw new Error(UNAVAILABLE);
+    if (!config.tenantOrgId || !connection || !token) {
+      throw new Error(UNAVAILABLE);
+    }
     // This POST only verifies current grants. Reuse the exact source and one
     // total budget; never retry a tool/business effect or refresh the deadline.
     const signal = AbortSignal.any([
@@ -215,11 +219,14 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
             ? turn.eventId !== context.currentMessageId
             : context.currentMessageId !== undefined ||
               sessionThreadId(turn.sessionKey) !== turn.threadRootEventId)
-        )
+        ) {
           return undefined;
+        }
         const assertCurrent = () => {
           context.assertInvocationCurrent?.();
-          if (turns.get(runId) !== turn || !turn.admitted) throw new Error(UNAVAILABLE);
+          if (turns.get(runId) !== turn || !turn.admitted) {
+            throw new Error(UNAVAILABLE);
+          }
         };
         assertCurrent();
         return Object.freeze({
@@ -231,10 +238,13 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           ) {
             assertCurrent();
             abortSignal?.throwIfAborted();
-            if (![true, "own-accounts", "tenant-domain-admin"].includes(policy))
+            if (![true, "own-accounts", "tenant-domain-admin"].includes(policy)) {
               throw new Error(UNAVAILABLE);
+            }
             const response = await requestAuthorization(turn, policy, abortSignal);
-            if (!response.ok) throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+            if (!response.ok) {
+              throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+            }
             const result: unknown = await response.json();
             assertCurrent();
             abortSignal?.throwIfAborted();
@@ -247,8 +257,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
               result.agentId !== turn.agentId ||
               !("orgId" in result) ||
               result.orgId !== configFromRuntime(api).tenantOrgId
-            )
+            ) {
               throw new Error(UNAVAILABLE);
+            }
             return result;
           },
         });
@@ -385,7 +396,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         // The heartbeat producer retains the completed command result, but
         // supplies no live human/event custody for a new Matrix turn. Do not
         // infer a principal from session history or report a human denial.
-        if (context.runId) retireTurn(context.runId);
+        if (context.runId) {
+          retireTurn(context.runId);
+        }
         logEntitlements({
           phase: "admission",
           agentId: context.agentId ?? null,

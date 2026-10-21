@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { roomPlacementPage } from "./dataroom-placement.js";
+import { roomPlacementPage, roomReadView } from "./dataroom-placement.js";
 
 describe("bounded requester placement inventory", () => {
   const snapshot = {
@@ -57,5 +57,23 @@ describe("bounded requester placement inventory", () => {
     expect(page.documents[0]).toMatchObject({ detailsTruncated: true });
     expect(page.documents[0]?.displayName).toHaveLength(300);
     expect(() => roomPlacementPage("room-1", { documents: [] })).toThrow(/incomplete/);
+  });
+
+  it("preserves full reads and exact detail while limiting cursors to placement", () => {
+    expect(roomReadView("room-1", snapshot, {})).toBe(snapshot);
+    expect(roomReadView("room-1", snapshot, { view: "placement" })).toEqual(
+      roomPlacementPage("room-1", snapshot),
+    );
+    expect(roomReadView("room-1", snapshot, { documentId: "doc-79" })).toEqual({
+      roomVersion: 8,
+      document: snapshot.documents.at(-1),
+    });
+    expect(roomReadView("room-1", snapshot, { documentId: "missing" })).toEqual({
+      roomVersion: 8,
+      document: null,
+    });
+    expect(() => roomReadView("room-1", snapshot, { cursor: "rp1_invalid" })).toThrow(
+      /view=placement/,
+    );
   });
 });
