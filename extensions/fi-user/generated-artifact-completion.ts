@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { resolveReplyPublication } from "openclaw/plugin-sdk/reply-runtime";
+import { matchesArtifactReceipt } from "./file-upload-custody.js";
 
 type RunObservation = {
   started: true;
@@ -89,7 +90,9 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
     const isFiling =
       event.toolName === "fi_user_dataroom" &&
       artifactId !== undefined &&
-      (action === "upload_generated_artifact" || action === "upload_to_project_library");
+      (action === "upload_file" ||
+        action === "upload_generated_artifact" ||
+        action === "upload_to_project_library");
     if (!isDelivery && !isFiling) {
       return;
     }
@@ -166,7 +169,10 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               details.artifactId === artifactId &&
               string(details.messageId) !== undefined;
             const receipt = record(details?.filingReceipt);
-            const provenance = record(receipt?.provenance);
+            const attribution = record(
+              receipt?.existingContent ? receipt.requestedArtifact : receipt?.provenance,
+            );
+            const sessionId = string(context.sessionId);
             const documentId =
               string(details?.documentId) ?? string(record(details?.document)?.documentId);
             const filed =
@@ -175,10 +181,17 @@ export function registerGeneratedArtifactCompletion(api: OpenClawPluginApi) {
               documentId !== undefined &&
               receipt?.documentId === documentId &&
               validHash(receipt?.sha256) &&
-              provenance?.source === "generated_artifact" &&
-              provenance.artifactId === artifactId &&
-              provenance.sha256 === receipt.sha256 &&
-              provenance.sessionId === next.pending[artifactId].sessionId &&
+              sessionId !== undefined &&
+              (next.pending[artifactId].sessionId === undefined ||
+                next.pending[artifactId].sessionId === sessionId) &&
+              (attribution?.source === "generated_artifact" ||
+                attribution?.source === "downloaded_file") &&
+              matchesArtifactReceipt(receipt, {
+                source: attribution.source,
+                artifactId,
+                sha256: receipt.sha256,
+                sessionId,
+              }) &&
               (!next.pending[artifactId].sha256 ||
                 next.pending[artifactId].sha256 === receipt.sha256);
             if (delivered || filed) {

@@ -55,7 +55,7 @@ async function after(
   params: Record<string, unknown>,
   details?: unknown,
   error?: string,
-  options: { session?: string; run?: string; tool?: string } = {},
+  options: { session?: string; run?: string; tool?: string; sessionId?: string | null } = {},
 ) {
   return hooks.get("after_tool_call")!(
     {
@@ -67,7 +67,7 @@ async function after(
     } as never,
     {
       sessionKey: options.session ?? sessionKey,
-      sessionId: "session-fixture",
+      sessionId: options.sessionId === null ? undefined : (options.sessionId ?? "session-fixture"),
       runId: options.run ?? runId,
       toolName: options.tool ?? "fi_user_deliver_file",
     } as never,
@@ -492,6 +492,167 @@ describe("registered generated-artifact completion hooks", () => {
       { tool: "fi_user_dataroom" },
     );
     expect(await final()).toBeUndefined();
+  });
+  it.each([
+    ["generated_artifact", "upload_file", true, false],
+    ["generated_artifact", "upload_file", false, false],
+    ["downloaded_file", "upload_file", false, false],
+    ["downloaded_file", "upload_to_project_library", false, false],
+    ["downloaded_file", "upload_generated_artifact", false, false],
+    ["generated_artifact", "upload_file", true, true],
+    ["downloaded_file", "upload_file", false, true],
+  ])(
+    "accepts verified %s via %s (registered=%s, existing=%s)",
+    async (source, action, registered, existingContent) => {
+      if (registered) {
+        await register();
+      }
+      const attribution = { source, artifactId, sha256, sessionId: "session-fixture" };
+      await after(
+        { action, artifactId },
+        {
+          document: { documentId: "doc-1" },
+          filingReceipt: {
+            documentId: "doc-1",
+            sha256,
+            existingContent,
+            provenance: existingContent ? { source: "slack" } : attribution,
+            ...(existingContent ? { requestedArtifact: attribution } : {}),
+          },
+        },
+        undefined,
+        { tool: "fi_user_dataroom" },
+      );
+      expect(await final()).toBeUndefined();
+    },
+  );
+  it.each([
+    { sessionId: "other-session" },
+    { artifactId: "other-artifact" },
+    { sha256: "b".repeat(64) },
+    { source: "slack" },
+  ])("refuses a downloaded upload receipt with mismatched attribution %j", async (mismatch) => {
+    await after(
+      { action: "upload_file", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: {
+            source: "downloaded_file",
+            artifactId,
+            sha256,
+            sessionId: "session-fixture",
+            ...mismatch,
+          },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it.each<{
+    documentId?: string;
+    error?: string;
+    sessionId?: null;
+    existingContent?: boolean;
+  }>([
+    { documentId: "other-document" },
+    { error: "Destination readback failed" },
+    { sessionId: null },
+    { existingContent: true },
+  ])("keeps an unverified downloaded upload incomplete %j", async (failure) => {
+    await after(
+      { action: "upload_file", artifactId },
+      {
+        documentId: failure.documentId ?? "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          existingContent: failure.existingContent,
+          provenance: {
+            source: "downloaded_file",
+            artifactId,
+            sha256,
+            sessionId: "session-fixture",
+          },
+        },
+      },
+      failure.error,
+      { tool: "fi_user_dataroom", sessionId: failure.sessionId },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it("retains a registered byte mismatch despite a self-consistent filing receipt", async () => {
+    await register();
+    const differentHash = "b".repeat(64);
+    await after(
+      { action: "upload_file", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256: differentHash,
+          provenance: {
+            source: "generated_artifact",
+            artifactId,
+            sha256: differentHash,
+            sessionId: "session-fixture",
+          },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it("does not replace a registered session with a later filing context", async () => {
+    await register();
+    await after(
+      { action: "upload_file", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          provenance: {
+            source: "generated_artifact",
+            artifactId,
+            sha256,
+            sessionId: "other-session",
+          },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom", sessionId: "other-session" },
+    );
+    expect(await final()).toEqual(incomplete());
+  });
+  it("does not substitute original provenance for mismatched requested content evidence", async () => {
+    const attribution = {
+      source: "downloaded_file",
+      artifactId,
+      sha256,
+      sessionId: "session-fixture",
+    };
+    await after(
+      { action: "upload_file", artifactId },
+      {
+        documentId: "doc-1",
+        filingReceipt: {
+          documentId: "doc-1",
+          sha256,
+          existingContent: true,
+          provenance: attribution,
+          requestedArtifact: { ...attribution, artifactId: "other-artifact" },
+        },
+      },
+      undefined,
+      { tool: "fi_user_dataroom" },
+    );
+    expect(await final()).toEqual(incomplete());
   });
   it("does not accept filing claims with missing or mismatched byte-bound receipts", async () => {
     await register();
