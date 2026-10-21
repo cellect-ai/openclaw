@@ -603,6 +603,54 @@ describe("fi_user_dataroom", () => {
     tasks: [{ id: "task-1", documentIds: ["doc-0"] }],
   };
 
+  it("continues a large authorized placement read and retrieves exact details without an admin action", async () => {
+    const large = {
+      ...room,
+      documents: Array.from({ length: 90 }, (_, i) => ({
+        documentId: `doc-${i}`,
+        displayName: `Document ${i}`,
+        roomCategory: i === 89 ? "Lorenzo KYC" : "Overview",
+        orderKey: `01.${i}`,
+        visibility: "internal",
+      })),
+      tasks: [{ id: "pfs", title: "PFS", documentIds: ["doc-89"], status: "open" }],
+    };
+    routes.push((url, init) =>
+      url.pathname === "/api/shape/datarooms/room-1" && (init.method ?? "GET") === "GET"
+        ? json(large)
+        : undefined,
+    );
+    const tool = plugin().tool("fi_user_dataroom", context());
+    let result = await tool.execute("placement", {
+      action: "get",
+      roomId: "room-1",
+      view: "placement",
+    });
+    let page = result.details as { nextCursor?: string; complete: boolean; tasks: unknown[] };
+    expect(page.complete).toBe(false);
+    while (page.nextCursor) {
+      result = await tool.execute("placement", {
+        action: "get",
+        roomId: "room-1",
+        view: "placement",
+        cursor: page.nextCursor,
+      });
+      page = result.details as typeof page;
+    }
+    expect(page.complete).toBe(true);
+    expect(page.tasks).toContainEqual(large.tasks[0]);
+    const exact = await tool.execute("detail", {
+      action: "get",
+      roomId: "room-1",
+      documentId: "doc-89",
+    });
+    expect(exact.details).toMatchObject({ document: large.documents[89] });
+    expect(calls.filter((call) => !call.url.endsWith("/openclaw-user-delegation"))).toSatisfy(
+      (values: typeof calls) => values.every((call) => (call.init.method ?? "GET") === "GET"),
+    );
+    expect(mocks.subagentRun).not.toHaveBeenCalled();
+  });
+
   it("offers only the reviewed actions: no generic pass-through, members, recipients or public links", () => {
     const schema = plugin().tool("fi_user_dataroom", context()).parameters as {
       properties: { action: { enum?: string[]; anyOf?: Array<{ const: string }> } };

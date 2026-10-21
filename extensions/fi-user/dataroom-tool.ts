@@ -10,6 +10,7 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
+import { roomPlacementPage } from "./dataroom-placement.js";
 import {
   delegatedJson,
   exchange,
@@ -83,6 +84,18 @@ const DataRoomSchema = Type.Object(
   {
     action: stringEnum(DATAROOM_ACTIONS),
     roomId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    view: Type.Optional(
+      stringEnum(["full", "placement"] as const, {
+        description:
+          "For get: placement returns a bounded inventory; follow nextCursor until complete before choosing a section. Full preserves the complete room response.",
+      }),
+    ),
+    cursor: Type.Optional(
+      Type.String({
+        maxLength: 512,
+        description: "For get view=placement: nextCursor from the previous page of this same room.",
+      }),
+    ),
     documentId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     documentIds: Type.Optional(
       Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 1, maxItems: 50 }),
@@ -136,6 +149,8 @@ const DataRoomSchema = Type.Object(
 type DataRoomInput = {
   action: DataRoomAction;
   roomId?: string;
+  view?: "full" | "placement";
+  cursor?: string;
   documentId?: string;
   documentIds?: string[];
   taskId?: string;
@@ -574,10 +589,27 @@ export function createDataRoomTool(
         return jsonResult(await uploadBytes(ctx, roomId, input, upload.file, upload.provenance));
       }
       if (input.action === "get") {
-        return jsonResult(await snapshot(ctx, roomId));
+        const room = await snapshot(ctx, roomId);
+        if (input.view === "placement") {
+          return jsonResult(roomPlacementPage(decodeURIComponent(roomId), room, input.cursor));
+        }
+        if (input.cursor) throw new Error("cursor requires get with view=placement");
+        return jsonResult(
+          input.documentId
+            ? {
+                roomVersion: roomVersion(room),
+                document:
+                  room.documents?.find((document) => document.documentId === input.documentId) ??
+                  null,
+              }
+            : room,
+        );
       }
       if (input.action === "tasks") {
-        return jsonResult({ tasks: await roomTasks(ctx, roomId) });
+        const tasks = await roomTasks(ctx, roomId);
+        return jsonResult({
+          tasks: input.taskId ? tasks.filter((task) => task.id === input.taskId) : tasks,
+        });
       }
       if (input.action === "add_document") {
         const documentId = pathSegment(input.documentId, "documentId");
