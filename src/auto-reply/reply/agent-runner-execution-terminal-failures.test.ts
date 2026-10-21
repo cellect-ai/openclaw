@@ -64,6 +64,28 @@ describe("executeAgentTurn: terminal failures", () => {
     expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
   });
 
+  it.each(["timeout", "name-only stop spoof"] as const)("still reports a real %s as failure", async (kind) => {
+    if (kind === "timeout") {
+      state.runEmbeddedAgentMock.mockResolvedValueOnce({
+        payloads: [],
+        meta: { aborted: true, stopReason: "timeout", timeoutPhase: "provider" },
+      });
+    } else {
+      state.runEmbeddedAgentMock.mockRejectedValueOnce(
+        Object.assign(new Error("provider failed"), { name: "ConversationRunStopReason" }),
+      );
+    }
+    const caller = new AbortController();
+    const { executeAgentTurn } = await import("./agent-runner-execution.js");
+    const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams(),
+      sessionCtx: { Provider: "matrix", MessageSid: "owned-failure-message" },
+      opts: { abortSignal: caller.signal },
+    });
+    expect(caller.signal.aborted).toBe(false);
+    expect(result.outcome.kind).toBe("rejected");
+  });
+
   it("surfaces billing guidance for mixed-cause fallback exhaustion", async () => {
     state.runWithModelFallbackMock.mockRejectedValueOnce(
       createTestFallbackSummaryError({
