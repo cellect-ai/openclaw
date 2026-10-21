@@ -1332,7 +1332,7 @@ describe("talk realtime gateway relay", () => {
     }
   });
 
-  it("logs relay transcript append failures", async () => {
+  it("logs transcript append failures and rejects an incomplete close", async () => {
     const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
     const tempDir = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-relay-voice-failure-")),
@@ -1373,16 +1373,16 @@ describe("talk realtime gateway relay", () => {
       expect(warn).toHaveBeenCalledExactlyOnceWith(
         expect.stringContaining("realtime relay transcript append failed"),
       );
-      void stopTalkRealtimeRelaySession({
-        relaySessionId: session.relaySessionId,
-        connId: "conn-voice-failure",
-      });
-      await vi.waitFor(() =>
-        expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)?.status).toBe(
-          "closed",
-        ),
+      await expect(
+        stopTalkRealtimeRelaySession({
+          relaySessionId: session.relaySessionId,
+          connId: "conn-voice-failure",
+        }),
+      ).rejects.toThrow("agent session not found (agent:main:missing)");
+      // A rejected transcript prefix cannot be recorded as successfully closed.
+      expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)?.status).toBe(
+        "open",
       );
-      expect(warn).toHaveBeenCalledTimes(1);
     } finally {
       await cleanupIsolatedRelayState(tempDir);
       envSnapshot.restore();
