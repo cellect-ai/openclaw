@@ -93,7 +93,6 @@ try {
   const invocation = gatewayInvocation(program);
   if (invocation) {
     let interrupted;
-    let child;
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP", "SIGQUIT"]) {
       process.on(signal, () => {
         interrupted ??= signal;
@@ -101,7 +100,7 @@ try {
         child?.kill(signal === "SIGHUP" || signal === "SIGQUIT" ? "SIGTERM" : signal);
       });
     }
-    child = spawn(
+    const child = spawn(
       process.execPath,
       [
         path.join(root, "openclaw.mjs"),
@@ -116,11 +115,11 @@ try {
     child.on("error", (error) => {
       failure = error;
     });
-    const outcome = await new Promise((resolve) =>
-      child.once("close", (code, signal) => resolve({ code, signal })),
-    );
+    const outcome = await new Promise((resolve) => {
+      child.once("close", (code, signal) => resolve({ code, signal }));
+    });
     if (failure) {
-      throw failure;
+      throw failure instanceof Error ? failure : new Error(String(failure));
     }
     const signal = interrupted ?? outcome.signal;
     if (signal || outcome.code !== 0) {
