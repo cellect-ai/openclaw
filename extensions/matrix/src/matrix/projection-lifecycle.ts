@@ -1,7 +1,16 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
 import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
+import { resolveAgentRoute, parseAgentSessionKey } from "openclaw/plugin-sdk/routing";
 import type { CoreConfig } from "../types.js";
+import { resolveMatrixAccountConfig } from "./account-config.js";
+import { listMatrixAccountIds } from "./accounts.js";
+import { resolveMatrixInboundRoute } from "./monitor/route.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
+import {
+  listAllBindings,
+  getMatrixThreadBindingManager,
+  toSessionBindingRecord,
+} from "./thread-bindings-shared.js";
 
 type LifecycleHandle = ReturnType<
   OpenClawPluginApi["runtime"]["events"]["registerConversationLifecycleTransport"]
@@ -21,37 +30,97 @@ export function noteMatrixProjectionFinalResult(
 export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
   const handle = api.runtime.events.registerConversationLifecycleTransport({
     transportId: "matrix-conversation-v2",
-    resolveBindings: (owner) =>
-      getSessionBindingService()
-        .listBySession(owner.sessionKey)
-        .flatMap((binding) => {
-          const metadata = binding.metadata;
-          const roomId = binding.conversation.parentConversationId;
-          if (
-            binding.conversation.channel !== "matrix" ||
-            !roomId ||
-            typeof metadata?.environment !== "string" ||
-            !metadata.environment ||
-            typeof metadata.projectedConversationId !== "string" ||
-            !metadata.projectedConversationId ||
-            // listBySession already selected this Slack/Matrix owner. A
-            // source-authorized bind can omit agentId; skip only a mismatch.
-            (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
+    resolveBindings: (owner) => {
+      const direct = getSessionBindingService().listBySession(owner.sessionKey);
+      // Native rooms keep one durable conversation identity. A seated bot uses
+      // its own execution session/account, but publishes under that same identity.
+      // Derive participants from the real route so restart needs no second store.
+      const cfg = (api.runtime.config.current?.() ?? api.config) as CoreConfig;
+      const rows = listAllBindings();
+      const native = rows.flatMap((row) => {
+        const roomId = row.parentConversationId;
+        if (
+          !roomId ||
+          row.boundBy !== "session-projection" ||
+          row.externalSource ||
+          row.sourceReplyAuthorization ||
+          !row.conversationId.startsWith("$") ||
+          !parseAgentSessionKey(row.targetSessionKey)?.rest.startsWith("matrix:") ||
+          // Native bootstrap admits exactly one binding per room, across accounts.
+          rows.some(
+            (other) =>
+              other !== row &&
+              (other.parentConversationId === roomId || other.conversationId === roomId),
           )
-            return [];
-          return [
-            {
-              environment: metadata.environment,
-              conversationId: metadata.projectedConversationId,
-              roomId,
-              bindingId: binding.bindingId,
-              accountId: binding.conversation.accountId,
-              threadRootEventId: binding.conversation.conversationId,
-              sessionKey: owner.sessionKey,
-              agentId: owner.agentId,
-            },
-          ];
-        }),
+        )
+          return [];
+        const accounts = listMatrixAccountIds(cfg).filter((accountId) => {
+          if (
+            cfg.channels?.matrix?.enabled === false ||
+            resolveMatrixAccountConfig({ cfg, accountId }).enabled === false ||
+            !getMatrixThreadBindingManager(accountId)
+          )
+            return false;
+          const resolved = resolveMatrixInboundRoute({
+            cfg,
+            accountId,
+            roomId,
+            senderId: "",
+            isDirectMessage: false,
+            threadId: row.conversationId,
+            resolveAgentRoute,
+          });
+          return (
+            resolved.bindingOwnerAvailable &&
+            resolved.route.matchedBy !== "default" &&
+            !resolved.pluginId &&
+            !resolved.configuredBinding &&
+            !resolved.runtimeBindingId &&
+            resolved.route.sessionKey === owner.sessionKey &&
+            resolved.route.agentId === owner.agentId
+          );
+        });
+        const accountId = accounts[0];
+        if (accounts.length !== 1 || !accountId) return [];
+        const binding = toSessionBindingRecord(row, { idleTimeoutMs: 0, maxAgeMs: 0 });
+        return [
+          {
+            ...binding,
+            targetSessionKey: owner.sessionKey,
+            conversation: { ...binding.conversation, accountId },
+            metadata: { ...binding.metadata, agentId: owner.agentId },
+          },
+        ];
+      });
+      return [...direct, ...native].flatMap((binding) => {
+        const metadata = binding.metadata;
+        const roomId = binding.conversation.parentConversationId;
+        if (
+          binding.conversation.channel !== "matrix" ||
+          !roomId ||
+          typeof metadata?.environment !== "string" ||
+          !metadata.environment ||
+          typeof metadata.projectedConversationId !== "string" ||
+          !metadata.projectedConversationId ||
+          // listBySession already selected this Slack/Matrix owner. A
+          // source-authorized bind can omit agentId; skip only a mismatch.
+          (Boolean(metadata.agentId) && metadata.agentId !== owner.agentId)
+        )
+          return [];
+        return [
+          {
+            environment: metadata.environment,
+            conversationId: metadata.projectedConversationId,
+            roomId,
+            bindingId: binding.bindingId,
+            accountId: binding.conversation.accountId,
+            threadRootEventId: binding.conversation.conversationId,
+            sessionKey: owner.sessionKey,
+            agentId: owner.agentId,
+          },
+        ];
+      });
+    },
     publish: async (binding, event, transactionId) => {
       await withResolvedMatrixSendClient(
         {
