@@ -755,7 +755,13 @@ export async function runExecProcess({
         throw new AggregateError(errors, errors.map(formatErrorMessage).join("\n"));
       }
       const owner = opts.executionOwner;
-      if (opts.closeProcessTree && owner?.runId && owner.sessionKey && owner.agentId) {
+      if (
+        opts.closeProcessTree &&
+        sandboxTermination !== undefined &&
+        owner?.runId &&
+        owner.sessionKey &&
+        owner.agentId
+      ) {
         // Native cleanup proof, not a model-visible tool result or a turn-end guess.
         // Emit before releasing this process's owner; background exits use this same path.
         emitAgentEvent({
