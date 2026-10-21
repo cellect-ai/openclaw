@@ -41,6 +41,29 @@ import { createReplyOperation } from "./reply-run-registry.js";
 const state = await setupAgentRunnerExecutionTestState();
 
 describe("executeAgentTurn: terminal failures", () => {
+  it.each([
+    { stopReason: "aborted", reason: "user" },
+    { stopReason: "restart", reason: "restart" },
+    { stopReason: "superseded", reason: "superseded" },
+  ] as const)("keeps a run-owned $stopReason result quiet while the caller stays live", async ({ stopReason, reason }) => {
+    const caller = new AbortController();
+    const { replyOperation, failMock } = createMockReplyOperation();
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "provider cancellation detail", isError: true }],
+      meta: { aborted: true, stopReason },
+    });
+    const { executeAgentTurn } = await import("./agent-runner-execution.js");
+    const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams({ replyOperation }),
+      sessionCtx: { Provider: "matrix", MessageSid: "owned-stop-message" },
+      opts: { abortSignal: caller.signal },
+    });
+    expect(caller.signal.aborted).toBe(false);
+    expect(result.outcome).toEqual({ kind: "aborted", reason });
+    expect(failMock).not.toHaveBeenCalled();
+    expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
+  });
+
   it("surfaces billing guidance for mixed-cause fallback exhaustion", async () => {
     state.runWithModelFallbackMock.mockRejectedValueOnce(
       createTestFallbackSummaryError({
