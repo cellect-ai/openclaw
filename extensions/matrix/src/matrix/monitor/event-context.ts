@@ -75,25 +75,29 @@ export function createMatrixEventContextResolver(params: {
       const ids = new Set<string>();
       for (const block of presentation.blocks) {
         const buttons = asOptionalRecord(block)?.buttons;
-        if (!Array.isArray(buttons)) continue;
+        if (!Array.isArray(buttons)) {
+          continue;
+        }
         for (const button of buttons) {
           const action = asOptionalRecord(asOptionalRecord(button)?.action);
           if (
             action?.type === "question" &&
             typeof action.questionId === "string" &&
             /^ask_[a-f0-9]{32}$/.test(action.questionId)
-          )
+          ) {
             ids.add(action.questionId);
+          }
         }
       }
       const [questionId] = ids;
-      if (ids.size === 1 && questionId && event.sender)
+      if (ids.size === 1 && questionId && event.sender) {
         context.questionReply = {
           questionId,
           eventId: event.event_id,
           threadRootEventId: resolveMatrixThreadRootId(event.content),
           issuer: event.sender,
         };
+      }
     }
     if (isThread || !event.unsigned?.redacted_because) {
       const body = summarizeMatrixMessageContextEvent(event);

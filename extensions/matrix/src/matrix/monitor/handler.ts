@@ -411,7 +411,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         ? {
             ...ingressLifecycle,
             onDeferred: () => {
-              if (replayLifecycle?.onDeferred() === false) return false;
+              if (replayLifecycle?.onDeferred() === false) {
+                return false;
+              }
               ingressLifecycle.onDeferred();
               return undefined;
             },
@@ -639,7 +641,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         draftController.previewLifecycle.retainPreview();
       }
       runtime.error?.(`matrix handler failed: ${String(err)}`);
-      if (ingressLifecycle) throw err;
+      if (ingressLifecycle) {
+        throw err;
+      }
     } finally {
       // Stop the draft stream timer so partial drafts don't leak if the
       // model run throws or times out mid-stream.

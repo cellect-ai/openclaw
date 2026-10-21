@@ -109,7 +109,9 @@ describe("native Matrix participant lifecycle adapter", () => {
     mocks.send.mockReset().mockResolvedValue("$accepted");
     mocks.stoppedAccounts.clear();
     mocks.managers.clear();
-    for (const accountId of accounts) mocks.managers.set(accountId, {});
+    for (const accountId of accounts) {
+      mocks.managers.set(accountId, {});
+    }
     mocks.rows = [{ ...canonical }];
     cfg = {
       agents: { entries: { admin: {}, main: {}, other: {} } },
@@ -145,7 +147,9 @@ describe("native Matrix participant lifecycle adapter", () => {
       entries: async () => [...saved].map(([key, value]) => ({ key, value, createdAt: 1 })),
       lookup: async (key: string) => saved.get(key),
       registerIfAbsent: async (key: string, value: unknown) => {
-        if (saved.has(key)) return false;
+        if (saved.has(key)) {
+          return false;
+        }
         saved.set(key, value);
         return true;
       },
@@ -308,7 +312,9 @@ describe("native Matrix participant lifecycle adapter", () => {
       mocks.managers.set("main", {});
       if (scenario === "wrong-key") {
         const entry = [...saved][0];
-        if (!entry) throw new Error("Expected a persisted execution relationship");
+        if (!entry) {
+          throw new Error("Expected a persisted execution relationship");
+        }
         const [key, value] = entry;
         saved.delete(key);
         saved.set("incorrect-key", value);

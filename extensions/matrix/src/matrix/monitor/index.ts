@@ -310,7 +310,9 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     waitForTasks: async () => {
       await monitorTaskRunner.waitForIdle();
       await ingress?.stop();
-      if (ingressAdmissionError) throw ingressAdmissionError;
+      if (ingressAdmissionError) {
+        throw ingressAdmissionError;
+      }
     },
     cleanup: () => threadBindingManager?.stop(),
   };
@@ -328,7 +330,9 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     statusController.noteSyncCheckpoint(client.getSyncCheckpointStatus());
     client.setSyncPersistenceBarrier(async () => {
       await monitorTaskRunner.waitForIdle();
-      if (ingressAdmissionError) throw ingressAdmissionError;
+      if (ingressAdmissionError) {
+        throw ingressAdmissionError;
+      }
     });
     monitorLifecycleSignal = opts.abortSignal
       ? AbortSignal.any([opts.abortSignal, clientLease.abortSignal])
@@ -505,8 +509,9 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
             startupMs,
             startupGraceMs,
           })
-        )
+        ) {
           return;
+        }
         try {
           await monitorIngress.receive({ roomId, event });
         } catch (error) {

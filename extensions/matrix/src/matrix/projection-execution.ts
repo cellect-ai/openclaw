@@ -52,15 +52,21 @@ function key(execution: MatrixProjectionExecution) {
 }
 
 function same(left: unknown, right: MatrixProjectionExecution): boolean {
-  if (!left || typeof left !== "object" || Array.isArray(left)) return false;
+  if (!left || typeof left !== "object" || Array.isArray(left)) {
+    return false;
+  }
   const value = left as Record<string, unknown>;
   return Object.keys(right).every((field) => value[field] === right[field as keyof typeof right]);
 }
 
 function decode(value: unknown): MatrixProjectionExecution | undefined {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return undefined;
+  }
   const row = value as Record<string, unknown>;
-  if (row.version !== 1) return undefined;
+  if (row.version !== 1) {
+    return undefined;
+  }
   for (const field of [
     "environment",
     "conversationId",
@@ -73,8 +79,13 @@ function decode(value: unknown): MatrixProjectionExecution | undefined {
     "producerMxid",
   ]) {
     const text = row[field];
-    if (typeof text !== "string" || !text || text.length > 1024 || /[\u0000-\u001f]/.test(text)) {
+    if (typeof text !== "string" || !text || text.length > 1024) {
       return undefined;
+    }
+    for (const character of text) {
+      if (character.charCodeAt(0) < 0x20) {
+        return undefined;
+      }
     }
   }
   const execution = value as MatrixProjectionExecution;
@@ -95,7 +106,9 @@ export async function restoreMatrixProjectionExecutions(params: {
   accountId: string;
 }): Promise<void> {
   const manager = getMatrixThreadBindingManager(params.accountId);
-  if (!manager) return;
+  if (!manager) {
+    return;
+  }
   const [producer, joinedRooms, entries] = await Promise.all([
     params.client.getUserId(),
     params.client.getJoinedRooms(),
@@ -107,7 +120,9 @@ export async function restoreMatrixProjectionExecutions(params: {
       })
       .entries(),
   ]);
-  if (manager !== getMatrixThreadBindingManager(params.accountId)) return;
+  if (manager !== getMatrixThreadBindingManager(params.accountId)) {
+    return;
+  }
   const joined = new Set(joinedRooms);
   for (const entry of entries) {
     const execution = decode(entry.value);
@@ -127,7 +142,9 @@ function canonical(roomId: string) {
   const rows = listAllBindings().filter(
     (row) => row.parentConversationId === roomId || row.conversationId === roomId,
   );
-  if (!rows.length) return undefined;
+  if (!rows.length) {
+    return undefined;
+  }
   const row = rows[0];
   // Source-backed rooms keep their existing source owner; this relation cannot
   // transfer Slack/source custody to a seated native Matrix account.
@@ -142,8 +159,9 @@ function canonical(roomId: string) {
     !row.projectedConversationId ||
     row.parentConversationId !== roomId ||
     !row.conversationId.startsWith("$")
-  )
+  ) {
     return undefined;
+  }
   return row;
 }
 
@@ -161,8 +179,9 @@ function matchesCurrent(execution: MatrixProjectionExecution, cfg: CoreConfig) {
     !listMatrixAccountIds(cfg).includes(execution.accountId) ||
     !getMatrixThreadBindingManager(execution.accountId) ||
     (account.userId && account.userId !== execution.producerMxid)
-  )
+  ) {
     return false;
+  }
   const resolved = resolveMatrixInboundRoute({
     cfg,
     accountId: execution.accountId,
@@ -216,7 +235,9 @@ export async function admitMatrixProjectionExecution(params: {
   const manager = getMatrixThreadBindingManager(params.accountId);
   const environment = row.environment;
   const conversationId = row.projectedConversationId;
-  if (!environment || !conversationId) return;
+  if (!environment || !conversationId) {
+    return;
+  }
   const execution: MatrixProjectionExecution = {
     version: 1,
     environment,
@@ -289,7 +310,9 @@ export function resolveMatrixProjectionExecutions(
   cfg: CoreConfig,
 ): MatrixProjectionExecution[] {
   for (const [id, { execution, manager }] of admitted) {
-    if (manager !== getMatrixThreadBindingManager(execution.accountId)) admitted.delete(id);
+    if (manager !== getMatrixThreadBindingManager(execution.accountId)) {
+      admitted.delete(id);
+    }
   }
   const matching = [...admitted.values()].flatMap(({ execution, manager }) =>
     execution.agentId === owner.agentId &&
