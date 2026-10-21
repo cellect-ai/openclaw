@@ -109,6 +109,14 @@ describe("Matrix requester Slack identity capability", () => {
     vi.unstubAllGlobals();
   });
 
+  function requestBody(index: number): unknown {
+    const init = fetchMock.mock.calls[index]?.[1];
+    if (!init || typeof init.body !== "string") {
+      throw new Error(`Expected JSON request ${index + 1}`);
+    }
+    return JSON.parse(init.body);
+  }
+
   it.each(["text", "voice"] as const)(
     "rechecks the admitted %s sender through Fi",
     async (mode) => {
@@ -116,7 +124,7 @@ describe("Matrix requester Slack identity capability", () => {
       fetchMock.mockImplementation(async () => response(admitted()));
       await subject.admit(mode);
       await expect(subject.resolveSender(requester)).resolves.toBe("U12345678");
-      const body = JSON.parse(fetchMock.mock.calls[1][1].body);
+      const body = requestBody(1);
       expect(body).toEqual({
         roomId: "!room:matrix.example",
         agentId: "cellect-main",
@@ -125,7 +133,7 @@ describe("Matrix requester Slack identity capability", () => {
           : { eventId: "$event" }),
         googleRequester: true,
       });
-      expect(JSON.parse(fetchMock.mock.calls[0][1].body)).not.toHaveProperty("googleRequester");
+      expect(requestBody(0)).not.toHaveProperty("googleRequester");
       fetchMock.mockResolvedValueOnce(new Response(null, { status: 403 }));
       await expect(subject.resolveSender(requester)).resolves.toBeUndefined();
       // Mapping refusals constrain this read; ordinary tool admission remains Fi's decision.
@@ -183,7 +191,10 @@ describe("Matrix requester Slack identity capability", () => {
     await subject.admit();
     let complete!: (reply: Response) => void;
     fetchMock.mockImplementationOnce(
-      () => new Promise<Response>((resolve) => (complete = resolve)),
+      () =>
+        new Promise<Response>((resolve) => {
+          complete = resolve;
+        }),
     );
     const pending = subject.resolveSender(requester);
     await subject.retire();
