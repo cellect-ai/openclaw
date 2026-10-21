@@ -31,7 +31,7 @@ vi.mock("./thread-bindings-shared.js", async (importOriginal) => ({
 vi.mock("./send/client.js", () => ({
   withResolvedMatrixSendClient: (
     options: { accountId: string },
-    callback: (client: { sendEvent: typeof mocks.send }) => unknown,
+    callback: (client: { sendEvent: (...args: unknown[]) => Promise<string> }) => unknown,
   ) => callback({ sendEvent: (...args: unknown[]) => mocks.send(options.accountId, ...args) }),
 }));
 
