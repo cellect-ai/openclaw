@@ -6,11 +6,11 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 
-type Requester = { sessionKey: string; accountId: string; senderId: string };
+type Requester = { sessionKey: string; accountId: string; senderId: string; workspaceId: string };
 type Resolver = { resolveSender: (requester: Requester) => Promise<string | undefined> };
 const senderId = "@speaker:matrix.example";
 const sessionKey = "agent:cellect-main:matrix:channel:!room:matrix.example:thread:$root";
-const requester = { sessionKey, accountId: "mainprod", senderId };
+const requester = { sessionKey, accountId: "mainprod", senderId, workspaceId: "T12345678" };
 
 function fixture() {
   const hooks = new Map<string, (event: never, context: never) => unknown>();
@@ -91,7 +91,7 @@ const admitted = (overrides = {}) => ({
   ok: true,
   agentId: "cellect-main",
   orgId: "tenant-a",
-  googleRequester: { matrixUserId: senderId, slackUserId: "U12345678" },
+  googleRequester: { matrixUserId: senderId, slackUserId: "U12345678", workspaceId: "T12345678" },
   ...overrides,
 });
 const response = (body: unknown) => new Response(JSON.stringify(body));
@@ -132,6 +132,7 @@ describe("Matrix requester Slack identity capability", () => {
           ? { mode: "voice", speakerMxid: senderId, threadRootEventId: "$root" }
           : { eventId: "$event" }),
         googleRequester: true,
+        slackRequesterWorkspace: true,
       });
       expect(requestBody(0)).not.toHaveProperty("googleRequester");
       fetchMock.mockResolvedValueOnce(new Response(null, { status: 403 }));
@@ -162,6 +163,15 @@ describe("Matrix requester Slack identity capability", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("refuses a target in another workspace despite a valid org-bound Slack actor", async () => {
+    const subject = fixture();
+    fetchMock.mockImplementation(async () => response(admitted()));
+    await subject.admit();
+    await expect(
+      subject.resolveSender({ ...requester, workspaceId: "T99999999" }),
+    ).resolves.toBeUndefined();
+  });
+
   it("refuses an ambiguous tuple shared by two admitted runs", async () => {
     const subject = fixture();
     fetchMock.mockImplementation(async () => response(admitted()));
@@ -175,6 +185,14 @@ describe("Matrix requester Slack identity capability", () => {
     { orgId: "tenant-b" },
     { agentId: "another-agent" },
     { googleRequester: undefined },
+    { googleRequester: { matrixUserId: senderId, slackUserId: "U12345678" } },
+    {
+      googleRequester: {
+        matrixUserId: senderId,
+        slackUserId: "U12345678",
+        workspaceId: "T99999999",
+      },
+    },
     { googleRequester: { matrixUserId: "@other:matrix.example", slackUserId: "U12345678" } },
     { googleRequester: { matrixUserId: senderId, slackUserId: "@forged" } },
   ])("rejects an unbound mapping response: %j", async (overrides) => {
