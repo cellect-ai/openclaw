@@ -15,9 +15,11 @@ vi.mock("./fi-delegation.js", async (original) => ({
   ...(await original<typeof import("./fi-delegation.js")>()),
   exchange: mocks.exchange,
 }));
+import { createDataRoomTool } from "./dataroom-tool.js";
 import {
   generatedFileAction,
   readGeneratedArtifact,
+  registerFileArtifactRuntime,
   withoutInternalDownloadLinks,
 } from "./generated-artifacts.js";
 import fiUserPlugin from "./index.js";
@@ -128,6 +130,13 @@ afterEach(async () => {
   await fs.rm(directory, { recursive: true, force: true });
 });
 
+function requestBody(init?: RequestInit) {
+  if (typeof init?.body === "string") {
+    return init.body;
+  }
+  return init?.body instanceof URLSearchParams ? init.body.toString() : "";
+}
+
 async function register(name = "Budget.csv", bytes = csv) {
   await fs.writeFile(path.join(output, name), bytes);
   const result = await createDeliverFileTool(api, context).execute("register", {
@@ -220,9 +229,10 @@ describe("requester-bound generated artifact delivery", () => {
     };
     let replyPage = 0;
     const fetch = vi.fn(async (url: string, _init?: RequestInit) => {
-      if (url.endsWith("auth.test"))
+      if (url.endsWith("auth.test")) {
         return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
-      if (url.endsWith("conversations.replies") && replyPage++ === 0)
+      }
+      if (url.endsWith("conversations.replies") && replyPage++ === 0) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -243,7 +253,8 @@ describe("requester-bound generated artifact delivery", () => {
             ],
           }),
         );
-      if (url.endsWith("conversations.replies"))
+      }
+      if (url.endsWith("conversations.replies")) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -257,7 +268,10 @@ describe("requester-bound generated artifact delivery", () => {
             ],
           }),
         );
-      if (url.startsWith("https://files.slack.com/")) return new Response(csv);
+      }
+      if (url.startsWith("https://files.slack.com/")) {
+        return new Response(csv);
+      }
       throw new Error(`Unexpected Slack request: ${url}`);
     });
     vi.stubGlobal("fetch", fetch);
@@ -271,13 +285,13 @@ describe("requester-bound generated artifact delivery", () => {
       threadId: "1791917000.123456",
     });
     const request = fetch.mock.calls.find(([url]) => url.endsWith("conversations.replies"));
-    expect(String(request?.[1]?.body)).toContain("channel=CCHANNEL1");
-    expect(String(request?.[1]?.body)).toContain("ts=1791917000.123456");
+    expect(requestBody(request?.[1])).toContain("channel=CCHANNEL1");
+    expect(requestBody(request?.[1])).toContain("ts=1791917000.123456");
     expect(replyPage).toBe(2);
     expect(
       fetch.mock.calls.some(
         ([url, init]) =>
-          url.endsWith("conversations.replies") && String(init?.body).includes("cursor=page-two"),
+          url.endsWith("conversations.replies") && requestBody(init).includes("cursor=page-two"),
       ),
     ).toBe(true);
     expect(fetch.mock.calls.some(([url]) => url.endsWith("conversations.open"))).toBe(false);
@@ -297,11 +311,13 @@ describe("requester-bound generated artifact delivery", () => {
     vi.stubGlobal(
       "fetch",
       vi.fn(async (url: string) => {
-        if (url.endsWith("conversations.open"))
+        if (url.endsWith("conversations.open")) {
           return new Response(JSON.stringify({ ok: true, channel: { id: "DREQUESTER" } }));
-        if (url.endsWith("auth.test"))
+        }
+        if (url.endsWith("auth.test")) {
           return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
-        if (url.endsWith("conversations.history"))
+        }
+        if (url.endsWith("conversations.history")) {
           return new Response(
             JSON.stringify({
               ok: true,
@@ -321,6 +337,7 @@ describe("requester-bound generated artifact delivery", () => {
               ],
             }),
           );
+        }
         return new Response(csv);
       }),
     );
@@ -620,7 +637,7 @@ describe("requester-bound generated artifact delivery", () => {
       });
       vi.stubGlobal("fetch", fetch);
       const result = await generatedFileAction(api, context, { action: "reconcile", artifactId });
-      expect(String(fetch.mock.calls[0]?.[1]?.body)).toBe("users=UNICHOLAS");
+      expect(requestBody(fetch.mock.calls[0]?.[1])).toBe("users=UNICHOLAS");
       if (match) {
         expect(details(result)).toMatchObject({
           delivered: "slack_dm",
@@ -647,11 +664,13 @@ describe("requester-bound generated artifact delivery", () => {
       generatedFileAction(api, context, { action: "deliver", artifactId }),
     ).rejects.toThrow(/timeout/);
     const fetch = vi.fn(async (url: string) => {
-      if (url.endsWith("conversations.open"))
+      if (url.endsWith("conversations.open")) {
         return new Response(JSON.stringify({ ok: true, channel: { id: "DREQUESTER" } }));
-      if (url.endsWith("auth.test"))
+      }
+      if (url.endsWith("auth.test")) {
         return new Response(JSON.stringify({ ok: true, user_id: "UBOT" }));
-      if (url.endsWith("conversations.history"))
+      }
+      if (url.endsWith("conversations.history")) {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -671,12 +690,13 @@ describe("requester-bound generated artifact delivery", () => {
             ],
           }),
         );
+      }
       return new Response(csv);
     });
     vi.stubGlobal("fetch", fetch);
     const result = await generatedFileAction(api, context, { action: "reconcile", artifactId });
     expect(details(result)).toMatchObject({ status: "unknown" });
-    expect(fetch.mock.calls.some(([url]) => String(url).includes("files.slack.com"))).toBe(false);
+    expect(fetch.mock.calls.some(([url]) => url.includes("files.slack.com"))).toBe(false);
     await expect(
       generatedFileAction(api, context, { action: "deliver", artifactId }),
     ).rejects.toThrow(/uncertain/);
@@ -739,5 +759,158 @@ describe("internal download links", () => {
     ).toBe(
       "Budget — file delivery has not been verified; no accessible download link is available. PDF — file delivery has not been verified; no accessible download link is available. [real](https://fi.example.test/doc)",
     );
+  });
+});
+
+describe("downloaded attachment file handoff", () => {
+  async function download(messageId = "mail-12345") {
+    registerFileArtifactRuntime(api);
+    const registration = vi
+      .mocked(api.runtime.channel.runtimeContexts.register)
+      .mock.calls.map(([entry]) => entry)
+      .find((entry) => entry.channelId === "slack");
+    const runtime = registration?.context as {
+      capture: (ctx: OpenClawPluginToolContext) => {
+        registerDownload: (input: unknown) => Promise<{ artifactId: string; sha256: string }>;
+      };
+    };
+    return runtime.capture(context).registerDownload({
+      bytes: csv,
+      fileName: "Original.csv",
+      mimeType: "text/csv",
+      origin: {
+        provider: "microsoft365",
+        mailbox: "nicholas@example.test",
+        messageId,
+        attachmentId: "attach-12345",
+      },
+    });
+  }
+  it.each([false, true])(
+    "downloads and files under member grants, retaining upload identity after a lost response=%s",
+    async (loseResponse) => {
+      const result = await download();
+      expect(await download()).toMatchObject(result);
+      expect(await readGeneratedArtifact(api, context, result.artifactId)).toMatchObject({
+        bytes: csv,
+        fileName: "Original.csv",
+        provenance: { source: "downloaded_file", artifactId: result.artifactId },
+      });
+      mocks.exchange.mockResolvedValue({
+        ...delegation(),
+        config: { baseUrl: "https://fi.test" },
+        delegation: { ...delegation().delegation, fi: { token: "requester-token" } },
+      });
+      let uploaded = false;
+      let lostOnce = false;
+      const uploadKeys: string[] = [];
+      const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+        expect(new Headers(init?.headers).get("authorization")).toBe("Bearer requester-token");
+        if (init?.method === "POST") {
+          const form = init.body as FormData;
+          const requestedArtifactId = form.get("provenanceArtifactId");
+          if (typeof requestedArtifactId !== "string") {
+            throw new Error("Expected an artifact ID");
+          }
+          expect(Buffer.from(await (form.get("file") as File).arrayBuffer())).toEqual(csv);
+          expect(form.get("provenanceSource")).toBe("downloaded_file");
+          expect(form.get("provenanceSha256")).toBe(result.sha256);
+          expect(new Headers(init.headers).get("if-match")).toBe(
+            form.get("provenanceArtifactId") === result.artifactId ? "3" : "4",
+          );
+          uploaded = true;
+          uploadKeys.push(new Headers(init.headers).get("idempotency-key")!);
+          if (loseResponse && !lostOnce) {
+            lostOnce = true;
+            throw new Error("Response lost after POST applied");
+          }
+          return Response.json({
+            document: { documentId: "doc-1" },
+            filingReceipt: {
+              documentId: "doc-1",
+              sha256: result.sha256,
+              ...(form.get("provenanceArtifactId") !== result.artifactId
+                ? {
+                    existingContent: true,
+                    requestedArtifact: {
+                      source: "downloaded_file",
+                      artifactId: requestedArtifactId,
+                      sha256: result.sha256,
+                      sessionId: "session-1",
+                    },
+                  }
+                : {}),
+              provenance: {
+                source: "downloaded_file",
+                artifactId: result.artifactId,
+                sha256: result.sha256,
+                sessionId: "session-1",
+              },
+            },
+          });
+        }
+        expect(url).toBe("https://fi.test/api/shape/datarooms/room-1");
+        return Response.json({
+          roomVersion: uploaded ? 4 : 3,
+          documents: uploaded ? [{ documentId: "doc-1", visibility: "internal" }] : [],
+        });
+      });
+      vi.stubGlobal("fetch", fetch);
+      if (loseResponse) {
+        await expect(
+          createDataRoomTool(api, context).execute("lost-response", {
+            action: "upload_file",
+            artifactId: result.artifactId,
+            roomId: "room-1",
+            visibility: "internal",
+          }),
+        ).rejects.toThrow(/Response lost/);
+      }
+      const receipt = await createDataRoomTool(api, context).execute("file-download", {
+        action: "upload_file",
+        artifactId: result.artifactId,
+        roomId: "room-1",
+        visibility: "internal",
+      });
+      expect(details(receipt)).toMatchObject({
+        documentId: "doc-1",
+        filingReceipt: { sha256: result.sha256 },
+      });
+      if (loseResponse) {
+        expect(uploadKeys[1]).toBe(uploadKeys[0]);
+      }
+      const another = await download("mail-another");
+      expect(another.artifactId).not.toBe(result.artifactId);
+      await createDataRoomTool(api, context).execute("another-download", {
+        action: "upload_file",
+        artifactId: another.artifactId,
+        roomId: "room-1",
+        visibility: "internal",
+      });
+      expect(uploadKeys.at(-1)).not.toBe(uploadKeys[0]);
+    },
+  );
+  it("keeps the download after a denied destination and rejects another session", async () => {
+    const result = await download();
+    await expect(
+      readGeneratedArtifact(api, { ...context, sessionId: "other-session" }, result.artifactId),
+    ).rejects.toThrow(/does not belong/);
+    mocks.exchange.mockResolvedValue({
+      ...delegation(),
+      config: { baseUrl: "https://fi.test" },
+      delegation: { ...delegation().delegation, fi: { token: "requester-token" } },
+    });
+    const fetch = vi.fn(async () => new Response("Forbidden", { status: 403 }));
+    vi.stubGlobal("fetch", fetch);
+    await expect(
+      createDataRoomTool(api, context).execute("denied-room", {
+        action: "upload_file",
+        artifactId: result.artifactId,
+        roomId: "denied",
+        visibility: "internal",
+      }),
+    ).rejects.toThrow(/403/);
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect((await readGeneratedArtifact(api, context, result.artifactId)).bytes).toEqual(csv);
   });
 });

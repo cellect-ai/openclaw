@@ -23,6 +23,14 @@ type Artifact = {
   sha256: string;
   mimeType: string;
   sessionId: string;
+  source?: "downloaded_file";
+  origin?: {
+    provider: string;
+    mailbox: string;
+    messageId: string;
+    attachmentId: string;
+    attachmentPath?: number[];
+  };
 };
 type Delivery = { status: "sending" | "delivered" | "unknown"; messageId?: string };
 
@@ -79,13 +87,19 @@ async function scope(api: OpenClawPluginApi, context: OpenClawPluginToolContext)
   return { owner, directory: `media/outbound/generated-${owner}`, delegation, identity };
 }
 
-function fileName(value: string) {
-  if (
+function unsafeFileName(value: string) {
+  return (
     !value ||
     value.length > 180 ||
     value !== path.basename(value) ||
-    /[\\/\x00-\x1f]/.test(value)
-  ) {
+    value.includes("\\") ||
+    value.includes("/") ||
+    /\p{Cc}/u.test(value)
+  );
+}
+
+function fileName(value: string) {
+  if (unsafeFileName(value)) {
     throw new Error("Use a filename only, not a path");
   }
   if (!types[path.extname(value).toLowerCase()]) {
@@ -159,7 +173,89 @@ export async function readGeneratedArtifact(
     fileName: record.fileName,
     sha256: record.sha256,
     mimeType: record.mimeType,
-    provenance: { artifactId, sha256: record.sha256, sessionId: record.sessionId },
+    provenance: {
+      source: record.source ?? ("generated_artifact" as const),
+      artifactId,
+      sha256: record.sha256,
+      sessionId: record.sessionId,
+    },
+  };
+}
+
+/** Provider plugins hand original bytes to the existing requester/session artifact owner. */
+export function registerFileArtifactRuntime(api: OpenClawPluginApi) {
+  for (const channelId of ["matrix", "slack", "webchat"]) {
+    api.runtime.channel.runtimeContexts.register({
+      channelId,
+      capability: "fi-file-artifacts",
+      context: {
+        protocol: "fi-file-artifacts-v1",
+        capture(context: OpenClawPluginToolContext) {
+          return {
+            registerDownload: (input: Parameters<typeof registerDownloadedArtifact>[2]) =>
+              registerDownloadedArtifact(api, context, input),
+          };
+        },
+      },
+    });
+  }
+}
+
+export async function registerDownloadedArtifact(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+  input: {
+    bytes: Uint8Array;
+    fileName: string;
+    mimeType?: string;
+    origin: NonNullable<Artifact["origin"]>;
+  },
+) {
+  const current = await scope(api, context);
+  const name = input.fileName;
+  if (unsafeFileName(name) || name.startsWith(".")) {
+    throw new Error("Use the attachment's filename only, not a path");
+  }
+  if (!input.bytes.length || input.bytes.length > MAX_SLACK_FILE_BYTES) {
+    throw new Error("Downloaded files must be between 1 byte and 200 MB");
+  }
+  const bytes = Buffer.from(input.bytes);
+  const sha256 = createHash("sha256").update(bytes).digest("hex");
+  const mimeType = input.mimeType || "application/octet-stream";
+  // An interrupted download repeats the same custody, not a second upload identity.
+  const key = createHash("sha256")
+    .update(JSON.stringify([current.owner, input.origin, name, mimeType, sha256]))
+    .digest("hex");
+  const id = `ga_${key.slice(0, 8)}-${key.slice(8, 12)}-${key.slice(12, 16)}-${key.slice(16, 20)}-${key.slice(20, 32)}`;
+  const relativePath = `${current.directory}/${id}/${name}`;
+  const boundary = await root(context.workspaceDir!);
+  assertCurrent(context);
+  await boundary.write(relativePath, bytes, { mkdir: true });
+  assertCurrent(context);
+  await store(api).register(
+    id,
+    {
+      id,
+      owner: current.owner,
+      workspace: context.workspaceDir!,
+      relativePath,
+      fileName: name,
+      sha256,
+      mimeType,
+      sessionId: context.sessionId!,
+      source: "downloaded_file",
+      origin: input.origin,
+    },
+    { assertCurrent: () => assertCurrent(context) },
+  );
+  return {
+    status: "downloaded_not_filed",
+    artifactId: id,
+    fileName: name,
+    bytes: bytes.length,
+    sha256,
+    source: "downloaded_file",
+    next: "Upload this artifactId with fi_user_dataroom action=upload_file; retain it until filing is confirmed.",
   };
 }
 
@@ -355,7 +451,9 @@ export async function generatedFileAction(
       });
       for (const message of history.messages ?? []) {
         // A matching requester upload or another thread is not evidence of our send.
-        if (message.user !== sender.user_id) continue;
+        if (message.user !== sender.user_id) {
+          continue;
+        }
         if (
           target.threadId &&
           message.ts !== target.threadId &&
@@ -389,7 +487,9 @@ export async function generatedFileAction(
         }
       }
       const next = history.response_metadata?.next_cursor?.trim();
-      if (!next || next === cursor) break;
+      if (!next || next === cursor) {
+        break;
+      }
       cursor = next;
     }
     return jsonResult({
