@@ -35,7 +35,7 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
       // Native rooms keep one durable conversation identity. A seated bot uses
       // its own execution session/account, but publishes under that same identity.
       // Derive participants from the real route so restart needs no second store.
-      const cfg = (api.runtime.config.current?.() ?? api.config) as CoreConfig;
+      const cfg = api.runtime.config.current?.() ?? api.config;
       const rows = listAllBindings();
       const native = rows.flatMap((row) => {
         const roomId = row.parentConversationId;

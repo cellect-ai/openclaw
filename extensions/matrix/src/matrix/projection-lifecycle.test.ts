@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -7,7 +8,6 @@ import {
   unregisterSessionBindingAdapter,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoreConfig } from "../types.js";
 import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
 import {
   toSessionBindingRecord,
@@ -55,7 +55,7 @@ const canonical: MatrixThreadBindingRecord = {
 // Exercise the callbacks installed at the host transport boundary with real
 // native routing and registered binding adapters. Core owns run admission/replay.
 describe("native Matrix participant lifecycle adapter", () => {
-  let cfg: CoreConfig;
+  let cfg: OpenClawConfig;
   let transport: TransportOptions;
   let lifecycle: ReturnType<typeof startMatrixProjectionLifecycle>;
   const accounts = ["admin", "main", "duplicate"];
