@@ -383,6 +383,7 @@ export function createExecRequestPreparation(params: {
     normalizeParams,
     executionCustody: (args: ExecToolArgs, toolCallId: string, context?: HookContext) => ({
       closeProcessTree: args.closeProcessTree === true,
+      originRunId: params.defaults?.runId,
       executionOwner: {
         toolCallId,
         sessionKey:
