@@ -18,7 +18,7 @@ type Runtime = {
   capture(context: OpenClawPluginToolContext): Capability | undefined;
 };
 function fixture() {
-  const hooks = new Map<string, (event: never, context: never) => unknown>();
+  const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
   const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
   const lifecycles: PluginRuntimeLifecycleRegistration[] = [];
   let runtime: Runtime;
@@ -50,13 +50,14 @@ function fixture() {
         },
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => {
-        if (name === "before_agent_reply") hooks.set(name, handler as never);
+        if (name === "before_agent_reply")
+          hooks.set(name, [...(hooks.get(name) ?? []), handler as never]);
       },
       registerAgentEventSubscription: (entry) => subscriptions.push(entry),
       registerRuntimeLifecycle: (entry) => lifecycles.push(entry),
     }),
   );
-  const admit = (runId = "one", senderId = "@speaker:matrix.test", mode = "voice") => {
+  const admit = async (runId = "one", senderId = "@speaker:matrix.test", mode = "voice") => {
     const ctx = {
       runId,
       agentId: "cellect-fi-admin",
@@ -73,7 +74,11 @@ function fixture() {
         },
       },
     };
-    return hooks.get("before_agent_reply")!({} as never, ctx as never);
+    for (const hook of hooks.get("before_agent_reply") ?? []) {
+      const result = await hook({} as never, ctx as never);
+      if (result) return result;
+    }
+    return undefined;
   };
   const capture = (overrides = {}) =>
     runtime.capture({
