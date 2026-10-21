@@ -132,6 +132,7 @@ describe("Matrix requester Slack identity capability", () => {
           ? { mode: "voice", speakerMxid: senderId, threadRootEventId: "$root" }
           : { eventId: "$event" }),
         googleRequester: true,
+        recheck: true,
         slackRequesterWorkspace: true,
       });
       expect(requestBody(0)).not.toHaveProperty("googleRequester");

@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
+import type { OpenClawPluginToolContext, PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegation.js";
 
 const UNAVAILABLE = "I couldn’t verify your access to this agent. Please try again shortly.";
@@ -96,7 +96,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   });
   api.lifecycle.registerRuntimeLifecycle({
     id: "matrix-entitlement-identities",
-    dispose: () => turns.clear(),
+    dispose: () => {
+      turns.clear();
+      turnRuntime?.dispose();
+    },
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
         turns.delete(runId);
@@ -111,6 +114,93 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       }
     },
   });
+  const requestAuthorization = async (
+    turn: Turn,
+    policy?: true | "own-accounts" | "tenant-domain-admin",
+    abortSignal?: AbortSignal,
+    slackRequesterWorkspace = false,
+  ) => {
+    const config = configFromRuntime(api);
+    const connection = matrixConnection(config, turn.accountId);
+    const token = connection && brokerToken(connection);
+    if (!config.tenantOrgId || !connection || !token) throw new Error(UNAVAILABLE);
+    return fetch(`${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`, {
+      method: "POST",
+      signal: AbortSignal.any([AbortSignal.timeout(12_000), ...(abortSignal ? [abortSignal] : [])]),
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        roomId: turn.roomId,
+        agentId: turn.agentId,
+        ...(turn.mode === "voice"
+          ? { mode: "voice", speakerMxid: turn.senderId, threadRootEventId: turn.threadRootEventId }
+          : { eventId: turn.eventId }),
+        ...(policy ? { recheck: true, googleRequester: policy } : {}),
+        ...(slackRequesterWorkspace ? { slackRequesterWorkspace: true } : {}),
+      }),
+    });
+  };
+  const turnRuntime = api.runtime.channel.runtimeContexts.register({
+    channelId: "matrix",
+    capability: "fi-admitted-turn",
+    context: {
+      protocol: "fi-matrix-turn-v1",
+      capture(context: OpenClawPluginToolContext) {
+        const runId = context.runId;
+        const turn = runId ? turns.get(runId) : undefined;
+        if (
+          !runId ||
+          !turn?.admitted ||
+          context.messageChannel !== "matrix" ||
+          SOURCE_SESSION.test(context.sessionKey ?? "") ||
+          turn.agentId !== context.agentId ||
+          turn.accountId !== context.agentAccountId ||
+          turn.sessionKey !== context.sessionKey ||
+          turn.roomId !== context.nativeChannelId ||
+          turn.senderId !== context.requesterSenderId ||
+          (turn.mode === "text"
+            ? turn.eventId !== context.currentMessageId
+            : context.currentMessageId !== undefined ||
+              sessionThreadId(turn.sessionKey) !== turn.threadRootEventId)
+        )
+          return undefined;
+        const assertCurrent = () => {
+          context.assertInvocationCurrent?.();
+          if (turns.get(runId) !== turn || !turn.admitted) throw new Error(UNAVAILABLE);
+        };
+        assertCurrent();
+        return Object.freeze({
+          mode: turn.mode,
+          assertCurrent,
+          async authorizeRequester(
+            policy: true | "own-accounts" | "tenant-domain-admin",
+            abortSignal?: AbortSignal,
+          ) {
+            assertCurrent();
+            abortSignal?.throwIfAborted();
+            if (![true, "own-accounts", "tenant-domain-admin"].includes(policy))
+              throw new Error(UNAVAILABLE);
+            const response = await requestAuthorization(turn, policy, abortSignal);
+            if (!response.ok) throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+            const result: unknown = await response.json();
+            assertCurrent();
+            abortSignal?.throwIfAborted();
+            if (
+              !result ||
+              typeof result !== "object" ||
+              !("ok" in result) ||
+              result.ok !== true ||
+              !("agentId" in result) ||
+              result.agentId !== turn.agentId ||
+              !("orgId" in result) ||
+              result.orgId !== configFromRuntime(api).tenantOrgId
+            )
+              throw new Error(UNAVAILABLE);
+            return result;
+          },
+        });
+      },
+    },
+  });
   const authorize = async (
     turn: Turn,
     requester?: { workspaceId: string; resolve: (senderId: string) => void },
@@ -120,32 +210,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (!config.tenantOrgId) {
         return UNAVAILABLE;
       }
-      const connection = matrixConnection(config, turn.accountId);
-      const token = connection && brokerToken(connection);
-      if (!connection || !token) {
-        return UNAVAILABLE;
-      }
-      // Shorter than the tool-hook deadline; admission catches all failures and returns a reply.
-      const response = await fetch(
-        `${connection.baseUrl.replace(/\/+$/, "")}/api/threads/agent-authorize`,
-        {
-          method: "POST",
-          signal: AbortSignal.timeout(12_000),
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
-          body: JSON.stringify({
-            roomId: turn.roomId,
-            agentId: turn.agentId,
-            ...(turn.mode === "voice"
-              ? {
-                  mode: "voice",
-                  speakerMxid: turn.senderId,
-                  threadRootEventId: turn.threadRootEventId,
-                }
-              : { eventId: turn.eventId }),
-            ...(requester ? { googleRequester: true, slackRequesterWorkspace: true } : {}),
-          }),
-        },
-      );
+      const response = await requestAuthorization(turn, requester ? true : undefined, undefined, Boolean(requester));
       if (response.status === 403) {
         return DENIED;
       }

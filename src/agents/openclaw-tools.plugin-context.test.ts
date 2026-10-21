@@ -52,6 +52,13 @@ describe("openclaw plugin tool context", () => {
     );
   });
 
+  it("forwards host execution identity without deriving it from the session", () => {
+    expect(
+      resolve({ runId: "host-run", agentSessionKey: "agent:main:session" }).context.runId,
+    ).toBe("host-run");
+    expect(resolve({ agentSessionKey: "agent:main:session" }).context.runId).toBeUndefined();
+  });
+
   it("forwards trusted requester sender identity", () => {
     const result = resolveOpenClawPluginToolInputs({
       options: {
