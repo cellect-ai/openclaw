@@ -275,6 +275,10 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 # Google Chrome and Debian Chromium.
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
     SSL_CERT_DIR=/etc/ssl/certs
+# Create the policy directories first: COPY --chmod would otherwise create
+# them 0644, and a non-root Chromium could not read the policy (fail-open).
+RUN install -d -m 0755 /etc/opt/chrome_for_testing/policies/managed \
+      /etc/opt/chrome/policies/managed /etc/chromium/policies/managed
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome_for_testing/policies/managed/cellect-emudhra-distrust.json
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome/policies/managed/cellect-emudhra-distrust.json
 COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/chromium/policies/managed/cellect-emudhra-distrust.json
@@ -467,6 +471,10 @@ USER node
 
 # Verify the shipped toolchain needs no privileged writes or first-run downloads.
 RUN COREPACK_ENABLE_NETWORK=0 PNPM_CONFIG_OFFLINE=true pnpm --version
+# The Chromium distrust policy must be readable by the unprivileged user too.
+RUN for d in /etc/opt/chrome_for_testing /etc/opt/chrome /etc/chromium; do \
+      test -r "$d/policies/managed/cellect-emudhra-distrust.json" || exit 1; \
+    done
 
 # Start gateway server with default config.
 # Binds to loopback (127.0.0.1) by default for security.
