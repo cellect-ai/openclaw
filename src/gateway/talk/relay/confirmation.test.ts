@@ -194,6 +194,43 @@ describe("native relay confirmation transcript admission", () => {
     expect(mocks.run).toHaveBeenCalledOnce();
   });
 
+  it.each(["before", "after"] as const)(
+    "does not force a duplicate when provider delegation starts %s a checking backchannel",
+    async (timing) => {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        const h = createHarness(false);
+        h.request.onTranscript?.("user", "Can you just check?", true);
+        h.request.onEvent?.({
+          direction: "server",
+          type: "response.created",
+          responseId: "checking-response",
+        });
+        if (timing === "after") {
+          h.request.onTranscript?.("assistant", "Let me check that for you.", true);
+        }
+        // Native delegation can expand a short utterance into a different prompt.
+        expect((await h.run({ prompt: "Read the current project status" })).text).toBe(
+          "Read result.",
+        );
+        if (timing === "before") {
+          await vi.advanceTimersByTimeAsync(2_001);
+          h.request.onTranscript?.("assistant", "Let me check that for you.", true);
+        }
+        await vi.advanceTimersByTimeAsync(250);
+        expect(mocks.run).toHaveBeenCalledOnce();
+        expect(h.relay.context.broadcastToConnIds).not.toHaveBeenCalledWith(
+          "talk.event",
+          expect.objectContaining({ type: "toolCall", forced: true }),
+          expect.anything(),
+          expect.anything(),
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    },
+  );
+
   it("does not reuse a delayed yes after a newer partial begins", async () => {
     const h = createHarness();
     const persist = createDeferredCore();
