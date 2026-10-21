@@ -789,7 +789,6 @@ export async function runExecProcess({
     } finally {
       // Fork: finalization can release remote process/session resources. Keep
       // the background-work blocker until that owner transition has settled.
-      session.finalizing = false;
       try {
         finalOutcome = await settleExecProcessExit({
           session,
@@ -805,6 +804,7 @@ export async function runExecProcess({
             }),
         });
       } finally {
+        session.finalizing = false;
         delete session.originRunId;
       }
     }
