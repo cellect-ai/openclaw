@@ -189,6 +189,8 @@ export type MsgContext = Partial<CanonicalInboundText> & {
   /** Effective channel reply mode prepared for this turn. */
   ReplyToMode?: ReplyToMode;
   ReplyToId?: string;
+  /** Transport-verified native question reply; narrows answer selection, never grants authority. */
+  ExpectedQuestionId?: string;
   /**
    * Root message id for thread reconstruction (used by Feishu for root_id).
    * When a message is part of a thread, this is the id of the first message.

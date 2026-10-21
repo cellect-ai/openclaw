@@ -218,6 +218,15 @@ accounts routed to the same agent do not make the executing account ambiguous.
 Contradictory relationships refuse admission rather than silently omitting status.
 Lifecycle delivery already in durable custody keeps its original frozen target.
 
+Replies to a structured question keep the selected question event in
+`m.in_reply_to` while retaining the conversation's `m.thread` root. When the
+homeserver event identifies the executing account's own question, ingress carries
+its exact question ID through queued and active-run input. The native question
+owner checks that ID at answer admission; old controls cannot answer a newer
+question from the same agent. Ordinary quotes and quotes of another agent remain
+ordinary conversation input. Legacy text-only prompts without a structured
+question ID do not acquire this extra fence.
+
 | Switch                                    | Effect                                                                                                                                                                                                                                                                 |
 | ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS` | Adds `atMs`, `admittedAtMs`, `waitingOn`, `failureKind` and `stoppedBy` to each fact and sends a heartbeat for a run whose executor still holds its claim. The heartbeat does not keep a silent run out of the 30 minute silence sweep, and stops an hour into a wait. |

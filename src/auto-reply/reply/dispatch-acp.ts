@@ -317,6 +317,7 @@ export async function tryDispatchAcpReplyCore(
       (await claimPreparedPendingAgentQuestionAnswer(
         {
           sessionKey: acpResolution.sessionKey,
+          expectedQuestionId: params.ctx.ExpectedQuestionId,
           text: pendingAnswerText,
           sourceRecorder: inputRecorder,
           authority: { kind: "run", assertCurrent: assertInputCurrent },

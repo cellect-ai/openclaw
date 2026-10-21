@@ -76,6 +76,7 @@ export async function runReplyQuestionInput(
   try {
     const claimed = await claimPendingAgentQuestionAnswerFromCaller({
       sessionKey,
+      expectedQuestionId: followupRun.expectedQuestionId ?? params.sessionCtx.ExpectedQuestionId,
       text,
       caller,
       assertSourceCurrent,

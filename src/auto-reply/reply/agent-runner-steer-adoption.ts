@@ -188,6 +188,7 @@ export async function runActiveReplySteer(
     }
     const injectionAttempt = beginReplyMessageInjectionTarget(injectionTarget, followupRun.prompt, {
       currentInboundContext: followupRun.currentInboundContext,
+      expectedQuestionId: followupRun.expectedQuestionId,
       inboundAudio: followupRun.currentInboundAudio === true,
       assertCurrent: automaticFallbackRoute
         ? () => {

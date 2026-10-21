@@ -28,6 +28,7 @@ export type CodexSteeringQueueOptions = Pick<
   | "imageOrder"
   | "media"
   | "isInboundUserMessage"
+  | "expectedQuestionId"
   | "onQueueAccepted"
   | "onQueueSettled"
   | "userTurnTranscriptRecorder"

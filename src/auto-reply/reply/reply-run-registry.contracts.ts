@@ -27,6 +27,8 @@ export type ReplyBackendCancelReason = "user_abort" | "restart" | "superseded";
 export type ReplyTurnKind = "visible" | "heartbeat" | "queued_followup";
 
 export type ReplyBackendQueueMessageOptions = {
+  /** Exact transport-selected pending question; prevents old controls answering a successor. */
+  expectedQuestionId?: string;
   /** Prepared context for this queue item, separate from its transcript and answer text. */
   currentInboundContext?: CurrentInboundPromptContext;
   steeringMode?: "all";

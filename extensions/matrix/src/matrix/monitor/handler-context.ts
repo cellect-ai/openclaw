@@ -156,6 +156,11 @@ export async function resolveMatrixInboundContext(config: {
   }
   const replySenderAllowed =
     !replyContext?.senderId || isRoomContextSenderAllowed(replyContext.senderId);
+  const questionReply = replyContext?.questionReply && replyContext.questionReply.issuer === await client.getUserId()
+    ? replyContext.questionReply : undefined;
+  if (questionReply && questionReply.threadRootEventId !== threadTarget) {
+    throw new Error("Matrix question reply refused: thread_mismatch");
+  }
   const roomInfo = isRoom ? await getRoomInfo(roomId) : undefined;
   const roomName = roomInfo?.name;
   const envelopeFrom = isDirectMessage ? senderName : (roomName ?? roomId);
@@ -306,6 +311,7 @@ export async function resolveMatrixInboundContext(config: {
       NativeDirectUserId: isDirectMessage ? senderId : undefined,
       // This path is fed only by the homeserver's own room event; its sender is the homeserver's.
       SenderAuthentication: "verified" as const,
+      ...(questionReply ? { ExpectedQuestionId: questionReply.questionId } : {}),
     },
   });
   if (quoteHidden) {

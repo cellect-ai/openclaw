@@ -126,7 +126,7 @@ describe("Codex source-bound pending input", () => {
     }
   });
 
-  it.each(["open", "closed"] as const)(
+  it.each(["open", "closed", "stale-question"] as const)(
     "guards a Codex pending-question claim across registration: %s",
     async (transition) => {
       registrations.mockClear();
@@ -164,6 +164,7 @@ describe("Codex source-bound pending input", () => {
         return result;
       });
       const question = runAgentHarnessGatewayQuestion({
+        questionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         sessionKey: params.sessionKey!,
         questions: [{ id: "mode", header: "Mode", question: "Continue?", options: [] }],
         timeoutMs: 60_000,
@@ -186,7 +187,8 @@ describe("Codex source-bound pending input", () => {
         const delivery = handle!
           .messageInjectionV2!.queueMessage(
             "controlled answer",
-            { isInboundUserMessage: true },
+            { isInboundUserMessage: true, expectedQuestionId: transition === "stale-question"
+              ? "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" : "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
             () => {
               if (!sourceCurrent) {
                 throw new Error("source closed");
@@ -198,14 +200,15 @@ describe("Codex source-bound pending input", () => {
             () => "accepted",
             () => "rejected",
           );
-        sourceCurrent = transition === "open";
+        sourceCurrent = transition !== "closed";
         registration.resolve();
-        expect(await delivery).toBe(sourceCurrent ? "accepted" : "rejected");
+        const accepted = sourceCurrent && transition !== "stale-question";
+        expect(await delivery).toBe(accepted ? "accepted" : "rejected");
         expect(
           gatewayCall.mock.calls.filter(([method]) => method === "question.resolve"),
-        ).toHaveLength(sourceCurrent ? 1 : 0);
+        ).toHaveLength(accepted ? 1 : 0);
         expect(handle!.isAborted?.()).toBe(false);
-        if (!sourceCurrent) {
+        if (!accepted) {
           await handle!.messageInjectionV2!.queueMessage(
             "independent answer",
             { isInboundUserMessage: true },
@@ -216,7 +219,7 @@ describe("Codex source-bound pending input", () => {
         await expect(questionOutcome).resolves.toMatchObject({
           status: "answered",
           answers: {
-            answers: { mode: [sourceCurrent ? "controlled answer" : "independent answer"] },
+            answers: { mode: [accepted ? "controlled answer" : "independent answer"] },
           },
         });
         expect(harness.requests.some(({ method }) => method === "turn/steer")).toBe(false);

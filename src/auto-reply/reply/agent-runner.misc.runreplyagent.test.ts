@@ -112,7 +112,7 @@ const { runReplyAgent } = await import("./agent-runner.js");
 setupAgentRunnerTestHooks();
 
 describe("runReplyAgent pending operator input", () => {
-  it("refuses an unbound question without falling through to active-run queueing", async () => {
+  it.each(["unbound", "stale"])("refuses a %s question without falling through to active-run queueing", async (kind) => {
     const gatewayCall = vi.fn(async () => ({ status: "answered" }));
     const reservation = registerPendingAgentQuestion({
       questionId: "ask_direct_cli_answer",
@@ -132,7 +132,7 @@ describe("runReplyAgent pending operator input", () => {
     const replyOperationRunState = {};
     const testRun = createBaseRun({
       context: { agentText: "Green" },
-      followup: { transcriptPrompt: "Green" },
+      followup: { transcriptPrompt: "Green", ...(kind === "stale" ? { expectedQuestionId: "ask_older_question" } : {}) },
       reply: {
         commandBody: "Green",
         transcriptCommandBody: "Green",
@@ -145,7 +145,7 @@ describe("runReplyAgent pending operator input", () => {
 
     try {
       await expect(testRun.run()).resolves.toEqual({
-        text: expect.stringContaining("pending question has no prepared creator authority"),
+        text: expect.stringContaining(kind === "stale" ? "selected question is no longer current" : "pending question has no prepared creator authority"),
         isError: true,
       });
       expect(gatewayCall).not.toHaveBeenCalled();

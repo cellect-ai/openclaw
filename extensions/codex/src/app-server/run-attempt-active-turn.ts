@@ -462,6 +462,7 @@ export function activateCodexAttemptTurn(
     assertSteeringActive();
     return await claimPendingAgentQuestionAnswer({
       sessionKey: params.sessionKey ?? params.sessionId,
+      expectedQuestionId: optionsLocal.expectedQuestionId,
       text,
       authority: { kind: authorityKind, assertCurrent: injectionGuard(assertCurrent) },
       sourceRecorder: optionsLocal.userTurnTranscriptRecorder,

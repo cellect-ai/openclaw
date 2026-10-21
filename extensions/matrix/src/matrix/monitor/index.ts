@@ -529,8 +529,6 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
     }
     logVerboseMessage("matrix: client started");
 
-    await restoreMatrixProjectionExecutions({ core, client, accountId: effectiveAccountId });
-
     logger.info(`matrix: logged in as ${auth.userId}`);
     void monitorTaskRunner.runDetachedTask("deviceId backfill", async () => {
       const taskSignal = getMatrixMonitorTaskSignal();
@@ -554,6 +552,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       },
       abortSignal: monitorLifecycleSignal,
     });
+
+    await restoreMatrixProjectionExecutions({ core, client, accountId: effectiveAccountId });
 
     await runMatrixStartupMaintenance({
       client,

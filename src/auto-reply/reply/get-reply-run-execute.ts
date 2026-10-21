@@ -395,6 +395,7 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,
+    expectedQuestionId: sessionCtx.ExpectedQuestionId,
     currentInboundAudio: hasInboundAudio(sessionCtx),
     gatewayLocalUserIngress: getGatewayLocalUserIngress(ctx),
     channelAdmissionEvidence:

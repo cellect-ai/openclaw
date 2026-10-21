@@ -102,6 +102,7 @@ export function resolveFollowupDeliveryContextKey(run: FollowupRun): string {
     run.originatingReplyToMode ?? "",
     normalizeChatType(run.originatingChatType) ?? "",
     resolveFollowupAuthorizationKey(run),
+    run.expectedQuestionId ? [run.expectedQuestionId, run.messageId ?? run.sourceTurnId ?? ""] : null,
     run.turnAdoptionLifecycle?.ownerKey ?? "",
     normalizeOptionalString(execution.runtimePolicySessionKey ?? execution.sessionKey) ?? "",
     execution.provider,
@@ -186,6 +187,7 @@ type FollowupRuntimeMetadata = Pick<
   | "operatorAuthority"
   | "personalBootstrapEligible"
   | "currentInboundEventKind"
+  | "expectedQuestionId"
   | "currentInboundAudio"
   | "currentInboundContext"
   | "explicitSkillSelections"
@@ -269,6 +271,7 @@ export function collectRuntimeMetadata(
       ? { personalBootstrapEligible: true }
       : {}),
     currentInboundEventKind: currentTurnSource?.currentInboundEventKind,
+    expectedQuestionId: authoritySource?.expectedQuestionId,
     currentInboundAudio: currentTurnSource?.currentInboundAudio,
     currentInboundContext: collectCurrentInboundContext(items),
     explicitSkillSelections:
@@ -303,6 +306,7 @@ export function createOverflowSummaryRetrySource(source: FollowupRun): FollowupR
   return {
     prompt: source.prompt,
     sourceTurnId: source.sourceTurnId,
+    expectedQuestionId: source.expectedQuestionId,
     admissionSessionId: source.admissionSessionId,
     operatorAuthority: source.operatorAuthority,
     personalBootstrapEligible: source.personalBootstrapEligible,

@@ -355,6 +355,7 @@ export async function claimEmbeddedPendingUserInputAnswer(
   }
   return await claimPendingAgentQuestionAnswer({
     sessionKey,
+    expectedQuestionId: options.expectedQuestionId,
     text,
     authority: resolveQuestionAuthority(canInject, authority),
     sourceRecorder: options.userTurnTranscriptRecorder,

@@ -843,6 +843,42 @@ describe("matrix monitor handler pairing account scope", () => {
     expectMockCallWithFields(recordInboundSession, { sessionKey: "agent:ops:main:thread:$root" });
   });
 
+  it.each(["fresh", "ordinary-quote", "wrong-issuer", "wrong-root"])(
+    "carries only verified native question reply identity through ingress: %s", async (scenario) => {
+      const error = vi.fn();
+      const content = {
+        msgtype: "m.text", body: "Which option?",
+        "m.relates_to": { rel_type: "m.thread", event_id: scenario === "wrong-root" ? "$other" : "$root" },
+        ...(scenario === "ordinary-quote" ? {} : {
+          "com.openclaw.presentation": { version: 1, type: "message.presentation", blocks: [{
+            type: "buttons", buttons: [{ label: "Blue", action: {
+              type: "question", questionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", optionValue: "Blue",
+            } }],
+          }] },
+        }),
+      };
+      const { handler, finalizeInboundContext, recordInboundSession } = createMatrixHandlerTestHarness({
+        isDirectMessage: false, runtime: { error },
+        client: { getEvent: async (_room, eventId) => eventId === "$root"
+          ? createMatrixTextMessageEvent({ eventId: "$root", body: "Conversation root" })
+          : createMatrixRoomMessageEvent({ eventId: "$question", content,
+            sender: scenario === "wrong-issuer" ? "@another-bot:example.org" : "@bot:example.org" }) },
+      });
+      await receiveText(handler, {
+        eventId: "$answer", body: "@room Blue", mentions: { room: true },
+        relatesTo: { rel_type: "m.thread", event_id: "$root", "m.in_reply_to": { event_id: "$question" } },
+      });
+      if (scenario === "wrong-root") {
+        expect(recordInboundSession).not.toHaveBeenCalled();
+        expect(error).toHaveBeenCalledWith(expect.stringContaining("thread_mismatch"));
+      } else {
+        const context = requireRecord(callArg(finalizeInboundContext, 0, 0, "context"), "context");
+        expect(context.ExpectedQuestionId).toBe(scenario === "fresh" ? "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" : undefined);
+        expect(recordInboundSession).toHaveBeenCalledOnce();
+      }
+    },
+  );
+
   it("keeps threaded DMs flat when dm threadReplies is off", async () => {
     const { handler, finalizeInboundContext, recordInboundSession } =
       createMatrixHandlerTestHarness({
