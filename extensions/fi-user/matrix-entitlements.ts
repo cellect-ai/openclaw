@@ -210,7 +210,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (!config.tenantOrgId) {
         return UNAVAILABLE;
       }
-      const response = await requestAuthorization(turn, requester ? true : undefined, undefined, Boolean(requester));
+      const response = await requestAuthorization(
+        turn,
+        requester ? true : undefined,
+        undefined,
+        Boolean(requester),
+      );
       if (response.status === 403) {
         return DENIED;
       }
