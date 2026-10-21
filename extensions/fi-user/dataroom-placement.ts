@@ -89,6 +89,7 @@ export function roomPlacementPage(roomId: string, snapshot: PlacementSnapshot, c
   while (end < count) {
     const isDocument = end < documents.length;
     const item = isDocument ? documents[end] : tasks[end - documents.length];
+    if (!item) throw new Error("The room placement inventory changed while preparing this page.");
     const size = JSON.stringify(item).length;
     if (end > offset && chars + size > PAGE_CHAR_LIMIT) break;
     (isDocument ? pageDocuments : pageTasks).push(item);
