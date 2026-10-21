@@ -407,7 +407,10 @@ describe("tools.effective handler", () => {
           const tools = applyFinalEffectiveToolPolicy({
             bundledTools: [probe],
             config: params.cfg,
-            conversationCapabilityProfile: params.conversationCapabilityProfile,
+            conversationCapabilityProfile: expectDefined(
+              params.conversationCapabilityProfile,
+              "tools.effective prepares the session capability profile",
+            ),
             warn: () => {},
           });
           const inventory = makeCoreInventory({
