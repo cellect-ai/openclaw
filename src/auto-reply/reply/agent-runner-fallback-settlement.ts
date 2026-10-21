@@ -47,7 +47,17 @@ export async function settleAgentFallbackCycle(params: {
   ) {
     turn.replyOperation?.abortForRestart();
   }
-  const abortReason = resolveReplyOperationAbortReason(turn.replyOperation);
+  // The native run can be stopped without aborting its caller's reply operation.
+  // Consume its settled cancellation before provider error payloads become failures.
+  const abortReason =
+    resolveReplyOperationAbortReason(turn.replyOperation) ??
+    (classifyAgentRunTerminalOutcome(terminalOutcome) === "cancellation"
+      ? terminalOutcome.stopReason === "restart"
+        ? "restart"
+        : terminalOutcome.reason === "superseded"
+          ? "superseded"
+          : "user"
+      : undefined);
   if (abortReason) {
     settledLifecycleTerminal?.emit("end", runResult, terminalMetadata);
     await drainPendingToolTasks({ tasks: turn.pendingToolTasks, onTimeout: logVerbose });
