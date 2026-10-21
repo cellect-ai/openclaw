@@ -15,12 +15,31 @@ export const ON_BEHALF_OF_ENV = "FI_ON_BEHALF_OF";
 /** Where Fi's CLI reads the requester's own delegated token; it prefers it to the assertion. */
 export const DELEGATED_USER_TOKEN_ENV = "FI_DELEGATED_USER_TOKEN";
 /** One issued credential and the Fi origin that issued it; never split at the tool boundary. */
-export type CommandDelegation = { token: string; baseUrl: string };
+export type CommandDelegation = { token: string; baseUrl: string; command?: string };
 export const ON_BEHALF_OF_AGENTS = new Set(["cellect-fi-admin", "cellect-main"]);
 export const ON_BEHALF_OF_TOOLS = new Set(["exec", "sandbox_exec"]);
 const ASSERTION_TTL_SECONDS = 10 * 60;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
 const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
+
+/** Pin ordinary CLI calls to the installed wrapper, never caller-controlled PATH/env. */
+export function pinInstalledFiCliCommand(params: Record<string, unknown>): string | undefined {
+  if (
+    typeof params.command !== "string" ||
+    /[\x00\r\n;&|<>()`$\\]/.test(params.command) ||
+    (params.env !== undefined &&
+      (typeof params.env !== "object" ||
+        params.env === null ||
+        Array.isArray(params.env) ||
+        Object.keys(params.env).length > 0))
+  ) {
+    return undefined;
+  }
+  const command = params.command.trim();
+  return /^(?:cellect|\/usr\/local\/bin\/cellect)(?:[ \t]|$)/.test(command)
+    ? command.replace(/^(?:cellect|\/usr\/local\/bin\/cellect)/, "/usr/local/bin/cellect")
+    : undefined;
+}
 
 export type OnBehalfOfRequester =
   | { requester_slack_user_id: string }
@@ -132,6 +151,9 @@ export function withOnBehalfOfEnv(
     next.elevated = false;
     // Credential custody ends only after the native owner has reaped descendants.
     next.closeProcessTree = true;
+    if (delegation.command !== undefined) {
+      next.command = delegation.command;
+    }
   }
   return next;
 }

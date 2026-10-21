@@ -12,7 +12,12 @@ import {
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
-import { ON_BEHALF_OF_TOOLS, onBehalfOfRequester, type CommandDelegation } from "./on-behalf-of.js";
+import {
+  ON_BEHALF_OF_TOOLS,
+  onBehalfOfRequester,
+  pinInstalledFiCliCommand,
+  type CommandDelegation,
+} from "./on-behalf-of.js";
 
 /**
  * The host gives every before_tool_call handler 15 s in all, and the Matrix
@@ -304,6 +309,11 @@ export function registerAdminDelegation(
     const defaults = cfg.agents?.defaults?.sandbox;
     const execHost = agent?.tools?.exec?.host ?? cfg.tools?.exec?.host ?? "auto";
     const scope = agent?.sandbox?.scope ?? defaults?.scope ?? "agent";
+    const binds = [...(defaults?.docker?.binds ?? []), ...(agent?.sandbox?.docker?.binds ?? [])];
+    const readonlyCli = ["/usr/local/bin/cellect", "/repos/fi-runtime"].every((target) => {
+      const matches = binds.map((bind) => bind.split(":")).filter((parts) => parts[1] === target);
+      return matches.length === 1 && matches[0]?.length === 3 && matches[0][2] === "ro";
+    });
     return {
       /** Naming the sandbox and no elevation is what every command already gets. */
       pinIsHarmless:
@@ -315,6 +325,7 @@ export function registerAdminDelegation(
         // Talk steers a session without these hooks; its own agent must not be this one.
         cfg.talk?.agentId?.trim().toLowerCase() !== adminAgentId.toLowerCase(),
       scope,
+      readonlyCli,
     };
   };
   /** One sandbox per session only under that scope; otherwise the agent's sessions share it. */
@@ -796,7 +807,15 @@ export function registerAdminDelegation(
         };
         const expiry = Math.min(expiresAt * 1000, now + MAX_HOLD_MS);
         const key = ctx.runId && ctx.toolCallId && JSON.stringify([ctx.runId, ctx.toolCallId]);
-        if (key && !holder.calls.has(key) && holder.calls.size < MAX_TRACKED) {
+        const pinnedCommand = posture(agentId).readonlyCli
+          ? pinInstalledFiCliCommand(event.params)
+          : undefined;
+        if (
+          key &&
+          pinnedCommand !== undefined &&
+          !holder.calls.has(key) &&
+          holder.calls.size < MAX_TRACKED
+        ) {
           holder.calls.set(key, { agentId, sessionKey: ctx.sessionKey!, expiresAt: expiry });
         } else {
           holder.untrackedUntil = Math.max(holder.untrackedUntil, expiry);
@@ -804,7 +823,11 @@ export function registerAdminDelegation(
         holder.expiresAt = Math.max(holder.expiresAt, expiry);
         remember(custody, sandbox, holder);
         diagnose(ctx, "mint-issued");
-        return { token, baseUrl };
+        return {
+          token,
+          baseUrl,
+          ...(pinnedCommand !== undefined ? { command: pinnedCommand } : {}),
+        };
       },
       (error: unknown) => {
         // Status only: the failure may quote the request, which carries the credential.

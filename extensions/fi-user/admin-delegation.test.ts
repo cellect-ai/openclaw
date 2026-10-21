@@ -28,11 +28,30 @@ installDelegationFixtures();
 
 describe("the admin agent's delegated user token", () => {
   describe("native process custody release", () => {
+    const cli = {
+      params: { command: "/usr/local/bin/cellect platform documents show --tenant fixture" },
+    };
+    const immutable = {
+      ...SANDBOXED,
+      agents: {
+        defaults: {
+          sandbox: {
+            mode: "all",
+            docker: {
+              binds: [
+                "/fixture/cli:/usr/local/bin/cellect:ro",
+                "/fixture/runtime:/repos/fi-runtime:ro",
+              ],
+            },
+          },
+        },
+      },
+    };
     async function reserved() {
-      const turn = plugin();
+      const turn = plugin({}, immutable);
       await turn.arrive();
       await turn.start();
-      const result = await turn.exec({ toolCallId: "command-1" });
+      const result = await turn.exec({ toolCallId: "command-1" }, cli);
       expect(result?.params).toMatchObject({ closeProcessTree: true });
       return turn;
     }
@@ -67,7 +86,7 @@ describe("the admin agent's delegated user token", () => {
 
     it("one cleanup cannot release sibling commands or replay a release", async () => {
       const turn = await reserved();
-      await turn.exec({ toolCallId: "command-2" });
+      await turn.exec({ toolCallId: "command-2" }, cli);
       await turn.cleanup();
       await turn.cleanup();
       expect(await turn.exec(unproven)).toMatchObject({ block: true });
@@ -80,6 +99,48 @@ describe("the admin agent's delegated user token", () => {
       await turn.exec();
       await turn.cleanup();
       expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    });
+
+    it.each([
+      { command: "bash -lc '/usr/local/bin/cellect --help'" },
+      { command: "/usr/local/bin/cellect --help; env > /workspace/saved" },
+      { command: "/usr/local/bin/cellect $(echo --help)" },
+      { command: "/usr/local/bin/cellect --help", env: { NODE_OPTIONS: "--require fixture" } },
+      { command: "/usr/local/bin/cellect --help", env: { FI_CLI_NODE: "/workspace/node" } },
+    ])("retains expiry custody outside the immutable direct CLI contract: %j", async (params) => {
+      const turn = plugin({}, immutable);
+      await turn.arrive();
+      await turn.start();
+      await turn.exec({ toolCallId: "command-1" }, { params });
+      await turn.cleanup();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    });
+
+    it("does not assume that an unproven runtime mount is immutable", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      await turn.exec({ toolCallId: "command-1" }, cli);
+      await turn.cleanup();
+      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    });
+
+    it("pins a normal bare CLI invocation without depending on PATH", async () => {
+      const turn = plugin({}, immutable);
+      await turn.arrive();
+      await turn.start();
+      expect(
+        (
+          await turn.exec(
+            { toolCallId: "command-1" },
+            {
+              params: { command: "cellect platform documents show --tenant fixture" },
+            },
+          )
+        )?.params,
+      ).toMatchObject({ command: cli.params.command, closeProcessTree: true });
+      await turn.cleanup();
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
     });
   });
   describe("Superadmin requester handoff", () => {
