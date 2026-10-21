@@ -45,6 +45,7 @@ import {
   type MatrixSyncState,
 } from "../sync-state.js";
 import { createMatrixThreadBindingManager } from "../thread-bindings.js";
+import { restoreMatrixProjectionExecutions } from "../projection-execution.js";
 import { registerMatrixAutoJoin } from "./auto-join.js";
 import { resolveMatrixMonitorConfig } from "./config.js";
 import { createDirectRoomTracker } from "./direct.js";
@@ -527,6 +528,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       return;
     }
     logVerboseMessage("matrix: client started");
+
+    await restoreMatrixProjectionExecutions({ core, client, accountId: effectiveAccountId });
 
     logger.info(`matrix: logged in as ${auth.userId}`);
     void monitorTaskRunner.runDetachedTask("deviceId backfill", async () => {

@@ -1,5 +1,7 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/channel-entry-contract";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import "openclaw/plugin-sdk/compiled-subprocess-testing";
+import { createPluginStateKeyedStoreForTests, resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
@@ -9,7 +11,7 @@ import {
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
-import { admitMatrixProjectionExecution } from "./projection-execution.js";
+import { admitMatrixProjectionExecution, restoreMatrixProjectionExecutions } from "./projection-execution.js";
 import {
   toSessionBindingRecord,
   type MatrixThreadBindingRecord,
@@ -70,6 +72,7 @@ describe("native Matrix participant lifecycle adapter", () => {
         unregisterSessionBindingAdapter({ channel: "matrix", accountId });
       }
       cleanup();
+      resetPluginStateStoreForTests();
       vi.unstubAllEnvs();
     });
   });
@@ -128,6 +131,7 @@ describe("native Matrix participant lifecycle adapter", () => {
     runtime = createPluginRuntimeMock();
     saved = new Map();
     runtime.state.openKeyedStore = vi.fn().mockReturnValue({
+      entries: async () => [...saved].map(([key, value]) => ({ key, value, createdAt: 1 })),
       lookup: async (key: string) => saved.get(key),
       registerIfAbsent: async (key: string, value: unknown) => {
         if (saved.has(key)) return false;
@@ -251,6 +255,50 @@ describe("native Matrix participant lifecycle adapter", () => {
     await admit();
     expect(resolve("main")).toHaveLength(1);
   });
+  it("restores a durable relationship on account startup without another user message", async () => {
+    await admit();
+    mocks.managers.set("main", {});
+    expect(resolve("main")).toEqual([]);
+    // Account startup order must not matter: the canonical account can load last.
+    mocks.rows = [];
+    await restoreMatrixProjectionExecutions({
+      core: runtime, accountId: "main",
+      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
+    });
+    expect(resolve("main")).toEqual([]);
+    mocks.rows = [{ ...canonical }];
+    expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main" })]);
+  });
+  it("recovers an execution from the actual worker-backed plugin SQLite namespace", async () => {
+    runtime.state.openKeyedStore = (options) => createPluginStateKeyedStoreForTests("matrix", options);
+    await admit();
+    mocks.managers.set("main", {});
+    expect(resolve("main")).toEqual([]);
+    await restoreMatrixProjectionExecutions({
+      core: runtime, accountId: "main",
+      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
+    });
+    expect(resolve("main")).toEqual([expect.objectContaining({ accountId: "main", roomId })]);
+  });
+  it.each(["not-joined", "wrong-producer", "wrong-key"])(
+    "refuses restored publication for %s", async (scenario) => {
+      await admit();
+      mocks.managers.set("main", {});
+      if (scenario === "wrong-key") {
+        const [[key, value]] = [...saved];
+        saved.delete(key);
+        saved.set("incorrect-key", value);
+      }
+      await restoreMatrixProjectionExecutions({
+        core: runtime, accountId: "main",
+        client: {
+          getUserId: async () => scenario === "wrong-producer" ? "@other:example.org" : "@main:example.org",
+          getJoinedRooms: async () => scenario === "not-joined" ? [] : [roomId],
+        },
+      });
+      expect(resolve("main")).toEqual([]);
+    },
+  );
   it.each(["environment", "projectedConversationId"] as const)(
     "refuses a relationship when canonical %s changes", async (field) => {
       await admit();

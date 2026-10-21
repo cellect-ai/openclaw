@@ -52,6 +52,51 @@ function same(left: unknown, right: MatrixProjectionExecution): boolean {
   return Object.keys(right).every((field) => value[field] === right[field as keyof typeof right]);
 }
 
+function decode(value: unknown): MatrixProjectionExecution | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (row.version !== 1) return undefined;
+  for (const field of ["environment", "conversationId", "roomId", "canonicalBindingId",
+    "threadRootEventId", "accountId", "agentId", "sessionKey", "producerMxid"]) {
+    const text = row[field];
+    if (typeof text !== "string" || !text || text.length > 1024 || /[\u0000-\u001f]/.test(text)) {
+      return undefined;
+    }
+  }
+  const execution = value as MatrixProjectionExecution;
+  return execution.roomId.startsWith("!") && execution.threadRootEventId.startsWith("$") &&
+    execution.producerMxid.startsWith("@") &&
+    parseAgentSessionKey(execution.sessionKey)?.agentId === execution.agentId
+      ? execution : undefined;
+}
+
+/** Account startup restores persisted relationships, not routing or run authority.
+ * Canonical rows can load in either account order; the resolver checks them at use.
+ */
+export async function restoreMatrixProjectionExecutions(params: {
+  core: PluginRuntime;
+  client: Pick<MatrixClient, "getJoinedRooms" | "getUserId">;
+  accountId: string;
+}): Promise<void> {
+  const manager = getMatrixThreadBindingManager(params.accountId);
+  if (!manager) return;
+  const [producer, joinedRooms, entries] = await Promise.all([
+    params.client.getUserId(), params.client.getJoinedRooms(),
+    params.core.state.openKeyedStore<MatrixProjectionExecution>({
+      namespace: "projection-executions-v1", maxEntries: 10_000, overflowPolicy: "reject-new",
+    }).entries(),
+  ]);
+  if (manager !== getMatrixThreadBindingManager(params.accountId)) return;
+  const joined = new Set(joinedRooms);
+  for (const entry of entries) {
+    const execution = decode(entry.value);
+    if (execution && execution.accountId === params.accountId &&
+      execution.producerMxid === producer && joined.has(execution.roomId) && key(execution) === entry.key) {
+      admitted.set(entry.key, { execution, manager });
+    }
+  }
+}
+
 function canonical(roomId: string) {
   const rows = listAllBindings().filter(
     (row) => row.parentConversationId === roomId || row.conversationId === roomId,
@@ -184,9 +229,15 @@ export async function admitMatrixProjectionExecution(params: {
 export function resolveMatrixProjectionExecutions(
   owner: { agentId: string; sessionKey: string }, cfg: CoreConfig,
 ): MatrixProjectionExecution[] {
-  return [...admitted.values()].flatMap(({ execution, manager }) =>
+  for (const [id, { execution, manager }] of admitted) {
+    if (manager !== getMatrixThreadBindingManager(execution.accountId)) admitted.delete(id);
+  }
+  const matching = [...admitted.values()].flatMap(({ execution, manager }) =>
     execution.agentId === owner.agentId && execution.sessionKey === owner.sessionKey &&
     manager === getMatrixThreadBindingManager(execution.accountId) && matchesCurrent(execution, cfg)
       ? [execution] : [],
   );
+  // A restored contradictory relationship cannot select two senders for one
+  // native session. Native ingress reports execution_owner_conflict on retry.
+  return matching.length > 1 ? [] : matching;
 }
