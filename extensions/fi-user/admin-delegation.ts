@@ -45,7 +45,8 @@ const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
  */
 const MAX_HOLD_MS = 15 * 60 * 1000;
 /** Shown to whoever reaches a sandbox that still holds another person's token. */
-const HELD = "This sandbox still holds another requester's command state. Retry after its requester token expires.";
+const HELD =
+  "This sandbox still holds another requester's command state. Retry after its requester token expires.";
 const UNPROVEN_HOLD =
   "This run has no verified requester proof for the sandbox's retained command state. A fresh authenticated message is required; this does not indicate another command is running.";
 /**
