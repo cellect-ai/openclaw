@@ -463,6 +463,12 @@ export function createHooksRequestHandler(
           model: normalized.value.model ?? null,
           thinking: normalized.value.thinking ?? null,
           timeoutSeconds: normalized.value.timeoutSeconds ?? null,
+          ...(normalized.value.mailRequesterEmail
+            ? { mailRequesterEmail: normalized.value.mailRequesterEmail }
+            : {}),
+          ...(normalized.value.mailRequesterSlackUserId
+            ? { mailRequesterSlackUserId: normalized.value.mailRequesterSlackUserId }
+            : {}),
         },
       });
       const replay = resolveHookReplay(replayKey);

@@ -13,6 +13,7 @@ import {
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import {
+  mailWakeRequester,
   ON_BEHALF_OF_TOOLS,
   onBehalfOfRequester,
   pinInstalledFiCliCommand,
@@ -214,7 +215,9 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * same sender, and nobody else may write into the session while it runs.
  * Cron, heartbeat, webhook, sub-agent and inter-session runs bring no such
  * message; a batch from several people and a run another person steers are
- * refused.
+ * refused. A shared-mail hook is the exception: its session is `hook:fi-mail:`
+ * and its sender was attested by the authenticated hooks caller, so that
+ * cron turn is the named member.
  *
  * A Slack session must be the sender's own direct one. A Matrix room or thread
  * is admitted one message at a time (owner decision, 2026-10-06): the run must
@@ -455,6 +458,15 @@ export function registerAdminDelegation(
       // run does not take up what arrived for the next one.
       const run: Run = { agentId, sessionKey };
       remember(runs, runId, run);
+      // A shared-mail hook is a cron turn whose sender the hooks caller
+      // attested. It does not consume a channel arrival.
+      if (context.trigger === "cron") {
+        const mail = mailWakeRequester(sessionKey, context.senderId);
+        if (mail) {
+          run.sender = JSON.stringify(mail);
+        }
+        return undefined;
+      }
       // Only a run that carries a message takes up what arrived; a heartbeat
       // or inter-session run in between must not clear a queued message.
       if (context.trigger !== "user" || !context.senderId) {
@@ -699,7 +711,8 @@ export function registerAdminDelegation(
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    const requester = onBehalfOfRequester(ctx.requester);
+    const mail = mailWakeRequester(sessionKey, ctx.requester?.senderId);
+    const requester = mail ?? onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
     if (
       !run ||
@@ -729,6 +742,9 @@ export function registerAdminDelegation(
     } else if ("requester_matrix_user_id" in requester) {
       body = { requesterMatrixUserId: requester.requester_matrix_user_id };
       connection = matrixConnection(config, ctx.requester?.accountId);
+    } else if (mail && "requester_email" in requester) {
+      body = { requesterEmail: requester.requester_email };
+      connection = config;
     } else {
       diagnose(ctx, "mint-unsupported-requester");
       return undefined;

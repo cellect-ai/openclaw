@@ -348,6 +348,51 @@ describe("gateway hooks helpers", () => {
     });
   });
 
+  test("normalizeAgentPayload accepts a mail requester only on a shared-mail hook", () => {
+    const accepted = normalizeAgentPayload({
+      message: "file this",
+      sessionKey: "hook:fi-mail:abc",
+      mailRequesterEmail: " Alex@Cellect.ai ",
+      mailRequesterSlackUserId: "u0admin001",
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.value.mailRequesterEmail).toBe("alex@cellect.ai");
+      expect(accepted.value.mailRequesterSlackUserId).toBe("U0ADMIN001");
+    }
+    expect(
+      normalizeAgentPayload({
+        message: "file this",
+        sessionKey: "hook:gmail:1",
+        mailRequesterEmail: "alex@cellect.ai",
+      }),
+    ).toEqual({
+      ok: false,
+      error: "mail requester fields are only accepted on a hook:fi-mail: session",
+    });
+    expect(
+      normalizeAgentPayload({
+        message: "file this",
+        sessionKey: "hook:fi-mail:abc",
+        mailRequesterSlackUserId: "not-a-slack-id",
+      }),
+    ).toEqual({
+      ok: false,
+      error: "mailRequesterSlackUserId must be a Slack user id",
+    });
+    const absent = normalizeAgentPayload({
+      message: "file this",
+      sessionKey: "hook:gmail:1",
+      mailRequesterEmail: "  ",
+      mailRequesterSlackUserId: "",
+    });
+    expect(absent.ok).toBe(true);
+    if (absent.ok) {
+      expect(absent.value.mailRequesterEmail).toBeUndefined();
+      expect(absent.value.mailRequesterSlackUserId).toBeUndefined();
+    }
+  });
+
   test("normalizeAgentPayload passes agentId", () => {
     const ok = normalizeAgentPayload({ message: "hello", agentId: "hooks" });
     expect(ok.ok).toBe(true);

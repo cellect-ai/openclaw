@@ -549,6 +549,9 @@ export function createGatewayHookDispatcher(params: {
             if (startupAbortController.signal.aborted) {
               return;
             }
+            const mailRequesterSenderId = sessionKey.startsWith("hook:fi-mail:")
+              ? (acceptedValue.mailRequesterSlackUserId ?? acceptedValue.mailRequesterEmail)
+              : undefined;
             const runHookIsolatedTurn = async () =>
               await runCronIsolatedAgentTurn({
                 cfg,
@@ -557,6 +560,7 @@ export function createGatewayHookDispatcher(params: {
                 deliveryAttemptFence: null,
                 message: acceptedValue.message,
                 sessionKey,
+                ...(mailRequesterSenderId ? { mailRequesterSenderId } : {}),
                 // Isolated runs derive their lifecycle key from random jobId (or an
                 // already-stable cron: key), so accepted agentId closes reload drift.
                 agentId,

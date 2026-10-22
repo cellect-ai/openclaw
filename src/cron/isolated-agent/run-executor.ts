@@ -426,6 +426,12 @@ function createCronPromptExecutor(
             agentId: params.agentId,
             trigger: "cron",
             jobId: params.job.id,
+            // Only a shared-mail hook carries a host-attested requester. The
+            // delivery channel stays the announce route; this id is the person.
+            ...(params.agentSessionKey.toLowerCase().includes(":hook:fi-mail:") &&
+            params.mailRequesterSenderId
+              ? { senderId: params.mailRequesterSenderId }
+              : {}),
             messageActionTurnCapability,
             config: params.cfgWithAgentDefaults,
             prompt: promptText,

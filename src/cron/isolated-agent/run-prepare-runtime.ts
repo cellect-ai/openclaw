@@ -38,6 +38,12 @@ export type RunCronAgentTurnParams = {
   executionRoot?: string;
   /** Explicit instruction set for a host-owned turn, including an empty review context. */
   skillsSnapshot?: SkillSnapshot;
+  /**
+   * Host-attested Fi member for a shared-mail hook. The hooks dispatcher sets
+   * this from the authenticated hook body. It is never read from the prompt
+   * or from persisted cron state.
+   */
+  mailRequesterSenderId?: string;
 };
 
 export type WithRunSession = (

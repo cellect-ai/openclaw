@@ -412,6 +412,52 @@ describe("the admin agent's delegated user token", () => {
     expect(mintBody()).toEqual({ requesterSenderId: "U0ADMIN001", agentId: "cellect-fi-admin" });
   });
 
+  it("mints a shared-mail wake as the Slack member the hook named", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const result = await turn.exec({
+      sessionKey,
+      requester: { channel: "last", senderId: "U0ADMIN001" },
+    });
+    expect(result?.params.env).toMatchObject({ FI_DELEGATED_USER_TOKEN: TOKEN });
+    expect(mintBody()).toEqual({ requesterSenderId: "U0ADMIN001", agentId: "cellect-fi-admin" });
+  });
+
+  it("mints a shared-mail wake as the member mailbox when no Slack id is bound", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({
+      sessionKey,
+      channel: "last",
+      trigger: "cron",
+      senderId: "alex@cellect.ai",
+    });
+    const result = await turn.exec({
+      sessionKey,
+      requester: { channel: "last", senderId: "alex@cellect.ai" },
+    });
+    expect(mintBody()).toEqual({ requesterEmail: "alex@cellect.ai", agentId: "cellect-fi-admin" });
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+  });
+
+  it("does not mint an ordinary cron turn that carries an email sender", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:cron:job";
+    await turn.start({
+      sessionKey,
+      channel: "last",
+      trigger: "cron",
+      senderId: "alex@cellect.ai",
+    });
+    const result = await turn.exec({
+      sessionKey,
+      requester: { channel: "last", senderId: "alex@cellect.ai" },
+    });
+    expect(mints()).toHaveLength(0);
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+  });
+
   it("withholds the token from a call that names another Fi, and leaves its env alone", async () => {
     const turn = plugin();
     await turn.arrive();
