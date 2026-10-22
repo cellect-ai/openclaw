@@ -21,6 +21,8 @@ export const ON_BEHALF_OF_TOOLS = new Set(["exec", "sandbox_exec"]);
 const ASSERTION_TTL_SECONDS = 10 * 60;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
 const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
+const MAIL_WAKE_SESSION = /(?:^|:)hook:fi-mail:/i;
+const MAIL_REQUESTER_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 
 /** Pin ordinary CLI calls to the installed wrapper, never caller-controlled PATH/env. */
 export function pinInstalledFiCliCommand(params: Record<string, unknown>): string | undefined {
@@ -101,6 +103,29 @@ export function onBehalfOfRequester(
   }
   if (requester?.channel === "matrix" && MATRIX_USER_ID.test(sender)) {
     return { requester_matrix_user_id: sender };
+  }
+  return undefined;
+}
+
+/**
+ * The member a shared-mail hook acts as. The hooks caller attested this
+ * sender; it is not a channel proof and it is not read from the prompt.
+ * Slack-shaped ids mint as Slack members. An email mints as that mailbox.
+ * Any other session, including ordinary cron, is not a mail wake.
+ */
+export function mailWakeRequester(
+  sessionKey: string | undefined | null,
+  senderId: string | undefined | null,
+): OnBehalfOfRequester | undefined {
+  if (!sessionKey || !MAIL_WAKE_SESSION.test(sessionKey)) {
+    return undefined;
+  }
+  const sender = senderId?.trim() ?? "";
+  if (SLACK_USER_ID.test(sender)) {
+    return { requester_slack_user_id: sender.toUpperCase() };
+  }
+  if (MAIL_REQUESTER_EMAIL.test(sender.toLowerCase()) && sender.length <= 254) {
+    return { requester_email: sender.toLowerCase() };
   }
   return undefined;
 }

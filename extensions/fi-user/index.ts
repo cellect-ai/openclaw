@@ -58,6 +58,7 @@ import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "
 import {
   ON_BEHALF_OF_AGENTS,
   ON_BEHALF_OF_TOOLS,
+  mailWakeRequester,
   onBehalfOfRequester,
   signOnBehalfOf,
   withOnBehalfOfEnv,
@@ -623,10 +624,11 @@ export default definePluginEntry({
             return undefined;
           }
           const secret = brokerToken(config);
-          const requester = onBehalfOfRequester(
-            ctx.requester,
-            ctx.sessionKey ? adminActionSessions.get(ctx.sessionKey) : undefined,
-          );
+          const adminAction = ctx.sessionKey ? adminActionSessions.get(ctx.sessionKey) : undefined;
+          const requester = adminAction
+            ? onBehalfOfRequester(ctx.requester, adminAction)
+            : (mailWakeRequester(ctx.sessionKey, ctx.requester?.senderId) ??
+              onBehalfOfRequester(ctx.requester));
           const assertion =
             attributed && secret && requester && ctx.agentId
               ? signOnBehalfOf({ secret, agentId: ctx.agentId, requester })

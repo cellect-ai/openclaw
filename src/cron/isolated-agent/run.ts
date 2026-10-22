@@ -283,6 +283,7 @@ async function runCronIsolatedAgentTurnInTrace(
               loadThinkingCatalog: prepared.context.thinkingSelection.loadThinkingCatalog,
               executionIdentity: params.executionIdentity,
               admissionSource: params.admissionSource,
+              mailRequesterSenderId: params.mailRequesterSenderId,
             };
             const execution = await prepared.context.sessionWorkAdmission.run(() =>
               withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>

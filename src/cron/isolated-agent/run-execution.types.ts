@@ -48,6 +48,7 @@ export type CronRunExecutionParams = Pick<
     | "executionIdentity"
     | "admissionSource"
     | "deliveryAttemptFence"
+    | "mailRequesterSenderId"
   > & {
     runId: string;
     agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];
