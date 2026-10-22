@@ -2,6 +2,7 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import {
   modelFallbackOverrideFromAvailability,
+  resolveFormatFailureFallbackModels,
   resolveModelFallbackAvailability,
 } from "../../agents/agent-scope.js";
 import {
@@ -29,7 +30,7 @@ export function resolveModelFallbackOptions(
   configOverride: FollowupRun["run"]["config"] = run.config,
 ) {
   const config = configOverride;
-  const modelFallbackAvailability = resolveModelFallbackAvailability({
+  const availabilityParams = {
     cfg: config,
     agentId: run.agentId,
     sessionKey: run.sessionKey,
@@ -38,7 +39,9 @@ export function resolveModelFallbackOptions(
     hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
     modelSelectionLocked: run.modelSelectionLocked,
     subagentSpawnLineage: run.subagentSpawnLineage,
-  });
+  };
+  const modelFallbackAvailability = resolveModelFallbackAvailability(availabilityParams);
+  const formatFailureFallbacks = resolveFormatFailureFallbackModels(availabilityParams);
   return {
     cfg: config,
     provider: run.provider,
@@ -49,6 +52,9 @@ export function resolveModelFallbackOptions(
     sessionKey: run.runtimePolicySessionKey ?? run.sessionKey,
     modelFallbackAvailability,
     fallbacksOverride: modelFallbackOverrideFromAvailability(modelFallbackAvailability),
+    ...(formatFailureFallbacks && formatFailureFallbacks.length > 0
+      ? { formatFailureFallbacks }
+      : {}),
   };
 }
 

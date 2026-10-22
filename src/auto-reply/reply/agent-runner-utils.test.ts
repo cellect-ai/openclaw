@@ -21,6 +21,7 @@ vi.mock("../../agents/agent-scope.js", async () => ({
   ).modelFallbackOverrideFromAvailability,
   resolveModelFallbackAvailability: (...args: unknown[]) =>
     hoisted.resolveModelFallbackAvailabilityMock(...args),
+  resolveFormatFailureFallbackModels: () => undefined,
 }));
 
 vi.mock("../../channels/plugins/index.js", () => ({

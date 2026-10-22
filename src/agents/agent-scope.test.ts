@@ -22,6 +22,7 @@ import {
   resolveAgentSkillsFilter,
   modelFallbackOverrideFromAvailability,
   resolveEffectiveModelFallbacks,
+  resolveFormatFailureFallbackModels,
   resolveModelFallbackAvailability,
   resolveAgentModelFallbacksOverride,
   resolveRunModelFallbacksOverride,
@@ -274,6 +275,66 @@ describe("resolveAgentConfig", () => {
     ];
     it.each(projectionRows)("$name", ({ availability, expected }) => {
       expect(modelFallbackOverrideFromAvailability(availability)).toEqual(expected);
+    });
+  });
+
+  describe("resolveFormatFailureFallbackModels", () => {
+    const cfgWithFallbacks: OpenClawConfig = {
+      agents: {
+        defaults: { model: { fallbacks: ["anthropic/claude-sonnet-4-6"] } },
+        entries: {
+          main: {},
+          pinned: {
+            model: {
+              primary: "openai/gpt-6.1-sol",
+              fallbacks: ["anthropic/claude-opus-5-5"],
+            },
+          },
+          strict: { model: { primary: "openai/gpt-6.1-sol" } },
+        },
+      },
+    };
+
+    it("keeps configured fallbacks for a format failure after a user pin", () => {
+      expect(
+        resolveFormatFailureFallbackModels({
+          cfg: cfgWithFallbacks,
+          agentId: "pinned",
+          hasSessionModelOverride: true,
+          modelOverrideSource: "user",
+        }),
+      ).toEqual(["anthropic/claude-opus-5-5"]);
+    });
+
+    it("leaves an explicit empty fallback list strict", () => {
+      expect(
+        resolveFormatFailureFallbackModels({
+          cfg: cfgWithFallbacks,
+          agentId: "strict",
+          hasSessionModelOverride: true,
+          modelOverrideSource: "user",
+        }),
+      ).toBeUndefined();
+    });
+
+    it("does not add format fallbacks when the ladder is already active or locked", () => {
+      expect(
+        resolveFormatFailureFallbackModels({
+          cfg: cfgWithFallbacks,
+          agentId: "main",
+          hasSessionModelOverride: true,
+          modelOverrideSource: "auto",
+        }),
+      ).toBeUndefined();
+      expect(
+        resolveFormatFailureFallbackModels({
+          cfg: cfgWithFallbacks,
+          agentId: "pinned",
+          hasSessionModelOverride: true,
+          modelOverrideSource: "user",
+          modelSelectionLocked: true,
+        }),
+      ).toBeUndefined();
     });
   });
 

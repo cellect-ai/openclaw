@@ -620,11 +620,7 @@ export function modelFallbackOverrideFromAvailability(
   }
 }
 
-/**
- * Resolves fallback availability once for the run scope. A pinned model override disables the
- * configured ladder; splitting that fact from its models would report fallbacks that cannot run.
- */
-export function resolveModelFallbackAvailability(params: {
+type ModelFallbackAvailabilityParams = {
   cfg: OpenClawConfig;
   agentId: string;
   sessionKey?: string | null;
@@ -635,19 +631,11 @@ export function resolveModelFallbackAvailability(params: {
   modelFallbacksOverride?: string[];
   /** Declared child lineage includes visible sessions with dashboard keys. */
   subagentSpawnLineage?: boolean;
-}): ModelFallbackAvailability {
-  if (params.modelSelectionLocked) {
-    return { kind: "disabled_by_model_selection_lock" };
-  }
-  if (params.modelFallbacksOverride !== undefined) {
-    return modelFallbackAvailabilityFromModels(params.modelFallbacksOverride, "explicit");
-  }
-  const canUseConfiguredFallbacks =
-    params.modelOverrideSource === "auto" ||
-    (params.modelOverrideSource === undefined && params.hasAutoFallbackProvenance === true);
-  if (params.hasSessionModelOverride && !canUseConfiguredFallbacks) {
-    return { kind: "disabled_by_model_override" };
-  }
+};
+
+function resolveUnsuppressedModelFallbackAvailability(
+  params: ModelFallbackAvailabilityParams,
+): ModelFallbackAvailability {
   const hiddenSubagent = isSubagentSessionKey(params.sessionKey);
   // Hidden children without an effective override retain their existing agent policy.
   const useSubagentFallbacks = params.hasSessionModelOverride
@@ -665,6 +653,43 @@ export function resolveModelFallbackAvailability(params: {
     fallbacksOverride ?? resolveAgentModelFallbackValues(params.cfg.agents?.defaults?.model),
     source,
   );
+}
+
+/**
+ * Resolves fallback availability once for the run scope. A pinned model override disables the
+ * configured ladder; splitting that fact from its models would report fallbacks that cannot run.
+ */
+export function resolveModelFallbackAvailability(
+  params: ModelFallbackAvailabilityParams,
+): ModelFallbackAvailability {
+  if (params.modelSelectionLocked) {
+    return { kind: "disabled_by_model_selection_lock" };
+  }
+  if (params.modelFallbacksOverride !== undefined) {
+    return modelFallbackAvailabilityFromModels(params.modelFallbacksOverride, "explicit");
+  }
+  const canUseConfiguredFallbacks =
+    params.modelOverrideSource === "auto" ||
+    (params.modelOverrideSource === undefined && params.hasAutoFallbackProvenance === true);
+  if (params.hasSessionModelOverride && !canUseConfiguredFallbacks) {
+    return { kind: "disabled_by_model_override" };
+  }
+  return resolveUnsuppressedModelFallbackAvailability(params);
+}
+
+/**
+ * Configured models to try only after a blank or malformed answer when a user pin emptied the
+ * ladder. Auth, billing, and rate-limit failures stay on the pinned model. An explicit empty
+ * fallback list, including an agent primary with no fallbacks, stays empty.
+ */
+export function resolveFormatFailureFallbackModels(
+  params: ModelFallbackAvailabilityParams,
+): string[] | undefined {
+  if (resolveModelFallbackAvailability(params).kind !== "disabled_by_model_override") {
+    return undefined;
+  }
+  const unsuppressed = resolveUnsuppressedModelFallbackAvailability(params);
+  return unsuppressed.kind === "active" ? unsuppressed.models : undefined;
 }
 
 export function resolveEffectiveModelFallbacks(params: {

@@ -46,6 +46,7 @@ function resolveMemoryFlushModelFallbackOptions(
         model: overrideModel,
         requestedRouteResolution: "raw" as const,
         fallbacksOverride: [],
+        formatFailureFallbacks: undefined,
       };
     }
   }
@@ -54,6 +55,7 @@ function resolveMemoryFlushModelFallbackOptions(
     model: override,
     requestedRouteResolution: "raw" as const,
     fallbacksOverride: [],
+    formatFailureFallbacks: undefined,
   };
 }
 

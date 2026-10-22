@@ -88,6 +88,49 @@ import {
   type SessionSuspensionParams,
 } from "./session-suspension.js";
 
+function resolveDeferredFormatFailureCandidates(params: {
+  cfg: OpenClawConfig | undefined;
+  agentId?: string;
+  provider: string;
+  model: string;
+  formatFailureFallbacks?: string[];
+  requestedRouteResolution?: ModelFallbackRouteResolution;
+  manifestPlugins?: ModelManifestNormalizationContext["manifestPlugins"];
+  candidates: readonly ModelFallbackCandidate[];
+  allows?: (candidate: { provider: string; model: string }) => boolean;
+}): ModelFallbackCandidate[] {
+  const fallbacks = params.formatFailureFallbacks
+    ?.map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (!params.cfg || !fallbacks || fallbacks.length === 0) {
+    return [];
+  }
+  const seen = new Set(
+    params.candidates.map((candidate) => `${candidate.provider}\0${candidate.model}`),
+  );
+  const extra: ModelFallbackCandidate[] = [];
+  for (const candidate of resolveModelCandidateChain({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model,
+    fallbacksOverride: fallbacks,
+    requestedRouteResolution: params.requestedRouteResolution,
+    manifestPlugins: params.manifestPlugins,
+  })) {
+    if (candidate.routeOrigin === "requested") {
+      continue;
+    }
+    const key = `${candidate.provider}\0${candidate.model}`;
+    if (seen.has(key) || (params.allows && !params.allows(candidate))) {
+      continue;
+    }
+    seen.add(key);
+    extra.push(candidate);
+  }
+  return extra;
+}
+
 const log = createSubsystemLogger("model-fallback");
 const modelFallbackAuthRuntimeLoader = createLazyImportLoader<ModelFallbackAuthRuntime>(
   () => import("./auth-profiles.runtime.js"),
@@ -105,6 +148,11 @@ type RunWithModelFallbackParams<T> = ModelFallbackRuntimeContext & {
   agentDir?: string;
   /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
   fallbacksOverride?: string[];
+  /**
+   * Models held back from the normal ladder. They run only after a format failure
+   * when `fallbacksOverride` is empty because a user pin suppressed configured fallbacks.
+   */
+  formatFailureFallbacks?: string[];
   requestedRouteResolution?: ModelFallbackRouteResolution;
   run: ModelFallbackRunFn<T>;
   onError?: ModelFallbackErrorHandler;
@@ -170,12 +218,27 @@ async function runWithModelFallbackInternal<T>(
     manifestPlugins: params.manifestPlugins,
   });
   const operatorModelPolicy = operatorAuthority?.modelPolicy;
-  const candidates = operatorModelPolicy
+  const admittedCandidates = operatorModelPolicy
     ? plannedCandidates.filter(operatorModelPolicy.allows)
     : plannedCandidates;
-  if (operatorModelPolicy && candidates.length === 0) {
+  if (operatorModelPolicy && admittedCandidates.length === 0) {
     assertOperatorModelAllowed(operatorAuthority, undefined);
   }
+  const candidates = [...admittedCandidates];
+  const formatFailureCandidates = resolveDeferredFormatFailureCandidates({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model,
+    formatFailureFallbacks: params.formatFailureFallbacks,
+    requestedRouteResolution: params.requestedRouteResolution,
+    manifestPlugins: params.manifestPlugins,
+    candidates,
+    allows: operatorModelPolicy?.allows,
+  });
+  const discoveryCandidates = [...candidates, ...formatFailureCandidates];
+  // Prepare only the models that will run. Held-back format fallbacks are prepared
+  // after a format failure so a successful pinned turn does not select their host.
   await params.prepareCandidateChain?.(candidates);
   const userLockedAuthProfileId = params.userLockedAuthProfileId?.trim() || undefined;
   const authRuntime =
@@ -190,7 +253,7 @@ async function runWithModelFallbackInternal<T>(
         externalCli: externalCliDiscoveryScoped({
           config: params.cfg,
           allowKeychainPrompt: false,
-          providerIds: candidates.map((candidate) => candidate.provider),
+          providerIds: discoveryCandidates.map((candidate) => candidate.provider),
           ...(userLockedAuthProfileId ? { profileIds: [userLockedAuthProfileId] } : {}),
         }),
       })
@@ -251,7 +314,7 @@ async function runWithModelFallbackInternal<T>(
     }
   };
 
-  const hasFallbackCandidates = candidates.length > 1;
+  let hasFallbackCandidates = candidates.length > 1;
   const requestedCandidate = candidates.find((candidate) => candidate.routeOrigin === "requested");
   const runAttribution = { sessionId: params.sessionId, lane: params.lane };
   const runObs = {
@@ -687,11 +750,37 @@ async function runWithModelFallbackInternal<T>(
     if (isKnownFailover && normalized.reason === "tls_certificate") {
       tlsFailedProviders.add(candidate.provider);
     }
-    const failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
+    let failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
       currentIndex: i,
       excludedProviders: tlsFailedProviders,
     });
+    if (
+      failedNextCandidateIndex >= candidates.length &&
+      isKnownFailover &&
+      normalized.reason === "format" &&
+      formatFailureCandidates.length > 0
+    ) {
+      const recoveredCandidates = formatFailureCandidates.splice(0);
+      candidates.push(...recoveredCandidates);
+      await params.prepareCandidateChain?.(recoveredCandidates);
+      hasFallbackCandidates = candidates.length > 1;
+      runObs.fallbackConfigured = hasFallbackCandidates;
+      candObs.fallbackConfigured = hasFallbackCandidates;
+      failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
+        candidates,
+        currentIndex: i,
+        excludedProviders: tlsFailedProviders,
+      });
+      const recovered = candidates[failedNextCandidateIndex];
+      if (recovered) {
+        log.warn(
+          `Format failure on ${sanitizeForLog(candidate.provider)}/${sanitizeForLog(candidate.model)} ` +
+            `is using configured fallback ${sanitizeForLog(recovered.provider)}/${sanitizeForLog(recovered.model)} ` +
+            "suppressed by a user model override.",
+        );
+      }
+    }
     lastError = normalized;
     await recordFailure(normalized, candidates[failedNextCandidateIndex]);
     if (failedNextCandidateIndex > i + 1) {

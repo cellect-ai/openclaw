@@ -995,6 +995,97 @@ describe("runWithModelFallback", () => {
     expect(run).toHaveBeenCalledTimes(2);
   });
 
+  it("uses configured fallbacks after a format failure when a user pin emptied the ladder", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const preparedModels: string[][] = [];
+    const prepared = vi.fn((chain: Array<{ model: string }>) => {
+      preparedModels.push(chain.map((candidate) => candidate.model));
+    });
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new FailoverError("openai/gpt-6.1-sol ended without a visible assistant reply", {
+          reason: "format",
+          provider: "openai",
+          model: "gpt-6.1-sol",
+        }),
+      )
+      .mockResolvedValueOnce("fallback answer");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-6.1-sol",
+      fallbacksOverride: [],
+      formatFailureFallbacks: ["anthropic/claude-opus-5-5"],
+      skipAuthProfileRuntime: true,
+      prepareCandidateChain: prepared,
+      run,
+    });
+
+    expect(result.result).toBe("fallback answer");
+    expect(result.provider).toBe("anthropic");
+    expect(result.model).toBe("claude-opus-5-5");
+    expect(run.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+      ["openai", "gpt-6.1-sol"],
+      ["anthropic", "claude-opus-5-5"],
+    ]);
+    expect(preparedModels).toEqual([["gpt-6.1-sol"], ["claude-opus-5-5"]]);
+  });
+
+  it("keeps a user pin on rate limit when format fallbacks are held back", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const prepared = vi.fn();
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("rate limited", {
+        reason: "rate_limit",
+        provider: "openai",
+        model: "gpt-6.1-sol",
+      }),
+    );
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-6.1-sol",
+        fallbacksOverride: [],
+        formatFailureFallbacks: ["anthropic/claude-opus-5-5"],
+        skipAuthProfileRuntime: true,
+        prepareCandidateChain: prepared,
+        run,
+      }),
+    ).rejects.toMatchObject({ reason: "rate_limit" });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[0]).toBe("openai");
+    expect(prepared.mock.calls.map((call) => call[0].map((candidate) => candidate.model))).toEqual([
+      ["gpt-6.1-sol"],
+    ]);
+  });
+
+  it("does not invent format fallbacks for an explicit empty ladder", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("empty reply", {
+        reason: "format",
+        provider: "openai",
+        model: "gpt-6.1-sol",
+      }),
+    );
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-6.1-sol",
+        fallbacksOverride: [],
+        skipAuthProfileRuntime: true,
+        run,
+      }),
+    ).rejects.toMatchObject({ reason: "format" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
   it("keeps raw provider schema errors in fallback summaries", async () => {
     const cfg = createModelFallbackConfig("openai/gpt-5.4", ["openai/gpt-5.4-mini"]);
     const rawError =
