@@ -102,6 +102,7 @@ function resolveAgentHookChannelId(params: {
 
 /** Builds channel/provider fields for plugin agent hook context. */
 export function buildAgentHookContextChannelFields(params: {
+  inputProvenance?: PluginHookAgentContext["inputProvenance"];
   sessionKey?: string | null;
   messageChannel?: string | null;
   messageProvider?: string | null;
@@ -111,13 +112,20 @@ export function buildAgentHookContextChannelFields(params: {
   agentAccountId?: string | null;
 }): Pick<
   PluginHookAgentContext,
-  "accountId" | "channel" | "channelId" | "chatId" | "messageProvider" | "senderId"
+  | "accountId"
+  | "channel"
+  | "channelId"
+  | "chatId"
+  | "messageProvider"
+  | "senderId"
+  | "inputProvenance"
 > {
   const channel = resolveAgentHookChannel(params);
   const channelId = resolveAgentHookChannelId(params);
   const accountId = normalizeOptionalString(params.agentAccountId);
   return {
     channel,
+    ...(params.inputProvenance ? { inputProvenance: params.inputProvenance } : {}),
     ...(accountId ? { accountId } : {}),
     messageProvider: normalizeOptionalString(params.messageProvider),
     channelId,
