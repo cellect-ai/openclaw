@@ -220,6 +220,8 @@ export async function createMatrixSessionProjection(params: {
   sourceActorId?: string;
   accountId?: string;
   label?: string;
+  /** Application-owned message shown by ordinary Matrix clients at the thread root. */
+  introText?: string;
   readOnly?: boolean;
   sourceDirect?: boolean;
   sourceDetached?: boolean;
@@ -263,6 +265,10 @@ export async function createMatrixSessionProjection(params: {
   }
 
   const label = (clean(params.label) || `${agentId} session`).slice(0, 160);
+  const introText = clean(params.introText) || "Conversation connected.";
+  if (introText.length > 4096) {
+    throw new ProjectionError("invalid_request", "Projection introduction is too long");
+  }
   const externalSource = resolveDetachedProjectionSource({ ...params, targetSessionKey });
   if (params.sourceDetached) {
     parseSourceProjectionSnapshot(params.sourceSnapshot);
@@ -501,7 +507,7 @@ export async function createMatrixSessionProjection(params: {
               : params.sourceDirect
                 ? "session-projection-slack-direct"
                 : MATRIX_SESSION_PROJECTION_BOUND_BY,
-          introText: `OpenClaw session mirror · ${label}`,
+          introText,
           // Session projections follow the canonical session lifecycle, not the
           // shorter subagent-thread defaults used by ordinary Matrix bindings.
           idleTimeoutMs: 0,
@@ -567,6 +573,7 @@ export async function handleMatrixSessionProjectionCreate(
       sourceActorId: clean(params?.sourceActorId) || undefined,
       accountId: clean(params?.accountId) || undefined,
       label: clean(params?.label) || undefined,
+      introText: clean(params?.introText) || undefined,
       readOnly: params?.readOnly === true,
       sourceDirect: params?.sourceDirect === true,
       sourceDetached: params?.sourceDetached === true,

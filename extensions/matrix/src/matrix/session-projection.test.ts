@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { bindReplyPublication } from "../../../../src/auto-reply/reply-publication.js";
 import {
   createMatrixSessionProjection,
+  handleMatrixSessionProjectionCreate,
   inspectMatrixSessionProjection,
   handleMatrixSessionProjectionMessageReceived,
   handleMatrixSessionProjectionReplyPayloadSending as handleUntrustedReply,
@@ -177,7 +178,56 @@ describe("Matrix session projection", () => {
           sourceActorId: "user-123",
           idleTimeoutMs: 0,
           maxAgeMs: 0,
+          introText: "Conversation connected.",
         }),
+      }),
+    );
+  });
+
+  it("passes application introduction and links unchanged to the ordinary root publication", async () => {
+    const introText =
+      "Continuing this conversation in Cellect.\n\n" +
+      "[Open in Cellect](https://fi.example/shape/chat?fiConversation=conversation) · " +
+      "[Open in Slack](https://fi.example/api/threads/source-link?conversationId=conversation)";
+    await createMatrixSessionProjection({
+      cfg,
+      targetSessionKey: sessionKey,
+      roomId: "!room",
+      introText,
+    });
+    expect(mocks.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        placement: "child",
+        metadata: expect.objectContaining({ introText }),
+      }),
+    );
+    await expect(
+      createMatrixSessionProjection({
+        cfg,
+        targetSessionKey: sessionKey,
+        roomId: "!room",
+        introText: "x".repeat(4097),
+      }),
+    ).rejects.toThrow("Projection introduction is too long");
+  });
+
+  it("accepts the application introduction through the registered gateway request handler", async () => {
+    const introText =
+      "Continuing this conversation in Cellect.\n\n" +
+      "[Open in Cellect](https://fi.example/chat) · [Open in Slack](https://example.slack.com/archives/C1/p1700000000000001)";
+    const respond = vi.fn();
+    await handleMatrixSessionProjectionCreate(
+      {
+        params: { targetSessionKey: sessionKey, roomId: "!room", introText },
+        context: { getRuntimeConfig: () => cfg },
+        respond,
+      } as unknown as Parameters<typeof handleMatrixSessionProjectionCreate>[0],
+      {} as never,
+    );
+    expect(respond).toHaveBeenCalledWith(true, expect.objectContaining({ status: "created" }));
+    expect(mocks.bind).toHaveBeenCalledWith(
+      expect.objectContaining({
+        metadata: expect.objectContaining({ introText }),
       }),
     );
   });
