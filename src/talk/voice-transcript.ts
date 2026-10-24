@@ -6,6 +6,13 @@ export function voiceTranscriptEventId(voiceSessionId: string, entryId: string):
   return `voice:${voiceSessionId}:${entryId}`;
 }
 
+/** Provider annotations contain no spoken request; ordinary words and mixed speech remain intact. */
+export function isNoiseOnlyVoiceTranscript(text: string): boolean {
+  return /^(?:\[(?:noise|silence|background noise|no speech|blank_audio)\][\s.\u2026,!?;:-]*)+$/i.test(
+    text.trim(),
+  );
+}
+
 export function buildPersistedVoiceMessage(params: {
   role: "user" | "assistant";
   text: string;

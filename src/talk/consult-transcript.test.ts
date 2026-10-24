@@ -5,6 +5,10 @@ import { classifySkippableRealtimeVoiceConsultTranscript } from "./consult-trans
 describe("realtime voice consult transcript classification", () => {
   it("skips empty and incomplete transcripts", () => {
     expect(classifySkippableRealtimeVoiceConsultTranscript("  ")).toBe("empty");
+    expect(classifySkippableRealtimeVoiceConsultTranscript("[noise] ...")).toBe("empty");
+    expect(
+      classifySkippableRealtimeVoiceConsultTranscript("[noise] check the email"),
+    ).toBeUndefined();
     expect(classifySkippableRealtimeVoiceConsultTranscript("can you check...")).toBe(
       "incomplete-transcript",
     );

@@ -134,6 +134,36 @@ describe("client voice session", () => {
     ).toThrow("already closed");
   });
 
+  it("does not persist noise-only user ASR as a conversation message", async () => {
+    await seedSession("agent:main:main");
+    const target = { agentId: "main", sessionKey: "agent:main:main" };
+    const voiceSessionId = createOrResumeClientVoiceSession({
+      ...target,
+      origin: "client",
+      voiceSessionId: "voice-noise",
+    });
+    await appendClientVoiceTranscript({
+      ...target,
+      sessionTarget: { sessionKey: target.sessionKey },
+      voiceSessionId,
+      entryId: "noise",
+      role: "user",
+      text: "[noise] ...",
+      config: {},
+    });
+    expect(sessionAccessorMocks.appendTranscriptMessage).not.toHaveBeenCalled();
+    await appendClientVoiceTranscript({
+      ...target,
+      sessionTarget: { sessionKey: target.sessionKey },
+      voiceSessionId,
+      entryId: "speech",
+      role: "user",
+      text: "[noise] check the email",
+      config: {},
+    });
+    expect(sessionAccessorMocks.appendTranscriptMessage).toHaveBeenCalledOnce();
+  });
+
   it("marks confirmability by declared capability, relay origin, or observed transcript", () => {
     const capable = createOrResumeClientVoiceSession({
       agentId: "main",

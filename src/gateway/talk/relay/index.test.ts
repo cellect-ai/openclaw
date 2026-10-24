@@ -20,6 +20,7 @@ import {
   authorizeClientVoiceConfirmation,
   bindAuthorizedClientVoiceConfirmation,
   checkClientVoiceToolConfirmationPolicy,
+  deactivateClientVoiceConfirmationSession,
 } from "../../../talk/client-voice-confirmation.js";
 import { noteClientVoiceConfirmationUtteranceForTest as noteClientVoiceConfirmationUtterance } from "../../../talk/client-voice-confirmation.test-support.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
@@ -2137,12 +2138,46 @@ describe("talk realtime gateway relay", () => {
     ).toHaveLength(2);
   });
 
+  it("settles relay confirmation readiness on a noise final without publishing it or granting a write", async () => {
+    let request: RealtimeVoiceBridgeCreateRequest | undefined;
+    const provider = createIdleRelayProvider((req) => {
+      request = req;
+      return makeRelayTransport({});
+    });
+    const { events, context } = createRelayEventRecorder();
+    const session = createTalkRealtimeRelaySession({ context, provider });
+    await Promise.resolve();
+    const policy = {
+      agentId: "main",
+      voiceSessionId: session.relaySessionId,
+      runId: "original",
+      toolName: "message",
+      toolParams: { action: "send", message: "hello" },
+    };
+    expect(checkClientVoiceToolConfirmationPolicy(policy).allowed).toBe(false);
+    request?.onTranscript?.("user", "yes", false);
+    const owner = relaySessions.get(session.relaySessionId)!;
+    const pending = owner.confirmationReadiness.wait();
+    await nextEventLoopTurn();
+    request?.onTranscript?.("user", "[noise] ...", true);
+    await expect(pending).resolves.toBeUndefined();
+    expect(owner.voiceTranscriptSeq).toBe(0);
+    expect(
+      events.some((entry) => (entry.payload as { text?: string }).text === "[noise] ..."),
+    ).toBe(false);
+    expect(checkClientVoiceToolConfirmationPolicy(policy).allowed).toBe(false);
+    stopTalkRealtimeRelaySession({ relaySessionId: session.relaySessionId, connId: "conn-1" });
+    deactivateClientVoiceConfirmationSession("main", session.relaySessionId);
+  });
+
   it("bridges browser audio, transcripts, and tool results through a backend provider", async () => {
     let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const bridge = makeRelayTransport({
       supportsToolResultContinuation: true,
       connect: vi.fn(async () => {
         bridgeRequest?.onReady?.();
+        bridgeRequest?.onTranscript?.("user", "[noise] ...", false);
+        bridgeRequest?.onTranscript?.("user", "[noise] ...", true);
         bridgeRequest?.onTranscript?.("user", "hel", false, { textMode: "snapshot" });
         bridgeRequest?.onEvent?.({
           direction: "server",
@@ -2204,6 +2239,9 @@ describe("talk realtime gateway relay", () => {
       interruptResponseOnInputAudio: true,
     });
     const readyPayload = findEventPayload(events, (payload) => payload.type === "ready");
+    expect(
+      events.some((entry) => (entry.payload as { text?: string }).text === "[noise] ..."),
+    ).toBe(false);
     expectRecordFields(readyPayload, {
       relaySessionId: session.relaySessionId,
       type: "ready",

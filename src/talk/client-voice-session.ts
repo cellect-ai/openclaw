@@ -46,6 +46,7 @@ import {
   buildPersistedVoiceMessage,
   createVoiceTranscriptOperationRegistry,
   normalizeVoiceTranscriptText,
+  isNoiseOnlyVoiceTranscript,
   VOICE_TRANSCRIPT_MAX_UNRESOLVED,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
   voiceTranscriptEventId,
@@ -443,7 +444,10 @@ function appendVoiceTranscript(params: {
 }): Promise<void> {
   // Normalize before admission so the queued task retains only bounded text.
   const normalized = { ...params, text: normalizeVoiceTranscriptText(params.text) };
-  if (!normalized.text) {
+  if (
+    !normalized.text ||
+    (normalized.role === "user" && isNoiseOnlyVoiceTranscript(normalized.text))
+  ) {
     return Promise.resolve();
   }
   const confirmation =

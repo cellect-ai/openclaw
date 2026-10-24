@@ -27,6 +27,7 @@ import {
   handleRealtimeVoiceHarnessBridgeEvent,
 } from "../../talk/realtime-session-harness.js";
 import type { TalkEvent } from "../../talk/talk-events.js";
+import { isNoiseOnlyVoiceTranscript } from "../../talk/voice-transcript.js";
 import type { DeliveryContext } from "../../utils/delivery-context.shared.js";
 import { ADMIN_SCOPE, WRITE_SCOPE } from "../operator-scopes.js";
 import { resolveChatSendCallerContext } from "../server-methods/gateway-client-identity.js";
@@ -393,6 +394,12 @@ export function createTalkClientGatewayControlOwner(params: {
 
   const handleTranscript = (role: "user" | "assistant", text: string, final: boolean): void => {
     if (!acceptingProviderTranscripts || (signal.aborted && !final)) {
+      return;
+    }
+    if (role === "user" && isNoiseOnlyVoiceTranscript(text)) {
+      if (final) {
+        confirmationReadiness.observeUserTranscript("", true);
+      }
       return;
     }
     const userTranscript =

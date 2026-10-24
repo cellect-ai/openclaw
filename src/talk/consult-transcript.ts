@@ -1,3 +1,5 @@
+import { isNoiseOnlyVoiceTranscript } from "./voice-transcript.js";
+
 /**
  * Transcript guardrails for realtime voice agent consults.
  *
@@ -54,7 +56,7 @@ export function classifySkippableRealtimeVoiceConsultTranscript(
   text: string,
 ): SkippableRealtimeVoiceConsultTranscriptReason | undefined {
   const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
-  if (!normalized) {
+  if (!normalized || isNoiseOnlyVoiceTranscript(normalized)) {
     return "empty";
   }
   if (/(\.\.\.|…)\s*$/.test(normalized)) {

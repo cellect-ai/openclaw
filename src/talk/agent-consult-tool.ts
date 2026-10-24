@@ -12,6 +12,9 @@ import {
 import { isStringOption, readTrimmedStringAlias } from "../utils/string-readers.js";
 import type { RealtimeVoiceTool } from "./provider-types.js";
 
+const UNVERIFIED_OUTCOME_INSTRUCTIONS =
+  "A denied, unavailable, interrupted, or failed check leaves the external outcome unverified. Say you could not verify it; never infer that an email was unsent or an action was undone from an access or tool failure, and never repeat a write just to find out.";
+
 /** Stable provider-facing tool name for realtime voice agent delegation. */
 export const REALTIME_VOICE_AGENT_CONSULT_TOOL_NAME = "openclaw_agent_consult";
 /** Closed policy set controlling whether the consult tool is exposed. */
@@ -222,6 +225,7 @@ export function buildRealtimeVoiceSessionInstructions(params: {
       toolPolicy: params.toolPolicy,
       consultPolicy: params.consultPolicy,
     }),
+    UNVERIFIED_OUTCOME_INSTRUCTIONS,
   ];
   // Proxy prompts retain empty blocks as part of their stable session prefix.
   return (params.isAgentProxy ? instructions : instructions.filter(Boolean)).join("\n\n");
@@ -299,6 +303,7 @@ export function buildRealtimeVoiceAgentConsultPrompt(params: {
     "Answer each independent part of a multi-part request when possible; one unavailable lookup must not suppress another answerable part.",
     "If speech is materially ambiguous about the person, entity, date, amount, or requested action, ask one concise correction before consequential work. Do not invent ASR confidence data.",
     "A checking/backchannel statement is not a result: complete the requested lookup and return its result, or return a clear failure/limitation. Never imply work is still running unless a tracked run actually remains active.",
+    UNVERIFIED_OUTCOME_INSTRUCTIONS,
     "When finished, return only the concise result the realtime voice agent should speak back.",
     "Report a security or approval block only when an actual tool result says so. Distinguish tool errors from permission denials; do not invent a blocked attempt. If a read-only call fails, correct the tool or arguments and continue when possible.",
     "Do not include markdown, tool logs, or private reasoning. Include citations only when the spoken answer needs them.",

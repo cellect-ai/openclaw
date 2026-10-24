@@ -15,6 +15,7 @@ import type { TalkEventInput } from "../../../talk/talk-session-controller.js";
 import {
   VOICE_TRANSCRIPT_QUEUE_POLICY,
   voiceTranscriptEventId,
+  isNoiseOnlyVoiceTranscript,
 } from "../../../talk/voice-transcript.js";
 import { createTalkClientAgentConsultRunner } from "../client-agent-consult.js";
 import { createTalkRealtimeRunControlOwner } from "../realtime-run-control.js";
@@ -498,6 +499,12 @@ export function createTalkRealtimeRelaySession(
     onTranscript: (role, text, final, update) => {
       const relay = getActiveRelay() ?? (relayRef.current?.closing ? relayRef.current : undefined);
       if (!relay || relay.voiceSessionClose) {
+        return;
+      }
+      if (role === "user" && isNoiseOnlyVoiceTranscript(text)) {
+        if (final && !relay.closing) {
+          confirmationReadiness.observeUserTranscript("", true);
+        }
         return;
       }
       if (role === "assistant" && outputOwnership.suppressingOutput) {
