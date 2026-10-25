@@ -282,7 +282,7 @@ function smokeImage(directory, architecture, variant, configDigest) {
   );
   const script =
     variant === "browser"
-      ? String.raw`set -eu; browser="$(find /home/node/.cache/ms-playwright -maxdepth 5 -type f \( -name chrome -o -name chromium -o -name chrome-headless-shell \) -print | head -1)"; test -n "$browser"; "$browser" --version`
+      ? String.raw`set -eu; browser="$(find "$PLAYWRIGHT_BROWSERS_PATH" -maxdepth 5 -type f \( -name chrome -o -name chromium -o -name chrome-headless-shell \) -print | head -1)"; test -n "$browser"; "$browser" --version`
       : WORKSPACE_SMOKE;
   run("docker", ["run", "--rm", "--entrypoint", "/bin/sh", image, "-lc", script], {
     timeout: 120_000,

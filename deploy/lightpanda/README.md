@@ -60,7 +60,7 @@ manifests or the lockfile:
 
 | Package                                                              | Version | License    | Verified npm tarball integrity                                                                    |
 | -------------------------------------------------------------------- | ------- | ---------- | ------------------------------------------------------------------------------------------------- |
-| [playwright-core](https://registry.npmjs.org/playwright-core/1.63.0) | 1.63.0  | Apache-2.0 | `sha512-rYCsBF/M5HjUch52bbtVONEFjv6Xu8sm8h72dNlR5bzIE1fvC/bxgspzkjSfU+MweEMmPM8KJebG6nnyxo5mCg==` |
+| [playwright-core](https://registry.npmjs.org/playwright-core/1.64.1) | 1.64.1  | Apache-2.0 | `sha512-BC4s8y6SEVA6Q1rSxZTto8hI1KUI3xXlHGZgvGqP4IqPdI/a6FX9H29IDNz7vKo9l21b6LfYosScPL6M3xxyDQ==` |
 | [ws](https://registry.npmjs.org/ws/8.21.3)                           | 8.21.3  | MIT        | `sha512-201TZ/kPWxoPr/OKWjquZR1SWKXcvxdH+e1xrx89b3YbmzLMFCLfnaG1HFIgWzJOEWZ7MvpK++odZufgYR50Rw==` |
 
 Downloaded tarball SHA-512 values matched `pnpm-lock.yaml`. Playwright's package

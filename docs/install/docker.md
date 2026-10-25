@@ -134,11 +134,12 @@ Keep your existing volumes, ports, and other settings. Do not rerun setup with a
 empty shell environment to change only the image: setup rewrites `.env` from the
 current shell and defaults.
 
-An existing home volume or bind mount covering `/home/node/.cache/ms-playwright`
-can hide the image's bundled Chromium. If browser discovery still fails after the
-image switch, check those mounts. Preserve the data, then either provision
-Chromium in the mounted home or adjust the mounts to leave the image's browser
-cache visible; recreating the container does not refresh a populated home volume.
+The image's bundled Chromium lives at `/opt/ms-playwright`
+(`PLAYWRIGHT_BROWSERS_PATH`), outside the home volume, so an image switch updates
+it. A home volume created by an older image may still hold a stale copy under
+`/home/node/.cache/ms-playwright`; browser discovery prefers
+`PLAYWRIGHT_BROWSERS_PATH`, and you can delete the stale copy once the new image
+is running. Do not set `browser.executablePath` to a path inside the home volume.
 
 For a new installation from a local source build, bake Chromium into the image:
 

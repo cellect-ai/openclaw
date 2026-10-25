@@ -1203,11 +1203,15 @@ printf 'status=%s\\n' "$status"
   it("exports the Playwright browser cache installed by the root Dockerfile", () => {
     const dockerfile = readFileSync("Dockerfile", "utf8");
 
-    expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright");
+    expect(dockerfile).toContain("ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright");
     expect(dockerfile).toContain('mkdir -p "$PLAYWRIGHT_BROWSERS_PATH"');
+    expect(dockerfile).toContain(
+      'ln -s "$PLAYWRIGHT_BROWSERS_PATH" /home/node/.cache/ms-playwright',
+    );
     expect(dockerfile).toContain(
       "node /app/node_modules/playwright-core/cli.js install --with-deps chromium",
     );
+    expect(dockerfile).not.toContain('chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"');
   });
 
   it("passes the baked browser build arg through Docker setup", () => {

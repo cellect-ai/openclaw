@@ -269,8 +269,8 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 # eMudhra distrust (2026-10-21): Node and OpenSSL clients read the patched OS
 # store explicitly, and every Chromium the gateway can launch distrusts the 16
 # compromised intermediates plus emSign ECC Root CA - G3 by managed policy.
-# The Playwright Chromium lives in the openclaw_home volume, which an image
-# rebuild does not replace, so the policy ships here, outside /home/node.
+# The policy ships here, outside /home/node, so it also covers an older
+# Chromium left on a retained home volume.
 # Chrome for Testing reads /etc/opt/chrome_for_testing; the other two cover
 # Google Chrome and Debian Chromium.
 ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
@@ -406,16 +406,22 @@ RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,shar
 # Adds ~300MB but eliminates the 60-90s Playwright install on every container start.
 # Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
+# The browsers stay in the image, outside /home/node: Compose retains /home/node
+# as a named volume, which Docker seeds only once, so a browser installed there
+# never updates on later deploys (gateways kept Chrome 145 and 153 across
+# Playwright bumps). Root-owned so the runtime cannot replace a binary it launches.
+# The symlink keeps the old path for volume-less runs and newly created volumes.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN --mount=type=cache,id=openclaw-bookworm-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-bookworm-apt-lists,target=/var/lib/apt,sharing=locked \
     if [ -n "$OPENCLAW_INSTALL_BROWSER" ]; then \
       apt-get update && \
       DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
-      install -d -m 0755 -o node -g node "$(dirname "$PLAYWRIGHT_BROWSERS_PATH")" && \
       mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
       node /app/node_modules/playwright-core/cli.js install --with-deps chromium && \
-      chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"; \
+      chmod -R a+rX,go-w "$PLAYWRIGHT_BROWSERS_PATH" && \
+      install -d -m 0755 -o node -g node /home/node/.cache && \
+      ln -s "$PLAYWRIGHT_BROWSERS_PATH" /home/node/.cache/ms-playwright; \
     fi
 
 # Optionally install Docker CLI for sandbox container management.
