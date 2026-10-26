@@ -4,6 +4,9 @@ import {
   onInternalDiagnosticEvent,
   type DiagnosticEventPayload,
 } from "../../../infra/diagnostic-events.js";
+import { hookRunnerGlobalState } from "../../../plugins/hook-runner-global-state.js";
+import { createHookRunnerWithRegistry } from "../../../plugins/hooks.test-fixtures.js";
+import type { PluginHookToolContext } from "../../../plugins/types.js";
 import { readNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
 import { wrapToolWithBeforeToolCallHook } from "../../agent-tools.before-tool-call.js";
 import type { createOpenClawCodingTools } from "../../agent-tools.js";
@@ -29,6 +32,7 @@ import {
 
 const hoisted = getHoisted();
 const tempPaths: string[] = [];
+let restoreHookState: (() => void) | undefined;
 
 function catalogProbeTools() {
   return [
@@ -67,9 +71,132 @@ describe("runEmbeddedAttempt tool boundaries", () => {
   });
 
   afterEach(async () => {
+    restoreHookState?.();
+    restoreHookState = undefined;
     await cleanupTempPaths(tempPaths);
     tempPaths.length = 0;
   });
+
+  it.each([true, false])(
+    "preserves requester identity for fallback Code Mode tools (verified sender: %s)",
+    async (verifiedSender) => {
+      const senderId = "@requester:matrix.example";
+      const accountId = "matrix-account";
+      const contexts: PluginHookToolContext[] = [];
+      const { runner, registry } = createHookRunnerWithRegistry([
+        {
+          hookName: "before_tool_call",
+          handler: () => undefined,
+        },
+      ]);
+      vi.spyOn(runner, "hasHooks").mockImplementation((name) => name === "before_tool_call");
+      vi.spyOn(runner, "runBeforeToolCall").mockImplementation(async (_event, context) => {
+        contexts.push(context);
+        if (context.requester?.senderId !== senderId || context.requester.accountId !== accountId) {
+          return { block: true, blockReason: "no_admission" };
+        }
+        return undefined;
+      });
+      hoisted.getGlobalHookRunnerMock.mockReturnValue(runner);
+      // The prepared tool adapter can run in the built worker module graph.
+      // Both copies share the host hook slot, rather than this source-module mock.
+      const previousHookState = { ...hookRunnerGlobalState };
+      restoreHookState = () => Object.assign(hookRunnerGlobalState, previousHookState);
+      Object.assign(hookRunnerGlobalState, { hookRunner: runner, registry });
+      const publishQuestion = vi.fn(async () => ({ content: [], details: { published: true } }));
+      hoisted.createOpenClawCodingToolsMock.mockReturnValue([
+        {
+          name: "ask_user",
+          description: "Ask a question",
+          parameters: { type: "object" },
+          execute: publishQuestion,
+        },
+      ]);
+      const result = await createContextEngineAttemptRunner({
+        contextEngine: createContextEngineBootstrapAndAssemble(),
+        sessionKey: "agent:main:matrix:channel:!room:matrix.example:thread:$root",
+        tempPaths,
+        attemptOverrides: {
+          disableTools: false,
+          fallbackActive: true,
+          messageChannel: "matrix",
+          agentAccountId: accountId,
+          senderId: verifiedSender ? senderId : undefined,
+          config: { tools: { codeMode: true, toolSearch: false } },
+        },
+        createSession: () => {
+          const session = createDefaultEmbeddedSession();
+          const options = hoisted.createAgentSessionMock.mock.calls.at(-1)?.[0];
+          if (!options?.customTools) {
+            throw new Error("Expected prepared tools");
+          }
+          const tools = wrapToolDefinitions(options.customTools);
+          expect(tools.map((tool) => tool.name)).toContain("exec");
+          let turn = 0;
+          const agent = new Agent({
+            initialState: { model: options.model, tools },
+            streamFn: () => {
+              const first = turn++ === 0;
+              const message: AssistantMessage = {
+                role: "assistant",
+                content: first
+                  ? [
+                      {
+                        type: "toolCall",
+                        id: "question-call",
+                        name: "exec",
+                        arguments: {
+                          title: "Ask the requester a question",
+                          code: "return await ask_user({});",
+                        },
+                      },
+                    ]
+                  : [{ type: "text", text: "Done." }],
+                api: options.model.api,
+                provider: options.model.provider,
+                model: options.model.id,
+                usage: createZeroUsageFixture(),
+                stopReason: first ? "toolUse" : "stop",
+                timestamp: Date.now(),
+              };
+              const stream = createAssistantMessageEventStream();
+              queueMicrotask(() => {
+                stream.push({ type: "done", reason: first ? "toolUse" : "stop", message });
+                stream.end();
+              });
+              return stream;
+            },
+          });
+          // SAFETY: This fixture delegates execution to the real tool-calling loop.
+          session.agent = agent as typeof session.agent;
+          Object.defineProperty(session, "messages", {
+            get: () => agent.state.messages,
+            set: (messages) => {
+              agent.state.messages = messages;
+            },
+          });
+          session.setActiveToolsByName = (names) => {
+            agent.state.tools = tools.filter((tool) => names.includes(tool.name));
+          };
+          session.getActiveToolNames = () => agent.state.tools.map((tool) => tool.name);
+          session.prompt = async (prompt, promptOptions) => {
+            promptOptions?.preflightResult?.(true);
+            await agent.prompt(prompt);
+          };
+          return session;
+        },
+      });
+      expect(result.codeModeEngaged).toBe(true);
+      expect(contexts[0]).toMatchObject({
+        toolName: "ask_user",
+        requester: { channel: "matrix", accountId, ...(verifiedSender ? { senderId } : {}) },
+      });
+      expect(publishQuestion).toHaveBeenCalledTimes(verifiedSender ? 1 : 0);
+      if (!verifiedSender) {
+        expect(contexts[0]?.requester).not.toHaveProperty("senderId");
+      }
+    },
+  );
 
   it.each([
     { mode: "direct spawn", toolName: "sessions_spawn", code: undefined, failurePhase: undefined },

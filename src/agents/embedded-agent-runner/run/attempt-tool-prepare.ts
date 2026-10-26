@@ -409,6 +409,17 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         runId: attempt.runId,
         approvalReviewerDeviceId: attempt.approvalReviewerDeviceId,
         channelId: attempt.currentChannelId,
+        // Catalog controls enter the tool adapter without a coding-tool wrapper.
+        // Carry the same host-verified requester into their policy hooks.
+        requester: {
+          ...(attempt.messageChannel || attempt.messageProvider
+            ? { channel: attempt.messageChannel ?? attempt.messageProvider }
+            : {}),
+          ...(attempt.agentAccountId ? { accountId: attempt.agentAccountId } : {}),
+          ...(attempt.senderId ? { senderId: attempt.senderId } : {}),
+          ...(attempt.senderIsOwner !== undefined ? { senderIsOwner: attempt.senderIsOwner } : {}),
+          ...(attempt.memberRoleIds?.length ? { roleIds: [...attempt.memberRoleIds] } : {}),
+        },
         trace: params.runTrace,
         loopDetection: resolveToolLoopDetectionConfig({
           cfg: attempt.config,
