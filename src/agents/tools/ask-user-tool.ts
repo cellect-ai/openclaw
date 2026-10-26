@@ -476,6 +476,8 @@ export function createAskUserTool(params: {
   return {
     label: "Ask User",
     name: "ask_user",
+    // Human answers must resume the model tool call, never an unattended guest cell.
+    catalogMode: "direct-only",
     displaySummary: ASK_USER_TOOL_DISPLAY_SUMMARY,
     description: describeAskUserTool(),
     parameters: AskUserToolSchema,
@@ -657,10 +659,14 @@ export function createAskUserTool(params: {
               isReplyDispatchDeliveryError(deliveryResult.error) &&
               deliveryResult.error.outcome === "failed-deliver"
             ) {
-              const details = { status: "delivery_failed" as const };
+              const details = {
+                status: "delivery_failed" as const,
+                ok: false,
+                error: "Question delivery could not be confirmed. Please ask again.",
+              };
               return {
                 ...textResult(
-                  `The prompt became visible, but its controls failed to deliver. The question was cancelled; no retry/fallback should be sent.\n\n${JSON.stringify(details, null, 2)}`,
+                  `Question delivery could not be confirmed. The question was cancelled; do not send a duplicate prompt automatically.\n\n${JSON.stringify(details, null, 2)}`,
                   details,
                 ),
                 terminate: true,

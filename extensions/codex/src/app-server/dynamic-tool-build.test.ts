@@ -539,6 +539,40 @@ describe("Codex app-server dynamic tool build", () => {
     });
   });
 
+  it.each(["direct", "searchable"] as const)(
+    "keeps production human-question tools outside native Code Mode with %s loading",
+    async (loading) => {
+      const workspaceDir = path.join(tempDir, "human-question-workspace");
+      const params = createParams(path.join(tempDir, "human-question.jsonl"), workspaceDir);
+      params.sessionKey = "agent:main:main";
+      params.disableTools = false;
+      params.runtimePlan = createCodexRuntimePlanFixture();
+      await bindProductionCodexHostCapabilities(params, hostCapabilityClosers);
+      const tools = await buildDynamicToolsForTest(params, workspaceDir, {});
+      const questionTools = tools.filter((tool) => ["ask_user", "secrets"].includes(tool.name));
+      expect(questionTools.map((tool) => tool.name).toSorted()).toEqual(["ask_user", "secrets"]);
+      const bridge = createCodexDynamicToolBridge({
+        tools: questionTools,
+        signal: new AbortController().signal,
+        loading,
+      });
+      expect(bridge.specs).toEqual([
+        {
+          type: "namespace",
+          name: CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+          description: "",
+          tools: expect.arrayContaining([
+            expect.objectContaining({ name: "ask_user" }),
+            expect.objectContaining({ name: "secrets" }),
+          ]),
+        },
+      ]);
+      for (const tool of flattenCodexDynamicToolFunctions(bridge.specs)) {
+        expect(tool).not.toHaveProperty("deferLoading");
+      }
+    },
+  );
+
   it("pins guarded Gateway shell calls to human approval after stripping model policy", async () => {
     const workspaceDir = path.join(tempDir, "guarded-gateway-workspace");
     const params = createParams(path.join(tempDir, "guarded-gateway.jsonl"), workspaceDir);

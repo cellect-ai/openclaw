@@ -24,7 +24,11 @@ vi.mock("./runtime.js", () => ({
   }),
 }));
 
-import { matrixOutbound, resolveMatrixExtraContent } from "./outbound.js";
+import {
+  matrixOutbound,
+  prepareMatrixReplyPayload,
+  resolveMatrixExtraContent,
+} from "./outbound.js";
 
 type MockCallSource = { mock: { calls: Array<Array<unknown>> } };
 
@@ -321,6 +325,48 @@ describe("matrixOutbound cfg threading", () => {
       "Choose\n\nEnvironment:\n- Production: `/deploy production`\n- Opaque",
     );
     expect(rendered?.text).not.toContain("private-callback-token");
+  });
+
+  it("keeps an authored question body once while preserving structured answer controls", async () => {
+    const text = [
+      "Agent needs input:",
+      "",
+      "Next step",
+      "What should happen next?",
+      "1. Prepare and hold - Nothing is sent.",
+      "2. Leave open",
+      "Other: reply with your own answer.",
+    ].join("\n");
+    const presentation = {
+      blocks: [
+        { type: "text" as const, text: "What should happen next?" },
+        { type: "text" as const, text: "- Prepare and hold: Nothing is sent.\n- Leave open" },
+        {
+          type: "buttons" as const,
+          buttons: [
+            {
+              label: "Prepare and hold",
+              action: { type: "question" as const, questionId: "ask_next", optionValue: "prepare" },
+            },
+            {
+              label: "Leave open",
+              action: { type: "question" as const, questionId: "ask_next", optionValue: "leave" },
+            },
+          ],
+        },
+      ],
+    };
+    const prepared = await prepareMatrixReplyPayload({
+      text,
+      presentation,
+      presentationTextMode: "fallback",
+    });
+
+    expect(prepared.text).toBe(text);
+    expect(resolveMatrixExtraContent(prepared)).toEqual({
+      "com.openclaw.presentation": { ...presentation, version: 1, type: "message.presentation" },
+    });
+    expect(prepared.presentation).toBeUndefined();
   });
 
   it("sends empty Matrix presentation payloads with a minimal fallback body", async () => {

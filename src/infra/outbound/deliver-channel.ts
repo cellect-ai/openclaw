@@ -368,7 +368,7 @@ function createPluginHandler(
         })
       : outbound?.presentationCapabilities,
     renderPresentation: outbound?.renderPresentation
-      ? async (payload, sourcePresentation) => {
+      ? async (payload, sourcePresentation, fallbackText) => {
           // The delivery owner already normalized/adapted this; cloning drops fallback fragments.
           const presentation = payload.presentation;
           if (!presentation) {
@@ -388,6 +388,7 @@ function createPluginHandler(
             payload,
             presentation,
             sourcePresentation,
+            fallbackText,
             ctx,
           });
         }

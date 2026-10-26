@@ -38,8 +38,10 @@ import {
   TOOL_SEARCH_RAW_TOOL_NAME,
 } from "./tool-search.js";
 import { createToolSurfacePresentationForTest } from "./tool-surface-plan.test-support.js";
+import { createAskUserTool } from "./tools/ask-user-tool.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 import { createInstalledSkillTools } from "./tools/installed-skill-tools.js";
+import { createSecretsTool } from "./tools/secrets-tool.js";
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -90,6 +92,16 @@ describe("Code Mode catalog and model-visible surface", () => {
       pluginTool("fake_create_ticket", "Create a ticket"),
     ]);
     expect(tools.map((tool) => tool.name)).toEqual(["exec", "wait", "computer"]);
+    expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_create_ticket"]);
+  });
+
+  it("keeps blocking human questions out of guest execution", () => {
+    const { tools, catalogRef } = catalog([
+      createAskUserTool({ sessionKey: "agent:main:main" }),
+      createSecretsTool({ sessionKey: "agent:main:main" }),
+      pluginTool("fake_create_ticket", "Create a ticket"),
+    ]);
+    expect(tools.map((tool) => tool.name)).toEqual(["exec", "wait", "ask_user", "secrets"]);
     expect(catalogRef.current?.entries.map((entry) => entry.name)).toEqual(["fake_create_ticket"]);
   });
 

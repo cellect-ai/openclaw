@@ -122,7 +122,6 @@ export async function sendQuestionToolPrompt(params: {
       questions: questions.map(({ questionId: id, ...question }) =>
         Object.assign(question, { id }),
       ),
-      options: { intro: "Question for you:" },
     }),
   );
 }

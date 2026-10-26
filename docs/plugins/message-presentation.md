@@ -548,6 +548,12 @@ back to text because its complete native card cannot fit, use
 `sourcePresentation` to preserve full labels and apply the channel's text and
 URL sanitation. Continue using `presentation` for native controls.
 
+When the producer marks its text with `presentationTextMode: "fallback"`, the
+renderer also receives that body as `fallbackText`. Text-backed structured
+transports such as Matrix retain this authored body alongside the structured
+event. Native card renderers can keep omitting it when the native presentation
+already expresses the same facts.
+
 ## Degradation rules
 
 Presentation must be safe to send on limited channels.
@@ -611,16 +617,16 @@ required and the channel cannot pin the sent message, delivery reports failure.
 
 Current bundled renderers:
 
-| Channel         | Native render target                      | Notes                                                                                                                                                                                                   |
-| --------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Discord         | Components and component containers       | Supports the documented Discord-specific `components` extension for native layouts that `presentation` cannot express. Portable shared sends should use `presentation`.                                 |
-| Feishu          | Interactive cards                         | Card header uses `title` once. Within native cards, disabled or unsupported buttons retain label-only text; rejected URL targets and opaque callback values are omitted.                                |
-| Matrix          | Text fallback plus structured event field | Buttons/selects advertise as supported, but every block renders as `renderMessagePresentationFallbackText` output carried in a `com.openclaw.presentation` event field, not native interactive widgets. |
-| Mattermost      | Text plus interactive props               | Selects and dividers are not supported; those blocks degrade to text.                                                                                                                                   |
-| Microsoft Teams | Adaptive Cards                            | Plain `message` text is included with the card when both are provided. Selects, styles, and disabled state are not supported.                                                                           |
-| Slack           | Block Kit                                 | Renders `chart` as native `data_visualization` and `table` as native `data_table`; preserves legacy `channelData.slack.blocks`, but new shared sends should use `presentation`.                         |
-| Telegram        | Text plus inline keyboards                | Buttons/selects require inline button capability for the target surface; otherwise text fallback is used.                                                                                               |
-| Plain channels  | Text fallback                             | Channels without a renderer still get readable output.                                                                                                                                                  |
+| Channel         | Native render target                      | Notes                                                                                                                                                                                           |
+| --------------- | ----------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Discord         | Components and component containers       | Supports the documented Discord-specific `components` extension for native layouts that `presentation` cannot express. Portable shared sends should use `presentation`.                         |
+| Feishu          | Interactive cards                         | Card header uses `title` once. Within native cards, disabled or unsupported buttons retain label-only text; rejected URL targets and opaque callback values are omitted.                        |
+| Matrix          | Text fallback plus structured event field | Retains producer-authored fallback text when supplied; otherwise renders the blocks as text. The structured blocks remain in `com.openclaw.presentation` for clients with interactive controls. |
+| Mattermost      | Text plus interactive props               | Selects and dividers are not supported; those blocks degrade to text.                                                                                                                           |
+| Microsoft Teams | Adaptive Cards                            | Plain `message` text is included with the card when both are provided. Selects, styles, and disabled state are not supported.                                                                   |
+| Slack           | Block Kit                                 | Renders `chart` as native `data_visualization` and `table` as native `data_table`; preserves legacy `channelData.slack.blocks`, but new shared sends should use `presentation`.                 |
+| Telegram        | Text plus inline keyboards                | Buttons/selects require inline button capability for the target surface; otherwise text fallback is used.                                                                                       |
+| Plain channels  | Text fallback                             | Channels without a renderer still get readable output.                                                                                                                                          |
 
 Provider-native payload compatibility is kept for existing reply producers only.
 New native fields require the explicit exception review above.

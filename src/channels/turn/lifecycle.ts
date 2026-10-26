@@ -33,6 +33,7 @@ import {
 } from "../../infra/outbound/payloads.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
+import { wrapCurrentPluginInstance } from "../../plugins/plugin-instance-scope.js";
 import { resolveMessageReceiptPrimaryId } from "../message/receipt.js";
 import { createChannelReplyPipeline } from "../message/reply-pipeline.js";
 import { recordInboundSession } from "../session.js";
@@ -375,7 +376,9 @@ async function dispatchChannelTurnWithDeliveryOwner(
   const replyPipeline = resolveAssembledReplyPipeline(params);
   const adoption = params.turnAdoptionLifecycle ?? params.replyOptions?.turnAdoptionLifecycle;
   const delivery =
-    params.admission?.kind === "observeOnly" ? createObserveOnlyDeliveryAdapter() : params.delivery;
+    params.admission?.kind === "observeOnly"
+      ? createObserveOnlyDeliveryAdapter()
+      : wrapCurrentPluginInstance(params.delivery);
   const pendingAttempts: PendingChannelDeliveryAttempt[] = [];
   const suppressedAttempts: PendingChannelDeliveryAttempt[] = [];
   let agentRun: [runId?: string, executionIdentityToken?: ExecutionToken] = [];

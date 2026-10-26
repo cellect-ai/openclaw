@@ -208,6 +208,8 @@ export type ChannelOutboundAdapter = {
     presentation: MessagePresentation;
     /** Normalized original for readable fallbacks; native rendering uses presentation. */
     sourcePresentation?: MessagePresentation;
+    /** Producer-authored plain rendering when presentationTextMode is fallback. */
+    fallbackText?: string;
     ctx: ChannelOutboundPayloadContext;
   }) => Promise<ReplyPayload | null> | ReplyPayload | null;
   pinDeliveredMessage?: (params: {

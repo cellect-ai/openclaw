@@ -3,6 +3,7 @@ import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.j
 import { ReplyDispatchDeliveryError } from "../../auto-reply/reply/reply-dispatch-outcome.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { steerActiveSessionWithOptionalDeliveryWait } from "../embedded-agent-runner/run/attempt-queue-message.js";
+import { isToolResultError } from "../tool-result-error.js";
 import {
   cancelAskUserPromptDelivery,
   createAskUserTool,
@@ -703,10 +704,18 @@ describe("ask_user execution", () => {
     expect(deliveryError).not.toBeInstanceOf(ReplyDispatchDeliveryError);
     settleAskUserPromptDelivery(reservation.questionId, deliveryError);
 
-    await expect(pending).resolves.toMatchObject({
+    const failedResult = await pending;
+    expect(isToolResultError(failedResult)).toBe(true);
+    expect(failedResult).toMatchObject({
       terminate: true,
-      details: { status: "delivery_failed" },
-      content: [expect.objectContaining({ text: expect.stringMatching(/no retry\/fallback/i) })],
+      details: { status: "delivery_failed", ok: false },
+      content: [
+        expect.objectContaining({
+          text: expect.stringContaining(
+            "Question delivery could not be confirmed. The question was cancelled; do not send a duplicate prompt automatically.",
+          ),
+        }),
+      ],
     });
     expect(gateway.mock).toHaveBeenCalledWith(
       "question.resolve",

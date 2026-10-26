@@ -3956,6 +3956,50 @@ describe("Codex app-server thread lifecycle bindings", () => {
     expect(savedBinding?.contextEngine).toBeUndefined();
   });
 
+  it("replaces a guest question catalog with direct-only questions before the next turn", async () => {
+    const { sessionFile } = createPaths();
+    const fixture = await createSequentialLifecycleHarness(() => threadStartResult("thread-2"));
+    const oldTools = [createDeferredNamedDynamicTool("ask_user")];
+    const directTools: LifecycleInput["dynamicTools"] = [
+      {
+        type: "namespace",
+        name: "openclaw_direct",
+        description: "",
+        tools: [createNamedDynamicTool("ask_user")],
+      },
+    ];
+    await startOrResumeThread({ client: fixture.client, dynamicTools: oldTools });
+    await fixture.endTurn("thread-1");
+    const repaired = await startOrResumeThread({
+      client: fixture.client,
+      dynamicTools: directTools,
+    });
+    expect(repaired.threadId).toBe("thread-2");
+    const starts = fixture.request.mock.calls.filter(([method]) => method === "thread/start");
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.[1]).toMatchObject({
+      dynamicTools: directTools,
+      config: {
+        "features.code_mode": expect.objectContaining({
+          direct_only_tool_namespaces: expect.arrayContaining(["openclaw_direct"]),
+        }),
+      },
+    });
+    const fingerprint = (await readCodexAppServerBinding(sessionFile))?.dynamicToolsFingerprint;
+    await fixture.endTurn("thread-2");
+    const resumed = await startOrResumeThread({
+      client: fixture.client,
+      dynamicTools: directTools,
+    });
+    expect(resumed.threadId).toBe("thread-2");
+    expect((await readCodexAppServerBinding(sessionFile))?.dynamicToolsFingerprint).toBe(
+      fingerprint,
+    );
+    expect(fixture.request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(
+      2,
+    );
+  });
+
   it("keeps the previous dynamic tool fingerprint for transient no-tool maintenance turns", async () => {
     const { sessionFile } = createPaths();
 

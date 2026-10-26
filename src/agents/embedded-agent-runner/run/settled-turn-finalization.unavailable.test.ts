@@ -39,11 +39,17 @@ describe("unavailable finalization through the real core backend", () => {
     { trigger: "user", terminal: "failed", context: "openclaw-transcript", toolFailed: false },
     { trigger: "cron", terminal: "failed", context: "unavailable", toolFailed: false },
     { trigger: "user", terminal: "ok", context: "unavailable", toolFailed: true },
+    { trigger: "user", terminal: "ok", context: "unavailable", toolFailed: "delivery" },
     { trigger: "cron", terminal: "ok", context: "unavailable", toolFailed: false },
   ] as const)(
     "preserves settled work when finalization is unavailable ($trigger/$terminal/$context/toolFailed=$toolFailed)",
     async ({ trigger, terminal, context, toolFailed }) => {
       const failed = terminal === "failed";
+      const toolName = toolFailed === "delivery" ? "ask_user" : "exec";
+      const toolFailureText =
+        toolFailed === "delivery"
+          ? "Question delivery could not be confirmed. The question was cancelled."
+          : "Command exited with code 127";
       const expectedText = failed
         ? "⚠️ Selected model is at capacity. Try a different model, or wait and retry."
         : trigger === "cron"
@@ -54,7 +60,7 @@ describe("unavailable finalization through the real core backend", () => {
         provider: "openai",
         model: "gpt-5.6-luna",
         stopReason: "toolUse",
-        content: [{ type: "toolCall", id: "completed-command", name: "exec", arguments: {} }],
+        content: [{ type: "toolCall", id: "completed-command", name: toolName, arguments: {} }],
       });
       const attempt = makeEmbeddedRunnerAttempt({
         terminal:
@@ -79,19 +85,20 @@ describe("unavailable finalization through the real core backend", () => {
           {
             role: "toolResult",
             toolCallId: "completed-command",
-            toolName: "exec",
-            content: [{ type: "text", text: "completed-once" }],
-            isError: toolFailed,
+            toolName,
+            content: [{ type: "text", text: toolFailed ? toolFailureText : "completed-once" }],
+            isError: Boolean(toolFailed),
+            ...(toolFailed === "delivery"
+              ? { details: { status: "delivery_failed", ok: false, error: toolFailureText } }
+              : {}),
             timestamp: 3,
           },
         ],
-        toolMetas: [{ toolName: "exec", toolCallId: "completed-command", replaySafe: false }],
+        toolMetas: [{ toolName, toolCallId: "completed-command", replaySafe: false }],
         itemLifecycle: { startedCount: 1, completedCount: 1, activeCount: 0 },
         replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
         currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
-        lastToolError: toolFailed
-          ? { toolName: "exec", error: "Command exited with code 127" }
-          : undefined,
+        lastToolError: toolFailed ? { toolName, error: toolFailureText } : undefined,
       });
       attempt.settledTurnFinalizationContext =
         context === "unavailable"
@@ -146,9 +153,13 @@ describe("unavailable finalization through the real core backend", () => {
       expect(result.prepared.failureSignal).toBeUndefined();
       if (toolFailed) {
         expect(result.attempt).toBe(attempt);
+        expect(result.attempt.lastToolError).toEqual({ toolName, error: toolFailureText });
         expect(result.prepared.payloadsWithToolMedia).toEqual([
           expect.objectContaining({ text: expect.stringContaining("failed"), isError: true }),
         ]);
+        expect(
+          result.prepared.payloadsWithToolMedia?.some((payload) => payload.text === FALLBACK),
+        ).toBe(false);
         expect(await readVisibleSessionTranscriptMessageEntries(target)).toEqual(prefix);
         return;
       }

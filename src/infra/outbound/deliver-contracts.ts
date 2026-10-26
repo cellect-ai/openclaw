@@ -90,6 +90,7 @@ export type ChannelHandler = {
   renderPresentation?: (
     payload: ReplyPayload,
     sourcePresentation?: MessagePresentation,
+    fallbackText?: string,
   ) => Promise<ReplyPayload | null>;
   /** Resolved for the delivery's account when the adapter declares an account-aware resolver. */
   presentationCapabilities?: ChannelOutboundAdapter["presentationCapabilities"];

@@ -2414,6 +2414,54 @@ describe("deliverOutboundPayloads", () => {
     });
   });
 
+  it("passes authored fallback text to structured transport renderers", async () => {
+    const renderPresentation = vi.fn<NonNullable<ChannelOutboundAdapter["renderPresentation"]>>(
+      ({ payload, fallbackText }) => ({ ...payload, text: fallbackText }),
+    );
+    const sendText = installTextOutbound(
+      { channel: "matrix", messageId: "authored-controls", roomId: "!room" },
+      {
+        presentationCapabilities: { supported: true, buttons: true },
+        renderPresentation,
+        sendMedia: vi.fn(),
+      },
+    );
+    await deliverMatrix({
+      to: "!room",
+      payloads: [
+        {
+          text: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Prepare and hold",
+                    action: { type: "question", questionId: "ask_next", optionValue: "prepare" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(renderPresentation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ text: undefined }),
+        fallbackText: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+      }),
+    );
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+      }),
+    );
+  });
+
   it("keeps authored fallback text when formatting-aware capabilities disable tables", async () => {
     const renderPresentation = vi.fn(({ payload }) => ({ ...payload, text: "native table" }));
     const resolvePresentationCapabilities = vi.fn(

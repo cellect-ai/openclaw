@@ -296,7 +296,7 @@ describe("handleToolExecutionStart read path checks", () => {
 
     expect(onToolResult).toHaveBeenCalledWith({
       text: [
-        "Question for you:",
+        "Agent needs input:",
         "",
         "Target",
         "Where should this deploy?",
@@ -1965,7 +1965,9 @@ describe("handleToolExecutionEnd timeout metadata", () => {
       sessionKey: "agent:unit-session",
       toolResultFormat: "markdown",
     });
-    expect(payloads[0]?.text).toBe("⚠️ Exec failed (exit 1)");
+    expect(payloads[0]?.text).toBe(
+      "⚠️ Exec failed (exit 1). I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+    );
   });
 
   it("records structured error codes for failed tool results", async () => {
@@ -2233,7 +2235,9 @@ describe("handleToolExecutionEnd exec approval prompts", () => {
       sessionKey: "agent:unit-session",
       toolResultFormat: "markdown",
     });
-    expect(payloads[0]?.text).toBe("⚠️ Exec blocked");
+    expect(payloads[0]?.text).toBe(
+      "⚠️ Exec blocked. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+    );
   });
 
   it.each([

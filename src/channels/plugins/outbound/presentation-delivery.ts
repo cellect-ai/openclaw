@@ -15,6 +15,7 @@ export async function renderPresentationForDelivery(
     renderPresentation?: (
       payload: ReplyPayload & { presentation: MessagePresentation },
       sourcePresentation?: MessagePresentation,
+      fallbackText?: string,
     ) => ReplyPayload | null | Promise<ReplyPayload | null>;
   },
   payload: ReplyPayload,
@@ -56,7 +57,11 @@ export async function renderPresentationForDelivery(
     presentation: adaptedPresentation,
   };
   const rendered = handler.renderPresentation
-    ? await handler.renderPresentation(adaptedPayload, presentation)
+    ? await handler.renderPresentation(
+        adaptedPayload,
+        presentation,
+        textIsFallback ? payload.text : undefined,
+      )
     : null;
   if (rendered) {
     const {

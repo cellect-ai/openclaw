@@ -61,6 +61,7 @@ describe("renderPresentationForDelivery button adaptation", () => {
             tone: undefined,
             blocks: [{ type: "buttons", buttons: normalizedButtons }],
           },
+          undefined,
         ],
       ];
       const renderPresentation = vi
@@ -165,5 +166,7 @@ describe("renderPresentationForDelivery authored fallback", () => {
     });
 
     expect(renderPresentation).toHaveBeenCalledTimes(1);
+    expect(renderPresentation.mock.calls[0]?.[0].text).toBeUndefined();
+    expect(renderPresentation.mock.calls[0]?.[2]).toBe("authored plain body");
   });
 });

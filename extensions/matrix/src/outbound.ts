@@ -75,13 +75,18 @@ function resolveMatrixPresentationContent(
 function renderMatrixPresentationPayload(params: {
   payload: ReplyPayload;
   presentation: MessagePresentation;
+  fallbackText?: string;
 }): ReplyPayload {
   const matrixData = resolveMatrixChannelData(params.payload);
-  const fallbackText = renderMessagePresentationFallbackText({
-    text: params.payload.text,
-    presentation: params.presentation,
-    emptyFallback: MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT,
-  });
+  // Matrix clients consume the same structured event with different native UI.
+  // Keep the producer's complete readable body instead of flattening its controls twice.
+  const fallbackText = params.fallbackText?.trim()
+    ? params.fallbackText
+    : renderMessagePresentationFallbackText({
+        text: params.payload.text,
+        presentation: params.presentation,
+        emptyFallback: MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT,
+      });
   return {
     ...params.payload,
     text: fallbackText,
@@ -105,8 +110,12 @@ export function prepareMatrixReplyPayload(payload: ReplyPayload): Promise<ReplyP
   return renderPresentationForDelivery(
     {
       presentationCapabilities: matrixPresentationCapabilities,
-      renderPresentation: (prepared) =>
-        renderMatrixPresentationPayload({ payload: prepared, presentation: prepared.presentation }),
+      renderPresentation: (prepared, _sourcePresentation, fallbackText) =>
+        renderMatrixPresentationPayload({
+          payload: prepared,
+          presentation: prepared.presentation,
+          fallbackText,
+        }),
     },
     payload,
   );

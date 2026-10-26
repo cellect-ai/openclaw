@@ -248,6 +248,8 @@ export function createSecretsTool(params: {
   return {
     label: "Secrets",
     name: "secrets",
+    // Credential requests wait for a human in the same native tool-call lifecycle.
+    catalogMode: "direct-only",
     description: describeSecretsTool(),
     parameters: SecretsToolSchema,
     execute: async (toolCallId, input, signal) => {
