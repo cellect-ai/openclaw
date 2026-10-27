@@ -269,6 +269,78 @@ describe("registered Matrix agent entitlement hooks", () => {
     ).toMatchObject({ handled: true });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+  describe("dedicated Superadmin operator admission", () => {
+    const operatorConfig = { matrixTenantOrgId: undefined, operatorAgentId: "cellect-main" };
+    const proof = (overrides: Record<string, unknown> = {}) =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          agentId: "cellect-main",
+          orgId: "tenant-b",
+          credentialClass: "operator",
+          ...overrides,
+        }),
+      );
+
+    it("admits another tenant only with operator proof and rechecks the pinned tenant", async () => {
+      const hook = plugin(operatorConfig);
+      fetchMock.mockImplementation(async () => proof());
+      expect(await hook("before_agent_reply", {}, context())).toBeUndefined();
+      expect(await hook("before_tool_call", {}, tools())).toBeUndefined();
+      fetchMock.mockImplementation(async () => proof({ orgId: "tenant-c" }));
+      expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+    });
+
+    it.each([
+      { credentialClass: "tenant" },
+      { credentialClass: undefined },
+      { agentId: "cellect-fi-admin" },
+      { orgId: "" },
+      { orgId: null },
+      { ok: false },
+    ])("refuses invalid operator proof %j", async (override) => {
+      fetchMock.mockImplementation(async () => proof(override));
+      expect(await plugin(operatorConfig)("before_agent_reply", {}, context())).toMatchObject({
+        handled: true,
+      });
+    });
+
+    it("keeps tenant/admin agents unavailable on the operator runtime", async () => {
+      fetchMock.mockImplementation(async () => proof({ agentId: "cellect-fi-admin" }));
+      expect(
+        await plugin(operatorConfig)("before_agent_reply", {}, context("cellect-fi-admin")),
+      ).toMatchObject({ handled: true });
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it.each(["tenantOrgId", "matrixTenantOrgId"])(
+      "rejects operator config with %s",
+      async (key) => {
+        expect(
+          await plugin({ ...operatorConfig, [key]: "tenant-a" })(
+            "before_agent_reply",
+            {},
+            context(),
+          ),
+        ).toMatchObject({ handled: true });
+        expect(fetchMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it("does not let an operator proof authorize a tenant runtime", async () => {
+      fetchMock.mockImplementation(async () => proof({ orgId: "tenant-a" }));
+      expect(await plugin()("before_agent_reply", {}, context())).toMatchObject({ handled: true });
+    });
+
+    it("honors live revocation after operator admission", async () => {
+      const hook = plugin(operatorConfig);
+      fetchMock
+        .mockResolvedValueOnce(proof())
+        .mockResolvedValueOnce(new Response(null, { status: 403 }));
+      expect(await hook("before_agent_reply", {}, context())).toBeUndefined();
+      expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
+    });
+  });
   it("revalidates before tools and honors revocation, then releases run identity", async () => {
     const hook = plugin();
     fetchMock

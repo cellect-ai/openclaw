@@ -17,7 +17,7 @@ type Runtime = {
   protocol: string;
   capture(context: OpenClawPluginToolContext): Capability | undefined;
 };
-function fixture() {
+function fixture(configOverrides: Record<string, unknown> = {}, agentId = "cellect-fi-admin") {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
   const subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
   const lifecycles: PluginRuntimeLifecycleRegistration[] = [];
@@ -34,6 +34,7 @@ function fixture() {
                 baseUrl: "https://fi.test/fi",
                 brokerTokenEnv: "VOICE_BROKER",
                 matrixTenantOrgId: "tenant",
+                ...configOverrides,
               },
             },
           },
@@ -60,12 +61,12 @@ function fixture() {
   const admit = async (runId = "one", senderId = "@speaker:matrix.test", mode = "voice") => {
     const ctx = {
       runId,
-      agentId: "cellect-fi-admin",
+      agentId,
       accountId: "admin",
       channel: "matrix",
       senderId,
       chatId: "!room:matrix.test:thread:$root",
-      sessionKey: "agent:cellect-fi-admin:matrix:channel:!room:matrix.test:thread:$root",
+      sessionKey: `agent:${agentId}:matrix:channel:!room:matrix.test:thread:$root`,
       channelContext: {
         sender: { id: senderId },
         chat: {
@@ -83,10 +84,10 @@ function fixture() {
   const capture = (overrides = {}) =>
     runtime.capture({
       runId: "one",
-      agentId: "cellect-fi-admin",
+      agentId,
       agentAccountId: "admin",
       messageChannel: "matrix",
-      sessionKey: "agent:cellect-fi-admin:matrix:channel:!room:matrix.test:thread:$root",
+      sessionKey: `agent:${agentId}:matrix:channel:!room:matrix.test:thread:$root`,
       requesterSenderId: "@speaker:matrix.test",
       nativeChannelId: "!room:matrix.test",
       ...overrides,
@@ -130,6 +131,26 @@ describe("registered Fi admitted-turn capability", () => {
   afterEach(() => {
     vi.unstubAllGlobals();
     vi.unstubAllEnvs();
+  });
+  it("keeps operator requester capabilities pinned to their admitted conversation tenant", async () => {
+    const f = fixture(
+      { matrixTenantOrgId: undefined, operatorAgentId: "cellect-main" },
+      "cellect-main",
+    );
+    const operatorProof = (orgId: string, credentialClass = "operator") =>
+      new Response(JSON.stringify({ ok: true, agentId: "cellect-main", orgId, credentialClass }));
+    fetchMock.mockResolvedValueOnce(operatorProof("other-tenant"));
+    expect(await f.admit()).toBeUndefined();
+    const cap = f.capture()!;
+    expect(cap).toBeDefined();
+    fetchMock.mockResolvedValueOnce(operatorProof("other-tenant"));
+    await expect(cap.authorizeRequester("own-accounts")).resolves.toMatchObject({
+      orgId: "other-tenant",
+    });
+    fetchMock.mockResolvedValueOnce(operatorProof("different-tenant"));
+    await expect(cap.authorizeRequester("own-accounts")).rejects.toThrow();
+    fetchMock.mockResolvedValueOnce(operatorProof("other-tenant", "tenant"));
+    await expect(cap.authorizeRequester("own-accounts")).rejects.toThrow();
   });
   it("uses the actual speaker and owner thread, and obtains fresh provider-neutral proof", async () => {
     const f = fixture();

@@ -5,7 +5,12 @@ import {
   sleepWithAbort,
 } from "openclaw/plugin-sdk/retry-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
-import { brokerToken, configFromRuntime, matrixConnection } from "./fi-delegation.js";
+import {
+  brokerToken,
+  configFromRuntime,
+  matrixConnection,
+  type ResolvedPluginConfig,
+} from "./fi-delegation.js";
 
 const UNAVAILABLE = "Access verification is temporarily unavailable. Please retry shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
@@ -23,6 +28,8 @@ type Turn = {
   roomId: string;
   senderId: string;
   sessionKey: string;
+  /** Fi-owned conversation tenant, pinned after the first successful admission. */
+  orgId?: string;
 } & ({ eventId: string; mode: "text" } | { threadRootEventId: string; mode: "voice" });
 
 function sessionThreadId(sessionKey: string): string | undefined {
@@ -73,6 +80,46 @@ function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: strin
   return turn.mode === "voice"
     ? { eventId: null, threadRootEventId: turn.threadRootEventId }
     : { eventId: turn.eventId, threadRootEventId: null };
+}
+
+function hasAuthorizationScope(config: ResolvedPluginConfig, agentId: string): boolean {
+  if (config.tenantOrgConflict) {
+    return false;
+  }
+  return config.operatorAgentId
+    ? !config.tenantOrgId && config.operatorAgentId === agentId
+    : Boolean(config.tenantOrgId);
+}
+
+/** Fi owns requester grants; configuration limits which runtime can consume them. */
+function isAuthorizedProof(
+  api: OpenClawPluginApi,
+  turn: Turn,
+  result: unknown,
+): result is { ok: true; agentId: string; orgId: string; googleRequester?: unknown } {
+  const config = configFromRuntime(api);
+  if (
+    !hasAuthorizationScope(config, turn.agentId) ||
+    !result ||
+    typeof result !== "object" ||
+    !("ok" in result) ||
+    result.ok !== true ||
+    !("agentId" in result) ||
+    result.agentId !== turn.agentId ||
+    !("orgId" in result) ||
+    typeof result.orgId !== "string" ||
+    !result.orgId.trim() ||
+    (turn.orgId !== undefined && result.orgId !== turn.orgId)
+  ) {
+    return false;
+  }
+  if (config.operatorAgentId) {
+    return "credentialClass" in result && result.credentialClass === "operator";
+  }
+  return (
+    result.orgId === config.tenantOrgId &&
+    (!("credentialClass" in result) || result.credentialClass === "tenant")
+  );
 }
 
 /**
@@ -139,7 +186,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     const config = configFromRuntime(api);
     const connection = matrixConnection(config, turn.accountId);
     const token = connection && brokerToken(connection);
-    if (!config.tenantOrgId || !connection || !token) {
+    if (!hasAuthorizationScope(config, turn.agentId) || !connection || !token) {
       throw new Error(UNAVAILABLE);
     }
     // This POST only verifies current grants. Reuse the exact source and one
@@ -248,16 +295,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
             const result: unknown = await response.json();
             assertCurrent();
             abortSignal?.throwIfAborted();
-            if (
-              !result ||
-              typeof result !== "object" ||
-              !("ok" in result) ||
-              result.ok !== true ||
-              !("agentId" in result) ||
-              result.agentId !== turn.agentId ||
-              !("orgId" in result) ||
-              result.orgId !== configFromRuntime(api).tenantOrgId
-            ) {
+            if (!isAuthorizedProof(api, turn, result)) {
               throw new Error(UNAVAILABLE);
             }
             return result;
@@ -272,8 +310,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     abortSignal?: AbortSignal,
   ): Promise<AuthorizationFailure | undefined> => {
     try {
-      const config = configFromRuntime(api);
-      if (!config.tenantOrgId) {
+      if (!hasAuthorizationScope(configFromRuntime(api), turn.agentId)) {
         return UNAVAILABLE;
       }
       const response = await requestAuthorization(
@@ -300,18 +337,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ) {
         return SILENT;
       }
-      if (
-        !result ||
-        typeof result !== "object" ||
-        !("ok" in result) ||
-        result.ok !== true ||
-        !("agentId" in result) ||
-        result.agentId !== turn.agentId ||
-        !("orgId" in result) ||
-        result.orgId !== config.tenantOrgId
-      ) {
+      if (!isAuthorizedProof(api, turn, result)) {
         return UNAVAILABLE;
       }
+      turn.orgId = result.orgId;
       if (requester) {
         const identity = "googleRequester" in result ? result.googleRequester : undefined;
         if (

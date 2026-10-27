@@ -4,6 +4,21 @@ Requester-bound Fi, Gmail, Drive, data-room and e-sign tools for the Fi user
 agent, the Matrix admission gate, admin-action approvals, and requester
 attribution for the admin agent's shell work.
 
+## Dedicated operator admission
+
+Tenant runtimes configure `tenantOrgId`; every Matrix admission and tool recheck
+must return that organization. A dedicated Superadmin runtime instead configures
+`operatorAgentId: "cellect-main"` and omits both `tenantOrgId` and
+`matrixTenantOrgId`. Combining operator and tenant settings fails closed.
+
+Only that exact agent can consume cross-tenant Matrix authorization. Fi must
+attest `credentialClass: "operator"`, the matching agent, and a nonempty
+conversation `orgId` after checking the native requester's current internal
+operator access. Each admitted turn retains that conversation organization;
+subsequent tool/requester checks cannot switch it. Other agents remain denied
+on this runtime. This setting does not grant user-delegation tokens or widen
+Slack access. Deploy the matching Fi authorization response before enabling it.
+
 ## Generated files stay in the conversation
 
 `fi_user_deliver_file` registers validated, requester/session-bound outputs and
@@ -111,7 +126,7 @@ the thread while the run is still working, the rest of that run gets no token.
 Which organization a room belongs to is not something the plugin can read from
 the message. The Matrix admission gate asks Fi about the room and event before
 the run and before every tool call, and blocks the call unless Fi names this
-runtime's organization; a token is only ever asked for after that.
+runtime's organization (or the dedicated operator turn's pinned conversation organization); a token is only ever asked for after that.
 
 ### After a token: the sandbox is held
 

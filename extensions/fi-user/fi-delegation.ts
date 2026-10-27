@@ -12,6 +12,8 @@ export type PluginConfig = {
    * Slack, Matrix and webchat delegation exchange both refuse another org.
    */
   tenantOrgId?: string;
+  /** Dedicated operator runtime only; mutually exclusive with both tenant keys. */
+  operatorAgentId?: "cellect-main";
   /** Earlier name of `tenantOrgId`, still honored. Both set must agree. */
   matrixTenantOrgId?: string;
   gamBinary?: string;
@@ -43,6 +45,7 @@ export type ResolvedPluginConfig = Required<
   projectionFullRefreshesPerTick: number;
   matrixEnvironments: Record<string, { baseUrl: string; brokerTokenEnv: string }>;
   tenantOrgId?: string;
+  operatorAgentId?: "cellect-main";
   /** The two tenant keys disagree: no org can be trusted, so every tenant check refuses. */
   tenantOrgConflict?: true;
 };
@@ -80,6 +83,7 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
     baseUrl: raw?.baseUrl?.replace(/\/+$/, "") || "https://app.cellect.ai/fi",
     brokerTokenEnv: raw?.brokerTokenEnv || "OPENCLAW_FI_USER_BROKER_TOKEN",
     matrixEnvironments: raw?.matrixEnvironments ?? {},
+    ...(raw?.operatorAgentId === "cellect-main" ? { operatorAgentId: raw.operatorAgentId } : {}),
     ...(tenant ? { tenantOrgId: tenant } : {}),
     ...(tenantOrgConflict ? { tenantOrgConflict: true as const } : {}),
     gamBinary: raw?.gamBinary || "/home/node/.openclaw/bin/gam7/gam",
