@@ -496,6 +496,47 @@ describe("the admin agent's delegated user token", () => {
     expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
+  it.each([false, true])(
+    "preserves the requester for boolean awaitResults=%s",
+    async (awaitResults) => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const result = await turn.exec({}, { params: { command: "x", awaitResults } });
+      expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    },
+  );
+
+  it.each([
+    { awaitResults: "true" },
+    { awaitResults: 0 },
+    { awaitResults: null },
+    { awaitResults: {} },
+    { awaitResults: [] },
+  ])("does not delegate malformed awaitResults=%j", async ({ awaitResults }) => {
+    const turn = plugin();
+    await turn.arrive();
+    await turn.start();
+    const result = await turn.exec({}, { params: { command: "x", awaitResults } });
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toEqual([]);
+  });
+
+  it.each([
+    { background: true },
+    { pty: true },
+    { elevated: true },
+    { host: "gateway" },
+    { nativeShellOnly: true },
+  ])("does not let required collection bypass unsafe exec parameters %j", async (unsafe) => {
+    const turn = plugin();
+    await turn.arrive();
+    await turn.start();
+    const result = await turn.exec({}, { params: { command: "x", awaitResults: true, ...unsafe } });
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toEqual([]);
+  });
+
   it("uses this runtime's own admin agent id with Fi's protocol name", async () => {
     const session = "agent:tenant-admin:slack:direct:u0admin001";
     const turn = plugin({ adminAgentId: "tenant-admin" });

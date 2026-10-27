@@ -91,6 +91,7 @@ const EXEC_PARAMS = new Set([
   "workdir",
   "env",
   "yieldMs",
+  "awaitResults",
   "background",
   "closeProcessTree",
   "timeoutSeconds",
@@ -177,6 +178,7 @@ function runsInSandbox(params: Record<string, unknown>): boolean {
   return (
     typeof params.command === "string" &&
     Object.keys(params).every((key) => EXEC_PARAMS.has(key)) &&
+    (params.awaitResults === undefined || typeof params.awaitResults === "boolean") &&
     (params.host === undefined || params.host === "sandbox") &&
     params.node === undefined &&
     !params.elevated &&
