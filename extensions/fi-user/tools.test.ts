@@ -660,6 +660,7 @@ describe("fi_user_dataroom", () => {
       schema.properties.action.anyOf?.map((entry) => entry.const) ??
       [];
     expect(actions).toEqual([
+      "create",
       "list",
       "get",
       "tasks",
