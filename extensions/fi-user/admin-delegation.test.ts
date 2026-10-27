@@ -577,6 +577,78 @@ describe("the admin agent's delegated user token", () => {
       },
     );
 
+    it.each(["Matrix", "Slack"])(
+      "keeps queued same-sender %s events bound to their own runs",
+      async (channel) => {
+        vi.useFakeTimers();
+        try {
+          const turn = plugin();
+          const first = channel === "Matrix" ? thread() : slackThread();
+          const eventId = channel === "Matrix" ? "$e2" : "1792190934.152459";
+          const second = {
+            arrive: { ...first.arrive, messageId: eventId },
+            start: {
+              ...first.start,
+              channelContext: {
+                ...first.start.channelContext,
+                chat: { ...first.start.channelContext.chat, eventId },
+              },
+            },
+            exec: first.exec,
+          };
+          await turn.arrive(first.arrive);
+          await turn.arrive(second.arrive);
+          await turn.start(first.start);
+          expect(token(await turn.exec(first.exec))).toBe(TOKEN);
+          await turn.settle("run-1");
+          await turn.start({ ...second.start, runId: "heartbeat", trigger: "heartbeat" });
+          expect(token(await turn.exec({ ...second.exec, runId: "heartbeat" }))).toBeUndefined();
+          expect(mints()).toHaveLength(1);
+          await turn.start({ ...second.start, runId: "run-2" });
+          expect(token(await turn.exec({ ...second.exec, runId: "run-2" }))).toBe(TOKEN);
+          await turn.settle("run-2");
+          // Expire command custody so refusal proves event consumption, not a held sandbox.
+          vi.advanceTimersByTime(10 * 60 * 1000 + 1);
+          await turn.start({ ...first.start, runId: "replayed-event" });
+          expect(
+            token(await turn.exec({ ...first.exec, runId: "replayed-event" })),
+          ).toBeUndefined();
+          expect(mints()).toHaveLength(2);
+        } finally {
+          vi.useRealTimers();
+        }
+      },
+    );
+
+    it.each([undefined, OTHER])(
+      "refuses retained queued proof after an input from %s",
+      async (senderId) => {
+        const turn = plugin();
+        const first = thread();
+        const second = thread("@admin:matrix.example", "$e2");
+        await turn.arrive(first.arrive);
+        await turn.arrive(second.arrive);
+        await turn.start(first.start);
+        await turn.inject({ channel: "matrix", sessionKey: THREAD, senderId });
+        await turn.start({ ...second.start, runId: "run-2" });
+        expect(token(await turn.exec({ ...second.exec, runId: "run-2" }))).toBeUndefined();
+        expect(mints()).toEqual([]);
+      },
+    );
+
+    it("does not preserve ambiguous queued native senders", async () => {
+      const turn = plugin();
+      const first = thread();
+      const second = thread(OTHER, "$e2");
+      await turn.arrive(first.arrive);
+      await turn.arrive(second.arrive);
+      await turn.start(first.start);
+      expect(token(await turn.exec(first.exec))).toBeUndefined();
+      await turn.start({ ...second.start, runId: "run-2" });
+      expect(token(await turn.exec({ ...second.exec, runId: "run-2" }))).toBeUndefined();
+      expect(mints()).toEqual([]);
+    });
+
     it("gives the next run in the thread nothing of the first", async () => {
       vi.useFakeTimers();
       try {

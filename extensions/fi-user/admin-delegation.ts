@@ -549,6 +549,14 @@ export function registerAdminDelegation(
         origin?.sender?.isBot !== true
       ) {
         run.sender = sender;
+        // Dispatch can queue several native events before the first run starts.
+        // Consume only this run's exact event; later runs need their own proof.
+        if (requiresEvent && typeof origin?.chat?.eventId === "string") {
+          arrived.events.delete(origin.chat.eventId);
+          if (arrived.events.size > 0) {
+            remember(arrivals, sessionKey, arrived);
+          }
+        }
       }
       diagnose({ runId, sessionKey }, run.sender ? "turn-admitted" : "turn-unproven", () => ({
         requesterPresent: Boolean(sender),
