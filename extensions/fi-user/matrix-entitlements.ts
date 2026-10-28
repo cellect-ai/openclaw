@@ -349,6 +349,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         if (![true, "own-accounts", "tenant-domain-admin"].includes(policy)) {
           throw new Error(UNAVAILABLE);
         }
+        const wasPrivateSoleHuman = turn.privateSoleHuman;
+        turn.privateSoleHuman = false;
         const response = await requestAuthorization(turn, policy, abortSignal);
         if (!response.ok) {
           throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
@@ -360,6 +362,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           throw new Error(UNAVAILABLE);
         }
         turn.privateSoleHuman = isPrivateSoleHuman(result);
+        if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
+          throw new Error(AUDIENCE_CHANGED);
+        }
         return result;
       },
     });

@@ -537,13 +537,15 @@ describe("the admin agent's delegated user token", () => {
       expect(turn.registered()).toEqual({
         // The base branch's hooks, a second before_agent_reply for the token
         // rule, and the fork's own producers: generated-artifact filing
-        // completion (after_tool_call + reply_payload_sending) and fi-user
-        // download-link stripping (message_sending + reply_payload_sending).
+        // completion (after_tool_call + reply_payload_sending), fi-user
+        // download-link stripping (message_sending + reply_payload_sending)
+        // and Fi's proven conversation audience (before_prompt_build).
         hooks: [
           "after_tool_call",
           "before_agent_reply",
           "before_agent_reply",
           "before_dispatch",
+          "before_prompt_build",
           "before_tool_call",
           "message_received",
           "message_received",
