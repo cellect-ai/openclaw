@@ -1,8 +1,12 @@
 // Talk session log runtime tests cover persisted voice session log records.
 import { describe, expect, it } from "vitest";
 import {
+  createAssistantSpeechEchoState,
   getRealtimeVoiceBridgeEventHealth,
   getRealtimeVoiceTranscriptHealth,
+  isPrefixOfAssistantSpeech,
+  isUnpublishedAssistantSpeechEcho,
+  observeAssistantSpeechEcho,
   recordRealtimeVoiceBridgeEvent,
   recordRealtimeVoiceTranscript,
   type RealtimeVoiceBridgeEventLogEntry,
@@ -42,5 +46,26 @@ describe("realtime voice session log runtime", () => {
       lastRealtimeEventDetail: "ok",
       recentRealtimeEvents: events,
     });
+  });
+
+  it("keeps a stopped answer off the caller's side", () => {
+    expect(isPrefixOfAssistantSpeech("I don't have a calendar yet", "I don't have a")).toBe(true);
+    expect(isPrefixOfAssistantSpeech("I don't have a calendar yet", "yes")).toBe(false);
+    expect(isPrefixOfAssistantSpeech("I don't have a calendar yet", "I don't")).toBe(false);
+
+    const state = createAssistantSpeechEchoState();
+    observeAssistantSpeechEcho(state, "user", "When are you going to be there?", true);
+    observeAssistantSpeechEcho(state, "assistant", "I ", false, "delta");
+    observeAssistantSpeechEcho(state, "assistant", "don't ", false, "delta");
+    observeAssistantSpeechEcho(state, "assistant", "have a", false, "delta");
+    expect(isUnpublishedAssistantSpeechEcho(state, "I don't have a")).toBe(true);
+    expect(isUnpublishedAssistantSpeechEcho(state, "When are you going to be there?")).toBe(false);
+
+    observeAssistantSpeechEcho(state, "assistant", "I don't have a calendar yet", true, "snapshot");
+    expect(isUnpublishedAssistantSpeechEcho(state, "I don't have a")).toBe(true);
+    expect(isUnpublishedAssistantSpeechEcho(state, "What about Thursday?")).toBe(false);
+
+    observeAssistantSpeechEcho(state, "assistant", "Thursday works.", false, "delta");
+    expect(isUnpublishedAssistantSpeechEcho(state, "I don't have a")).toBe(false);
   });
 });

@@ -111,6 +111,97 @@ function hasMeaningfulEchoOverlap(userTokens: string[], assistantTokens: string[
   return overlap / uniqueUserTokens.length >= 0.58;
 }
 
+/**
+ * The caller's line from before the assistant spoke, plus the assistant speech
+ * heard so far. Stop can finalize microphone echo of that speech as a user
+ * transcript; this is what keeps those words off the caller's side.
+ */
+export type AssistantSpeechEchoState = {
+  assistantSpeech: string;
+  assistantSpeechOpen: boolean;
+  assistantSpeechFinal: boolean;
+  callerUtterance: string;
+};
+
+export function createAssistantSpeechEchoState(): AssistantSpeechEchoState {
+  return {
+    assistantSpeech: "",
+    assistantSpeechOpen: false,
+    assistantSpeechFinal: false,
+    callerUtterance: "",
+  };
+}
+
+function normalizedEchoKey(text: string): string {
+  return normalizeTranscriptForEchoMatch(text).join(" ");
+}
+
+/**
+ * True when the user text is the start of the assistant utterance.
+ * A single short word is too common to treat as echo.
+ */
+export function isPrefixOfAssistantSpeech(assistantText: string, userText: string): boolean {
+  const userTokens = normalizeTranscriptForEchoMatch(userText);
+  const assistantTokens = normalizeTranscriptForEchoMatch(assistantText);
+  if (userTokens.length === 0 || assistantTokens.length < userTokens.length) {
+    return false;
+  }
+  const phrase = userTokens.join(" ");
+  if (phrase.length < 8 && userTokens.length < 3) {
+    return false;
+  }
+  return userTokens.every((token, index) => assistantTokens[index] === token);
+}
+
+/** Folds provider transcript events into the echo state for one voice session. */
+export function observeAssistantSpeechEcho(
+  state: AssistantSpeechEchoState,
+  role: "user" | "assistant",
+  text: string,
+  final: boolean,
+  textMode?: "delta" | "snapshot",
+): void {
+  if (role === "assistant") {
+    if (!text) {
+      return;
+    }
+    const snapshot = final || textMode === "snapshot";
+    if (snapshot || state.assistantSpeechFinal || !state.assistantSpeechOpen) {
+      state.assistantSpeech = text;
+    } else {
+      state.assistantSpeech += text;
+    }
+    state.assistantSpeechOpen = true;
+    state.assistantSpeechFinal = final;
+    return;
+  }
+  const spoken = text.trim();
+  if (spoken && !state.assistantSpeechOpen) {
+    state.callerUtterance = spoken;
+  }
+}
+
+/**
+ * Speaker echo of the answer the assistant is giving. The caller's own line,
+ * including one the provider holds until the answer settles, is not echo.
+ */
+export function isUnpublishedAssistantSpeechEcho(
+  state: AssistantSpeechEchoState,
+  text: string,
+): boolean {
+  const spoken = text.trim();
+  if (!spoken || !state.assistantSpeechOpen) {
+    return false;
+  }
+  if (
+    state.callerUtterance &&
+    normalizedEchoKey(spoken) === normalizedEchoKey(state.callerUtterance)
+  ) {
+    return false;
+  }
+  return isPrefixOfAssistantSpeech(state.assistantSpeech, spoken);
+}
+
 /** Detects user transcript text that likely came from assistant speaker echo, not speech. */
 export function isLikelyRealtimeVoiceAssistantEchoTranscript(params: {
   transcript: RealtimeVoiceTranscriptEntry[];

@@ -11,6 +11,11 @@ import {
 } from "../../../talk/provider-types.js";
 import { createRealtimeVoiceSessionHarness } from "../../../talk/realtime-session-harness.js";
 import { resolveRealtimeVoiceInterruptResponseOnInputAudio } from "../../../talk/realtime-session-policy.js";
+import {
+  createAssistantSpeechEchoState,
+  isUnpublishedAssistantSpeechEcho,
+  observeAssistantSpeechEcho,
+} from "../../../talk/session-log-runtime.js";
 import type { TalkEventInput } from "../../../talk/talk-session-controller.js";
 import {
   VOICE_TRANSCRIPT_QUEUE_POLICY,
@@ -122,6 +127,7 @@ export function createTalkRealtimeRelaySession(
   let currentOutputItemId: string | undefined;
   let playbackTurnId: string | undefined;
   const pendingTranscriptQuestions = new Map<string, string>();
+  const speechEcho = createAssistantSpeechEchoState();
   let ready = false;
   let continuityResetActive = false;
   let failureEmitted = false;
@@ -505,6 +511,12 @@ export function createTalkRealtimeRelaySession(
         if (final && !relay.closing) {
           confirmationReadiness.observeUserTranscript("", true);
         }
+        return;
+      }
+      observeAssistantSpeechEcho(speechEcho, role, text, final, update?.textMode);
+      // Stopping while the assistant is talking finalizes whatever the mic
+      // just heard. That echo is the answer, not another line from the caller.
+      if (role === "user" && isUnpublishedAssistantSpeechEcho(speechEcho, text)) {
         return;
       }
       if (role === "assistant" && outputOwnership.suppressingOutput) {
