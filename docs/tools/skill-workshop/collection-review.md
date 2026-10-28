@@ -39,7 +39,10 @@ Runtimes without those guarantees, including undeclared CLI backends, the Codex 
 node-placed CLI execution, remain unsupported for rooted reviews. When the configured
 model chain is provably unsupported, the weekly job remains visible but disabled
 with `no-rooted-runtime` in its display name. Configure a supported runtime or fallback;
-Gateway startup and config reload reconcile enablement and clear that reason.
+Gateway startup and config reload reconcile enablement and clear that reason. An agent
+whose global and agent `tools.allow`/`tools.deny` admit none of the review tools (for
+example a dispatcher limited to session tools) is disabled the same way with
+`no-workshop-tools`.
 Reconciliation uses prepared policy and processes one agent at a time, yielding
 between updates so fleet-wide review preparation does not block Gateway health requests.
 Stored session model or runtime preferences are preserved; reviews with these

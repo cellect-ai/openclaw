@@ -17,6 +17,7 @@ import {
   normalizeModelSelection,
   resolveModelRefFromString,
 } from "../agents/model-selection-shared.js";
+import { pickSandboxToolPolicy } from "../agents/sandbox-tool-policy.js";
 import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
 import {
   resolveAgentModelFallbackValues,
@@ -45,18 +46,16 @@ const SKILL_COLLECTION_REVIEW_EVERY_MS = 7 * 24 * 60 * 60_000;
 const SKILL_COLLECTION_REVIEW_NO_ROOTED_RUNTIME_REASON = "no-rooted-runtime";
 const SKILL_COLLECTION_REVIEW_NO_WORKSHOP_TOOLS_REASON = "no-workshop-tools";
 
-/** Explicit allow/deny lists can leave an agent (e.g. a session dispatcher) no review tool. */
+/**
+ * Global and agent allow/deny lists can leave an agent (e.g. a session dispatcher)
+ * no review tool. Profile and provider layers only narrow further and are not
+ * consulted, so this never disables a review the runtime could run.
+ */
 function canUseSkillWorkshopMaintenanceTools(cfg: OpenClawConfig, agentId: string): boolean {
-  const policies = [cfg.tools, resolveAgentConfig(cfg, agentId)?.tools].map((tools) =>
-    tools && (Array.isArray(tools.allow) || Array.isArray(tools.deny))
-      ? {
-          allow: Array.isArray(tools.allow)
-            ? [...tools.allow, ...(Array.isArray(tools.alsoAllow) ? tools.alsoAllow : [])]
-            : undefined,
-          deny: Array.isArray(tools.deny) ? tools.deny : undefined,
-        }
-      : undefined,
-  );
+  const policies = [
+    pickSandboxToolPolicy(cfg.tools),
+    pickSandboxToolPolicy(resolveAgentConfig(cfg, agentId)?.tools),
+  ];
   return SKILL_WORKSHOP_MAINTENANCE_TOOLS.some((name) => isToolAllowedByPolicies(name, policies));
 }
 

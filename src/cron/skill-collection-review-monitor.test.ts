@@ -154,7 +154,9 @@ describe("resolveSkillCollectionReviewMonitorSpecs", () => {
         entries: {
           dispatcher: { tools: { allow: ["sessions_spawn", "sessions_list"] } },
           denied: { tools: { deny: ["group:fs", "group:runtime", "ls", "apply_patch"] } },
-          extended: { tools: { allow: ["sessions_spawn"], alsoAllow: ["read"] } },
+          additive: { tools: { allow: [], alsoAllow: ["sessions_spawn"] } },
+          profiled: { tools: { profile: "messaging", alsoAllow: ["sessions_spawn"] } },
+          writer: { tools: { allow: ["write"] } },
           worker: { tools: { allow: ["group:fs"] } },
           open: {},
         },
@@ -175,12 +177,43 @@ describe("resolveSkillCollectionReviewMonitorSpecs", () => {
         displayName: "[no-workshop-tools] Skill collection review (" + agentId + ")",
       });
     }
-    for (const agentId of ["extended", "worker", "open"]) {
+    for (const agentId of ["additive", "profiled", "writer", "worker", "open"]) {
       expect(byAgent.get(agentId)).toMatchObject({
         enabled: true,
         displayName: "Skill collection review (" + agentId + ")",
       });
     }
+  });
+
+  it("applies a global allowlist to every agent's review tools", () => {
+    const cfg = {
+      tools: { allow: ["sessions_spawn"] },
+      agents: {
+        defaults: { model: "anthropic/claude-sonnet-4-6" },
+        entries: { extended: { tools: { alsoAllow: ["read"] } }, plain: {} },
+      },
+      skills: { workshop: { autonomous: { mode: "auto" } } },
+    } as OpenClawConfig;
+    const byAgent = new Map(
+      Array.from(resolveSkillCollectionReviewMonitorSpecs(cfg, []), (spec) => [
+        spec.agentId,
+        spec.input,
+      ]),
+    );
+    expect(byAgent.get("plain")).toMatchObject({ enabled: false });
+    expect(byAgent.get("extended")).toMatchObject({ enabled: false });
+  });
+
+  it("labels no tool reason while the workshop is not autonomous", () => {
+    const cfg = {
+      agents: { entries: { dispatcher: { tools: { allow: ["sessions_spawn"] } } } },
+      skills: { workshop: { autonomous: { mode: "propose" } } },
+    } as OpenClawConfig;
+    const [spec] = resolveSkillCollectionReviewMonitorSpecs(cfg, []);
+    expect(spec?.input).toMatchObject({
+      enabled: false,
+      displayName: "Skill collection review (dispatcher)",
+    });
   });
 
   it("does not create session storage while projecting an existing monitor", async () => {
