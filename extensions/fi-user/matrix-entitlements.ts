@@ -20,6 +20,24 @@ type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 // Not the gated set: the only sessions exempt from it. These are the source
 // sessions the Matrix channel's own reply guard supports and authorizes.
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
+// Fi's admission, not the Matrix room kind, knows who can read this chat. Only
+// the one audience Fi proves is injected; anything else stays unknown.
+const AUDIENCE_CHANGED =
+  "This conversation's audience changed during the turn. Treat it as shared and recheck what may be disclosed before continuing.";
+const PRIVATE_SOLE_HUMAN_CONTEXT = [
+  "## Fi conversation audience",
+  "Verified by Fi's grant check when this prompt was built: private conversation; the requester is the only human member.",
+  "",
+  "```json",
+  JSON.stringify({
+    schema: "fi.conversation_audience.v1",
+    visibility: "private",
+    human_count: 1,
+    mixed_audience: false,
+    requester_is_sole_human: true,
+  }),
+  "```",
+].join("\n");
 type Turn = {
   admitted: boolean;
   externalInput: boolean;
@@ -31,6 +49,8 @@ type Turn = {
   sessionKey: string;
   /** Fi-owned conversation tenant, pinned after the first successful admission. */
   orgId?: string;
+  /** Latest Fi admission proved a private conversation whose only human is the sender. */
+  privateSoleHuman?: boolean;
 } & ({ eventId: string; mode: "text" } | { threadRootEventId: string; mode: "voice" });
 
 function sessionThreadId(sessionKey: string): string | undefined {
@@ -62,6 +82,22 @@ function hostChatMatchesRoom(chatId: unknown, roomId: string, threadRoot: unknow
   const at = chatId.lastIndexOf(marker);
   return (
     at > 0 && chatId.slice(0, at) === roomId && chatId.slice(at + marker.length) === threadRoot
+  );
+}
+
+function isPrivateSoleHuman(result: object): boolean {
+  const audience = "audience" in result ? result.audience : undefined;
+  return Boolean(
+    audience &&
+    typeof audience === "object" &&
+    "visibility" in audience &&
+    audience.visibility === "private" &&
+    "requesterIsSoleHuman" in audience &&
+    audience.requesterIsSoleHuman === true &&
+    "humanCount" in audience &&
+    audience.humanCount === 1 &&
+    "mixedAudience" in audience &&
+    audience.mixedAudience === false,
   );
 }
 
@@ -323,6 +359,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         if (!isAuthorizedProof(api, turn, result)) {
           throw new Error(UNAVAILABLE);
         }
+        turn.privateSoleHuman = isPrivateSoleHuman(result);
         return result;
       },
     });
@@ -337,6 +374,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     requester?: { workspaceId: string; resolve: (senderId: string) => void },
     abortSignal?: AbortSignal,
   ): Promise<AuthorizationFailure | undefined> => {
+    // Only a successful check re-establishes the audience; failures leave it unknown.
+    turn.privateSoleHuman = false;
     try {
       if (!hasAuthorizationScope(configFromRuntime(api), turn.agentId)) {
         return UNAVAILABLE;
@@ -369,6 +408,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return UNAVAILABLE;
       }
       turn.orgId = result.orgId;
+      turn.privateSoleHuman = isPrivateSoleHuman(result);
       if (requester) {
         const identity = "googleRequester" in result ? result.googleRequester : undefined;
         if (
@@ -597,6 +637,15 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     },
     { priority: 10_000 },
   );
+  api.on("before_prompt_build", (_event, context) => {
+    const turn = context.runId ? turns.get(context.runId) : undefined;
+    return turn?.admitted &&
+      turn.privateSoleHuman &&
+      turn.agentId === context.agentId &&
+      turn.sessionKey === context.sessionKey
+      ? { appendSystemContext: PRIVATE_SOLE_HUMAN_CONTEXT }
+      : undefined;
+  });
   const beforeToolCall = (context: PluginHookToolContext) => {
     const matrixTurn =
       context.requester?.channel === "matrix" ||
@@ -629,6 +678,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       );
       return { block: true, blockReason: UNAVAILABLE };
     }
+    const wasPrivateSoleHuman = turn.privateSoleHuman;
     return authorize(turn, undefined, context.abortSignal).then((failure) => {
       // A terminal publication or replacement can arrive while Fi checks live
       // grants. A successful response cannot resurrect a retired admission.
@@ -653,8 +703,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         ...turnIds(turn),
         sessionThreadId: sessionThreadId(turn.sessionKey) ?? null,
       });
-      return failure
-        ? { block: true, blockReason: failure === SILENT ? DENIED : failure }
+      if (failure) {
+        return { block: true, blockReason: failure === SILENT ? DENIED : failure };
+      }
+      // The system prompt keeps its claim until the next build; stop and say so.
+      return wasPrivateSoleHuman && !turn.privateSoleHuman
+        ? { block: true, blockReason: AUDIENCE_CHANGED }
         : undefined;
     });
   };

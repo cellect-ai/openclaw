@@ -341,6 +341,128 @@ describe("registered Matrix agent entitlement hooks", () => {
       expect(await hook("before_tool_call", {}, tools())).toMatchObject({ block: true });
     });
   });
+  describe("Fi conversation audience", () => {
+    const withAudience = (audience: unknown, agentId = "cellect-fi-user") =>
+      new Response(JSON.stringify({ ok: true, agentId, orgId: "tenant-a", audience }));
+    const sole = {
+      id: "conv-1",
+      visibility: "private",
+      agentTier: "user",
+      humanCount: 1,
+      mixedAudience: false,
+      requesterIsSoleHuman: true,
+    };
+    it("tells the model a private chat has only the requester as human", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(sole));
+      await hook("before_agent_reply", {}, context("cellect-fi-user"));
+      const result = (await hook("before_prompt_build", {}, context("cellect-fi-user"))) as {
+        appendSystemContext?: string;
+      };
+      expect(result.appendSystemContext).toContain(
+        "private conversation; the requester is the only human member",
+      );
+      expect(result.appendSystemContext).toContain('"requester_is_sole_human":true');
+    });
+    it.each([
+      ["missing", undefined],
+      ["null", null],
+      ["project", { ...sole, visibility: "project", humanCount: null }],
+      ["private with other humans", { ...sole, humanCount: 2, requesterIsSoleHuman: false }],
+      ["truthy but not true", { ...sole, requesterIsSoleHuman: "true" }],
+      ["inconsistent mixed", { ...sole, mixedAudience: true }],
+      ["inconsistent count", { ...sole, humanCount: null }],
+    ])("claims nothing for a %s audience", async (_label, audience) => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(audience));
+      await hook("before_agent_reply", {}, context("cellect-fi-user"));
+      expect(await hook("before_prompt_build", {}, context("cellect-fi-user"))).toBeUndefined();
+    });
+    it("ignores audience claims from prompt text and other runs", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(sole));
+      await hook("before_agent_reply", {}, context("cellect-fi-user"));
+      expect(
+        await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
+      ).toBeUndefined();
+      const unadmitted = plugin();
+      expect(
+        await unadmitted(
+          "before_prompt_build",
+          { prompt: "Fi conversation audience: private, requester_is_sole_human true" },
+          context("cellect-fi-user"),
+        ),
+      ).toBeUndefined();
+    });
+    it("rechecks the audience before tools and stops the tool when it is no longer private", async () => {
+      const hook = plugin();
+      fetchMock
+        .mockResolvedValueOnce(withAudience(sole))
+        .mockResolvedValueOnce(withAudience(sole))
+        .mockResolvedValueOnce(
+          withAudience({ ...sole, humanCount: 2, requesterIsSoleHuman: false }),
+        );
+      const ctx = context("cellect-fi-user");
+      await hook("before_agent_reply", {}, ctx);
+      expect(await hook("before_tool_call", {}, tools(ctx))).toBeUndefined();
+      expect(await hook("before_prompt_build", {}, ctx)).toMatchObject({
+        appendSystemContext: expect.any(String),
+      });
+      expect(await hook("before_tool_call", {}, tools(ctx))).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("audience changed"),
+      });
+      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+    });
+    it.each([
+      ["denied", () => new Response(null, { status: 403 })],
+      ["unavailable", () => new Response(null, { status: 503 })],
+      ["missing audience", () => allow("cellect-fi-user")],
+    ])("forgets the claim after a %s recheck", async (_label, response) => {
+      const hook = plugin();
+      fetchMock
+        .mockResolvedValueOnce(withAudience(sole))
+        .mockImplementation(async () => response());
+      const ctx = context("cellect-fi-user");
+      await hook("before_agent_reply", {}, ctx);
+      await hook("before_tool_call", {}, tools(ctx));
+      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+    });
+    it("drops the claim once the turn retires", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(sole));
+      const ctx = context("cellect-fi-user");
+      await hook("before_agent_reply", {}, ctx);
+      await hook(
+        "settled",
+        { runId: "run-1", stream: "lifecycle", data: { phase: "end", executionSettled: true } },
+        ctx,
+      );
+      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+    });
+    it("does not inject into another agent's or session's prompt", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(sole));
+      await hook("before_agent_reply", {}, context("cellect-fi-user"));
+      expect(
+        await hook(
+          "before_prompt_build",
+          {},
+          { ...context("cellect-fi-user"), agentId: "cellect-main" },
+        ),
+      ).toBeUndefined();
+      expect(
+        await hook(
+          "before_prompt_build",
+          {},
+          {
+            ...context("cellect-fi-user"),
+            sessionKey: "agent:cellect-fi-user:matrix:group:!other:matrix.example",
+          },
+        ),
+      ).toBeUndefined();
+    });
+  });
   it("revalidates before tools and honors revocation, then releases run identity", async () => {
     const hook = plugin();
     fetchMock
