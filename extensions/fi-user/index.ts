@@ -65,6 +65,7 @@ import {
 } from "./on-behalf-of.js";
 import { projectionFailureKind } from "./projection-failure.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
+import { createWorkbookTool } from "./workbook-tool.js";
 
 const MAX_DRIVE_TEXT_CHARS = 200_000;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
@@ -654,6 +655,10 @@ export default definePluginEntry({
     api.registerTool({
       contextVersion: 2,
       create: (context: OpenClawPluginToolContext<2>) => {
+        const workbookTurn = matrixEntitlements.workbookTurn(context);
+        if (workbookTurn) {
+          return [createWorkbookTool(api, context, workbookTurn)];
+        }
         if (!isFiUserTurn(context)) {
           return null;
         }

@@ -7,6 +7,7 @@
   "contracts": {
     "tools": [
       "fi_user_api",
+      "fi_workbook",
       "fi_user_gmail",
       "fi_user_gdrive",
       "fi_user_dataroom",

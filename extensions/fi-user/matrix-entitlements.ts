@@ -22,6 +22,7 @@ type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 type Turn = {
   admitted: boolean;
+  externalInput: boolean;
   authorization: AbortController;
   agentId: string;
   accountId: string;
@@ -244,65 +245,92 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       },
     );
   };
-  const turnRuntime = api.runtime.channel.runtimeContexts.register({
-    channelId: "matrix",
-    capability: "fi-admitted-turn",
-    context: {
-      protocol: "fi-matrix-turn-v1",
-      capture(context: OpenClawPluginToolContext) {
-        const runId = context.runId;
-        const turn = runId ? turns.get(runId) : undefined;
+  const capture = (context: OpenClawPluginToolContext) => {
+    const runId = context.runId;
+    const turn = runId ? turns.get(runId) : undefined;
+    if (
+      !runId ||
+      !turn?.admitted ||
+      context.messageChannel !== "matrix" ||
+      SOURCE_SESSION.test(context.sessionKey ?? "") ||
+      turn.agentId !== context.agentId ||
+      turn.accountId !== context.agentAccountId ||
+      turn.sessionKey !== context.sessionKey ||
+      turn.roomId !== context.nativeChannelId ||
+      turn.senderId !== context.requesterSenderId ||
+      (turn.mode === "text"
+        ? turn.eventId !== context.currentMessageId
+        : context.currentMessageId !== undefined ||
+          sessionThreadId(turn.sessionKey) !== turn.threadRootEventId)
+    ) {
+      return undefined;
+    }
+    const assertCurrent = () => {
+      context.assertInvocationCurrent?.();
+      if (turns.get(runId) !== turn || !turn.admitted) {
+        throw new Error(UNAVAILABLE);
+      }
+    };
+    assertCurrent();
+    return Object.freeze({
+      mode: turn.mode,
+      assertCurrent,
+      workbookProof() {
+        assertCurrent();
+        const config = configFromRuntime(api);
+        const root = sessionThreadId(turn.sessionKey);
         if (
-          !runId ||
-          !turn?.admitted ||
-          context.messageChannel !== "matrix" ||
-          SOURCE_SESSION.test(context.sessionKey ?? "") ||
-          turn.agentId !== context.agentId ||
-          turn.accountId !== context.agentAccountId ||
-          turn.sessionKey !== context.sessionKey ||
-          turn.roomId !== context.nativeChannelId ||
-          turn.senderId !== context.requesterSenderId ||
-          (turn.mode === "text"
-            ? turn.eventId !== context.currentMessageId
-            : context.currentMessageId !== undefined ||
-              sessionThreadId(turn.sessionKey) !== turn.threadRootEventId)
+          config.operatorAgentId !== "cellect-main" ||
+          config.tenantOrgId ||
+          config.tenantOrgConflict ||
+          !turn.externalInput ||
+          turn.agentId !== "cellect-main" ||
+          turn.mode !== "text" ||
+          !root ||
+          !turn.orgId
         ) {
           return undefined;
         }
-        const assertCurrent = () => {
-          context.assertInvocationCurrent?.();
-          if (turns.get(runId) !== turn || !turn.admitted) {
-            throw new Error(UNAVAILABLE);
-          }
-        };
-        assertCurrent();
-        return Object.freeze({
-          mode: turn.mode,
+        return {
+          runId,
+          sessionKey: turn.sessionKey,
+          roomId: turn.roomId,
+          eventId: turn.eventId,
+          threadRootEventId: root,
+          senderMxid: turn.senderId,
+          accountId: turn.accountId,
+          orgId: turn.orgId,
+          signal: turn.authorization.signal,
           assertCurrent,
-          async authorizeRequester(
-            policy: true | "own-accounts" | "tenant-domain-admin",
-            abortSignal?: AbortSignal,
-          ) {
-            assertCurrent();
-            abortSignal?.throwIfAborted();
-            if (![true, "own-accounts", "tenant-domain-admin"].includes(policy)) {
-              throw new Error(UNAVAILABLE);
-            }
-            const response = await requestAuthorization(turn, policy, abortSignal);
-            if (!response.ok) {
-              throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
-            }
-            const result: unknown = await response.json();
-            assertCurrent();
-            abortSignal?.throwIfAborted();
-            if (!isAuthorizedProof(api, turn, result)) {
-              throw new Error(UNAVAILABLE);
-            }
-            return result;
-          },
-        });
+        };
       },
-    },
+      async authorizeRequester(
+        policy: true | "own-accounts" | "tenant-domain-admin",
+        abortSignal?: AbortSignal,
+      ) {
+        assertCurrent();
+        abortSignal?.throwIfAborted();
+        if (![true, "own-accounts", "tenant-domain-admin"].includes(policy)) {
+          throw new Error(UNAVAILABLE);
+        }
+        const response = await requestAuthorization(turn, policy, abortSignal);
+        if (!response.ok) {
+          throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+        }
+        const result: unknown = await response.json();
+        assertCurrent();
+        abortSignal?.throwIfAborted();
+        if (!isAuthorizedProof(api, turn, result)) {
+          throw new Error(UNAVAILABLE);
+        }
+        return result;
+      },
+    });
+  };
+  const turnRuntime = api.runtime.channel.runtimeContexts.register({
+    channelId: "matrix",
+    capability: "fi-admitted-turn",
+    context: { protocol: "fi-matrix-turn-v1", capture },
   });
   const authorize = async (
     turn: Turn,
@@ -518,6 +546,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const turn: Turn = {
+        externalInput: !context.inputProvenance || context.inputProvenance.kind === "external_user",
         admitted: false,
         authorization: new AbortController(),
         agentId: context.agentId,
@@ -650,7 +679,11 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ? turn
       : undefined;
   };
-  return { beforeToolCall, admittedVoiceTurn };
+  return {
+    beforeToolCall,
+    admittedVoiceTurn,
+    workbookTurn: (context: OpenClawPluginToolContext) => capture(context)?.workbookProof(),
+  };
 }
 
 export type MatrixEntitlements = ReturnType<typeof registerMatrixEntitlements>;
