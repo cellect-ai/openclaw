@@ -15,6 +15,8 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   admitMatrixProjectionExecution,
+  relateMatrixProjectionCanonical,
+  resetMatrixRelatedCanonicalForTests,
   restoreMatrixProjectionExecutions,
 } from "./projection-execution.js";
 import { startMatrixProjectionLifecycle } from "./projection-lifecycle.js";
@@ -376,5 +378,178 @@ describe("native Matrix participant lifecycle adapter", () => {
       mocks.rows.push({ ...canonical, conversationId: "$other" });
     }
     expect(resolve("main")).toEqual([]);
+  });
+});
+
+// A Superadmin chat's binding row lives on the operator gateway; a tenant
+// agent seated there runs on its own gateway, which holds no row for the room.
+describe("Matrix canonical binding held by another gateway", () => {
+  let cfg: OpenClawConfig;
+  let transport: TransportOptions;
+  let lifecycle: ReturnType<typeof startMatrixProjectionLifecycle>;
+  let runtime: ReturnType<typeof createPluginRuntimeMock>;
+  const foreign = `operator:${roomId}:${root}`;
+  const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
+    afterEach(() => {
+      lifecycle.stop();
+      unregisterSessionBindingAdapter({ channel: "matrix", accountId: "main" });
+      resetMatrixRelatedCanonicalForTests();
+      cleanup();
+      resetPluginStateStoreForTests();
+      vi.unstubAllEnvs();
+    });
+  });
+  const joined = { getJoinedRooms: async () => [roomId] };
+  function relate(overrides: Record<string, unknown> = {}, client = joined) {
+    return relateMatrixProjectionCanonical({
+      core: runtime,
+      cfg,
+      client,
+      request: {
+        accountId: "main",
+        agentId: "main",
+        roomId,
+        environment: "test",
+        conversationId: "conversation",
+        bindingId: foreign,
+        ...overrides,
+      },
+    });
+  }
+  function admit(threadRootEventId = root) {
+    return admitMatrixProjectionExecution({
+      core: runtime,
+      cfg,
+      accountId: "main",
+      agentId: "main",
+      roomId,
+      threadRootEventId,
+      sessionKey: sessionKey("main"),
+      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
+    });
+  }
+  function resolve() {
+    return transport.resolveBindings({
+      agentId: "main",
+      sessionId: "session-main",
+      sessionKey: sessionKey("main"),
+    });
+  }
+  beforeEach(() => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("matrix-related-canonical-"));
+    mocks.send.mockReset().mockResolvedValue("$accepted");
+    mocks.stoppedAccounts.clear();
+    mocks.managers.clear();
+    mocks.managers.set("main", {});
+    mocks.rows = [];
+    cfg = {
+      agents: { entries: { main: {} } },
+      channels: {
+        matrix: {
+          accounts: {
+            main: {
+              homeserver: "https://example.org",
+              accessToken: "test-token",
+              userId: "@main:example.org",
+            },
+          },
+        },
+      },
+      bindings: [{ agentId: "main", match: { channel: "matrix", accountId: "main" } }],
+    };
+    registerSessionBindingAdapter({
+      channel: "matrix",
+      accountId: "main",
+      listBySession: () => [],
+      inspectByConversation: () => null,
+      resolveByConversation: () => {
+        throw new Error("Route inspection must stay read-only");
+      },
+    });
+    runtime = createPluginRuntimeMock();
+    runtime.state.openKeyedStore = (options) =>
+      createPluginStateKeyedStoreForTests("matrix", options);
+    runtime.config.current = () => cfg;
+    runtime.events.registerConversationLifecycleTransport = (options) => {
+      transport = options;
+      return { stop() {}, flush: async () => {}, noteResult() {}, resolveRun: () => undefined };
+    };
+    lifecycle = startMatrixProjectionLifecycle(createTestPluginApi({ config: cfg, runtime }));
+  });
+  it("publishes a seated run under the other gateway's canonical binding", async () => {
+    await admit();
+    // Before Fi relates the room this gateway has nothing to report under.
+    expect(resolve()).toEqual([]);
+    await expect(relate()).resolves.toMatchObject({ status: "related", bindingId: foreign });
+    await admit();
+    const bindings = resolve();
+    expect(bindings).toEqual([
+      expect.objectContaining({ bindingId: foreign, accountId: "main", threadRootEventId: root }),
+    ]);
+    await transport.publish(
+      bindings[0]!,
+      {
+        version: 2,
+        environment: "test",
+        conversationId: "conversation",
+        roomId,
+        bindingId: foreign,
+        runId: "run-main",
+        generation: "g",
+        revision: 1,
+        state: "running",
+      },
+      "transaction-main",
+    );
+    expect(mocks.send).toHaveBeenLastCalledWith(
+      "main",
+      roomId,
+      "m.cellect.conversation.lifecycle",
+      expect.objectContaining({ bindingId: foreign, runId: "run-main" }),
+      "transaction-main",
+    );
+  });
+  it("is idempotent, survives a restart, and refuses a different binding for the room", async () => {
+    await relate();
+    await expect(relate()).resolves.toMatchObject({ status: "related" });
+    await expect(relate({ bindingId: `operator:${roomId}:$other` })).rejects.toThrow(
+      "relation_conflict",
+    );
+    await expect(relate({ conversationId: "another" })).rejects.toThrow("relation_conflict");
+    mocks.managers.set("main", {});
+    await restoreMatrixProjectionExecutions({
+      core: runtime,
+      accountId: "main",
+      client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [roomId] },
+    });
+    await admit();
+    expect(resolve()).toEqual([expect.objectContaining({ bindingId: foreign })]);
+  });
+  it("answers local, and never relates, when this gateway holds the room's row", async () => {
+    mocks.rows = [{ ...canonical }];
+    await expect(relate({ bindingId: `admin:${roomId}:${root}` })).resolves.toMatchObject({
+      status: "local",
+    });
+    await expect(relate()).rejects.toThrow("different or source-backed owner");
+    mocks.rows = [];
+    expect(resolve()).toEqual([]);
+  });
+  it.each([
+    ["a malformed binding", { bindingId: "operator:!other:example.org:$root" }],
+    ["a binding without a thread root", { bindingId: `operator:${roomId}:root` }],
+    ["another agent's route", { agentId: "other" }],
+    ["an unconfigured account", { accountId: "ghost" }],
+  ])("refuses %s", async (_name, overrides) => {
+    await expect(relate(overrides)).rejects.toThrow();
+    await admit();
+    expect(resolve()).toEqual([]);
+  });
+  it("refuses a bot that has not joined the room", async () => {
+    await expect(relate({}, { getJoinedRooms: async () => [] })).rejects.toThrow("joined");
+  });
+  it("dispatches a run in another thread of the room without admitting it", async () => {
+    await relate();
+    await expect(admit("$elsewhere")).resolves.toBeUndefined();
+    expect(resolve()).toEqual([]);
   });
 });

@@ -49,6 +49,39 @@ export function registerMatrixSessionProjection(api: OpenClawPluginApi): void {
     },
     { scope: "operator.admin" },
   );
+  api.registerGatewayMethod(
+    "matrix.sessionProjection.relate",
+    async ({ params, respond }) => {
+      // Fi seats a bot of this gateway in a room another gateway created.
+      try {
+        const [{ relateMatrixProjectionCanonical }, { withResolvedMatrixSendClient }] =
+          await Promise.all([
+            import("./src/matrix/projection-execution.js"),
+            import("./src/matrix/send/client.js"),
+          ]);
+        const cfg = (api.runtime.config?.current?.() ?? api.config) as CoreConfig;
+        const accountId = typeof params?.accountId === "string" ? params.accountId.trim() : "";
+        if (!accountId) {
+          throw new Error("Invalid accountId");
+        }
+        respond(
+          true,
+          await withResolvedMatrixSendClient({ cfg, accountId }, (client) =>
+            relateMatrixProjectionCanonical({
+              core: api.runtime,
+              cfg,
+              client,
+              request: params ?? {},
+            }),
+          ),
+        );
+      } catch (error) {
+        const failure = projectionFailure(error);
+        respond(false, failure.payload, failure.error);
+      }
+    },
+    { scope: "operator.admin" },
+  );
   let lifecycle: { stop: () => void } | undefined;
   let stopSourceReceipts: (() => void) | undefined;
   let prepareSourceResult:
