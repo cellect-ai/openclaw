@@ -17,6 +17,7 @@ import {
   normalizeModelSelection,
   resolveModelRefFromString,
 } from "../agents/model-selection-shared.js";
+import { isToolAllowedByPolicies } from "../agents/tool-policy-match.js";
 import {
   resolveAgentModelFallbackValues,
   resolveAgentModelPrimaryValue,
@@ -42,6 +43,22 @@ import type { CronJob, CronJobCreate } from "./types.js";
 
 const SKILL_COLLECTION_REVIEW_EVERY_MS = 7 * 24 * 60 * 60_000;
 const SKILL_COLLECTION_REVIEW_NO_ROOTED_RUNTIME_REASON = "no-rooted-runtime";
+const SKILL_COLLECTION_REVIEW_NO_WORKSHOP_TOOLS_REASON = "no-workshop-tools";
+
+/** Explicit allow/deny lists can leave an agent (e.g. a session dispatcher) no review tool. */
+function canUseSkillWorkshopMaintenanceTools(cfg: OpenClawConfig, agentId: string): boolean {
+  const policies = [cfg.tools, resolveAgentConfig(cfg, agentId)?.tools].map((tools) =>
+    tools && (Array.isArray(tools.allow) || Array.isArray(tools.deny))
+      ? {
+          allow: Array.isArray(tools.allow)
+            ? [...tools.allow, ...(Array.isArray(tools.alsoAllow) ? tools.alsoAllow : [])]
+            : undefined,
+          deny: Array.isArray(tools.deny) ? tools.deny : undefined,
+        }
+      : undefined,
+  );
+  return SKILL_WORKSHOP_MAINTENANCE_TOOLS.some((name) => isToolAllowedByPolicies(name, policies));
+}
 
 /** Returns undefined when static config cannot prove the full runtime chain. */
 function hasEligibleSkillCollectionReviewRuntime(
@@ -236,15 +253,20 @@ export function* resolveSkillCollectionReviewMonitorSpecs(
       hasStoredExecutionPreference(cfg, agentId, existing.id)
         ? undefined
         : configuredEligibility;
-    const enabled = workshopEnabled && hasEligibleRuntime !== false;
+    const disabledReason = !canUseSkillWorkshopMaintenanceTools(cfg, agentId)
+      ? SKILL_COLLECTION_REVIEW_NO_WORKSHOP_TOOLS_REASON
+      : hasEligibleRuntime === false
+        ? SKILL_COLLECTION_REVIEW_NO_ROOTED_RUNTIME_REASON
+        : undefined;
+    const enabled = workshopEnabled && !disabledReason;
     yield {
       agentId,
       input: {
         declarationKey: `${SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX}${agentId}`,
         name: `skill-collection-review-${agentId}`,
         displayName:
-          workshopEnabled && hasEligibleRuntime === false
-            ? `[${SKILL_COLLECTION_REVIEW_NO_ROOTED_RUNTIME_REASON}] Skill collection review (${agentId})`
+          workshopEnabled && disabledReason
+            ? `[${disabledReason}] Skill collection review (${agentId})`
             : `Skill collection review (${agentId})`,
         agentId,
         enabled,

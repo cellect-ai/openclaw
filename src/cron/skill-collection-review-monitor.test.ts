@@ -147,6 +147,42 @@ describe("resolveSkillCollectionReviewMonitorSpecs", () => {
     }
   });
 
+  it("disables agents whose tool allowlist leaves no review tool", () => {
+    const cfg = {
+      agents: {
+        defaults: { model: "anthropic/claude-sonnet-4-6" },
+        entries: {
+          dispatcher: { tools: { allow: ["sessions_spawn", "sessions_list"] } },
+          denied: { tools: { deny: ["group:fs", "group:runtime", "ls", "apply_patch"] } },
+          extended: { tools: { allow: ["sessions_spawn"], alsoAllow: ["read"] } },
+          worker: { tools: { allow: ["group:fs"] } },
+          open: {},
+        },
+      },
+      skills: { workshop: { autonomous: { mode: "auto" } } },
+    } as OpenClawConfig;
+
+    const byAgent = new Map(
+      Array.from(resolveSkillCollectionReviewMonitorSpecs(cfg, []), (spec) => [
+        spec.agentId,
+        spec.input,
+      ]),
+    );
+
+    for (const agentId of ["dispatcher", "denied"]) {
+      expect(byAgent.get(agentId)).toMatchObject({
+        enabled: false,
+        displayName: "[no-workshop-tools] Skill collection review (" + agentId + ")",
+      });
+    }
+    for (const agentId of ["extended", "worker", "open"]) {
+      expect(byAgent.get(agentId)).toMatchObject({
+        enabled: true,
+        displayName: "Skill collection review (" + agentId + ")",
+      });
+    }
+  });
+
   it("does not create session storage while projecting an existing monitor", async () => {
     const testState = await createOpenClawTestState({ label: "skill-review-projection" });
     try {
