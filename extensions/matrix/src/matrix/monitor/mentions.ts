@@ -35,6 +35,50 @@ function resolveMatrixUserLocalpart(userId: string): string | null {
   return trimmed.slice(1, colonIndex).trim() || null;
 }
 
+/**
+ * The name a Cellect client puts on a pill when the room has not stored one.
+ *
+ * Derived only from this account's localpart: the three built-in agents, a
+ * tenant bot `bot_<org>_<agent>`, and `<env>.bot_<org>_<agent>`. A custom
+ * agent has no canonical name here, so a tenant-chosen label still has to be
+ * the room or profile display name. The visible text must equal this name;
+ * the href still has to be this exact account.
+ */
+function canonicalBuiltinMentionLabel(userId: string): string | null {
+  const localpart = resolveMatrixUserLocalpart(userId);
+  if (!localpart) {
+    return null;
+  }
+  let bare = localpart.toLowerCase();
+  const environmentBot = bare.match(/^[a-z0-9]+\.(bot_.+)$/);
+  if (environmentBot?.[1]) {
+    bare = environmentBot[1];
+  }
+  if (bare.startsWith("bot_")) {
+    if (bare.endsWith("_cellect-fi-admin")) {
+      return "Cellect Fi Admin";
+    }
+    if (bare.endsWith("_cellect-main")) {
+      return "Cellect Superadmin";
+    }
+    if (bare.endsWith("_cellect-fi-user") || bare.endsWith("_cellect-fi")) {
+      return "Cellect Fi";
+    }
+    return null;
+  }
+  switch (bare) {
+    case "cellect-fi":
+    case "cellect-fi-user":
+      return "Cellect Fi";
+    case "cellect-fi-admin":
+      return "Cellect Fi Admin";
+    case "cellect-main":
+      return "Cellect Superadmin";
+    default:
+      return null;
+  }
+}
+
 function hasVisibleNativeMatrixUserMention(text: string | undefined, userId: string): boolean {
   const localpart = resolveMatrixUserLocalpart(userId);
   if (!text || !localpart) {
@@ -58,12 +102,16 @@ function resolveMatrixMentionPrefixCandidates(params: {
   const seen = new Set<string>();
 
   const localpart = params.userId ? resolveMatrixUserLocalpart(params.userId) : null;
+  const builtin = params.userId ? canonicalBuiltinMentionLabel(params.userId) : null;
   for (const candidate of [
     params.userId,
     localpart ? `@${localpart}` : null,
     params.displayName,
     params.displayName ? `@${params.displayName}` : null,
     params.displayName ? `@[${params.displayName}]` : null,
+    builtin,
+    builtin ? `@${builtin}` : null,
+    builtin ? `@[${builtin}]` : null,
   ]) {
     const trimmed = candidate?.trim();
     if (!trimmed) {
@@ -133,6 +181,7 @@ function isVisibleMentionLabel(params: {
     return true;
   }
   const localpart = resolveMatrixUserLocalpart(params.userId);
+  const builtin = canonicalBuiltinMentionLabel(params.userId);
   const candidates = [
     extractVisibleMentionText(params.userId),
     localpart ? extractVisibleMentionText(localpart) : null,
@@ -140,6 +189,9 @@ function isVisibleMentionLabel(params: {
     params.displayName ? extractVisibleMentionText(params.displayName) : null,
     params.displayName ? extractVisibleMentionText(`@${params.displayName}`) : null,
     params.displayName ? extractVisibleMentionText(`@[${params.displayName}]`) : null,
+    builtin ? extractVisibleMentionText(builtin) : null,
+    builtin ? extractVisibleMentionText(`@${builtin}`) : null,
+    builtin ? extractVisibleMentionText(`@[${builtin}]`) : null,
   ].filter((value): value is string => Boolean(value));
   return candidates.includes(cleaned);
 }
@@ -152,7 +204,8 @@ function hasVisibleRoomMention(value?: string): boolean {
 /**
  * Check if formatted_body contains a matrix.to link whose visible label still
  * looks like a real mention for the given user. Do not trust href alone, since
- * senders can hide arbitrary matrix.to links behind unrelated link text.
+ * senders can hide arbitrary matrix.to links behind unrelated link text. A
+ * canonical built-in name counts only when it is the name of this exact user.
  * Many Matrix clients (including Element) use HTML links in formatted_body instead of
  * or in addition to the m.mentions field.
  */
