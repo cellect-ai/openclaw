@@ -363,6 +363,134 @@ describe("resolveMentions", () => {
       );
       expect(result.wasMentioned).toBe(false);
     });
+
+    it.each<[label: string, userId: string, visible: string, mentioned: boolean]>([
+      [
+        "tenant admin builtin while the room name is unset",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Fi Admin",
+        true,
+      ],
+      [
+        "tenant admin builtin when the room name fell back to the Matrix id",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Fi Admin",
+        true,
+      ],
+      ["tenant user builtin", "@bot_shape_cellect-fi-user:matrix.cellect.ai", "Cellect Fi", true],
+      ["short tenant user builtin", "@bot_shape_cellect-fi:matrix.cellect.ai", "Cellect Fi", true],
+      [
+        "environment-prefixed tenant admin",
+        "@staging.bot_terra_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Fi Admin",
+        true,
+      ],
+      ["legacy admin account", "@cellect-fi-admin:matrix.cellect.ai", "Cellect Fi Admin", true],
+      [
+        "superadmin builtin",
+        "@bot_acme_cellect-main:matrix.cellect.ai",
+        "Cellect Superadmin",
+        true,
+      ],
+      [
+        "at-prefixed builtin",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "@Cellect Fi Admin",
+        true,
+      ],
+      [
+        "spaced and cased builtin",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "cellect   fi admin",
+        true,
+      ],
+      [
+        "admin label on the user bot",
+        "@bot_shape_cellect-fi-user:matrix.cellect.ai",
+        "Cellect Fi Admin",
+        false,
+      ],
+      [
+        "user label on the admin bot",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Fi",
+        false,
+      ],
+      [
+        "custom agent with no canonical name",
+        "@bot_cellect_personal:matrix.cellect.ai",
+        "Cellect Fi Admin",
+        false,
+      ],
+      [
+        "tenant-chosen name without a stored display name",
+        "@bot_shape_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Shape Admin",
+        false,
+      ],
+      [
+        "builtin with extra words",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "Cellect Fi Admin please",
+        false,
+      ],
+      [
+        "unrelated label on a builtin bot",
+        "@bot_cellect_cellect-fi-admin:matrix.cellect.ai",
+        "click here",
+        false,
+      ],
+    ])("canonical builtin pill: %s", (_label, userId, visible, mentioned) => {
+      const result = resolveMentions({
+        content: {
+          msgtype: "m.text",
+          body: "please look",
+          formatted_body: `<a href="https://matrix.to/#/${userId}">${visible}</a> please look`,
+          "m.mentions": { user_ids: [userId] },
+        },
+        userId,
+        displayName:
+          _label === "tenant admin builtin when the room name fell back to the Matrix id"
+            ? userId
+            : null,
+        text: "please look",
+        mentionRegexes: [],
+      });
+      expect(result).toEqual({ wasMentioned: mentioned, hasExplicitMention: mentioned });
+    });
+
+    it("keeps a tenant-chosen display name", () => {
+      const userId = "@bot_shape_cellect-fi-admin:matrix.cellect.ai";
+      const result = resolveMentions({
+        content: {
+          msgtype: "m.text",
+          body: "please look",
+          formatted_body: `<a href="https://matrix.to/#/${userId}">Cellect Shape Admin</a> please look`,
+          "m.mentions": { user_ids: [userId] },
+        },
+        userId,
+        displayName: "Cellect Shape Admin",
+        text: "please look",
+        mentionRegexes: [],
+      });
+      expect(result).toEqual({ wasMentioned: true, hasExplicitMention: true });
+    });
+
+    it("does not treat the canonical name in plain text as a mention", () => {
+      const userId = "@bot_cellect_cellect-fi-admin:matrix.cellect.ai";
+      expect(
+        resolveMentions({
+          content: {
+            msgtype: "m.text",
+            body: "Cellect Fi Admin please look",
+            "m.mentions": { user_ids: [userId] },
+          },
+          userId,
+          text: "Cellect Fi Admin please look",
+          mentionRegexes: [],
+        }),
+      ).toEqual({ wasMentioned: false, hasExplicitMention: false });
+    });
   });
 
   describe("regex patterns", () => {
