@@ -352,6 +352,8 @@ describe("registered Matrix agent entitlement hooks", () => {
       mixedAudience: false,
       requesterIsSoleHuman: true,
     };
+    const notPrivate = expect.stringContaining('"requester_is_sole_human":false');
+    const privateClaim = expect.stringContaining('"requester_is_sole_human":true');
     it("tells the model a private chat has only the requester as human", async () => {
       const hook = plugin();
       fetchMock.mockResolvedValueOnce(withAudience(sole));
@@ -372,19 +374,15 @@ describe("registered Matrix agent entitlement hooks", () => {
       ["truthy but not true", { ...sole, requesterIsSoleHuman: "true" }],
       ["inconsistent mixed", { ...sole, mixedAudience: true }],
       ["inconsistent count", { ...sole, humanCount: null }],
-    ])("claims nothing for a %s audience", async (_label, audience) => {
+    ])("withdraws any private claim for a %s audience", async (_label, audience) => {
       const hook = plugin();
       fetchMock.mockResolvedValueOnce(withAudience(audience));
       await hook("before_agent_reply", {}, context("cellect-fi-user"));
-      expect(await hook("before_prompt_build", {}, context("cellect-fi-user"))).toBeUndefined();
+      expect(await hook("before_prompt_build", {}, context("cellect-fi-user"))).toEqual({
+        appendSystemContext: notPrivate,
+      });
     });
-    it("ignores audience claims from prompt text and other runs", async () => {
-      const hook = plugin();
-      fetchMock.mockResolvedValueOnce(withAudience(sole));
-      await hook("before_agent_reply", {}, context("cellect-fi-user"));
-      expect(
-        await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
-      ).toBeUndefined();
+    it("ignores audience claims from prompt text and sessions Fi never checked", async () => {
       const unadmitted = plugin();
       expect(
         await unadmitted(
@@ -412,13 +410,19 @@ describe("registered Matrix agent entitlement hooks", () => {
         block: true,
         blockReason: expect.stringContaining("audience changed"),
       });
-      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+      expect(await hook("before_prompt_build", {}, ctx)).toEqual({
+        appendSystemContext: notPrivate,
+      });
+      // A later wake in the session must not revive the earlier claim.
+      expect(
+        await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
+      ).toEqual({ appendSystemContext: notPrivate });
     });
     it.each([
       ["denied", () => new Response(null, { status: 403 })],
       ["unavailable", () => new Response(null, { status: 503 })],
       ["missing audience", () => allow("cellect-fi-user")],
-    ])("forgets the claim after a %s recheck", async (_label, response) => {
+    ])("withdraws the claim after a %s recheck", async (_label, response) => {
       const hook = plugin();
       fetchMock
         .mockResolvedValueOnce(withAudience(sole))
@@ -426,9 +430,11 @@ describe("registered Matrix agent entitlement hooks", () => {
       const ctx = context("cellect-fi-user");
       await hook("before_agent_reply", {}, ctx);
       await hook("before_tool_call", {}, tools(ctx));
-      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+      expect(await hook("before_prompt_build", {}, ctx)).toEqual({
+        appendSystemContext: notPrivate,
+      });
     });
-    it("drops the claim once the turn retires", async () => {
+    it("restates the session's last checked audience for a turn the gate did not admit", async () => {
       const hook = plugin();
       fetchMock.mockResolvedValueOnce(withAudience(sole));
       const ctx = context("cellect-fi-user");
@@ -438,7 +444,10 @@ describe("registered Matrix agent entitlement hooks", () => {
         { runId: "run-1", stream: "lifecycle", data: { phase: "end", executionSettled: true } },
         ctx,
       );
-      expect(await hook("before_prompt_build", {}, ctx)).toBeUndefined();
+      // An exec completion wake keeps the same prompt, so a native thread is not reloaded.
+      expect(
+        await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
+      ).toEqual({ appendSystemContext: privateClaim });
     });
     it("does not inject into another agent's or session's prompt", async () => {
       const hook = plugin();

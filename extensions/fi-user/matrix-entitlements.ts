@@ -21,7 +21,8 @@ type AuthorizationFailure = typeof UNAVAILABLE | typeof DENIED | typeof SILENT;
 // sessions the Matrix channel's own reply guard supports and authorizes.
 const SOURCE_SESSION = /^agent:(cellect-fi-user|cellect-fi-admin|cellect-main):slack:/;
 // Fi's admission, not the Matrix room kind, knows who can read this chat. Only
-// the one audience Fi proves is injected; anything else stays unknown.
+// a private, sole-human audience Fi proves is asserted; any other admitted
+// answer withdraws it, since an earlier block can outlive its turn.
 const AUDIENCE_CHANGED =
   "This conversation's audience changed during the turn. Treat it as shared and recheck what may be disclosed before continuing.";
 const PRIVATE_SOLE_HUMAN_CONTEXT = [
@@ -38,6 +39,17 @@ const PRIVATE_SOLE_HUMAN_CONTEXT = [
   }),
   "```",
 ].join("\n");
+// A Codex thread keeps an earlier block in its history, so a turn Fi did not
+// prove private must withdraw it rather than stay silent.
+const NOT_PRIVATE_SOLE_HUMAN_CONTEXT = [
+  "## Fi conversation audience",
+  "Fi's grant check did not verify this conversation as private to the requester when this prompt was built. Any earlier Fi conversation audience block no longer applies: treat the conversation as shared.",
+  "",
+  "```json",
+  JSON.stringify({ schema: "fi.conversation_audience.v1", requester_is_sole_human: false }),
+  "```",
+].join("\n");
+const MAX_AUDIENCES = 5_000;
 type Turn = {
   admitted: boolean;
   externalInput: boolean;
@@ -194,16 +206,34 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       }
     },
   });
+  /**
+   * Each session's audience as its latest admitted check left it. A turn the
+   * gate did not admit (an exec completion, a wake) restates it, so the prompt
+   * changes only when Fi's answer does.
+   */
+  const audiences = new Map<string, boolean>();
+  const rememberAudience = (turn: Turn): void => {
+    audiences.delete(turn.sessionKey);
+    audiences.set(turn.sessionKey, turn.privateSoleHuman === true);
+    for (const oldest of audiences.keys()) {
+      if (audiences.size <= MAX_AUDIENCES) {
+        break;
+      }
+      audiences.delete(oldest);
+    }
+  };
   api.lifecycle.registerRuntimeLifecycle({
     id: "matrix-entitlement-identities",
     dispose: () => {
       retireAll();
+      audiences.clear();
       turnRuntime?.dispose();
     },
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
         retireTurn(runId);
       } else if (sessionKey) {
+        audiences.delete(sessionKey);
         for (const [id, turn] of turns) {
           if (turn.sessionKey === sessionKey) {
             retireTurn(id);
@@ -211,6 +241,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         }
       } else {
         retireAll();
+        audiences.clear();
       }
     },
   });
@@ -351,21 +382,26 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         }
         const wasPrivateSoleHuman = turn.privateSoleHuman;
         turn.privateSoleHuman = false;
-        const response = await requestAuthorization(turn, policy, abortSignal);
-        if (!response.ok) {
-          throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+        try {
+          const response = await requestAuthorization(turn, policy, abortSignal);
+          if (!response.ok) {
+            throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
+          }
+          const result: unknown = await response.json();
+          assertCurrent();
+          abortSignal?.throwIfAborted();
+          if (!isAuthorizedProof(api, turn, result)) {
+            throw new Error(UNAVAILABLE);
+          }
+          turn.privateSoleHuman = isPrivateSoleHuman(result);
+          if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
+            throw new Error(AUDIENCE_CHANGED);
+          }
+          return result;
+        } finally {
+          // A failed check withdraws the claim as surely as a shared answer.
+          rememberAudience(turn);
         }
-        const result: unknown = await response.json();
-        assertCurrent();
-        abortSignal?.throwIfAborted();
-        if (!isAuthorizedProof(api, turn, result)) {
-          throw new Error(UNAVAILABLE);
-        }
-        turn.privateSoleHuman = isPrivateSoleHuman(result);
-        if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
-          throw new Error(AUDIENCE_CHANGED);
-        }
-        return result;
       },
     });
   };
@@ -638,18 +674,26 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return failure === SILENT ? { handled: true } : { handled: true, reply: { text: failure } };
       }
       turn.admitted = true;
+      rememberAudience(turn);
       return undefined;
     },
     { priority: 10_000 },
   );
   api.on("before_prompt_build", (_event, context) => {
     const turn = context.runId ? turns.get(context.runId) : undefined;
-    return turn?.admitted &&
-      turn.privateSoleHuman &&
-      turn.agentId === context.agentId &&
-      turn.sessionKey === context.sessionKey
-      ? { appendSystemContext: PRIVATE_SOLE_HUMAN_CONTEXT }
-      : undefined;
+    const privateSoleHuman =
+      turn?.admitted && turn.agentId === context.agentId && turn.sessionKey === context.sessionKey
+        ? turn.privateSoleHuman === true
+        : context.sessionKey?.startsWith(`agent:${context.agentId}:`)
+          ? audiences.get(context.sessionKey)
+          : undefined;
+    return privateSoleHuman === undefined
+      ? undefined
+      : {
+          appendSystemContext: privateSoleHuman
+            ? PRIVATE_SOLE_HUMAN_CONTEXT
+            : NOT_PRIVATE_SOLE_HUMAN_CONTEXT,
+        };
   });
   const beforeToolCall = (context: PluginHookToolContext) => {
     const matrixTurn =
@@ -708,6 +752,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         ...turnIds(turn),
         sessionThreadId: sessionThreadId(turn.sessionKey) ?? null,
       });
+      rememberAudience(turn);
       if (failure) {
         return { block: true, blockReason: failure === SILENT ? DENIED : failure };
       }
