@@ -5,7 +5,7 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { exchange } from "./fi-delegation.js";
+import { exchange, FI_USER_AGENT_ID } from "./fi-delegation.js";
 import {
   downloadSlackFile,
   MAX_SLACK_FILE_BYTES,
@@ -191,6 +191,14 @@ export function registerFileArtifactRuntime(api: OpenClawPluginApi) {
       context: {
         protocol: "fi-file-artifacts-v1",
         capture(context: OpenClawPluginToolContext) {
+          // Only Fi-user files a held download (fi_user_dataroom upload_file).
+          // Another agent's workspace is shared across its sessions, so it gets
+          // no copy, and is told so rather than that its requester is unverified.
+          if (context.agentId !== FI_USER_AGENT_ID) {
+            throw new Error(
+              "Downloading a mail attachment for filing is available only to Fi-user; this agent cannot download or file it. Nothing was downloaded.",
+            );
+          }
           return {
             registerDownload: (input: Parameters<typeof registerDownloadedArtifact>[2]) =>
               registerDownloadedArtifact(api, context, input),
