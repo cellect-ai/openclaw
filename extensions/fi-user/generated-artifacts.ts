@@ -182,7 +182,11 @@ export async function readGeneratedArtifact(
   };
 }
 
-/** Provider plugins hand original bytes to the existing requester/session artifact owner. */
+/**
+ * Provider plugins hand original bytes to the existing requester/session artifact owner.
+ * Protocol: a provider calls `capture` before it fetches anything, so a refusal
+ * there means nothing was downloaded.
+ */
 export function registerFileArtifactRuntime(api: OpenClawPluginApi) {
   for (const channelId of ["matrix", "slack", "webchat"]) {
     api.runtime.channel.runtimeContexts.register({

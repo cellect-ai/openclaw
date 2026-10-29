@@ -786,18 +786,20 @@ describe("downloaded attachment file handoff", () => {
       },
     });
   }
-  it("tells another agent it cannot download for filing, before any bytes are fetched", () => {
+  it.each(
+    ["matrix", "slack", "webchat"].flatMap((channelId) =>
+      ["cellect-fi-admin", "cellect-main", undefined].map((agentId) => [channelId, agentId]),
+    ),
+  )("tells %s agent %s it cannot download for filing", (channelId, agentId) => {
     registerFileArtifactRuntime(api);
     const runtime = vi
       .mocked(api.runtime.channel.runtimeContexts.register)
       .mock.calls.map(([entry]) => entry)
-      .find((entry) => entry.channelId === "matrix")?.context as {
+      .find((entry) => entry.channelId === channelId)?.context as {
       capture: (ctx: OpenClawPluginToolContext) => unknown;
     };
     const exchanges = mocks.exchange.mock.calls.length;
-    expect(() => runtime.capture({ ...context, agentId: "cellect-fi-admin" })).toThrow(
-      "available only to Fi-user",
-    );
+    expect(() => runtime.capture({ ...context, agentId })).toThrow("available only to Fi-user");
     expect(mocks.exchange.mock.calls.length).toBe(exchanges);
   });
   it.each([false, true])(
