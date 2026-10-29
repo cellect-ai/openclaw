@@ -58,6 +58,11 @@ function plugin(configOverrides: Record<string, unknown> = {}) {
         await lifecycle.dispose?.();
       }
     }
+    if (name === "cleanup") {
+      for (const lifecycle of lifecycles) {
+        await lifecycle.cleanup?.(event as never);
+      }
+    }
     for (const hook of hooks.get(name) ?? []) {
       const result = await hook(event as never, context as never);
       if (result) {
@@ -434,20 +439,55 @@ describe("registered Matrix agent entitlement hooks", () => {
         appendSystemContext: notPrivate,
       });
     });
-    it("restates the session's last checked audience for a turn the gate did not admit", async () => {
+    it("never restates a private claim for a run Fi did not check", async () => {
       const hook = plugin();
       fetchMock.mockResolvedValueOnce(withAudience(sole));
       const ctx = context("cellect-fi-user");
       await hook("before_agent_reply", {}, ctx);
+      expect(await hook("before_prompt_build", {}, ctx)).toEqual({
+        appendSystemContext: privateClaim,
+      });
       await hook(
         "settled",
         { runId: "run-1", stream: "lifecycle", data: { phase: "end", executionSettled: true } },
         ctx,
       );
-      // An exec completion wake keeps the same prompt, so a native thread is not reloaded.
+      expect(await hook("before_prompt_build", {}, ctx)).toEqual({
+        appendSystemContext: notPrivate,
+      });
       expect(
         await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
-      ).toEqual({ appendSystemContext: privateClaim });
+      ).toEqual({ appendSystemContext: notPrivate });
+    });
+    it.each([
+      ["denied", () => new Response(null, { status: 403 })],
+      ["unavailable", () => new Response(null, { status: 503 })],
+    ])("withdraws after a private session's next admission is %s", async (_label, response) => {
+      const hook = plugin();
+      fetchMock
+        .mockResolvedValueOnce(withAudience(sole))
+        .mockImplementation(async () => response());
+      await hook("before_agent_reply", {}, context("cellect-fi-user"));
+      await hook(
+        "settled",
+        { runId: "run-1", stream: "lifecycle", data: { phase: "end", executionSettled: true } },
+        context("cellect-fi-user"),
+      );
+      const next = context("cellect-fi-user", { runId: "run-2" });
+      expect(await hook("before_agent_reply", {}, next)).toMatchObject({ handled: true });
+      expect(await hook("before_prompt_build", {}, next)).toEqual({
+        appendSystemContext: notPrivate,
+      });
+    });
+    it("forgets a session Fi checked once the host cleans it up", async () => {
+      const hook = plugin();
+      fetchMock.mockResolvedValueOnce(withAudience(sole));
+      const ctx = context("cellect-fi-user");
+      await hook("before_agent_reply", {}, ctx);
+      await hook("cleanup", { sessionKey: ctx.sessionKey }, ctx);
+      expect(
+        await hook("before_prompt_build", {}, context("cellect-fi-user", { runId: "run-2" })),
+      ).toBeUndefined();
     });
     it("does not inject into another agent's or session's prompt", async () => {
       const hook = plugin();

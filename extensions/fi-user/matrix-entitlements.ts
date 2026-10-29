@@ -49,7 +49,7 @@ const NOT_PRIVATE_SOLE_HUMAN_CONTEXT = [
   JSON.stringify({ schema: "fi.conversation_audience.v1", requester_is_sole_human: false }),
   "```",
 ].join("\n");
-const MAX_AUDIENCES = 5_000;
+const MAX_CHECKED_SESSIONS = 5_000;
 type Turn = {
   admitted: boolean;
   externalInput: boolean;
@@ -207,33 +207,34 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     },
   });
   /**
-   * Each session's audience as its latest admitted check left it. A turn the
-   * gate did not admit (an exec completion, a wake) restates it, so the prompt
-   * changes only when Fi's answer does.
+   * Sessions Fi has checked. A later run there that the gate did not admit
+   * (an inter-session send, a manual run) was never checked itself, so it is
+   * told only that any earlier block no longer applies.
    */
-  const audiences = new Map<string, boolean>();
-  const rememberAudience = (turn: Turn): void => {
-    audiences.delete(turn.sessionKey);
-    audiences.set(turn.sessionKey, turn.privateSoleHuman === true);
-    for (const oldest of audiences.keys()) {
-      if (audiences.size <= MAX_AUDIENCES) {
+  const checkedSessions = new Set<string>();
+  const noteChecked = (sessionKey: string): void => {
+    const key = sessionKey.toLowerCase();
+    checkedSessions.delete(key);
+    checkedSessions.add(key);
+    for (const oldest of checkedSessions) {
+      if (checkedSessions.size <= MAX_CHECKED_SESSIONS) {
         break;
       }
-      audiences.delete(oldest);
+      checkedSessions.delete(oldest);
     }
   };
   api.lifecycle.registerRuntimeLifecycle({
     id: "matrix-entitlement-identities",
     dispose: () => {
       retireAll();
-      audiences.clear();
+      checkedSessions.clear();
       turnRuntime?.dispose();
     },
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
         retireTurn(runId);
       } else if (sessionKey) {
-        audiences.delete(sessionKey);
+        checkedSessions.delete(sessionKey.toLowerCase());
         for (const [id, turn] of turns) {
           if (turn.sessionKey === sessionKey) {
             retireTurn(id);
@@ -241,7 +242,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         }
       } else {
         retireAll();
-        audiences.clear();
+        checkedSessions.clear();
       }
     },
   });
@@ -382,26 +383,22 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         }
         const wasPrivateSoleHuman = turn.privateSoleHuman;
         turn.privateSoleHuman = false;
-        try {
-          const response = await requestAuthorization(turn, policy, abortSignal);
-          if (!response.ok) {
-            throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
-          }
-          const result: unknown = await response.json();
-          assertCurrent();
-          abortSignal?.throwIfAborted();
-          if (!isAuthorizedProof(api, turn, result)) {
-            throw new Error(UNAVAILABLE);
-          }
-          turn.privateSoleHuman = isPrivateSoleHuman(result);
-          if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
-            throw new Error(AUDIENCE_CHANGED);
-          }
-          return result;
-        } finally {
-          // A failed check withdraws the claim as surely as a shared answer.
-          rememberAudience(turn);
+        noteChecked(turn.sessionKey);
+        const response = await requestAuthorization(turn, policy, abortSignal);
+        if (!response.ok) {
+          throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
         }
+        const result: unknown = await response.json();
+        assertCurrent();
+        abortSignal?.throwIfAborted();
+        if (!isAuthorizedProof(api, turn, result)) {
+          throw new Error(UNAVAILABLE);
+        }
+        turn.privateSoleHuman = isPrivateSoleHuman(result);
+        if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
+          throw new Error(AUDIENCE_CHANGED);
+        }
+        return result;
       },
     });
   };
@@ -417,6 +414,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   ): Promise<AuthorizationFailure | undefined> => {
     // Only a successful check re-establishes the audience; failures leave it unknown.
     turn.privateSoleHuman = false;
+    noteChecked(turn.sessionKey);
     try {
       if (!hasAuthorizationScope(configFromRuntime(api), turn.agentId)) {
         return UNAVAILABLE;
@@ -504,6 +502,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           return undefined;
         }
         const [runId, turn] = selected;
+        const wasPrivateSoleHuman = turn.privateSoleHuman;
         let senderId: string | undefined;
         // Fi's existing requester mapping rechecks the actual sender's current
         // private-conversation grants; the mapping is never retained on a turn.
@@ -513,7 +512,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
             senderId = resolved;
           },
         });
-        return !failure && turns.get(runId) === turn && turn.admitted ? senderId : undefined;
+        return !failure &&
+          turns.get(runId) === turn &&
+          turn.admitted &&
+          !(wasPrivateSoleHuman && !turn.privateSoleHuman)
+          ? senderId
+          : undefined;
       },
     },
   });
@@ -674,7 +678,6 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return failure === SILENT ? { handled: true } : { handled: true, reply: { text: failure } };
       }
       turn.admitted = true;
-      rememberAudience(turn);
       return undefined;
     },
     { priority: 10_000 },
@@ -684,8 +687,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     const privateSoleHuman =
       turn?.admitted && turn.agentId === context.agentId && turn.sessionKey === context.sessionKey
         ? turn.privateSoleHuman === true
-        : context.sessionKey?.startsWith(`agent:${context.agentId}:`)
-          ? audiences.get(context.sessionKey)
+        : context.sessionKey?.startsWith(`agent:${context.agentId}:`) &&
+            checkedSessions.has(context.sessionKey.toLowerCase())
+          ? false
           : undefined;
     return privateSoleHuman === undefined
       ? undefined
@@ -752,7 +756,6 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         ...turnIds(turn),
         sessionThreadId: sessionThreadId(turn.sessionKey) ?? null,
       });
-      rememberAudience(turn);
       if (failure) {
         return { block: true, blockReason: failure === SILENT ? DENIED : failure };
       }
