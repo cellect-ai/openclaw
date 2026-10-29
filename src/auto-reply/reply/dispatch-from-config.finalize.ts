@@ -386,13 +386,12 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
   const replyAcceptedByActiveRun = replyAdmission?.status === "accepted";
   const queueCapRejected =
     replyAdmission?.status === "skipped" && replyAdmission.reason === "queue-cap";
-  // A Stop can reach only the run's own operation, leaving dispatch's signal
-  // live. The reader asked for no reply; silence is not a delivery failure.
-  const agentTurnOwnerResult = state.replyOperationRunState.agentTurnOwner?.result;
+  // A Stop can reach only the run's own operation, or only the native run,
+  // leaving dispatch's signal live. The reader asked for no reply; silence is
+  // not a delivery failure.
   const agentTurnStoppedByUser =
     state.replyOperationRunState.agentTurn === "cancelled" &&
-    agentTurnOwnerResult?.kind === "aborted" &&
-    agentTurnOwnerResult.code === "aborted_by_user";
+    state.replyOperationRunState.agentTurnAbortReason === "user";
   const noVisibleReplyFallbackAllowed = () =>
     !agentTurnStoppedByUser &&
     replyCompletion().outcome === "missing" &&

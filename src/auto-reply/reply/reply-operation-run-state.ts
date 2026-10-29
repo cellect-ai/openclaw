@@ -48,6 +48,8 @@ export type ReplyOperationRunState = {
   questionInputHandled?: true;
   messageInjectionAborted?: true;
   agentTurn?: ReturnType<typeof resolveAgentTurnExecutionStatus>;
+  /** Why a cancelled turn ended; a native run Stop leaves its reply operation unaborted. */
+  agentTurnAbortReason?: "user" | "restart" | "superseded";
   agentTurnOwner?: ReplyOperation;
   messagingToolSentTargets?: MessagingToolSend[];
   backgroundWorkStarted?: boolean;
@@ -73,11 +75,18 @@ export function resolveReplyOperationRunState(
   return (options as ReplyOptionsWithOperationRunState | undefined)?.[REPLY_OPERATION_RUN_STATE];
 }
 
+const ABORT_REASON_BY_CODE = {
+  aborted_by_user: "user",
+  aborted_for_restart: "restart",
+  aborted_for_supersession: "superseded",
+} as const;
+
 export function recordReplyOperationAgentTurn(
   states: readonly ReplyOperationRunState[] | undefined,
   owner: ReplyOperation | undefined,
   outcome?:
-    | { kind: "aborted" | "rejected" }
+    | { kind: "aborted"; reason?: "user" | "restart" | "superseded" }
+    | { kind: "rejected" }
     | {
         kind: "settled";
         status: "ok" | "failed";
@@ -91,6 +100,12 @@ export function recordReplyOperationAgentTurn(
     state.agentTurn = resolveAgentTurnExecutionStatus(
       outcome ?? (owner?.result?.kind === "aborted" ? owner.result : undefined),
     );
+    state.agentTurnAbortReason =
+      outcome?.kind === "aborted"
+        ? outcome.reason
+        : !outcome && owner?.result?.kind === "aborted"
+          ? ABORT_REASON_BY_CODE[owner.result.code]
+          : undefined;
     if (outcome?.kind === "settled") {
       state.messagingToolSentTargets = outcome.result.messagingToolSentTargets?.slice();
       state.backgroundWorkStarted = Boolean(

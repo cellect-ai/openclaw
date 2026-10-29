@@ -92,16 +92,38 @@ it.each(["genuine failure", "ConversationRunStopReason"])(
   },
 );
 
-// A Stop that reaches only the run's own operation leaves dispatch's signal live.
-// The runner records the cancelled turn and returns nothing; that is not a missing reply.
+// A Stop can reach only the run's own operation, or only the native run,
+// leaving dispatch's signal live. The runner records the cancelled turn and
+// returns nothing; for a user Stop that is not a missing reply.
 it.each([
-  { code: "aborted_by_user", fallback: false },
-  { code: "aborted_for_restart", fallback: true },
+  {
+    name: "native run stopped during the first model call",
+    owner: { result: null },
+    outcome: { kind: "aborted", reason: "user" },
+    fallback: false,
+  },
+  {
+    name: "reply operation aborted by the user",
+    owner: { result: { kind: "aborted", code: "aborted_by_user" } },
+    outcome: undefined,
+    fallback: false,
+  },
+  {
+    name: "native run aborted for restart",
+    owner: { result: null },
+    outcome: { kind: "aborted", reason: "restart" },
+    fallback: true,
+  },
+  {
+    name: "reply operation aborted for restart",
+    owner: { result: { kind: "aborted", code: "aborted_for_restart" } },
+    outcome: undefined,
+    fallback: true,
+  },
 ] as const)(
-  "an agent turn $code with no reply posts fallback=$fallback",
-  async ({ code, fallback }) => {
+  "$name with no reply posts fallback=$fallback",
+  async ({ owner, outcome, fallback }) => {
     const dispatcher = createDispatcher();
-    const owner = { result: { kind: "aborted", code } } as unknown as ReplyOperation;
     const result = await dispatchReplyFromConfig({
       ctx: buildTestCtx({
         Provider: "matrix",
@@ -113,9 +135,11 @@ it.each([
       dispatcher,
       replyOptions: { abortSignal: new AbortController().signal },
       replyResolver: async (_inbound, opts) => {
-        recordReplyOperationAgentTurn([resolveReplyOperationRunState(opts)!], owner, {
-          kind: "aborted",
-        });
+        recordReplyOperationAgentTurn(
+          [resolveReplyOperationRunState(opts)!],
+          owner as unknown as ReplyOperation,
+          outcome,
+        );
         return undefined;
       },
     });
