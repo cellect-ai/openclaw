@@ -40,6 +40,8 @@ const MAX_TRACKED = 5_000;
  * also match one of the remembered events, so forgetting only refuses.
  */
 const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
+/** Fi's source-reply check runs as the Matrix event is received, just before it is dispatched. */
+const SOURCE_REPLY_TTL_MS = 5 * 60 * 1000;
 /**
  * Fi's tokens live ten minutes. One that claims more than this is refused, and
  * no sandbox is held for longer on any answer's say-so.
@@ -107,10 +109,12 @@ type Arrivals = {
   proven: boolean;
   /** Event ids of the proven Matrix messages among them. */
   events: Set<string>;
+  /** The projection room each proven Matrix reply to a source session came from. */
+  sourceRooms: Map<string, string>;
   /** When the last of them was observed. */
   at: number;
 };
-type Proof = { sender: string; eventId?: string };
+type Proof = { sender: string; eventId?: string; sourceRoomId?: string };
 /** Who a sandbox last ran a token-bearing command for, and until when that token lives. */
 type Custody = {
   sender: string;
@@ -300,10 +304,13 @@ export function registerAdminDelegation(
   };
   const arrivals = new Map<string, Arrivals>();
   const runs = new Map<string, Run>();
+  /** Fi's latest allowance for one Matrix person to continue one source session, by room. */
+  const sourceReplies = new Map<string, { roomId: string; at: number }>();
   const custody = new Map<string, Custody>();
   const reset = () => {
     arrivals.clear();
     runs.clear();
+    sourceReplies.clear();
   };
   /**
    * What this runtime's configuration says about the admin agent's commands,
@@ -372,7 +379,24 @@ export function registerAdminDelegation(
         ? { sender, eventId: message.messageId }
         : undefined;
     }
-    if (!("requester_matrix_user_id" in requester) || !rest.startsWith("matrix:")) {
+    if (!("requester_matrix_user_id" in requester)) {
+      return undefined;
+    }
+    if (rest.startsWith("slack:")) {
+      // A reply in a Slack source session's Matrix projection. The Matrix
+      // channel admits it only after Fi's source guard allows this person to
+      // continue this session from that room; that answer is the proof.
+      const allowed = sourceReplies.get(
+        JSON.stringify([sessionKey, requester.requester_matrix_user_id]),
+      );
+      return allowed &&
+        allowed.at > Date.now() - SOURCE_REPLY_TTL_MS &&
+        typeof message.isGroup === "boolean" &&
+        message.messageId?.startsWith("$")
+        ? { sender, eventId: message.messageId, sourceRoomId: allowed.roomId }
+        : undefined;
+    }
+    if (!rest.startsWith("matrix:")) {
       return undefined;
     }
     return typeof message.isGroup === "boolean" && message.messageId?.startsWith("$")
@@ -426,6 +450,11 @@ export function registerAdminDelegation(
       } else if (sessionKey) {
         const key = sessionKey.toLowerCase();
         arrivals.delete(key);
+        for (const reply of sourceReplies.keys()) {
+          if (JSON.parse(reply)[0] === key) {
+            sourceReplies.delete(reply);
+          }
+        }
         for (const [id, run] of runs) {
           if (run.sessionKey === key) {
             runs.delete(id);
@@ -522,8 +551,12 @@ export function registerAdminDelegation(
       // Shared conversations admit only the run of the dispatched native event,
       // by that same sender. Never reuse the stored sender on a synthetic wake.
       const origin = context.channelContext;
+      const rest = sessionKey.slice(`agent:${agentId}:`.length);
       const slackChannel = /^slack:(?:channel|group):([cg][a-z0-9]+)(?::thread:\d+\.\d+)?$/.exec(
-        sessionKey.slice(`agent:${agentId}:`.length),
+        rest,
+      );
+      const sourceReply = Boolean(
+        requester && "requester_matrix_user_id" in requester && rest.startsWith("slack:"),
       );
       const requiresEvent = requester && ("requester_matrix_user_id" in requester || slackChannel);
       const nativeSender =
@@ -537,8 +570,10 @@ export function registerAdminDelegation(
         !requiresEvent ||
         (typeof nativeSender === "string" &&
           origin?.sender?.id === nativeSender &&
-          (!slackChannel || origin?.chat?.id?.toLowerCase() === slackChannel[1]) &&
           typeof origin?.chat?.eventId === "string" &&
+          (sourceReply
+            ? arrived?.sourceRooms.get(origin.chat.eventId) === origin.chat.id
+            : !slackChannel || origin?.chat?.id?.toLowerCase() === slackChannel[1]) &&
           arrived?.events.has(origin.chat.eventId) === true);
       if (
         sender &&
@@ -555,6 +590,7 @@ export function registerAdminDelegation(
         // Consume only this run's exact event; later runs need their own proof.
         if (requiresEvent && typeof origin?.chat?.eventId === "string") {
           arrived.events.delete(origin.chat.eventId);
+          arrived.sourceRooms.delete(origin.chat.eventId);
           if (arrived.events.size > 0) {
             remember(arrivals, sessionKey, arrived);
           }
@@ -586,13 +622,22 @@ export function registerAdminDelegation(
           arrivals.delete(key);
         }
       }
-      arrived = { senders: new Set(), proven: false, events: new Set(), at: now };
+      arrived = {
+        senders: new Set(),
+        proven: false,
+        events: new Set(),
+        sourceRooms: new Map(),
+        at: now,
+      };
     }
     arrived.senders.add(sender);
     arrived.proven ||= proof !== undefined;
     arrived.at = now;
     if (proof?.eventId) {
       arrived.events.add(proof.eventId);
+      if (proof.sourceRoomId) {
+        arrived.sourceRooms.set(proof.eventId, proof.sourceRoomId);
+      }
     }
     remember(arrivals, sessionKey, arrived);
     for (const run of runs.values()) {
@@ -874,5 +919,17 @@ export function registerAdminDelegation(
     );
   };
 
-  return { dispatched, received, held, mint };
+  /** Fi allowed this Matrix person to continue this source session from this room. */
+  const sourceReplyAllowed = (allowed: {
+    sessionKey: string;
+    roomId: string;
+    senderId: string;
+  }): void => {
+    remember(sourceReplies, JSON.stringify([allowed.sessionKey.toLowerCase(), allowed.senderId]), {
+      roomId: allowed.roomId,
+      at: Date.now(),
+    });
+  };
+
+  return { dispatched, received, held, mint, sourceReplyAllowed };
 }

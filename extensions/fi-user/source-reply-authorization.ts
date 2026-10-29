@@ -28,6 +28,8 @@ type Reader = {
 export function registerSourceReplyAuthorization(
   api: OpenClawPluginApi,
   connection: () => { baseUrl: string; token?: string },
+  /** Told of each Matrix sender Fi allowed to continue a source session, as it is allowed. */
+  onAllowed?: (allowed: { sessionKey: string; roomId: string; senderId: string }) => void,
 ) {
   const resolveSource = async (
     params: SourceBinding,
@@ -206,12 +208,20 @@ export function registerSourceReplyAuthorization(
           return "unavailable";
         }
         const result: unknown = await response.json();
-        return result &&
-          typeof result === "object" &&
-          "allowed" in result &&
-          result.allowed === true
-          ? "allowed"
-          : "denied";
+        if (
+          !result ||
+          typeof result !== "object" ||
+          !("allowed" in result) ||
+          result.allowed !== true
+        ) {
+          return "denied";
+        }
+        onAllowed?.({
+          sessionKey: params.binding.targetSessionKey,
+          roomId: params.matrixRoomId,
+          senderId: params.matrixSenderId,
+        });
+        return "allowed";
       },
     },
   });

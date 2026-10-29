@@ -546,7 +546,7 @@ export default definePluginEntry({
         fullRefreshesPerTick: config.projectionFullRefreshesPerTick,
       };
     };
-    registerSourceReplyAuthorization(api, projectionConnection);
+    registerSourceReplyAuthorization(api, projectionConnection, adminDelegation.sourceReplyAllowed);
     const slackProjection = registerSlackChannelProjection(api, projectionConnection);
     api.on("message_received", async (event, context) => {
       slackProjection.noteInboundActivity({
