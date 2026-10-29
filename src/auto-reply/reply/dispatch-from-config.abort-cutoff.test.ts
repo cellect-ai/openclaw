@@ -13,6 +13,11 @@ import {
 } from "./dispatch-from-config.test-harness.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
+import {
+  recordReplyOperationAgentTurn,
+  resolveReplyOperationRunState,
+} from "./reply-operation-run-state.js";
+import type { ReplyOperation } from "./reply-run-registry.js";
 import { buildTestCtx } from "./test-ctx.js";
 import type { TypingController } from "./typing.js";
 
@@ -86,6 +91,66 @@ it.each(["genuine failure", "ConversationRunStopReason"])(
     expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
   },
 );
+
+// A Stop that reaches only the run's own operation leaves dispatch's signal live.
+// The runner records the cancelled turn and returns nothing; that is not a missing reply.
+it.each([
+  { code: "aborted_by_user", fallback: false },
+  { code: "aborted_for_restart", fallback: true },
+] as const)(
+  "an agent turn $code with no reply posts fallback=$fallback",
+  async ({ code, fallback }) => {
+    const dispatcher = createDispatcher();
+    const owner = { result: { kind: "aborted", code } } as unknown as ReplyOperation;
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "matrix",
+        Surface: "matrix",
+        ChatType: "direct",
+        SessionKey: "agent:main:inner-stop",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyOptions: { abortSignal: new AbortController().signal },
+      replyResolver: async (_inbound, opts) => {
+        recordReplyOperationAgentTurn([resolveReplyOperationRunState(opts)!], owner, {
+          kind: "aborted",
+        });
+        return undefined;
+      },
+    });
+    if (fallback) {
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledOnce();
+    } else {
+      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      expect(result.noVisibleReplyFallbackDelivered).toBeUndefined();
+    }
+  },
+);
+
+it("still posts the fallback after a failed agent turn with no reply", async () => {
+  const dispatcher = createDispatcher();
+  const result = await dispatchReplyFromConfig({
+    ctx: buildTestCtx({
+      Provider: "matrix",
+      Surface: "matrix",
+      ChatType: "direct",
+      SessionKey: "agent:main:inner-failure",
+    }),
+    cfg: emptyConfig,
+    dispatcher,
+    replyOptions: { abortSignal: new AbortController().signal },
+    replyResolver: async (_inbound, opts) => {
+      const owner = { result: { kind: "failed", code: "run_failed" } } as unknown as ReplyOperation;
+      recordReplyOperationAgentTurn([resolveReplyOperationRunState(opts)!], owner);
+      return undefined;
+    },
+  });
+  expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({
+    text: buildNoVisibleReplyFallbackText(),
+  });
+  expect(result.noVisibleReplyFallbackDelivered).toBe(true);
+});
 
 it.each([
   { name: "cutoff message ID", message: { MessageSid: "42" }, cancelled: true },
