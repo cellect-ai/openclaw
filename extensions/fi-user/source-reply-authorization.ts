@@ -28,8 +28,13 @@ type Reader = {
 export function registerSourceReplyAuthorization(
   api: OpenClawPluginApi,
   connection: () => { baseUrl: string; token?: string },
-  /** Told of each Matrix sender Fi allowed to continue a source session, as it is allowed. */
-  onAllowed?: (allowed: { sessionKey: string; roomId: string; senderId: string }) => void,
+  /** Told of each decision on a Matrix sender continuing a source session, as it is made. */
+  onDecision?: (decision: {
+    sessionKey: string;
+    roomId: string;
+    senderId: string;
+    allowed: boolean;
+  }) => void,
 ) {
   const resolveSource = async (
     params: SourceBinding,
@@ -151,6 +156,61 @@ export function registerSourceReplyAuthorization(
       memberSenderIds: channel.memberSenderIds,
     };
   };
+  const authorize = async (params: {
+    binding: SourceBinding;
+    matrixRoomId: string;
+    matrixSenderId: string;
+  }): Promise<"allowed" | "denied" | "unavailable"> => {
+    const credentials = connection();
+    if (!credentials.token) {
+      return "unavailable";
+    }
+    const verified = await resolveSource(params.binding);
+    const source = verified.externalSource;
+    const response = await fetch(
+      `${credentials.baseUrl}/api/openclaw-session-projection/authorize`,
+      {
+        method: "POST",
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          authorization: `Bearer ${credentials.token}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          matrixRoomId: params.matrixRoomId,
+          matrixSenderId: params.matrixSenderId,
+          sessionKey: params.binding.targetSessionKey,
+          agentId: params.binding.targetSessionKey.split(":")[1],
+          ...(source.peerSenderId
+            ? {
+                directSource: {
+                  workspaceId: source.workspaceId,
+                  channelId: source.channelId,
+                  peerSenderId: source.peerSenderId,
+                },
+              }
+            : {
+                source: {
+                  workspaceId: source.workspaceId,
+                  channelId: source.channelId,
+                  rootMessageId: source.rootMessageId,
+                  memberSenderIds: verified.memberSenderIds,
+                },
+              }),
+        }),
+      },
+    );
+    if (response.status === 403) {
+      return "denied";
+    }
+    if (!response.ok) {
+      return "unavailable";
+    }
+    const result: unknown = await response.json();
+    return result && typeof result === "object" && "allowed" in result && result.allowed === true
+      ? "allowed"
+      : "denied";
+  };
   api.runtime.channel.runtimeContexts.register({
     channelId: "matrix",
     capability: "source-session-authorization",
@@ -162,66 +222,19 @@ export function registerSourceReplyAuthorization(
         matrixRoomId: string;
         matrixSenderId: string;
       }) => {
-        const credentials = connection();
-        if (!credentials.token) {
-          return "unavailable";
+        let outcome: "allowed" | "denied" | "unavailable" | undefined;
+        try {
+          outcome = await authorize(params);
+          return outcome;
+        } finally {
+          // Every answer, including a failure, replaces the last one for this sender.
+          onDecision?.({
+            sessionKey: params.binding.targetSessionKey,
+            roomId: params.matrixRoomId,
+            senderId: params.matrixSenderId,
+            allowed: outcome === "allowed",
+          });
         }
-        const verified = await resolveSource(params.binding);
-        const source = verified.externalSource;
-        const response = await fetch(
-          `${credentials.baseUrl}/api/openclaw-session-projection/authorize`,
-          {
-            method: "POST",
-            signal: AbortSignal.timeout(15_000),
-            headers: {
-              authorization: `Bearer ${credentials.token}`,
-              "content-type": "application/json",
-            },
-            body: JSON.stringify({
-              matrixRoomId: params.matrixRoomId,
-              matrixSenderId: params.matrixSenderId,
-              sessionKey: params.binding.targetSessionKey,
-              agentId: params.binding.targetSessionKey.split(":")[1],
-              ...(source.peerSenderId
-                ? {
-                    directSource: {
-                      workspaceId: source.workspaceId,
-                      channelId: source.channelId,
-                      peerSenderId: source.peerSenderId,
-                    },
-                  }
-                : {
-                    source: {
-                      workspaceId: source.workspaceId,
-                      channelId: source.channelId,
-                      rootMessageId: source.rootMessageId,
-                      memberSenderIds: verified.memberSenderIds,
-                    },
-                  }),
-            }),
-          },
-        );
-        if (response.status === 403) {
-          return "denied";
-        }
-        if (!response.ok) {
-          return "unavailable";
-        }
-        const result: unknown = await response.json();
-        if (
-          !result ||
-          typeof result !== "object" ||
-          !("allowed" in result) ||
-          result.allowed !== true
-        ) {
-          return "denied";
-        }
-        onAllowed?.({
-          sessionKey: params.binding.targetSessionKey,
-          roomId: params.matrixRoomId,
-          senderId: params.matrixSenderId,
-        });
-        return "allowed";
       },
     },
   });

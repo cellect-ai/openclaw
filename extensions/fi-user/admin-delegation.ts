@@ -382,10 +382,11 @@ export function registerAdminDelegation(
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }
-    if (rest.startsWith("slack:")) {
-      // A reply in a Slack source session's Matrix projection. The Matrix
-      // channel admits it only after Fi's source guard allows this person to
-      // continue this session from that room; that answer is the proof.
+    if (/^slack:(?:channel|group):/.test(rest)) {
+      // A reply in a Slack thread's Matrix projection. The Matrix channel
+      // admits it only after Fi's source guard allows this person to continue
+      // this session from that room; that answer is the proof. A Slack DM's
+      // projection has no local peer check here, so it proves nothing.
       const allowed = sourceReplies.get(
         JSON.stringify([sessionKey, requester.requester_matrix_user_id]),
       );
@@ -919,17 +920,20 @@ export function registerAdminDelegation(
     );
   };
 
-  /** Fi allowed this Matrix person to continue this source session from this room. */
-  const sourceReplyAllowed = (allowed: {
+  /** Fi's latest answer on this Matrix person continuing this source session from this room. */
+  const sourceReplyDecided = (decision: {
     sessionKey: string;
     roomId: string;
     senderId: string;
+    allowed: boolean;
   }): void => {
-    remember(sourceReplies, JSON.stringify([allowed.sessionKey.toLowerCase(), allowed.senderId]), {
-      roomId: allowed.roomId,
-      at: Date.now(),
-    });
+    const key = JSON.stringify([decision.sessionKey.toLowerCase(), decision.senderId]);
+    if (decision.allowed) {
+      remember(sourceReplies, key, { roomId: decision.roomId, at: Date.now() });
+    } else {
+      sourceReplies.delete(key);
+    }
   };
 
-  return { dispatched, received, held, mint, sourceReplyAllowed };
+  return { dispatched, received, held, mint, sourceReplyDecided };
 }

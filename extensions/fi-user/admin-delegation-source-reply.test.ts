@@ -8,16 +8,16 @@ import {
   TOKEN,
 } from "./admin-delegation.test-helpers.js";
 
-type Allowed = { sessionKey: string; roomId: string; senderId: string };
-const guard = vi.hoisted(() => ({ allowed: undefined as undefined | ((a: Allowed) => void) }));
+type Decision = { sessionKey: string; roomId: string; senderId: string; allowed: boolean };
+const guard = vi.hoisted(() => ({ decided: undefined as undefined | ((d: Decision) => void) }));
 // Fi's source guard is exercised in its own tests; here only its answer matters.
 vi.mock("./source-reply-authorization.js", () => ({
   registerSourceReplyAuthorization: (
     _api: unknown,
     _connection: unknown,
-    onAllowed?: (allowed: Allowed) => void,
+    onDecision?: (decision: Decision) => void,
   ) => {
-    guard.allowed = onAllowed;
+    guard.decided = onDecision;
   },
 }));
 
@@ -47,8 +47,14 @@ const reply = (senderId = ADMIN, eventId = "$reply", roomId = ROOM) => ({
     requester: { channel: "matrix", senderId, accountId: "adminprod" },
   },
 });
-const allow = (overrides: Partial<Allowed> = {}) =>
-  guard.allowed?.({ sessionKey: SLACK_THREAD, roomId: ROOM, senderId: ADMIN, ...overrides });
+const allow = (overrides: Partial<Decision> = {}) =>
+  guard.decided?.({
+    sessionKey: SLACK_THREAD,
+    roomId: ROOM,
+    senderId: ADMIN,
+    allowed: true,
+    ...overrides,
+  });
 
 describe("a Matrix reply to a Slack source session", () => {
   beforeEach(() => {
@@ -74,11 +80,67 @@ describe("a Matrix reply to a Slack source session", () => {
     ["no source guard answer", () => undefined],
     ["an answer for another person", () => allow({ senderId: "@other:matrix.example" })],
     ["an answer for another session", () => allow({ sessionKey: `${SLACK_THREAD}9` })],
+    ["a later refusal", () => (allow(), allow({ allowed: false }))],
   ])("does not mint with %s", async (_name, answer) => {
     const turn = plugin();
     const message = reply();
     answer();
     await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it.each([
+    ["an asserted sender", { senderAuthentication: "asserted" }, {}],
+    ["a bot sender", {}, { sender: { id: ADMIN, isBot: true } }],
+  ])("does not mint for %s", async (_name, arrival, origin) => {
+    const turn = plugin();
+    const message = reply();
+    allow();
+    await turn.arrive({ ...message.arrive, ...arrival });
+    await turn.start({
+      ...message.start,
+      channelContext: { ...message.start.channelContext, ...origin },
+    });
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("matches the session however the guard cased it", async () => {
+    const turn = plugin();
+    const message = reply();
+    allow({ sessionKey: SLACK_THREAD.replace("c0channel1", "C0CHANNEL1") });
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+  });
+
+  it("does not mint in a Slack DM's projection", async () => {
+    const turn = plugin();
+    const dm = "agent:cellect-fi-admin:slack:direct:u0admin001";
+    const message = reply();
+    allow({ sessionKey: dm });
+    await turn.arrive({ ...message.arrive, sessionKey: dm });
+    await turn.start({ ...message.start, sessionKey: dm });
+    expect(JSON.stringify(await turn.exec({ ...message.exec, sessionKey: dm }))).not.toContain(
+      TOKEN,
+    );
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not mint when another person writes before the run starts", async () => {
+    const turn = plugin();
+    const message = reply();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.arrive({
+      channel: "slack",
+      senderId: "U0OTHER002",
+      sessionKey: SLACK_THREAD,
+      isGroup: true,
+      messageId: "1792190999.000001",
+    });
     await turn.start(message.start);
     expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
     expect(mints()).toEqual([]);
