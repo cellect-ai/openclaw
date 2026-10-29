@@ -14,6 +14,26 @@ const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
 const OWNER_TYPES = new Set(["project", "company", "fund", "investing_entity"]);
 const CATEGORY = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/;
+/** Fi's `FILENAME_DATE_BASES`: why a filename date is the right one. */
+export const FILENAME_DATE_BASES = [
+  "document_date",
+  "signature_date",
+  "acceptance_date",
+  "issued_date",
+  "statement_period_end",
+  "effective_date",
+  "received_at",
+  "generated_at",
+];
+const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+/** Fi's own refusal codes whose message is about the request, not the server. */
+const REQUEST_REFUSALS = new Set([
+  "validation",
+  "forbidden",
+  "not-found",
+  "conflict",
+  "unsupported",
+]);
 const FILENAME_DATE = /^\d{4}(?:-\d{2}(?:-\d{2})?)?$/;
 const MAX_PROVENANCE_ID = 320;
 
@@ -56,6 +76,10 @@ type ImportResult = {
 };
 
 const refuse = (reason: string) => new Error(`${reason} Nothing was downloaded or imported.`);
+const realDate = (value: string) =>
+  ISO_DATE.test(value) && new Date(`${value}T00:00:00Z`).toISOString().startsWith(value);
+const UNCONFIRMED =
+  "The import may have been registered, but Fi did not confirm it. Look the file up in Fi before retrying.";
 
 /** The Fi owner the requester asked to file under; checked before anything is downloaded. */
 export function mailImportDestination(value: unknown): MailImportDestination {
@@ -76,13 +100,15 @@ export function mailImportDestination(value: unknown): MailImportDestination {
     !destination.objectSlug ||
     destination.objectSlug.length > 200 ||
     !CATEGORY.test(destination.category) ||
-    (destination.dateDoc !== undefined && !ISO_DATE.test(destination.dateDoc)) ||
+    (destination.dateDoc !== undefined && !realDate(destination.dateDoc)) ||
     (destination.filenameDate !== undefined && !FILENAME_DATE.test(destination.filenameDate)) ||
+    (destination.filenameDateBasis !== undefined &&
+      !FILENAME_DATE_BASES.includes(destination.filenameDateBasis)) ||
     Boolean(destination.filenameDate) !== Boolean(destination.filenameDateBasis) ||
     (!destination.dateDoc && !destination.filenameDate)
   ) {
     throw refuse(
-      "Fi-admin files a mail attachment straight into Fi: pass importTo with objectType (project, company, fund or investing_entity), objectSlug, a library category, and dateDoc (YYYY-MM-DD) or filenameDate with filenameDateBasis.",
+      "Fi-admin files a mail attachment straight into Fi: pass importTo with objectType (project, company, fund or investing_entity), objectSlug, a library category, and dateDoc (YYYY-MM-DD) or filenameDate with a listed filenameDateBasis.",
     );
   }
   return destination;
@@ -135,6 +161,9 @@ export async function importMailAttachment(
   if (!delegation) {
     throw new Error("The requester is not linked to an active Fi member; nothing was imported.");
   }
+  if (typeof delegation.fi?.token !== "string" || !JWT.test(delegation.fi.token)) {
+    throw new Error("Fi did not issue a usable requester credential; nothing was imported.");
+  }
   const sha256 = createHash("sha256").update(file.bytes).digest("hex");
   // A member importing on a document grant may not assert provenance; Fi refuses it.
   const admin = ["owner", "admin"].includes(delegation.user.role);
@@ -149,11 +178,13 @@ export async function importMailAttachment(
       : {}),
   };
   const form = new FormData();
-  const body = file.bytes.buffer.slice(
-    file.bytes.byteOffset,
-    file.bytes.byteOffset + file.bytes.byteLength,
-  ) as ArrayBuffer;
-  form.set("file", new Blob([body], { type: file.mimeType || "application/octet-stream" }), name);
+  form.set(
+    "file",
+    new Blob([file.bytes as Uint8Array<ArrayBuffer>], {
+      type: file.mimeType || "application/octet-stream",
+    }),
+    name,
+  );
   form.set(
     "input",
     JSON.stringify({
@@ -168,12 +199,18 @@ export async function importMailAttachment(
       "This turn's requester changed during the download; nothing was imported. Ask again from the conversation.",
     );
   }
+  // Once the request is sent, only Fi's answer says whether it was registered.
   const response = await delegatedFetch(
     requester.connection,
     delegation,
     `/api/${encodeURIComponent(delegation.user.orgSlug)}/documents/import`,
     { method: "POST", body: form, signal: AbortSignal.timeout(300_000) },
-  );
+  ).catch(() => {
+    throw new Error(UNCONFIRMED);
+  });
+  if (response.status >= 500) {
+    throw new Error(UNCONFIRMED);
+  }
   const reply = (await readFiResponse(response).catch(() => null)) as {
     ok?: boolean;
     result?: ImportResult;
@@ -181,18 +218,30 @@ export async function importMailAttachment(
     error?: unknown;
     code?: unknown;
   } | null;
-  if (response.status === 409 && reply?.code === "conflict") {
+  const error = typeof reply?.error === "string" ? reply.error : "";
+  // Fi answers a duplicate as a conflict naming the document (when the
+  // requester may see it); an ambiguous owner is a conflict too, and is not one.
+  const duplicate =
+    response.status === 409 && reply?.code === "conflict"
+      ? /^This file is already registered in \S+(?: as document (\S+))?$/.exec(error)
+      : null;
+  if (duplicate) {
     return {
       status: "already_in_fi",
+      documentId: duplicate[1] ?? null,
       fileName: name,
       bytes: file.bytes.length,
       sha256,
-      detail: typeof reply.error === "string" ? reply.error.slice(0, 500) : null,
-      next: "Fi already holds these exact bytes; use that document. Nothing new was imported and nothing was saved to the workspace.",
+      next: duplicate[1]
+        ? "Fi already holds these exact bytes as this documentId; file that one. Nothing new was imported and nothing was saved to the workspace."
+        : "Fi already holds these exact bytes under an owner this requester cannot open. Nothing new was imported and nothing was saved to the workspace.",
     };
   }
   if (!response.ok) {
-    const detail = typeof reply?.error === "string" ? `: ${reply.error.slice(0, 500)}` : "";
+    const detail =
+      typeof reply?.code === "string" && REQUEST_REFUSALS.has(reply.code) && error
+        ? `: ${error.slice(0, 300)}`
+        : "";
     throw new Error(
       `Fi refused the import (${response.status})${detail}. Nothing was saved to the workspace.`,
     );
@@ -205,9 +254,7 @@ export async function importMailAttachment(
     !result.documentId ||
     result.sha256 !== sha256
   ) {
-    throw new Error(
-      "The import may have been registered, but Fi did not confirm it. Look the file up in Fi before retrying.",
-    );
+    throw new Error(UNCONFIRMED);
   }
   return {
     status: "imported_to_fi",

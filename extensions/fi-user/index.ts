@@ -32,6 +32,7 @@ import {
   brokerToken,
   configFromRuntime,
   exchange,
+  FI_ADMIN_DELEGATION_AGENT_ID,
   isFiUserTurn,
   rememberWebchatContext,
   type Delegation,
@@ -540,7 +541,8 @@ export default definePluginEntry({
     registerFileArtifactRuntime(api, {
       // The configured Fi-admin only: another admin runtime has no import path here.
       isAdminAgent: (agentId) =>
-        agentId?.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase(),
+        agentId?.toLowerCase() === FI_ADMIN_DELEGATION_AGENT_ID &&
+        agentId.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase(),
       provenToolRequester: adminDelegation.provenToolRequester,
     });
     const projectionConnection = () => {

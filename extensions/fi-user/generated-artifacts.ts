@@ -208,6 +208,11 @@ export function registerFileArtifactRuntime(
         protocol: "fi-file-artifacts-v1",
         capture(context: OpenClawPluginToolContext, request?: { importTo?: unknown }) {
           if (context.agentId === FI_USER_AGENT_ID) {
+            if (request?.importTo !== undefined) {
+              throw new Error(
+                "Fi-user files a downloaded attachment with fi_user_dataroom; omit importTo, which is for Fi-admin. Nothing was downloaded.",
+              );
+            }
             return {
               registerDownload: (input: Parameters<typeof registerDownloadedArtifact>[2]) =>
                 registerDownloadedArtifact(api, context, input),
@@ -216,7 +221,12 @@ export function registerFileArtifactRuntime(
           // Fi-admin's workspace is shared across its sessions, so it never
           // holds a requester's file: the bytes go to Fi in the same call.
           if (admin?.isAdminAgent(context.agentId)) {
-            const destination = mailImportDestination(request?.importTo);
+            if (!request) {
+              throw new Error(
+                "This gateway's mail plugin cannot name a Fi destination yet, so Fi-admin cannot import attachments until it is updated. Nothing was downloaded.",
+              );
+            }
+            const destination = mailImportDestination(request.importTo);
             if (!admin.provenToolRequester(context)) {
               throw new Error(
                 "Importing a mail attachment needs this turn's verified requester. Nothing was downloaded or imported.",
