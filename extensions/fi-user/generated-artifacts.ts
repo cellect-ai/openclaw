@@ -5,6 +5,11 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
+import {
+  importMailAttachment,
+  mailImportDestination,
+  type ProvenRequester,
+} from "./admin-mail-import.js";
 import { exchange, FI_USER_AGENT_ID } from "./fi-delegation.js";
 import {
   downloadSlackFile,
@@ -185,28 +190,51 @@ export async function readGeneratedArtifact(
 /**
  * Provider plugins hand original bytes to the existing requester/session artifact owner.
  * Protocol: a provider calls `capture` before it fetches anything, so a refusal
- * there means nothing was downloaded.
+ * there means nothing was downloaded. Fi-user holds the bytes for its own
+ * filing; Fi-admin imports them straight into Fi (`request.importTo`).
  */
-export function registerFileArtifactRuntime(api: OpenClawPluginApi) {
+export function registerFileArtifactRuntime(
+  api: OpenClawPluginApi,
+  admin?: {
+    isAdminAgent: (agentId: string | undefined) => boolean;
+    provenToolRequester: (context: OpenClawPluginToolContext) => ProvenRequester | undefined;
+  },
+) {
   for (const channelId of ["matrix", "slack", "webchat"]) {
     api.runtime.channel.runtimeContexts.register({
       channelId,
       capability: "fi-file-artifacts",
       context: {
         protocol: "fi-file-artifacts-v1",
-        capture(context: OpenClawPluginToolContext) {
-          // Only Fi-user files a held download (fi_user_dataroom upload_file).
-          // Another agent's workspace is shared across its sessions, so it gets
-          // no copy, and is told so rather than that its requester is unverified.
-          if (context.agentId !== FI_USER_AGENT_ID) {
-            throw new Error(
-              "Downloading a mail attachment for filing is available only to Fi-user; this agent cannot download or file it. Nothing was downloaded.",
-            );
+        capture(context: OpenClawPluginToolContext, request?: { importTo?: unknown }) {
+          if (context.agentId === FI_USER_AGENT_ID) {
+            return {
+              registerDownload: (input: Parameters<typeof registerDownloadedArtifact>[2]) =>
+                registerDownloadedArtifact(api, context, input),
+            };
           }
-          return {
-            registerDownload: (input: Parameters<typeof registerDownloadedArtifact>[2]) =>
-              registerDownloadedArtifact(api, context, input),
-          };
+          // Fi-admin's workspace is shared across its sessions, so it never
+          // holds a requester's file: the bytes go to Fi in the same call.
+          if (admin?.isAdminAgent(context.agentId)) {
+            const destination = mailImportDestination(request?.importTo);
+            if (!admin.provenToolRequester(context)) {
+              throw new Error(
+                "Importing a mail attachment needs this turn's verified requester. Nothing was downloaded or imported.",
+              );
+            }
+            return {
+              registerDownload: (input: Parameters<typeof importMailAttachment>[3]) =>
+                importMailAttachment(
+                  context,
+                  destination,
+                  () => admin.provenToolRequester(context),
+                  input,
+                ),
+            };
+          }
+          throw new Error(
+            "Downloading a mail attachment for filing is available only to Fi-user and Fi-admin; this agent cannot download or file it. Nothing was downloaded.",
+          );
         },
       },
     });

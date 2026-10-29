@@ -1,6 +1,10 @@
 import { createHash } from "node:crypto";
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
-import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type {
+  OpenClawConfig,
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/core";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { adminActionSessions } from "./admin-action.js";
@@ -935,5 +939,63 @@ export function registerAdminDelegation(
     }
   };
 
-  return { dispatched, received, held, mint, sourceReplyDecided };
+  /**
+   * The person this Fi-admin tool call's run was proven to act for, and the Fi
+   * that answers for them: the same proof a sandbox command needs for its
+   * token, for a Fi call the plugin makes itself. Nothing when unproven.
+   */
+  const provenToolRequester = (
+    ctx: Pick<
+      OpenClawPluginToolContext,
+      "runId" | "agentId" | "sessionKey" | "messageChannel" | "requesterSenderId" | "agentAccountId"
+    >,
+  ):
+    | {
+        connection: ResolvedPluginConfig;
+        body: { requesterSenderId: string } | { requesterMatrixUserId: string };
+      }
+    | undefined => {
+    const config = configFromRuntime(api);
+    const agentId = ctx.agentId?.toLowerCase();
+    const sessionKey = ctx.sessionKey?.toLowerCase();
+    const run = ctx.runId ? runs.get(ctx.runId) : undefined;
+    const channel = { channel: ctx.messageChannel, senderId: ctx.requesterSenderId };
+    const requester = onBehalfOfRequester(channel);
+    if (
+      !config.tenantOrgId ||
+      !agentId ||
+      agentId !== config.adminAgentId.toLowerCase() ||
+      !sessionKey ||
+      adminActionSessions.has(ctx.sessionKey!) ||
+      !run ||
+      !requester ||
+      run.agentId !== agentId ||
+      run.sessionKey !== sessionKey ||
+      run.sender !== JSON.stringify(requester) ||
+      (run.voice &&
+        admittedVoiceTurn({
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          sessionKey: ctx.sessionKey,
+          requester: { ...channel, accountId: ctx.agentAccountId },
+        }) !== run.voice)
+    ) {
+      return undefined;
+    }
+    if ("requester_slack_user_id" in requester) {
+      return { connection: config, body: { requesterSenderId: requester.requester_slack_user_id } };
+    }
+    if (!("requester_matrix_user_id" in requester)) {
+      return undefined;
+    }
+    const matrix = matrixConnection(config, ctx.agentAccountId);
+    return matrix
+      ? {
+          connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },
+          body: { requesterMatrixUserId: requester.requester_matrix_user_id },
+        }
+      : undefined;
+  };
+
+  return { dispatched, received, held, mint, sourceReplyDecided, provenToolRequester };
 }

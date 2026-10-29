@@ -518,7 +518,6 @@ export default definePluginEntry({
   register(api) {
     registerAdminActionRpc(api);
     registerGeneratedArtifactCompletion(api);
-    registerFileArtifactRuntime(api);
     api.on("reply_payload_sending", (event, context) => {
       if (
         !(event.sessionKey ?? context.sessionKey)?.startsWith("agent:cellect-fi-user:") ||
@@ -538,6 +537,12 @@ export default definePluginEntry({
     });
     const matrixEntitlements = registerMatrixEntitlements(api);
     const adminDelegation = registerAdminDelegation(api, matrixEntitlements.admittedVoiceTurn);
+    registerFileArtifactRuntime(api, {
+      // The configured Fi-admin only: another admin runtime has no import path here.
+      isAdminAgent: (agentId) =>
+        agentId?.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase(),
+      provenToolRequester: adminDelegation.provenToolRequester,
+    });
     const projectionConnection = () => {
       const config = configFromRuntime(api);
       return {

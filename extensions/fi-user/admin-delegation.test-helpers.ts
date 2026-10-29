@@ -98,6 +98,7 @@ export function plugin(
   const warn = vi.fn();
   const info = vi.fn();
   const runContexts = new Map<string, PluginJsonValue>();
+  const runtimeContexts = vi.fn();
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -136,7 +137,7 @@ export function plugin(
         },
       },
       runtime: {
-        channel: { runtimeContexts: { register: vi.fn() } },
+        channel: { runtimeContexts: { register: runtimeContexts } },
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
       registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
@@ -211,6 +212,14 @@ export function plugin(
           ...overrides,
         },
       ) as Promise<Rewrite>,
+    /** The context the plugin registered for one channel capability. */
+    runtimeContext: (channelId: string, capability: string) =>
+      (
+        runtimeContexts.mock.calls as Array<
+          [{ channelId: string; capability: string; context: unknown }]
+        >
+      ).find(([entry]) => entry.channelId === channelId && entry.capability === capability)?.[0]
+        .context,
     /** What the plugin registered with the host. */
     registered: () => ({
       hooks: [...hooks].flatMap(([name, handlers]) => handlers.map(() => name)).toSorted(),
