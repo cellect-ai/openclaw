@@ -285,6 +285,20 @@ describe("message hook mappers", () => {
     }
   });
 
+  it("gives inbound message hooks the host-owned channel context", () => {
+    const channelContext = Object.freeze({
+      sender: Object.freeze({ id: "@alex:matrix.example" }),
+      chat: Object.freeze({ id: "!room:matrix.example", talkThreadRootEventId: "$root" }),
+    });
+    const withContext = deriveInboundMessageHookContext(
+      makeInboundCtx({ ChannelContext: channelContext }),
+    );
+    expect(toPluginMessageContext(withContext).channelContext).toBe(channelContext);
+    expect(
+      toPluginMessageContext(deriveInboundMessageHookContext(makeInboundCtx())),
+    ).not.toHaveProperty("channelContext");
+  });
+
   it("checks reply-field presence before reading a sent context", () => {
     const reads: PropertyKey[] = [];
     const canonical = new Proxy(

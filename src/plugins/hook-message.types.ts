@@ -1,6 +1,7 @@
 import type { MessageHookMediaFact } from "../hooks/message-hook-media.js";
 import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
 import type { PluginConversationBinding } from "./conversation-binding.types.js";
+import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 
 /** Ordered media fact exposed by inbound message hooks. */
 export type PluginHookMediaFact = MessageHookMediaFact;
@@ -110,6 +111,12 @@ export type PluginHookMessageContext = {
   spanId?: string;
   parentSpanId?: string;
   callDepth?: number;
+  /**
+   * Host-owned channel identity for an inbound message, as agent hooks see it.
+   * Only channel monitors and the Gateway set it; `chat.send` wire input cannot
+   * (a Matrix Talk consult carries `chat.talkThreadRootEventId` here).
+   */
+  channelContext?: PluginHookChannelContext;
 };
 
 export type PluginHookInboundClaimContext = PluginHookMessageContext & {

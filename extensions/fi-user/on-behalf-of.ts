@@ -107,6 +107,43 @@ export function onBehalfOfRequester(
   return undefined;
 }
 
+/** Host-owned channel identity; a Matrix Talk consult names its speaker and thread here. */
+export type TalkChannelContext = {
+  sender?: { id?: unknown; [key: string]: unknown };
+  chat?: { [key: string]: unknown };
+};
+
+/**
+ * The speaker of a Matrix Talk consult the Gateway dispatches into this
+ * thread's admin session, as the sender a typed message of theirs would carry.
+ * Fi attested that identity for the Talk binding; it is no channel proof and
+ * admits nothing by itself (the consult run stands on its own voice proof).
+ * It is not someone unknown either: counted that way, it left that same
+ * person's next typed message in the thread unadmitted, because a voice run
+ * deliberately does not take up what arrived. Another speaker still counts
+ * against a typed turn that is not theirs.
+ */
+export function talkConsultSender(
+  adminAgentId: string,
+  sessionKey: string,
+  message: { senderId?: string; channelContext?: TalkChannelContext },
+): string | undefined {
+  const root = message.channelContext?.chat?.talkThreadRootEventId;
+  const speaker = message.channelContext?.sender?.id;
+  if (
+    typeof root !== "string" ||
+    !root.startsWith("$") ||
+    typeof speaker !== "string" ||
+    speaker !== message.senderId ||
+    !sessionKey.startsWith(`agent:${adminAgentId.toLowerCase()}:matrix:`) ||
+    !sessionKey.endsWith(`:thread:${root.toLowerCase()}`)
+  ) {
+    return undefined;
+  }
+  const requester = onBehalfOfRequester({ channel: "matrix", senderId: speaker });
+  return requester ? JSON.stringify(requester) : undefined;
+}
+
 /**
  * The member a shared-mail hook acts as. The hooks caller attested this
  * sender; it is not a channel proof and it is not read from the prompt.

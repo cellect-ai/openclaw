@@ -565,6 +565,7 @@ export default definePluginEntry({
         channel: context.channelId,
         senderId: event.senderId ?? context.senderId,
         sessionKey: event.sessionKey ?? context.sessionKey,
+        channelContext: context.channelContext,
       });
       if (context.channelId === "webchat") {
         rememberWebchatContext(event.sessionKey ?? context.sessionKey, event.content);
@@ -582,6 +583,7 @@ export default definePluginEntry({
           senderId: event.senderId ?? context.senderId,
           senderAuthentication: event.senderAuthentication,
           sessionKey: event.sessionKey ?? context.sessionKey,
+          channelContext: context.channelContext,
         };
         const channel = context.channelId ?? event.channel;
         try {

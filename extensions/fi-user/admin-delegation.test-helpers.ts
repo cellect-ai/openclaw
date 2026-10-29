@@ -88,6 +88,15 @@ export const SANDBOXED = {
   tools: { elevated: { enabled: false } },
 };
 
+/** The hook context the host builds for an inbound message, host-owned channel identity included. */
+function messageContext(overrides: Record<string, unknown>) {
+  return {
+    channelId: overrides.channel ?? "slack",
+    sessionKey: overrides.sessionKey ?? SESSION,
+    ...(overrides.channelContext ? { channelContext: overrides.channelContext } : {}),
+  };
+}
+
 export function plugin(
   configOverrides: Record<string, unknown> = {},
   host: Record<string, unknown> = SANDBOXED,
@@ -162,14 +171,14 @@ export function plugin(
       hook(
         "message_received",
         { from: "x", content: "also do this", senderId: "U0ADMIN001", ...overrides },
-        { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
+        messageContext(overrides),
       ),
     /** A message the host receives and then dispatches to the session. */
     arrive: async (overrides: Record<string, unknown> = {}) => {
       await hook(
         "message_received",
         { from: "x", content: "run the audit", senderId: "U0ADMIN001", ...overrides },
-        { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
+        messageContext(overrides),
       );
       return hook(
         "before_dispatch",
@@ -181,7 +190,7 @@ export function plugin(
           senderAuthentication: "verified",
           ...overrides,
         },
-        { channelId: overrides.channel ?? "slack", sessionKey: overrides.sessionKey ?? SESSION },
+        messageContext(overrides),
       );
     },
     /** The run the host starts for it. */

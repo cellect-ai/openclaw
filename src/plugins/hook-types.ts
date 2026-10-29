@@ -26,6 +26,7 @@ import type {
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
 import type { PluginHookBeforeToolCallResult } from "./hook-before-tool-call-result.js";
+import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { InputGateDecision } from "./hook-decision-types.js";
 import type {
   PluginHookCronChangedEvent,
@@ -416,6 +417,8 @@ export type PluginHookBeforeDispatchContext = {
   replyToBody?: string;
   replyToSender?: string;
   replyToIsQuote?: boolean;
+  /** Host-owned channel identity; see `PluginHookMessageContext.channelContext`. */
+  channelContext?: PluginHookChannelContext;
 };
 
 export type PluginHookBeforeDispatchResult = {

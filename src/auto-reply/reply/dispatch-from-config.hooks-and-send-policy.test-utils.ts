@@ -246,6 +246,24 @@ describe("before_dispatch hook", () => {
     },
   );
 
+  it("gives before_dispatch the host-owned channel context", async () => {
+    hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
+    const channelContext = {
+      sender: { id: "@alex:matrix.example" },
+      chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+    };
+    await dispatchReplyFromConfig({
+      ctx: createHookCtx({ SenderId: "@alex:matrix.example", ChannelContext: channelContext }),
+      cfg: emptyConfig,
+      dispatcher: createDispatcher(),
+    });
+    const context = firstMockCall(
+      hookMocks.runner.runBeforeDispatch,
+      "before dispatch hook",
+    )[1] as { channelContext?: unknown };
+    expect(context.channelContext).toEqual(channelContext);
+  });
+
   it("passes inbound reply metadata to before_dispatch event and context", async () => {
     hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
     const dispatcher = createDispatcher();

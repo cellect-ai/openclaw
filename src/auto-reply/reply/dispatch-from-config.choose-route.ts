@@ -604,6 +604,9 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
                   replyToBody: state.hookState.hookContext.replyToBody,
                   replyToSender: state.hookState.hookContext.replyToSender,
                   replyToIsQuote: state.hookState.hookContext.replyToIsQuote,
+                  ...(state.hookState.hookContext.channelContext
+                    ? { channelContext: state.hookState.hookContext.channelContext }
+                    : {}),
                 },
                 { prepare: state.assertCurrentBindingRoute },
               ),

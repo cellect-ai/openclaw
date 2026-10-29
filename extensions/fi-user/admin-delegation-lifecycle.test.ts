@@ -30,16 +30,37 @@ describe("the admin agent's delegated user token", () => {
         chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
       },
     });
+    /**
+     * The consult's own dispatch, as the Gateway makes it: a trusted internal
+     * chat.send into the thread session that fires message_received and
+     * before_dispatch with the attested speaker, no channel authentication and
+     * no room event, and the host-owned Talk channel context.
+     */
+    const consultDispatch = (speaker = "@admin:matrix.example") => ({
+      channel: "matrix",
+      sessionKey: THREAD,
+      senderId: speaker,
+      senderAuthentication: undefined,
+      isGroup: undefined,
+      messageId: undefined,
+      channelContext: {
+        sender: { id: speaker },
+        chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+      },
+    });
     beforeEach(() => {
       vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
     });
 
-    it("mints for the admitted speaker without inventing a text dispatch, then admits later text", async () => {
+    it("mints for the admitted speaker from its own dispatch, then admits that speaker's later text", async () => {
       const turn = plugin();
+      await turn.arrive(consultDispatch());
       expect(await turn.start(voice())).toBeUndefined();
       expect((await turn.exec(thread().exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
       expect(mintBody()).toMatchObject({ requesterMatrixUserId: "@admin:matrix.example" });
       await turn.settle();
+      // The voice token still holds the sandbox: a typed run that was not
+      // admitted would be refused here, not merely run without a token.
       const text = thread("@admin:matrix.example", "$later");
       await turn.arrive(text.arrive);
       await turn.start({ ...text.start, runId: "text-after-voice" });
@@ -47,6 +68,58 @@ describe("the admin agent's delegated user token", () => {
         (await turn.exec({ ...text.exec, runId: "text-after-voice" }))?.params.env
           ?.FI_DELEGATED_USER_TOKEN,
       ).toBe(TOKEN);
+    });
+
+    it("still counts another speaker's consult against a typed turn", async () => {
+      const turn = plugin();
+      await turn.arrive(consultDispatch("@other:matrix.example"));
+      await turn.start({
+        ...voice(),
+        senderId: "@other:matrix.example",
+        channelContext: {
+          sender: { id: "@other:matrix.example" },
+          chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+        },
+      });
+      await turn.settle();
+      const text = thread("@admin:matrix.example", "$later");
+      await turn.arrive(text.arrive);
+      await turn.start({ ...text.start, runId: "text-after-voice" });
+      expect(
+        JSON.stringify(await turn.exec({ ...text.exec, runId: "text-after-voice" })),
+      ).not.toContain(TOKEN);
+    });
+
+    it.each([
+      ["no Talk context", { channelContext: undefined }],
+      [
+        "a speaker other than the sender",
+        {
+          channelContext: {
+            sender: { id: "@other:matrix.example" },
+            chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+          },
+        },
+      ],
+      [
+        "another thread",
+        {
+          channelContext: {
+            sender: { id: "@admin:matrix.example" },
+            chat: { id: "!room:matrix.example", talkThreadRootEventId: "$other" },
+          },
+        },
+      ],
+    ])("counts an unverified dispatch with %s as someone unknown", async (_name, overrides) => {
+      const turn = plugin();
+      await turn.arrive({ ...consultDispatch(), ...overrides });
+      const text = thread("@admin:matrix.example", "$later");
+      await turn.arrive(text.arrive);
+      await turn.start({ ...text.start, runId: "text-after-dispatch" });
+      expect(
+        JSON.stringify(await turn.exec({ ...text.exec, runId: "text-after-dispatch" })),
+      ).not.toContain(TOKEN);
+      expect(mints()).toHaveLength(0);
     });
 
     it.each([

@@ -21,7 +21,9 @@ import {
   ON_BEHALF_OF_TOOLS,
   onBehalfOfRequester,
   pinInstalledFiCliCommand,
+  talkConsultSender,
   type CommandDelegation,
+  type TalkChannelContext,
 } from "./on-behalf-of.js";
 
 /**
@@ -155,6 +157,11 @@ type Inbound = {
   /** The channel's own id of the dispatched message: for Matrix, the room event. */
   messageId?: string;
   sessionKey?: string;
+  /**
+   * Host-owned channel identity. A Matrix Talk consult the Gateway dispatches
+   * names its attested speaker and thread here; chat.send input cannot set it.
+   */
+  channelContext?: TalkChannelContext;
 };
 
 /**
@@ -664,7 +671,8 @@ export function registerAdminDelegation(
    * A message the host is about to dispatch to the agent. Only here does the
    * channel say whether it proved the sender itself (Slack for its own events,
    * Matrix for the homeserver's), whether the conversation is one person's and
-   * which event it is. Anything else counts as someone unknown.
+   * which event it is. A Talk consult counts as its attested speaker, unproven;
+   * anything else counts as someone unknown.
    */
   const dispatched = (message: Inbound): void => {
     const session = adminSession(message);
@@ -675,7 +683,13 @@ export function registerAdminDelegation(
       message.senderAuthentication === "verified"
         ? provenSender(session.adminAgentId, session.sessionKey, message)
         : undefined;
-    observe(session.sessionKey, proof?.sender ?? UNPROVEN, proof);
+    observe(
+      session.sessionKey,
+      proof?.sender ??
+        talkConsultSender(session.adminAgentId, session.sessionKey, message) ??
+        UNPROVEN,
+      proof,
+    );
   };
 
   /**
@@ -689,7 +703,11 @@ export function registerAdminDelegation(
       return;
     }
     const requester = onBehalfOfRequester(message);
-    observe(session.sessionKey, requester ? JSON.stringify(requester) : UNPROVEN);
+    observe(
+      session.sessionKey,
+      talkConsultSender(session.adminAgentId, session.sessionKey, message) ??
+        (requester ? JSON.stringify(requester) : UNPROVEN),
+    );
   };
 
   /**
