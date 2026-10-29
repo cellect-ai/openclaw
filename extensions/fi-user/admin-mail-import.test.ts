@@ -202,6 +202,7 @@ describe("Fi-admin mail attachment import", () => {
     respond();
     const { handoff, context } = await provenTurn();
     const before = fetchMock.mock.calls.length;
+    // The mail plugin always sends its request, with or without a destination.
     expect(() => handoff.capture(context, { importTo: destination })).toThrow(
       "Nothing was downloaded or imported",
     );
@@ -282,7 +283,8 @@ describe("Fi-admin mail attachment import", () => {
   });
 
   it("does not import from an approved admin action's session", async () => {
-    const sessionKey = "agent:cellect-fi-admin:admin-action:zzz333";
+    // A session the turn would otherwise prove, so only the approved action refuses.
+    const sessionKey = SESSION;
     adminActionSessions.set(sessionKey, {
       id: "ZZZ333",
       task: "external_share_link",
@@ -297,8 +299,8 @@ describe("Fi-admin mail attachment import", () => {
     try {
       respond();
       const turn = plugin();
-      await turn.arrive({ sessionKey });
-      await turn.start({ sessionKey });
+      await turn.arrive();
+      await turn.start();
       const handoff = turn.runtimeContext("slack", "fi-file-artifacts") as Handoff;
       expect(() =>
         handoff.capture(
