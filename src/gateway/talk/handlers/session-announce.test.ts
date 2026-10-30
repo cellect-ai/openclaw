@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
 import { forgetUnifiedTalkSession, rememberUnifiedTalkSession } from "../session-registry.js";
 
-const announce = vi.hoisted(() => vi.fn());
+const announce = vi.hoisted(() => vi.fn(() => "accepted"));
 vi.mock("../relay/index.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../relay/index.js")>()),
   announceTalkRealtimeRelayAnswer: announce,
@@ -20,14 +20,18 @@ async function callAnnounce(params: Record<string, unknown>, connId = "conn-1") 
     respond: respond as never,
     context: {} as never,
   });
-  return respond.mock.calls[0] as [boolean, unknown, { code?: string; message?: string }?];
+  return respond.mock.calls[0] as [
+    boolean,
+    unknown,
+    { code?: string; message?: string; retryable?: boolean; details?: unknown }?,
+  ];
 }
 
 describe("talk.session.announce", () => {
   afterEach(() => {
     forgetUnifiedTalkSession("talk-1");
     forgetUnifiedTalkSession("stt-1");
-    announce.mockReset();
+    announce.mockReset().mockReturnValue("accepted");
   });
 
   function rememberRelay() {
@@ -76,6 +80,7 @@ describe("talk.session.announce", () => {
     ["blank text", { sessionId: "talk-1", text: "   " }],
     ["text over 16000 characters", { sessionId: "talk-1", text: "a".repeat(16_001) }],
     ["missing text", { sessionId: "talk-1" }],
+    ["only framing markers", { sessionId: "talk-1", text: "<<ANSWER>> <<END ANSWER>>" }],
   ])("rejects %s", async (_label, params) => {
     rememberRelay();
 
@@ -84,6 +89,29 @@ describe("talk.session.announce", () => {
     expect(ok).toBe(false);
     expect(error).toMatchObject({ code: ErrorCodes.INVALID_REQUEST });
     expect(announce).not.toHaveBeenCalled();
+  });
+
+  it("tells a client the provider cannot announce, so it can fall back", async () => {
+    rememberRelay();
+    announce.mockReturnValue("unsupported");
+
+    const [ok, , error] = await callAnnounce({ sessionId: "talk-1", text: "answer" });
+
+    expect(ok).toBe(false);
+    expect(error).toMatchObject({
+      code: ErrorCodes.INVALID_REQUEST,
+      details: { code: "announce_unsupported" },
+    });
+  });
+
+  it("does not answer ok when the voice is not accepting input", async () => {
+    rememberRelay();
+    announce.mockReturnValue("unavailable");
+
+    const [ok, , error] = await callAnnounce({ sessionId: "talk-1", text: "answer" });
+
+    expect(ok).toBe(false);
+    expect(error).toMatchObject({ code: ErrorCodes.UNAVAILABLE, retryable: true });
   });
 
   it("rejects a session without a realtime voice", async () => {

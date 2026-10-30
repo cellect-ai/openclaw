@@ -36,6 +36,7 @@ import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
 import {
   announceTalkRealtimeRelayAnswer,
+  normalizeTalkAnswerText,
   cancelTalkRealtimeRelayTurn,
   createTalkRealtimeRelaySession,
   sendTalkRealtimeRelayAudio,
@@ -611,16 +612,39 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         return;
       }
       const connId = requireUnifiedTalkSessionConn(session, client?.connId);
-      const text = params.text.trim();
+      const text = normalizeTalkAnswerText(params.text);
       if (!text) {
         respondInvalidRequest(respond, "talk.session.announce requires non-empty text");
         return;
       }
-      await announceTalkRealtimeRelayAnswer({
+      const outcome = await announceTalkRealtimeRelayAnswer({
         relaySessionId: session.relaySessionId,
         connId,
         text,
       });
+      if (outcome === "unsupported") {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.INVALID_REQUEST,
+            "talk.session.announce is not supported by this realtime voice provider",
+            { details: { code: "announce_unsupported" } },
+          ),
+        );
+        return;
+      }
+      if (outcome === "unavailable") {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "Realtime voice is not accepting input; retry", {
+            retryable: true,
+            details: { code: "announce_unavailable" },
+          }),
+        );
+        return;
+      }
       respondOk(respond);
     },
     talkSessionError,

@@ -109,7 +109,10 @@ export class OpenAIRealtimeBridge extends OpenAIRealtimeEvents implements Realti
   }
 
   sendUserMessage(text: string, options?: OpenAIRealtimeUserMessageOptions): void {
-    if (options?.toolChoice && (this.responseBusy || this.pendingToolCallIds.size > 0)) {
+    if (
+      typeof options?.toolChoice === "object" &&
+      (this.responseBusy || this.pendingToolCallIds.size > 0)
+    ) {
       throw new Error("Forced realtime tool choice requires an idle response state");
     }
     if (this.pendingToolCallIds.size > 0) {

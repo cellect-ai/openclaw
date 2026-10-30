@@ -49,7 +49,7 @@ import {
 export type OpenAIRealtimeVoice = (typeof OPENAI_REALTIME_VOICES)[number];
 
 export type OpenAIRealtimeUserMessageOptions = {
-  toolChoice?: { type: "function"; name: string };
+  toolChoice?: "none" | { type: "function"; name: string };
 };
 
 export type OpenAIRealtimeVoiceProviderConfig = Partial<ReturnType<typeof normalizeProviderConfig>>;

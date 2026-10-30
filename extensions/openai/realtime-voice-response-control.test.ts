@@ -187,6 +187,19 @@ describe("OpenAI realtime voice response control", () => {
     });
   });
 
+  it("asks for a response without tools when the host disables them", async () => {
+    const bridge = createNativeBridge();
+    const socket = await connectReadyBridge(bridge);
+
+    bridge.sendUserMessage?.("Summarise the answer aloud.", { toolChoice: "none" });
+
+    expect(parseSent(socket).at(-1)).toEqual({
+      type: "response.create",
+      event_id: expect.stringMatching(/^openclaw-response-create-/),
+      response: { output_modalities: ["audio"], tool_choice: "none" },
+    });
+  });
+
   it("defers manual response.create while a realtime response is active", async () => {
     const bridge = createNativeBridge();
     const socket = await connectReadyBridge(bridge);

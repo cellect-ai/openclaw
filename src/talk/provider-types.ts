@@ -347,7 +347,8 @@ export type RealtimeVoiceBridge = {
   setMediaTimestamp(ts: number): void;
   sendUserMessage?(
     text: string,
-    options?: { toolChoice?: { type: "function"; name: string } },
+    /** `"none"` keeps the response from calling tools where the provider supports it. */
+    options?: { toolChoice?: "none" | { type: "function"; name: string } },
   ): void;
   triggerGreeting?(instructions?: string): void;
   handleBargeIn?(options?: RealtimeVoiceBargeInOptions): void;
