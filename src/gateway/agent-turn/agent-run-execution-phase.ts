@@ -53,12 +53,8 @@ import {
 } from "./agent-dedupe.js";
 import { yieldAfterAgentAcceptedAck } from "./agent-handler-helpers.js";
 import { captureAgentJobSession } from "./agent-job.js";
-import {
-  bindAgentRestartRecoveryRequesterContext,
-  resolveAgentRestartRecoveryContext,
-  resolveAgentRestartRecoveryExecutionIdentityAdmission,
-} from "./agent-restart-recovery-context.js";
-import { prepareRestartRecoveryRequesterEntry } from "./agent-restart-recovery-requester.js";
+import { resolveAgentRestartRecoveryExecutionIdentityAdmission } from "./agent-restart-recovery-context.js";
+import { prepareAgentRestartRecoveryContext } from "./agent-restart-recovery-requester.js";
 import { dispatchAgentRunWithCommentaryMedia } from "./agent-run-commentary-media.js";
 import { createAgentRunDiagnostics } from "./agent-run-diagnostics.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
@@ -378,28 +374,13 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           params.context.validateAgentRuntimeApprovalAuthority?.(agentRuntimeIdentity) === true
             ? resolveExecutionIdentitySpawnFacts(agentRuntimeIdentity)
             : undefined;
-        const requesterRecoveryEntry = params.isRestartRecoveryResumeRun
-          ? await prepareRestartRecoveryRequesterEntry({
-              isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
-              canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
-              expectedExistingSessionId: params.request.expectedExistingSessionId,
-              resolvedSessionId: params.resolvedSessionId,
-              runId: params.runId,
-              sessionEntry: params.sessionEntry,
-              agentId: params.activeSessionAgentId,
-              sessionKey: params.resolvedSessionKey,
-              storePath: prepared.lifecycleStorePath,
-              assertCurrent: assertDispatchCurrent,
-            })
-          : params.sessionEntry;
-        const restartRecoveryContext = resolveAgentRestartRecoveryContext({
-          isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
-          canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
-          expectedExistingSessionId: params.request.expectedExistingSessionId,
-          resolvedSessionId: params.resolvedSessionId,
-          runId: params.runId,
-          sessionEntry: requesterRecoveryEntry,
+        const recoveryPreparation = prepareAgentRestartRecoveryContext(params, {
+          storePath: prepared.lifecycleStorePath,
+          assertCurrent: assertDispatchCurrent,
         });
+        const recovery =
+          recoveryPreparation instanceof Promise ? await recoveryPreparation : recoveryPreparation;
+        const restartRecoveryContext = recovery.context;
         const restartRecoveryChannelContext = restartRecoveryContext?.channel;
         const runContext = {
           messageChannel:
@@ -569,17 +550,7 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
                 operationalRunInstance: prepared.operationalRunInstance,
                 operatorAuthority: prepared.operatorAuthority,
                 onAdmittedRunContext: (admittedRunContext) => {
-                  bindAgentRestartRecoveryRequesterContext(admittedRunContext, {
-                    isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
-                    canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
-                    expectedExistingSessionId: params.request.expectedExistingSessionId,
-                    resolvedSessionId: params.resolvedSessionId,
-                    runId: params.runId,
-                    sessionEntry: requesterRecoveryEntry,
-                    agentId: params.activeSessionAgentId,
-                    sessionKey: params.resolvedSessionKey,
-                    assertCurrent: assertDispatchCurrent,
-                  });
+                  recovery.bindRequester(admittedRunContext);
                   skillLibraryAuthoring?.bind(admittedRunContext);
                   bindGatewayContextResolver(
                     admittedRunContext,

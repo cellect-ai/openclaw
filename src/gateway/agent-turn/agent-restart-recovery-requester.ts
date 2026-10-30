@@ -1,10 +1,15 @@
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import { buildChannelSourceTurnId } from "../../auto-reply/reply/source-turn-id.js";
 import { loadTranscriptEvents } from "../../config/sessions/session-transcript-events.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { normalizeConversationPeerId } from "../../routing/conversation-ref.js";
-import { resolveAgentRestartRecoveryContext } from "./agent-restart-recovery-context.js";
+import {
+  bindAgentRestartRecoveryRequesterContext,
+  resolveAgentRestartRecoveryContext,
+} from "./agent-restart-recovery-context.js";
+import type { StartAgentRunExecutionParams } from "./agent-run-execution-types.js";
 
 /** Upgrade old claims from their exact original transcript event, never recent history. */
 export function restoreRestartRecoveryRequesterEvent(
@@ -21,12 +26,13 @@ export function restoreRestartRecoveryRequesterEvent(
     !delivery.to ||
     !senderId ||
     !source.startsWith("channel-user:v1:")
-  )
+  ) {
     return entry;
+  }
   const matches = events.flatMap((event) => {
     const row = asOptionalRecord(event);
     const message = asOptionalRecord(row?.message);
-    const meta = asOptionalRecord(message?.__openclaw);
+    const meta = asOptionalRecord(message?.["__openclaw"]);
     const transport = asOptionalRecord(meta?.transport);
     const provenance = asOptionalRecord(message?.provenance);
     const eventId = normalizeOptionalString(transport?.messageId);
@@ -45,7 +51,9 @@ export function restoreRestartRecoveryRequesterEvent(
       ? [eventId]
       : [];
   });
-  if (matches.length !== 1) return entry;
+  if (matches.length !== 1) {
+    return entry;
+  }
   return {
     ...entry,
     restartRecoveryRequesterChatId: normalizeConversationPeerId(delivery.channel, delivery.to),
@@ -70,8 +78,9 @@ export async function prepareRestartRecoveryRequesterEntry(
     !params.resolvedSessionId ||
     (entry.restartRecoveryRequesterChatId && entry.restartRecoveryRequesterEventId) ||
     !resolveAgentRestartRecoveryContext(params)?.channel?.requesterSenderId
-  )
+  ) {
     return entry;
+  }
   params.assertCurrent();
   const events = await loadTranscriptEvents({
     agentId: params.agentId,
@@ -82,4 +91,45 @@ export async function prepareRestartRecoveryRequesterEntry(
   });
   params.assertCurrent();
   return restoreRestartRecoveryRequesterEvent(entry, events);
+}
+
+/** One prepared native source owns presentation and later requester binding together. */
+export function prepareAgentRestartRecoveryContext(
+  execution: Pick<
+    StartAgentRunExecutionParams,
+    | "isRestartRecoveryResumeRun"
+    | "canUseInternalRuntimeHandoff"
+    | "resolvedSessionId"
+    | "runId"
+    | "sessionEntry"
+    | "activeSessionAgentId"
+    | "resolvedSessionKey"
+  > & {
+    request: Pick<StartAgentRunExecutionParams["request"], "expectedExistingSessionId">;
+  },
+  owner: { storePath: string; assertCurrent: () => void },
+) {
+  const source = {
+    isRestartRecoveryResumeRun: execution.isRestartRecoveryResumeRun,
+    canUseInternalRuntimeHandoff: execution.canUseInternalRuntimeHandoff,
+    expectedExistingSessionId: execution.request.expectedExistingSessionId,
+    resolvedSessionId: execution.resolvedSessionId,
+    runId: execution.runId,
+    sessionEntry: execution.sessionEntry,
+    agentId: execution.activeSessionAgentId,
+    sessionKey: execution.resolvedSessionKey,
+    ...owner,
+  };
+  const prepare = (entry: SessionEntry | undefined) => {
+    const retained = { ...source, sessionEntry: entry };
+    return {
+      context: resolveAgentRestartRecoveryContext(retained),
+      bindRequester: (context: AdmittedRunContext) =>
+        bindAgentRestartRecoveryRequesterContext(context, retained),
+    };
+  };
+  // Ordinary turns keep their synchronous dispatch path and cannot obtain requester custody.
+  return source.isRestartRecoveryResumeRun
+    ? prepareRestartRecoveryRequesterEntry(source).then(prepare)
+    : prepare(source.sessionEntry);
 }

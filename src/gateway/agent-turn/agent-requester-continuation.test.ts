@@ -20,8 +20,10 @@ import {
   startSessionWorkAdmissionInterruption,
 } from "../../sessions/session-lifecycle-admission.js";
 import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.message.js";
-import { bindAgentRestartRecoveryRequesterContext } from "./agent-restart-recovery-context.js";
-import { restoreRestartRecoveryRequesterEvent } from "./agent-restart-recovery-requester.js";
+import {
+  prepareAgentRestartRecoveryContext,
+  restoreRestartRecoveryRequesterEvent,
+} from "./agent-restart-recovery-requester.js";
 
 installDelegationFixtures();
 const AGENT = "cellect-fi-admin";
@@ -30,7 +32,9 @@ const SESSION_ID = "original-session-incarnation";
 const SOURCE = "channel-user:v1:original-task";
 const owners: Array<{ close: () => void }> = [];
 afterEach(() => {
-  for (const owner of owners.splice(0)) owner.close();
+  for (const owner of owners.splice(0)) {
+    owner.close();
+  }
   clearAgentRunContext(RUN);
   vi.restoreAllMocks();
 });
@@ -90,7 +94,9 @@ async function nativeRecovery(
     },
     assertCurrent: () => {
       interrupted.signal.throwIfAborted();
-      if (!work.isActive()) throw new Error("native task custody revoked");
+      if (!work.isActive()) {
+        throw new Error("native task custody revoked");
+      }
     },
     ...overrides,
   };
@@ -99,15 +105,21 @@ async function nativeRecovery(
   const admitted = await admission.admit("embedded");
   // This is the production gateway recovery/admission composition, followed by the real
   // embedded hook projector and Fi handlers. No new channel dispatch or sender is supplied.
-  bindAgentRestartRecoveryRequesterContext(
-    admitted,
-    residentEvents
-      ? {
-          ...params,
-          sessionEntry: restoreRestartRecoveryRequesterEvent(params.sessionEntry, residentEvents),
-        }
-      : params,
+  const recoveryPreparation = prepareAgentRestartRecoveryContext(
+    {
+      ...params,
+      sessionEntry: residentEvents
+        ? restoreRestartRecoveryRequesterEvent(params.sessionEntry, residentEvents)
+        : params.sessionEntry,
+      activeSessionAgentId: AGENT,
+      resolvedSessionKey: sessionKey,
+      request: { expectedExistingSessionId: params.expectedExistingSessionId },
+    },
+    { storePath: scope, assertCurrent: params.assertCurrent },
   );
+  const recovery =
+    recoveryPreparation instanceof Promise ? await recoveryPreparation : recoveryPreparation;
+  recovery.bindRequester(admitted);
   registerAgentRunContext(RUN, { agentId: AGENT, sessionKey, sessionId: SESSION_ID });
   const context = buildEmbeddedAgentHookContext(
     {
@@ -180,14 +192,17 @@ describe("native requester continuation through Fi hooks", () => {
       const turn = plugin();
       const { context, revoke, admission } = await nativeRecovery();
       await turn.start(context);
-      if (kind === "native custody") revoke();
-      else if (kind === "run settlement") admission.close();
-      else
+      if (kind === "native custody") {
+        revoke();
+      } else if (kind === "run settlement") {
+        admission.close();
+      } else {
         registerAgentRunContext(RUN, {
           agentId: AGENT,
           sessionKey: context.sessionKey,
           sessionId: "new-session",
         });
+      }
       expect(JSON.stringify(await turn.exec(context))).not.toContain(TOKEN);
       expect(mints()).toHaveLength(0);
     },
@@ -224,14 +239,18 @@ describe("native requester continuation through Fi hooks", () => {
         fetchMock.mockImplementation(async (url: string) =>
           url === AUTHORIZE_URL ? new Response("{}", { status: 403 }) : minted(),
         );
-      if (phase === "admission") denyRoom();
+      if (phase === "admission") {
+        denyRoom();
+      }
       const started = await turn.start(context);
       if (phase === "admission") {
         expect(started).toMatchObject({ handled: true });
         expect((await turn.exec({ ...context, requester: undefined }))?.block).toBe(true);
       } else {
         expect(started).toBeUndefined();
-        if (phase === "tool") denyRoom();
+        if (phase === "tool") {
+          denyRoom();
+        }
         const result = await turn.exec({
           ...context,
           requester: undefined,
