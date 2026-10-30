@@ -1,14 +1,10 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { ErrorCodes, errorShape } from "openclaw/plugin-sdk/gateway-runtime";
+import { projectSlackChannelThread } from "./channel-projection-publisher.js";
 import { isSlackChannelThreadSessionKey } from "./channel-projection-session.js";
-import {
-  projectSlackChannelThread,
-  registerSlackProjectionReconciler,
-} from "./channel-projection.js";
+import { registerSlackProjectionReconciler } from "./channel-projection.js";
 import { isSlackDirectSessionKey, recoverSlackDirectProjection } from "./direct-projection.js";
 import { projectionFailureKind } from "./projection-failure.js";
-
-export { projectSlackChannelThread };
 
 const MATRIX_ROOM_ID = /![^:\s]+:[^\s]+/;
 

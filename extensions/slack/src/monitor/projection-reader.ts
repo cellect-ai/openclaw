@@ -25,6 +25,7 @@ export function createSlackProjectionReader(params: {
 }) {
   const { client, workspaceId } = params;
   const writeClient = params.writeClient ?? client;
+  const postChatMessage = writeClient.chat.postMessage.bind(writeClient.chat);
   return {
     workspaceId,
     botUserId: params.botUserId,
@@ -74,7 +75,7 @@ export function createSlackProjectionReader(params: {
             return "existing";
           }
         }
-        const result = await writeClient.chat.postMessage({
+        const result = await postChatMessage({
           channel: input.channelId,
           text,
           unfurl_links: false,

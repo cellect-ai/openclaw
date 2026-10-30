@@ -10,13 +10,16 @@ const projection = vi.hoisted(() => ({
 }));
 
 vi.mock("./channel-projection.js", () => ({
-  projectSlackChannelThread: projection.project,
   registerSlackProjectionReconciler: () => ({
     retryChannelProjection: projection.retryChannelProjection,
     wake: vi.fn(),
     noteActivity: vi.fn(),
     channelProjectionSucceeded: vi.fn(),
   }),
+}));
+
+vi.mock("./channel-projection-publisher.js", () => ({
+  projectSlackChannelThread: projection.project,
 }));
 
 vi.mock("./direct-projection.js", () => ({
