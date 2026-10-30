@@ -30,7 +30,10 @@ import {
 } from "../../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
-import { createTestRegistry } from "../../test-utils/channel-plugins.js";
+import {
+  createDirectOutboundTestAdapter,
+  createTestRegistry,
+} from "../../test-utils/channel-plugins.js";
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import {
   consumePreExecutionBlockedToolCall,
@@ -1665,6 +1668,7 @@ describe("message tool secret scoping", () => {
       const plugin = createChannelPlugin({
         id: "slack",
         actions: ["read"],
+        outbound: createDirectOutboundTestAdapter({ channel: "slack" }),
         messageActionTargetAliases: {
           read: { aliases: ["permalink"], resolveDeliveryTarget: () => "C12345678" },
         },
@@ -1674,7 +1678,11 @@ describe("message tool secret scoping", () => {
         },
       });
       plugin.actions = { ...plugin.actions, providerOwnedReadGates: true, handleAction };
-      registerPlugins(plugin);
+      // The real runner requires an activated channel; an action-only setup shell
+      // would bootstrap the production Slack plugin instead of this fixture.
+      setActivePluginRegistry(
+        createTestRegistry([{ pluginId: "slack", source: "test", origin: "bundled", plugin }]),
+      );
       const config = {
         agents: { entries: { analyst: {} } },
         bindings: accounts.map((accountId) => ({
@@ -1691,6 +1699,22 @@ describe("message tool secret scoping", () => {
         },
         tools: { message: { crossContext: { allowAcrossProviders: true } } },
       } as OpenClawConfig;
+      mocks.resolveCommandSecretRefsViaGateway.mockImplementation(
+        async ({
+          config: rawConfig,
+          allowedPaths,
+        }: {
+          config: unknown;
+          allowedPaths?: Set<string>;
+        }) => {
+          const resolvedConfig = structuredClone(rawConfig as OpenClawConfig);
+          const reader = resolvedConfig.channels?.slack?.accounts?.reader;
+          if (reader && allowedPaths?.has("channels.slack.accounts.reader.botToken")) {
+            reader.botToken = "fixture-reader-token";
+          }
+          return { resolvedConfig, diagnostics: [] };
+        },
+      );
       const tool = createMessageTool({
         config,
         agentId: "analyst",
@@ -1730,6 +1754,16 @@ describe("message tool secret scoping", () => {
           expect.objectContaining({
             accountId: "reader",
             agentId: "analyst",
+            cfg: expect.objectContaining({
+              channels: expect.objectContaining({
+                slack: expect.objectContaining({
+                  accounts: expect.objectContaining({
+                    reader: { botToken: "fixture-reader-token" },
+                    other: { botToken: { source: "env", provider: "default", id: "OTHER_TOKEN" } },
+                  }),
+                }),
+              }),
+            }),
             toolContext: expect.objectContaining({ currentChannelProvider: "matrix" }),
           }),
         );
