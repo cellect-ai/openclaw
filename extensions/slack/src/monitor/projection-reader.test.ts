@@ -101,7 +101,7 @@ describe("Slack Fi chat pointer post", () => {
         metadata: { event_type: FI_CHAT_POINTER_EVENT, event_payload: { v: 1 } },
       }),
     );
-    expect(postMessage.mock.calls[0][0].thread_ts).toBeUndefined();
+    expect(postMessage.mock.calls[0]?.[0]).not.toHaveProperty("thread_ts");
     history.mockResolvedValue({
       ok: true,
       messages: [
