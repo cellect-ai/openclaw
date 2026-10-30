@@ -22,8 +22,19 @@ function isLetMeKnowTurn(context: {
  * the session, so the next turn is back on the agent's own model.
  */
 export function registerLetMeKnow(api: OpenClawPluginApi): void {
+  let warnedInvalidModel = false;
   api.on("before_model_resolve", (_event, context) => {
-    const model = isLetMeKnowTurn(context) ? configFromRuntime(api).letMeKnowModel : undefined;
+    if (!isLetMeKnowTurn(context)) {
+      return undefined;
+    }
+    const config = configFromRuntime(api);
+    if (config.letMeKnowModelInvalid && !warnedInvalidModel) {
+      warnedInvalidModel = true;
+      api.logger.warn(
+        'fi-user: letMeKnowModel is not "provider/model"; keeping the agent\'s model',
+      );
+    }
+    const model = config.letMeKnowModel;
     return model ? { providerOverride: model.provider, modelOverride: model.model } : undefined;
   });
   api.on("before_prompt_build", (_event, context) =>

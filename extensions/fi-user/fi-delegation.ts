@@ -54,6 +54,8 @@ export type ResolvedPluginConfig = Required<
   /** The two tenant keys disagree: no org can be trusted, so every tenant check refuses. */
   tenantOrgConflict?: true;
   letMeKnowModel?: { provider: string; model: string };
+  /** `letMeKnowModel` is set but not "provider/model"; it is ignored. */
+  letMeKnowModelInvalid?: true;
 };
 
 export type Delegation = {
@@ -114,7 +116,9 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
             model: letMeKnowModel.slice(letMeKnowSlash + 1),
           },
         }
-      : {}),
+      : letMeKnowModel
+        ? { letMeKnowModelInvalid: true as const }
+        : {}),
   };
 }
 

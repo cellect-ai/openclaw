@@ -250,5 +250,5 @@ The Matrix monitor marks a person's message sent with Fi's "Let me know" action
 (`channelContext.chat.letMeKnow`). For that turn only, fi-user appends an
 instruction to open the final reply with a short answer that reads well aloud,
 and, when `letMeKnowModel` (`"provider/model"`) is configured, runs the turn on
-that model. Unset, the turn keeps the agent's own model. Nothing is stored on
+that model. Unset or malformed (logged once), the turn keeps the agent's own model. Nothing is stored on
 the session.

@@ -7,17 +7,20 @@ type Hook = (event: unknown, context: unknown) => unknown;
 
 function hooks(config: Record<string, unknown> = {}) {
   const registered = new Map<string, Hook>();
+  const warn = vi.fn();
   registerLetMeKnow(
     createTestPluginApi({
       id: "fi-user",
       name: "Fi User Delegation",
       config: { plugins: { entries: { "fi-user": { config } } } },
       runtime: {} as OpenClawPluginApi["runtime"],
+      logger: { info: vi.fn(), warn, error: vi.fn(), debug: vi.fn() },
       on: vi.fn((name: string, handler: Hook) => registered.set(name, handler)) as never,
     }),
   );
   const run = (name: string, context: unknown) => registered.get(name)?.({ prompt: "" }, context);
   return {
+    warn,
     model: (context: unknown) => run("before_model_resolve", context),
     prompt: (context: unknown) => run("before_prompt_build", context),
   };
@@ -58,6 +61,15 @@ describe("fi-user let-me-know turns", () => {
       expect(hook.prompt(turn())).toEqual({ appendContext: LET_ME_KNOW_CONTEXT });
     },
   );
+
+  it("warns once about a malformed letMeKnowModel", () => {
+    const hook = hooks({ letMeKnowModel: "claude-opus" });
+
+    hook.model(turn());
+    hook.model(turn());
+
+    expect(hook.warn).toHaveBeenCalledOnce();
+  });
 
   it.each([
     ["an unflagged turn", turn({})],
