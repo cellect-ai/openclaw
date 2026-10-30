@@ -7,10 +7,12 @@ import { Type, type TObject } from "typebox";
 import { stripPlainTextToolCallBlocks } from "../../../packages/tool-call-repair/src/index.js";
 import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AgentRuntimeMessageActionContext } from "../../gateway/message-action-turn-capability.js";
 import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import { sourceDeliveryTargetsMatch } from "../../infra/outbound/source-delivery-plan.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
+import { listAgentBoundAccountCandidates } from "../../routing/bound-account-read.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
 import { channelTargetSchema, stringEnum } from "../schema/typebox.js";
@@ -22,6 +24,45 @@ function sourceReplyPolicyError(message: string): MessageActionDeniedError {
     message,
     "message_source_reply_policy_denied",
     "message-source-reply:current-conversation",
+  );
+}
+
+/** Select credentials before secret redemption; Slack still owns workspace and target admission. */
+export function resolveMatrixSlackReadAccount(params: {
+  cfg: OpenClawConfig;
+  action: ChannelMessageActionName;
+  currentChannel?: string;
+  channel?: string;
+  agentId?: string;
+  requestedAccountId?: string;
+  directOperator?: boolean;
+}): string | undefined {
+  if (
+    params.directOperator ||
+    params.action !== "read" ||
+    normalizeMessageChannel(params.currentChannel) !== "matrix" ||
+    params.channel !== "slack"
+  ) {
+    return undefined;
+  }
+  const accounts = params.agentId
+    ? listAgentBoundAccountCandidates({
+        cfg: params.cfg,
+        channelId: "slack",
+        agentId: params.agentId,
+      })
+    : [];
+  const requested = normalizeOptionalAccountId(params.requestedAccountId);
+  if (requested && accounts.includes(requested)) return requested;
+  if (!requested && accounts.length === 1) return accounts[0];
+  throw new MessageActionDeniedError(
+    requested
+      ? "Slack read account is not bound to this agent."
+      : accounts.length > 1
+        ? "Slack read has multiple bound accounts; specify the authorized account."
+        : "Slack read requires a configured account binding for this agent.",
+    "message_account_binding_required",
+    "message-account:agent-binding",
   );
 }
 export const SOURCE_REPLY_ONLY_MESSAGE_SCHEMA = Type.Object({

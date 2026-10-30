@@ -67,6 +67,7 @@ import {
   enforceSourceReplyOnlyMessageAction,
   enforceSourceReplyOnlyTextDirectives,
   enforceTrustedTurnExplicitAccount,
+  resolveMatrixSlackReadAccount,
   SOURCE_REPLY_ONLY_MESSAGE_SCHEMA,
 } from "./message-tool-source-policy.js";
 import { createMessageToolTurnAuthority } from "./message-tool-turn-authority.js";
@@ -391,6 +392,18 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         accountId: requestedAccountId,
         fallbackAccountId: scheduledAccountId ?? agentAccountId,
       });
+      const boundReadAccountId = decisions.runBoundary(() =>
+        resolveMatrixSlackReadAccount({
+          cfg: rawConfig,
+          action,
+          currentChannel: effectiveCurrentChannel.currentChannelProvider,
+          channel: scope.channel,
+          agentId: resolvedAgentId,
+          requestedAccountId: requestedAccountId ?? scheduledAccountId,
+          directOperator: options?.conversationReadOrigin === "direct-operator",
+        }),
+      );
+      if (boundReadAccountId) scope.accountId = boundReadAccountId;
       // Broadcast execution only narrows on an explicit non-all channel. Target
       // prefixes cannot authorize fewer providers than the runner will execute.
       const unscopedExplicitBroadcast =
@@ -401,7 +414,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         validateExplicitMessageAccountSelection({
           cfg: rawConfig,
           channel: unscopedExplicitBroadcast ? undefined : scope.channel,
-          accountId: requestedAccountId ?? scheduledAccountId,
+          accountId: requestedAccountId ?? boundReadAccountId ?? scheduledAccountId,
           checkResolvedAccount: false,
         }),
       );
@@ -444,7 +457,8 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       ).resolvedConfig;
       assertActionCurrent();
 
-      const accountId = explicitAccountId ?? scheduledAccountId ?? agentAccountId;
+      const accountId =
+        explicitAccountId ?? boundReadAccountId ?? scheduledAccountId ?? agentAccountId;
       const pollVoteEchoRoute = resolvePollVoteEchoRoute({
         action,
         args: params,

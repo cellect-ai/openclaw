@@ -66,6 +66,7 @@ function resolveSlackActionContext(
     mediaLocalRoots: ctx.mediaLocalRoots,
     mediaReadFile: ctx.mediaReadFile,
     conversationReadOrigin: ctx.conversationReadOrigin,
+    agentId: ctx.agentId ?? undefined,
     sessionKey: ctx.sessionKey ?? undefined,
     requesterAccountId: ctx.requesterAccountId ?? undefined,
     requesterSenderId: ctx.requesterSenderId ?? undefined,

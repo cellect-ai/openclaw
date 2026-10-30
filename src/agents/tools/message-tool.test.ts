@@ -1652,6 +1652,115 @@ describe("message tool secret scoping", () => {
     );
   });
 
+  describe("Matrix to Slack bound reads", () => {
+    function setup(
+      accounts: string[],
+      requestedAccountId?: string,
+      targetParams: Record<string, unknown> = { channelId: "C12345678" },
+    ) {
+      const handleAction = vi.fn(async () => ({
+        content: [{ type: "text" as const, text: "thread" }],
+        details: {},
+      }));
+      const plugin = createChannelPlugin({
+        id: "slack",
+        actions: ["read"],
+        messageActionTargetAliases: {
+          read: { aliases: ["permalink"], resolveDeliveryTarget: () => "C12345678" },
+        },
+        config: {
+          listAccountIds: () => ["reader", "other"],
+          resolveAccount: () => ({ enabled: true }),
+        },
+      });
+      plugin.actions = { ...plugin.actions, providerOwnedReadGates: true, handleAction };
+      registerPlugins(plugin);
+      const config = {
+        agents: { entries: { analyst: {} } },
+        bindings: accounts.map((accountId) => ({
+          agentId: "analyst",
+          match: { channel: "slack", accountId, teamId: "T12345678" },
+        })),
+        channels: {
+          slack: {
+            accounts: {
+              reader: { botToken: { source: "env", provider: "default", id: "READER_TOKEN" } },
+              other: { botToken: { source: "env", provider: "default", id: "OTHER_TOKEN" } },
+            },
+          },
+        },
+        tools: { message: { crossContext: { allowAcrossProviders: true } } },
+      } as OpenClawConfig;
+      const tool = createMessageTool({
+        config,
+        agentId: "analyst",
+        agentAccountId: "matrix-account",
+        currentChannelProvider: "matrix",
+        currentChannelId: "!room:example.test",
+        agentSessionKey: "agent:analyst:matrix:channel:!room:example.test",
+        getScopedChannelsCommandSecretTargets: mocks.getScopedChannelsCommandSecretTargets as never,
+        resolveCommandSecretRefsViaGateway: mocks.resolveCommandSecretRefsViaGateway as never,
+        runMessageAction: actualRunMessageAction,
+      });
+      return {
+        handleAction,
+        invoke: () =>
+          tool.execute("read-thread", {
+            action: "read",
+            channel: "slack",
+            ...targetParams,
+            threadId: "1234567890.123456",
+            ...(requestedAccountId ? { accountId: requestedAccountId } : {}),
+          }),
+      };
+    }
+
+    it.each([undefined, "reader"])(
+      "dispatches the bound account and scopes its secrets (explicit=%s)",
+      async (requested) => {
+        const { invoke, handleAction } = setup(["reader"], requested);
+        await invoke();
+        expect(mocks.getScopedChannelsCommandSecretTargets).toHaveBeenCalledWith(
+          expect.objectContaining({ channel: "slack", accountId: "reader" }),
+        );
+        expect(latestSecretResolveCall().allowedPaths).toEqual(
+          new Set(["channels.slack.accounts.reader.botToken"]),
+        );
+        expect(handleAction).toHaveBeenCalledWith(
+          expect.objectContaining({
+            accountId: "reader",
+            agentId: "analyst",
+            toolContext: expect.objectContaining({ currentChannelProvider: "matrix" }),
+          }),
+        );
+      },
+    );
+
+    it.each([
+      { channelId: "D12345678" },
+      { target: "team:T12345678:channel:C12345678" },
+      { permalink: "https://example.slack.com/archives/C12345678/p1234567890123456" },
+    ])("keeps provider-owned target forms for binding admission: %j", async (target) => {
+      const { invoke, handleAction } = setup(["reader"], undefined, target);
+      await invoke();
+      expect(handleAction).toHaveBeenCalledWith(expect.objectContaining({ accountId: "reader" }));
+    });
+
+    it.each([
+      { accounts: [], requested: undefined, error: "requires a configured account binding" },
+      { accounts: ["reader", "other"], requested: undefined, error: "multiple bound accounts" },
+      { accounts: ["reader"], requested: "other", error: "not bound to this agent" },
+    ])(
+      "rejects unsafe selection before secrets: $error",
+      async ({ accounts, requested, error }) => {
+        const { invoke, handleAction } = setup(accounts, requested);
+        await expect(invoke()).rejects.toThrow(error);
+        expect(mocks.resolveCommandSecretRefsViaGateway).not.toHaveBeenCalled();
+        expect(handleAction).not.toHaveBeenCalled();
+      },
+    );
+  });
+
   it.each([
     { name: "malformed", accountId: "!!!", error: "Invalid account ID" },
     { name: "unknown", accountId: "missing", error: "Unknown account" },

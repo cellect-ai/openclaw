@@ -30,6 +30,24 @@ function resolveNormalizedBoundAccountMatch(binding: AgentRouteBinding) {
   };
 }
 
+/** Candidate identities only. The destination provider must verify each binding's scope. */
+export function listAgentBoundAccountCandidates(params: {
+  cfg: OpenClawConfig;
+  channelId: string;
+  agentId: string;
+}): string[] {
+  const channelId = normalizeRouteBindingChannelId(params.channelId);
+  const agentId = normalizeAgentId(params.agentId);
+  const accounts = new Set<string>();
+  for (const binding of listConfiguredBindings(params.cfg)) {
+    if (!isRouteBinding(binding)) continue;
+    const match = resolveNormalizedBoundAccountMatch(binding);
+    if (!match || match.channelId !== channelId || match.agentId !== agentId) continue;
+    accounts.add(match.accountId);
+  }
+  return [...accounts];
+}
+
 export function resolveFirstBoundAccountId(params: {
   cfg: OpenClawConfig;
   channelId: string;

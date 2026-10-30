@@ -18,7 +18,14 @@ const original = { ...slackActionRuntime };
 const readSlackMessages = vi.fn();
 const isSlackConversationMember = vi.fn();
 function slackConfig(overrides: Record<string, unknown> = {}): OpenClawConfig {
-  return { channels: { slack: { botToken: "fixture-token", ...overrides } } };
+  return {
+    agents: { entries: { "cellect-main": {}, "other-agent": {} } },
+    bindings: ["default", "readerone", "readertwo"].map((accountId) => ({
+      agentId: "cellect-main",
+      match: { channel: "slack", accountId, teamId: "T12345678" },
+    })),
+    channels: { slack: { botToken: "fixture-token", ...overrides } },
+  };
 }
 const allowlisted = () =>
   slackConfig({ groupPolicy: "allowlist", channels: { C_CURRENT: { enabled: true } } });
@@ -38,6 +45,7 @@ beforeEach(() => {
 afterEach(() => Object.assign(slackActionRuntime, original));
 describe("Matrix requester Slack reads", () => {
   const matrixRequester = {
+    agentId: "cellect-main",
     currentChannelProvider: "matrix",
     sessionKey: "agent:cellect-main:matrix:room:!room:example.test",
     currentChannelId: "!room:example.test",
@@ -95,9 +103,20 @@ describe("Matrix requester Slack reads", () => {
   it("uses the selected read token's authenticated workspace", async () => {
     authTest.mockResolvedValueOnce({ ok: true, team_id: "T99999999" });
     isSlackConversationMember.mockResolvedValueOnce(true);
+    const config = slackConfig({ groupPolicy: "allowlist", userToken: "fixture-user-token" });
+    config.bindings = [
+      {
+        agentId: "cellect-main",
+        match: {
+          channel: "slack",
+          accountId: "default",
+          teamId: "T99999999",
+        },
+      },
+    ];
     await handleSlackAction(
       { action: "readMessages", channelId: "C_OTHER" },
-      slackConfig({ groupPolicy: "allowlist", userToken: "fixture-user-token" }),
+      config,
       matrixRequester,
     );
     expect(getClient).toHaveBeenCalledWith(
@@ -152,10 +171,77 @@ describe("Matrix requester Slack reads", () => {
       allowlisted(),
       matrixRequester,
     );
-    expect(authTest).not.toHaveBeenCalled();
+    expect(authTest).toHaveBeenCalledTimes(1);
     expect(requesterSlackIdentity).not.toHaveBeenCalled();
     expect(readSlackMessages).toHaveBeenCalled();
   });
+
+  it("rejects a read token from outside the configured binding workspace before content", async () => {
+    authTest.mockResolvedValueOnce({ ok: true, team_id: "T99999999" });
+    await expect(
+      handleSlackAction(
+        { action: "readMessages", channelId: "C_CURRENT" },
+        allowlisted(),
+        matrixRequester,
+      ),
+    ).rejects.toThrow("no matching agent account binding");
+    expect(requesterSlackIdentity).not.toHaveBeenCalled();
+    expect(readSlackMessages).not.toHaveBeenCalled();
+  });
+
+  it("does not let a wildcard binding widen the selected account's workspace", async () => {
+    const config = allowlisted();
+    config.bindings?.push({ agentId: "cellect-main", match: { channel: "slack", accountId: "*" } });
+    authTest.mockResolvedValueOnce({ ok: true, team_id: "T99999999" });
+    await expect(
+      handleSlackAction(
+        { action: "readMessages", channelId: "C_CURRENT" },
+        config,
+        matrixRequester,
+      ),
+    ).rejects.toThrow("no matching agent account binding");
+    expect(requesterSlackIdentity).not.toHaveBeenCalled();
+    expect(readSlackMessages).not.toHaveBeenCalled();
+  });
+
+  it.each(["channel", "direct"] as const)(
+    "honors another agent's more specific %s binding",
+    async (kind) => {
+      const config = allowlisted();
+      config.bindings?.push({
+        agentId: "other-agent",
+        match: {
+          channel: "slack",
+          accountId: "default",
+          teamId: "T12345678",
+          peer: { kind, id: kind === "direct" ? "U123" : "C_CURRENT" },
+        },
+      });
+      await expect(
+        handleSlackAction(
+          { action: "readMessages", channelId: kind === "direct" ? "D0DM" : "C_CURRENT" },
+          config,
+          matrixRequester,
+        ),
+      ).rejects.toThrow("no matching agent account binding");
+      expect(requesterSlackIdentity).not.toHaveBeenCalled();
+      expect(readSlackMessages).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["agentId", "sessionKey", "requesterAccountId", "requesterSenderId"] as const)(
+    "refuses missing host %s before authenticating credentials",
+    async (field) => {
+      await expect(
+        handleSlackAction({ action: "readMessages", channelId: "C_CURRENT" }, allowlisted(), {
+          ...matrixRequester,
+          [field]: undefined,
+        }),
+      ).rejects.toThrow("no matching agent account binding");
+      expect(authTest).not.toHaveBeenCalled();
+      expect(readSlackMessages).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([false, true])("retains requester membership for Matrix reads (DM=%s)", async (dm) => {
     requesterSlackIdentity.mockResolvedValueOnce("U999");

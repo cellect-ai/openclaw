@@ -25,6 +25,8 @@ export type SlackActionContext = Pick<
   | "hasRepliedRef"
   | "sameChannelThreadRequired"
 > & {
+  /** Host-owned agent whose configured bindings authorize cross-provider reads. */
+  agentId?: string;
   /** Host-owned session used by cross-provider requester identity adapters. */
   sessionKey?: string;
   conversationReadOrigin?: ChannelMessageActionContext["conversationReadOrigin"];

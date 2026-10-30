@@ -39,7 +39,11 @@ import { resolveSlackMediaMaxBytes, SLACK_TEXT_LIMIT } from "./limits.js";
 import { resolveSlackChannelConfig } from "./monitor/channel-config.js";
 import { isSlackChannelAllowedByPolicy } from "./monitor/policy.js";
 import { hasSlackNativeDataBlock } from "./native-data-blocks.js";
-import { readSlackPlatformErrorCode, resolveSlackReadRequester } from "./read-requester.js";
+import {
+  prepareMatrixSlackRead,
+  readSlackPlatformErrorCode,
+  resolveSlackReadRequester,
+} from "./read-requester.js";
 import { mergeSlackSendResults } from "./send-results.js";
 import type { SlackSendResult } from "./send.js";
 import { formatSlackTarget } from "./target-parsing.js";
@@ -357,6 +361,7 @@ async function assertSlackReadTargetAllowed(params: {
    */
   requesterMembership?: {
     readOpts: { cfg: OpenClawConfig; accountId?: string; token?: string; teamId?: string };
+    preparedWorkspaceId?: string;
   };
 }) {
   const deny = () => {
@@ -367,7 +372,12 @@ async function assertSlackReadTargetAllowed(params: {
   const denyUnlessRequesterMember = async (info?: SlackConversationInfo): Promise<void> => {
     const read = params.requesterMembership;
     const requesterId = read
-      ? await resolveSlackReadRequester(params.account.accountId, params.context, read.readOpts)
+      ? await resolveSlackReadRequester(
+          params.account.accountId,
+          params.context,
+          read.readOpts,
+          read.preparedWorkspaceId,
+        )
       : undefined;
     params.context?.assertDirectAdapterHandoff?.();
     if (!requesterId || !read) {
@@ -656,7 +666,7 @@ export async function handleSlackAction(
 
   const assertReadTargetAllowed = async (
     target: SlackActionChannelTarget,
-    opts?: { allowRequesterMembership?: boolean },
+    opts?: { allowRequesterMembership?: boolean; preparedWorkspaceId?: string },
   ) => {
     await assertSlackReadTargetAllowed({
       account,
@@ -666,7 +676,12 @@ export async function handleSlackAction(
       conversationReadOrigin: context?.conversationReadOrigin,
       context,
       ...(opts?.allowRequesterMembership
-        ? { requesterMembership: { readOpts: buildActionOpts("read", target.teamId) } }
+        ? {
+            requesterMembership: {
+              readOpts: buildActionOpts("read", target.teamId),
+              preparedWorkspaceId: opts.preparedWorkspaceId,
+            },
+          }
         : {}),
     });
   };
@@ -939,8 +954,27 @@ export async function handleSlackAction(
       case "readMessages": {
         const target = resolveChannelTarget();
         const { channelId } = target;
-        await assertReadTargetAllowed(target, { allowRequesterMembership: true });
         const readOpts = buildActionOpts("read", target.teamId);
+        const preparedWorkspaceId = await prepareMatrixSlackRead({
+          cfg,
+          accountId: account.accountId,
+          channelId,
+          context,
+          readOpts,
+          resolveConversation: () =>
+            slackActionRuntime.resolveSlackConversationInfo({
+              cfg,
+              accountId: account.accountId,
+              channelId,
+              teamId: target.teamId,
+              operation: "read",
+              assertDirectAdapterHandoff: context?.assertDirectAdapterHandoff,
+            }),
+        });
+        await assertReadTargetAllowed(target, {
+          allowRequesterMembership: true,
+          preparedWorkspaceId,
+        });
         const limit = readPositiveIntegerParam(params, "limit", {
           message: "limit must be a positive integer.",
         });
