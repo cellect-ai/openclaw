@@ -638,8 +638,8 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
             isCurrent: isCurrentChannelOwner,
             ...cronOwner,
             sourceTurnId,
-            chatId: sessionCtx.ChannelContext?.chat?.id,
-            eventId: sessionCtx.ChannelContext?.chat?.eventId,
+            chatId: normalizeOptionalString(sessionCtx.ChannelContext?.chat?.id),
+            eventId: normalizeOptionalString(sessionCtx.ChannelContext?.chat?.eventId),
           },
         )
       : undefined;

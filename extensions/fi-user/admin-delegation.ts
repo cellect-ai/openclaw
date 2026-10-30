@@ -150,7 +150,13 @@ type Run = {
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
 };
 /** Every use retains the exact host capability; copied identity fields prove nothing. */
-function continuationCurrent(run: Run, ctx: PluginHookToolContext): boolean {
+function continuationCurrent(
+  run: Run,
+  ctx: Pick<
+    PluginHookToolContext,
+    "requesterContinuation" | "runId" | "sessionId" | "sessionKey" | "agentId" | "requester"
+  >,
+): boolean {
   const proof = run.continuation;
   if (!proof) {
     return true;
