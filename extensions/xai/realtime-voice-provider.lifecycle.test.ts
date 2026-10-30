@@ -308,6 +308,7 @@ describe("xAI realtime response and transcript lifecycle", () => {
   it("settles input recognized after the response finished once it stops changing", async () => {
     const { bridge, socket, onTranscript } = await openTranscriptBridge();
     socket.emitServer({ type: "input_audio_buffer.speech_started" });
+    socket.emitServer({ type: "input_audio_buffer.speech_stopped" });
     socket.emitServer({ type: "response.created", response: { id: "one" } });
     responseDone(socket, "one");
     vi.useFakeTimers();
@@ -337,7 +338,7 @@ describe("xAI realtime response and transcript lifecycle", () => {
       item_id: "a",
       error: { message: "recognition failed" },
     });
-    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).not.toHaveBeenCalled();
     responseDone(socket, "one");
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
       ["user", "Read the gauge", true, { itemId: "b", textMode: "snapshot" }],

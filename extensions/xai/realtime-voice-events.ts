@@ -16,7 +16,10 @@ export class XaiRealtimeMalformedAudioError extends Error {}
 
 // Quiet period before committing recognized speech. A long assistant turn must
 // not hold the utterance: the timeline send happens once this window passes,
-// or sooner when the current response finishes.
+// or sooner when the current response finishes. The window only runs once the
+// server VAD has closed the item: Grok's cumulative snapshots arrive about once
+// a second but leave gaps over two seconds mid-sentence, and a committed item
+// accepts no later snapshot.
 const XAI_REALTIME_INPUT_SETTLE_MS = 1_500;
 
 export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
@@ -25,6 +28,9 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
   private pendingInputTranscript: { key: string; text: string; itemId?: string } | undefined;
   private finalizedInputTranscriptKeys = new Set<string>();
   private inputSpeechSequence = 0;
+  // The input item the server VAD is still hearing; null while nobody speaks.
+  // An item started without an id is tracked as "" and matches any snapshot.
+  private openInputSpeechItemId: string | null = null;
   private inputResponseStarted = false;
   private outputResponse: { id?: string; ended: boolean } | undefined;
   private finalizedToolCallItems = new Set<string>();
@@ -166,7 +172,19 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         this.flushPendingInputTranscript();
         this.inputSpeechSequence += 1;
         this.inputResponseStarted = false;
+        this.openInputSpeechItemId = event.item_id ?? "";
         this.handleServerVadBargeIn();
+        return;
+      case "input_audio_buffer.speech_stopped":
+      case "input_audio_buffer.committed":
+        if (this.isInputSpeechOpen(event.item_id)) {
+          this.openInputSpeechItemId = null;
+          // Recognition may already be complete; settle it unless a later
+          // snapshot or the response boundary arrives first.
+          if (this.pendingInputTranscript) {
+            this.armInputSettleTimer();
+          }
+        }
         return;
       case "response.text.delta":
       case "response.output_text.delta":
@@ -233,23 +251,24 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
         // boundaries. Commit after a quiet period so a later correction can
         // replace the pending text, without waiting for a long spoken reply.
         // A response that finishes first flushes immediately and clears this.
-        this.armInputSettleTimer();
+        // While the speaker is still talking, the item's speech_stopped arms it.
+        if (this.isInputSpeechOpen(event.item_id)) {
+          clearTimeout(this.inputSettleTimer);
+          this.inputSettleTimer = undefined;
+        } else {
+          this.armInputSettleTimer();
+        }
         return;
       }
       case "conversation.item.input_audio_transcription.failed": {
+        // One item's recognition failed; the model still heard the audio and the
+        // stream is healthy. The bridge event above carries the reason to the
+        // relay, which logs it, instead of failing the voice session.
         const key = this.inputTranscriptKey(event);
         if (this.pendingInputTranscript?.key === key) {
           this.pendingInputTranscript = undefined;
         }
         this.inputTranscriptReplacements.delete(key);
-        this.config.onError?.(
-          new Error(
-            readXaiRealtimeErrorDetail(
-              event.error,
-              this.config.providerLabel ?? "xAI realtime voice",
-            ),
-          ),
-        );
         return;
       }
       case "response.done": {
@@ -400,6 +419,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     this.flushPendingInputTranscript();
     this.inputTranscriptReplacements.clear();
     this.finalizedInputTranscriptKeys.clear();
+    this.openInputSpeechItemId = null;
     this.inputResponseStarted = false;
     this.outputResponse = undefined;
     this.finalizedToolCallItems.clear();
@@ -411,6 +431,11 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       this.inputResponseStarted &&
       (!responseId || !this.outputResponse?.id || responseId === this.outputResponse.id)
     );
+  }
+
+  private isInputSpeechOpen(itemId: string | undefined): boolean {
+    const open = this.openInputSpeechItemId;
+    return open !== null && (open === "" || !itemId || open === itemId);
   }
 
   private armInputSettleTimer(): void {

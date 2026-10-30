@@ -392,6 +392,16 @@ export function createTalkRealtimeRelaySession(
       if (event.direction !== "server") {
         return;
       }
+      if (event.type === "conversation.item.input_audio_transcription.failed") {
+        // One utterance lost its caption and saved transcript; the provider still
+        // heard it. Record the reason instead of failing the voice session.
+        params.context.logGateway?.info(
+          `talk relay input transcription failed: provider=${params.provider.id} item=${
+            event.itemId ?? "unknown"
+          } reason=${event.detail ?? "unspecified"}`,
+        );
+        return;
+      }
       if (event.type === "response.created") {
         if (outputOwnership.takeSuperseded()) {
           currentOutputItemId = undefined;
