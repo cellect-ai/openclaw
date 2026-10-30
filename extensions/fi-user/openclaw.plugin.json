@@ -44,7 +44,8 @@
       "adminApprovers": { "type": "array", "items": { "type": "string", "minLength": 1 } },
       "adminPrincipals": { "type": "array", "items": { "type": "string", "minLength": 1 } },
       "adminAgentId": { "type": "string", "minLength": 1 },
-      "projectionFullRefreshesPerTick": { "type": "integer", "minimum": 0 }
+      "projectionFullRefreshesPerTick": { "type": "integer", "minimum": 0 },
+      "letMeKnowModel": { "type": "string", "pattern": "^[^/\\s]+/\\S+$" }
     }
   }
 }

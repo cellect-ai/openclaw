@@ -34,6 +34,11 @@ export type PluginConfig = {
    * full source snapshot per tick. Default 1; 0 keeps readers-only passes.
    */
   projectionFullRefreshesPerTick?: number;
+  /**
+   * "provider/model" a "Let me know" Matrix turn runs on, for that turn only.
+   * Unset or malformed: the turn keeps the agent's own model.
+   */
+  letMeKnowModel?: string;
 };
 
 export type ResolvedPluginConfig = Required<
@@ -48,6 +53,7 @@ export type ResolvedPluginConfig = Required<
   operatorAgentId?: "cellect-main";
   /** The two tenant keys disagree: no org can be trusted, so every tenant check refuses. */
   tenantOrgConflict?: true;
+  letMeKnowModel?: { provider: string; model: string };
 };
 
 export type Delegation = {
@@ -79,6 +85,8 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
     legacyTenantOrgId !== undefined &&
     tenantOrgId !== legacyTenantOrgId;
   const tenant = tenantOrgConflict ? undefined : (tenantOrgId ?? legacyTenantOrgId);
+  const letMeKnowModel = raw?.letMeKnowModel?.trim() ?? "";
+  const letMeKnowSlash = /\s/.test(letMeKnowModel) ? -1 : letMeKnowModel.indexOf("/");
   return {
     baseUrl: raw?.baseUrl?.replace(/\/+$/, "") || "https://app.cellect.ai/fi",
     brokerTokenEnv: raw?.brokerTokenEnv || "OPENCLAW_FI_USER_BROKER_TOKEN",
@@ -99,6 +107,14 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
       Number(raw?.projectionFullRefreshesPerTick) >= 0
         ? Number(raw?.projectionFullRefreshesPerTick)
         : RECONCILE_FULL_REFRESH_BUDGET,
+    ...(letMeKnowSlash > 0 && letMeKnowSlash < letMeKnowModel.length - 1
+      ? {
+          letMeKnowModel: {
+            provider: letMeKnowModel.slice(0, letMeKnowSlash),
+            model: letMeKnowModel.slice(letMeKnowSlash + 1),
+          },
+        }
+      : {}),
   };
 }
 

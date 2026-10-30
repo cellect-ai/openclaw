@@ -54,6 +54,7 @@ import {
   registerFileArtifactRuntime,
   withoutInternalDownloadLinks,
 } from "./generated-artifacts.js";
+import { registerLetMeKnow } from "./let-me-know.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "./member-tools.js";
 import {
@@ -537,6 +538,7 @@ export default definePluginEntry({
       return content === event.content ? undefined : { content };
     });
     const matrixEntitlements = registerMatrixEntitlements(api);
+    registerLetMeKnow(api);
     const adminDelegation = registerAdminDelegation(api, matrixEntitlements.admittedVoiceTurn);
     registerFileArtifactRuntime(api, {
       // The configured Fi-admin only: another admin runtime has no import path here.
