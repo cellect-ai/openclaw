@@ -378,19 +378,20 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           params.context.validateAgentRuntimeApprovalAuthority?.(agentRuntimeIdentity) === true
             ? resolveExecutionIdentitySpawnFacts(agentRuntimeIdentity)
             : undefined;
-        const requesterRecoveryEntry = await prepareRestartRecoveryRequesterEntry({
-          isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
-          canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
-          expectedExistingSessionId: params.request.expectedExistingSessionId,
-          resolvedSessionId: params.resolvedSessionId,
-          runId: params.runId,
-          sessionEntry: params.sessionEntry,
-          agentId: params.activeSessionAgentId,
-          sessionKey: params.resolvedSessionKey,
-          storePath: prepared.lifecycleStorePath,
-          assertCurrent: assertDispatchCurrent,
-        });
-        assertDispatchCurrent();
+        const requesterRecoveryEntry = params.isRestartRecoveryResumeRun
+          ? await prepareRestartRecoveryRequesterEntry({
+              isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
+              canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
+              expectedExistingSessionId: params.request.expectedExistingSessionId,
+              resolvedSessionId: params.resolvedSessionId,
+              runId: params.runId,
+              sessionEntry: params.sessionEntry,
+              agentId: params.activeSessionAgentId,
+              sessionKey: params.resolvedSessionKey,
+              storePath: prepared.lifecycleStorePath,
+              assertCurrent: assertDispatchCurrent,
+            })
+          : params.sessionEntry;
         const restartRecoveryContext = resolveAgentRestartRecoveryContext({
           isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
           canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
