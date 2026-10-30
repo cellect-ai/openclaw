@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { ChannelProjectionParams } from "./channel-projection.js";
+import type { ChannelProjectionParams } from "./channel-projection-publisher.js";
 import { createDetachedProjectionReconciler, planProjectionRoom } from "./detached-projection.js";
 import { reconcileRetryDelay } from "./reconciliation-batch.js";
 const mocks = vi.hoisted(() => ({ list: vi.fn(), get: vi.fn() }));

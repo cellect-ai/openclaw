@@ -4,7 +4,7 @@ import {
   listSessionKeys,
   sessionDeliveryOrigin,
 } from "openclaw/plugin-sdk/session-store-runtime";
-import type { ChannelProjectionParams } from "./channel-projection.js";
+import type { ChannelProjectionParams } from "./channel-projection-publisher.js";
 import {
   RECONCILE_BATCH_SIZE,
   RECONCILE_HISTORY_BATCH_SIZE,

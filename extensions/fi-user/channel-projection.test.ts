@@ -1,11 +1,8 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { isMissingSlackThread, projectSlackChannelThread } from "./channel-projection-publisher.js";
 import { registerSlackChannelProjection } from "./channel-projection-registration.js";
-import {
-  isMissingSlackThread,
-  projectSlackChannelThread,
-  registerSlackProjectionReconciler,
-} from "./channel-projection.js";
+import { registerSlackProjectionReconciler } from "./channel-projection.js";
 
 const discovery = vi.hoisted(() => ({
   entry: vi.fn(),

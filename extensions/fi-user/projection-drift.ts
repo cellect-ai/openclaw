@@ -1,5 +1,5 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
-import type { ChannelProjectionParams } from "./channel-projection.js";
+import type { ChannelProjectionParams } from "./channel-projection-publisher.js";
 import {
   logProjectionRefresh,
   PARENT,

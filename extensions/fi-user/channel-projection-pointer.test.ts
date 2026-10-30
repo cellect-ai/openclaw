@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectSlackChannelThread } from "./channel-projection.js";
+import { projectSlackChannelThread } from "./channel-projection-publisher.js";
 
 describe("Slack-origin Fi chat pointer", () => {
   afterEach(() => {

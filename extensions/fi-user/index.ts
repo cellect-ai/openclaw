@@ -19,8 +19,8 @@ import {
   decideAdminApproval,
 } from "./admin-action.js";
 import { isAdminAgent, registerAdminDelegation } from "./admin-delegation.js";
+import { projectSlackChannelThread } from "./channel-projection-publisher.js";
 import {
-  projectSlackChannelThread,
   registerSlackChannelProjection,
   type SlackProjectionMessage,
   type SlackProjectionContext,
