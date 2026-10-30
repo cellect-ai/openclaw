@@ -457,12 +457,15 @@ describe("the admin agent's delegated user token", () => {
       await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
       expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
         block: true,
-        blockReason: HELD,
+        blockReason: expect.stringContaining("no verified requester proof"),
       });
       // The admin's first run is still theirs.
       expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
       await turn.arrive({ senderId: "U0OTHER002" });
-      expect(await turn.exec()).toEqual({ block: true, blockReason: HELD });
+      expect(await turn.exec()).toEqual({
+        block: true,
+        blockReason: expect.stringContaining("no verified requester proof"),
+      });
     });
 
     it("leaves the owner's later runs and tools that do not reach the sandbox alone", async () => {
@@ -496,7 +499,7 @@ describe("the admin agent's delegated user token", () => {
       await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
       expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
         block: true,
-        blockReason: HELD,
+        blockReason: expect.stringContaining("no verified requester proof"),
       });
     });
 
@@ -682,7 +685,7 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
-  it("leaves an approved admin action with today's attribution only", async () => {
+  it("confines an approved admin action to its exact typed operation", async () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
     adminActionSessions.set(sessionKey, {
       id: "ZZZ222",
@@ -701,7 +704,10 @@ describe("the admin agent's delegated user token", () => {
       await turn.arrive({ sessionKey });
       await turn.start({ sessionKey });
       const result = await turn.exec({ sessionKey });
-      expect(result?.params.env).toEqual({ FI_ON_BEHALF_OF: expect.any(String) });
+      expect(result).toMatchObject({
+        block: true,
+        blockReason: expect.stringContaining("exact typed operation owner"),
+      });
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {
       adminActionSessions.delete(sessionKey);
