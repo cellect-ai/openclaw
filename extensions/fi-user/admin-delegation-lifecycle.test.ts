@@ -11,6 +11,7 @@ import {
   thread,
   MINT_URL,
   HELD,
+  UNPROVEN_HOLD,
   SANDBOXED,
   plugin,
   fetchMock,
@@ -332,7 +333,7 @@ describe("the admin agent's delegated user token", () => {
             defaults: { sandbox: { mode: "off" } },
             entries: {
               "cellect-fi-admin": {
-                sandbox: { mode: "all", scope: "session" },
+                sandbox: { ...SANDBOXED.agents.defaults.sandbox, scope: "session" },
                 tools: { exec: { host: "auto" }, elevated: { enabled: false } },
               },
             },
@@ -457,15 +458,12 @@ describe("the admin agent's delegated user token", () => {
       await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
       expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
         block: true,
-        blockReason: expect.stringContaining("no verified requester proof"),
+        blockReason: UNPROVEN_HOLD,
       });
       // The admin's first run is still theirs.
       expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
       await turn.arrive({ senderId: "U0OTHER002" });
-      expect(await turn.exec()).toEqual({
-        block: true,
-        blockReason: expect.stringContaining("no verified requester proof"),
-      });
+      expect(await turn.exec()).toEqual({ block: true, blockReason: UNPROVEN_HOLD });
     });
 
     it("leaves the owner's later runs and tools that do not reach the sandbox alone", async () => {
@@ -491,7 +489,9 @@ describe("the admin agent's delegated user token", () => {
     it("holds only the session's own sandbox when sandboxes are per session", async () => {
       const turn = await afterAdminsCommand({
         ...SANDBOXED,
-        agents: { defaults: { sandbox: { mode: "all", scope: "session" } } },
+        agents: {
+          defaults: { sandbox: { ...SANDBOXED.agents.defaults.sandbox, scope: "session" } },
+        },
       });
       // Another session is another sandbox: Fi is asked about its own sender.
       expect((await turn.exec(otherExec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
@@ -499,7 +499,7 @@ describe("the admin agent's delegated user token", () => {
       await turn.start({ runId: "cron-1", trigger: "cron", senderId: undefined });
       expect(await turn.exec({ runId: "cron-1", requester: undefined })).toEqual({
         block: true,
-        blockReason: expect.stringContaining("no verified requester proof"),
+        blockReason: UNPROVEN_HOLD,
       });
     });
 
@@ -596,7 +596,7 @@ describe("the admin agent's delegated user token", () => {
     // Tool-start events, the trajectory, CLI and worker events all pass through this.
     const recorded = JSON.stringify(sanitizeToolArgs(rewritten?.params));
     expect(recorded).not.toContain(TOKEN);
-    expect(recorded).toContain("npm run fi:audit");
+    expect(recorded).toContain("/usr/local/bin/cellect commands list");
   });
 
   describe("what the plugin asks of the host", () => {
@@ -685,7 +685,7 @@ describe("the admin agent's delegated user token", () => {
     });
   });
 
-  it("confines an approved admin action to its exact typed operation", async () => {
+  it("leaves an approved admin action with its typed operation owner", async () => {
     const sessionKey = "agent:cellect-fi-admin:admin-action:zzz222";
     adminActionSessions.set(sessionKey, {
       id: "ZZZ222",
@@ -704,9 +704,10 @@ describe("the admin agent's delegated user token", () => {
       await turn.arrive({ sessionKey });
       await turn.start({ sessionKey });
       const result = await turn.exec({ sessionKey });
-      expect(result).toMatchObject({
+      expect(result).toEqual({
         block: true,
-        blockReason: expect.stringContaining("exact typed operation owner"),
+        blockReason:
+          "Approved actions execute only through their exact typed operation owner. Generic agent tools cannot mutate or widen an approved request.",
       });
       expect(fetchMock).not.toHaveBeenCalled();
     } finally {

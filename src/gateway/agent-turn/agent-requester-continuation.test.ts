@@ -168,6 +168,52 @@ describe("native requester continuation through Fi hooks", () => {
     vi.restoreAllMocks();
   });
 
+  it("keeps resumed raw shell work credential-free without reserving the sandbox", async () => {
+    const turn = plugin();
+    const { context } = await nativeRecovery();
+    await turn.start(context);
+    const command = "cat /workspace/input.json";
+    const tenantRole = "fixture-owned-tenant-context";
+    const shell = await turn.exec(context, {
+      params: { command, env: { PGOPTIONS: tenantRole, FI_DELEGATED_USER_TOKEN: "replayed" } },
+    });
+    expect(shell?.block).not.toBe(true);
+    expect(shell?.params).toMatchObject({ command, env: { PGOPTIONS: tenantRole } });
+    expect(shell?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(0);
+    await turn.start({
+      ...context,
+      runId: "unbound-operator",
+      requesterContinuation: undefined,
+      trigger: "manual",
+      senderId: undefined,
+    });
+    const unbound = await turn.exec({
+      ...context,
+      runId: "unbound-operator",
+      requesterContinuation: undefined,
+      requester: undefined,
+    });
+    expect(unbound?.block).not.toBe(true);
+    expect(unbound?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(0);
+    expect((await turn.exec(context))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+  });
+
+  it("requires a unique native call identity for each resumed CLI credential", async () => {
+    const turn = plugin();
+    const { context } = await nativeRecovery();
+    await turn.start(context);
+    expect(
+      (await turn.exec({ ...context, toolCallId: undefined }))?.params.env?.FI_DELEGATED_USER_TOKEN,
+    ).toBeUndefined();
+    expect(mints()).toHaveLength(0);
+    const tracked = { ...context, toolCallId: "immutable-cli-1" };
+    expect((await turn.exec(tracked))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect((await turn.exec(tracked))?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(1);
+  });
+
   it.each(["unbound operator", "wrong session", "wrong claim"])(
     "rejects %s injection",
     async (kind) => {

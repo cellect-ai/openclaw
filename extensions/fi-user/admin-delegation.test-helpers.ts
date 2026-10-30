@@ -82,9 +82,23 @@ export type Rewrite =
   | undefined;
 export const HELD =
   "This sandbox still holds another requester's command state. Retry after its requester token expires.";
+export const UNPROVEN_HOLD =
+  "This run has no verified requester proof for the sandbox's retained command state. A fresh authenticated message is required; this does not indicate another command is running.";
 /** A runtime whose admin agent always runs in the sandbox, with elevation off. */
 export const SANDBOXED = {
-  agents: { defaults: { sandbox: { mode: "all" as const } } },
+  agents: {
+    defaults: {
+      sandbox: {
+        mode: "all" as const,
+        docker: {
+          binds: [
+            "/fixture/cli:/usr/local/bin/cellect:ro",
+            "/fixture/runtime:/repos/fi-runtime:ro",
+          ],
+        },
+      },
+    },
+  },
   tools: { elevated: { enabled: false } },
 };
 
@@ -108,6 +122,7 @@ export function plugin(
   const info = vi.fn();
   const runContexts = new Map<string, PluginJsonValue>();
   const runtimeContexts = vi.fn();
+  let toolCallNumber = 0;
   fiUserPlugin.register?.(
     createTestPluginApi({
       id: "fi-user",
@@ -211,9 +226,10 @@ export function plugin(
     exec: (overrides: Record<string, unknown> = {}, event: Record<string, unknown> = {}) =>
       hook(
         "before_tool_call",
-        { toolName: "exec", params: { command: "npm run fi:audit" }, ...event },
+        { toolName: "exec", params: { command: "cellect commands list" }, ...event },
         {
           runId: "run-1",
+          toolCallId: `command-${++toolCallNumber}`,
           agentId: "cellect-fi-admin",
           sessionKey: SESSION,
           toolName: "exec",

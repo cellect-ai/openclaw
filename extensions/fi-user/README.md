@@ -100,6 +100,12 @@ The call:
 
 - It is OpenClaw's own `exec` (`sandbox_exec` included) with no `host` other
   than `sandbox`, no `node`, not `elevated`, not `pty` and not `background`.
+- It invokes only the installed `cellect` CLI, with no shell composition,
+  metacharacters or caller-supplied environment. Both `/usr/local/bin/cellect`
+  and `/repos/fi-runtime` must be immutable read-only mounts. Values with shell
+  metacharacters use the CLI's structured `--input` file transport.
+- Its native run and tool-call identity uniquely identify the command whose
+  process-tree cleanup releases the credential custody.
 - Its own `FI_APP_URL`, if it passes one, equals the selected connection's
   `baseUrl` (the host-proven Matrix account selects that connection).
 - At least half a second is left of the time the host gives the tool hook.
@@ -128,23 +134,24 @@ the message. The Matrix admission gate asks Fi about the room and event before
 the run and before every tool call, and blocks the call unless Fi names this
 runtime's organization (or the dedicated operator turn's pinned conversation organization); a token is only ever asked for after that.
 
-### After a token: the sandbox is held
+### After a token: exact command cleanup
 
-A command that ran with a token may have printed it or left a file or a
-running process behind. Until that token expires (ten minutes at most), the
-sandbox it ran in is kept to the person it was issued for. The admin agent's
+Only the immutable installed CLI receives a requester token; raw shell work
+does not. The CLI must not print or persist the credential. Its native process
+owner reaps descendants before releasing custody of that exact command. Until
+cleanup is proven, the admin agent's
 `exec`, `sandbox_exec`, `process`, `sandbox_process`, `read`, `ls`, `write`,
-`edit`, `apply_patch` and `view_image` calls are blocked with "Another admin's
-command is still finishing here. Try again in a few minutes." unless the run is
-one proven to be that person's. Cron, heartbeat and approved-action runs have
-no proven person and are blocked too.
+`edit`, `apply_patch` and `view_image` calls from another requester cannot reach
+that sandbox. Token expiry is a fallback for failed or missing cleanup, never
+a minimum waiting period after a completed command. A turn ending or a tool
+result arriving alone is not cleanup proof.
 
 Which sandbox that is follows `sandbox.scope` for the admin agent:
 
 - `session`: only that session (that thread) is held.
 - `agent` (the default, and what tenant runtimes are generated with): the
   admin agent has one sandbox, so one person's token holds every other person's
-  admin-agent commands, in every conversation, for up to ten minutes. The same
+  admin-agent commands, in every conversation, until cleanup. The same
   person on Slack and on Matrix counts as two people.
 - `shared`: other agents use the same sandbox and cannot be held, so no token
   is issued at all.
@@ -158,11 +165,9 @@ The hold is in memory. A plugin reload or Gateway restart forgets it.
 
 ### Output is not scrubbed
 
-The plugin does not redact tool output. A command that prints its environment
-puts the token in the thread's transcript, where the model and everyone in the
-thread can read it. What bounds that: the token lives ten minutes, Fi accepts
-it on five routes only, Fi checked that its owner is an admin of this
-organization, and the sandbox is held for its owner while it lives.
+The plugin does not redact tool output. The immutable installed CLI owns the
+no-credential-output/persistence contract. Arbitrary commands that could print
+or save the environment receive no requester token.
 
 The host does mask the `FI_DELEGATED_USER_TOKEN` value where it records a
 call's arguments (tool-start events, trajectory, CLI and worker events).
@@ -194,7 +199,7 @@ Not visible to the plugin; infra must assert these for a runtime that issues tok
 | Codex exec-server off for the admin agent                            | It takes its environment from Codex and drops `*_TOKEN` keys; the token would not arrive and the call is not this plugin's to pin.                                                                                  |
 | Admin agent not on a CLI backend; Codex native shell not relied on   | A native shell is seen as `exec` but takes no `env`. The host refuses any rewrite of a Codex native shell call, so such a call is blocked whenever an assertion or token is set; the token never reaches the model. |
 | No Talk binding to an admin-agent session                            | A binding is made at run time for a session, not in configuration. The plugin sees only `talk.agentId` and, afterwards, the first consult.                                                                          |
-| `sandbox.scope` chosen knowingly                                     | See "After a token: the sandbox is held". `agent` scope serialises admins across the whole runtime while a token lives; `session` scope holds one thread.                                                           |
+| `sandbox.scope` chosen knowingly                                     | See "After a token: exact command cleanup". `agent` scope serialises credential-bearing commands across the runtime; `session` scope holds one thread only until its commands are cleaned up.                       |
 
 Config keys used: `baseUrl`, `brokerTokenEnv`, `tenantOrgId` (or
 `matrixTenantOrgId`), `adminAgentId`; for Matrix also `matrixEnvironments` and
