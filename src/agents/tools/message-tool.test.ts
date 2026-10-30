@@ -1669,6 +1669,13 @@ describe("message tool secret scoping", () => {
         id: "slack",
         actions: ["read"],
         outbound: createDirectOutboundTestAdapter({ channel: "slack" }),
+        messaging: {
+          normalizeTarget: (target) => target,
+          targetResolver: {
+            looksLikeId: (target) => /^(?:[CD]\d+|team:T\d+:channel:C\d+)$/.test(target),
+            hint: "synthetic Slack conversation ID",
+          },
+        },
         messageActionTargetAliases: {
           read: { aliases: ["permalink"], resolveDeliveryTarget: () => "C12345678" },
         },
