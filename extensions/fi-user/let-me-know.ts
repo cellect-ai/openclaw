@@ -7,7 +7,7 @@ export const LET_ME_KNOW_CONTEXT =
 /** The Matrix monitor sets the flag only for a person's own flagged message. */
 function isLetMeKnowTurn(context: {
   channel?: string;
-  channelContext?: { chat?: { letMeKnow?: unknown }; sender?: { isBot?: unknown } };
+  channelContext?: { chat?: Record<string, unknown>; sender?: Record<string, unknown> };
 }): boolean {
   return (
     context.channel === "matrix" &&
