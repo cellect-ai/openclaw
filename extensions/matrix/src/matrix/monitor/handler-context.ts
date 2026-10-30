@@ -16,6 +16,9 @@ import type { MatrixHandlerRuntimeConfig } from "./handler-types.js";
 import { readMatrixSharedHistory } from "./shared-history.js";
 import type { MatrixRawEvent, RoomMessageEventContent } from "./types.js";
 
+/** Content key Fi's web and iOS composers set on a "Let me know" message. */
+const MATRIX_LET_ME_KNOW_CONTENT_KEY = "ai.cellect.let_me_know";
+
 export async function resolveMatrixInboundContext(config: {
   handler: MatrixHandlerRuntimeConfig;
   ingress: MatrixIngressContent;
@@ -194,6 +197,15 @@ export async function resolveMatrixInboundContext(config: {
     body: textWithId,
   });
   const groupSystemPrompt = normalizeOptionalString(roomConfig?.systemPrompt);
+  // A person's "Let me know" send marks their own message; a configured bot cannot ask for it.
+  const letMeKnowFlag = (event.content as Record<string, unknown> | undefined)?.[
+    MATRIX_LET_ME_KNOW_CONTENT_KEY
+  ];
+  const letMeKnow =
+    !ingress.botLoopProtection &&
+    typeof letMeKnowFlag === "object" &&
+    letMeKnowFlag !== null &&
+    (letMeKnowFlag as { version?: unknown }).version === 1;
   const quoteHidden = Boolean(
     replyContext &&
     !evaluateSupplementalContextVisibility({
@@ -256,7 +268,7 @@ export async function resolveMatrixInboundContext(config: {
       // A configured bot account is a proven sender but not a person; hooks that
       // act for the sender need to tell the two apart.
       sender: { id: senderId, ...(ingress.botLoopProtection ? { isBot: true } : {}) },
-      chat: { id: roomId, eventId: messageId },
+      chat: { id: roomId, eventId: messageId, ...(letMeKnow ? { letMeKnow: true } : {}) },
     },
     from: isDirectMessage ? `matrix:${senderId}` : `matrix:channel:${roomId}`,
     sender: {
