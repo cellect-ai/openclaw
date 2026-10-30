@@ -1722,13 +1722,30 @@ describe("message tool secret scoping", () => {
           return { resolvedConfig, diagnostics: [] };
         },
       );
+      const sessionKey = "agent:analyst:matrix:channel:!room:example.test";
+      const turnCapability = mintMessageActionTurnCapability({
+        agentId: "analyst",
+        runId: "matrix-slack-read-run",
+        sessionId: "matrix-slack-read-session",
+        sessionKey,
+        requesterAccountId: "matrix-account",
+        requesterSenderId: "@member:example.test",
+        toolContext: {
+          currentChannelProvider: "matrix",
+          currentChannelId: "!room:example.test",
+        },
+      });
+      mintedTurnCapabilities.push(turnCapability);
       const tool = createMessageTool({
         config,
         agentId: "analyst",
+        runId: "matrix-slack-read-run",
+        sessionId: "matrix-slack-read-session",
+        messageActionTurnCapability: turnCapability,
         agentAccountId: "matrix-account",
         currentChannelProvider: "matrix",
         currentChannelId: "!room:example.test",
-        agentSessionKey: "agent:analyst:matrix:channel:!room:example.test",
+        agentSessionKey: sessionKey,
         getScopedChannelsCommandSecretTargets: mocks.getScopedChannelsCommandSecretTargets as never,
         resolveCommandSecretRefsViaGateway: mocks.resolveCommandSecretRefsViaGateway as never,
         runMessageAction: actualRunMessageAction,
@@ -1771,7 +1788,13 @@ describe("message tool secret scoping", () => {
                 }),
               }),
             }),
-            toolContext: expect.objectContaining({ currentChannelProvider: "matrix" }),
+            sessionKey: "agent:analyst:matrix:channel:!room:example.test",
+            requesterAccountId: "matrix-account",
+            requesterSenderId: "@member:example.test",
+            toolContext: expect.objectContaining({
+              currentChannelProvider: "matrix",
+              currentChannelId: "!room:example.test",
+            }),
           }),
         );
       },
