@@ -1,4 +1,5 @@
 import type { WebClient } from "@slack/web-api";
+import { isSlackFiChatPointer, sourcePointerCoversProjected } from "./fi-chat-pointer.js";
 import { hydrateSlackProjectionNames } from "./projection-actor.js";
 import { slackProjectionContent } from "./projection-content.js";
 import { createProjectionDeadline } from "./projection-deadline.js";
@@ -111,6 +112,7 @@ export async function readSlackProjectionChannel(
         content: string;
         bot: boolean;
       }> = [];
+      let latestPointerMessageId: string | undefined;
       const messageCursors = new Set<string>();
       let messageCursor: string | undefined;
       do {
@@ -126,6 +128,15 @@ export async function readSlackProjectionChannel(
           throw new Error("Slack thread unavailable");
         }
         for (const message of page.messages) {
+          if (isSlackFiChatPointer(message)) {
+            if (
+              message.ts &&
+              (!latestPointerMessageId || message.ts.localeCompare(latestPointerMessageId) > 0)
+            ) {
+              latestPointerMessageId = message.ts;
+            }
+            continue;
+          }
           if (message.ts && message.user && typeof message.text === "string") {
             messages.push({
               messageId: message.ts,
@@ -151,6 +162,11 @@ export async function readSlackProjectionChannel(
         channelId,
         rootMessageId,
         memberSenderIds: [...new Set(memberSenderIds)],
+        sourcePointerPresent: Boolean(latestPointerMessageId),
+        sourcePointerCurrent: sourcePointerCoversProjected(
+          latestPointerMessageId,
+          messages.map((message) => message.messageId),
+        ),
         messages: await hydrateSlackProjectionNames(client, workspaceId, messages, read),
       };
     },
