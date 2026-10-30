@@ -160,7 +160,11 @@ export function createRealtimeVoiceBridgeSession(
     sendUserMessage: (text, options) => {
       if (text.trim()) {
         const bridge = requireBridge();
-        requestResponse(bridge.sendUserMessage?.bind(bridge, text, options));
+        requestResponse(
+          options
+            ? bridge.sendUserMessage?.bind(bridge, text, options)
+            : bridge.sendUserMessage?.bind(bridge, text),
+        );
       }
     },
     handleBargeIn: (options) => {
