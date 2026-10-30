@@ -532,8 +532,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       if (context.channel !== "matrix") {
         return undefined;
       }
-      // Source-linked continuations already pass the Matrix channel's source-session guard.
-      if (SOURCE_SESSION.test(context.sessionKey ?? "")) {
+      // Fresh source-linked ingress already passed the Matrix channel's source-session guard.
+      // A native continuation rechecks its original Matrix event below.
+      if (SOURCE_SESSION.test(context.sessionKey ?? "") && !context.requesterContinuation) {
         return undefined;
       }
       if (
@@ -730,9 +731,15 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const beforeToolCall = (context: PluginHookToolContext) => {
     const matrixTurn =
       context.requester?.channel === "matrix" ||
+      context.requesterContinuation?.channel === "matrix" ||
       (context.sessionKey?.includes(":matrix:") ?? false) ||
       Boolean(context.runId && turns.has(context.runId));
-    if (!matrixTurn || SOURCE_SESSION.test(context.sessionKey ?? "")) {
+    if (
+      !matrixTurn ||
+      (SOURCE_SESSION.test(context.sessionKey ?? "") &&
+        !context.requesterContinuation &&
+        !(context.runId && turns.get(context.runId)?.continuation))
+    ) {
       return undefined;
     }
     const runId = context.runId;

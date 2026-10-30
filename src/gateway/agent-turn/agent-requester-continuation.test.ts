@@ -40,7 +40,12 @@ async function nativeRecovery(
   overrides: Record<string, unknown> = {},
   residentEvents?: readonly unknown[],
 ) {
-  const sessionKey = channel === "matrix" ? THREAD : SLACK_THREAD;
+  const sessionKey =
+    typeof overrides.sessionKey === "string"
+      ? overrides.sessionKey
+      : channel === "matrix"
+        ? THREAD
+        : SLACK_THREAD;
   const scope = "/fixture/native-requester-continuation/sessions";
   const interrupted = new AbortController();
   const originalWork = await beginSessionWorkAdmission({
@@ -208,6 +213,40 @@ describe("native requester continuation through Fi hooks", () => {
     );
     expect(mints()).toHaveLength(1);
   });
+
+  it.each(["admission", "tool", "stripped proof", "allowed"])(
+    "rechecks Matrix source-session recovery at %s",
+    async (phase) => {
+      vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+      const turn = plugin();
+      const { context } = await nativeRecovery("matrix", { sessionKey: SLACK_THREAD });
+      const denyRoom = () =>
+        fetchMock.mockImplementation(async (url: string) =>
+          url === AUTHORIZE_URL ? new Response("{}", { status: 403 }) : minted(),
+        );
+      if (phase === "admission") denyRoom();
+      const started = await turn.start(context);
+      if (phase === "admission") {
+        expect(started).toMatchObject({ handled: true });
+        expect((await turn.exec({ ...context, requester: undefined }))?.block).toBe(true);
+      } else {
+        expect(started).toBeUndefined();
+        if (phase === "tool") denyRoom();
+        const result = await turn.exec({
+          ...context,
+          requester: undefined,
+          ...(phase === "stripped proof" ? { requesterContinuation: undefined } : {}),
+        });
+        if (phase === "allowed") {
+          expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+          expect(mints()).toHaveLength(1);
+          return;
+        }
+        expect(result?.block).toBe(true);
+      }
+      expect(mints()).toHaveLength(0);
+    },
+  );
 
   it("does not extend the original task to an operator injection with the same asserted sender", async () => {
     const turn = plugin();
