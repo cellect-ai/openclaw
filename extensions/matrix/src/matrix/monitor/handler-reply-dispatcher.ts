@@ -32,6 +32,9 @@ import {
 
 type MatrixDraftController = Awaited<ReturnType<typeof createMatrixDraftController>>;
 
+/** Fi pairs a finished answer with the person's "Let me know" request by this field. */
+const MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY = "ai.cellect.let_me_know_answer";
+
 export function createMatrixReplyDispatcher(config: {
   cfg: CoreConfig;
   prefixOptions: Omit<ReturnType<typeof createReplyPrefixOptions>, "onModelSelected">;
@@ -48,6 +51,8 @@ export function createMatrixReplyDispatcher(config: {
   replyToMode: ReplyToMode;
   threadTarget?: string;
   replyToEventId?: string;
+  /** The turn's own triggering "Let me know" event; only its final replies are marked. */
+  letMeKnowTriggerEventId?: string;
   accountId: string;
   mediaLocalRoots: readonly string[];
   logVerboseMessage: (message: string) => void;
@@ -66,6 +71,7 @@ export function createMatrixReplyDispatcher(config: {
     replyToMode,
     threadTarget,
     replyToEventId,
+    letMeKnowTriggerEventId,
     accountId,
     mediaLocalRoots,
     logVerboseMessage,
@@ -73,7 +79,15 @@ export function createMatrixReplyDispatcher(config: {
   const quietDraftStreaming = streaming === "quiet" || streaming === "progress";
   // Tool, block, and final payloads are delivered separately but share one first-reply slot.
   const hasRepliedRef = { value: false };
-  const deliverPayload = (reply: ReplyPayload) =>
+  const letMeKnowAnswerContent = letMeKnowTriggerEventId
+    ? {
+        [MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY]: {
+          version: 1,
+          triggerEventId: letMeKnowTriggerEventId,
+        },
+      }
+    : undefined;
+  const deliverPayload = (reply: ReplyPayload, extraContent?: Record<string, unknown>) =>
     deliverMatrixReplies({
       cfg,
       replies: [reply],
@@ -86,6 +100,7 @@ export function createMatrixReplyDispatcher(config: {
       replyToId: threadTarget ?? replyToEventId ?? undefined,
       accountId,
       mediaLocalRoots,
+      ...(extraContent ? { extraContent } : {}),
     });
   const { previewLifecycle } = draftController;
   let nonFinalReplyDeliveryFailed = false;
@@ -106,11 +121,10 @@ export function createMatrixReplyDispatcher(config: {
       onReplyStart: typingCallbacks.onReplyStart,
       onIdle: typingCallbacks.onIdle,
     },
-    deliverReply: async (
-      payload: ReplyPayload,
-      info: { kind: "tool" | "block" | "final" },
-    ) => {
+    deliverReply: async (payload: ReplyPayload, info: { kind: "tool" | "block" | "final" }) => {
       const publication = resolveMatrixReplyPublication(payload, accountId, roomId, threadTarget);
+      // Tool progress and streamed blocks are working frames, not the answer.
+      const answerContent = info.kind === "final" ? letMeKnowAnswerContent : undefined;
       const createDraftReceipt = (id: string): MessageReceipt =>
         createPreviewMessageReceipt({
           id,
@@ -188,10 +202,12 @@ export function createMatrixReplyDispatcher(config: {
                       ? { [MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY]: true }
                       : {}),
                     ...presentationContent,
+                    ...answerContent,
                   };
                   if (
                     !quietDraftStreaming &&
                     !presentationContent &&
+                    !answerContent &&
                     draftStream.matchesPreparedText(edit.text)
                   ) {
                     if (!(await draftStream.finalizeLive())) {
@@ -223,7 +239,7 @@ export function createMatrixReplyDispatcher(config: {
                       ? buildTtsSupplementMediaPayload(payload)
                       : { ...payload, text: undefined }
                     : undefined,
-                deliverSupplemental: deliverPayload,
+                deliverSupplemental: (supplemental) => deliverPayload(supplemental),
                 logPreviewEditFailure: (err) => {
                   logVerboseMessage(`matrix: preview final edit failed: ${String(err)}`);
                 },
@@ -248,6 +264,7 @@ export function createMatrixReplyDispatcher(config: {
             }
             return await deliverPayload(
               normalPayload === payload ? fallbackPayload : normalPayload,
+              answerContent,
             );
           },
         });

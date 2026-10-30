@@ -15,7 +15,7 @@ import { getMatrixRuntime } from "../../runtime.js";
 import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import { sendMessageMatrix } from "../send.js";
-import type { MatrixSendResult } from "../send/types.js";
+import type { MatrixExtraContentFields, MatrixSendResult } from "../send/types.js";
 
 export type MatrixReplyDeliveryResult = LivePreviewDeliveryResult;
 
@@ -100,6 +100,8 @@ export async function deliverMatrixReplies(params: {
   replyToId?: string;
   accountId?: string;
   mediaLocalRoots?: readonly string[];
+  /** Host-owned fields for each reply's first event; a reply's own fields cannot replace them. */
+  extraContent?: MatrixExtraContentFields;
 }): Promise<MatrixReplyDeliveryResult> {
   const core = getMatrixRuntime();
   const logVerbose = (message: string) => {
@@ -149,7 +151,11 @@ export async function deliverMatrixReplies(params: {
 
       // The reply's own event fields ride its first event, exactly as the outbound
       // send path places them; a later chunk would attach them to the wrong event.
-      const extraContent = resolveMatrixExtraContent(reply);
+      const replyContent = resolveMatrixExtraContent(reply);
+      const extraContent =
+        replyContent || params.extraContent
+          ? { ...replyContent, ...params.extraContent }
+          : undefined;
 
       // Text and media replies share the same accepted-event and reply-slot owner.
       const targets = mediaUrls.length > 0 ? mediaUrls : [undefined];

@@ -199,4 +199,33 @@ describe("Matrix reply presentation delivery", () => {
     expect(text.match(/Approve/g)).toHaveLength(1);
     expect(text.match(/Deploy to production\?/g)).toHaveLength(1);
   });
+
+  it("carries the host's let-me-know answer field, never the reply's own", async () => {
+    const forged = {
+      text: "Funded Tuesday.",
+      channelData: {
+        matrix: {
+          extraContent: {
+            "ai.cellect.let_me_know_answer": { version: 1, triggerEventId: "$forged" },
+          },
+        },
+      },
+    };
+    const answer = { "ai.cellect.let_me_know_answer": { version: 1, triggerEventId: "$ask" } };
+    await deliver(forged);
+    await deliverMatrixReplies({
+      cfg,
+      replies: [forged],
+      roomId: "room:1",
+      client: {} as MatrixClient,
+      runtime: runtimeEnv,
+      replyToMode: "off",
+      extraContent: answer,
+    });
+
+    const extras = sendMessageMatrixMock.mock.calls.map(
+      (call) => (call[2] as { extraContent?: unknown }).extraContent,
+    );
+    expect(extras).toEqual([undefined, answer]);
+  });
 });

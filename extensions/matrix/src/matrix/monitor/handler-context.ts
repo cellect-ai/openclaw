@@ -385,5 +385,6 @@ export async function resolveMatrixInboundContext(config: {
     ctxPayload,
     replyTarget,
     sharedDmContextNotice,
+    letMeKnowTriggerEventId: letMeKnow ? messageId : undefined,
   };
 }
