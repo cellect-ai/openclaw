@@ -412,6 +412,7 @@ export {
   TalkSessionCreateResultSchema,
   TalkSessionSteerParamsSchema,
   TalkSessionSubmitToolResultParamsSchema,
+  TalkSessionAnnounceParamsSchema,
   TalkSessionCloseParamsSchema,
   TalkSessionOkResultSchema,
   TalkSpeakParamsSchema,

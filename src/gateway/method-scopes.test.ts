@@ -156,6 +156,7 @@ describe("method scope resolution", () => {
     ["talk.session.acknowledgeMark", ["operator.talk"]],
     ["talk.session.submitToolResult", ["operator.talk"]],
     ["talk.session.steer", ["operator.talk"]],
+    ["talk.session.announce", ["operator.talk"]],
     ["talk.session.close", ["operator.talk"]],
     ["update.status", ["operator.admin"]],
     ["update.report", ["operator.admin"]],
@@ -848,6 +849,7 @@ describe("operator scope authorization", () => {
       "talk.session.acknowledgeMark",
       "talk.session.submitToolResult",
       "talk.session.steer",
+      "talk.session.announce",
       "talk.session.close",
     ]) {
       expect(authorizeOperatorScopesForMethod(method, ["operator.talk"])).toEqual({

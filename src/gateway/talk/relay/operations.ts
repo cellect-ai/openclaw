@@ -228,7 +228,7 @@ function closeTalkRealtimeRelaySessionsForConnection(connId: string): Promise<vo
   });
 }
 
-function getRelaySession(relaySessionId: string, connId: string): RelaySession {
+export function getRelaySession(relaySessionId: string, connId: string): RelaySession {
   return requireActiveTalkRelaySession({
     sessions: relaySessions,
     sessionId: relaySessionId,

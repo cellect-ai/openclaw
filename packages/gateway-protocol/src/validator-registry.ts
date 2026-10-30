@@ -419,6 +419,7 @@ export const validateTalkSessionSteerParams = compile(S.TalkSessionSteerParamsSc
 export const validateTalkSessionSubmitToolResultParams = compile(
   S.TalkSessionSubmitToolResultParamsSchema,
 );
+export const validateTalkSessionAnnounceParams = compile(S.TalkSessionAnnounceParamsSchema);
 export const validateTalkSessionCloseParams = compile(S.TalkSessionCloseParamsSchema);
 export const validateTalkSpeakParams = compile(S.TalkSpeakParamsSchema);
 export const validateTtsSpeakParams = compile(S.TtsSpeakParamsSchema);

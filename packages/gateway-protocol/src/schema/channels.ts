@@ -359,6 +359,15 @@ export const TalkSessionSteerParamsSchema = closedObject({
   mode: Type.Optional(TalkAgentControlModeSchema),
 });
 
+/**
+ * Has the realtime voice speak a finished answer to an earlier request. The
+ * Gateway frames the text as speech instructions; callers send only the answer.
+ */
+export const TalkSessionAnnounceParamsSchema = closedObject({
+  sessionId: NonEmptyString,
+  text: Type.String({ minLength: 1, maxLength: 16000 }),
+});
+
 export const TalkSessionCloseParamsSchema = closedObject({
   sessionId: NonEmptyString,
 });
@@ -749,6 +758,7 @@ export type TalkSessionSteerParams = Static<typeof TalkSessionSteerParamsSchema>
 export type TalkSessionSubmitToolResultParams = Static<
   typeof TalkSessionSubmitToolResultParamsSchema
 >;
+export type TalkSessionAnnounceParams = Static<typeof TalkSessionAnnounceParamsSchema>;
 export type TalkSessionCloseParams = Static<typeof TalkSessionCloseParamsSchema>;
 export type TalkSessionOkResult = Static<typeof TalkSessionOkResultSchema>;
 export type TalkSpeakParams = Static<typeof TalkSpeakParamsSchema>;

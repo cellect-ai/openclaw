@@ -5,6 +5,7 @@ import {
 import {
   ErrorCodes,
   errorShape,
+  validateTalkSessionAnnounceParams,
   validateTalkSessionAppendAudioParams,
   validateTalkSessionCancelOutputParams,
   validateTalkSessionCloseParams,
@@ -34,6 +35,7 @@ import { formatForLog } from "../../ws-log.js";
 import { resolveTalkAgentConsultAuthority } from "../client-gateway-control.js";
 import { createTalkHandoff, getTalkHandoff, revokeTalkHandoff } from "../handoff.js";
 import {
+  announceTalkRealtimeRelayAnswer,
   cancelTalkRealtimeRelayTurn,
   createTalkRealtimeRelaySession,
   sendTalkRealtimeRelayAudio,
@@ -596,6 +598,30 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         respond,
         "talk.session.steer requires the active managed-room connection",
       );
+    },
+    talkSessionError,
+  ),
+  "talk.session.announce": defineValidatedGatewayHandler(
+    "talk.session.announce",
+    validateTalkSessionAnnounceParams,
+    async ({ params, respond, client }) => {
+      const session = getUnifiedTalkSession(params.sessionId);
+      if (session.kind !== "realtime-relay") {
+        respondInvalidRequest(respond, "talk.session.announce requires realtime relay");
+        return;
+      }
+      const connId = requireUnifiedTalkSessionConn(session, client?.connId);
+      const text = params.text.trim();
+      if (!text) {
+        respondInvalidRequest(respond, "talk.session.announce requires non-empty text");
+        return;
+      }
+      await announceTalkRealtimeRelayAnswer({
+        relaySessionId: session.relaySessionId,
+        connId,
+        text,
+      });
+      respondOk(respond);
     },
     talkSessionError,
   ),

@@ -61,6 +61,7 @@ export function runGatewayPendingWorkContinuation<T>(params: {
       "talk.session.acknowledgeMark",
       "talk.session.submitToolResult",
       "talk.session.steer",
+      "talk.session.announce",
       "talk.session.close",
       "talk.client.toolCall",
       "talk.client.transcript",

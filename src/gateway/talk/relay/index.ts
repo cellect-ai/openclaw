@@ -1,5 +1,6 @@
 // Gateway Talk realtime relay.
 // Bridges browser Talk audio sessions with realtime voice provider plugins.
+export { announceTalkRealtimeRelayAnswer } from "./announce.js";
 export { createTalkRealtimeRelaySession } from "./session-create.js";
 export {
   acknowledgeTalkRealtimeRelayMark,
