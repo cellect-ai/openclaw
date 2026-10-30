@@ -21,11 +21,29 @@ export type RelayVoiceTranscriptUpdate = {
   textMode?: "delta" | "snapshot";
 };
 
+// A later final revises the previous saved line only while the speaker could
+// still be finishing it. Grok carries an unanswered item's words into the next
+// item's cumulative transcript ("And" -> "And how much ..."), seconds later.
+const RELAY_VOICE_REVISION_WINDOW_MS = 30_000;
+
+function extendsAtWordBoundary(shorter: string, longer: string): boolean {
+  if (!longer.startsWith(shorter)) {
+    return false;
+  }
+  const next = longer.charAt(shorter.length);
+  // "No" -> "Now ..." is a new sentence; "And" -> "And how ..." continues it.
+  return next === "" || /[\s\p{P}]/u.test(next) || /[\s\p{P}]$/u.test(shorter);
+}
+
 function sameSpokenUtterance(previous: string, next: string): boolean {
   if (previous.length < 2 || next.length < 2) {
     return false;
   }
-  if (previous === next || next.startsWith(previous) || previous.startsWith(next)) {
+  if (
+    previous === next ||
+    extendsAtWordBoundary(previous, next) ||
+    extendsAtWordBoundary(next, previous)
+  ) {
     return true;
   }
   const limit = Math.min(previous.length, next.length);
@@ -48,6 +66,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
   projectionId: string;
   deliveryIntentId: string;
   supersedeEventId?: string;
+  arrivedAt: number;
 }): Promise<OutboundDeliveryResult[]> {
   const cfg = params.session.voiceConfig ?? params.session.context.getRuntimeConfig();
   const stored = extractDeliveryInfo(params.sessionKey, { cfg });
@@ -113,6 +132,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
     role: params.role,
     key: params.utteranceKey,
     text: params.text,
+    at: params.arrivedAt,
     ...(messageId ? { eventId: messageId } : {}),
   };
   return results;
@@ -163,6 +183,7 @@ export function enqueueRelayVoiceTranscript(
   }
   const transcriptSeq = session.voiceTranscriptSeq + 1;
   const entryId = String(transcriptSeq);
+  const arrivedAt = Date.now();
   const { agentId, sessionKey, canonicalKey, storePath } = session.sessionTarget;
   const admission = session.voiceTranscriptQueue.enqueue(
     async () => {
@@ -188,7 +209,8 @@ export function enqueueRelayVoiceTranscript(
           const revises =
             open?.role === role &&
             ((itemKey !== undefined && open.key === itemKey) ||
-              sameSpokenUtterance(open.text, normalizedText));
+              (arrivedAt - open.at <= RELAY_VOICE_REVISION_WINDOW_MS &&
+                sameSpokenUtterance(open.text, normalizedText)));
           const supersedeEventId = revises ? open?.eventId : undefined;
           const utteranceKey = revises && open ? open.key : (itemKey ?? entryId);
           const projectionId = `voice:${session.id}:${utteranceKey}`;
@@ -201,6 +223,7 @@ export function enqueueRelayVoiceTranscript(
               text: normalizedText,
               utteranceKey,
               projectionId,
+              arrivedAt,
               // A stable intent refuses a second send, so a revision needs its own.
               deliveryIntentId: supersedeEventId ? `${projectionId}:${entryId}` : projectionId,
               ...(supersedeEventId ? { supersedeEventId } : {}),

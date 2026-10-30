@@ -162,6 +162,94 @@ describe("realtime relay voice transcript persistence", () => {
     expect(second.deliveryIntentId).toBe("voice:relay-voice-bounded:item:item-1:2");
   });
 
+  // Recorded LiteLLM / grok-voice-think-fast-2.0 finals (2026-10-30): the user
+  // paused after "And", Grok started a new item and carried "And" into its
+  // cumulative transcript. The first bubble must be replaced, not duplicated.
+  const carriedPrefixFinals = [
+    { itemId: "4574f7a0", text: "And" },
+    {
+      itemId: "db8361a2",
+      text: "And how much is did we invoice Shape Management? No, wait, stop. I meant for the month of September only.",
+    },
+  ];
+
+  function matrixSession() {
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+    return session;
+  }
+
+  function projectedSupersedes() {
+    return projectionMocks.deliverOutboundPayloads.mock.calls.map(
+      ([params]) =>
+        (
+          params as {
+            payloads: Array<{ channelData?: { matrix?: { supersedeEventId?: string } } }>;
+          }
+        ).payloads[0]?.channelData?.matrix?.supersedeEventId,
+    );
+  }
+
+  it("replaces a saved line when Grok carries it into the next item", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$and" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$full" }]);
+    const session = matrixSession();
+    for (const final of carriedPrefixFinals) {
+      enqueueRelayVoiceTranscript(session, "user", final.text, {
+        itemId: final.itemId,
+        textMode: "snapshot",
+      });
+    }
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectedSupersedes()).toEqual([undefined, "$and"]);
+    expect(session.voiceUtterance).toMatchObject({
+      key: "item:4574f7a0",
+      text: carriedPrefixFinals[1]?.text,
+      eventId: "$full",
+    });
+  });
+
+  it("keeps a carried prefix as its own line after the revision window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      projectionMocks.deliverOutboundPayloads
+        .mockResolvedValueOnce([{ channel: "matrix", messageId: "$and" }])
+        .mockResolvedValueOnce([{ channel: "matrix", messageId: "$later" }]);
+      const session = matrixSession();
+      const [first, second] = carriedPrefixFinals;
+      enqueueRelayVoiceTranscript(session, "user", first!.text, { itemId: first!.itemId });
+      await session.voiceTranscriptQueue.flush();
+      vi.setSystemTime(Date.now() + 30_001);
+      enqueueRelayVoiceTranscript(session, "user", second!.text, { itemId: second!.itemId });
+      await session.voiceTranscriptQueue.flush();
+
+      expect(projectedSupersedes()).toEqual([undefined, undefined]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replace a short line that only shares letters with the next one", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$no" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$now" }]);
+    const session = matrixSession();
+    enqueueRelayVoiceTranscript(session, "user", "No", { itemId: "a" });
+    enqueueRelayVoiceTranscript(session, "user", "Now tell me the September total", {
+      itemId: "b",
+    });
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectedSupersedes()).toEqual([undefined, undefined]);
+  });
+
   it("bounds stalled finals, drains the accepted prefix, and closes once", async () => {
     const firstAppend = createDeferred();
     voiceSessionMocks.appendRelayVoiceTranscript.mockImplementation(

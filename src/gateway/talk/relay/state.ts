@@ -470,6 +470,8 @@ export type RelaySession = {
     key: string;
     text: string;
     eventId?: string;
+    /** When this line's final arrived; a revision must follow within a short window. */
+    at: number;
   };
   closing?: { reason: "completed" | "error"; completion?: Promise<void> };
   failSession: (message: string) => void;
