@@ -47,7 +47,8 @@ to `FI_SERVICE_TOKEN` + `FI_ON_BEHALF_OF`. For calls that proceed,
 
 ### When a token is issued
 
-All of these must hold to issue a token. Same-environment calls retain their
+The runtime and call conditions below must hold to issue a token, with one of
+the requester proofs described below. Same-environment calls retain their
 existing assertion-only operator fallback. An eligible, proven Matrix turn
 that selects another environment is blocked if its token cannot be issued:
 request failure, invalid reply, exhausted hook budget, expired run/speaker
@@ -71,7 +72,7 @@ the verified person's current grants in the broker credential's tenant.
 - `talk.agentId` is not the admin agent.
 - The plugin has a `tenantOrgId`.
 
-The message and the run:
+For fresh text ingress, the message and the run:
 
 - The message that started the run is one the channel itself proved the sender
   of (`senderAuthentication: "verified"`), in one of these sessions:
@@ -87,14 +88,27 @@ The message and the run:
   - Discord, webchat and every other session kind get no token.
 - Every input observed for the session since a message run last took it up
   came from that one person, within the last six hours.
-- The run is a `user` turn by that same sender. Cron, heartbeat, system-event,
-  webhook, sub-agent, inter-session, tool-injected and resumed runs get no
-  token, nor does a run started by one of this Gateway's own Matrix bot accounts.
+- The run is a `user` turn by that same sender. Unbound cron, heartbeat,
+  system-event, webhook, sub-agent, inter-session, tool-injected and resumed
+  input does not prove a requester. This Gateway's own Matrix bot accounts
+  cannot receive a person's token.
 - Nobody else wrote into the session while the run was active.
 - A Matrix-bound voice consultation instead uses the entitlement owner's
   admitted speaker/run proof, rechecked when the command executes. A synthetic
   voice prompt or a remembered session sender is not that proof.
-- The session is not an approved admin action (those keep `FI_ON_BEHALF_OF` only).
+- The session is not an approved admin action; those execute only through their
+  exact typed operation owner, and generic agent tools are blocked.
+
+Supported native yields and restart/deployment recovery can instead retain the
+original task's host-issued `requesterContinuation`. Its current owner must match
+the exact agent, run, session incarnation, account and source task. The plugin
+checks that live custody before and after authorization work and renews the
+short-lived credential through Fi's current requester grants. Matrix recovery
+also rechecks access to the original room and event, including replies linked
+to a Slack source session. No new human message is needed while that native task
+remains owned. Additional injected instructions, a stored last sender, or an
+already-settled historical thread cannot extend that authority. Missing original
+Matrix evidence stays unproven.
 
 The call:
 
