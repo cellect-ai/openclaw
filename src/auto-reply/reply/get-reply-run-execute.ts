@@ -634,7 +634,13 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           },
           undefined,
           channelRequester,
-          { isCurrent: isCurrentChannelOwner, ...cronOwner },
+          {
+            isCurrent: isCurrentChannelOwner,
+            ...cronOwner,
+            sourceTurnId,
+            chatId: sessionCtx.ChannelContext?.chat?.id,
+            eventId: sessionCtx.ChannelContext?.chat?.eventId,
+          },
         )
       : undefined;
   const cronCreatorAuthorityCapability =

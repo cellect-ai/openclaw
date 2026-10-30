@@ -59,6 +59,7 @@ type Turn = {
   roomId: string;
   senderId: string;
   sessionKey: string;
+  continuation?: PluginHookToolContext["requesterContinuation"];
   /** Fi-owned conversation tenant, pinned after the first successful admission. */
   orgId?: string;
   /** Latest Fi admission proved a private conversation whose only human is the sender. */
@@ -334,6 +335,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       return undefined;
     }
     const assertCurrent = () => {
+      turn.continuation?.assertCurrent();
       context.assertInvocationCurrent?.();
       if (turns.get(runId) !== turn || !turn.admitted) {
         throw new Error(UNAVAILABLE);
@@ -389,6 +391,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           throw new Error(response.status === 403 ? DENIED : UNAVAILABLE);
         }
         const result: unknown = await response.json();
+        turn.continuation?.assertCurrent();
         assertCurrent();
         abortSignal?.throwIfAborted();
         if (!isAuthorizedProof(api, turn, result)) {
@@ -416,6 +419,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     turn.privateSoleHuman = false;
     noteChecked(turn.sessionKey);
     try {
+      turn.continuation?.assertCurrent();
       if (!hasAuthorizationScope(configFromRuntime(api), turn.agentId)) {
         return UNAVAILABLE;
       }
@@ -432,6 +436,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return UNAVAILABLE;
       }
       const result: unknown = await response.json();
+      turn.continuation?.assertCurrent();
       if (
         turn.mode === "text" &&
         result &&
@@ -552,10 +557,30 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         });
         return { handled: true };
       }
-      const roomId = context.channelContext?.chat?.id;
-      const eventId = context.channelContext?.chat?.eventId;
+      const continuation = context.requesterContinuation;
+      if (continuation) {
+        try {
+          continuation.assertCurrent();
+          if (
+            continuation.runId !== context.runId ||
+            continuation.agentId !== context.agentId ||
+            continuation.sessionKey !== context.sessionKey ||
+            continuation.sessionId !== context.sessionId ||
+            continuation.channel !== "matrix" ||
+            continuation.accountId !== context.accountId ||
+            (context.senderId !== undefined && context.senderId !== continuation.senderId) ||
+            !continuation.sourceTurnId
+          ) {
+            throw new Error("Requester continuation does not own this turn");
+          }
+        } catch {
+          return { handled: true, reply: { text: UNAVAILABLE } };
+        }
+      }
+      const roomId = continuation?.chatId ?? context.channelContext?.chat?.id;
+      const eventId = continuation?.eventId ?? context.channelContext?.chat?.eventId;
       const talkThreadRootEventId = context.channelContext?.chat?.talkThreadRootEventId;
-      const senderId = context.channelContext?.sender?.id;
+      const senderId = continuation?.senderId ?? context.channelContext?.sender?.id;
       const threadId = sessionThreadId(context.sessionKey ?? "");
       const textSessionMatches = ["channel", "group", "direct"].some(
         (kind) =>
@@ -565,11 +590,13 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       const chatMatches =
         typeof roomId === "string" &&
         hostChatMatchesRoom(
-          context.chatId,
+          continuation?.chatId ?? context.chatId,
           roomId,
           talkThreadRootEventId ?? (textSessionMatches ? threadId : undefined),
         );
-      const senderMatches = typeof senderId === "string" && context.senderId === senderId;
+      const senderMatches =
+        typeof senderId === "string" &&
+        (continuation ? continuation.senderId === senderId : context.senderId === senderId);
       if (
         !context.runId ||
         !context.agentId ||
@@ -634,6 +661,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         externalInput: !context.inputProvenance || context.inputProvenance.kind === "external_user",
         admitted: false,
         authorization: new AbortController(),
+        ...(continuation ? { continuation } : {}),
         agentId: context.agentId,
         accountId: context.accountId,
         roomId,
@@ -709,13 +737,42 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     }
     const runId = context.runId;
     const turn = runId ? turns.get(runId) : undefined;
+    const continuation = turn?.continuation;
+    let continuationCurrent = false;
+    if (
+      continuation &&
+      context.requesterContinuation === continuation &&
+      continuation.runId === runId &&
+      continuation.agentId === context.agentId &&
+      continuation.sessionKey === context.sessionKey &&
+      continuation.sessionId === context.sessionId
+    ) {
+      try {
+        continuation.assertCurrent();
+        continuationCurrent = true;
+      } catch {
+        // The same identity without its original live task custody grants nothing.
+      }
+    }
+    const requester = continuation ?? context.requester;
+    const conflictingRequester =
+      continuation &&
+      context.requester &&
+      ((context.requester.senderId !== undefined &&
+        context.requester.senderId !== continuation.senderId) ||
+        (context.requester.accountId !== undefined &&
+          context.requester.accountId !== continuation.accountId) ||
+        (context.requester.channel !== undefined &&
+          context.requester.channel !== continuation.channel));
     if (
       !runId ||
       !turn ||
       turn.agentId !== context.agentId ||
       turn.sessionKey !== context.sessionKey ||
-      turn.senderId !== context.requester?.senderId ||
-      turn.accountId !== context.requester?.accountId
+      turn.senderId !== requester?.senderId ||
+      turn.accountId !== requester?.accountId ||
+      (continuation && !continuationCurrent) ||
+      conflictingRequester
     ) {
       logEntitlements(
         {

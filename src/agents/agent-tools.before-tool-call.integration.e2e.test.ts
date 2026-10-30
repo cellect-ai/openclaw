@@ -294,6 +294,34 @@ describe("before_tool_call hook integration", () => {
     ).toBe(false);
   });
 
+  it("carries the native requester capability across the tool hook boundary", async () => {
+    const requesterContinuation = Object.freeze({
+      runId: "native-run",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session",
+      sourceTurnId: "channel-user:v1:original",
+      channel: "slack",
+      senderId: "U0ADMIN001",
+      assertCurrent: vi.fn(),
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const tool = wrapToolWithBeforeToolCallHook(asAgentTool({ name: "exec", execute }), {
+      runId: "native-run",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session",
+      requesterContinuation,
+    });
+    await tool.execute("native-call", { command: "true" });
+    expect(beforeToolCallHook).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ requesterContinuation }),
+    );
+    expect(beforeToolCallHook.mock.calls[0]?.[1].requesterContinuation).toBe(requesterContinuation);
+    expect(execute).toHaveBeenCalledOnce();
+  });
+
   it("allows hook to modify parameters", async () => {
     beforeToolCallHook = installBeforeToolCallHook({
       runBeforeToolCallImpl: async () => ({ params: { mode: "safe" } }),

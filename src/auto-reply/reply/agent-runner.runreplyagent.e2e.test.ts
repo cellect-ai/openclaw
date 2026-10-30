@@ -3304,6 +3304,8 @@ describe("runReplyAgent pending final delivery capture", () => {
       expect(storedAtAdoption.restartRecoveryDeliverySourceRunId).toBe(expectedSourceTurnId);
       expect(storedAtAdoption.restartRecoveryRequesterAccountId).toBe("work");
       expect(storedAtAdoption.restartRecoveryRequesterSenderId).toBe("discord-user");
+      expect(storedAtAdoption.restartRecoveryRequesterChatId).toBe("24680");
+      expect(storedAtAdoption.restartRecoveryRequesterEventId).toBe("1503645939964055592");
       expect(storedAtAdoption.restartRecoverySourceIngress).toBe("channel");
       expect(storedAtAdoption.restartRecoverySourceReplyDeliveryMode).toBe("message_tool_only");
       const transcript = await loadTranscriptEvents({
@@ -3343,6 +3345,10 @@ describe("runReplyAgent pending final delivery capture", () => {
         OriginatingTo: "channel:24680",
         AccountId: "work",
         SenderId: "discord-user",
+        ChannelContext: {
+          sender: { id: "discord-user" },
+          chat: { id: "24680", eventId: "1503645939964055592" },
+        },
         MessageSid: "1503645939964055592",
         MessageThreadId: "1503645939964055592",
       },

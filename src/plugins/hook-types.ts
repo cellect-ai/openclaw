@@ -18,6 +18,7 @@ import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.j
 import type {
   PluginHookAgentContext,
   PluginHookContextWindow,
+  PluginHookRequesterContinuation,
 } from "./hook-agent-context.types.js";
 import type {
   PluginHookBeforeModelResolveEvent,
@@ -65,6 +66,7 @@ import type { PluginHookSessionContext } from "./session-end-transcript.js";
 export type {
   PluginHookAgentContext,
   PluginHookToolAuthority,
+  PluginHookRequesterContinuation,
 } from "./hook-agent-context.types.js";
 
 export type {
@@ -597,6 +599,8 @@ export type PluginHookToolContext = {
    * closed when a required field is absent.
    */
   requester?: PluginHookToolRequesterContext;
+  /** Live requester custody of a supported native task continuation. */
+  requesterContinuation?: PluginHookRequesterContinuation;
 };
 
 export type PluginHookBeforeToolCallEvent = {

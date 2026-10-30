@@ -1,5 +1,9 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { createExecutionIdentityRecoveryAdmission } from "../../agents/admitted-run-context.js";
+import {
+  bindAdmittedRunRequesterContinuation,
+  type AdmittedRunContext,
+  createExecutionIdentityRecoveryAdmission,
+} from "../../agents/admitted-run-context.js";
 import { parseExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import type { InternalSessionEntry, SessionEntry } from "../../config/sessions.js";
 import { resolveRestartRecoveryChannelAuthority } from "../../config/sessions/restart-recovery-state.js";
@@ -15,6 +19,8 @@ type AgentRestartRecoveryChannelContext = {
   currentThreadTs?: string;
   requesterAccountId?: string;
   requesterSenderId?: string;
+  requesterEventId?: string;
+  requesterChatId?: string;
   sameChannelThreadRequired: boolean;
   sourceTurnId: string;
 };
@@ -73,10 +79,47 @@ export function resolveAgentRestartRecoveryContext(params: {
           sourceTurnId: authority.sourceTurnId,
           requesterAccountId: normalizeOptionalString(entry.restartRecoveryRequesterAccountId),
           requesterSenderId: normalizeOptionalString(entry.restartRecoveryRequesterSenderId),
+          ...(entry.restartRecoveryRequesterEventId
+            ? { requesterEventId: normalizeOptionalString(entry.restartRecoveryRequesterEventId) }
+            : {}),
+          ...(entry.restartRecoveryRequesterChatId
+            ? { requesterChatId: normalizeOptionalString(entry.restartRecoveryRequesterChatId) }
+            : {}),
           sameChannelThreadRequired: entry.restartRecoverySameChannelThreadRequired === true,
         },
       }
     : { messageChannel };
+}
+
+/** Project requester custody only from the same native recovery admission used for dispatch. */
+export function bindAgentRestartRecoveryRequesterContext(
+  context: AdmittedRunContext,
+  params: Parameters<typeof resolveAgentRestartRecoveryContext>[0] & {
+    agentId: string;
+    sessionKey?: string;
+    assertCurrent: () => void;
+  },
+): void {
+  if (!params.isRestartRecoveryResumeRun || !params.sessionKey || !params.resolvedSessionId) {
+    return;
+  }
+  const source = resolveAgentRestartRecoveryContext(params)?.channel;
+  if (!source?.requesterSenderId) {
+    return;
+  }
+  bindAdmittedRunRequesterContinuation(context, {
+    runId: params.runId,
+    agentId: params.agentId,
+    sessionKey: params.sessionKey,
+    sessionId: params.resolvedSessionId,
+    sourceTurnId: source.sourceTurnId,
+    channel: source.channel,
+    senderId: source.requesterSenderId,
+    accountId: source.requesterAccountId,
+    chatId: source.requesterChatId,
+    eventId: source.requesterEventId,
+    assertCurrent: params.assertCurrent,
+  });
 }
 
 /** Resolve only the private token durably owned by the admitted recovery cycle. */

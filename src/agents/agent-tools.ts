@@ -9,6 +9,7 @@ import { getProcessSupervisor } from "../process/supervisor/index.js";
 import { getActiveSecretsRuntimeConfigSnapshot } from "../secrets/runtime-state.js";
 import type { SkillSnapshot } from "../skills/types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
+import { resolveAdmittedRunRequesterContinuation } from "./admitted-run-context.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import {
   bindAssembledAgentToolActionDescriptor,
@@ -567,6 +568,11 @@ export function createOpenClawCodingToolsInternal(
     ...(options?.memberRoleIds?.length ? { roleIds: [...options.memberRoleIds] } : {}),
   } satisfies PluginHookToolRequesterContext;
   const hasRequester = Object.keys(requester).length > 0;
+  const requesterContinuation = resolveAdmittedRunRequesterContinuation({
+    runId: options?.runId,
+    sessionKey: executionSessionKey,
+    sessionId: options?.sessionId,
+  });
   const hookContext = {
     agentId: executionAgentId,
     ...(options?.config ? { config: options.config } : {}),
@@ -584,6 +590,7 @@ export function createOpenClawCodingToolsInternal(
     approvalReviewerDeviceId: options?.approvalReviewerDeviceId,
     channelId: options?.hookChannelId ?? options?.currentChannelId,
     ...(hasRequester ? { requester } : {}),
+    ...(requesterContinuation ? { requesterContinuation } : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(turnSourceTo ? { turnSourceTo } : {}),
     ...(options?.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),

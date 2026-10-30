@@ -14,14 +14,17 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   claimAgentRunDelegatedAuthority,
   getAgentRunLifecycleGeneration,
+  getAgentRunContext,
   readAgentRunDelegatedAuthorityFailure,
   releaseAgentRunDelegatedAuthority,
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import type { GatewayAccessGrantRef } from "../plugins/gateway-access-policy.types.js";
+import type { PluginHookRequesterContinuation } from "../plugins/hook-agent-context.types.js";
 import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding-owner.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
+import { bindRequesterOwnerIdentity } from "./cron-creator-authority-context.js";
 import type { PreparedOperatorModelPolicy } from "./operator-model-policy.types.js";
 
 /** Operational lifecycle correlation. This is never identity or authorization evidence. */
@@ -246,6 +249,7 @@ export type PreparedAgentRunAdmission = Readonly<{
 type DelegatedAuthorityLease = {
   authority: AgentRunDelegatedAuthority;
   foregroundClosed: boolean;
+  requesterContinuation?: PluginHookRequesterContinuation;
   assertSourceCurrent?: () => void;
   operatorAuthority?: AdmittedRunOperatorAuthority;
 };
@@ -284,6 +288,97 @@ export function getAdmittedRunDelegatedAuthority(
   return lease && !lease.foregroundClosed && validateAgentRunDelegatedAuthority(lease.authority)
     ? lease.authority
     : undefined;
+}
+
+/** Attach the original requester only after native recovery admission proved its exact source. */
+export function bindAdmittedRunRequesterContinuation(
+  context: AdmittedRunContext,
+  source: PluginHookRequesterContinuation,
+): void {
+  const lease = delegatedAuthorityLeases.get(context);
+  if (
+    !lease ||
+    !getAdmittedRunDelegatedAuthority(context) ||
+    source.runId !== context.operationalRunInstance.runId ||
+    lease.requesterContinuation
+  ) {
+    throw new Error("Requester continuation requires its exact admitted run");
+  }
+  const assertSourceCurrent = source.assertCurrent;
+  const authority = lease.authority;
+  const assertCurrent = () => {
+    if (getAdmittedRunDelegatedAuthority(context) !== authority) {
+      throw new Error("Requester continuation is no longer active");
+    }
+    assertSourceCurrent();
+    const current = getAgentRunContext(source.runId);
+    if (
+      getAdmittedRunDelegatedAuthority(context) !== authority ||
+      current?.agentId !== source.agentId ||
+      current.sessionKey !== source.sessionKey ||
+      current.sessionId !== source.sessionId
+    ) {
+      throw new Error("Requester continuation is no longer active");
+    }
+  };
+  // Session facts may be installed by the admission owner after this callback.
+  // Projection and every use below require the complete exact incarnation.
+  assertSourceCurrent();
+  lease.requesterContinuation = Object.freeze({ ...source, assertCurrent });
+}
+
+/** Project current original-source custody, never the session's stored last sender. */
+export function resolveAdmittedRunRequesterContinuation(params: {
+  runId?: string;
+  sessionKey?: string;
+  sessionId?: string;
+}): PluginHookRequesterContinuation | undefined {
+  const current = params.runId ? getAgentRunContext(params.runId) : undefined;
+  const authority = current?.delegatedAuthority;
+  const context = authority && admittedContextsByAuthority.get(authority);
+  const lease = context && delegatedAuthorityLeases.get(context);
+  if (context && lease && !lease.requesterContinuation && current) {
+    // The native yield owner retains the original requester independently of the old
+    // foreground run. Resolve only in that exact admitted continuation's live scope.
+    const owner = bindRequesterOwnerIdentity({ ...params, agentId: current.agentId });
+    if (
+      owner?.sourceTurnId &&
+      owner.channel &&
+      owner.senderId &&
+      current.agentId &&
+      params.runId &&
+      params.sessionKey &&
+      params.sessionId
+    ) {
+      bindAdmittedRunRequesterContinuation(context, {
+        runId: params.runId,
+        agentId: current.agentId,
+        sessionKey: params.sessionKey,
+        sessionId: params.sessionId,
+        sourceTurnId: owner.sourceTurnId,
+        channel: owner.channel,
+        senderId: owner.senderId,
+        accountId: owner.accountId,
+        chatId: owner.chatId,
+        eventId: owner.eventId,
+        assertCurrent: owner.assertCurrent,
+      });
+    }
+  }
+  const proof = lease?.requesterContinuation;
+  if (
+    !proof ||
+    proof.runId !== params.runId ||
+    proof.sessionKey !== params.sessionKey ||
+    proof.sessionId !== params.sessionId ||
+    current?.agentId !== proof.agentId ||
+    current.sessionKey !== proof.sessionKey ||
+    current.sessionId !== proof.sessionId
+  ) {
+    return undefined;
+  }
+  proof.assertCurrent();
+  return proof;
 }
 
 /** Captures the operator's source lifetime from a live run, including for detached children. */

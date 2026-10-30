@@ -390,6 +390,8 @@ export function buildRestartSafeChatTranscriptState(params: {
       restartRecoveryDeliverySourceRunId: params.clientRunId,
       restartRecoveryRequesterAccountId: undefined,
       restartRecoveryRequesterSenderId: undefined,
+      restartRecoveryRequesterEventId: undefined,
+      restartRecoveryRequesterChatId: undefined,
       restartRecoverySameChannelThreadRequired: undefined,
       restartRecoverySourceIngress: "control-ui",
       restartRecoverySourceReplyDeliveryMode: undefined,

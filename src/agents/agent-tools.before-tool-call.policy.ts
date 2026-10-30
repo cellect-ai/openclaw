@@ -267,6 +267,9 @@ export async function runBeforeToolCallHook(args: {
       ...(args.toolCallId && { toolCallId: args.toolCallId }),
       ...(args.ctx?.channelId && { channelId: args.ctx.channelId }),
       ...(args.ctx?.requester ? { requester: args.ctx.requester } : {}),
+      ...(args.ctx?.requesterContinuation
+        ? { requesterContinuation: args.ctx.requesterContinuation }
+        : {}),
     });
     const toolContext = buildToolContext(toolIdentity);
     // Policies form a mutation chain. Reconcile each decision against the prior

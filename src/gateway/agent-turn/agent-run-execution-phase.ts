@@ -54,9 +54,11 @@ import {
 import { yieldAfterAgentAcceptedAck } from "./agent-handler-helpers.js";
 import { captureAgentJobSession } from "./agent-job.js";
 import {
+  bindAgentRestartRecoveryRequesterContext,
   resolveAgentRestartRecoveryContext,
   resolveAgentRestartRecoveryExecutionIdentityAdmission,
 } from "./agent-restart-recovery-context.js";
+import { prepareRestartRecoveryRequesterEntry } from "./agent-restart-recovery-requester.js";
 import { dispatchAgentRunWithCommentaryMedia } from "./agent-run-commentary-media.js";
 import { createAgentRunDiagnostics } from "./agent-run-diagnostics.js";
 import { withAgentRunDispatchExecutionIdentity } from "./agent-run-dispatch-execution-identity.js";
@@ -376,13 +378,26 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
           params.context.validateAgentRuntimeApprovalAuthority?.(agentRuntimeIdentity) === true
             ? resolveExecutionIdentitySpawnFacts(agentRuntimeIdentity)
             : undefined;
-        const restartRecoveryContext = resolveAgentRestartRecoveryContext({
+        const requesterRecoveryEntry = await prepareRestartRecoveryRequesterEntry({
           isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
           canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
           expectedExistingSessionId: params.request.expectedExistingSessionId,
           resolvedSessionId: params.resolvedSessionId,
           runId: params.runId,
           sessionEntry: params.sessionEntry,
+          agentId: params.activeSessionAgentId,
+          sessionKey: params.resolvedSessionKey,
+          storePath: prepared.lifecycleStorePath,
+          assertCurrent: assertDispatchCurrent,
+        });
+        assertDispatchCurrent();
+        const restartRecoveryContext = resolveAgentRestartRecoveryContext({
+          isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
+          canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
+          expectedExistingSessionId: params.request.expectedExistingSessionId,
+          resolvedSessionId: params.resolvedSessionId,
+          runId: params.runId,
+          sessionEntry: requesterRecoveryEntry,
         });
         const restartRecoveryChannelContext = restartRecoveryContext?.channel;
         const runContext = {
@@ -553,6 +568,17 @@ async function executeAgentRun(params: StartAgentRunExecutionParams): Promise<vo
                 operationalRunInstance: prepared.operationalRunInstance,
                 operatorAuthority: prepared.operatorAuthority,
                 onAdmittedRunContext: (admittedRunContext) => {
+                  bindAgentRestartRecoveryRequesterContext(admittedRunContext, {
+                    isRestartRecoveryResumeRun: params.isRestartRecoveryResumeRun,
+                    canUseInternalRuntimeHandoff: params.canUseInternalRuntimeHandoff,
+                    expectedExistingSessionId: params.request.expectedExistingSessionId,
+                    resolvedSessionId: params.resolvedSessionId,
+                    runId: params.runId,
+                    sessionEntry: requesterRecoveryEntry,
+                    agentId: params.activeSessionAgentId,
+                    sessionKey: params.resolvedSessionKey,
+                    assertCurrent: assertDispatchCurrent,
+                  });
                   skillLibraryAuthoring?.bind(admittedRunContext);
                   bindGatewayContextResolver(
                     admittedRunContext,

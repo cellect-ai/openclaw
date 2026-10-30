@@ -23,6 +23,23 @@ export type PluginHookToolAuthority = {
   assertActive(): void;
 };
 
+/** Original requester retained by the native owner of this exact resumed task. */
+export type PluginHookRequesterContinuation = Readonly<{
+  runId: string;
+  agentId: string;
+  sessionKey: string;
+  sessionId: string;
+  sourceTurnId: string;
+  /** Original native text event, retained only with the owning source task. */
+  chatId?: string;
+  eventId?: string;
+  channel: string;
+  senderId: string;
+  accountId?: string;
+  /** Checks current native task custody; identity fields alone grant nothing. */
+  assertCurrent: () => void;
+}>;
+
 export type PluginHookAgentContext = PluginHookContextWindow & {
   runId?: string;
   jobId?: string;
@@ -54,6 +71,8 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   channelId?: string;
   /** Typed origin of the turn's user-role input when supplied by the producer. */
   inputProvenance?: InputProvenance;
+  /** Host-owned capability; absent for unbound operator or inter-session input. */
+  requesterContinuation?: PluginHookRequesterContinuation;
   /** @deprecated Use `channelContext.sender` for channel-specific identities. */
   senderExternalId?: string;
   /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */

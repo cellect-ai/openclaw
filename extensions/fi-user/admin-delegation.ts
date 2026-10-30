@@ -146,8 +146,33 @@ type Run = {
   agentId: string;
   sessionKey: string;
   sender?: string;
+  continuation?: PluginHookToolContext["requesterContinuation"];
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
 };
+/** Every use retains the exact host capability; copied identity fields prove nothing. */
+function continuationCurrent(run: Run, ctx: PluginHookToolContext): boolean {
+  const proof = run.continuation;
+  if (!proof) {
+    return true;
+  }
+  if (
+    ctx.requesterContinuation !== proof ||
+    ctx.runId !== proof.runId ||
+    ctx.sessionId !== proof.sessionId ||
+    ctx.sessionKey !== proof.sessionKey ||
+    ctx.agentId !== proof.agentId ||
+    (ctx.requester?.accountId !== undefined && ctx.requester.accountId !== proof.accountId) ||
+    (ctx.requester?.channel !== undefined && ctx.requester.channel !== proof.channel)
+  ) {
+    return false;
+  }
+  try {
+    proof.assertCurrent();
+    return true;
+  } catch {
+    return false;
+  }
+}
 type Inbound = {
   channel?: string;
   senderId?: string;
@@ -501,6 +526,16 @@ export function registerAdminDelegation(
       // run does not take up what arrived for the next one.
       const run: Run = { agentId, sessionKey };
       remember(runs, runId, run);
+      const continuation = context.requesterContinuation;
+      if (continuation) {
+        run.continuation = continuation;
+        const requester = onBehalfOfRequester(continuation);
+        if (requester && continuation.sourceTurnId && continuationCurrent(run, context)) {
+          run.sender = JSON.stringify(requester);
+        }
+        diagnose({ runId, sessionKey }, run.sender ? "turn-admitted" : "turn-unproven");
+        return undefined;
+      }
       // A shared-mail hook is a cron turn whose sender the hooks caller
       // attested. It does not consume a channel arrival.
       if (context.trigger === "cron") {
@@ -702,6 +737,13 @@ export function registerAdminDelegation(
     if (!session) {
       return;
     }
+    // A retained task's authority does not cover additional injected instructions,
+    // even when the injection repeats the original person's asserted sender id.
+    for (const run of runs.values()) {
+      if (run.continuation && run.sessionKey === session.sessionKey.toLowerCase()) {
+        delete run.sender;
+      }
+    }
     const requester = onBehalfOfRequester(message);
     observe(
       session.sessionKey,
@@ -744,7 +786,10 @@ export function registerAdminDelegation(
       return undefined;
     }
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    return run?.agentId === agentId && run.sessionKey === sessionKey && run.sender === holder.sender
+    return run?.agentId === agentId &&
+      run.sessionKey === sessionKey &&
+      run.sender === holder.sender &&
+      continuationCurrent(run, ctx)
       ? undefined
       : { block: true, blockReason: run?.sender ? HELD : UNPROVEN_HOLD };
   };
@@ -790,7 +835,8 @@ export function registerAdminDelegation(
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     const mail = mailWakeRequester(sessionKey, ctx.requester?.senderId);
-    const requester = mail ?? onBehalfOfRequester(ctx.requester);
+    const requester = mail ?? onBehalfOfRequester(run?.continuation ?? ctx.requester);
+    const suppliedRequester = onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
     if (
       !run ||
@@ -800,6 +846,8 @@ export function registerAdminDelegation(
       run.sessionKey !== sessionKey ||
       !sessionKey.startsWith(`agent:${agentId}:`) ||
       run.sender !== sender ||
+      !continuationCurrent(run, ctx) ||
+      (run.continuation && suppliedRequester && JSON.stringify(suppliedRequester) !== sender) ||
       (run.voice && admittedVoiceTurn(ctx) !== run.voice)
     ) {
       diagnose(ctx, "mint-run-unproven", () => ({
@@ -819,7 +867,10 @@ export function registerAdminDelegation(
       connection = config;
     } else if ("requester_matrix_user_id" in requester) {
       body = { requesterMatrixUserId: requester.requester_matrix_user_id };
-      connection = matrixConnection(config, ctx.requester?.accountId);
+      connection = matrixConnection(
+        config,
+        run.continuation?.accountId ?? ctx.requester?.accountId,
+      );
     } else if (mail && "requester_email" in requester) {
       body = { requesterEmail: requester.requester_email };
       connection = config;
@@ -871,6 +922,7 @@ export function registerAdminDelegation(
           ctx.abortSignal?.aborted ||
           runs.get(ctx.runId ?? "") !== run ||
           run.sender !== sender ||
+          !continuationCurrent(run, ctx) ||
           (run.voice && admittedVoiceTurn(ctx) !== run.voice)
         ) {
           diagnose(ctx, "mint-reply-invalid", () => ({
@@ -977,7 +1029,10 @@ export function registerAdminDelegation(
     const agentId = ctx.agentId?.toLowerCase();
     const sessionKey = ctx.sessionKey?.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    const channel = { channel: ctx.messageChannel, senderId: ctx.requesterSenderId };
+    const channel = run?.continuation ?? {
+      channel: ctx.messageChannel,
+      senderId: ctx.requesterSenderId,
+    };
     const requester = onBehalfOfRequester(channel);
     if (
       !config.tenantOrgId ||
@@ -990,6 +1045,14 @@ export function registerAdminDelegation(
       run.agentId !== agentId ||
       run.sessionKey !== sessionKey ||
       run.sender !== JSON.stringify(requester) ||
+      (run.continuation &&
+        !continuationCurrent(run, {
+          runId: ctx.runId,
+          agentId: ctx.agentId,
+          sessionKey: ctx.sessionKey,
+          sessionId: run.continuation.sessionId,
+          requesterContinuation: run.continuation,
+        })) ||
       (run.voice &&
         admittedVoiceTurn({
           runId: ctx.runId,
@@ -1006,7 +1069,7 @@ export function registerAdminDelegation(
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }
-    const matrix = matrixConnection(config, ctx.agentAccountId);
+    const matrix = matrixConnection(config, run.continuation?.accountId ?? ctx.agentAccountId);
     return matrix
       ? {
           connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },

@@ -394,6 +394,8 @@ export function normalizeRestartRecoveryEntryFields(
     "restartRecoveryDeliverySourceRunId",
     "restartRecoveryRequesterAccountId",
     "restartRecoveryRequesterSenderId",
+    "restartRecoveryRequesterEventId",
+    "restartRecoveryRequesterChatId",
   ] as const) {
     assign(key, normalizeRunId(entry[key]));
   }
@@ -552,6 +554,8 @@ export function buildRestartRecoveryClaimCleanupPatch(params: {
     restartRecoveryHarnessCompletion: undefined,
     restartRecoveryRequesterAccountId: undefined,
     restartRecoveryRequesterSenderId: undefined,
+    restartRecoveryRequesterEventId: undefined,
+    restartRecoveryRequesterChatId: undefined,
     restartRecoverySameChannelThreadRequired: undefined,
     restartRecoverySourceIngress: undefined,
     restartRecoverySourceReplyDeliveryMode: undefined,

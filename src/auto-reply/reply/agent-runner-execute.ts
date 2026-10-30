@@ -418,6 +418,8 @@ export function createReplyAgentRestartRecoveryController(
     requesterAccountId:
       followupRun.originatingAccountId ?? sessionCtx.AccountId ?? followupRun.run.agentAccountId,
     requesterSenderId: sessionCtx.SenderId,
+    requesterEventId: sessionCtx.ChannelContext?.chat?.eventId,
+    requesterChatId: sessionCtx.ChannelContext?.chat?.id,
     resolveUserTurnTarget: ({
       entry,
       sessionId,

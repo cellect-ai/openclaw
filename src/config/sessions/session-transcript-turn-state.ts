@@ -28,6 +28,8 @@ export function buildRestartRecoveryExpectedState(
     restartRecoveryDeliverySourceRunId: entry.restartRecoveryDeliverySourceRunId,
     restartRecoveryRequesterAccountId: entry.restartRecoveryRequesterAccountId,
     restartRecoveryRequesterSenderId: entry.restartRecoveryRequesterSenderId,
+    restartRecoveryRequesterEventId: entry.restartRecoveryRequesterEventId,
+    restartRecoveryRequesterChatId: entry.restartRecoveryRequesterChatId,
     restartRecoverySameChannelThreadRequired: entry.restartRecoverySameChannelThreadRequired,
     restartRecoverySourceIngress: entry.restartRecoverySourceIngress,
     restartRecoverySourceReplyDeliveryMode: entry.restartRecoverySourceReplyDeliveryMode,
@@ -72,6 +74,10 @@ export function sessionMatchesExpectedTranscriptTurn<T extends { entry: SessionE
           expectedState.restartRecoveryDeliverySourceRunId &&
         selected.entry.restartRecoveryRequesterAccountId ===
           expectedState.restartRecoveryRequesterAccountId &&
+        selected.entry.restartRecoveryRequesterChatId ===
+          expectedState.restartRecoveryRequesterChatId &&
+        selected.entry.restartRecoveryRequesterEventId ===
+          expectedState.restartRecoveryRequesterEventId &&
         selected.entry.restartRecoveryRequesterSenderId ===
           expectedState.restartRecoveryRequesterSenderId &&
         selected.entry.restartRecoverySameChannelThreadRequired ===

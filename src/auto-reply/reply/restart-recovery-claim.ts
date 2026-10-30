@@ -108,6 +108,8 @@ export function createReplyRestartRecoveryClaimController(params: {
   resolveDeliveryContext: (entry: SessionEntry | undefined) => DeliveryContext | undefined;
   requesterAccountId?: unknown;
   requesterSenderId?: unknown;
+  requesterEventId?: unknown;
+  requesterChatId?: unknown;
   resolveUserTurnTarget?: (params: {
     entry: SessionEntry;
     sessionId: string;
@@ -329,6 +331,8 @@ export function createReplyRestartRecoveryClaimController(params: {
           restartRecoveryDeliverySourceRunId: sourceTurnId,
           restartRecoveryRequesterAccountId: normalizeOptionalString(params.requesterAccountId),
           restartRecoveryRequesterSenderId: normalizeOptionalString(params.requesterSenderId),
+          restartRecoveryRequesterEventId: normalizeOptionalString(params.requesterEventId),
+          restartRecoveryRequesterChatId: normalizeOptionalString(params.requesterChatId),
           restartRecoverySameChannelThreadRequired:
             params.sameChannelThreadRequired === true ? true : undefined,
           restartRecoverySourceIngress: "channel",

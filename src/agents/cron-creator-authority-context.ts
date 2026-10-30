@@ -172,6 +172,9 @@ export function bindRequesterOwnerIdentity(params: {
       senderId?: string;
       channel?: string;
       accountId?: string;
+      sourceTurnId?: string;
+      chatId?: string;
+      eventId?: string;
     }
   | undefined {
   const scope = activeCronCreatorAuthority.getStore();
@@ -221,6 +224,9 @@ export function bindRequesterOwnerIdentity(params: {
     senderId: owner.senderId,
     channel: owner.channel,
     accountId: owner.accountId,
+    sourceTurnId: owner.sourceTurnId,
+    chatId: owner.chatId,
+    eventId: owner.eventId,
     assertCurrent: () => {
       if (!isCurrent()) {
         throw new Error("Requester owner identity is no longer active for this continuation");

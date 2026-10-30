@@ -88,6 +88,8 @@ export type SessionRestartRecoveryState = {
   restartRecoveryHarnessCompletion?: HarnessCompletionRecovery;
   restartRecoveryRequesterAccountId?: string;
   restartRecoveryRequesterSenderId?: string;
+  restartRecoveryRequesterEventId?: string;
+  restartRecoveryRequesterChatId?: string;
   restartRecoverySameChannelThreadRequired?: true;
   restartRecoverySourceIngress?: "channel" | "control-ui" | "internal";
   restartRecoverySourceReplyDeliveryMode?: SourceReplyDeliveryMode;
