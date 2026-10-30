@@ -94,11 +94,15 @@ describe("the admin agent's delegated user token", () => {
       expect((await turn.exec(unproven))?.block).not.toBe(true);
     });
 
-    it("retains conservative expiry for calls without unique identity", async () => {
-      const turn = await reserved();
-      await turn.exec();
-      await turn.cleanup();
-      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+    it("never mints an untrackable command credential", async () => {
+      const turn = plugin({}, immutable);
+      await turn.arrive();
+      await turn.start();
+      expect(
+        (await turn.exec({ toolCallId: undefined }, cli))?.params.env?.FI_DELEGATED_USER_TOKEN,
+      ).toBeUndefined();
+      expect(mints()).toEqual([]);
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
     });
 
     it.each([
@@ -107,22 +111,75 @@ describe("the admin agent's delegated user token", () => {
       { command: "/usr/local/bin/cellect $(echo --help)" },
       { command: "/usr/local/bin/cellect --help", env: { NODE_OPTIONS: "--require fixture" } },
       { command: "/usr/local/bin/cellect --help", env: { FI_CLI_NODE: "/workspace/node" } },
-    ])("retains expiry custody outside the immutable direct CLI contract: %j", async (params) => {
+      { command: "cat /workspace/skills/platform-documents/SKILL.md" },
+      { command: "cellect platform room show --display-name 'CO-002 ($2,525.00)'" },
+    ])("keeps requester credentials out of raw shell work: %j", async (params) => {
       const turn = plugin({}, immutable);
       await turn.arrive();
       await turn.start();
-      await turn.exec({ toolCallId: "command-1" }, { params });
-      await turn.cleanup();
-      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+      expect(
+        (await turn.exec({ toolCallId: "command-1" }, { params }))?.params.env
+          ?.FI_DELEGATED_USER_TOKEN,
+      ).toBeUndefined();
+      expect(mints()).toEqual([]);
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
     });
 
     it("does not assume that an unproven runtime mount is immutable", async () => {
-      const turn = plugin();
+      const turn = plugin({}, { ...SANDBOXED, agents: { defaults: { sandbox: { mode: "all" } } } });
       await turn.arrive();
       await turn.start();
-      await turn.exec({ toolCallId: "command-1" }, cli);
-      await turn.cleanup();
-      expect(await turn.exec(unproven)).toMatchObject({ block: true });
+      expect(
+        (await turn.exec({ toolCallId: "command-1" }, cli))?.params.env?.FI_DELEGATED_USER_TOKEN,
+      ).toBeUndefined();
+      expect(mints()).toEqual([]);
+      expect((await turn.exec(unproven))?.block).not.toBe(true);
+    });
+
+    it.each([
+      "cat /workspace/skills/platform-documents/SKILL.md",
+      "cellect platform room show --tenant fixture --display-name 'CO-002 ($2,525.00)'",
+      "cellect platform room show --tenant fixture --input /workspace/room-input.json",
+    ])("admits the next Slack requester immediately after completed work: %s", async (command) => {
+      const turn = plugin(
+        {},
+        {
+          ...SANDBOXED,
+          agents: {
+            defaults: { sandbox: { ...SANDBOXED.agents.defaults.sandbox, scope: "session" } },
+          },
+        },
+      );
+      const first = slackThread();
+      await turn.arrive(first.arrive);
+      await turn.start(first.start);
+      const result = await turn.exec(first.exec, { params: { command } });
+      if (command.includes("--input")) {
+        expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      }
+      await turn.cleanup({ sessionKey: SLACK_THREAD });
+      await turn.settle();
+      const senderId = "U0OTHER002";
+      await turn.arrive({ ...first.arrive, senderId, messageId: "1792190934.152459" });
+      await turn.start({
+        ...first.start,
+        runId: "run-2",
+        senderId,
+        channelContext: {
+          sender: { id: senderId },
+          chat: { id: SLACK_CHANNEL, eventId: "1792190934.152459" },
+        },
+      });
+      const next = await turn.exec({
+        ...first.exec,
+        runId: "run-2",
+        requester: { channel: "slack", senderId },
+      });
+      expect(next?.block).not.toBe(true);
+      expect(next?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+      expect(JSON.parse(String(mints().at(-1)?.[1]?.body))).toMatchObject({
+        requesterSenderId: senderId,
+      });
     });
 
     it("pins a normal bare CLI invocation without depending on PATH", async () => {
@@ -284,7 +341,9 @@ describe("the admin agent's delegated user token", () => {
       {},
       {
         ...SANDBOXED,
-        agents: { defaults: { sandbox: { mode: "all", scope: "session" } } },
+        agents: {
+          defaults: { sandbox: { ...SANDBOXED.agents.defaults.sandbox, scope: "session" } },
+        },
       },
     );
     const first = thread();
@@ -385,8 +444,7 @@ describe("the admin agent's delegated user token", () => {
       {},
       {
         params: {
-          command: "npm run fi:audit --as U0SOMEONE9",
-          env: { KEEP: "1", fi_delegated_user_token: "forged", REQUESTER: "U0SOMEONE9" },
+          command: "cellect commands list",
         },
       },
     );
@@ -394,8 +452,6 @@ describe("the admin agent's delegated user token", () => {
     expect(result?.params).toMatchObject({ host: "sandbox", elevated: false });
     // The issued credential replaces the sandbox's inherited Fi origin as one pair.
     expect(result?.params.env).toEqual({
-      KEEP: "1",
-      REQUESTER: "U0SOMEONE9",
       FI_ON_BEHALF_OF: expect.any(String),
       FI_DELEGATED_USER_TOKEN: TOKEN,
       FI_APP_URL: "https://fi.example.test/fi",
@@ -467,9 +523,8 @@ describe("the admin agent's delegated user token", () => {
       { params: { command: "x", env: { Fi_App_Url: "https://fi.example.test/fi//" } } },
     );
     expect(same?.params.env).toEqual({
-      FI_APP_URL: "https://fi.example.test/fi",
+      Fi_App_Url: "https://fi.example.test/fi//",
       FI_ON_BEHALF_OF: expect.any(String),
-      FI_DELEGATED_USER_TOKEN: TOKEN,
     });
     fetchMock.mockClear();
     for (const url of ["https://evil.test", "https://fi.example.test", 7]) {
@@ -490,7 +545,10 @@ describe("the admin agent's delegated user token", () => {
     await turn.start();
     fetchMock.mockImplementationOnce(async () => minted({ token: "first.fixture.token" }));
     const first = await turn.exec({ toolName: "sandbox_exec" }, { toolName: "sandbox_exec" });
-    const second = await turn.exec({}, { params: { command: "x", host: "sandbox" } });
+    const second = await turn.exec(
+      {},
+      { params: { command: "cellect commands list", host: "sandbox" } },
+    );
     expect(first?.params.env?.FI_DELEGATED_USER_TOKEN).toBe("first.fixture.token");
     expect(second?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
     expect(fetchMock).toHaveBeenCalledTimes(2);
@@ -502,7 +560,10 @@ describe("the admin agent's delegated user token", () => {
       const turn = plugin();
       await turn.arrive();
       await turn.start();
-      const result = await turn.exec({}, { params: { command: "x", awaitResults } });
+      const result = await turn.exec(
+        {},
+        { params: { command: "cellect commands list", awaitResults } },
+      );
       expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
     },
   );
@@ -781,8 +842,14 @@ describe("the admin agent's delegated user token", () => {
         );
         return delegation.mint(
           configFromRuntime(api),
-          { toolName: "exec", params: { command: "npm run fi:audit" } },
-          { ...message.exec, runId: "run-1", agentId: "cellect-fi-admin", toolName: "exec" },
+          { toolName: "exec", params: { command: "cellect commands list" } },
+          {
+            ...message.exec,
+            runId: "run-1",
+            toolCallId: "command-1",
+            agentId: "cellect-fi-admin",
+            toolName: "exec",
+          },
           Date.now(),
         );
       };
@@ -791,6 +858,7 @@ describe("the admin agent's delegated user token", () => {
       expect(await admit("@admin:matrix.example")).toEqual({
         token: TOKEN,
         baseUrl: "https://fi.example.test/fi",
+        command: "/usr/local/bin/cellect commands list",
       });
     });
 

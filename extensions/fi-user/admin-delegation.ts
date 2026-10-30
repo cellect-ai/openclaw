@@ -125,8 +125,6 @@ type Proof = { sender: string; eventId?: string; sourceRoomId?: string };
 type Custody = {
   sender: string;
   expiresAt: number;
-  /** Missing/duplicate call identities retain the conservative expiry fallback. */
-  untrackedUntil: number;
   calls: Map<string, { sessionKey: string; agentId: string; expiresAt: number }>;
 };
 type Held = { block: true; blockReason: string };
@@ -251,7 +249,9 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
  * nothing for the deployment: the admin agent always runs sandboxed, its exec
  * host is the sandbox, and elevation is off. Elsewhere nothing is issued and
  * nothing is pinned. Credential-bearing commands require native process-tree
- * cleanup. The sandbox is reserved until each exact command's cleanup is proven,
+ * cleanup. Only a direct immutable installed CLI call with a unique native call
+ * identity receives a token; raw shell work never receives requester credentials.
+ * The sandbox is reserved until each exact command's cleanup is proven,
  * with token expiry as the fallback for missing or failed proof. This relies on
  * the installed CLI's no-credential-persistence contract; process extinction is
  * not a claim that arbitrary shell writes to shared files have been erased.
@@ -436,7 +436,7 @@ export function registerAdminDelegation(
           }
           holder.calls.delete(key);
           holder.expiresAt = Math.max(
-            holder.untrackedUntil,
+            0,
             ...[...holder.calls.values()].map((pending) => pending.expiresAt),
           );
           if (holder.expiresAt <= Date.now()) {
@@ -847,6 +847,24 @@ export function registerAdminDelegation(
       }));
       return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
     }
+    // Raw shell work can persist an environment credential in arbitrary files.
+    // Do not issue it a token and then reserve the entire thread until expiry.
+    // The installed CLI's no-persistence contract and native cleanup identity
+    // are both required before asking Fi to mint a command credential.
+    const pinnedCommand = posture(agentId).readonlyCli
+      ? pinInstalledFiCliCommand(event.params)
+      : undefined;
+    const key = ctx.runId && ctx.toolCallId && JSON.stringify([ctx.runId, ctx.toolCallId]);
+    if (pinnedCommand === undefined || !key) {
+      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+    }
+    const canTrack = () => {
+      const calls = custody.get(sandboxKey(agentId, sessionKey))?.calls;
+      return !calls?.has(key) && (calls?.size ?? 0) < MAX_TRACKED;
+    };
+    if (!canTrack()) {
+      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+    }
     const budget = Math.min(MAX_MINT_MS, HOOK_BUDGET_MS - (Date.now() - enteredAt));
     if (budget < MIN_MINT_MS) {
       diagnose(ctx, "mint-budget-exhausted");
@@ -894,36 +912,25 @@ export function registerAdminDelegation(
           diagnose(ctx, "mint-held");
           return blocked;
         }
+        if (!canTrack()) {
+          return crossEnvironmentFailure;
+        }
         // Expiry is a fallback, not a minimum hold: native descendant cleanup
         // releases only this exact call, never another still-running command.
         const holder = custody.get(sandbox) ?? {
           sender,
           expiresAt: 0,
-          untrackedUntil: 0,
           calls: new Map(),
         };
         const expiry = Math.min(expiresAt * 1000, now + MAX_HOLD_MS);
-        const key = ctx.runId && ctx.toolCallId && JSON.stringify([ctx.runId, ctx.toolCallId]);
-        const pinnedCommand = posture(agentId).readonlyCli
-          ? pinInstalledFiCliCommand(event.params)
-          : undefined;
-        if (
-          key &&
-          pinnedCommand !== undefined &&
-          !holder.calls.has(key) &&
-          holder.calls.size < MAX_TRACKED
-        ) {
-          holder.calls.set(key, { agentId, sessionKey: ctx.sessionKey!, expiresAt: expiry });
-        } else {
-          holder.untrackedUntil = Math.max(holder.untrackedUntil, expiry);
-        }
+        holder.calls.set(key, { agentId, sessionKey: ctx.sessionKey!, expiresAt: expiry });
         holder.expiresAt = Math.max(holder.expiresAt, expiry);
         remember(custody, sandbox, holder);
         diagnose(ctx, "mint-issued");
         return {
           token,
           baseUrl,
-          ...(pinnedCommand !== undefined ? { command: pinnedCommand } : {}),
+          command: pinnedCommand,
         };
       },
       (error: unknown) => {

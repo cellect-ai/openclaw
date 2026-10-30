@@ -345,11 +345,7 @@ describe("fails closed", () => {
         {},
         {
           params: {
-            command: "npm run fi:audit",
-            env: {
-              FI_DELEGATED_USER_TOKEN: "replayed",
-              FI_APP_URL: "https://fi.example.test/fi",
-            },
+            command: "cellect commands list",
           },
         },
       );
@@ -357,7 +353,6 @@ describe("fails closed", () => {
       expect(fetchMock).toHaveBeenCalledTimes(1);
       expect(result?.params.env).toEqual({
         FI_ON_BEHALF_OF: expect.any(String),
-        FI_APP_URL: "https://fi.example.test/fi",
       });
       expect(JSON.stringify(result)).not.toContain(BROKER);
       const logged = JSON.stringify([turn.warn.mock.calls, consoleError.mock.calls]);

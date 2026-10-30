@@ -74,12 +74,10 @@ describe("the delegated credential's selected Fi origin", () => {
       const result = await turn.exec(message.exec, {
         params: {
           command: "cellect commands list",
-          env: { KEEP: "yes", Fi_App_Url: `${DEV}//`, fi_delegated_user_token: "forged" },
         },
       });
       expect(result?.params).toMatchObject({ host: "sandbox", elevated: false });
       expect(result?.params.env).toEqual({
-        KEEP: "yes",
         FI_APP_URL: DEV,
         FI_DELEGATED_USER_TOKEN: TOKEN,
         FI_ON_BEHALF_OF: expect.any(String),
@@ -138,6 +136,18 @@ describe("the delegated credential's selected Fi origin", () => {
       expect(selectedMints()).toHaveLength(0);
     },
   );
+
+  it.each([
+    { command: "cat /workspace/input.json" },
+    { command: "cellect commands list", env: { KEEP: "yes", FI_DELEGATED_USER_TOKEN: "replayed" } },
+  ])("does not send an unsupported selected-environment call to ambient Fi: %j", async (params) => {
+    const turn = create(),
+      message = selected();
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    expect(await turn.exec(message.exec, { params })).toMatchObject({ block: true });
+    expect(selectedMints()).toEqual([]);
+  });
 
   it("also blocks a proven Superadmin dev turn when Fi refuses its token", async () => {
     const turn = create(),
