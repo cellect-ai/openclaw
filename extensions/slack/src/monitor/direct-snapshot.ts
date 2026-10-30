@@ -1,9 +1,17 @@
 import type { WebClient } from "@slack/web-api";
+import { isSlackFiChatPointer, sourcePointerCoversProjected } from "./fi-chat-pointer.js";
 import { hydrateSlackProjectionNames } from "./projection-actor.js";
 import { slackProjectionContent } from "./projection-content.js";
 import { createProjectionDeadline } from "./projection-deadline.js";
 
-type Message = { ts?: string; user?: string; text?: string; bot_id?: string; reply_count?: number };
+type Message = {
+  ts?: string;
+  user?: string;
+  text?: string;
+  bot_id?: string;
+  reply_count?: number;
+  metadata?: { event_type?: string };
+};
 type Page = {
   ok?: boolean;
   messages?: Message[];
@@ -95,25 +103,36 @@ export async function readSlackDirectSnapshot(
       );
     }
   }
+  const projected = [...messages.values()].flatMap((message) =>
+    message.ts && message.user && typeof message.text === "string" && !isSlackFiChatPointer(message)
+      ? [
+          {
+            messageId: message.ts,
+            senderId: message.user,
+            content: slackProjectionContent(message),
+            bot: Boolean(message.bot_id),
+          },
+        ]
+      : [],
+  );
+  const latestPointerMessageId = [...messages.values()]
+    .filter((message) => isSlackFiChatPointer(message))
+    .reduce<string | undefined>(
+      (latest, message) =>
+        message.ts && (!latest || message.ts.localeCompare(latest) > 0) ? message.ts : latest,
+      undefined,
+    );
   return {
     directSource,
+    sourcePointerPresent: Boolean(latestPointerMessageId),
+    sourcePointerCurrent: sourcePointerCoversProjected(
+      latestPointerMessageId,
+      projected.map((message) => message.messageId),
+    ),
     messages: await hydrateSlackProjectionNames(
       client,
       workspaceId,
-      [...messages.values()]
-        .flatMap((message) =>
-          message.ts && message.user && typeof message.text === "string"
-            ? [
-                {
-                  messageId: message.ts,
-                  senderId: message.user,
-                  content: slackProjectionContent(message),
-                  bot: Boolean(message.bot_id),
-                },
-              ]
-            : [],
-        )
-        .toSorted((left, right) => left.messageId.localeCompare(right.messageId)),
+      projected.toSorted((left, right) => left.messageId.localeCompare(right.messageId)),
       read,
     ),
   };
