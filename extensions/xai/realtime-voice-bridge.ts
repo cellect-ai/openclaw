@@ -21,6 +21,7 @@ import {
   serializeXaiRealtimeToolResult,
   toXaiRealtimeWsUrl,
   type XaiRealtimeEvent,
+  type XaiRealtimeUserMessageOptions,
 } from "./realtime-voice-config.js";
 import { XaiRealtimeMalformedAudioError, XaiRealtimeVoiceEvents } from "./realtime-voice-events.js";
 import { XaiRealtimePlaybackMarkOverflowError } from "./realtime-voice-protocol.js";
@@ -43,7 +44,8 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     result: unknown;
     options?: RealtimeVoiceToolResultOptions;
   }> = [];
-  private pendingUserMessages: string[] = [];
+  private pendingUserMessages: Array<{ text: string; options?: XaiRealtimeUserMessageOptions }> =
+    [];
   private connectionUrl = "";
   private readonly flowId = randomUUID();
   private sessionReadyFired = false;
@@ -73,13 +75,13 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     this.latestMediaTimestamp = ts;
   }
 
-  sendUserMessage(text: string): void {
+  sendUserMessage(text: string, options?: XaiRealtimeUserMessageOptions): void {
     if (this.lifecycle.phase() === "terminal") {
       return;
     }
     if (!this.isConnected()) {
       if (this.pendingUserMessages.length < XAI_REALTIME_MAX_PENDING_USER_MESSAGES) {
-        this.pendingUserMessages.push(text);
+        this.pendingUserMessages.push({ text, ...(options ? { options } : {}) });
       } else {
         this.config.onError?.(
           new Error(
@@ -89,7 +91,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       }
       return;
     }
-    this.sendUserMessageNow(text);
+    this.sendUserMessageNow(text, options);
   }
 
   triggerGreeting(instructions?: string): void {
@@ -481,7 +483,7 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
       this.submitToolResultNow(pending.callId, pending.result, pending.options);
     }
     for (const message of this.pendingUserMessages.splice(0)) {
-      this.sendUserMessageNow(message);
+      this.sendUserMessageNow(message.text, message.options);
     }
     if (!this.sessionReadyFired) {
       this.sessionReadyFired = true;
@@ -513,7 +515,6 @@ export class XaiRealtimeVoiceBridge extends XaiRealtimeVoiceEvents implements Re
     // Observers report a sent frame, so nested control cannot overtake it.
     this.config.onEvent?.({ direction: "client", type, ...(detail ? { detail } : {}) });
   }
-
 
   private failConnection(
     error: XaiRealtimeMalformedAudioError | XaiRealtimePlaybackMarkOverflowError,

@@ -52,6 +52,21 @@ export type OpenAIRealtimeUserMessageOptions = {
   toolChoice?: "none" | { type: "function"; name: string };
 };
 
+/**
+ * One deferred response.create answers every request queued behind it. `"none"`
+ * outranks a forced call or the default so a later plain request cannot release
+ * an announcement to tools; a forced call outranks the default.
+ */
+export function mergeOpenAIRealtimeResponseToolChoice(
+  pending: OpenAIRealtimeUserMessageOptions["toolChoice"],
+  next: OpenAIRealtimeUserMessageOptions["toolChoice"],
+): OpenAIRealtimeUserMessageOptions["toolChoice"] {
+  if (pending === "none" || next === "none") {
+    return "none";
+  }
+  return next ?? pending;
+}
+
 export type OpenAIRealtimeVoiceProviderConfig = Partial<ReturnType<typeof normalizeProviderConfig>>;
 
 export type OpenAIRealtimeVoiceBridgeConfig = RealtimeVoiceBridgeCreateRequest &

@@ -76,6 +76,26 @@ export type XaiRealtimeEvent = {
   error?: unknown;
 };
 
+/** Tool choice one response.create carries; `"none"` keeps an announcement from calling tools. */
+export type XaiRealtimeResponseToolChoice = "none" | { type: "function"; name: string };
+
+export type XaiRealtimeUserMessageOptions = { toolChoice?: XaiRealtimeResponseToolChoice };
+
+/**
+ * One deferred response.create answers every request queued behind it. `"none"`
+ * outranks a forced call or the default so a later plain request cannot release
+ * an announcement to tools; a forced call outranks the default.
+ */
+export function mergeXaiRealtimeResponseToolChoice(
+  pending: XaiRealtimeResponseToolChoice | undefined,
+  next: XaiRealtimeResponseToolChoice | undefined,
+): XaiRealtimeResponseToolChoice | undefined {
+  if (pending === "none" || next === "none") {
+    return "none";
+  }
+  return next ?? pending;
+}
+
 export type XaiRealtimeSessionUpdate = {
   type: "session.update";
   session: {

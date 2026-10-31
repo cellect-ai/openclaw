@@ -58,7 +58,12 @@ function createLazyRealtimeVoiceBridge(
   type PendingVoiceOperation =
     | { type: "audio" }
     | { timestamp: number; type: "media-timestamp" }
-    | { bytes: number; text: string; type: "user-message" }
+    | {
+        bytes: number;
+        options?: Parameters<NonNullable<RealtimeVoiceBridge["sendUserMessage"]>>[1];
+        text: string;
+        type: "user-message";
+      }
     | { instructions?: string; type: "greeting" }
     | {
         bytes: number;
@@ -139,7 +144,12 @@ function createLazyRealtimeVoiceBridge(
           loadedBridge.setMediaTimestamp(operation.timestamp);
           break;
         case "user-message":
-          loadedBridge.sendUserMessage?.(operation.text);
+          // Keep the call's arity: providers and their tests see no trailing undefined.
+          if (operation.options) {
+            loadedBridge.sendUserMessage?.(operation.text, operation.options);
+          } else {
+            loadedBridge.sendUserMessage?.(operation.text);
+          }
           break;
         case "tool-result":
           await loadedBridge.submitToolResult(
@@ -200,13 +210,17 @@ function createLazyRealtimeVoiceBridge(
         type: "media-timestamp",
       });
     },
-    sendUserMessage: (text) => {
+    sendUserMessage: (text, options) => {
       if (!lifecycle.isActive()) {
         return;
       }
       const bridge = lifecycle.bridge;
       if (acceptsInput && bridge) {
-        bridge.sendUserMessage?.(text);
+        if (options) {
+          bridge.sendUserMessage?.(text, options);
+        } else {
+          bridge.sendUserMessage?.(text);
+        }
         return;
       }
       const messageBytes = Buffer.byteLength(text, "utf8");
@@ -223,6 +237,7 @@ function createLazyRealtimeVoiceBridge(
       }
       pendingOperations.push({
         bytes: messageBytes,
+        ...(options ? { options } : {}),
         text,
         type: "user-message",
       });

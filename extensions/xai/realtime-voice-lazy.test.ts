@@ -123,6 +123,21 @@ describe("xAI lazy realtime voice", () => {
     },
   );
 
+  it("forwards a queued announcement's tool choice once the bridge connects", async () => {
+    const bridge = await createLazyVoiceBridge();
+
+    bridge.sendUserMessage?.("I have an answer.", { toolChoice: "none" });
+    bridge.sendUserMessage?.("plain");
+    await bridge.connect();
+    bridge.sendUserMessage?.("after connect", { toolChoice: "none" });
+
+    expect(runtimeMocks.voiceSendUserMessage.mock.calls).toEqual([
+      ["I have an answer.", { toolChoice: "none" }],
+      ["plain"],
+      ["after connect", { toolChoice: "none" }],
+    ]);
+  });
+
   it("snapshots lazy voice tool results with one canonical serialization", async () => {
     const bridge = await createLazyVoiceBridge();
     const toJSON = vi.fn((key: string) => ({ key, ok: true }));

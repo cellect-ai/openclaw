@@ -208,7 +208,7 @@ export abstract class OpenAIRealtimeEvents extends OpenAIRealtimeProtocol {
           this.responseActive = true;
           this.responseCreateState = "idle";
           this.manualResponseCreateEventId = null;
-          this.responseCreatePending = true;
+          this.deferRejectedResponseCreate();
           return;
         }
         const rejectsManualResponseCancel =

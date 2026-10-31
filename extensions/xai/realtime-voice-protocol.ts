@@ -18,7 +18,10 @@ import {
   XAI_REALTIME_DEFAULT_VAD_THRESHOLD,
   XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
   XAI_REALTIME_MAX_PENDING_PLAYBACK_MARKS,
+  mergeXaiRealtimeResponseToolChoice,
   serializeXaiRealtimeToolResult,
+  type XaiRealtimeResponseToolChoice,
+  type XaiRealtimeUserMessageOptions,
   type XaiRealtimeEvent,
   type XaiRealtimeSessionUpdate,
   type XaiRealtimeVoiceBridgeConfig,
@@ -39,6 +42,12 @@ export abstract class XaiRealtimeVoiceProtocol {
   protected responseCreateInFlight = false;
   protected responseCancelInFlight = false;
   protected responseCreatePending = false;
+  /** Tool choice the deferred response.create must carry once it is sent. */
+  protected pendingResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
+  /** Tool choice of the response.create sent and not yet acknowledged. */
+  protected inFlightResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
+  /** Tool choice of the live response; a function call in a "none" response is refused. */
+  protected activeResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
   protected pendingToolCallIds = new Set<string>();
   protected latestMediaTimestamp = 0;
   protected outputAudioGeneration = 0;
@@ -55,7 +64,7 @@ export abstract class XaiRealtimeVoiceProtocol {
 
   protected abstract sendEvent(event: unknown, detail?: string): void;
 
-  protected sendUserMessageNow(text: string): void {
+  protected sendUserMessageNow(text: string, options?: XaiRealtimeUserMessageOptions): void {
     this.sendEvent({
       type: "conversation.item.create",
       item: {
@@ -64,7 +73,7 @@ export abstract class XaiRealtimeVoiceProtocol {
         content: [{ type: "input_text", text }],
       },
     });
-    this.requestResponseCreate();
+    this.requestResponseCreate(options?.toolChoice);
   }
 
   protected submitToolResultNow(
@@ -271,8 +280,33 @@ export abstract class XaiRealtimeVoiceProtocol {
       return;
     }
     this.deliveredToolCallKeys.add(dedupeKey);
+    if (this.activeResponseToolChoice === "none") {
+      this.refuseToolCallInToolFreeResponse({ itemId, callId, name });
+      return;
+    }
     this.pendingToolCallIds.add(callId);
     this.config.onToolCall({ itemId, callId, name, args });
+  }
+
+  private refuseToolCallInToolFreeResponse(params: {
+    itemId: string;
+    callId: string;
+    name: string;
+  }): void {
+    // Grok through LiteLLM accepts tool_choice "none" and still calls tools. The
+    // provider pauses until every call has an output, so answer it here; no new
+    // response.create, or the refusal would start another turn.
+    this.config.onEvent?.({
+      direction: "server",
+      type: "tool_call.refused",
+      detail: `reason=tool_choice_none name=${params.name}`,
+      itemId: params.itemId,
+    });
+    this.submitToolResultNow(
+      params.callId,
+      { error: "Tools are unavailable while announcing an answer." },
+      { suppressResponse: true },
+    );
   }
 
   private rejectToolCallArguments(params: {
@@ -293,7 +327,8 @@ export abstract class XaiRealtimeVoiceProtocol {
     this.submitToolResultNow(params.callId, { error: "Invalid tool arguments." });
   }
 
-  protected requestResponseCreate(): void {
+  protected requestResponseCreate(toolChoice?: XaiRealtimeResponseToolChoice): void {
+    const merged = mergeXaiRealtimeResponseToolChoice(this.pendingResponseToolChoice, toolChoice);
     // xAI requires every parallel function output before one response.create, and
     // relay playback must drain before the next response starts.
     if (
@@ -305,19 +340,41 @@ export abstract class XaiRealtimeVoiceProtocol {
       this.pendingToolCallIds.size > 0
     ) {
       this.responseCreatePending = true;
+      this.pendingResponseToolChoice = merged;
       return;
     }
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
     this.responseCreateInFlight = true;
-    this.sendEvent({ type: "response.create" });
+    this.inFlightResponseToolChoice = merged;
+    // Gemini Live through LiteLLM has no tool_choice on response.create; the
+    // refusal of a call in a "none" response still applies there.
+    const sendToolChoice = merged !== undefined && !this.config.model?.startsWith("gemini-");
+    this.sendEvent(
+      sendToolChoice
+        ? { type: "response.create", response: { tool_choice: merged } }
+        : { type: "response.create" },
+    );
   }
 
   protected flushPendingResponseCreate(): void {
     if (!this.responseCreatePending) {
       return;
     }
+    const toolChoice = this.pendingResponseToolChoice;
     this.responseCreatePending = false;
-    this.requestResponseCreate();
+    this.pendingResponseToolChoice = undefined;
+    this.requestResponseCreate(toolChoice);
+  }
+
+  /** A rejected response.create is owed again with the tool choice it carried. */
+  protected deferRejectedResponseCreate(): void {
+    this.responseCreatePending = true;
+    this.pendingResponseToolChoice = mergeXaiRealtimeResponseToolChoice(
+      this.pendingResponseToolChoice,
+      this.inFlightResponseToolChoice,
+    );
+    this.inFlightResponseToolChoice = undefined;
   }
 
   protected resetRealtimeSessionState(options: { preserveToolCallState?: boolean } = {}): void {
@@ -327,6 +384,9 @@ export abstract class XaiRealtimeVoiceProtocol {
     this.responseCreateInFlight = false;
     this.responseCancelInFlight = false;
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
+    this.inFlightResponseToolChoice = undefined;
+    this.activeResponseToolChoice = undefined;
     this.assistantAudioItem = null;
     this.resetInputTranscripts();
     if (!options.preserveToolCallState) {

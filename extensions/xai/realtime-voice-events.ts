@@ -74,6 +74,11 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
       this.finalizedToolCallItems.clear();
       this.outputAudioGeneration += 1;
       this.responseActive = true;
+      // A response we asked for carries our tool choice; a server-VAD response has none.
+      this.activeResponseToolChoice = this.responseCreateInFlight
+        ? this.inFlightResponseToolChoice
+        : undefined;
+      this.inFlightResponseToolChoice = undefined;
       this.responseCreateInFlight = false;
       this.markQueue = [];
       this.assistantAudioItem = null;
@@ -542,7 +547,7 @@ export abstract class XaiRealtimeVoiceEvents extends XaiRealtimeVoiceProtocol {
     if (detail.startsWith(XAI_REALTIME_ACTIVE_RESPONSE_ERROR_PREFIX)) {
       this.responseActive = true;
       this.responseCreateInFlight = false;
-      this.responseCreatePending = true;
+      this.deferRejectedResponseCreate();
       return;
     }
     if (detail === XAI_REALTIME_NO_ACTIVE_RESPONSE_CANCEL_ERROR) {
