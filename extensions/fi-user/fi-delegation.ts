@@ -160,11 +160,14 @@ export function pluginConfig(
   const resolved = cfg
     ? resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined)
     : configFromRuntime(api);
-  if (context.messageChannel !== "matrix") {
+  const projectedReply = isProjectedMatrixReply(context);
+  if (context.messageChannel !== "matrix" && !projectedReply) {
     return resolved;
   }
-  const accountId = context.agentAccountId?.trim();
   const deliveryAccountId = context.deliveryContext?.accountId?.trim();
+  // A projected reply's agent account can be the Slack session's own; its
+  // Matrix account is the one its reply route delivers through.
+  const accountId = projectedReply ? deliveryAccountId : context.agentAccountId?.trim();
   if (accountId && deliveryAccountId && accountId !== deliveryAccountId) {
     throw new Error("The Matrix requester account disagrees with its delivery route");
   }
@@ -225,6 +228,51 @@ function webchatContextToken(sessionKey: string | undefined): string | undefined
   return entry.token;
 }
 
+/**
+ * A Fi-user run in a Slack thread's session that its Matrix projection
+ * started: the host may report the session's channel, but the run's own reply
+ * route is the Matrix room the verified message came from, through a
+ * configured Matrix account. The Matrix channel dispatches into a Slack
+ * session only from a projection Fi's source guard allowed for that sender, so
+ * the host-owned sender of such a run is that Matrix person. Model-supplied
+ * text never reaches these fields.
+ */
+export function isProjectedMatrixReply(
+  context: Pick<
+    OpenClawPluginToolContext,
+    "messageChannel" | "sessionKey" | "deliveryContext" | "requesterSenderId" | "agentId"
+  >,
+): boolean {
+  const accountId = context.deliveryContext?.accountId?.trim();
+  return (
+    context.messageChannel === "slack" &&
+    context.deliveryContext?.channel === "matrix" &&
+    Boolean(accountId) &&
+    matrixAccountConfigured(accountId) &&
+    MATRIX_USER_ID.test(context.requesterSenderId?.trim() ?? "") &&
+    new RegExp(`^agent:${context.agentId ?? "\u0000"}:slack:(?:channel|group):`, "i").test(
+      context.sessionKey ?? "",
+    )
+  );
+}
+
+function matrixAccountConfigured(accountId: string | undefined): boolean {
+  if (!accountId) {
+    return false;
+  }
+  try {
+    const environments: unknown = JSON.parse(process.env.FI_THREADS_ENV_BY_ACCOUNT ?? "{}");
+    return (
+      Boolean(environments) &&
+      typeof environments === "object" &&
+      !Array.isArray(environments) &&
+      Object.hasOwn(environments, accountId)
+    );
+  } catch {
+    return false;
+  }
+}
+
 export type RequesterIdentity =
   | { channel: "slack"; requesterSenderId: string }
   | { channel: "matrix"; requesterMatrixUserId: string }
@@ -247,7 +295,10 @@ export function requesterIdentity(context: OpenClawPluginToolContext): Requester
   if (context.messageChannel === "slack" && SLACK_USER_ID.test(sender)) {
     return { channel: "slack", requesterSenderId: sender.toUpperCase() };
   }
-  if (context.messageChannel === "matrix" && MATRIX_USER_ID.test(sender)) {
+  if (
+    (context.messageChannel === "matrix" || isProjectedMatrixReply(context)) &&
+    MATRIX_USER_ID.test(sender)
+  ) {
     return { channel: "matrix", requesterMatrixUserId: sender };
   }
   if (context.messageChannel === "webchat") {

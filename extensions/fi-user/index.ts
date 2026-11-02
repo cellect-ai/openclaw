@@ -605,6 +605,7 @@ export default definePluginEntry({
           channel,
           isGroup: event.isGroup,
           messageId: event.messageId,
+          ...(context.accountId ? { accountId: context.accountId } : {}),
           ...message,
         });
         return undefined;

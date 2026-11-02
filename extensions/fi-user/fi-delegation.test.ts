@@ -1,6 +1,6 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exchange, lookupDelegation } from "./fi-delegation.js";
+import { exchange, isFiUserTurn, lookupDelegation, requesterIdentity } from "./fi-delegation.js";
 
 const connection = { baseUrl: "https://fi.example.test", brokerTokenEnv: "TEST_BROKER_TOKEN" };
 const requester = { requesterSenderId: "U12345678" };
@@ -157,5 +157,71 @@ describe("the tenant applies to a Slack-only runtime", () => {
       delegation: { user: { email: "member@example.com" } },
       identity: { channel: "slack", requesterSenderId: "U12345678" },
     });
+  });
+});
+
+/**
+ * A Matrix reply in a Fi-user Slack thread's projection runs in the Slack
+ * session; the host may report that session's channel and account while the
+ * run's own reply route is the Matrix room the verified message came from.
+ */
+describe("a projected Matrix reply in a Slack-keyed Fi-user session", () => {
+  const SESSION = "agent:cellect-fi-user:slack:channel:c0channel1:thread:1792189039.487369";
+  const MATRIX = "@member:matrix.example";
+  const projected = (overrides: Record<string, unknown> = {}) =>
+    ({
+      agentId: "cellect-fi-user",
+      sessionKey: SESSION,
+      messageChannel: "slack",
+      agentAccountId: "fi-user",
+      requesterSenderId: MATRIX,
+      deliveryContext: { channel: "matrix", to: "room:!projection:matrix.example", accountId: "userprod" },
+      ...overrides,
+    }) as unknown as OpenClawPluginToolContext;
+  beforeEach(() => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ userprod: "prod" }));
+  });
+
+  it("takes the requester from the verified Matrix sender although the run reports Slack", () => {
+    expect(requesterIdentity(projected())).toEqual({
+      channel: "matrix",
+      requesterMatrixUserId: MATRIX,
+    });
+    expect(isFiUserTurn(projected())).toBe(true);
+  });
+
+  it("asks Fi for that Matrix person through the Matrix account's environment", async () => {
+    fetchMock.mockResolvedValueOnce(member({ orgId: "org-a" }));
+    const config = {
+      plugins: {
+        entries: { "fi-user": { config: { ...connection, tenantOrgId: "org-a" } } },
+      },
+    };
+    const api = { config, runtime: { config: { current: () => config } } } as never;
+    await exchange(
+      api as OpenClawPluginApi,
+      projected({ getRuntimeConfig: () => config }),
+    );
+    expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({
+      requesterMatrixUserId: MATRIX,
+      agentId: "cellect-fi-user",
+    });
+  });
+
+  it("keeps a Slack sender a Slack requester", () => {
+    expect(requesterIdentity(projected({ requesterSenderId: "U12345678" }))).toEqual({
+      channel: "slack",
+      requesterSenderId: "U12345678",
+    });
+  });
+
+  it.each([
+    ["the reply route is not Matrix", { deliveryContext: { channel: "slack", accountId: "fi-user" } }],
+    ["the Matrix account is not configured", { deliveryContext: { channel: "matrix", accountId: "unknown" } }],
+    ["the session is a Slack DM", { sessionKey: "agent:cellect-fi-user:slack:direct:u12345678" }],
+    ["the session belongs to another agent", { sessionKey: SESSION.replace("cellect-fi-user", "cellect-fi-admin") }],
+    ["the sender is not a Matrix user id", { requesterSenderId: "matrix-alice" }],
+  ])("refuses when %s", (_name, overrides) => {
+    expect(requesterIdentity(projected(overrides))).toBeNull();
   });
 });

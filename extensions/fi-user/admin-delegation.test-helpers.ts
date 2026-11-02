@@ -107,6 +107,7 @@ function messageContext(overrides: Record<string, unknown>) {
   return {
     channelId: overrides.channel ?? "slack",
     sessionKey: overrides.sessionKey ?? SESSION,
+    ...(overrides.accountId ? { accountId: overrides.accountId } : {}),
     ...(overrides.channelContext ? { channelContext: overrides.channelContext } : {}),
   };
 }

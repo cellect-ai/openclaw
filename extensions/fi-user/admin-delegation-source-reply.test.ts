@@ -185,3 +185,119 @@ describe("a Matrix reply to a Slack source session", () => {
     expect(JSON.stringify(next)).not.toContain(TOKEN);
   });
 });
+
+/**
+ * The host can report the Slack session's channel (and account) for a run its
+ * Matrix projection started. The verified Matrix dispatch of that very event
+ * still names the person; nothing else may.
+ */
+describe("a Matrix reply to a Slack source session the host labels as Slack", () => {
+  beforeEach(() => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+  });
+  const asSlack = (message = reply()) => ({
+    arrive: { ...message.arrive, accountId: "adminprod" },
+    start: { ...message.start, channel: "slack", accountId: "fi-admin" },
+    exec: {
+      ...message.exec,
+      requester: { channel: "slack", senderId: message.exec.requester.senderId, accountId: "fi-admin" },
+    },
+  });
+
+  it("mints for the verified Matrix sender when the run and tool report Slack", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
+  });
+
+  it("mints when the dispatch itself is labelled with the Slack session's channel", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive({ ...message.arrive, channel: "slack" });
+    await turn.start(message.start);
+    expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
+  });
+
+  it("does not mint for a Slack sender starting a run on the Matrix event", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.start({
+      ...message.start,
+      senderId: "U0ADMIN001",
+      channelContext: { ...message.start.channelContext, sender: { id: "U0ADMIN001" } },
+    });
+    const result = await turn.exec({
+      ...message.exec,
+      requester: { channel: "slack", senderId: "U0ADMIN001" },
+    });
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not mint for a Matrix sender the source guard did not allow", async () => {
+    const turn = plugin();
+    const message = asSlack(reply("@other:matrix.example"));
+    allow();
+    await turn.arrive({ ...message.arrive, channel: "slack" });
+    await turn.start(message.start);
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not mint for an asserted (unverified) Matrix sender", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive({ ...message.arrive, senderAuthentication: "asserted" });
+    await turn.start(message.start);
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not mint for a tool call naming another person than the admitted sender", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    const result = await turn.exec({
+      ...message.exec,
+      requester: { channel: "slack", senderId: "@other:matrix.example", accountId: "fi-admin" },
+    });
+    expect(JSON.stringify(result)).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not mint once another sender writes into the session mid-run", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    await turn.inject({ channel: "slack", senderId: "U0OTHER002", sessionKey: SLACK_THREAD });
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
+  it("does not let the admitted reply prove the next run", async () => {
+    const turn = plugin();
+    const message = asSlack();
+    allow();
+    await turn.arrive(message.arrive);
+    await turn.start(message.start);
+    expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    await turn.settle();
+    await turn.start({ ...message.start, runId: "run-2" });
+    expect(JSON.stringify(await turn.exec({ ...message.exec, runId: "run-2" }))).not.toContain(
+      TOKEN,
+    );
+  });
+});

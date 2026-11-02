@@ -21,6 +21,7 @@ import {
   ON_BEHALF_OF_TOOLS,
   onBehalfOfRequester,
   pinInstalledFiCliCommand,
+  type OnBehalfOfRequester,
   talkConsultSender,
   type CommandDelegation,
   type TalkChannelContext,
@@ -77,6 +78,7 @@ const SANDBOX_TOOLS = new Set([
 ]);
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const UNPROVEN = "unproven";
+const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
 type DelegationDiagnosticReason =
   | "turn-context-incomplete"
   | "turn-already-observed"
@@ -117,10 +119,24 @@ type Arrivals = {
   events: Set<string>;
   /** The projection room each proven Matrix reply to a source session came from. */
   sourceRooms: Map<string, string>;
+  /**
+   * The homeserver-verified sender and Matrix account of each proven reply to
+   * a source session, by event. The run started for that event takes its
+   * requester from here, whatever channel the host reports for the session.
+   */
+  sourceSenders: Map<string, { matrixUserId: string; accountId?: string }>;
   /** When the last of them was observed. */
   at: number;
 };
-type Proof = { sender: string; eventId?: string; sourceRoomId?: string };
+type Proof = {
+  sender: string;
+  eventId?: string;
+  sourceRoomId?: string;
+  sourceMatrixUserId?: string;
+  sourceAccountId?: string;
+};
+/** A run admitted for a verified Matrix reply in a Slack source session's projection. */
+type MatrixOrigin = { matrixUserId: string; accountId?: string };
 /** Who a sandbox last ran a token-bearing command for, and until when that token lives. */
 type Custody = {
   sender: string;
@@ -146,7 +162,22 @@ type Run = {
   sender?: string;
   continuation?: PluginHookToolContext["requesterContinuation"];
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
+  matrixOrigin?: MatrixOrigin;
 };
+/**
+ * The Matrix requester of a run admitted from a verified source-session reply,
+ * when the host names that run's sender but reports the session's own channel.
+ * Only the exact admitted sender qualifies; a continuation keeps its own proof.
+ */
+function matrixOriginRequester(
+  run: Run | undefined,
+  senderId: string | undefined,
+): OnBehalfOfRequester | undefined {
+  const origin = run?.matrixOrigin;
+  return origin && !run.continuation && senderId?.trim() === origin.matrixUserId
+    ? { requester_matrix_user_id: origin.matrixUserId }
+    : undefined;
+}
 /** Every use retains the exact host capability; copied identity fields prove nothing. */
 function continuationCurrent(
   run: Run,
@@ -185,6 +216,8 @@ type Inbound = {
   isGroup?: boolean;
   /** The channel's own id of the dispatched message: for Matrix, the room event. */
   messageId?: string;
+  /** The channel account that received it, as the host routed it. */
+  accountId?: string;
   sessionKey?: string;
   /**
    * Host-owned channel identity. A Matrix Talk consult the Gateway dispatches
@@ -389,6 +422,29 @@ export function registerAdminDelegation(
   const sandboxKey = (adminAgentId: string, sessionKey: string): string =>
     posture(adminAgentId).scope === "session" ? sessionKey : `agent:${adminAgentId.toLowerCase()}`;
   /**
+   * Who an inbound message for an admin session is from. A reply in a Slack
+   * session's Matrix projection is a Matrix person even when the host labels
+   * the message with the session's channel; only Fi's current source-guard
+   * allowance for this exact person and session makes such a sender one.
+   */
+  const inboundRequester = (
+    sessionKey: string,
+    message: Pick<Inbound, "channel" | "senderId">,
+  ): OnBehalfOfRequester | undefined => {
+    const direct = onBehalfOfRequester(message);
+    if (direct) {
+      return direct;
+    }
+    const sender = message.senderId?.trim() ?? "";
+    const allowed = sourceReplies.get(JSON.stringify([sessionKey, sender]));
+    return /^agent:[^:]+:slack:(?:channel|group):/.test(sessionKey) &&
+      MATRIX_USER_ID.test(sender) &&
+      allowed !== undefined &&
+      allowed.at > Date.now() - SOURCE_REPLY_TTL_MS
+      ? { requester_matrix_user_id: sender }
+      : undefined;
+  };
+  /**
    * The sender a verified dispatched message proves for the admin agent's
    * session, by the session key the host routed (compared in lower case):
    * - Slack DMs bind the peer. Channels/threads additionally bind the native
@@ -403,8 +459,8 @@ export function registerAdminDelegation(
     sessionKey: string,
     message: Inbound,
   ): Proof | undefined => {
-    const requester = onBehalfOfRequester(message);
     const prefix = `agent:${adminAgentId.toLowerCase()}:`;
+    const requester = inboundRequester(sessionKey, message);
     if (!requester || !sessionKey.startsWith(prefix)) {
       return undefined;
     }
@@ -436,7 +492,13 @@ export function registerAdminDelegation(
         allowed.at > Date.now() - SOURCE_REPLY_TTL_MS &&
         typeof message.isGroup === "boolean" &&
         message.messageId?.startsWith("$")
-        ? { sender, eventId: message.messageId, sourceRoomId: allowed.roomId }
+        ? {
+            sender,
+            eventId: message.messageId,
+            sourceRoomId: allowed.roomId,
+            sourceMatrixUserId: requester.requester_matrix_user_id,
+            ...(message.accountId?.trim() ? { sourceAccountId: message.accountId.trim() } : {}),
+          }
         : undefined;
     }
     if (!rest.startsWith("matrix:")) {
@@ -596,15 +658,25 @@ export function registerAdminDelegation(
       }
       const arrived = arrivals.get(sessionKey);
       arrivals.delete(sessionKey);
-      const requester = onBehalfOfRequester({
-        channel: context.channel,
-        senderId: context.senderId,
-      });
-      const sender = requester && JSON.stringify(requester);
       // Shared conversations admit only the run of the dispatched native event,
       // by that same sender. Never reuse the stored sender on a synthetic wake.
       const origin = context.channelContext;
       const rest = sessionKey.slice(`agent:${agentId}:`.length);
+      const originEventId =
+        typeof origin?.chat?.eventId === "string" ? origin.chat.eventId : undefined;
+      // The host reports a Slack session's channel for a run its Matrix
+      // projection started. The verified dispatch of that very event names the
+      // Matrix person; the run's own sender must be that person.
+      const sourceOrigin =
+        originEventId && rest.startsWith("slack:")
+          ? arrived?.sourceSenders.get(originEventId)
+          : undefined;
+      const requester =
+        onBehalfOfRequester({ channel: context.channel, senderId: context.senderId }) ??
+        (sourceOrigin && context.senderId?.trim() === sourceOrigin.matrixUserId
+          ? { requester_matrix_user_id: sourceOrigin.matrixUserId }
+          : undefined);
+      const sender = requester && JSON.stringify(requester);
       const slackChannel = /^slack:(?:channel|group):([cg][a-z0-9]+)(?::thread:\d+\.\d+)?$/.exec(
         rest,
       );
@@ -639,11 +711,18 @@ export function registerAdminDelegation(
         origin?.sender?.isBot !== true
       ) {
         run.sender = sender;
+        if (sourceReply && sourceOrigin) {
+          run.matrixOrigin = {
+            matrixUserId: sourceOrigin.matrixUserId,
+            ...(sourceOrigin.accountId ? { accountId: sourceOrigin.accountId } : {}),
+          };
+        }
         // Dispatch can queue several native events before the first run starts.
         // Consume only this run's exact event; later runs need their own proof.
         if (requiresEvent && typeof origin?.chat?.eventId === "string") {
           arrived.events.delete(origin.chat.eventId);
           arrived.sourceRooms.delete(origin.chat.eventId);
+          arrived.sourceSenders.delete(origin.chat.eventId);
           if (arrived.events.size > 0) {
             remember(arrivals, sessionKey, arrived);
           }
@@ -680,6 +759,7 @@ export function registerAdminDelegation(
         proven: false,
         events: new Set(),
         sourceRooms: new Map(),
+        sourceSenders: new Map(),
         at: now,
       };
     }
@@ -690,6 +770,12 @@ export function registerAdminDelegation(
       arrived.events.add(proof.eventId);
       if (proof.sourceRoomId) {
         arrived.sourceRooms.set(proof.eventId, proof.sourceRoomId);
+      }
+      if (proof.sourceMatrixUserId) {
+        arrived.sourceSenders.set(proof.eventId, {
+          matrixUserId: proof.sourceMatrixUserId,
+          ...(proof.sourceAccountId ? { accountId: proof.sourceAccountId } : {}),
+        });
       }
     }
     remember(arrivals, sessionKey, arrived);
@@ -750,7 +836,7 @@ export function registerAdminDelegation(
         delete run.sender;
       }
     }
-    const requester = onBehalfOfRequester(message);
+    const requester = inboundRequester(session.sessionKey, message);
     observe(
       session.sessionKey,
       talkConsultSender(session.adminAgentId, session.sessionKey, message) ??
@@ -841,7 +927,10 @@ export function registerAdminDelegation(
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     const mail = mailWakeRequester(sessionKey, ctx.requester?.senderId);
-    const requester = mail ?? onBehalfOfRequester(run?.continuation ?? ctx.requester);
+    const requester =
+      mail ??
+      onBehalfOfRequester(run?.continuation ?? ctx.requester) ??
+      matrixOriginRequester(run, ctx.requester?.senderId);
     const suppliedRequester = onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
     if (
@@ -873,10 +962,19 @@ export function registerAdminDelegation(
       connection = config;
     } else if ("requester_matrix_user_id" in requester) {
       body = { requesterMatrixUserId: requester.requester_matrix_user_id };
-      connection = matrixConnection(
-        config,
-        run.continuation?.accountId ?? ctx.requester?.accountId,
-      );
+      // A source-session reply names its Matrix account at dispatch; the tool
+      // context may carry the Slack session's account instead.
+      const originAccount = run.matrixOrigin?.accountId;
+      connection =
+        originAccount &&
+        ctx.requester?.channel === "matrix" &&
+        ctx.requester.accountId !== undefined &&
+        ctx.requester.accountId !== originAccount
+          ? undefined
+          : matrixConnection(
+              config,
+              run.continuation?.accountId ?? originAccount ?? ctx.requester?.accountId,
+            );
     } else if (mail && "requester_email" in requester) {
       body = { requesterEmail: requester.requester_email };
       connection = config;
@@ -1046,7 +1144,8 @@ export function registerAdminDelegation(
       channel: ctx.messageChannel,
       senderId: ctx.requesterSenderId,
     };
-    const requester = onBehalfOfRequester(channel);
+    const requester =
+      onBehalfOfRequester(channel) ?? matrixOriginRequester(run, ctx.requesterSenderId);
     if (
       !config.tenantOrgId ||
       !agentId ||
@@ -1082,7 +1181,10 @@ export function registerAdminDelegation(
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }
-    const matrix = matrixConnection(config, run.continuation?.accountId ?? ctx.agentAccountId);
+    const matrix = matrixConnection(
+      config,
+      run.continuation?.accountId ?? run.matrixOrigin?.accountId ?? ctx.agentAccountId,
+    );
     return matrix
       ? {
           connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },
