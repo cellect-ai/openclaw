@@ -628,13 +628,49 @@ function resolveSlackActionChannelTarget(
   };
 }
 
+/**
+ * The one Slack account explicitly bound to the acting agent, for a read a
+ * Matrix (Fi chat) turn makes without naming an account. Wildcard bindings and
+ * several candidates select nothing, so the default account's checks apply.
+ */
+export function resolveMatrixReadAccountId(
+  cfg: OpenClawConfig,
+  context: SlackActionContext | undefined,
+): string | undefined {
+  const agentId = context?.agentId?.trim().toLowerCase();
+  if (
+    !agentId ||
+    context?.currentChannelProvider?.trim().toLowerCase() !== "matrix" ||
+    context.conversationReadOrigin === "direct-operator"
+  ) {
+    return undefined;
+  }
+  const candidates = new Set(
+    (cfg.bindings ?? [])
+      .filter(
+        (binding) =>
+          binding.agentId?.trim().toLowerCase() === agentId &&
+          binding.match?.channel?.trim().toLowerCase() === "slack",
+      )
+      .map((binding) => binding.match.accountId?.trim().toLowerCase())
+      .filter((id): id is string => Boolean(id) && id !== "*"),
+  );
+  return candidates.size === 1 ? [...candidates][0] : undefined;
+}
+
 export async function handleSlackAction(
   params: Record<string, unknown>,
   cfg: OpenClawConfig,
   context?: SlackActionContext,
 ): Promise<AgentToolResult<unknown>> {
   const action = readStringParam(params, "action", { required: true });
-  const accountId = readStringParam(params, "accountId");
+  // A Fi (Matrix) turn reading a pasted Slack link names no Slack account. Use
+  // this agent's own explicitly bound Slack account; the read below still
+  // proves that account's workspace, its route to this agent, and the
+  // requester's own membership through their linked Slack identity.
+  const accountId =
+    readStringParam(params, "accountId") ??
+    (action === "readMessages" ? resolveMatrixReadAccountId(cfg, context) : undefined);
   const { resolveSlackAccount, resolveSlackOperationToken } = await loadSlackAccountsRuntime();
   const account = resolveSlackAccount({ cfg, accountId });
   const resolveChannelTarget = () =>
