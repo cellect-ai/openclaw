@@ -141,7 +141,7 @@ export function registerFiUserWorkflowTests(harness: WorkflowHarness) {
       });
     });
 
-    it("sends a template needing extra signers to an administrator instead", async () => {
+    it("sends a template needing extra signers through send_envelope instead", async () => {
       routes.push((url) =>
         url.pathname === "/api/shape/559-first/esign" ? json(list) : undefined,
       );
@@ -153,7 +153,7 @@ export function registerFiUserWorkflowTests(harness: WorkflowHarness) {
           templateId: 6,
           confirmSend: true,
         }),
-      ).rejects.toThrow(/request_admin_action/);
+      ).rejects.toThrow(/action=send_envelope with those signers stated/);
     });
 
     it("resends to an existing signer through Fi as the requester", async () => {

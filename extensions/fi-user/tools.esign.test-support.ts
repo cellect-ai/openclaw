@@ -1,0 +1,185 @@
+import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { beforeEach, describe, expect, it } from "vitest";
+import type { FiUserMatrixEnvironmentHarness } from "./tools.matrix-environment.test-support.js";
+
+type EsignHarness = Pick<
+  FiUserMatrixEnvironmentHarness,
+  "calls" | "context" | "json" | "routes"
+> & {
+  bodyJson: (init: RequestInit | undefined) => Record<string, unknown>;
+  plugin: () => { tool: (name: string, context: OpenClawPluginToolContext) => AnyAgentTool };
+};
+
+/**
+ * A member prepares and sends through Fi's own signing verbs (owner decision
+ * of 2026-11-02): the route is stated, checked by Fi, previewed and approved.
+ */
+export function registerFiUserEsignTests(harness: EsignHarness) {
+  const { bodyJson, calls, context, json, plugin, routes } = harness;
+  const list = { templates: [] };
+
+  describe("fi_user_esign prepare and send_envelope", () => {
+    it("points a document without a reviewed template to prepare, not to an administrator", async () => {
+      routes.push((url) =>
+        url.pathname === "/api/shape/559-first/esign" ? json(list) : undefined,
+      );
+      await expect(
+        plugin().tool("fi_user_esign", context()).execute("e3b", {
+          action: "send",
+          project: "559-first",
+          documentId: "doc-9",
+          templateId: 9,
+        }),
+      ).rejects.toThrow(/use action=prepare/);
+    });
+
+    it("prepares a template from the reviewed manifest through Fi's signing verb, as the requester", async () => {
+      routes.push((url, init) =>
+        url.pathname === "/api/shape/signature/prepare" && init.method === "POST"
+          ? json({ ok: true, result: { applied: true, prepared: { templateId: 77 } } })
+          : undefined,
+      );
+      const manifest = {
+        documentKind: "consent",
+        sourceSha256: "a".repeat(64),
+        pageCount: 2,
+        fields: [],
+      };
+      const tool = plugin().tool("fi_user_esign", context());
+      await expect(
+        tool.execute("p0", { action: "prepare", project: "559-first", documentId: "doc-1" }),
+      ).rejects.toThrow(/manifest/);
+      const base = {
+        action: "prepare",
+        project: "559-first",
+        documentId: "doc-1",
+        ownerRole: "Managing Member",
+        manifest,
+      };
+      const result = await tool.execute("p1", base);
+      expect(result.details).toMatchObject({ ok: true, result: { prepared: { templateId: 77 } } });
+      await tool.execute("p2", { ...base, dryRun: true });
+      const sent = calls.filter((entry) => entry.url.endsWith("/api/shape/signature/prepare"));
+      expect(sent.map((entry) => bodyJson(entry.init))).toEqual([
+        {
+          input: {
+            project: "559-first",
+            document: "doc-1",
+            ownerRole: "Managing Member",
+            manifest,
+          },
+        },
+        {
+          input: {
+            project: "559-first",
+            document: "doc-1",
+            ownerRole: "Managing Member",
+            manifest,
+          },
+          dryRun: true,
+        },
+      ]);
+    });
+
+    describe("send_envelope", () => {
+      const args = {
+        action: "send_envelope",
+        project: "559-first",
+        documentId: "doc-1",
+        templateId: 77,
+        ownerRole: "Managing Member",
+        ownerEmail: "Lorenzo@Example.com",
+        additionalSigners: [{ role: "Seller", email: "seller@counterparty.example" }],
+        completionCopies: ["member@example.com"],
+        delivery: "docuseal",
+      };
+      const route = [
+        { kind: "signer", role: "Managing Member", email: "lorenzo@example.com" },
+        { kind: "signer", role: "Seller", email: "seller@counterparty.example" },
+        { kind: "completion", email: "member@example.com" },
+      ];
+      const sends = () => calls.filter((entry) => entry.url.endsWith("/api/shape/signature/send"));
+
+      beforeEach(() => {
+        routes.push((url, init) =>
+          url.pathname === "/api/shape/signature/send" && init.method === "POST"
+            ? json({
+                ok: true,
+                result: { applied: bodyJson(init).dryRun !== true, submissionId: 140 },
+              })
+            : undefined,
+        );
+      });
+
+      it("checks the stated route with Fi, previews it verbatim, and sends only the approved route", async () => {
+        const tool = plugin().tool("fi_user_esign", context());
+        const preview = await tool.execute("s1", args);
+        expect(preview.details).toMatchObject({
+          preview: true,
+          delivery: "docuseal",
+          emailsRecipients: true,
+          route: [
+            "signer (Managing Member): lorenzo@example.com",
+            "signer (Seller): seller@counterparty.example",
+            "completion copy: member@example.com",
+          ],
+          routeCode: expect.stringMatching(/^[0-9a-f]{16}$/),
+        });
+        expect(sends()).toHaveLength(1);
+        const checked = bodyJson(sends()[0].init);
+        expect(checked).toEqual({
+          dryRun: true,
+          input: {
+            project: "559-first",
+            document: "doc-1",
+            template: 77,
+            ownerRole: "Managing Member",
+            additionalRecipients: [
+              { kind: "signer", role: "Seller", email: "seller@counterparty.example" },
+            ],
+            completionBcc: ["member@example.com"],
+            confirmedRecipients: route,
+            delivery: "docuseal",
+            additionalRecipientsConfirmed: false,
+          },
+        });
+        const { routeCode } = preview.details as { routeCode: string };
+        // A route that changed after the preview is not the approved one.
+        await expect(
+          tool.execute("s2", {
+            ...args,
+            completionCopies: [...args.completionCopies, "extra@example.com"],
+            confirmRoute: routeCode,
+          }),
+        ).rejects.toThrow(/not the route the requester approved/);
+        await expect(
+          tool.execute("s3", { ...args, delivery: "hold", confirmRoute: routeCode }),
+        ).rejects.toThrow(/not the route the requester approved/);
+        expect(sends()).toHaveLength(1);
+        const sent = await tool.execute("s4", { ...args, confirmRoute: routeCode });
+        expect(sent.details).toMatchObject({
+          ok: true,
+          result: { applied: true, submissionId: 140 },
+        });
+        expect(bodyJson(sends()[1].init)).toEqual({
+          input: { ...(checked.input as object), additionalRecipientsConfirmed: true },
+        });
+      });
+
+      it("needs the owner signatory stated, holds by default, and adds nobody", async () => {
+        const tool = plugin().tool("fi_user_esign", context());
+        const { ownerEmail: _ownerEmail, ...noOwner } = args;
+        await expect(tool.execute("s5", noOwner)).rejects.toThrow(/ownerRole and ownerEmail/);
+        const { delivery: _delivery, completionCopies: _copies, ...held } = args;
+        const preview = await tool.execute("s6", held);
+        expect(preview.details).toMatchObject({ delivery: "hold", emailsRecipients: false });
+        // The requester is not slipped onto the completion copy.
+        expect(bodyJson(sends()[0].init).input).toMatchObject({
+          delivery: "hold",
+          completionBcc: [],
+          confirmedRecipients: route.slice(0, 2),
+        });
+      });
+    });
+  });
+}

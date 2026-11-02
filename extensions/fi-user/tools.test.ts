@@ -25,6 +25,7 @@ import { approvalStores } from "./admin-action.test-support.js";
 import { fiUserApiPath } from "./fi-api-tool.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
+import { registerFiUserEsignTests } from "./tools.esign.test-support.js";
 import { registerFiUserMatrixEnvironmentTests } from "./tools.matrix-environment.test-support.js";
 import { registerFiUserWorkflowTests } from "./tools.workflow.test-support.js";
 
@@ -928,6 +929,8 @@ registerFiUserWorkflowTests({
   plugin,
   routes,
 });
+
+registerFiUserEsignTests({ bodyJson, calls, context, json, plugin, routes });
 
 describe("shared inbox", () => {
   it("narrows every search to the requester's own correspondence", async () => {

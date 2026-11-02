@@ -212,9 +212,22 @@ export function createDeliverFileTool(
 
 // ── fi_user_esign ────────────────────────────────────────────────────
 
+const Recipient = Type.Object(
+  {
+    role: Type.String({
+      minLength: 1,
+      maxLength: 100,
+      description: "Template role, exactly as in the manifest.",
+    }),
+    email: Type.String({ format: "email", maxLength: 320 }),
+    name: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  },
+  { additionalProperties: false },
+);
+
 const EsignSchema = Type.Object(
   {
-    action: stringEnum(["list", "status", "resend", "send"] as const),
+    action: stringEnum(["list", "status", "resend", "send", "prepare", "send_envelope"] as const),
     project: Type.String({ minLength: 1, maxLength: 200, description: "Project slug." }),
     submissionId: Type.Optional(Type.Integer({ minimum: 1 })),
     signerEmail: Type.Optional(Type.String({ format: "email" })),
@@ -222,12 +235,60 @@ const EsignSchema = Type.Object(
     templateId: Type.Optional(Type.Integer({ minimum: 1 })),
     completionCopies: Type.Optional(Type.Array(Type.String({ format: "email" }), { maxItems: 20 })),
     confirmSend: Type.Optional(Type.Boolean()),
+    ownerRole: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 100,
+        description: "Template role the project's owner signatory signs as.",
+      }),
+    ),
+    manifest: Type.Optional(
+      Type.Record(Type.String(), Type.Unknown(), {
+        description:
+          "prepare: the reviewed preparation manifest (source hash, page count, confidences, reviewer, evidence, fields).",
+      }),
+    ),
+    dryRun: Type.Optional(
+      Type.Boolean({ description: "prepare: resolve and check only; creates nothing." }),
+    ),
+    ownerEmail: Type.Optional(
+      Type.String({
+        format: "email",
+        description: "send_envelope: the owner signatory's email, as stated to the requester.",
+      }),
+    ),
+    additionalSigners: Type.Optional(Type.Array(Recipient, { maxItems: 10 })),
+    viewers: Type.Optional(Type.Array(Recipient, { maxItems: 10 })),
+    delivery: Type.Optional(
+      stringEnum(["hold", "docuseal"] as const, {
+        description:
+          "send_envelope: hold (default) creates the envelope and emails nobody; docuseal emails the invitations.",
+      }),
+    ),
+    message: Type.Optional(
+      Type.Object(
+        {
+          subject: Type.String({ minLength: 1, maxLength: 300 }),
+          body: Type.String({ minLength: 1, maxLength: 5_000 }),
+        },
+        { additionalProperties: false },
+      ),
+    ),
+    replyTo: Type.Optional(Type.String({ format: "email" })),
+    confirmRoute: Type.Optional(
+      Type.String({
+        pattern: "^[0-9a-f]{16}$",
+        description: "send_envelope: the routeCode of the preview the requester approved.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
 
+type EsignRecipient = { role: string; email: string; name?: string };
+
 type EsignInput = {
-  action: "list" | "status" | "resend" | "send";
+  action: "list" | "status" | "resend" | "send" | "prepare" | "send_envelope";
   project: string;
   submissionId?: number;
   signerEmail?: string;
@@ -235,6 +296,16 @@ type EsignInput = {
   templateId?: number;
   completionCopies?: string[];
   confirmSend?: boolean;
+  ownerRole?: string;
+  manifest?: Record<string, unknown>;
+  dryRun?: boolean;
+  ownerEmail?: string;
+  additionalSigners?: EsignRecipient[];
+  viewers?: EsignRecipient[];
+  delivery?: "hold" | "docuseal";
+  message?: { subject: string; body: string };
+  replyTo?: string;
+  confirmRoute?: string;
 };
 
 type EsignTemplate = {
@@ -245,6 +316,66 @@ type EsignTemplate = {
   sent: boolean;
 };
 
+type RouteEntry = { kind: "signer" | "viewer" | "completion"; role?: string; email: string };
+
+const lower = (email: string) => email.trim().toLowerCase();
+
+/**
+ * The whole envelope route as stated: the owner signatory, every further
+ * signer and viewer, every completion copy. Nothing is added to it here; Fi
+ * refuses a send whose resolved route is not exactly this list.
+ */
+export function statedEsignRoute(input: EsignInput): RouteEntry[] {
+  if (!input.ownerRole?.trim() || !input.ownerEmail?.trim()) {
+    throw new Error(
+      "ownerRole and ownerEmail (the project's owner signatory, from action=list or the project's signing view) are required",
+    );
+  }
+  const completion = [...new Set((input.completionCopies ?? []).map(lower))];
+  return [
+    { kind: "signer", role: input.ownerRole.trim(), email: lower(input.ownerEmail) },
+    ...(input.additionalSigners ?? []).map((entry) => ({
+      kind: "signer" as const,
+      role: entry.role.trim(),
+      email: lower(entry.email),
+    })),
+    ...(input.viewers ?? []).map((entry) => ({
+      kind: "viewer" as const,
+      role: entry.role.trim(),
+      email: lower(entry.email),
+    })),
+    ...completion.map((email) => ({ kind: "completion" as const, email })),
+  ];
+}
+
+/** A short code for one exact route of one template: the approval names the route it approved. */
+export function esignRouteCode(input: EsignInput, route: RouteEntry[]): string {
+  return createHash("sha256")
+    .update(
+      JSON.stringify({
+        project: input.project,
+        documentId: input.documentId,
+        templateId: input.templateId,
+        delivery: input.delivery ?? "hold",
+        route,
+        message: input.message ?? null,
+        replyTo: input.replyTo ?? null,
+      }),
+    )
+    .digest("hex")
+    .slice(0, 16);
+}
+
+const recipientRecord = (kind: "signer" | "viewer", entry: EsignRecipient) =>
+  entry.name
+    ? { kind, role: entry.role, email: entry.email, name: entry.name }
+    : { kind, role: entry.role, email: entry.email };
+
+const routeLine = (entry: RouteEntry) =>
+  entry.kind === "completion"
+    ? `completion copy: ${entry.email}`
+    : `${entry.kind} (${entry.role}): ${entry.email}`;
+
 export function createEsignTool(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
@@ -253,12 +384,29 @@ export function createEsignTool(
     name: "fi_user_esign",
     label: "E-sign (as you)",
     description:
-      "E-sign through Fi as the verified requester, for documents of projects they hold: list envelopes and reviewed templates; status of an envelope; resend the provider's reminder to a signer already on the envelope (once a day); send a reviewed template with its stored signer defaults (the project owner signatory) after the requester confirms (confirmSend=true), with the requester on the completion copy. Changing a signer, adding an external signer, or a template that needs extra signers is an administrator action: use request_admin_action.",
+      "E-sign through Fi as the verified requester, for project documents they can read on their documents or construction grant: list envelopes and reviewed templates; status of an envelope; resend the provider's reminder to a signer already on the envelope (once a day); prepare a private signing template from the reviewed preparation manifest (action=prepare; sends nothing); create an envelope from that template with an explicit route (action=send_envelope: owner signatory, any further signers such as an internal admin or a counterparty named in the document, viewers, completion copies) — the first call returns the exact route and a routeCode, show it to the requester verbatim, and call again with confirmRoute only after they approve; delivery is hold unless docuseal is chosen. action=send still sends a reviewed template with its stored defaults (confirmSend=true). Changing a signer on an existing envelope, archiving and filing stay administrator actions (request_admin_action).",
     parameters: EsignSchema,
     async execute(_toolCallId, raw) {
       const input = raw as EsignInput;
       const { delegation, config } = await exchange(api, context);
-      const base = `${orgRoot(delegation.user.orgSlug)}/${pathSegment(input.project, "project")}/esign`;
+      const root = orgRoot(delegation.user.orgSlug);
+      const base = `${root}/${pathSegment(input.project, "project")}/esign`;
+      const operation = (
+        verb: "prepare" | "send",
+        body: { input: Record<string, unknown>; dryRun?: boolean },
+        label: string,
+      ) =>
+        delegatedJson(
+          config,
+          delegation,
+          `${root}/signature/${verb}`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify(body),
+          },
+          label,
+        );
       if (input.action === "list") {
         return jsonResult(await delegatedJson(config, delegation, base, {}, "Fi e-sign list"));
       }
@@ -286,6 +434,78 @@ export function createEsignTool(
           ),
         );
       }
+      if (input.action === "prepare") {
+        if (!input.documentId || !input.ownerRole || !input.manifest) {
+          throw new Error(
+            "documentId, ownerRole and manifest (the reviewed preparation manifest) are required to prepare",
+          );
+        }
+        return jsonResult(
+          await operation(
+            "prepare",
+            {
+              input: {
+                project: input.project,
+                document: input.documentId,
+                ownerRole: input.ownerRole,
+                manifest: input.manifest,
+              },
+              ...(input.dryRun === true ? { dryRun: true } : {}),
+            },
+            "Fi e-sign prepare",
+          ),
+        );
+      }
+      if (input.action === "send_envelope") {
+        if (!input.documentId || !input.templateId) {
+          throw new Error(
+            "documentId and templateId (from action=prepare or action=list) are required",
+          );
+        }
+        const route = statedEsignRoute(input);
+        const routeCode = esignRouteCode(input, route);
+        const envelope = (confirmed: boolean) => ({
+          project: input.project,
+          document: input.documentId,
+          template: input.templateId,
+          ownerRole: input.ownerRole,
+          additionalRecipients: [
+            ...(input.additionalSigners ?? []).map((entry) => recipientRecord("signer", entry)),
+            ...(input.viewers ?? []).map((entry) => recipientRecord("viewer", entry)),
+          ],
+          completionBcc: route
+            .filter((entry) => entry.kind === "completion")
+            .map((entry) => entry.email),
+          confirmedRecipients: route,
+          delivery: input.delivery ?? "hold",
+          ...(input.message ? { message: input.message } : {}),
+          ...(input.replyTo ? { replyTo: input.replyTo } : {}),
+          additionalRecipientsConfirmed: confirmed,
+        });
+        if (input.confirmRoute !== undefined && input.confirmRoute !== routeCode) {
+          throw new Error(
+            "This is not the route the requester approved (the recipients, delivery or message changed): preview it again without confirmRoute",
+          );
+        }
+        if (input.confirmRoute === undefined) {
+          // Fi resolves the envelope and refuses any route that is not exactly this one; nothing is created.
+          const planned = await operation(
+            "send",
+            { input: envelope(false), dryRun: true },
+            "Fi e-sign route check",
+          );
+          return jsonResult({
+            preview: true,
+            delivery: input.delivery ?? "hold",
+            emailsRecipients: (input.delivery ?? "hold") === "docuseal",
+            route: route.map(routeLine),
+            routeCode,
+            checked: planned,
+            next: "Show the requester exactly these recipients and the delivery; call again with the same arguments and confirmRoute=routeCode only after they approve.",
+          });
+        }
+        return jsonResult(await operation("send", { input: envelope(true) }, "Fi e-sign send"));
+      }
       if (!input.documentId || !input.templateId) {
         throw new Error("documentId and templateId (from action=list) are required to send");
       }
@@ -299,7 +519,7 @@ export function createEsignTool(
       );
       if (!template) {
         throw new Error(
-          "That document has no reviewed e-sign template yet; use request_admin_action with esign_prepare_template",
+          "That document has no reviewed e-sign template yet: analyze it, build the reviewed manifest and use action=prepare, then action=send_envelope",
         );
       }
       if (template.sent) {
@@ -307,7 +527,7 @@ export function createEsignTool(
       }
       if (template.additionalSignerRoles.length > 0) {
         throw new Error(
-          `This template needs signers beyond the stored defaults (${template.additionalSignerRoles.join(", ")}); use request_admin_action`,
+          `This template needs signers beyond the stored defaults (${template.additionalSignerRoles.join(", ")}); use action=send_envelope with those signers stated`,
         );
       }
       const completionBcc = [
