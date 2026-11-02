@@ -397,7 +397,13 @@ export function registerAdminDelegation(
     string,
     Map<string, { matrixUserId: string; roomId: string; accountId?: string }>
   >();
+  /**
+   * Fi-user sessions someone else wrote into since a run last started there: a
+   * run that may carry their queued words proves nobody, as on the admin side.
+   */
+  const fiUserTainted = new Set<string>();
   const reset = () => {
+    fiUserTainted.clear();
     arrivals.clear();
     runs.clear();
     sourceReplies.clear();
@@ -426,11 +432,13 @@ export function registerAdminDelegation(
     if (!proven || (dispatch && message.senderAuthentication !== "verified")) {
       fiUserReplies.delete(sessionKey);
       forgetProjectedMatrixSession(sessionKey);
+      fiUserTainted.add(sessionKey);
       return;
     }
     for (const [eventId, reply] of pending ?? []) {
       if (reply.matrixUserId !== sender) {
         pending!.delete(eventId);
+        fiUserTainted.add(sessionKey);
       }
     }
     forgetProjectedMatrixSession(sessionKey, sender);
@@ -625,6 +633,7 @@ export function registerAdminDelegation(
         const key = sessionKey.toLowerCase();
         arrivals.delete(key);
         fiUserReplies.delete(key);
+        fiUserTainted.delete(key);
         forgetProjectedMatrixSession(key);
         for (const reply of sourceReplies.keys()) {
           if (JSON.parse(reply)[0] === key) {
@@ -654,11 +663,14 @@ export function registerAdminDelegation(
         const eventId = typeof origin?.chat?.eventId === "string" ? origin.chat.eventId : undefined;
         const replies = fiUserReplies.get(sessionKey);
         const reply = eventId ? replies?.get(eventId) : undefined;
+        // A run takes up everything queued for the session so far.
+        const tainted = fiUserTainted.delete(sessionKey);
         if (eventId) {
           replies?.delete(eventId);
         }
         if (
           reply &&
+          !tainted &&
           context.trigger === "user" &&
           context.senderId?.trim() === reply.matrixUserId &&
           origin?.sender?.id === reply.matrixUserId &&

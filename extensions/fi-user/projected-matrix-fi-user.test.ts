@@ -135,4 +135,24 @@ describe("a projected Matrix reply in a Slack-keyed Fi-user session", () => {
     await turn.start({ ...reply().start, runId: "run-2" });
     expect(requesterIdentity(tool({ runId: "run-2" }))).toBeNull();
   });
+
+  it("refuses a run that can carry another person's earlier queued message", async () => {
+    const turn = plugin();
+    allow();
+    allow({ senderId: "@bob:matrix.example" });
+    await turn.arrive(reply("@bob:matrix.example", "$bob").arrive);
+    await turn.arrive(reply().arrive);
+    await turn.start(reply().start);
+    expect(requesterIdentity(tool())).toBeNull();
+  });
+
+  it("admits the next own run once another person's message had its own run", async () => {
+    const turn = plugin();
+    allow();
+    await turn.inject({ channel: "slack", senderId: "U0OTHER002", sessionKey: SESSION });
+    await turn.start({ ...reply().start, runId: "run-other", senderId: "U0OTHER002" });
+    await turn.arrive(reply().arrive);
+    await turn.start(reply().start);
+    expect(requesterIdentity(tool())).toEqual({ channel: "matrix", requesterMatrixUserId: MEMBER });
+  });
 });
