@@ -165,14 +165,15 @@ describe("Matrix requester Slack reads", () => {
     expect(readSlackMessages).not.toHaveBeenCalled();
   });
 
-  it("keeps configured read policy independent of Matrix mapping", async () => {
-    await handleSlackAction(
-      { action: "readMessages", channelId: "C_CURRENT" },
-      allowlisted(),
-      matrixRequester,
-    );
-    expect(authTest).toHaveBeenCalledTimes(1);
-    expect(requesterSlackIdentity).not.toHaveBeenCalled();
+  it("bounds an allowlisted channel by the Matrix requester's own Slack membership", async () => {
+    // Owner decision 2026-11-02: a Fi chat reads only what its requester can read in Slack.
+    await expect(
+      handleSlackAction({ action: "readMessages", channelId: "C_CURRENT" }, allowlisted(), matrixRequester),
+    ).rejects.toThrow("the requester is not a member");
+    expect(readSlackMessages).not.toHaveBeenCalled();
+    isSlackConversationMember.mockResolvedValueOnce(true);
+    await handleSlackAction({ action: "readMessages", channelId: "C_CURRENT" }, allowlisted(), matrixRequester);
+    expect(requesterSlackIdentity).toHaveBeenCalled();
     expect(readSlackMessages).toHaveBeenCalled();
   });
 
@@ -450,5 +451,48 @@ describe("Slack permalinks read from a Fi chat turn", () => {
       ...readSlackMessages.mock.calls.map(([, opts]) => (opts as { accountId?: string }).accountId),
     ];
     expect(selected.filter((id) => id === "fi-admin" || id === "fi-user")).toEqual([]);
+  });
+
+  it("requires the requester's membership even where the account's policy admits every channel", async () => {
+    const open = tenantConfig();
+    (open.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"].channels = {
+      "*": { enabled: true },
+    };
+    isSlackConversationMember.mockResolvedValue(false);
+    await expect(
+      handleSlackAction({ action: "readMessages", channelId: "C0PRIVATE01" }, open, fiAdmin),
+    ).rejects.toThrow("the requester is not a member");
+    isSlackConversationMember.mockResolvedValue(true);
+    await handleSlackAction({ action: "readMessages", channelId: "C0PRIVATE01" }, open, fiAdmin);
+    expect(readSlackMessages).toHaveBeenCalledTimes(1);
+  });
+
+  it("denies another person's DM with the bot even when that DM peer is configured", async () => {
+    const dms = tenantConfig();
+    Object.assign((dms.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"], {
+      dm: { enabled: true },
+      allowFrom: ["U999", "U123"],
+    });
+    Object.assign(slackActionRuntime, {
+      resolveSlackConversationInfo: async () => ({ type: "dm", user: "U999" }),
+    });
+    await expect(
+      handleSlackAction({ action: "readMessages", channelId: "D0OTHER0001" }, dms, fiAdmin),
+    ).rejects.toThrow("Slack read target channel is not allowed");
+    expect(readSlackMessages).not.toHaveBeenCalled();
+  });
+
+  it("keeps an operator's direct read and a native Slack turn under their own rules", async () => {
+    const open = tenantConfig();
+    (open.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"].channels = {
+      "*": { enabled: true },
+    };
+    await handleSlackAction(
+      { action: "readMessages", channelId: "C0BJLAWS49H", accountId: "fi-admin" },
+      open,
+      { ...fiAdmin, conversationReadOrigin: "direct-operator" },
+    );
+    expect(isSlackConversationMember).not.toHaveBeenCalled();
+    expect(readSlackMessages).toHaveBeenCalledTimes(1);
   });
 });

@@ -348,7 +348,94 @@ function resolveSlackChannelReadPolicy(params: {
   };
 }
 
-async function assertSlackReadTargetAllowed(params: {
+type SlackRequesterReadOpts = {
+  cfg: OpenClawConfig;
+  accountId?: string;
+  token?: string;
+  teamId?: string;
+};
+
+/**
+ * The trusted requester must be in the conversation: a member of the channel,
+ * or the peer of the DM. Fails closed when no Slack identity is linked.
+ */
+async function assertSlackRequesterMember(params: {
+  account: ResolvedSlackAccount;
+  cfg: OpenClawConfig;
+  channelId: string;
+  teamId?: string;
+  context?: SlackActionContext;
+  readOpts: SlackRequesterReadOpts;
+  preparedWorkspaceId?: string;
+  info?: SlackConversationInfo;
+}): Promise<void> {
+  const requesterId = await resolveSlackReadRequester(
+    params.account.accountId,
+    params.context,
+    params.readOpts,
+    params.preparedWorkspaceId,
+  );
+  params.context?.assertDirectAdapterHandoff?.();
+  if (!requesterId) {
+    throw new Error("Slack read target channel is not allowed.");
+  }
+  const info =
+    params.info ??
+    (/^[DG]/i.test(params.channelId)
+      ? await slackActionRuntime.resolveSlackConversationInfo({
+          cfg: params.cfg,
+          accountId: params.account.accountId,
+          channelId: params.channelId,
+          teamId: params.teamId,
+          operation: "read",
+          assertDirectAdapterHandoff: params.context?.assertDirectAdapterHandoff,
+        })
+      : undefined);
+  let member: boolean;
+  if (info?.type === "dm") {
+    member = info.user?.toUpperCase() === requesterId;
+  } else {
+    try {
+      member = await slackActionRuntime.isSlackConversationMember(
+        params.channelId,
+        requesterId,
+        params.readOpts,
+      );
+    } catch (error) {
+      const code = readSlackPlatformErrorCode(error) ?? "unknown_error";
+      throw new Error(
+        `Slack read target channel is not allowed: this Slack app cannot see conversation ${params.channelId} (${code}). ` +
+          "It is usually a DM or private channel the bot is not in. Ask the requester to forward the message or share the file into this conversation.",
+        { cause: error },
+      );
+    }
+  }
+  if (!member) {
+    throw new Error(
+      `Slack read target channel is not allowed: the requester is not a member of conversation ${params.channelId}.`,
+    );
+  }
+}
+
+/**
+ * A Fi (Matrix) turn acts for one person: whatever the account's channel
+ * policy admits, the conversation must also be one that person can read in
+ * Slack. Direct operator reads keep their own authority.
+ */
+async function assertSlackReadTargetAllowed(
+  params: Parameters<typeof assertSlackReadTargetPolicy>[0] & {
+    personScope?: { readOpts: SlackRequesterReadOpts; preparedWorkspaceId?: string };
+  },
+): Promise<void> {
+  const membership = { verified: false };
+  await assertSlackReadTargetPolicy({ ...params, membership });
+  // A target the policy admitted only through membership was already checked.
+  if (params.personScope && !membership.verified) {
+    await assertSlackRequesterMember({ ...params, ...params.personScope });
+  }
+}
+
+async function assertSlackReadTargetPolicy(params: {
   account: ResolvedSlackAccount;
   cfg: OpenClawConfig;
   channelId: string;
@@ -363,6 +450,8 @@ async function assertSlackReadTargetAllowed(params: {
     readOpts: { cfg: OpenClawConfig; accountId?: string; token?: string; teamId?: string };
     preparedWorkspaceId?: string;
   };
+  /** Set when the requester's membership was proven on the way. */
+  membership?: { verified: boolean };
 }) {
   const deny = () => {
     throw new Error("Slack read target channel is not allowed.");
@@ -406,6 +495,9 @@ async function assertSlackReadTargetAllowed(params: {
       throw new Error(
         `Slack read target channel is not allowed: the requester is not a member of conversation ${params.channelId}.`,
       );
+    }
+    if (params.membership) {
+      params.membership.verified = true;
     }
   };
   const currentConversation = isCurrentSlackReadTarget({
@@ -649,11 +741,13 @@ export function resolveMatrixReadAccountId(
     (cfg.bindings ?? [])
       .filter(
         (binding) =>
+          ((binding as { type?: string }).type ?? "route") === "route" &&
           binding.agentId?.trim().toLowerCase() === agentId &&
           binding.match?.channel?.trim().toLowerCase() === "slack",
       )
-      .map((binding) => binding.match.accountId?.trim().toLowerCase())
-      .filter((id): id is string => Boolean(id) && id !== "*"),
+      .map((binding) => binding.match.accountId?.trim())
+      .filter((id): id is string => Boolean(id) && id !== "*")
+      .map((id) => normalizeAccountId(id)),
   );
   return candidates.size === 1 ? [...candidates][0] : undefined;
 }
@@ -700,11 +794,24 @@ export async function handleSlackAction(
     };
   };
 
+  // Every Slack action a Fi (Matrix) turn takes is bounded by what its requester
+  // can read in Slack; this only narrows, it never admits a target.
+  const personScoped =
+    normalizeOptionalLowercaseString(context?.currentChannelProvider) === "matrix" &&
+    context?.conversationReadOrigin !== "direct-operator";
   const assertReadTargetAllowed = async (
     target: SlackActionChannelTarget,
     opts?: { allowRequesterMembership?: boolean; preparedWorkspaceId?: string },
   ) => {
     await assertSlackReadTargetAllowed({
+      ...(personScoped
+        ? {
+            personScope: {
+              readOpts: buildActionOpts("read", target.teamId),
+              preparedWorkspaceId: opts?.preparedWorkspaceId,
+            },
+          }
+        : {}),
       account,
       cfg,
       channelId: target.channelId,
