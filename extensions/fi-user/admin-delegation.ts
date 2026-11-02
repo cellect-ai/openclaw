@@ -11,11 +11,18 @@ import { adminActionSessions } from "./admin-action.js";
 import {
   configFromRuntime,
   FI_ADMIN_DELEGATION_AGENT_ID,
+  FI_USER_AGENT_ID,
   lookupDelegation,
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
+import {
+  forgetAllProjectedMatrixRuns,
+  forgetProjectedMatrixRun,
+  forgetProjectedMatrixSession,
+  rememberProjectedMatrixRun,
+} from "./projected-matrix-runs.js";
 import {
   mailWakeRequester,
   ON_BEHALF_OF_TOOLS,
@@ -382,10 +389,66 @@ export function registerAdminDelegation(
   /** Fi's latest allowance for one Matrix person to continue one source session, by room. */
   const sourceReplies = new Map<string, { roomId: string; at: number }>();
   const custody = new Map<string, Custody>();
+  /**
+   * Verified Matrix replies dispatched into a Fi-user Slack session, by session
+   * then event: the run started for that exact event, by that sender, takes it.
+   */
+  const fiUserReplies = new Map<
+    string,
+    Map<string, { matrixUserId: string; roomId: string; accountId?: string }>
+  >();
   const reset = () => {
     arrivals.clear();
     runs.clear();
     sourceReplies.clear();
+    fiUserReplies.clear();
+    forgetAllProjectedMatrixRuns();
+  };
+  const FI_USER_SOURCE_SESSION = new RegExp(`^agent:${FI_USER_AGENT_ID}:slack:(?:channel|group):`);
+  /**
+   * A message for a Fi-user Slack session. Only a homeserver-verified reply that
+   * Fi's source guard currently allows for this exact person and session is
+   * remembered; anyone else's message voids what is pending and running there.
+   */
+  const fiUserInbound = (message: Inbound, dispatch: boolean): void => {
+    const sessionKey = message.sessionKey?.toLowerCase();
+    if (!sessionKey || !FI_USER_SOURCE_SESSION.test(sessionKey)) {
+      return;
+    }
+    const sender = message.senderId?.trim() ?? "";
+    const allowed = sourceReplies.get(JSON.stringify([sessionKey, sender]));
+    const proven =
+      (message.channel === "matrix" || message.channel === "slack") &&
+      MATRIX_USER_ID.test(sender) &&
+      allowed !== undefined &&
+      allowed.at > Date.now() - SOURCE_REPLY_TTL_MS;
+    const pending = fiUserReplies.get(sessionKey);
+    if (!proven || (dispatch && message.senderAuthentication !== "verified")) {
+      fiUserReplies.delete(sessionKey);
+      forgetProjectedMatrixSession(sessionKey);
+      return;
+    }
+    for (const [eventId, reply] of pending ?? []) {
+      if (reply.matrixUserId !== sender) {
+        pending!.delete(eventId);
+      }
+    }
+    forgetProjectedMatrixSession(sessionKey, sender);
+    if (
+      !dispatch ||
+      typeof message.isGroup !== "boolean" ||
+      !message.messageId?.startsWith("$")
+    ) {
+      return;
+    }
+    const account = message.accountId?.trim();
+    const replies = pending ?? new Map();
+    replies.set(message.messageId, {
+      matrixUserId: sender,
+      roomId: allowed.roomId,
+      ...(account && matrixConnection(configFromRuntime(api), account) ? { accountId: account } : {}),
+    });
+    remember(fiUserReplies, sessionKey, replies);
   };
   /**
    * What this runtime's configuration says about the admin agent's commands,
@@ -497,7 +560,11 @@ export function registerAdminDelegation(
             eventId: message.messageId,
             sourceRoomId: allowed.roomId,
             sourceMatrixUserId: requester.requester_matrix_user_id,
-            ...(message.accountId?.trim() ? { sourceAccountId: message.accountId.trim() } : {}),
+            // Only a configured Matrix account names the Fi environment; a Slack
+            // account the host may report for the session never does.
+            ...(matrixConnection(configFromRuntime(api), message.accountId?.trim())
+              ? { sourceAccountId: message.accountId!.trim() }
+              : {}),
           }
         : undefined;
     }
@@ -543,6 +610,7 @@ export function registerAdminDelegation(
         (event.data.phase === "end" || event.data.phase === "error")
       ) {
         runs.delete(event.runId);
+        forgetProjectedMatrixRun(event.runId);
       }
     },
   });
@@ -552,9 +620,12 @@ export function registerAdminDelegation(
     cleanup: ({ runId, sessionKey }) => {
       if (runId) {
         runs.delete(runId);
+        forgetProjectedMatrixRun(runId);
       } else if (sessionKey) {
         const key = sessionKey.toLowerCase();
         arrivals.delete(key);
+        fiUserReplies.delete(key);
+        forgetProjectedMatrixSession(key);
         for (const reply of sourceReplies.keys()) {
           if (JSON.parse(reply)[0] === key) {
             sourceReplies.delete(reply);
@@ -577,6 +648,31 @@ export function registerAdminDelegation(
       const sessionKey = context.sessionKey?.toLowerCase();
       const runId = context.runId;
       const agentId = context.agentId?.toLowerCase();
+      if (agentId === FI_USER_AGENT_ID && sessionKey && runId) {
+        // Only the run of the exact verified event, by that same person, in its room.
+        const origin = context.channelContext;
+        const eventId = typeof origin?.chat?.eventId === "string" ? origin.chat.eventId : undefined;
+        const replies = fiUserReplies.get(sessionKey);
+        const reply = eventId ? replies?.get(eventId) : undefined;
+        if (eventId) {
+          replies?.delete(eventId);
+        }
+        if (
+          reply &&
+          context.trigger === "user" &&
+          context.senderId?.trim() === reply.matrixUserId &&
+          origin?.sender?.id === reply.matrixUserId &&
+          origin.sender.isBot !== true &&
+          origin.chat?.id === reply.roomId
+        ) {
+          rememberProjectedMatrixRun(runId, {
+            sessionKey,
+            matrixUserId: reply.matrixUserId,
+            ...(reply.accountId ? { accountId: reply.accountId } : {}),
+          });
+        }
+        return undefined;
+      }
       if (!agentId || !isAdminAgent(config, agentId)) {
         return undefined;
       }
@@ -802,6 +898,7 @@ export function registerAdminDelegation(
    * anything else counts as someone unknown.
    */
   const dispatched = (message: Inbound): void => {
+    fiUserInbound(message, true);
     const session = adminSession(message);
     if (!session) {
       return;
@@ -825,6 +922,7 @@ export function registerAdminDelegation(
    * turn that belongs to somebody else.
    */
   const received = (message: Inbound): void => {
+    fiUserInbound(message, false);
     const session = adminSession(message);
     if (!session) {
       return;
@@ -836,7 +934,12 @@ export function registerAdminDelegation(
         delete run.sender;
       }
     }
-    const requester = inboundRequester(session.sessionKey, message);
+    // Only channel input can be the allowed Matrix person here; a sender id
+    // another caller supplies (a hook, a client) still counts as someone else.
+    const requester =
+      message.channel === "matrix" || message.channel === "slack"
+        ? inboundRequester(session.sessionKey, message)
+        : onBehalfOfRequester(message);
     observe(
       session.sessionKey,
       talkConsultSender(session.adminAgentId, session.sessionKey, message) ??
@@ -965,16 +1068,16 @@ export function registerAdminDelegation(
       // A source-session reply names its Matrix account at dispatch; the tool
       // context may carry the Slack session's account instead.
       const originAccount = run.matrixOrigin?.accountId;
-      connection =
-        originAccount &&
-        ctx.requester?.channel === "matrix" &&
-        ctx.requester.accountId !== undefined &&
-        ctx.requester.accountId !== originAccount
+      // A run admitted from a source-session reply uses that reply's own Matrix
+      // account, or the tool's only when the host labels the call Matrix; a
+      // Slack account reported for the session never selects the environment.
+      const toolMatrixAccount =
+        ctx.requester?.channel === "matrix" ? ctx.requester.accountId : undefined;
+      connection = run.matrixOrigin
+        ? originAccount && toolMatrixAccount !== undefined && toolMatrixAccount !== originAccount
           ? undefined
-          : matrixConnection(
-              config,
-              run.continuation?.accountId ?? originAccount ?? ctx.requester?.accountId,
-            );
+          : matrixConnection(config, originAccount ?? toolMatrixAccount)
+        : matrixConnection(config, run.continuation?.accountId ?? ctx.requester?.accountId);
     } else if (mail && "requester_email" in requester) {
       body = { requesterEmail: requester.requester_email };
       connection = config;
@@ -1181,10 +1284,13 @@ export function registerAdminDelegation(
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }
-    const matrix = matrixConnection(
-      config,
-      run.continuation?.accountId ?? run.matrixOrigin?.accountId ?? ctx.agentAccountId,
-    );
+    const matrix = run.matrixOrigin
+      ? matrixConnection(
+          config,
+          run.matrixOrigin.accountId ??
+            (ctx.messageChannel === "matrix" ? ctx.agentAccountId : undefined),
+        )
+      : matrixConnection(config, run.continuation?.accountId ?? ctx.agentAccountId);
     return matrix
       ? {
           connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },
