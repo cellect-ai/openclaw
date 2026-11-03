@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import type { ModelsListResult } from "../../../packages/gateway-protocol/src/index.js";
 import { patchSessionEntryWithKey, type SessionEntry } from "../../config/sessions.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { hasOperatorToolGatewayAuthority } from "../../gateway/operator-invocation-authority.js";
@@ -22,6 +23,31 @@ import { loadPublishedPreparedModelCatalog } from "../prepared-model-catalog.js"
 import { normalizeToolModelOverride, ToolAuthorizationError } from "./common.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
 import type { ResolvedStatusSessionEntry as ResolvedStatusSession } from "./session-status-session-resolve.js";
+
+function modelSelectionRecovery(
+  error: Error,
+  raw: string,
+  models: readonly Pick<
+    ModelsListResult["models"][number],
+    "provider" | "id" | "name" | "available" | "manualSelectionAllowed"
+  >[],
+): Error {
+  const requested = raw.trim().toLowerCase().split("/").at(-1) ?? "";
+  const choices = models
+    .filter((entry) => entry.manualSelectionAllowed !== false && entry.available !== false)
+    .map((entry) => ({
+      key: modelKey(entry.provider, entry.id),
+      matches: `${entry.id} ${entry.name}`.toLowerCase().includes(requested),
+    }))
+    .sort((a, b) => Number(b.matches) - Number(a.matches) || a.key.localeCompare(b.key));
+  const keys = [...new Set(choices.map((entry) => entry.key))];
+  return keys.length
+    ? new Error(
+        `${error.message} Retry session_status with a configured canonical model ID: ${keys.slice(0, 8).join(", ")}.${keys.length > 8 ? " (Showing up to 8 choices, matching names first.)" : ""} A rejected nickname does not establish that the requested model is unavailable.`,
+        { cause: error },
+      )
+    : error;
+}
 
 /** Gateway requests use the mutation owner; standalone runs retain their local store contract. */
 export async function patchSessionStatusModel(params: {
@@ -57,6 +83,17 @@ export async function patchSessionStatusModel(params: {
             : {}),
           model: normalizeToolModelOverride(params.raw) ?? null,
         },
+      }).catch(async (error: unknown) => {
+        if (!(error instanceof Error) || !/model not allowed:/i.test(error.message)) {
+          throw error;
+        }
+        // The existing catalog owner filters this exact session and operator;
+        // never advertise another agent's models or expand nickname policy.
+        const catalog = await gatewayCall<ModelsListResult>({
+          method: "models.list",
+          params: { agentId, sessionKey: resolved.key, preparedOnly: true },
+        }).catch(() => undefined);
+        throw catalog ? modelSelectionRecovery(error, params.raw, catalog.models) : error;
       }),
     );
     return {
@@ -127,7 +164,11 @@ export async function patchSessionStatusModel(params: {
     }
     const key = modelKey(selected.ref.provider, selected.ref.model);
     if (!policy.allows(selected.ref)) {
-      throw new Error(`Model "${key}" is not allowed.`);
+      throw modelSelectionRecovery(
+        new Error(`Model "${key}" is not allowed.`),
+        raw,
+        policy.allowedCatalog,
+      );
     }
     modelSelection = {
       ...selected.ref,

@@ -8,6 +8,7 @@ import type { SessionEntry } from "../config/sessions/types.js";
 import type { ModelDefinitionConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createRequestGatewayMethodRegistry } from "../gateway/server-methods.js";
+import { createModelsListTestContext } from "../gateway/server-methods/models-list-result.openai-routes.test-support.js";
 import { flushPendingSessionsChangedEvents } from "../gateway/server-methods/session-change-event.js";
 import {
   disposeSessionReadContexts,
@@ -38,6 +39,10 @@ import type { AgentHarness } from "./harness/types.js";
 import type { ModelCatalogEntry } from "./model-catalog.js";
 import * as preparedCatalog from "./prepared-model-catalog.js";
 import { withGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
+import {
+  callAgentToolGatewayRequest,
+  type AgentToolGatewayRequestCaller,
+} from "./tools/in-process-gateway.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
 
 const runtime = vi.hoisted(() => ({
@@ -162,6 +167,7 @@ async function fixture(
     entry?: Partial<SessionEntry>;
     sessionEntry?: SessionEntry;
     catalog?: ModelCatalogEntry[];
+    observeGateway?: boolean;
   } = {},
 ) {
   const agentId = options.agentId ?? "main";
@@ -180,19 +186,21 @@ async function fixture(
     },
   );
   const broadcast = vi.fn<GatewayRequestContext["broadcastToConnIds"]>();
+  const modelContext = createModelsListTestContext({
+    cfg,
+    agentId,
+    agentDir: state.agentDir(agentId),
+    workspaceDir: state.workspaceDir,
+    catalog: options.catalog ?? catalog,
+    catalogComplete: true,
+    preparedAuthModes: { fixture: "api_key" },
+    preparedAuthStore: { version: 1, profiles: {} },
+  });
   const context = createGatewayRequestContext(
     makeContextParams({
       getAttachedGatewayMethodRegistry: createRequestGatewayMethodRegistry,
       broadcastToConnIds: broadcast,
-      loadGatewayModelCatalogSnapshot: async (params) => ({
-        agentId: params?.agentId ?? agentId,
-        agentDir: state.agentDir(params?.agentId ?? agentId),
-        workspaceDir: state.workspaceDir,
-        config: cfg,
-        catalogComplete: true,
-        entries: options.catalog ?? catalog,
-        routeVariants: options.catalog ?? catalog,
-      }),
+      loadGatewayModelCatalogSnapshot: modelContext.loadGatewayModelCatalogSnapshot,
     }),
   );
   let current = true;
@@ -200,10 +208,22 @@ async function fixture(
   context.resolveGatewayContext = resolveGatewayContext;
   context.getSessionEventSubscriberConnIds = () => new Set(["status-observer"]);
   await initializeSessionReadContext(context);
+  const gatewayCalls: Array<{
+    request: Parameters<AgentToolGatewayRequestCaller>[0];
+    result: Promise<unknown>;
+  }> = [];
+  const observeGateway: AgentToolGatewayRequestCaller = <T>(
+    request: Parameters<AgentToolGatewayRequestCaller>[0],
+  ) => {
+    const result = callAgentToolGatewayRequest<T>(request);
+    gatewayCalls.push({ request, result });
+    return result;
+  };
   const tool = createSessionStatusTool({
     config: cfg,
     agentSessionKey: key,
     requesterAgentIdOverride: agentId,
+    ...(options.observeGateway ? { callGateway: observeGateway } : {}),
   });
   const gatewayScope = { context, resolveGatewayContext, isWebchatConnect: () => false };
   const withCaller = <T>(run: () => Promise<T>) =>
@@ -222,6 +242,7 @@ async function fixture(
     context,
     broadcast,
     tool,
+    gatewayCalls,
     gatewayScope,
     withCaller,
     read: () => expectDefined(loadSessionEntry(scope), "status session"),
@@ -292,6 +313,61 @@ it.each([false, true])(
     expect(cfg).toEqual(configBefore);
   },
 );
+
+it("recovers a rejected nickname through this session's catalog without granting cross-agent models", async () => {
+  const astra = { provider: "fixture", id: "reasoner-astra", name: "Fixture Astra" };
+  const other = { provider: "fixture", id: "support-only", name: "Other agent" };
+  const choices = [
+    ...Array.from({ length: 10 }, (_, index) => ({
+      provider: "fixture",
+      id: `a-choice-${index}`,
+      name: `Choice ${index}`,
+    })),
+    astra,
+  ];
+  const entries = [...catalog, ...choices, other];
+  cfg = modelConfig(entries, {
+    model: { primary: "fixture/default" },
+    models: Object.fromEntries(entries.map((entry) => [`fixture/${entry.id}`, {}])),
+    modelPolicy: { allow: ["fixture/default", ...choices.map((entry) => `fixture/${entry.id}`)] },
+  });
+  const agents = expectDefined(cfg.agents?.entries, "model selection agents");
+  agents.support = {
+    models: { "fixture/support-only": { alias: "astra" } },
+    modelPolicy: { allow: ["fixture/support-only"] },
+  };
+  expectDefined(cfg.models?.providers?.fixture, "fixture model provider").apiKey = "fixture-key";
+  configRuntime.setRuntimeConfigSnapshot(cfg);
+  const target = await fixture({ catalog: entries, observeGateway: true });
+  const before = target.read();
+  const failure = await target
+    .execute({ sessionKey: "current", model: "astra" })
+    .catch((error: unknown) => error);
+  const catalogCall = expectDefined(
+    target.gatewayCalls.find(({ request }) => request.method === "models.list"),
+    "scoped model catalog call",
+  );
+  const discovered = await catalogCall.result;
+  expect(discovered).toMatchObject({
+    models: expect.arrayContaining([expect.objectContaining({ id: astra.id })]),
+  });
+  expect(failure).toBeInstanceOf(Error);
+  expect(String(failure)).toContain("model not allowed: fixture/astra");
+  expect(String(failure)).toContain("canonical model ID: fixture/reasoner-astra");
+  expect(String(failure)).not.toContain("support-only");
+  expect(String(failure)).toContain("Showing up to 8 choices");
+  expect(target.read()).toEqual(before);
+
+  expect((await target.execute({ model: "fixture/reasoner-astra" })).details).toMatchObject({
+    changedModel: true,
+    modelOverride: "fixture/reasoner-astra",
+  });
+  const selected = target.read();
+  await expect(target.execute({ model: "fixture/support-only" })).rejects.toThrow(
+    "model not allowed",
+  );
+  expect(target.read()).toEqual(selected);
+});
 
 it.each([
   ["unavailable", "The selected runtime is no longer available."],
