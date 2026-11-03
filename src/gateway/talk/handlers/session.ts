@@ -332,7 +332,9 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           const capabilities = resolution.capabilities;
           const controlSource =
             capabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
-          const providerInstructions = await resolveTalkRealtimeProviderInstructions({
+          // Profile files do not depend on the session row. Read them while that
+          // row is ensured. History names the row, so it starts only after.
+          const instructionsPromise = resolveTalkRealtimeProviderInstructions({
             config: runtimeConfig,
             agentId,
             configuredInstructions: realtimeConfig.instructions,
@@ -358,10 +360,10 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
             });
             replacement?.assertCurrent(target);
           };
-          const initialItems = await readTalkRealtimeInitialItems(
-            target,
-            assertEnsuredTargetCurrent,
-          );
+          const [providerInstructions, initialItems] = await Promise.all([
+            instructionsPromise,
+            readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent),
+          ]);
           assertEnsuredTargetCurrent();
           const model =
             normalizeOptionalString(relayLaunch.providerConfig.model) ??
