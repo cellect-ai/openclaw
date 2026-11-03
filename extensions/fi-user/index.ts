@@ -27,6 +27,7 @@ import {
 } from "./channel-projection-registration.js";
 import { createDataRoomTool } from "./dataroom-tool.js";
 import { isSlackDirectSessionKey } from "./direct-projection.js";
+import { createEsignTool } from "./esign-tool.js";
 import { createFiUserApiTool } from "./fi-api-tool.js";
 import {
   brokerToken,
@@ -56,7 +57,7 @@ import {
 } from "./generated-artifacts.js";
 import { registerLetMeKnow } from "./let-me-know.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
-import { createBudgetImportTool, createDeliverFileTool, createEsignTool } from "./member-tools.js";
+import { createBudgetImportTool, createDeliverFileTool } from "./member-tools.js";
 import {
   ON_BEHALF_OF_AGENTS,
   ON_BEHALF_OF_TOOLS,

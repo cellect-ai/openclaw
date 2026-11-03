@@ -181,5 +181,126 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
         });
       });
     });
+
+    describe("a company document", () => {
+      const company = {
+        action: "send_envelope",
+        company: "shape-equity-partners",
+        documentId: "sep-doc",
+        templateId: 91,
+        ownerRole: "Managing Member",
+        ownerEmail: "Lorenzo@Example.com",
+        completionCopies: ["member@example.com"],
+        delivery: "docuseal",
+      };
+
+      beforeEach(() => {
+        routes.push((url, init) =>
+          (url.pathname === "/api/shape/signature/send" ||
+            url.pathname === "/api/shape/signature/prepare") &&
+          init.method === "POST"
+            ? json({
+                ok: true,
+                result: { applied: bodyJson(init).dryRun !== true, submissionId: 150 },
+              })
+            : undefined,
+        );
+      });
+
+      it("prepares and sends with the stated signer as the company's primary signer, through the same two steps", async () => {
+        const tool = plugin().tool("fi_user_esign", context());
+        const manifest = {
+          documentKind: "consent",
+          sourceSha256: "b".repeat(64),
+          pageCount: 1,
+          fields: [],
+        };
+        await expect(
+          tool.execute("c0", {
+            action: "prepare",
+            company: "shape-equity-partners",
+            documentId: "sep-doc",
+            ownerRole: "Managing Member",
+            manifest,
+          }),
+        ).rejects.toThrow(/ownerEmail/);
+        await tool.execute("c1", {
+          action: "prepare",
+          company: "shape-equity-partners",
+          documentId: "sep-doc",
+          ownerRole: "Managing Member",
+          ownerEmail: "Lorenzo@Example.com",
+          manifest,
+        });
+        const prepared = calls.find((entry) => entry.url.endsWith("/api/shape/signature/prepare"));
+        expect(bodyJson(prepared!.init)).toEqual({
+          input: {
+            company: "shape-equity-partners",
+            primarySigner: { role: "Managing Member", email: "lorenzo@example.com" },
+            document: "sep-doc",
+            manifest,
+          },
+        });
+        const preview = await tool.execute("c2", company);
+        const { routeCode } = preview.details as { routeCode: string };
+        expect(preview.details).toMatchObject({
+          preview: true,
+          route: [
+            "signer (Managing Member): lorenzo@example.com",
+            "completion copy: member@example.com",
+          ],
+        });
+        await tool.execute("c3", { ...company, confirmRoute: routeCode });
+        const sends = calls.filter((entry) => entry.url.endsWith("/api/shape/signature/send"));
+        expect(sends.map((entry) => bodyJson(entry.init))).toEqual([
+          {
+            dryRun: true,
+            input: {
+              company: "shape-equity-partners",
+              primarySigner: { role: "Managing Member", email: "lorenzo@example.com" },
+              document: "sep-doc",
+              template: 91,
+              additionalRecipients: [],
+              completionBcc: ["member@example.com"],
+              confirmedRecipients: [
+                { kind: "signer", role: "Managing Member", email: "lorenzo@example.com" },
+                { kind: "completion", email: "member@example.com" },
+              ],
+              delivery: "docuseal",
+              additionalRecipientsConfirmed: false,
+            },
+          },
+          {
+            input: expect.objectContaining({
+              company: "shape-equity-partners",
+              additionalRecipientsConfirmed: true,
+            }),
+          },
+        ]);
+        // The same route code does not carry over to a project of the same name and template.
+        await expect(
+          tool.execute("c4", {
+            ...company,
+            company: undefined,
+            project: "shape-equity-partners",
+            confirmRoute: routeCode,
+          }),
+        ).rejects.toThrow(/not the route the requester approved/);
+      });
+
+      it("needs exactly one of project or company, and keeps list/status/resend/send per project", async () => {
+        const tool = plugin().tool("fi_user_esign", context());
+        await expect(tool.execute("c5", { ...company, project: "559-first" })).rejects.toThrow(
+          /exactly one of project or company/,
+        );
+        await expect(tool.execute("c6", { action: "list" })).rejects.toThrow(
+          /exactly one of project or company/,
+        );
+        await expect(
+          tool.execute("c7", { action: "list", company: "shape-equity-partners" }),
+        ).rejects.toThrow(/per project/);
+        expect(calls.some((entry) => entry.url.includes("/signature/"))).toBe(false);
+      });
+    });
   });
 }
