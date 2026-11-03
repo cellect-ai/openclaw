@@ -60,7 +60,10 @@ export function namesAnotherFi(params: Record<string, unknown>, appUrl: string):
  * then defaults, as resolveSandboxConfigForAgent/resolveExecTarget read them.
  * This owner cannot observe a per-session override.
  */
-export function adminCommandPosture(cfg: OpenClawPluginApi["config"], adminAgentId: string) {
+export function adminCommandPosture(
+  cfg: ReturnType<OpenClawPluginApi["runtime"]["config"]["current"]>,
+  adminAgentId: string,
+) {
   // SAFETY: the SDK supplies validated frozen config; this resolver only reads it.
   const agent = resolveAgentConfig(cfg as OpenClawConfig, adminAgentId);
   const defaults = cfg.agents?.defaults?.sandbox;
