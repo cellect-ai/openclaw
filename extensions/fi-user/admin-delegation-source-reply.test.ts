@@ -8,19 +8,14 @@ import {
   TOKEN,
 } from "./admin-delegation.test-helpers.js";
 
-type Decision = { sessionKey: string; roomId: string; senderId: string; allowed: boolean };
-const guard = vi.hoisted(() => ({ decided: undefined as undefined | ((d: Decision) => void) }));
-// Fi's source guard is exercised in its own tests; here only its answer matters.
-vi.mock("./source-reply-authorization.js", () => ({
-  registerSourceReplyAuthorization: (
-    _api: unknown,
-    _connection: unknown,
-    onDecision?: (decision: Decision) => void,
-  ) => {
-    guard.decided = onDecision;
-  },
-}));
-
+type Decision = {
+  sessionKey: string;
+  roomId: string;
+  senderId: string;
+  allowed: boolean;
+  authorizedAt: number;
+};
+const admissions = new Map<string, Decision>();
 installDelegationFixtures();
 
 const ROOM = "!projection:matrix.example";
@@ -29,10 +24,14 @@ const ADMIN = "@admin:matrix.example";
 const reply = (senderId = ADMIN, eventId = "$reply", roomId = ROOM) => ({
   arrive: {
     channel: "matrix",
+    accountId: "adminprod",
     senderId,
     sessionKey: SLACK_THREAD,
     isGroup: true,
     messageId: eventId,
+    get channelContext() {
+      return admittedContext(senderId, eventId, roomId);
+    },
   },
   start: {
     channel: "matrix",
@@ -47,17 +46,44 @@ const reply = (senderId = ADMIN, eventId = "$reply", roomId = ROOM) => ({
     requester: { channel: "matrix", senderId, accountId: "adminprod" },
   },
 });
-const allow = (overrides: Partial<Decision> = {}) =>
-  guard.decided?.({
+const allow = (overrides: Partial<Decision> = {}) => {
+  const decision = {
     sessionKey: SLACK_THREAD,
     roomId: ROOM,
     senderId: ADMIN,
     allowed: true,
+    authorizedAt: Date.now(),
     ...overrides,
-  });
+  };
+  admissions.set(decision.senderId, decision);
+};
+const admittedContext = (senderId: string, eventId: string, roomId = ROOM) => {
+  const decision = admissions.get(senderId);
+  return {
+    sender: { id: senderId },
+    chat: {
+      id: roomId,
+      eventId,
+      ...(decision?.allowed
+        ? {
+            sourceReplyAdmission: {
+              version: 1,
+              sessionKey: decision.sessionKey,
+              roomId: decision.roomId,
+              senderId: decision.senderId,
+              accountId: "adminprod",
+              eventId,
+              authorizedAt: decision.authorizedAt,
+            },
+          }
+        : {}),
+    },
+  };
+};
 
 describe("a Matrix reply to a Slack source session", () => {
   beforeEach(() => {
+    admissions.clear();
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
   });
 
@@ -76,11 +102,60 @@ describe("a Matrix reply to a Slack source session", () => {
     expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
   });
 
+  it("carries an ingress admission to a separately registered agent instance", async () => {
+    const root = plugin();
+    allow();
+    const emitted = reply().arrive;
+    const scoped = plugin();
+    await scoped.arrive(emitted);
+    await scoped.start(reply().start);
+    expect((await scoped.exec(reply().exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(root.info).not.toHaveBeenCalled();
+    expect(mints()).toHaveLength(1);
+  });
+
+  it.each([
+    ["session", { sessionKey: `${SLACK_THREAD}9` }],
+    ["room", { roomId: "!other:matrix.example" }],
+    ["event", { eventId: "$other" }],
+    ["sender", { senderId: "@other:matrix.example" }],
+    ["account", { accountId: "otherprod" }],
+    ["version", { version: 2 }],
+    ["future admission", { authorizedAt: Date.now() + 60_000 }],
+  ])("refuses an admission with a different %s", async (_label, mismatch) => {
+    const turn = plugin();
+    allow();
+    const message = reply();
+    const context = admittedContext(ADMIN, "$reply");
+    await turn.arrive({
+      ...message.arrive,
+      channelContext: {
+        ...context,
+        chat: {
+          ...context.chat,
+          sourceReplyAdmission: {
+            ...context.chat.sourceReplyAdmission,
+            ...mismatch,
+          },
+        },
+      },
+    });
+    await turn.start(message.start);
+    expect(JSON.stringify(await turn.exec(message.exec))).not.toContain(TOKEN);
+    expect(mints()).toEqual([]);
+  });
+
   it.each([
     ["no source guard answer", () => undefined],
     ["an answer for another person", () => allow({ senderId: "@other:matrix.example" })],
     ["an answer for another session", () => allow({ sessionKey: `${SLACK_THREAD}9` })],
-    ["a later refusal", () => (allow(), allow({ allowed: false }))],
+    [
+      "a later refusal",
+      () => {
+        allow();
+        allow({ allowed: false });
+      },
+    ],
   ])("does not mint with %s", async (_name, answer) => {
     const turn = plugin();
     const message = reply();
@@ -107,7 +182,7 @@ describe("a Matrix reply to a Slack source session", () => {
     expect(mints()).toEqual([]);
   });
 
-  it("matches the session however the guard cased it", async () => {
+  it("matches the source session however the admitted key cased it", async () => {
     const turn = plugin();
     const message = reply();
     allow({ sessionKey: SLACK_THREAD.replace("c0channel1", "C0CHANNEL1") });
@@ -193,14 +268,25 @@ describe("a Matrix reply to a Slack source session", () => {
  */
 describe("a Matrix reply to a Slack source session the host labels as Slack", () => {
   beforeEach(() => {
+    admissions.clear();
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
   });
   const asSlack = (message = reply()) => ({
-    arrive: { ...message.arrive, accountId: "adminprod" },
+    arrive: {
+      ...message.arrive,
+      accountId: "adminprod",
+      get channelContext() {
+        return message.arrive.channelContext;
+      },
+    },
     start: { ...message.start, channel: "slack", accountId: "fi-admin" },
     exec: {
       ...message.exec,
-      requester: { channel: "slack", senderId: message.exec.requester.senderId, accountId: "fi-admin" },
+      requester: {
+        channel: "slack",
+        senderId: message.exec.requester.senderId,
+        accountId: "fi-admin",
+      },
     },
   });
 

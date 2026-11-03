@@ -115,13 +115,13 @@ export async function resolveMatrixIngressContent(config: {
     return undefined;
   }
   const sourceAuthorization = await authorizeProjectionReply({ core, accountId, roomId, senderId });
-  if (sourceAuthorization !== "allowed") {
+  if (sourceAuthorization.outcome !== "allowed") {
     await sendProjectionReplyRejection({
       client,
       roomId,
       messageId,
       threadRootId: getSourceAuthorizedProjection(accountId, roomId)?.conversationId,
-      reason: sourceAuthorization,
+      reason: sourceAuthorization.outcome,
     });
     await commitInboundEventIfClaimedAndDiscardReserved();
     return undefined;
@@ -522,6 +522,11 @@ export async function resolveMatrixIngressContent(config: {
     resolveMessageIngress,
     route: _route,
     hasExplicitSessionBinding,
+    sourceReplyAdmission:
+      sourceAuthorization.sourceReplyAdmission?.sessionKey.toLowerCase() ===
+      _route.sessionKey.toLowerCase()
+        ? { ...sourceAuthorization.sourceReplyAdmission, eventId: messageId }
+        : undefined,
     roomConfig,
     isDirectMessage,
     isRoom,

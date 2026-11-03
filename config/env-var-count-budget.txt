@@ -9,4 +9,5 @@
 # OPENCLAW_NODE_EXEC_FALLBACK was removed by the core subsystem cleanup (#164153).
 # Seven non-env names were renamed away (carried from 9.8 fork): two shell-parser markers, two Matrix event-content
 # key constants, two agent-database file-mode constants, and one doc mention of a Fi symbol.
+# The internal Matrix device display-name prefix is also not an environment variable.
 474

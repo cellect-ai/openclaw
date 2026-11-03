@@ -6,6 +6,7 @@ import type {
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { adminActionSessions } from "./admin-action.js";
 import {
@@ -18,12 +19,6 @@ import {
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import {
-  forgetAllProjectedMatrixRuns,
-  forgetProjectedMatrixRun,
-  forgetProjectedMatrixSession,
-  rememberProjectedMatrixRun,
-} from "./projected-matrix-runs.js";
-import {
   mailWakeRequester,
   ON_BEHALF_OF_TOOLS,
   onBehalfOfRequester,
@@ -33,6 +28,12 @@ import {
   type CommandDelegation,
   type TalkChannelContext,
 } from "./on-behalf-of.js";
+import {
+  forgetAllProjectedMatrixRuns,
+  forgetProjectedMatrixRun,
+  forgetProjectedMatrixSession,
+  rememberProjectedMatrixRun,
+} from "./projected-matrix-runs.js";
 
 /**
  * The host gives every before_tool_call handler 15 s in all, and the Matrix
@@ -386,8 +387,6 @@ export function registerAdminDelegation(
   };
   const arrivals = new Map<string, Arrivals>();
   const runs = new Map<string, Run>();
-  /** Fi's latest allowance for one Matrix person to continue one source session, by room. */
-  const sourceReplies = new Map<string, { roomId: string; at: number }>();
   const custody = new Map<string, Custody>();
   /**
    * Verified Matrix replies dispatched into a Fi-user Slack session, by session
@@ -406,9 +405,39 @@ export function registerAdminDelegation(
     fiUserTainted.clear();
     arrivals.clear();
     runs.clear();
-    sourceReplies.clear();
     fiUserReplies.clear();
     forgetAllProjectedMatrixRuns();
+  };
+  /** Only Matrix's native, source-authorized ingress can supply this event tuple.
+   * It grants no Fi permissions; verified dispatch and exact run/event matching
+   * below still decide whether it can prove this turn. */
+  const sourceReplyAdmission = (message: Inbound, sessionKey: string) => {
+    const proof = message.channelContext?.chat?.sourceReplyAdmission;
+    if (!isRecord(proof)) {
+      return undefined;
+    }
+    const accountId = typeof proof.accountId === "string" ? proof.accountId : undefined;
+    return proof.version === 1 &&
+      typeof proof.sessionKey === "string" &&
+      proof.sessionKey.toLowerCase() === sessionKey &&
+      proof.senderId === message.senderId?.trim() &&
+      proof.senderId === message.channelContext?.sender?.id &&
+      proof.roomId === message.channelContext?.chat?.id &&
+      proof.eventId === message.messageId &&
+      proof.eventId === message.channelContext?.chat?.eventId &&
+      typeof proof.eventId === "string" &&
+      proof.eventId.startsWith("$") &&
+      accountId !== undefined &&
+      accountId === message.accountId &&
+      matrixConnection(configFromRuntime(api), accountId) !== undefined &&
+      typeof proof.authorizedAt === "number" &&
+      Number.isSafeInteger(proof.authorizedAt) &&
+      proof.authorizedAt <= Date.now() &&
+      proof.authorizedAt > Date.now() - SOURCE_REPLY_TTL_MS &&
+      typeof proof.roomId === "string" &&
+      proof.roomId.startsWith("!")
+      ? { roomId: proof.roomId, accountId }
+      : undefined;
   };
   const FI_USER_SOURCE_SESSION = new RegExp(`^agent:${FI_USER_AGENT_ID}:slack:(?:channel|group):`);
   /**
@@ -422,12 +451,11 @@ export function registerAdminDelegation(
       return;
     }
     const sender = message.senderId?.trim() ?? "";
-    const allowed = sourceReplies.get(JSON.stringify([sessionKey, sender]));
+    const allowed = sourceReplyAdmission(message, sessionKey);
     const proven =
       (message.channel === "matrix" || message.channel === "slack") &&
       MATRIX_USER_ID.test(sender) &&
-      allowed !== undefined &&
-      allowed.at > Date.now() - SOURCE_REPLY_TTL_MS;
+      allowed !== undefined;
     const pending = fiUserReplies.get(sessionKey);
     if (!proven || (dispatch && message.senderAuthentication !== "verified")) {
       fiUserReplies.delete(sessionKey);
@@ -442,11 +470,7 @@ export function registerAdminDelegation(
       }
     }
     forgetProjectedMatrixSession(sessionKey, sender);
-    if (
-      !dispatch ||
-      typeof message.isGroup !== "boolean" ||
-      !message.messageId?.startsWith("$")
-    ) {
+    if (!dispatch || typeof message.isGroup !== "boolean" || !message.messageId?.startsWith("$")) {
       return;
     }
     const account = message.accountId?.trim();
@@ -454,7 +478,9 @@ export function registerAdminDelegation(
     replies.set(message.messageId, {
       matrixUserId: sender,
       roomId: allowed.roomId,
-      ...(account && matrixConnection(configFromRuntime(api), account) ? { accountId: account } : {}),
+      ...(account && matrixConnection(configFromRuntime(api), account)
+        ? { accountId: account }
+        : {}),
     });
     remember(fiUserReplies, sessionKey, replies);
   };
@@ -500,18 +526,17 @@ export function registerAdminDelegation(
    */
   const inboundRequester = (
     sessionKey: string,
-    message: Pick<Inbound, "channel" | "senderId">,
+    message: Inbound,
   ): OnBehalfOfRequester | undefined => {
     const direct = onBehalfOfRequester(message);
     if (direct) {
       return direct;
     }
     const sender = message.senderId?.trim() ?? "";
-    const allowed = sourceReplies.get(JSON.stringify([sessionKey, sender]));
+    const allowed = sourceReplyAdmission(message, sessionKey);
     return /^agent:[^:]+:slack:(?:channel|group):/.test(sessionKey) &&
       MATRIX_USER_ID.test(sender) &&
-      allowed !== undefined &&
-      allowed.at > Date.now() - SOURCE_REPLY_TTL_MS
+      allowed !== undefined
       ? { requester_matrix_user_id: sender }
       : undefined;
   };
@@ -556,13 +581,8 @@ export function registerAdminDelegation(
       // admits it only after Fi's source guard allows this person to continue
       // this session from that room; that answer is the proof. A Slack DM's
       // projection has no local peer check here, so it proves nothing.
-      const allowed = sourceReplies.get(
-        JSON.stringify([sessionKey, requester.requester_matrix_user_id]),
-      );
-      return allowed &&
-        allowed.at > Date.now() - SOURCE_REPLY_TTL_MS &&
-        typeof message.isGroup === "boolean" &&
-        message.messageId?.startsWith("$")
+      const allowed = sourceReplyAdmission(message, sessionKey);
+      return allowed && typeof message.isGroup === "boolean" && message.messageId?.startsWith("$")
         ? {
             sender,
             eventId: message.messageId,
@@ -570,9 +590,7 @@ export function registerAdminDelegation(
             sourceMatrixUserId: requester.requester_matrix_user_id,
             // Only a configured Matrix account names the Fi environment; a Slack
             // account the host may report for the session never does.
-            ...(matrixConnection(configFromRuntime(api), message.accountId?.trim())
-              ? { sourceAccountId: message.accountId!.trim() }
-              : {}),
+            sourceAccountId: allowed.accountId,
           }
         : undefined;
     }
@@ -635,11 +653,6 @@ export function registerAdminDelegation(
         fiUserReplies.delete(key);
         fiUserTainted.delete(key);
         forgetProjectedMatrixSession(key);
-        for (const reply of sourceReplies.keys()) {
-          if (JSON.parse(reply)[0] === key) {
-            sourceReplies.delete(reply);
-          }
-        }
         for (const [id, run] of runs) {
           if (run.sessionKey === key) {
             runs.delete(id);
@@ -1220,21 +1233,6 @@ export function registerAdminDelegation(
     );
   };
 
-  /** Fi's latest answer on this Matrix person continuing this source session from this room. */
-  const sourceReplyDecided = (decision: {
-    sessionKey: string;
-    roomId: string;
-    senderId: string;
-    allowed: boolean;
-  }): void => {
-    const key = JSON.stringify([decision.sessionKey.toLowerCase(), decision.senderId]);
-    if (decision.allowed) {
-      remember(sourceReplies, key, { roomId: decision.roomId, at: Date.now() });
-    } else {
-      sourceReplies.delete(key);
-    }
-  };
-
   /**
    * The person this Fi-admin tool call's run was proven to act for, and the Fi
    * that answers for them: the same proof a sandbox command needs for its
@@ -1311,5 +1309,5 @@ export function registerAdminDelegation(
       : undefined;
   };
 
-  return { dispatched, received, held, mint, sourceReplyDecided, provenToolRequester };
+  return { dispatched, received, held, mint, provenToolRequester };
 }

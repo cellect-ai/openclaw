@@ -81,6 +81,7 @@ export async function resolveMatrixInboundContext(config: {
     media,
     preflightAudioTranscript,
     hasExplicitSessionBinding,
+    sourceReplyAdmission,
   } = ingress;
   const contextVisibilityMode = resolveChannelContextVisibilityMode({
     cfg,
@@ -268,7 +269,12 @@ export async function resolveMatrixInboundContext(config: {
       // A configured bot account is a proven sender but not a person; hooks that
       // act for the sender need to tell the two apart.
       sender: { id: senderId, ...(ingress.botLoopProtection ? { isBot: true } : {}) },
-      chat: { id: roomId, eventId: messageId, ...(letMeKnow ? { letMeKnow: true } : {}) },
+      chat: {
+        id: roomId,
+        eventId: messageId,
+        ...(letMeKnow ? { letMeKnow: true } : {}),
+        ...(sourceReplyAdmission ? { sourceReplyAdmission } : {}),
+      },
     },
     from: isDirectMessage ? `matrix:${senderId}` : `matrix:channel:${roomId}`,
     sender: {

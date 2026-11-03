@@ -137,15 +137,10 @@ describe("source reply authorization", () => {
         },
       },
     } as unknown as OpenClawPluginApi;
-    const decisions = vi.fn();
-    registerSourceReplyAuthorization(
-      api,
-      () => ({
-        baseUrl: "https://fi.example.test",
-        token: "test-bridge",
-      }),
-      decisions,
-    );
+    registerSourceReplyAuthorization(api, () => ({
+      baseUrl: "https://fi.example.test",
+      token: "test-bridge",
+    }));
     if (!guard) {
       throw new Error("Expected source guard registration");
     }
@@ -167,17 +162,6 @@ describe("source reply authorization", () => {
       guard.authorize({ ...send, binding: { ...binding, sourceAccountId: "other-account" } }),
     ).rejects.toThrow("not authorized");
     expect(request).toHaveBeenCalledTimes(2);
-    // Each answer, a failure included, is reported for exactly this session, room and sender.
-    const decision = {
-      sessionKey: binding.targetSessionKey,
-      roomId: send.matrixRoomId,
-      senderId: send.matrixSenderId,
-    };
-    expect(decisions.mock.calls.map(([d]) => d)).toEqual([
-      { ...decision, allowed: true },
-      { ...decision, allowed: false },
-      { ...decision, allowed: false },
-    ]);
   });
   it("preserves superadmin channel and private DM identities through Matrix continuation", async () => {
     const source = {

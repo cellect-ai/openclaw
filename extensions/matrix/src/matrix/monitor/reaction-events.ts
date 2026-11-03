@@ -194,12 +194,14 @@ export async function handleInboundMatrixReaction(params: {
   }
   if (
     isMatrixReadOnlyProjectionRoom(params.accountId, params.roomId) ||
-    (await authorizeProjectionReply({
-      core: params.core,
-      accountId: params.accountId,
-      roomId: params.roomId,
-      senderId: params.senderId,
-    })) !== "allowed"
+    (
+      await authorizeProjectionReply({
+        core: params.core,
+        accountId: params.accountId,
+        roomId: params.roomId,
+        senderId: params.senderId,
+      })
+    ).outcome !== "allowed"
   ) {
     return;
   }

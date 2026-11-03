@@ -56,6 +56,7 @@ const DEFAULT_ROUTE = {
 
 type MatrixHandlerTestHarnessOptions = {
   system?: Pick<MatrixMonitorHandlerParams["core"]["system"], "enqueueSystemEvent">;
+  runtimeContexts?: MatrixMonitorHandlerParams["core"]["channel"]["runtimeContexts"];
   accountId?: string;
   accountConfig?: MatrixConfig;
   cfg?: unknown;
@@ -303,6 +304,7 @@ export function createMatrixHandlerTestHarness(
         current: options.currentConfig ?? (() => options.liveCfg ?? cfgForHandler),
       },
       channel: {
+        ...(options.runtimeContexts ? { runtimeContexts: options.runtimeContexts } : {}),
         pairing: {
           readAllowFromStore,
           upsertPairingRequest,

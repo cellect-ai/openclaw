@@ -85,10 +85,20 @@ export async function authorizeProjectionReply(params: {
   accountId: string;
   roomId: string;
   senderId: string;
-}): Promise<"allowed" | "denied" | "unavailable"> {
+}): Promise<{
+  outcome: "allowed" | "denied" | "unavailable";
+  sourceReplyAdmission?: {
+    version: 1;
+    sessionKey: string;
+    roomId: string;
+    senderId: string;
+    accountId: string;
+    authorizedAt: number;
+  };
+}> {
   const binding = getSourceAuthorizedProjection(params.accountId, params.roomId);
   if (!binding) {
-    return "allowed";
+    return { outcome: "allowed" };
   }
   const guard = params.core.channel.runtimeContexts?.get<SourceReplyAuthorizer>({
     channelId: "matrix",
@@ -99,16 +109,33 @@ export async function authorizeProjectionReply(params: {
     !binding.sourceReplyAuthorization ||
     guard.protocol !== binding.sourceReplyAuthorization
   ) {
-    return "unavailable";
+    return { outcome: "unavailable" };
   }
   try {
-    return await guard.authorize({
+    const outcome = await guard.authorize({
       binding,
       matrixRoomId: params.roomId,
       matrixSenderId: params.senderId,
     });
+    return {
+      outcome,
+      ...(outcome === "allowed"
+        ? {
+            // Carry this exact admission with the native event across agent-scoped
+            // plugin registries; a closure-local callback cannot cross that boundary.
+            sourceReplyAdmission: {
+              version: 1 as const,
+              sessionKey: binding.targetSessionKey,
+              roomId: params.roomId,
+              senderId: params.senderId,
+              accountId: params.accountId,
+              authorizedAt: Date.now(),
+            },
+          }
+        : {}),
+    };
   } catch {
-    return "unavailable";
+    return { outcome: "unavailable" };
   }
 }
 

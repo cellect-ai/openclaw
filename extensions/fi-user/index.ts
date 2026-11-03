@@ -556,7 +556,7 @@ export default definePluginEntry({
         fullRefreshesPerTick: config.projectionFullRefreshesPerTick,
       };
     };
-    registerSourceReplyAuthorization(api, projectionConnection, adminDelegation.sourceReplyDecided);
+    registerSourceReplyAuthorization(api, projectionConnection);
     const slackProjection = registerSlackChannelProjection(api, projectionConnection);
     api.on("message_received", async (event, context) => {
       slackProjection.noteInboundActivity({
@@ -569,6 +569,8 @@ export default definePluginEntry({
         senderId: event.senderId ?? context.senderId,
         sessionKey: event.sessionKey ?? context.sessionKey,
         channelContext: context.channelContext,
+        messageId: event.messageId ?? context.messageId,
+        accountId: context.accountId,
       });
       if (context.channelId === "webchat") {
         rememberWebchatContext(event.sessionKey ?? context.sessionKey, event.content);

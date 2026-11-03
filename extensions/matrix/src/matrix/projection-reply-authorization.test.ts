@@ -61,6 +61,18 @@ describe("source-authorized Matrix continuation", () => {
     removeBindingRecord(binding);
     runtime.get.mockReset();
   });
+  it("does not claim source authorization for an unbound Matrix room", async () => {
+    const core = { channel: { runtimeContexts: { get: runtime.get } } } as unknown as PluginRuntime;
+    await expect(
+      authorizeProjectionReply({
+        core,
+        accountId: "unbound",
+        roomId: "!ordinary:example.test",
+        senderId: "@member:example.test",
+      }),
+    ).resolves.toEqual({ outcome: "allowed" });
+    expect(runtime.get).not.toHaveBeenCalled();
+  });
   it("routes room-level sends to the same native target while requiring fresh authorization", async () => {
     setBindingRecord(binding);
     expect(binding.boundBy).toBe("session-projection-read-only");
@@ -79,15 +91,23 @@ describe("source-authorized Matrix continuation", () => {
       roomId: binding.parentConversationId!,
       senderId: "@member:example.test",
     };
-    await expect(authorizeProjectionReply(params)).resolves.toBe("allowed");
-    await expect(authorizeProjectionReply(params)).resolves.toBe("denied");
-    await expect(authorizeProjectionReply(params)).resolves.toBe("unavailable");
+    await expect(authorizeProjectionReply(params)).resolves.toMatchObject({
+      outcome: "allowed",
+      sourceReplyAdmission: {
+        sessionKey: binding.targetSessionKey,
+        roomId: params.roomId,
+        senderId: params.senderId,
+        accountId: params.accountId,
+      },
+    });
+    await expect(authorizeProjectionReply(params)).resolves.toEqual({ outcome: "denied" });
+    await expect(authorizeProjectionReply(params)).resolves.toEqual({ outcome: "unavailable" });
     get.mockReturnValue(undefined);
     expect(isMatrixReadOnlyProjectionRoom(binding.accountId, "!source:example.test")).toBe(true);
-    await expect(authorizeProjectionReply(params)).resolves.toBe("unavailable");
+    await expect(authorizeProjectionReply(params)).resolves.toEqual({ outcome: "unavailable" });
     get.mockReturnValue({ protocol: "unknown-protocol", authorize });
     expect(isMatrixReadOnlyProjectionRoom(binding.accountId, "!source:example.test")).toBe(true);
-    await expect(authorizeProjectionReply(params)).resolves.toBe("unavailable");
+    await expect(authorizeProjectionReply(params)).resolves.toEqual({ outcome: "unavailable" });
     const cfg: OpenClawConfig = {
       agents: { entries: { main: {}, admin: {} } },
       bindings: [{ agentId: "main", match: { channel: "matrix", accountId: binding.accountId } }],

@@ -3,26 +3,53 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installDelegationFixtures, plugin } from "./admin-delegation.test-helpers.js";
 import { isFiUserTurn, requesterIdentity } from "./fi-delegation.js";
 
-type Decision = { sessionKey: string; roomId: string; senderId: string; allowed: boolean };
-const guard = vi.hoisted(() => ({ decided: undefined as undefined | ((d: Decision) => void) }));
-// Fi's source guard is exercised in its own tests; here only its answer matters.
-vi.mock("./source-reply-authorization.js", () => ({
-  registerSourceReplyAuthorization: (
-    _api: unknown,
-    _connection: unknown,
-    onDecision?: (decision: Decision) => void,
-  ) => {
-    guard.decided = onDecision;
-  },
-}));
-
+type Decision = {
+  sessionKey: string;
+  roomId: string;
+  senderId: string;
+  allowed: boolean;
+  authorizedAt: number;
+};
+const admissions = new Map<string, Decision>();
 installDelegationFixtures();
 
 const SESSION = "agent:cellect-fi-user:slack:channel:c0channel1:thread:1792189039.487369";
 const ROOM = "!projection:matrix.example";
 const MEMBER = "@member:matrix.example";
-const allow = (overrides: Partial<Decision> = {}) =>
-  guard.decided?.({ sessionKey: SESSION, roomId: ROOM, senderId: MEMBER, allowed: true, ...overrides });
+const allow = (overrides: Partial<Decision> = {}) => {
+  const decision = {
+    sessionKey: SESSION,
+    roomId: ROOM,
+    senderId: MEMBER,
+    allowed: true,
+    authorizedAt: Date.now(),
+    ...overrides,
+  };
+  admissions.set(decision.senderId, decision);
+};
+const admittedContext = (senderId: string, eventId: string, roomId = ROOM) => {
+  const decision = admissions.get(senderId);
+  return {
+    sender: { id: senderId },
+    chat: {
+      id: roomId,
+      eventId,
+      ...(decision?.allowed
+        ? {
+            sourceReplyAdmission: {
+              version: 1,
+              sessionKey: decision.sessionKey,
+              roomId: decision.roomId,
+              senderId: decision.senderId,
+              accountId: "userprod",
+              eventId,
+              authorizedAt: decision.authorizedAt,
+            },
+          }
+        : {}),
+    },
+  };
+};
 /** A Fi-user reply in a Slack thread's projection; the host reports the Slack session's channel. */
 const reply = (senderId = MEMBER, eventId = "$reply") => ({
   arrive: {
@@ -32,6 +59,9 @@ const reply = (senderId = MEMBER, eventId = "$reply") => ({
     accountId: "userprod",
     isGroup: true,
     messageId: eventId,
+    get channelContext() {
+      return admittedContext(senderId, eventId);
+    },
   },
   start: {
     runId: "run-1",
@@ -57,6 +87,7 @@ const tool = (overrides: Record<string, unknown> = {}) =>
 
 describe("a projected Matrix reply in a Slack-keyed Fi-user session", () => {
   beforeEach(() => {
+    admissions.clear();
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ userprod: "prod" }));
   });
 
@@ -97,8 +128,18 @@ describe("a projected Matrix reply in a Slack-keyed Fi-user session", () => {
   it("refuses a run started on another event, in another room, or by a bot", async () => {
     for (const start of [
       { channelContext: { sender: { id: MEMBER }, chat: { id: ROOM, eventId: "$other" } } },
-      { channelContext: { sender: { id: MEMBER }, chat: { id: "!elsewhere:matrix.example", eventId: "$reply" } } },
-      { channelContext: { sender: { id: MEMBER, isBot: true }, chat: { id: ROOM, eventId: "$reply" } } },
+      {
+        channelContext: {
+          sender: { id: MEMBER },
+          chat: { id: "!elsewhere:matrix.example", eventId: "$reply" },
+        },
+      },
+      {
+        channelContext: {
+          sender: { id: MEMBER, isBot: true },
+          chat: { id: ROOM, eventId: "$reply" },
+        },
+      },
     ]) {
       const turn = plugin();
       allow();
