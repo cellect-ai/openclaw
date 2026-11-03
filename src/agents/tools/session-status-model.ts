@@ -39,7 +39,7 @@ function modelSelectionRecovery(
       key: modelKey(entry.provider, entry.id),
       matches: `${entry.id} ${entry.name}`.toLowerCase().includes(requested),
     }))
-    .sort((a, b) => Number(b.matches) - Number(a.matches) || a.key.localeCompare(b.key));
+    .toSorted((a, b) => Number(b.matches) - Number(a.matches) || a.key.localeCompare(b.key));
   const keys = [...new Set(choices.map((entry) => entry.key))];
   return keys.length
     ? new Error(
