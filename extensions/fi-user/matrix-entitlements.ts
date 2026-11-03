@@ -11,6 +11,13 @@ import {
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
+import {
+  hostChatMatchesRoom,
+  logEntitlements,
+  sessionThreadId,
+  turnIds,
+  type MatrixTurnOrigin,
+} from "./matrix-turn-origin.js";
 
 const UNAVAILABLE = "Access verification is temporarily unavailable. Please retry shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
@@ -53,6 +60,7 @@ const MAX_CHECKED_SESSIONS = 5_000;
 type Turn = {
   admitted: boolean;
   externalInput: boolean;
+  workspaceDir?: string;
   authorization: AbortController;
   agentId: string;
   accountId: string;
@@ -64,39 +72,7 @@ type Turn = {
   orgId?: string;
   /** Latest Fi admission proved a private conversation whose only human is the sender. */
   privateSoleHuman?: boolean;
-} & ({ eventId: string; mode: "text" } | { threadRootEventId: string; mode: "voice" });
-
-function sessionThreadId(sessionKey: string): string | undefined {
-  const marker = ":thread:";
-  const at = sessionKey.lastIndexOf(marker);
-  if (at < 0) {
-    return undefined;
-  }
-  const id = sessionKey.slice(at + marker.length);
-  return id.length > 0 ? id : undefined;
-}
-
-/**
- * Threaded text and Talk consults keep the bare Matrix room on channel context,
- * while the hook chat id can be the session raw id (`!room:server:thread:$root`).
- * Accept its suffix only when it matches the host-owned session (or Talk root).
- */
-function hostChatMatchesRoom(chatId: unknown, roomId: string, threadRoot: unknown): boolean {
-  if (typeof chatId !== "string" || chatId.length === 0) {
-    return false;
-  }
-  if (chatId === roomId) {
-    return true;
-  }
-  if (typeof threadRoot !== "string" || !threadRoot.startsWith("$")) {
-    return false;
-  }
-  const marker = ":thread:";
-  const at = chatId.lastIndexOf(marker);
-  return (
-    at > 0 && chatId.slice(0, at) === roomId && chatId.slice(at + marker.length) === threadRoot
-  );
-}
+} & MatrixTurnOrigin;
 
 function isPrivateSoleHuman(result: object): boolean {
   const audience = "audience" in result ? result.audience : undefined;
@@ -112,24 +88,6 @@ function isPrivateSoleHuman(result: object): boolean {
     "mixedAudience" in audience &&
     audience.mixedAudience === false,
   );
-}
-
-function logEntitlements(fields: Record<string, unknown>, mismatch?: string): void {
-  const line = {
-    evt: "threads.agent_entitlements",
-    ...fields,
-    ...(mismatch ? { mismatch } : {}),
-  };
-  console.info(JSON.stringify(line));
-  if (mismatch) {
-    console.warn(JSON.stringify({ ...line, level: "warn" }));
-  }
-}
-
-function turnIds(turn: Turn): { eventId: string | null; threadRootEventId: string | null } {
-  return turn.mode === "voice"
-    ? { eventId: null, threadRootEventId: turn.threadRootEventId }
-    : { eventId: turn.eventId, threadRootEventId: null };
 }
 
 function hasAuthorizationScope(config: ResolvedPluginConfig, agentId: string): boolean {
@@ -659,6 +617,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return { handled: true, reply: { text: UNAVAILABLE } };
       }
       const turn: Turn = {
+        workspaceDir: context.workspaceDir,
         externalInput: !context.inputProvenance || context.inputProvenance.kind === "external_user",
         admitted: false,
         authorization: new AbortController(),
@@ -853,6 +812,29 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   return {
     beforeToolCall,
     admittedVoiceTurn,
+    admittedOperatorCommand: (context: PluginHookToolContext) => {
+      const turn = context.runId ? turns.get(context.runId) : undefined;
+      const config = configFromRuntime(api);
+      return config.operatorAgentId === "cellect-main" &&
+        !config.tenantOrgId &&
+        !config.tenantOrgConflict &&
+        turn?.admitted &&
+        turn.externalInput &&
+        turn.mode === "text" &&
+        turn.orgId &&
+        turn.workspaceDir &&
+        !turn.continuation &&
+        sessionThreadId(turn.sessionKey) &&
+        !context.abortSignal?.aborted &&
+        turn.agentId === "cellect-main" &&
+        context.agentId === turn.agentId &&
+        turn.sessionKey === context.sessionKey &&
+        context.requester?.channel === "matrix" &&
+        context.requester.senderId === turn.senderId &&
+        context.requester.accountId === turn.accountId
+        ? turn
+        : undefined;
+    },
     workbookTurn: (context: OpenClawPluginToolContext) => capture(context)?.workbookProof(),
   };
 }

@@ -15,7 +15,12 @@ export const ON_BEHALF_OF_ENV = "FI_ON_BEHALF_OF";
 /** Where Fi's CLI reads the requester's own delegated token; it prefers it to the assertion. */
 export const DELEGATED_USER_TOKEN_ENV = "FI_DELEGATED_USER_TOKEN";
 /** One issued credential and the Fi origin that issued it; never split at the tool boundary. */
-export type CommandDelegation = { token: string; baseUrl: string; command?: string };
+export type CommandDelegation = {
+  token: string;
+  baseUrl: string;
+  command?: string;
+  operationReceipt?: true;
+};
 export const ON_BEHALF_OF_AGENTS = new Set(["cellect-fi-admin", "cellect-main"]);
 export const ON_BEHALF_OF_TOOLS = new Set(["exec", "sandbox_exec"]);
 const ASSERTION_TTL_SECONDS = 10 * 60;
@@ -189,7 +194,9 @@ export function withOnBehalfOfEnv(
       : {};
   for (const key of Object.keys(env)) {
     if (
-      [ON_BEHALF_OF_ENV, DELEGATED_USER_TOKEN_ENV].includes(key.toUpperCase()) ||
+      [ON_BEHALF_OF_ENV, DELEGATED_USER_TOKEN_ENV, "FI_OPERATION_RECEIPT_TOKEN"].includes(
+        key.toUpperCase(),
+      ) ||
       (delegation && key.toUpperCase() === "FI_APP_URL")
     ) {
       delete env[key];
@@ -199,7 +206,8 @@ export function withOnBehalfOfEnv(
     env[ON_BEHALF_OF_ENV] = assertion;
   }
   if (delegation) {
-    env[DELEGATED_USER_TOKEN_ENV] = delegation.token;
+    env[delegation.operationReceipt ? "FI_OPERATION_RECEIPT_TOKEN" : DELEGATED_USER_TOKEN_ENV] =
+      delegation.token;
     env.FI_APP_URL = delegation.baseUrl;
   }
   const next = { ...params };

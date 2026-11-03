@@ -1,16 +1,13 @@
 import { createHash } from "node:crypto";
-import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
-import type {
-  OpenClawConfig,
-  OpenClawPluginApi,
-  OpenClawPluginToolContext,
-} from "openclaw/plugin-sdk/core";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { adminActionSessions } from "./admin-action.js";
+import { adminCommandPosture, namesAnotherFi, runsInSandbox } from "./admin-command-sandbox.js";
 import {
   configFromRuntime,
+  isAdminAgent,
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
   lookupDelegation,
@@ -28,6 +25,7 @@ import {
   type CommandDelegation,
   type TalkChannelContext,
 } from "./on-behalf-of.js";
+import { operationCommandArgs, requestOperationCommandReceipt } from "./operation-command.js";
 import {
   forgetAllProjectedMatrixRuns,
   forgetProjectedMatrixRun,
@@ -102,23 +100,6 @@ type DelegationDiagnosticReason =
   | "mint-held"
   | "mint-issued"
   | "mint-request-failed";
-/** The parameters OpenClaw's own exec tool takes; a native harness shell names others. */
-const EXEC_PARAMS = new Set([
-  "title",
-  "command",
-  "workdir",
-  "env",
-  "yieldMs",
-  "awaitResults",
-  "background",
-  "closeProcessTree",
-  "timeoutSeconds",
-  "pty",
-  "elevated",
-  "host",
-  "ask",
-  "node",
-]);
 
 type Arrivals = {
   senders: Set<string>;
@@ -235,57 +216,6 @@ type Inbound = {
 };
 
 /**
- * Requester handoff applies to the configured admin and the existing Cellect
- * Superadmin. This is not a grant: native sender proof, sandbox posture, the
- * tenant broker and Fi's current member permissions still decide each call.
- */
-export function isAdminAgent(
-  config: Pick<ResolvedPluginConfig, "adminAgentId">,
-  agentId: string | undefined,
-): boolean {
-  const id = agentId?.toLowerCase();
-  return id === config.adminAgentId.toLowerCase() || id === "cellect-main";
-}
-
-/**
- * Whether these are OpenClaw exec parameters for a command in the sandbox. A
- * Codex `gateway_exec` or `node_exec` reaches the hook as `exec` with its host
- * pinned, and elevation leaves the sandbox too. A harness's native shell
- * (Codex, Claude Code) is also called `exec` here but takes no `env`; one that
- * sends only `command` cannot be told apart, and the host refuses the rewrite
- * of such a call, so the token never reaches it. A terminal or a command sent
- * to the background outlives the call that was given the token.
- *
- * With no `host` the effective one is configuration's, which a plugin cannot
- * see, so a call that gets a token is also pinned to the sandbox by the caller.
- */
-function runsInSandbox(params: Record<string, unknown>): boolean {
-  return (
-    typeof params.command === "string" &&
-    Object.keys(params).every((key) => EXEC_PARAMS.has(key)) &&
-    (params.awaitResults === undefined || typeof params.awaitResults === "boolean") &&
-    (params.host === undefined || params.host === "sandbox") &&
-    params.node === undefined &&
-    !params.elevated &&
-    !params.pty &&
-    !params.background
-  );
-}
-
-/** The command's own Fi origin, when it names one that is not `appUrl`. */
-function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolean {
-  const env =
-    params.env && typeof params.env === "object" && !Array.isArray(params.env)
-      ? (params.env as Record<string, unknown>)
-      : {};
-  return Object.entries(env).some(
-    ([key, value]) =>
-      key.toUpperCase() === "FI_APP_URL" &&
-      (typeof value !== "string" || value.trim().replace(/\/+$/, "") !== appUrl),
-  );
-}
-
-/**
  * The requester's own Fi token for one admin-agent shell command.
  *
  * Fi mints it for the person the host proved sent the message that started
@@ -336,6 +266,7 @@ function namesAnotherFi(params: Record<string, unknown>, appUrl: string): boolea
 export function registerAdminDelegation(
   api: OpenClawPluginApi,
   admittedVoiceTurn: MatrixEntitlements["admittedVoiceTurn"] = () => undefined,
+  admittedOperatorCommand: MatrixEntitlements["admittedOperatorCommand"] = () => undefined,
 ) {
   // Existing diagnostic flags/logging own activation and retention. Only an
   // opaque host run id, a closed reason, and booleans cross this boundary.
@@ -484,37 +415,8 @@ export function registerAdminDelegation(
     });
     remember(fiUserReplies, sessionKey, replies);
   };
-  /**
-   * What this runtime's configuration says about the admin agent's commands,
-   * read as the host reads it (`resolveSandboxConfigForAgent`, the exec host
-   * default in `resolveExecTarget`, `resolveElevatedPermissions`): the agent's
-   * own setting, then the default. A per-session override is not visible here.
-   */
-  const posture = (adminAgentId: string) => {
-    const cfg = (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig;
-    const agent = resolveAgentConfig(cfg, adminAgentId);
-    const defaults = cfg.agents?.defaults?.sandbox;
-    const execHost = agent?.tools?.exec?.host ?? cfg.tools?.exec?.host ?? "auto";
-    const scope = agent?.sandbox?.scope ?? defaults?.scope ?? "agent";
-    const binds = [...(defaults?.docker?.binds ?? []), ...(agent?.sandbox?.docker?.binds ?? [])];
-    const readonlyCli = ["/usr/local/bin/cellect", "/repos/fi-runtime"].every((target) => {
-      const matches = binds.map((bind) => bind.split(":")).filter((parts) => parts[1] === target);
-      return matches.length === 1 && matches[0]?.length === 3 && matches[0][2] === "ro";
-    });
-    return {
-      /** Naming the sandbox and no elevation is what every command already gets. */
-      pinIsHarmless:
-        (agent?.sandbox?.mode ?? defaults?.mode ?? "off") === "all" &&
-        // A sandbox shared with other agents cannot be held for one person.
-        scope !== "shared" &&
-        (execHost === "auto" || execHost === "sandbox") &&
-        (cfg.tools?.elevated?.enabled === false || agent?.tools?.elevated?.enabled === false) &&
-        // Talk steers a session without these hooks; its own agent must not be this one.
-        cfg.talk?.agentId?.trim().toLowerCase() !== adminAgentId.toLowerCase(),
-      scope,
-      readonlyCli,
-    };
-  };
+  const posture = (adminAgentId: string) =>
+    adminCommandPosture(api.runtime.config?.current?.() ?? api.config, adminAgentId);
   /** One sandbox per session only under that scope; otherwise the agent's sessions share it. */
   const sandboxKey = (adminAgentId: string, sessionKey: string): string =>
     posture(adminAgentId).scope === "session" ? sessionKey : `agent:${adminAgentId.toLowerCase()}`;
@@ -1027,9 +929,22 @@ export function registerAdminDelegation(
     enteredAt: number,
   ): Promise<CommandDelegation | Held | undefined> | undefined => {
     const agentId = ctx.agentId?.toLowerCase();
+    const operatorProof = admittedOperatorCommand(ctx);
+    const operatorRequested =
+      config.operatorAgentId === "cellect-main" &&
+      !config.tenantOrgId &&
+      ON_BEHALF_OF_TOOLS.has(event.toolName) &&
+      typeof event.params.command === "string" &&
+      operationCommandArgs(event.params.command) !== undefined;
+    const operatorFailure = {
+      block: true as const,
+      blockReason:
+        "The native RFI upload could not verify its current requester, file and target. Nothing was run; retry from the authenticated conversation.",
+    };
+    if (config.operatorAgentId === "cellect-main" && !operatorRequested) return undefined;
     if (
       !agentId ||
-      !config.tenantOrgId ||
+      (!config.tenantOrgId && !operatorProof) ||
       !isAdminAgent(config, agentId) ||
       !ON_BEHALF_OF_TOOLS.has(event.toolName) ||
       event.toolKind ||
@@ -1038,7 +953,9 @@ export function registerAdminDelegation(
       !ctx.sessionKey ||
       // An approved admin action keeps today's attribution; it is not this turn's requester.
       adminActionSessions.has(ctx.sessionKey) ||
-      !posture(agentId).pinIsHarmless
+      !posture(agentId).pinIsHarmless ||
+      // Talk never borrows a typed run's sender: only the native owner admits this exception.
+      (posture(agentId).servesTalk && !operatorProof)
     ) {
       if (isAdminAgent(config, ctx.agentId) && ON_BEHALF_OF_TOOLS.has(event.toolName)) {
         diagnose(ctx, "mint-ineligible", () => ({
@@ -1050,7 +967,7 @@ export function registerAdminDelegation(
           safePosture: posture(agentId ?? config.adminAgentId).pinIsHarmless,
         }));
       }
-      return undefined;
+      return operatorRequested ? Promise.resolve(operatorFailure) : undefined;
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
@@ -1081,7 +998,7 @@ export function registerAdminDelegation(
         sameSender: Boolean(sender && run?.sender === sender),
         voiceProofCurrent: !run?.voice || admittedVoiceTurn(ctx) === run.voice,
       }));
-      return undefined;
+      return operatorRequested ? Promise.resolve(operatorFailure) : undefined;
     }
     let body: Record<string, string>;
     let connection: Pick<ResolvedPluginConfig, "baseUrl" | "brokerTokenEnv"> | undefined;
@@ -1128,7 +1045,11 @@ export function registerAdminDelegation(
           connection && !namesAnotherFi(event.params, connection.baseUrl.replace(/\/+$/, "")),
         ),
       }));
-      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+      return operatorRequested
+        ? Promise.resolve(operatorFailure)
+        : crossEnvironmentFailure
+          ? Promise.resolve(crossEnvironmentFailure)
+          : undefined;
     }
     // Raw shell work can persist an environment credential in arbitrary files.
     // Do not issue it a token and then reserve the entire thread until expiry.
@@ -1137,41 +1058,85 @@ export function registerAdminDelegation(
     const pinnedCommand = posture(agentId).readonlyCli
       ? pinInstalledFiCliCommand(event.params)
       : undefined;
-    const key = ctx.runId && ctx.toolCallId && JSON.stringify([ctx.runId, ctx.toolCallId]);
-    if (pinnedCommand === undefined || !key) {
-      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+    const runId = ctx.runId,
+      toolCallId = ctx.toolCallId;
+    const key = runId && toolCallId && JSON.stringify([runId, toolCallId]);
+    if (pinnedCommand === undefined || !key || !runId || !toolCallId) {
+      return operatorRequested
+        ? Promise.resolve(operatorFailure)
+        : crossEnvironmentFailure
+          ? Promise.resolve(crossEnvironmentFailure)
+          : undefined;
     }
     const canTrack = () => {
       const calls = custody.get(sandboxKey(agentId, sessionKey))?.calls;
       return !calls?.has(key) && (calls?.size ?? 0) < MAX_TRACKED;
     };
     if (!canTrack()) {
-      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+      return operatorRequested
+        ? Promise.resolve(operatorFailure)
+        : crossEnvironmentFailure
+          ? Promise.resolve(crossEnvironmentFailure)
+          : undefined;
     }
     const budget = Math.min(MAX_MINT_MS, HOOK_BUDGET_MS - (Date.now() - enteredAt));
     if (budget < MIN_MINT_MS) {
       diagnose(ctx, "mint-budget-exhausted");
-      return crossEnvironmentFailure ? Promise.resolve(crossEnvironmentFailure) : undefined;
+      return operatorRequested
+        ? Promise.resolve(operatorFailure)
+        : crossEnvironmentFailure
+          ? Promise.resolve(crossEnvironmentFailure)
+          : undefined;
     }
     const baseUrl = connection.baseUrl;
     const sandbox = sandboxKey(agentId, sessionKey);
-    return lookupDelegation({ ...config, ...connection }, body, {
-      agentId: FI_ADMIN_DELEGATION_AGENT_ID,
-      signal: AbortSignal.timeout(budget),
-    }).then(
-      (delegation) => {
-        const token: unknown = delegation?.fi?.token;
-        const expiresAt: unknown = delegation?.fi?.expiresAt;
+    const issued = operatorProof
+      ? requestOperationCommandReceipt({
+          turn: operatorProof,
+          command: pinnedCommand,
+          runId,
+          toolCallId,
+          connection,
+          signal: AbortSignal.any([
+            AbortSignal.timeout(budget),
+            operatorProof.authorization.signal,
+            ...(ctx.abortSignal ? [ctx.abortSignal] : []),
+          ]),
+          assertCurrent: () => {
+            if (
+              admittedOperatorCommand(ctx) !== operatorProof ||
+              runs.get(ctx.runId ?? "") !== run ||
+              run.sender !== sender
+            )
+              throw new Error("Native command requester changed");
+          },
+        })
+      : lookupDelegation({ ...config, ...connection }, body, {
+          agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+          signal: AbortSignal.timeout(budget),
+        }).then((delegation) =>
+          delegation
+            ? { token: delegation.fi?.token, expiresAt: delegation.fi?.expiresAt }
+            : undefined,
+        );
+    return issued.then(
+      (credential) => {
+        // Other operator commands retain their existing execution path.
+        if (operatorProof && !credential) return undefined;
+        const token: unknown = credential?.token;
+        const expiresAt: unknown = credential?.expiresAt;
         const now = Date.now();
         if (
           typeof token !== "string" ||
           !JWT.test(token) ||
           typeof expiresAt !== "number" ||
           expiresAt * 1000 - now < MIN_REMAINING_SECONDS * 1000 ||
-          expiresAt * 1000 - now > MAX_HOLD_MS ||
+          expiresAt * 1000 - now > (operatorProof ? 120_000 : MAX_HOLD_MS) ||
           ctx.abortSignal?.aborted ||
           runs.get(ctx.runId ?? "") !== run ||
           run.sender !== sender ||
+          !posture(agentId).pinIsHarmless ||
+          (operatorProof && admittedOperatorCommand(ctx) !== operatorProof) ||
           !continuationCurrent(run, ctx) ||
           (run.voice && admittedVoiceTurn(ctx) !== run.voice)
         ) {
@@ -1187,7 +1152,7 @@ export function registerAdminDelegation(
             sameSender: run.sender === sender,
             voiceProofCurrent: !run.voice || admittedVoiceTurn(ctx) === run.voice,
           }));
-          return crossEnvironmentFailure;
+          return operatorProof ? operatorFailure : crossEnvironmentFailure;
         }
         // Someone else's token may have reached this sandbox while Fi answered:
         // the call must then wait like any other, not run without a token.
@@ -1197,7 +1162,7 @@ export function registerAdminDelegation(
           return blocked;
         }
         if (!canTrack()) {
-          return crossEnvironmentFailure;
+          return operatorProof ? operatorFailure : crossEnvironmentFailure;
         }
         // Expiry is a fallback, not a minimum hold: native descendant cleanup
         // releases only this exact call, never another still-running command.
@@ -1215,6 +1180,7 @@ export function registerAdminDelegation(
           token,
           baseUrl,
           command: pinnedCommand,
+          ...(operatorProof ? { operationReceipt: true as const } : {}),
         };
       },
       (error: unknown) => {
@@ -1228,7 +1194,7 @@ export function registerAdminDelegation(
         api.logger.warn(
           `fi-user: admin delegation not issued (${status ? `status ${status}` : "unavailable"})`,
         );
-        return crossEnvironmentFailure;
+        return operatorProof ? operatorFailure : crossEnvironmentFailure;
       },
     );
   };

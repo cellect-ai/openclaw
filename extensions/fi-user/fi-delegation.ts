@@ -123,6 +123,19 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
   };
 }
 
+/**
+ * Requester handoff applies to the configured admin and the existing Cellect
+ * Superadmin. This is not a grant: native sender proof, sandbox posture, the
+ * tenant broker and Fi's current member permissions still decide each call.
+ */
+export function isAdminAgent(
+  config: Pick<ResolvedPluginConfig, "adminAgentId">,
+  agentId: string | undefined,
+): boolean {
+  const id = agentId?.toLowerCase();
+  return id === config.adminAgentId.toLowerCase() || id === "cellect-main";
+}
+
 export function configFromRuntime(api: OpenClawPluginApi): ResolvedPluginConfig {
   const cfg = api.runtime.config?.current?.() ?? api.config;
   return resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined);

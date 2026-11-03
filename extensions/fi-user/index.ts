@@ -18,7 +18,7 @@ import {
   createRequestAdminActionTool,
   decideAdminApproval,
 } from "./admin-action.js";
-import { isAdminAgent, registerAdminDelegation } from "./admin-delegation.js";
+import { registerAdminDelegation } from "./admin-delegation.js";
 import { projectSlackChannelThread } from "./channel-projection-publisher.js";
 import {
   registerSlackChannelProjection,
@@ -32,6 +32,7 @@ import { createFiUserApiTool } from "./fi-api-tool.js";
 import {
   brokerToken,
   configFromRuntime,
+  isAdminAgent,
   exchange,
   FI_ADMIN_DELEGATION_AGENT_ID,
   isFiUserTurn,
@@ -540,7 +541,11 @@ export default definePluginEntry({
     });
     const matrixEntitlements = registerMatrixEntitlements(api);
     registerLetMeKnow(api);
-    const adminDelegation = registerAdminDelegation(api, matrixEntitlements.admittedVoiceTurn);
+    const adminDelegation = registerAdminDelegation(
+      api,
+      matrixEntitlements.admittedVoiceTurn,
+      matrixEntitlements.admittedOperatorCommand,
+    );
     registerFileArtifactRuntime(api, {
       // The configured Fi-admin only: another admin runtime has no import path here.
       isAdminAgent: (agentId) =>
