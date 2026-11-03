@@ -1,5 +1,5 @@
 import { resolveAgentConfig } from "openclaw/plugin-sdk/agent-scope-runtime";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 
 /** The parameters OpenClaw's own exec tool takes; a native harness shell names others. */
@@ -60,8 +60,9 @@ export function namesAnotherFi(params: Record<string, unknown>, appUrl: string):
  * then defaults, as resolveSandboxConfigForAgent/resolveExecTarget read them.
  * This owner cannot observe a per-session override.
  */
-export function adminCommandPosture(cfg: OpenClawConfig, adminAgentId: string) {
-  const agent = resolveAgentConfig(cfg, adminAgentId);
+export function adminCommandPosture(cfg: OpenClawPluginApi["config"], adminAgentId: string) {
+  // SAFETY: the SDK supplies validated frozen config; this resolver only reads it.
+  const agent = resolveAgentConfig(cfg as OpenClawConfig, adminAgentId);
   const defaults = cfg.agents?.defaults?.sandbox;
   const execHost = agent?.tools?.exec?.host ?? cfg.tools?.exec?.host ?? "auto";
   const scope = agent?.sandbox?.scope ?? defaults?.scope ?? "agent";
