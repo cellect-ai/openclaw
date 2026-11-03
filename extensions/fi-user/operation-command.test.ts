@@ -45,8 +45,13 @@ beforeEach(async () => {
     );
   vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
   fetchMock.mockImplementation(async (url: string, init: RequestInit) => {
-    if (url !== AUTHORIZE_URL) throw new Error("Operator must never request a user delegation");
-    const body = JSON.parse(String(init.body));
+    if (url !== AUTHORIZE_URL) {
+      throw new Error("Operator must never request a user delegation");
+    }
+    if (typeof init.body !== "string") {
+      throw new Error("Authorization request must contain JSON text");
+    }
+    const body = JSON.parse(init.body);
     if (body.operationCommand) {
       receiptRequests.push(body);
       return respond();
@@ -133,7 +138,7 @@ it.each(["synthetic", "voice", "foreign sender", "wrong account", "wrong run", "
   "refuses an RFI upload with %s custody",
   async (scenario) => {
     const turn = operator();
-    if (scenario !== "no dispatch")
+    if (scenario !== "no dispatch") {
       await admit(
         turn,
         scenario === "synthetic"
@@ -147,8 +152,10 @@ it.each(["synthetic", "voice", "foreign sender", "wrong account", "wrong run", "
               }
             : {},
       );
-    if (scenario === "foreign sender")
+    }
+    if (scenario === "foreign sender") {
       await turn.inject({ ...thread("@other:matrix.example").arrive, sessionKey });
+    }
     const result = await execute(
       turn,
       scenario === "wrong account"
@@ -169,7 +176,9 @@ it.each(["outside workspace", "symlink", "hardlink", "oversized"])(
     const turn = operator();
     await admit(turn);
     let file = "/workspace/excerpt.pdf";
-    if (scenario === "outside workspace") file = "/workspace/../outside.pdf";
+    if (scenario === "outside workspace") {
+      file = "/workspace/../outside.pdf";
+    }
     if (scenario === "symlink") {
       await fs.symlink("excerpt.pdf", path.join(workspace, "linked.pdf"));
       file = "/workspace/linked.pdf";
@@ -178,8 +187,9 @@ it.each(["outside workspace", "symlink", "hardlink", "oversized"])(
       await fs.link(path.join(workspace, "excerpt.pdf"), path.join(workspace, "linked.pdf"));
       file = "/workspace/linked.pdf";
     }
-    if (scenario === "oversized")
+    if (scenario === "oversized") {
       await fs.truncate(path.join(workspace, "excerpt.pdf"), 25 * 1024 * 1024 + 1);
+    }
     expect((await execute(turn, {}, command.replace("/workspace/excerpt.pdf", file)))?.block).toBe(
       true,
     );
@@ -194,8 +204,10 @@ it.each(["refused", "wrong tenant", "settled run", "steered run"])(
     await admit(turn);
     const success = respond;
     respond = async () => {
-      if (scenario === "refused") return new Response("Forbidden", { status: 403 });
-      if (scenario === "wrong tenant")
+      if (scenario === "refused") {
+        return new Response("Forbidden", { status: 403 });
+      }
+      if (scenario === "wrong tenant") {
         return new Response(
           JSON.stringify({
             ok: true,
@@ -204,9 +216,13 @@ it.each(["refused", "wrong tenant", "settled run", "steered run"])(
             orgId: "org-other",
           }),
         );
-      if (scenario === "settled run") await turn.settle();
-      if (scenario === "steered run")
+      }
+      if (scenario === "settled run") {
+        await turn.settle();
+      }
+      if (scenario === "steered run") {
         await turn.inject({ ...thread("@other:matrix.example").arrive, sessionKey });
+      }
       return success();
     };
     const result = await execute(turn);

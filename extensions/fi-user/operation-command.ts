@@ -7,6 +7,14 @@ import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import { sessionThreadId } from "./matrix-turn-origin.js";
 
 type Turn = NonNullable<ReturnType<MatrixEntitlements["admittedOperatorCommand"]>>;
+export function operationCommandFailure() {
+  return {
+    block: true as const,
+    blockReason:
+      "The native RFI upload could not verify its current requester, file and target. Nothing was run; retry from the authenticated conversation.",
+  };
+}
+
 export function operationCommandArgs(command: string): string[] | undefined {
   const argv = splitCommandArgs(command);
   return argv && argv.slice(1, 5).join(" ") === "fi build rfi attach" ? argv : undefined;
@@ -23,14 +31,23 @@ export async function requestOperationCommandReceipt(params: {
   assertCurrent: () => void;
 }): Promise<{ token: unknown; expiresAt: unknown; operationReceipt: true } | undefined> {
   const argv = operationCommandArgs(params.command);
-  if (!argv) return undefined;
+  if (!argv) {
+    return undefined;
+  }
   const fileIndex = argv.indexOf("--file");
   const file = argv[fileIndex + 1];
-  if (fileIndex < 5 || argv.lastIndexOf("--file") !== fileIndex || !file?.startsWith("/workspace/"))
+  if (
+    fileIndex < 5 ||
+    argv.lastIndexOf("--file") !== fileIndex ||
+    !file?.startsWith("/workspace/")
+  ) {
     throw new Error("Native RFI upload requires one protected workspace file");
+  }
   const { turn } = params;
   const workspaceDir = turn.workspaceDir;
-  if (!workspaceDir) throw new Error("Native RFI upload workspace is unavailable");
+  if (!workspaceDir) {
+    throw new Error("Native RFI upload workspace is unavailable");
+  }
   params.signal.throwIfAborted();
   params.assertCurrent();
   const boundary = await root(workspaceDir);
@@ -42,8 +59,9 @@ export async function requestOperationCommandReceipt(params: {
   params.assertCurrent();
   params.signal.throwIfAborted();
   const token = brokerToken(params.connection);
-  if (!token || !read.buffer.length)
+  if (!token || !read.buffer.length) {
     throw new Error("Native RFI upload authority or file is unavailable");
+  }
   const proof = {
     runId: params.runId,
     toolCallId: params.toolCallId,
@@ -80,7 +98,9 @@ export async function requestOperationCommandReceipt(params: {
   );
   params.assertCurrent();
   params.signal.throwIfAborted();
-  if (!response.ok) throw new Error(`Fi native command receipt failed (${response.status})`);
+  if (!response.ok) {
+    throw new Error(`Fi native command receipt failed (${response.status})`);
+  }
   const result: unknown = await response.json();
   params.assertCurrent();
   if (
@@ -101,8 +121,9 @@ export async function requestOperationCommandReceipt(params: {
     result.operationCommand.orgId !== turn.orgId ||
     !("receipt" in result.operationCommand) ||
     !("expiresAt" in result.operationCommand)
-  )
+  ) {
     throw new Error("Native RFI upload receipt is unavailable");
+  }
   return {
     token: result.operationCommand.receipt,
     expiresAt: result.operationCommand.expiresAt,

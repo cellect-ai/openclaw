@@ -25,7 +25,11 @@ import {
   type CommandDelegation,
   type TalkChannelContext,
 } from "./on-behalf-of.js";
-import { operationCommandArgs, requestOperationCommandReceipt } from "./operation-command.js";
+import {
+  operationCommandArgs,
+  operationCommandFailure,
+  requestOperationCommandReceipt,
+} from "./operation-command.js";
 import {
   forgetAllProjectedMatrixRuns,
   forgetProjectedMatrixRun,
@@ -936,12 +940,9 @@ export function registerAdminDelegation(
       ON_BEHALF_OF_TOOLS.has(event.toolName) &&
       typeof event.params.command === "string" &&
       operationCommandArgs(event.params.command) !== undefined;
-    const operatorFailure = {
-      block: true as const,
-      blockReason:
-        "The native RFI upload could not verify its current requester, file and target. Nothing was run; retry from the authenticated conversation.",
-    };
-    if (config.operatorAgentId === "cellect-main" && !operatorRequested) return undefined;
+    if (config.operatorAgentId === "cellect-main" && !operatorRequested) {
+      return undefined;
+    }
     if (
       !agentId ||
       (!config.tenantOrgId && !operatorProof) ||
@@ -967,7 +968,7 @@ export function registerAdminDelegation(
           safePosture: posture(agentId ?? config.adminAgentId).pinIsHarmless,
         }));
       }
-      return operatorRequested ? Promise.resolve(operatorFailure) : undefined;
+      return operatorRequested ? Promise.resolve(operationCommandFailure()) : undefined;
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
@@ -998,7 +999,7 @@ export function registerAdminDelegation(
         sameSender: Boolean(sender && run?.sender === sender),
         voiceProofCurrent: !run?.voice || admittedVoiceTurn(ctx) === run.voice,
       }));
-      return operatorRequested ? Promise.resolve(operatorFailure) : undefined;
+      return operatorRequested ? Promise.resolve(operationCommandFailure()) : undefined;
     }
     let body: Record<string, string>;
     let connection: Pick<ResolvedPluginConfig, "baseUrl" | "brokerTokenEnv"> | undefined;
@@ -1046,7 +1047,7 @@ export function registerAdminDelegation(
         ),
       }));
       return operatorRequested
-        ? Promise.resolve(operatorFailure)
+        ? Promise.resolve(operationCommandFailure())
         : crossEnvironmentFailure
           ? Promise.resolve(crossEnvironmentFailure)
           : undefined;
@@ -1063,7 +1064,7 @@ export function registerAdminDelegation(
     const key = runId && toolCallId && JSON.stringify([runId, toolCallId]);
     if (pinnedCommand === undefined || !key || !runId || !toolCallId) {
       return operatorRequested
-        ? Promise.resolve(operatorFailure)
+        ? Promise.resolve(operationCommandFailure())
         : crossEnvironmentFailure
           ? Promise.resolve(crossEnvironmentFailure)
           : undefined;
@@ -1074,7 +1075,7 @@ export function registerAdminDelegation(
     };
     if (!canTrack()) {
       return operatorRequested
-        ? Promise.resolve(operatorFailure)
+        ? Promise.resolve(operationCommandFailure())
         : crossEnvironmentFailure
           ? Promise.resolve(crossEnvironmentFailure)
           : undefined;
@@ -1083,7 +1084,7 @@ export function registerAdminDelegation(
     if (budget < MIN_MINT_MS) {
       diagnose(ctx, "mint-budget-exhausted");
       return operatorRequested
-        ? Promise.resolve(operatorFailure)
+        ? Promise.resolve(operationCommandFailure())
         : crossEnvironmentFailure
           ? Promise.resolve(crossEnvironmentFailure)
           : undefined;
@@ -1107,8 +1108,9 @@ export function registerAdminDelegation(
               admittedOperatorCommand(ctx) !== operatorProof ||
               runs.get(ctx.runId ?? "") !== run ||
               run.sender !== sender
-            )
+            ) {
               throw new Error("Native command requester changed");
+            }
           },
         })
       : lookupDelegation({ ...config, ...connection }, body, {
@@ -1122,7 +1124,9 @@ export function registerAdminDelegation(
     return issued.then(
       (credential) => {
         // Other operator commands retain their existing execution path.
-        if (operatorProof && !credential) return undefined;
+        if (operatorProof && !credential) {
+          return undefined;
+        }
         const token: unknown = credential?.token;
         const expiresAt: unknown = credential?.expiresAt;
         const now = Date.now();
@@ -1152,7 +1156,7 @@ export function registerAdminDelegation(
             sameSender: run.sender === sender,
             voiceProofCurrent: !run.voice || admittedVoiceTurn(ctx) === run.voice,
           }));
-          return operatorProof ? operatorFailure : crossEnvironmentFailure;
+          return operatorProof ? operationCommandFailure() : crossEnvironmentFailure;
         }
         // Someone else's token may have reached this sandbox while Fi answered:
         // the call must then wait like any other, not run without a token.
@@ -1162,7 +1166,7 @@ export function registerAdminDelegation(
           return blocked;
         }
         if (!canTrack()) {
-          return operatorProof ? operatorFailure : crossEnvironmentFailure;
+          return operatorProof ? operationCommandFailure() : crossEnvironmentFailure;
         }
         // Expiry is a fallback, not a minimum hold: native descendant cleanup
         // releases only this exact call, never another still-running command.
@@ -1194,7 +1198,7 @@ export function registerAdminDelegation(
         api.logger.warn(
           `fi-user: admin delegation not issued (${status ? `status ${status}` : "unavailable"})`,
         );
-        return operatorProof ? operatorFailure : crossEnvironmentFailure;
+        return operatorProof ? operationCommandFailure() : crossEnvironmentFailure;
       },
     );
   };
