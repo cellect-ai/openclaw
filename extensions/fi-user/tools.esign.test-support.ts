@@ -159,7 +159,7 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
           routeCode: expect.stringMatching(/^[0-9a-f]{16}$/),
         });
         expect(sends()).toHaveLength(1);
-        const checked = bodyJson(sends()[0].init);
+        const checked = bodyJson(sends()[0]?.init);
         expect(checked).toEqual({
           dryRun: true,
           input: {
@@ -194,7 +194,7 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
           ok: true,
           result: { applied: true, submissionId: 140 },
         });
-        expect(bodyJson(sends()[1].init)).toEqual({
+        expect(bodyJson(sends()[1]?.init)).toEqual({
           input: { ...(checked.input as object), additionalRecipientsConfirmed: true },
         });
       });
@@ -207,7 +207,7 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
         const preview = await tool.execute("s6", held);
         expect(preview.details).toMatchObject({ delivery: "hold", emailsRecipients: false });
         // The requester is not slipped onto the completion copy.
-        expect(bodyJson(sends()[0].init).input).toMatchObject({
+        expect(bodyJson(sends()[0]?.init).input).toMatchObject({
           delivery: "hold",
           completionBcc: [],
           confirmedRecipients: route.slice(0, 2),
