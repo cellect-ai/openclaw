@@ -321,12 +321,12 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
         ).rejects.toThrow(/not the route the requester approved/);
       });
 
-      it("needs exactly one of project or company, and keeps list/status/resend/send per project", async () => {
+      it("requires an owner for writes and refuses company template listing", async () => {
         const tool = plugin().tool("fi_user_esign", context());
         await expect(tool.execute("c5", { ...company, project: "559-first" })).rejects.toThrow(
           /exactly one of project or company/,
         );
-        await expect(tool.execute("c6", { action: "list" })).rejects.toThrow(
+        await expect(tool.execute("c6", { action: "send" })).rejects.toThrow(
           /exactly one of project or company/,
         );
         await expect(
