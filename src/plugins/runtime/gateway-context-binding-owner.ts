@@ -1,34 +1,44 @@
-const gatewayContextBindingOwnerKey = Symbol("gatewayContextBindingOwner");
+import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 
-class GatewayContextBindingOwner {
-  readonly #owner: object;
+// SDK source transforms and native chunks must recognize the same exact-owner brand.
+export const { getGatewayContextBindingSlot, prepareGatewayContextBindingOwner } =
+  resolveGlobalSingleton(Symbol.for("openclaw.gatewayContextBindingOwner"), () => {
+    const gatewayContextBindingOwnerKey = Symbol("gatewayContextBindingOwner");
 
-  constructor(owner: object) {
-    this.#owner = owner;
-    Object.setPrototypeOf(this, null);
-  }
+    class GatewayContextBindingOwner {
+      readonly #owner: object;
 
-  static read(value: unknown, owner: object): object | undefined {
-    return typeof value === "object" && value !== null && #owner in value && value.#owner === owner
-      ? value
-      : undefined;
-  }
-}
+      constructor(owner: object) {
+        this.#owner = owner;
+        Object.setPrototypeOf(this, null);
+      }
 
-export function getGatewayContextBindingSlot(owner: object): object | undefined {
-  const slot: unknown = Object.getOwnPropertyDescriptor(
-    owner,
-    gatewayContextBindingOwnerKey,
-  )?.value;
-  return GatewayContextBindingOwner.read(slot, owner);
-}
+      static read(value: unknown, owner: object): object | undefined {
+        return typeof value === "object" &&
+          value !== null &&
+          #owner in value &&
+          value.#owner === owner
+          ? value
+          : undefined;
+      }
+    }
 
-/** Reserve exact-owner storage before admission freezes the public context. */
-export function prepareGatewayContextBindingOwner<T extends object>(owner: T): T {
-  if (!getGatewayContextBindingSlot(owner)) {
-    Object.defineProperty(owner, gatewayContextBindingOwnerKey, {
-      value: new GatewayContextBindingOwner(owner),
-    });
-  }
-  return owner;
-}
+    function getGatewayContextBindingSlot(owner: object): object | undefined {
+      const slot: unknown = Object.getOwnPropertyDescriptor(
+        owner,
+        gatewayContextBindingOwnerKey,
+      )?.value;
+      return GatewayContextBindingOwner.read(slot, owner);
+    }
+
+    /** Reserve exact-owner storage before admission freezes the public context. */
+    function prepareGatewayContextBindingOwner<T extends object>(owner: T): T {
+      if (!getGatewayContextBindingSlot(owner)) {
+        Object.defineProperty(owner, gatewayContextBindingOwnerKey, {
+          value: new GatewayContextBindingOwner(owner),
+        });
+      }
+      return owner;
+    }
+    return { getGatewayContextBindingSlot, prepareGatewayContextBindingOwner };
+  });
