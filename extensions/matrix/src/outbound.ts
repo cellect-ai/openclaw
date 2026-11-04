@@ -328,12 +328,14 @@ export const matrixOutbound: ChannelOutboundAdapter = {
         threadId: resolvedThreadId,
         accountId: accountId ?? undefined,
         extraContent: resolveMatrixExtraContent(payload),
+        signal,
+        assertDirectAdapterHandoff,
       });
       const roomId = to.replace(/^room:/i, "");
       return attachChannelToResult(
         "matrix",
         toMatrixOutboundResult({
-          messageId: eventId || editEventId,
+          messageId: eventId,
           roomId,
           primaryMessageId: editEventId,
           content: payloadText,

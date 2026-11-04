@@ -515,6 +515,8 @@ export async function editMessageMatrix(
     threadId?: string;
     accountId?: string;
     timeoutMs?: number;
+    signal?: AbortSignal;
+    assertDirectAdapterHandoff?: () => void;
     msgtype?: MatrixTextMsgType;
     includeMentions?: boolean;
     extraContent?: MatrixExtraContentFields;
@@ -537,6 +539,8 @@ export async function editMessageMatrix(
       cfg: opts.cfg,
       accountId: opts.accountId,
       timeoutMs: opts.timeoutMs,
+      signal: opts.signal,
+      assertDirectAdapterHandoff: opts.assertDirectAdapterHandoff,
     },
     async (client) => {
       const resolvedRoom = await resolveMatrixRoomId(client, roomId);
@@ -619,7 +623,10 @@ export async function editMessageMatrix(
       applyMatrixStreamPhase(content, opts.streamPhase, true);
 
       const eventId = await client.sendMessage(resolvedRoom, content);
-      return eventId ?? "";
+      if (typeof eventId !== "string" || !/^\$\S{1,254}$/.test(eventId)) {
+        throw new Error("Matrix edit has no confirmed native event receipt");
+      }
+      return eventId;
     },
   );
 }

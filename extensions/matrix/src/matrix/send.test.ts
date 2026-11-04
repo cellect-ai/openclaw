@@ -862,7 +862,7 @@ describe("sendSingleTextMessageMatrix", () => {
         "!room:example",
       ]);
       expect(newContent(sentContent(1)).body).toBe(editedText);
-      expect(sentContent(1)["m.relates_to"]).toEqual({ rel_type: "m.replace", event_id: "evt1" });
+      expect(sentContent(1)["m.relates_to"]).toEqual({ rel_type: "m.replace", event_id: "$evt1" });
       expect(newContent(sentContent(1))).not.toHaveProperty("m.relates_to");
 
       stream.update("x".repeat(257));
@@ -878,6 +878,19 @@ describe("sendSingleTextMessageMatrix", () => {
       }
     }
   });
+});
+
+describe("editMessageMatrix native receipt", () => {
+  it.each(["", "~pending:edit", "original-event-id"])(
+    "refuses an unconfirmed edit receipt %j",
+    async (eventId) => {
+      sendMessage.mockResolvedValueOnce(eventId);
+      await expect(edit("approved link", { includeMentions: false })).rejects.toThrow(
+        "no confirmed native event receipt",
+      );
+      expect(sendMessage).toHaveBeenCalledOnce();
+    },
+  );
 });
 
 describe("editMessageMatrix projection publication", () => {

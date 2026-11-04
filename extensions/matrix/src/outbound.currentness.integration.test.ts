@@ -7,7 +7,7 @@ import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime
 import { describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "./channel.js";
 import { MatrixClient } from "./matrix/sdk.js";
-import { sendMessageMatrix } from "./matrix/send.js";
+import { editMessageMatrix, sendMessageMatrix } from "./matrix/send.js";
 import type { MatrixSendOpts } from "./matrix/send/types.js";
 import { getMatrixRuntime, setMatrixRuntime } from "./runtime.js";
 import { installMatrixTestRuntime } from "./test-runtime.js";
@@ -87,6 +87,7 @@ async function readRequestJson(request: http.IncomingMessage): Promise<unknown> 
 }
 
 type MatrixFixture = {
+  client: MatrixClient;
   senders: ReturnType<typeof registeredSenders>;
   context: Pick<ChannelOutboundContext, "cfg" | "to" | "deps" | "mediaLocalRoots">;
   handlers: FixtureHandlers;
@@ -159,6 +160,7 @@ async function withMatrixFixture(
     });
     client = resolvedClient;
     await run({
+      client: resolvedClient,
       senders: registeredSenders(registration),
       context: {
         cfg: {},
@@ -187,6 +189,51 @@ async function withMatrixFixture(
 }
 
 describe("registered Matrix sender currentness", () => {
+  it.each(["authority", "signal"] as const)(
+    "stops an edit when %s is revoked during the original-event read",
+    async (kind) => {
+      await withMatrixFixture("outbound", async ({ client, handlers, timeline }) => {
+        const caller = new AbortController();
+        let current = true;
+        let originalRead = false;
+        const revoked = new Error("Edit authority revoked during original-event read");
+        handlers.request = async ({ request, response, path }) => {
+          if (request.method !== "GET" || !path.endsWith("/event/$original")) return false;
+          originalRead = true;
+          if (kind === "authority") current = false;
+          else caller.abort(revoked);
+          respondJson(response, {
+            event_id: "$original",
+            room_id: ROOM_ID,
+            sender: "@bot:example.org",
+            type: "m.room.message",
+            origin_server_ts: 1,
+            content: {
+              msgtype: "m.text",
+              body: "request",
+              "m.relates_to": { rel_type: "m.thread", event_id: "$thread" },
+            },
+          });
+          return true;
+        };
+        await expect(
+          editMessageMatrix(ROOM_ID, "$original", "approved link", {
+            client,
+            cfg: {},
+            threadId: "$thread",
+            includeMentions: false,
+            signal: caller.signal,
+            assertDirectAdapterHandoff: () => {
+              if (!current) throw revoked;
+            },
+          }),
+        ).rejects.toThrow(revoked.message);
+        expect(originalRead).toBe(true);
+        expect(timeline).toEqual([]);
+      });
+    },
+  );
+
   // The message adapter delegates to outbound; only receipt projection needs both surfaces.
   describe("shared outbound path", () => {
     const registration = "message";

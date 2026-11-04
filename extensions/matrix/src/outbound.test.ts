@@ -6,12 +6,14 @@ const mocks = vi.hoisted(() => ({
   sendMessageMatrix: vi.fn(),
   sendPollMatrix: vi.fn(),
   redactMessageMatrix: vi.fn(),
+  editMessageMatrix: vi.fn(),
 }));
 
 vi.mock("./matrix/send.js", () => ({
   sendMessageMatrix: mocks.sendMessageMatrix,
   sendPollMatrix: mocks.sendPollMatrix,
   redactMessageMatrix: mocks.redactMessageMatrix,
+  editMessageMatrix: mocks.editMessageMatrix,
 }));
 
 vi.mock("./runtime.js", () => ({
@@ -120,9 +122,38 @@ describe("matrixOutbound cfg threading", () => {
     mocks.sendMessageMatrix.mockReset();
     mocks.sendPollMatrix.mockReset();
     mocks.redactMessageMatrix.mockReset();
+    mocks.editMessageMatrix.mockReset().mockResolvedValue("$replacement");
     mocks.sendMessageMatrix.mockResolvedValue({ messageId: "evt-1", roomId: "!room:example" });
     mocks.sendPollMatrix.mockResolvedValue({ eventId: "$poll", roomId: "!room:example" });
     mocks.redactMessageMatrix.mockResolvedValue("$redact");
+  });
+
+  it("carries the caller's exact authority and cancellation through native edits", async () => {
+    const caller = new AbortController();
+    const assertCurrent = vi.fn();
+    const result = await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "approved link",
+      accountId: "default",
+      threadId: "$thread",
+      signal: caller.signal,
+      assertDirectAdapterHandoff: assertCurrent,
+      payload: { text: "approved link", channelData: { matrix: { editEventId: "$original" } } },
+    });
+    expect(mocks.editMessageMatrix).toHaveBeenCalledExactlyOnceWith(
+      "room:!room:example",
+      "$original",
+      "approved link",
+      expect.objectContaining({
+        signal: caller.signal,
+        assertDirectAdapterHandoff: assertCurrent,
+        threadId: "$thread",
+        accountId: "default",
+      }),
+    );
+    expect(result.messageId).toBe("$replacement");
+    expect(mocks.sendMessageMatrix).not.toHaveBeenCalled();
   });
 
   it("chunks outbound text without requiring Matrix runtime initialization", () => {
