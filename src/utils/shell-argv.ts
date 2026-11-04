@@ -134,7 +134,7 @@ function splitQuotedArgs(
     }
     // Credential-bearing direct commands may contain only literal arguments:
     // expansions, control syntax and redirects are shell work, quoted text is data.
-    if (literalOnly && /[;&|<>()`$\r\n*?\[\]{}~]/u.test(ch)) {
+    if (literalOnly && /[;&|<>()`$\r\n*?[\]{}~]/u.test(ch)) {
       return null;
     }
     // In POSIX shells, "#" starts a comment only when it begins a word; keep

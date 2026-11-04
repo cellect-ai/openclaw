@@ -97,7 +97,7 @@ describe("splitShellArgs", () => {
     "cellect 'unclosed",
     'cellect "unclosed',
     "cellect trailing\\",
-    "cellect " + "\\" + "\nnext",
+    "cellect \\\nnext",
     "cellect x\nnext",
     "cellect \0",
   ])("refuses executable shell syntax in literal mode: %s", (command) => {
