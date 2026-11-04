@@ -4,8 +4,9 @@ import {
   errorShape,
   type GatewayRequestHandlerOptions,
 } from "openclaw/plugin-sdk/gateway-runtime";
-import { publishAdminActionCard } from "./admin-action-card.js";
+import { deliverWiringReceipt, publishAdminActionCard } from "./admin-action-card.js";
 import { approvedRoomFiling, executeApprovedRoomFiling } from "./admin-action-filing.js";
+import { executeApprovedWiringRequest } from "./admin-action-wiring.js";
 import {
   loadAdminAction,
   transitionAdminAction,
@@ -82,7 +83,9 @@ export function adminActionView(record: AdminActionRecord) {
     state:
       ["pending", "held"].includes(record.status) && record.createdAt + RECORD_TTL_MS <= Date.now()
         ? "expired"
-        : (record.execution?.state ?? (record.status === "failed" ? "unknown" : record.status)),
+        : record.execution?.wiringReceipt && !record.execution.wiringDelivered
+          ? "unknown"
+          : (record.execution?.state ?? (record.status === "failed" ? "unknown" : record.status)),
   };
 }
 
@@ -169,6 +172,15 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
             throw new Error("Invalid decision.");
           }
           if (
+            decision === "approve" &&
+            record.execution?.wiringReceipt &&
+            [record.revision, (record.revision ?? 1) - 1].includes(target.revision)
+          ) {
+            const recovered = await deliverWiringReceipt(api, record, assertCurrent);
+            options.respond(true, { ...adminActionView(recovered), applied: false });
+            return;
+          }
+          if (
             target.revision !== (record.revision ?? 1) ||
             record.createdAt + RECORD_TTL_MS <= Date.now()
           ) {
@@ -186,14 +198,19 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
           }
           const filing =
             decision === "approve" && email ? approvedRoomFiling(record, email) : undefined;
-          const delegation = filing
-            ? await lookupDelegation(
-                config,
-                { requesterMatrixUserId: target.requesterMatrixUserId },
-                { agentId: FI_ADMIN_DELEGATION_AGENT_ID, signal: options.signal },
-              )
-            : undefined;
-          if (filing) {
+          const wiring =
+            decision === "approve" && email && record.task === "company_wiring_share"
+              ? record.preparedWiring
+              : undefined;
+          const delegation =
+            filing || wiring
+              ? await lookupDelegation(
+                  config,
+                  { requesterMatrixUserId: target.requesterMatrixUserId },
+                  { agentId: FI_ADMIN_DELEGATION_AGENT_ID, signal: options.signal },
+                )
+              : undefined;
+          if (filing || wiring) {
             if (
               !delegation ||
               !["admin", "owner"].includes(delegation.user.role) ||
@@ -203,7 +220,12 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
             }
             // Refresh tenant membership and the exact session/device binding after
             // awaiting delegation, before admitting a durable decision or effect.
-            await authorize(api, options, record, target);
+            const refreshed = await authorize(api, options, record, target);
+            if (refreshed.email !== email || refreshed.email !== delegation.user.email) {
+              throw new Error(
+                "The current approver identity changed. Refresh the conversation before deciding.",
+              );
+            }
           }
           let next: AdminActionRecord = {
             ...record,
@@ -222,11 +244,12 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
             ...(decision === "approve"
               ? {
                   execution: {
-                    state: filing ? ("unknown" as const) : ("not_executed" as const),
+                    state: filing || wiring ? ("unknown" as const) : ("not_executed" as const),
                     operationId: `fi-admin-action-${record.id}`,
-                    message: filing
-                      ? "Approval recorded. Filing has not yet been authoritatively verified."
-                      : "Approval recorded. Not executed: this request requires a supported exact-target operation in Fi.",
+                    message:
+                      filing || wiring
+                        ? "Approval recorded. The requested operation has not yet been authoritatively verified."
+                        : "Approval recorded. Not executed: this request requires a supported exact-target operation in Fi.",
                   },
                 }
               : {}),
@@ -234,19 +257,27 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
           if (!(await transitionAdminAction(api, record, next, assertCurrent))) {
             throw new Error("Another decision changed this request. Refresh the conversation.");
           }
-          if (filing && delegation) {
-            const execution = await executeApprovedRoomFiling(
-              config,
-              delegation,
-              filing,
-              `fi-admin-action-${record.id}`,
-              assertCurrent,
-              {
-                expectedRoomVersion: record.preparedFiling!.expectedRoomVersion,
-                sourceSha256: record.preparedFiling!.sourceSha256,
-                sourceUpdatedAt: record.preparedFiling!.sourceUpdatedAt,
-              },
-            );
+          if ((filing || wiring) && delegation) {
+            const execution = wiring
+              ? await executeApprovedWiringRequest(
+                  config,
+                  delegation,
+                  wiring,
+                  `fi-admin-action-${record.id}`,
+                  assertCurrent,
+                )
+              : await executeApprovedRoomFiling(
+                  config,
+                  delegation,
+                  filing!,
+                  `fi-admin-action-${record.id}`,
+                  assertCurrent,
+                  {
+                    expectedRoomVersion: record.preparedFiling!.expectedRoomVersion,
+                    sourceSha256: record.preparedFiling!.sourceSha256,
+                    sourceUpdatedAt: record.preparedFiling!.sourceUpdatedAt,
+                  },
+                );
             const completed = { ...next, execution };
             // If receipt persistence becomes uncertain, the committed owner stays
             // unknown. Neither a repeat decision nor restart repeats the effect.
@@ -256,14 +287,18 @@ export function registerAdminActionRpc(api: OpenClawPluginApi) {
               }
             } catch {
               api.logger.warn(
-                "fi-user: filing receipt could not be recorded; outcome remains unconfirmed",
+                "fi-user: operation receipt could not be recorded; outcome remains unconfirmed",
               );
             }
           }
           // The durable decision wins even if publication fails. Retrying an old
           // card cannot repeat a business effect or reset the original expiry.
           try {
-            await publishAdminActionCard(api, next, assertCurrent);
+            if (next.execution?.wiringReceipt) {
+              next = await deliverWiringReceipt(api, next, assertCurrent);
+            } else {
+              await publishAdminActionCard(api, next, assertCurrent);
+            }
           } catch {
             api.logger.warn("fi-user: approval committed; card publication unavailable");
           }

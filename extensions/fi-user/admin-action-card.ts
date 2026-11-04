@@ -4,6 +4,7 @@ import type {
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { wiringSummary } from "./admin-action-wiring.js";
 import {
   ADMIN_TASKS,
   RECORD_TTL_MS,
@@ -105,6 +106,7 @@ export function adminActionCard(record: AdminActionRecord) {
     summary: singleLine(
       record.execution?.message ??
         targetSummary ??
+        (record.preparedWiring ? wiringSummary(record.preparedWiring) : undefined) ??
         (record.fields.displayName && record.fields.roomName
           ? `${record.fields.displayName} → ${record.fields.roomName}, ${record.fields.section ?? "section unresolved"}; ${record.fields.visibility ?? "visibility unresolved"}${record.fields.order ? `; order ${record.fields.order}` : "; no order"}; ${record.fields.taskIds?.length ?? 0} checklist links, ${record.fields.completeTaskIds?.length ?? 0} completions${record.fields.acknowledgeRestricted ? "; restricted sharing requested" : ""}.`
           : record.fields.description) ??
@@ -134,7 +136,8 @@ export async function publishAdminActionCard(
   }
   assertCurrent();
   const card = adminActionCard(record);
-  const text = `${card.title}\n${card.summary}`;
+  const wiring = record.execution?.wiringReceipt;
+  const text = `${card.title}\n${card.summary}${wiring ? `\n${wiring.companyName}\nRecipient: ${wiring.recipientEmail}\n${wiring.url}\nExpires: ${wiring.expiresAt}` : ""}`;
   const result = await adapter.sendPayload({
     // SAFETY: Matrix outbound only reads this host-validated immutable snapshot;
     // its adapter contract still accepts the mutable OpenClawConfig type.
@@ -170,4 +173,28 @@ export async function publishAdminActionCard(
       throw new Error("Approval publication could not be recorded; nothing was executed.");
     }
   }
+}
+
+/** Publication can be retried from durable custody without creating another bank share. */
+export async function deliverWiringReceipt(
+  api: OpenClawPluginApi,
+  record: AdminActionRecord,
+  assertCurrent: () => void,
+): Promise<AdminActionRecord> {
+  if (!record.execution?.wiringReceipt || record.execution.wiringDelivered) {
+    return record;
+  }
+  if (Date.parse(record.execution.wiringReceipt.expiresAt) <= Date.now()) {
+    throw new Error(
+      "This recipient link expired. A new release needs a new administrator approval.",
+    );
+  }
+  await publishAdminActionCard(api, record, assertCurrent);
+  const delivered = { ...record, execution: { ...record.execution, wiringDelivered: true } };
+  if (!(await transitionAdminAction(api, record, delivered, assertCurrent))) {
+    throw new Error(
+      "The wire-link delivery receipt could not be recorded. Retry delivery with the same requestId; do not create another share.",
+    );
+  }
+  return delivered;
 }

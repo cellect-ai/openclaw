@@ -10,6 +10,13 @@ import {
 } from "./admin-action.js";
 import { approvalStores } from "./admin-action.test-support.js";
 
+function fetchUrl(input: Parameters<typeof fetch>[0]): string {
+  if (typeof input === "string") {
+    return input;
+  }
+  return input instanceof URL ? input.href : input.url;
+}
+
 const origin = {
   orgId: "org-test",
   roomId: "!room:example.test",
@@ -138,6 +145,368 @@ beforeEach(() => {
 });
 
 describe("registered native business approval boundary", () => {
+  it.each(["member@example.test", "other@example.test"])(
+    "lets a member request a wire link for %s without releasing it",
+    async (recipientEmail) => {
+      const h = harness();
+      vi.mocked(fetch)
+        .mockResolvedValueOnce(
+          Response.json({
+            user: {
+              email: "member@example.test",
+              orgSlug: "test",
+              orgId: origin.orgId,
+              role: "member",
+            },
+            fi: { token: "member-token", expiresAt: 1_900_000_000 },
+            gmail: { enabled: false, mailbox: null },
+          }),
+        )
+        .mockResolvedValueOnce(
+          Response.json({
+            resource: { kind: "company", id: "company-a", name: "Company A", synthetic: false },
+          }),
+        );
+      const tool = createRequestAdminActionTool(h.api, {
+        agentId: "cellect-fi-user",
+        messageChannel: "matrix",
+        agentAccountId: "fi-user",
+        requesterSenderId: "@member:example.test",
+        nativeChannelId: origin.roomId,
+        deliveryContext: {
+          channel: "matrix",
+          to: origin.roomId,
+          accountId: "fi-user",
+          threadId: origin.threadRootEventId,
+        },
+      });
+      expect(
+        await tool.execute("wire-request", {
+          task: "company_wiring_share",
+          companyId: "company-a",
+          recipientEmail,
+        }),
+      ).toMatchObject({ details: { status: "pending_approval", cardPosted: true } });
+      expect(fetch).toHaveBeenCalledTimes(2);
+      expect(h.sendPayload).toHaveBeenCalledWith(
+        expect.objectContaining({
+          to: origin.roomId,
+          threadId: origin.threadRootEventId,
+          text: expect.stringContaining(recipientEmail),
+        }),
+      );
+      const request = [...h.namespaces.get("admin-actions")!.values()].find(
+        (value: unknown) => (value as AdminActionRecord).task === "company_wiring_share",
+      ) as AdminActionRecord;
+      expect(request.preparedWiring).toEqual({
+        companyId: "company-a",
+        companyName: "Company A",
+        recipientEmail,
+      });
+      expect(request.execution).toBeUndefined();
+    },
+  );
+
+  it("recovers the same durable approval when its initial card publication failed", async () => {
+    const h = harness();
+    h.sendPayload.mockRejectedValueOnce(new Error("Matrix unavailable"));
+    vi.mocked(fetch).mockImplementation(async (url) =>
+      fetchUrl(url).includes("fi-view/context")
+        ? Response.json({
+            resource: { kind: "company", id: "company-a", name: "Company A", synthetic: false },
+          })
+        : Response.json({
+            user: {
+              email: "member@example.test",
+              orgSlug: "test",
+              orgId: origin.orgId,
+              role: "member",
+            },
+            fi: { token: "member-token", expiresAt: 1_900_000_000 },
+            gmail: { enabled: false, mailbox: null },
+          }),
+    );
+    const tool = createRequestAdminActionTool(h.api, {
+      agentId: "cellect-fi-user",
+      messageChannel: "matrix",
+      agentAccountId: "fi-user",
+      requesterSenderId: "@member:example.test",
+      nativeChannelId: origin.roomId,
+      deliveryContext: {
+        channel: "matrix",
+        to: origin.roomId,
+        accountId: "fi-user",
+        threadId: origin.threadRootEventId,
+      },
+    });
+    const input = {
+      task: "company_wiring_share",
+      companyId: "company-a",
+      recipientEmail: "other@example.test",
+    };
+    const first = await tool.execute("request", input);
+    expect(first).toMatchObject({ details: { status: "publication_pending", cardPosted: false } });
+    const requestId = (first.details as { requestId: string }).requestId;
+    expect(await tool.execute("recover", { ...input, requestId })).toMatchObject({
+      details: { requestId, status: "pending_approval", cardPosted: true },
+    });
+    expect(
+      (h.namespaces.get("admin-actions")!.get(requestId) as AdminActionRecord).publicationEventId,
+    ).toBe("$edit");
+    expect(
+      vi.mocked(fetch).mock.calls.filter(([url]) => fetchUrl(url).includes("fi-view/context")),
+    ).toHaveLength(1);
+  });
+
+  it("releases one recipient-verified wire link only after a current administrator approves, and never repeats it", async () => {
+    const preparedWiring = {
+      companyId: "company-a",
+      companyName: "Company A",
+      recipientEmail: "other@example.test",
+    };
+    const h = harness({ ...record(), task: "company_wiring_share", preparedWiring });
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (fetchUrl(url).endsWith("admin-action-authorize")) {
+        return Response.json({
+          ok: true,
+          orgId: origin.orgId,
+          matrixUserId: target.requesterMatrixUserId,
+          role: "admin",
+          email: "admin@example.test",
+        });
+      }
+      if (fetchUrl(url).endsWith("openclaw-user-delegation")) {
+        return Response.json({
+          user: {
+            email: "admin@example.test",
+            orgSlug: "test",
+            orgId: origin.orgId,
+            role: "admin",
+          },
+          fi: { token: "approver-token", expiresAt: 1_900_000_000 },
+          gmail: { enabled: false, mailbox: null },
+        });
+      }
+      expect(new Headers(init?.headers).get("authorization")).toBe("Bearer approver-token");
+      if (fetchUrl(url).includes("book.payment-instruction.show")) {
+        return Response.json({
+          ok: true,
+          result: {
+            ownerKind: "company",
+            ownerId: "company-a",
+            defaults: [
+              {
+                purpose: "investment_funding",
+                instructionId: "instruction-a",
+                verificationStatus: "verified",
+                effectiveTo: null,
+              },
+            ],
+          },
+        });
+      }
+      expect(fetchUrl(url)).toContain("book.payment-instruction.share");
+      expect(init?.body).toBeInstanceOf(FormData);
+      return Response.json({
+        ok: true,
+        result: {
+          applied: true,
+          companyId: "company-a",
+          recipientEmail: preparedWiring.recipientEmail,
+          instruction: { instructionVersionId: "instruction-a" },
+          url: "https://fi.example.test/fi/s/code",
+          expiresAt: "2026-12-01T00:00:00Z",
+        },
+      });
+    });
+    expect((await h.invoke("decide", { ...target, decision: "approve" }))[1]).toMatchObject({
+      state: "done",
+      applied: true,
+    });
+    expect(h.subagentRun).not.toHaveBeenCalled();
+    expect(h.sendPayload).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: expect.stringContaining("https://fi.example.test/fi/s/code"),
+      }),
+    );
+    expect((await h.invoke("decide", { ...target, decision: "approve" }))[1]).toMatchObject({
+      state: "done",
+      applied: false,
+    });
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.filter(([url]) => fetchUrl(url).includes("book.payment-instruction.share")),
+    ).toHaveLength(1);
+  });
+
+  it("retains an approved link after publication failure and recovers only its delivery", async () => {
+    const preparedWiring = {
+      companyId: "company-a",
+      companyName: "Company A",
+      recipientEmail: "other@example.test",
+    };
+    const pending = {
+      ...record(),
+      task: "company_wiring_share" as const,
+      preparedWiring,
+      revision: 2,
+      status: "approved" as const,
+      execution: {
+        state: "done" as const,
+        operationId: "operation-one",
+        message: "Link created",
+        wiringReceipt: {
+          ...preparedWiring,
+          instructionVersionId: "instruction-a",
+          url: "https://fi.example.test/fi/s/code",
+          expiresAt: "2026-12-01T00:00:00Z",
+        },
+      },
+    };
+    const h = harness(pending);
+    h.sendPayload.mockRejectedValueOnce(new Error("Matrix unavailable"));
+    expect((await h.invoke("describe", { ...target, revision: 2 }))[1]).toMatchObject({
+      state: "unknown",
+    });
+    expect((await h.invoke("decide", { ...target, decision: "approve" }))[0]).toBe(false);
+    expect((await h.invoke("decide", { ...target, decision: "approve" }))[1]).toMatchObject({
+      state: "done",
+      applied: false,
+    });
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.every(([url]) => fetchUrl(url).endsWith("admin-action-authorize")),
+    ).toBe(true);
+    expect(
+      (h.namespaces.get("admin-actions")!.get("ABC234") as AdminActionRecord).execution,
+    ).toMatchObject({ wiringDelivered: true });
+    expect(h.sendPayload).toHaveBeenCalledTimes(2);
+  });
+
+  it("lets only the original requester recover an exact approved wire-link delivery in the original conversation", async () => {
+    const preparedWiring = {
+      companyId: "company-a",
+      companyName: "Company A",
+      recipientEmail: "other@example.test",
+    };
+    const h = harness({
+      ...record(),
+      task: "company_wiring_share",
+      preparedWiring,
+      requester: {
+        email: "member@example.test",
+        identity: { channel: "matrix", requesterMatrixUserId: "@member:example.test" },
+      },
+      status: "approved",
+      execution: {
+        state: "done",
+        operationId: "operation-one",
+        message: "Link created",
+        wiringReceipt: {
+          ...preparedWiring,
+          instructionVersionId: "instruction-a",
+          url: "https://fi.example.test/fi/s/code",
+          expiresAt: "2026-12-01T00:00:00Z",
+        },
+      },
+    });
+    vi.mocked(fetch).mockImplementation(async () =>
+      Response.json({
+        user: {
+          email: "member@example.test",
+          orgSlug: "test",
+          orgId: origin.orgId,
+          role: "member",
+        },
+        fi: { token: "member-token", expiresAt: 1_900_000_000 },
+        gmail: { enabled: false, mailbox: null },
+      }),
+    );
+    const tool = createRequestAdminActionTool(h.api, {
+      agentId: "cellect-fi-user",
+      messageChannel: "matrix",
+      agentAccountId: "fi-user",
+      requesterSenderId: "@member:example.test",
+      nativeChannelId: origin.roomId,
+      deliveryContext: {
+        channel: "matrix",
+        to: origin.roomId,
+        accountId: "fi-user",
+        threadId: origin.threadRootEventId,
+      },
+    });
+    await expect(
+      tool.execute("recover", {
+        task: "company_wiring_share",
+        requestId: "ABC234",
+        companyId: "company-a",
+        recipientEmail: "attacker@example.test",
+      }),
+    ).rejects.toThrow("unavailable");
+    expect(
+      await tool.execute("recover", {
+        task: "company_wiring_share",
+        requestId: "ABC234",
+        companyId: "company-a",
+        recipientEmail: "other@example.test",
+      }),
+    ).toMatchObject({ details: { status: "done" } });
+    expect(h.sendPayload).toHaveBeenCalledTimes(1);
+    expect(
+      vi
+        .mocked(fetch)
+        .mock.calls.every(([url]) => fetchUrl(url).endsWith("openclaw-user-delegation")),
+    ).toBe(true);
+  });
+
+  it("rejects an approver identity relinked while delegation is awaited", async () => {
+    const preparedWiring = {
+      companyId: "company-a",
+      companyName: "Company A",
+      recipientEmail: "other@example.test",
+    };
+    const h = harness({ ...record(), task: "company_wiring_share", preparedWiring });
+    vi.mocked(fetch)
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          orgId: origin.orgId,
+          matrixUserId: target.requesterMatrixUserId,
+          role: "admin",
+          email: "admin@example.test",
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          user: {
+            email: "admin@example.test",
+            orgSlug: "test",
+            orgId: origin.orgId,
+            role: "admin",
+          },
+          fi: { token: "admin-token", expiresAt: 1_900_000_000 },
+          gmail: { enabled: false, mailbox: null },
+        }),
+      )
+      .mockResolvedValueOnce(
+        Response.json({
+          ok: true,
+          orgId: origin.orgId,
+          matrixUserId: target.requesterMatrixUserId,
+          role: "admin",
+          email: "different@example.test",
+        }),
+      );
+    expect((await h.invoke("decide", { ...target, decision: "approve" }))[0]).toBe(false);
+    expect((h.namespaces.get("admin-actions")!.get("ABC234") as AdminActionRecord).status).toBe(
+      "pending",
+    );
+    expect(h.sendPayload).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
   it("does not offer an actionable card to a member lacking authoritative preparation", async () => {
     const h = harness();
     vi.mocked(fetch).mockResolvedValueOnce(

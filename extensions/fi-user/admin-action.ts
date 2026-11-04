@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import type {
   AnyAgentTool,
   OpenClawPluginApi,
@@ -7,9 +6,18 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import type { PluginStateKeyedStore } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import { Type } from "typebox";
-import { publishAdminActionCard, prepareAdminActionOrigin } from "./admin-action-card.js";
+import {
+  deliverWiringReceipt,
+  publishAdminActionCard,
+  prepareAdminActionOrigin,
+} from "./admin-action-card.js";
 import { prepareRoomFiling, type PreparedRoomFiling } from "./admin-action-filing.js";
+import { createAdminActionRequestSchema } from "./admin-action-schema.js";
+import {
+  prepareWiringRequest,
+  type PreparedWiringRequest,
+  type WiringReceipt,
+} from "./admin-action-wiring.js";
 import {
   configFromRuntime,
   delegatedJson,
@@ -25,6 +33,10 @@ import {
  * these widen access or reach outside the requester's grants.
  */
 export const ADMIN_TASKS = {
+  company_wiring_share: {
+    label: "Request receiving wire instructions",
+    required: ["companyId", "recipientEmail"],
+  },
   esign_change_recipient: {
     label: "Change an e-sign recipient",
     required: ["project", "submissionId", "currentSignerEmail", "newSignerEmail"],
@@ -56,6 +68,7 @@ export type AdminTask = keyof typeof ADMIN_TASKS;
 const TASK_NAMES = Object.keys(ADMIN_TASKS) as AdminTask[];
 
 export type AdminActionFields = {
+  companyId?: string;
   project?: string;
   submissionId?: number;
   currentSignerEmail?: string;
@@ -118,11 +131,14 @@ export type AdminActionRecord = {
   origin?: { orgId: string; roomId: string; threadRootEventId: string; agentMxid: string };
   publicationEventId?: string;
   preparedFiling?: PreparedRoomFiling;
+  preparedWiring?: PreparedWiringRequest;
   execution?: {
     state: "not_executed" | "unknown" | "done";
     operationId: string;
     message: string;
     receipt?: { roomId: string; documentId: string; roomVersion: number; taskIds: string[] };
+    wiringReceipt?: WiringReceipt;
+    wiringDelivered?: boolean;
   };
 };
 
@@ -457,66 +473,8 @@ export async function decideAdminApproval(
   return { claimed: true, decided };
 }
 
-const RequestSchema = Type.Object(
-  {
-    task: stringEnum(TASK_NAMES as unknown as readonly [AdminTask, ...AdminTask[]], {
-      description:
-        "esign_change_recipient | esign_prepare_template | external_share_link | document_outside_grants | restricted_filing | access_request",
-    }),
-    project: Type.Optional(Type.String({ maxLength: 200 })),
-    submissionId: Type.Optional(Type.Integer({ minimum: 1 })),
-    currentSignerEmail: Type.Optional(Type.String({ format: "email" })),
-    newSignerEmail: Type.Optional(Type.String({ format: "email" })),
-    documentId: Type.Optional(Type.String({ maxLength: 200 })),
-    recipientEmail: Type.Optional(Type.String({ format: "email" })),
-    roomId: Type.Optional(
-      Type.String({
-        maxLength: 200,
-        description: "restricted_filing into a data room. Omit to file into the project library.",
-      }),
-    ),
-    destination: Type.Optional(
-      stringEnum(["data_room", "project_library"] as const, {
-        description:
-          "restricted_filing: data_room (needs roomId) or project_library. Default: data_room when roomId is given, else project_library.",
-      }),
-    ),
-    category: Type.Optional(
-      Type.String({
-        maxLength: 50,
-        description: "restricted_filing to a project library: category.",
-      }),
-    ),
-    section: Type.Optional(
-      Type.String({
-        maxLength: 200,
-        description: "restricted_filing to a project library: section.",
-      }),
-    ),
-    slackFileId: Type.Optional(Type.String({ pattern: "^F[A-Za-z0-9]{6,}$" })),
-    description: Type.Optional(Type.String({ maxLength: 1_000 })),
-    targetType: Type.Optional(stringEnum(["org", "project", "company"] as const)),
-    targetId: Type.Optional(Type.String({ maxLength: 200 })),
-    reason: Type.Optional(Type.String({ maxLength: 1_000 })),
-    displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
-    roomName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
-    order: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),
-    noOrder: Type.Optional(Type.Boolean()),
-    visibility: Type.Optional(stringEnum(["shared", "internal"] as const)),
-    acknowledgeRestricted: Type.Optional(Type.Boolean()),
-    taskIds: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 30 }),
-    ),
-    noTask: Type.Optional(Type.Boolean()),
-    completeTaskIds: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { maxItems: 30 }),
-    ),
-    tags: Type.Optional(
-      Type.Array(Type.String({ minLength: 1, maxLength: 100 }), { maxItems: 30 }),
-    ),
-    highlight: Type.Optional(Type.Boolean()),
-  },
-  { additionalProperties: false },
+const RequestSchema = createAdminActionRequestSchema(
+  TASK_NAMES as unknown as readonly [AdminTask, ...AdminTask[]],
 );
 
 function newId(): string {
@@ -532,10 +490,10 @@ export function createRequestAdminActionTool(
     name: "request_admin_action",
     label: "Ask an administrator",
     description:
-      "Request a current administrator's decision in this conversation. Continue ordinary work under existing grants without approval. Supported privileged execution: restricted_filing of an exact existing documentId into an exact roomId, with recipient-facing displayName, roomName, section, order or explicit noOrder, visibility, taskIds or explicit noTask, and explicit completion targets. Resolve document/room/checklist targets first; never guess. Unsupported or ambiguous approved requests are not executed. access_request uses Fi's existing access-request workflow. Never tag or message the admin agent yourself.",
+      "Request a current administrator's decision in this Fi conversation. company_wiring_share requests an accessible company's verified receiving wire instructions for yourself or another named recipient: supply companyId and recipientEmail; only a current owner/admin can approve release of the recipient-verified link. Supply the existing requestId to recover delivery without creating another share. No email or payment is sent. Continue ordinary work under existing grants without approval. restricted_filing supports an exact existing documentId into an exact roomId, with displayName, roomName, section, order or noOrder, visibility, taskIds or noTask, and completion targets. Resolve exact targets first. Unsupported approved requests are not executed. access_request uses Fi's access-request workflow. Never tag or message the admin agent yourself.",
     parameters: RequestSchema,
     async execute(_toolCallId, raw) {
-      const input = raw as AdminActionFields & { task: AdminTask };
+      const input = raw as AdminActionFields & { task: AdminTask; requestId?: string };
       const task = ADMIN_TASKS[input.task];
       if (!task) {
         throw new Error("Unknown admin task");
@@ -547,7 +505,10 @@ export function createRequestAdminActionTool(
       if (missing.length > 0) {
         throw new Error(`${input.task} requires: ${missing.join(", ")}`);
       }
-      const { task: _task, ...fields } = input;
+      const { task: _task, requestId, ...fields } = input;
+      if (requestId && input.task !== "company_wiring_share") {
+        throw new Error("requestId retries only an existing wiring request.");
+      }
       if (input.task === "restricted_filing") {
         fields.destination = filingDestination(fields);
       }
@@ -615,22 +576,77 @@ export function createRequestAdminActionTool(
           ? { origin: prepareAdminActionOrigin(api, context, config) }
           : {}),
       };
-      if (record.origin) {
+      if (requestId) {
+        const existing = await loadAdminAction(api, requestId);
         if (
-          record.task !== "restricted_filing" ||
-          !["admin", "owner"].includes(delegation.user.role)
+          !record.origin ||
+          !existing?.origin ||
+          !existing.preparedWiring ||
+          existing.task !== "company_wiring_share" ||
+          existing.requester.email !== delegation.user.email ||
+          JSON.stringify(existing.origin) !== JSON.stringify(record.origin) ||
+          existing.preparedWiring?.companyId !== fields.companyId?.trim() ||
+          existing.preparedWiring.recipientEmail !== fields.recipientEmail?.trim().toLowerCase()
         ) {
+          throw new Error(
+            "That wiring request is unavailable to this requester in this conversation.",
+          );
+        }
+        if (
+          ["pending", "held"].includes(existing.status) &&
+          Date.now() < existing.createdAt + RECORD_TTL_MS
+        ) {
+          await publishAdminActionCard(api, existing, context.assertInvocationCurrent);
           return jsonResult({
-            status: "not_executable",
-            cardPosted: false,
+            requestId,
+            status: "pending_approval",
+            cardPosted: true,
             tellRequester:
-              "This action needs exact preparation by a current administrator through a supported operation. Nothing was executed and no actionable approval card was posted.",
+              "The existing approval card is posted in this conversation. No link or payment was created.",
           });
         }
-        record.preparedFiling = await prepareRoomFiling(
-          config,
-          record,
+        const recovered = await deliverWiringReceipt(
+          api,
+          existing,
           context.assertInvocationCurrent ?? (() => {}),
+        );
+        return jsonResult({
+          requestId,
+          status: recovered.execution?.wiringDelivered ? "done" : "pending_or_unconfirmed",
+          tellRequester: recovered.execution?.wiringDelivered
+            ? "The approved recipient-verified link is posted in this conversation. No email or payment was sent."
+            : "No new share was created. This request is still awaiting approval or its outcome must be reconciled.",
+        });
+      }
+      if (record.origin) {
+        if (record.task === "company_wiring_share") {
+          record.preparedWiring = await prepareWiringRequest(
+            config,
+            delegation,
+            record,
+            context.assertInvocationCurrent ?? (() => {}),
+          );
+        } else {
+          if (
+            record.task !== "restricted_filing" ||
+            !["admin", "owner"].includes(delegation.user.role)
+          ) {
+            return jsonResult({
+              status: "not_executable",
+              cardPosted: false,
+              tellRequester:
+                "This action needs exact preparation by a current administrator through a supported operation. Nothing was executed and no actionable approval card was posted.",
+            });
+          }
+          record.preparedFiling = await prepareRoomFiling(
+            config,
+            record,
+            context.assertInvocationCurrent ?? (() => {}),
+          );
+        }
+      } else if (record.task === "company_wiring_share") {
+        throw new Error(
+          "Request receiving wire instructions in the Fi conversation so an owner or admin can review the exact company and recipient.",
         );
       }
       context.assertInvocationCurrent?.();
@@ -648,7 +664,20 @@ export function createRequestAdminActionTool(
       }
       const text = approvalCardText(record, config);
       if (record.origin) {
-        await publishAdminActionCard(api, record, context.assertInvocationCurrent);
+        try {
+          await publishAdminActionCard(api, record, context.assertInvocationCurrent);
+        } catch (error) {
+          if (record.task !== "company_wiring_share") {
+            throw error;
+          }
+          return jsonResult({
+            requestId: record.id,
+            status: "publication_pending",
+            cardPosted: false,
+            tellRequester:
+              "Your request is retained, but its approval card could not be confirmed. Retry the same task, company and recipient with this requestId. No wire link or payment was created.",
+          });
+        }
       } else if (context.delivery) {
         await context.delivery.send({ text });
       }
