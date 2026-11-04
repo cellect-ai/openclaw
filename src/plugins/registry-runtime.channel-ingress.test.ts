@@ -7,7 +7,10 @@ import {
 } from "../channels/message-access/admission-evidence.js";
 import type { ResolvedChannelMessageIngress } from "../channels/message-access/runtime-types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import type {
+  GatewayContextResolver,
+  GatewayRequestContext,
+} from "../gateway/server-methods/types.js";
 import {
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
@@ -16,6 +19,11 @@ import {
 } from "../plugin-sdk/channel-ingress-runtime.js";
 import { recordAcceptedSessionParticipantInput } from "../sessions/session-participant-input-recording.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import {
+  bindLegacyPluginSdkResourceHost,
+  getBoundLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "./legacy-sdk-resource-host.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   markPluginRegistryActive,
@@ -32,6 +40,7 @@ import { createPluginRegistry } from "./registry.js";
 import {
   bindGatewayContextResolver,
   hasGatewayContextOwner,
+  withPluginRuntimeGatewayContextResolver,
 } from "./runtime/gateway-request-scope.js";
 import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
@@ -48,6 +57,7 @@ function createLegacyReceiver(params: {
   audit: ChannelAdmissionAudit;
   trusted?: boolean;
   readStoreAllowFrom?: () => Promise<string[]>;
+  gatewayContextResolver?: GatewayContextResolver;
 }) {
   const identity = {
     resolveParticipant: (subject: { stableId?: string | number | null }) => ({
@@ -78,6 +88,7 @@ function createLegacyReceiver(params: {
     origin: "global",
     trustedOfficialInstall: params.trusted !== false,
     audit: params.audit,
+    gatewayContextResolver: params.gatewayContextResolver,
     prepare: (api) => {
       const descriptor = defineStableChannelIngressIdentity(identity);
       // The released factory is created before registerChannel publishes its owner.
@@ -125,7 +136,15 @@ describe("bundled channel ingress runtime ownership", () => {
     "preserves the released %s helper through a trusted external channel callback",
     async (method) => {
       const audit = createChannelAdmissionAudit({ enabled: true });
-      const channel = createLegacyReceiver({ audit });
+      const gateway = { channelAdmissionAudit: audit } as GatewayRequestContext;
+      const resolveGatewayContext = () => gateway;
+      const host = new LegacyPluginSdkResourceHost();
+      const foreignHost = new LegacyPluginSdkResourceHost();
+      bindLegacyPluginSdkResourceHost(resolveGatewayContext, host);
+      const channel = createLegacyReceiver({
+        audit,
+        gatewayContextResolver: resolveGatewayContext,
+      });
       try {
         recordParticipant.mockClear();
         const context = await channel.receive(channel.resolvers[method]);
@@ -137,6 +156,15 @@ describe("bundled channel ingress runtime ownership", () => {
         expect(readChannelContextGatewayContextResolver(context)?.()?.channelAdmissionAudit).toBe(
           audit,
         );
+        const resolver = readChannelContextGatewayContextResolver(context);
+        expect(resolver).toBeDefined();
+        expect(
+          foreignHost.run(() =>
+            withPluginRuntimeGatewayContextResolver(resolver, () =>
+              getBoundLegacyPluginSdkResourceHost(),
+            ),
+          ),
+        ).toBe(host);
         recordAcceptedSessionParticipantInput(context, {
           agentId: "main",
           sessionKey: "agent:main:channel-owner:dm:dm-1",
@@ -153,8 +181,12 @@ describe("bundled channel ingress runtime ownership", () => {
             },
           }),
         );
+        await channel.dispose();
+        expect(resolver?.()).toBeUndefined();
       } finally {
         await channel.dispose();
+        await host.close();
+        await foreignHost.close();
         audit.close();
       }
     },

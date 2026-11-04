@@ -1,5 +1,6 @@
 import type { DecisionReceiptV1 } from "../../../packages/gateway-protocol/src/index.js";
 import type { GatewayContextResolver } from "../../gateway/server-methods/types.js";
+import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-context-binding.js";
 import {
   createChannelAdmissionDecisionReceipt,
   type ChannelAdmissionDecisionReceiptInput,
@@ -174,19 +175,24 @@ class PreparedChannelAdmissionEvidence {
     const current =
       !value.#owner ||
       (value.#owner.isLive() && value.#owner.resolveGatewayContext?.() === value.#gatewayContext);
+    const resolver: GatewayContextResolver | undefined =
+      current && value.#resolver
+        ? () =>
+            !value.#owner ||
+            (value.#owner.isLive() &&
+              value.#owner.resolveGatewayContext?.() === value.#gatewayContext)
+              ? value.#resolver?.()
+              : undefined
+        : undefined;
+    if (resolver) {
+      // Preserve SDK resource ownership without replacing the execution fence.
+      bindGatewayContextResolver(resolver, value.#resolver);
+    }
     return {
       evidence: current
         ? value.#evidence
         : unknownChannelAdmissionEvidence(AdmissionEvidence.read(value.#evidence)?.audit),
-      resolver:
-        current && value.#resolver
-          ? () =>
-              !value.#owner ||
-              (value.#owner.isLive() &&
-                value.#owner.resolveGatewayContext?.() === value.#gatewayContext)
-                ? value.#resolver?.()
-                : undefined
-          : undefined,
+      resolver,
     };
   }
 }
