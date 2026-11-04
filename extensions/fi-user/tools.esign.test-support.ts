@@ -18,6 +18,39 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
   const { bodyJson, calls, context, json, plugin, routes } = harness;
   const list = { templates: [] };
 
+  describe("fi_user_esign org status discovery", () => {
+    it("uses the existing signing list/show readers without a project and preserves continuation", async () => {
+      routes.push((url, init) =>
+        ["/api/shape/signature/list", "/api/shape/signature/show"].includes(url.pathname) &&
+        init.method === "POST"
+          ? json({ ok: true, result: { submissions: [{ submissionId: 12 }], nextBefore: 12 } })
+          : undefined,
+      );
+      const tool = plugin().tool("fi_user_esign", context());
+      const listed = await tool.execute("list-status", {
+        action: "list",
+        query: "Will Serve",
+        before: 30,
+      });
+      expect(listed.details).toMatchObject({ result: { nextBefore: 12 } });
+      await tool.execute("show-status", { action: "status", submissionId: 12 });
+      const sent = calls.filter((entry) => /signature\/(list|show)$/.test(entry.url));
+      expect(sent.map((entry) => bodyJson(entry.init))).toEqual([
+        { input: { query: "Will Serve", before: 30 } },
+        { input: { submission: 12 } },
+      ]);
+    });
+    it("keeps missing write owner and missing status id refused", async () => {
+      const tool = plugin().tool("fi_user_esign", context());
+      for (const action of ["resend", "send", "prepare", "send_envelope"])
+        await expect(tool.execute("refuse-owner", { action })).rejects.toThrow("exactly one");
+      await expect(tool.execute("refuse-id", { action: "status" })).rejects.toThrow("submissionId");
+      expect(
+        calls.filter((entry) => /signature\/(list|show|send|prepare)$/.test(entry.url)),
+      ).toHaveLength(0);
+    });
+  });
+
   describe("fi_user_esign prepare and send_envelope", () => {
     it("points a document without a reviewed template to prepare, not to an administrator", async () => {
       routes.push((url) =>

@@ -48,6 +48,18 @@ const EsignSchema = Type.Object(
       }),
     ),
     submissionId: Type.Optional(Type.Integer({ minimum: 1 })),
+    query: Type.Optional(
+      Type.String({
+        maxLength: 200,
+        description: "list without project: package title or recipient text.",
+      }),
+    ),
+    before: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        description: "list without project: nextBefore from the previous page.",
+      }),
+    ),
     signerEmail: Type.Optional(Type.String({ format: "email" })),
     documentId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
     templateId: Type.Optional(Type.Integer({ minimum: 1 })),
@@ -110,6 +122,8 @@ type EsignInput = {
   project?: string;
   company?: string;
   submissionId?: number;
+  query?: string;
+  before?: number;
   signerEmail?: string;
   documentId?: string;
   templateId?: number;
@@ -204,12 +218,39 @@ export function createEsignTool(
     name: "fi_user_esign",
     label: "E-sign (as you)",
     description:
-      "E-sign through Fi as the verified requester, for project documents they can read on their documents or construction grant, and (prepare/send_envelope with company) company documents they can read on the company's documents grant, where ownerRole/ownerEmail name the signer the document calls for: list envelopes and reviewed templates; status of an envelope; resend the provider's reminder to a signer already on the envelope (once a day); prepare a private signing template from the reviewed preparation manifest (action=prepare; sends nothing); create an envelope from that template with an explicit route (action=send_envelope: owner signatory, any further signers such as an internal admin or a counterparty named in the document, viewers, completion copies) — the first call returns the exact route and a routeCode, show it to the requester verbatim, and call again with confirmRoute only after they approve; delivery is hold unless docuseal is chosen. action=send still sends a reviewed template with its stored defaults (confirmSend=true). Changing a signer on an existing envelope, archiving and filing stay administrator actions (request_admin_action).",
+      "For package discovery/status, omit project and company: list searches all eligible packages (query=title or recipient; continue with before=nextBefore until exhausted). Members see packages they created or participate in; org owners/admins see all packages of their org, including provider-native packages not filed to a Fi document. Status reads never return signing links or send anything. E-sign through Fi as the verified requester, for project documents they can read on their documents or construction grant, and (prepare/send_envelope with company) company documents they can read on the company's documents grant, where ownerRole/ownerEmail name the signer the document calls for: list envelopes and reviewed templates; status of an envelope; resend the provider's reminder to a signer already on the envelope (once a day); prepare a private signing template from the reviewed preparation manifest (action=prepare; sends nothing); create an envelope from that template with an explicit route (action=send_envelope: owner signatory, any further signers such as an internal admin or a counterparty named in the document, viewers, completion copies) — the first call returns the exact route and a routeCode, show it to the requester verbatim, and call again with confirmRoute only after they approve; delivery is hold unless docuseal is chosen. action=send still sends a reviewed template with its stored defaults (confirmSend=true). Changing a signer on an existing envelope, archiving and filing stay administrator actions (request_admin_action).",
     parameters: EsignSchema,
     async execute(_toolCallId, raw) {
       const input = raw as EsignInput;
       const { delegation, config } = await exchange(api, context);
       const root = orgRoot(delegation.user.orgSlug);
+      if (
+        !input.project &&
+        !input.company &&
+        (input.action === "list" || input.action === "status")
+      ) {
+        if (input.action === "status" && !input.submissionId)
+          throw new Error("submissionId is required");
+        const verb = input.action === "list" ? "list" : "show";
+        return jsonResult(
+          await delegatedJson(
+            config,
+            delegation,
+            `${root}/signature/${verb}`,
+            {
+              method: "POST",
+              headers: { "content-type": "application/json" },
+              body: JSON.stringify({
+                input:
+                  input.action === "list"
+                    ? { query: input.query, before: input.before }
+                    : { submission: input.submissionId },
+              }),
+            },
+            "Fi e-sign status",
+          ),
+        );
+      }
       if (Boolean(input.project) === Boolean(input.company)) {
         throw new Error("Give exactly one of project or company");
       }
