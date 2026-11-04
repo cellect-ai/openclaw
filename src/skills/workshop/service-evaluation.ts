@@ -55,6 +55,10 @@ export async function evaluateSkillProposal(
 ): Promise<SkillProposalEvaluateResult> {
   const store = captureSkillWorkshopStoreOptions({
     ...options,
+    assertCommitAllowed: () => {
+      options.assertCommitAllowed?.();
+      input.assertCommitAllowed?.();
+    },
     env: options.env ?? input.env,
     agentId: input.agentId,
     config: input.config,

@@ -281,21 +281,23 @@ export async function writeSkillProposal(request: {
       params.assertCommitAllowed,
     );
   } catch (error) {
+    // Resolve only this staged generation after caller revocation; retain storage leases and CAS.
+    const recoveryStore = { ...params.store, assertCommitAllowed: undefined };
     const committed = await readCommittedSkillProposalTransition({
       record: params.record,
       event: params.event,
-      store: params.store,
+      store: recoveryStore,
     });
     if (committed) {
       return committed.event;
     }
-    const authoritative = await readStoredProposal(params.record.id, params.store);
+    const authoritative = await readStoredProposal(params.record.id, recoveryStore);
     if (authoritative?.row.record_json === JSON.stringify(params.record)) {
       throw new Error("Created Skill Workshop proposal is missing its committed event.", {
         cause: error,
       });
     }
-    await discardSkillProposalGeneration(params.record, params.store).catch(() => undefined);
+    await discardSkillProposalGeneration(params.record, recoveryStore).catch(() => undefined);
     throw error;
   }
 }
@@ -336,19 +338,21 @@ export async function replaceSkillProposalDraft(request: {
       invalidateRollback: true,
     });
   } catch (error) {
+    // Resolve only this staged generation after caller revocation; retain storage leases and CAS.
+    const recoveryStore = { ...params.store, assertCommitAllowed: undefined };
     const committed = await readCommittedSkillProposalTransition({
       record: params.record,
       event: params.event,
-      store: params.store,
+      store: recoveryStore,
     });
     if (!committed) {
-      const authoritative = await readStoredProposal(params.record.id, params.store);
+      const authoritative = await readStoredProposal(params.record.id, recoveryStore);
       if (authoritative?.row.record_json === JSON.stringify(params.record)) {
         throw new Error("Revised Skill Workshop proposal is missing its committed event.", {
           cause: error,
         });
       }
-      await discardSkillProposalGeneration(params.record, params.store).catch(() => undefined);
+      await discardSkillProposalGeneration(params.record, recoveryStore).catch(() => undefined);
       throw error;
     }
     commit = committed;

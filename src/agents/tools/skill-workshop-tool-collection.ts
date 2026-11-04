@@ -2,6 +2,7 @@ import { truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { restoreLatestSkillCollectionBackup } from "../../skills/workshop/collection-restore.js";
 import { listSkillCollectionReviewOutcomes } from "../../skills/workshop/collection-review-state.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../../skills/workshop/types.js";
 import { ToolInputError } from "./common.js";
 import { textResult } from "./tool-results.js";
 
@@ -21,6 +22,7 @@ function summarizeSkillNames(names: string[]) {
 }
 
 export async function executeSkillCollectionRestore(params: {
+  workspaceAuthoring?: SkillWorkshopWorkspaceAuthoring;
   workspaceDir: string;
   config: OpenClawConfig;
   agentId?: string;
@@ -32,6 +34,7 @@ export async function executeSkillCollectionRestore(params: {
     );
   }
   const result = await restoreLatestSkillCollectionBackup({
+    assertCommitAllowed: params.workspaceAuthoring?.assertCurrent,
     workspaceDir: params.workspaceDir,
     config: params.config,
     agentId: params.agentId,

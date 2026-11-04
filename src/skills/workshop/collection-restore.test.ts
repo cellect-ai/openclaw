@@ -60,6 +60,35 @@ function restore() {
 }
 
 describe("skill collection backup and restore", () => {
+  it("restores the current collection when caller authority closes during an awaited restore", async () => {
+    const file = await writeSkill("procedure", "# Original\n");
+    await seedBackup(() => writeSkill("procedure", "# Reviewed\n"));
+    const reviewed = await fs.readFile(file, "utf8");
+    const copy = fs.cp;
+    let active = true;
+    vi.spyOn(fs, "cp").mockImplementation(async (...args) => {
+      await copy(...args);
+      if (String(args[1]) === path.join(skillsRoot, "procedure")) {
+        active = false;
+      }
+    });
+    await expect(
+      restoreLatestSkillCollectionBackup({
+        workspaceDir: skillsRoot,
+        config: {},
+        agentId: "main",
+        env: state.env,
+        assertCommitAllowed: () => {
+          if (!active) {
+            throw new Error("caller revoked");
+          }
+        },
+      }),
+    ).rejects.toThrow("caller revoked");
+    expect(await fs.readFile(file, "utf8")).toBe(reviewed);
+    expect(dispatchChange).not.toHaveBeenCalled();
+  });
+
   it("retains matching skill and backup roots when the caller changes its agent directory", async () => {
     const header = "---\nname: procedure\ndescription: Procedure\n---\n\n";
     const originalA = header + "# Original A\n";

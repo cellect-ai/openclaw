@@ -625,6 +625,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     skillWorkshopProposalMutationBudget: params.skillWorkshopProposalMutationBudget,
     skillWorkshopProposalRevision: params.skillWorkshopProposalRevision,
     skillLibraryAuthoring: params.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
     promptMode: params.promptMode,
     ownerNumbers: params.ownerNumbers,
     enforceFinalTag: params.enforceFinalTag,

@@ -69,7 +69,7 @@ export async function applySkillProposalTransition(
   request: SkillProposalActionInput,
 ): Promise<SkillProposalApplyResult> {
   const store = captureSkillWorkshopStoreOptions(
-    storeOptions(request.env, request.agentId, request.config),
+    storeOptions(request.env, request.agentId, request.config, request.assertCommitAllowed),
   );
   const input = { ...request, env: store.env, eventActor: structuredClone(request.eventActor) };
   const initial = await readRequiredProposal(input.proposalId, {
@@ -215,7 +215,7 @@ export async function applySkillProposalTransition(
       });
 
       try {
-        await applyWorkspaceSkillMutation(mutation);
+        await applyWorkspaceSkillMutation(mutation, undefined, input.assertCommitAllowed);
       } catch (error) {
         // A rejected filesystem write may have partially changed its target
         // before throwing. Keep recovery facts unless the full bundle is
@@ -403,7 +403,13 @@ async function quarantineSkillProposalAfterScan(params: {
       occurredAt: now,
     }),
     store:
-      params.store ?? storeOptions(params.input.env, params.input.agentId, params.input.config),
+      params.store ??
+      storeOptions(
+        params.input.env,
+        params.input.agentId,
+        params.input.config,
+        params.input.assertCommitAllowed,
+      ),
     operationLabel: "skill-workshop.quarantine.commit",
   });
   if (commit.state !== "committed") {
@@ -492,15 +498,17 @@ async function recoverAfterApplyCommitFailure(params: {
   event: NewSkillProposalEvent;
   mutation: PreparedWorkspaceSkillMutation;
 }): Promise<SkillProposalEvent | null> {
+  // Finish only the already-prepared transition's exact cleanup after caller revocation.
+  const recoveryStore = { ...params.store, assertCommitAllowed: undefined };
   const committed = await readCommittedSkillProposalTransition({
     record: params.applied,
     event: params.event,
-    store: params.store,
+    store: recoveryStore,
   });
   if (committed) {
     return committed.event;
   }
-  const authoritative = await readStoredProposal(params.expected.id, params.store);
+  const authoritative = await readStoredProposal(params.expected.id, recoveryStore);
   if (authoritative?.record.status === "applied") {
     throw new Error("Applied Skill Workshop transition is missing its committed event.", {
       cause: params.error,
@@ -530,7 +538,7 @@ async function recoverAfterApplyCommitFailure(params: {
   await clearSkillProposalRollback({
     proposalId: params.expected.id,
     expectedRecordJson: JSON.stringify(params.expected),
-    store: params.store,
+    store: recoveryStore,
   }).catch(() => false);
   return null;
 }
@@ -539,10 +547,12 @@ function storeOptions(
   env: NodeJS.ProcessEnv | undefined,
   agentId: string | undefined,
   config: OpenClawConfig,
+  assertCommitAllowed?: () => void,
 ): SkillWorkshopStoreOptions {
   return {
     ...(env ? { env } : {}),
     ...(agentId ? { agentId } : {}),
     config,
+    assertCommitAllowed,
   };
 }

@@ -27,6 +27,10 @@ export function executeSkillWorkshopOperation<Key extends keyof SkillWorkshopExe
 ): Promise<SkillWorkshopExecutionOperations[Key]["output"]> {
   const captured = structuredClone(value);
   const store = captureSkillWorkshopStoreOptions(options);
+  const assertCallerCurrent = () => {
+    store.assertCommitAllowed?.();
+    assertCommitAllowed?.();
+  };
   const { context, leases } = store.execution;
   const execute = async (
     scope: Pick<SqliteWorkerStore<SkillWorkshopExecutionOperations>, "execute">,
@@ -44,15 +48,12 @@ export function executeSkillWorkshopOperation<Key extends keyof SkillWorkshopExe
     });
   };
   if (leases.length > 0) {
-    return runWithOpenClawStateLeasesWorker(
-      leases,
-      context,
-      execute,
-      assertCommitAllowed ? { assertCurrent: assertCommitAllowed } : undefined,
-    );
+    return runWithOpenClawStateLeasesWorker(leases, context, execute, {
+      assertCurrent: assertCallerCurrent,
+    });
   }
   const assertCurrent = () => {
-    assertCommitAllowed?.();
+    assertCallerCurrent();
     context.admission.assertCurrent();
     context.maintenanceScope?.assertAdmission();
   };

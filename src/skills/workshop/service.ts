@@ -60,11 +60,12 @@ function proposalStoreOptions(
   env: NodeJS.ProcessEnv | undefined,
   agentId: string | undefined,
   config: OpenClawConfig,
+  assertCommitAllowed?: () => void,
 ) {
   if (!agentId) {
     throw new Error("Skill Workshop requires the active agent id.");
   }
-  return { ...(env ? { env } : {}), agentId, config };
+  return { ...(env ? { env } : {}), agentId, config, assertCommitAllowed };
 }
 
 export async function reviseSkillProposal(
@@ -88,7 +89,12 @@ export async function reviseSkillProposal(
   const config = resolveSkillWorkshopConfig(request.config);
   const revision = (async () => {
     const storeOptions = captureSkillWorkshopStoreOptions(
-      proposalStoreOptions(request.env, request.agentId, request.config),
+      proposalStoreOptions(
+        request.env,
+        request.agentId,
+        request.config,
+        request.assertCommitAllowed,
+      ),
     );
     const initial = await readRequiredProposal(request.proposalId, storeOptions);
     return await withSkillProposalTargetLock(
@@ -277,7 +283,7 @@ async function markProposal(
   status: "quarantined" | "rejected",
 ): Promise<SkillProposalRecord> {
   const store = captureSkillWorkshopStoreOptions(
-    proposalStoreOptions(input.env, input.agentId, input.config),
+    proposalStoreOptions(input.env, input.agentId, input.config, input.assertCommitAllowed),
   );
   const request = { ...input, env: store.env, eventActor: structuredClone(input.eventActor) };
   const scope = request.agentId ? { agentId: request.agentId } : {};

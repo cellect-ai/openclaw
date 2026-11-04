@@ -31,6 +31,7 @@ type SkillCollectionChange = {
 };
 
 export async function restoreLatestSkillCollectionBackup(request: {
+  assertCommitAllowed?: () => void;
   workspaceDir: string;
   config: OpenClawConfig;
   agentId: string;
@@ -107,6 +108,7 @@ export async function restoreLatestSkillCollectionBackup(request: {
     await assertCollectionResultUnchanged(skillsRoot, manifest);
     try {
       await restoreSkillCollectionBackupTransaction({
+        assertCommitAllowed: params.assertCommitAllowed,
         skillsRoot,
         backupDir,
         skillDirs: manifest.skillDirs,

@@ -66,6 +66,74 @@ afterEach(async () => {
 });
 
 describe("Skill Workshop SQLite store", () => {
+  it.each(["create", "revise"])(
+    "discards only its staged generation when caller revokes before %s commit",
+    async (operation) => {
+      const options = {
+        workspaceDir: testState.stateDir,
+        config: workshopConfig,
+        agentId: "main",
+        env: testState.env,
+      };
+      const original = await proposeCreateSkill({
+        ...options,
+        name: "Retained proposal",
+        description: "Preserve original generation",
+        content: "# Original\n",
+      });
+      let active = true;
+      const assertCommitAllowed = () => {
+        if (!active) {
+          throw new Error("caller revoked after staging");
+        }
+      };
+      const stage = proposalGeneration.stageSkillProposalGeneration;
+      let staged: Parameters<typeof stage>[0] | undefined;
+      const staging = vi
+        .spyOn(proposalGeneration, "stageSkillProposalGeneration")
+        .mockImplementation(async (params) => {
+          await stage(params);
+          staged = params;
+          active = false;
+        });
+      try {
+        const writing =
+          operation === "create"
+            ? proposeCreateSkill({
+                ...options,
+                name: "Revoked new proposal",
+                description: "No orphan generation",
+                content: "# Revoked\n",
+                assertCommitAllowed,
+              })
+            : reviseSkillProposal({
+                ...options,
+                proposalId: original.record.id,
+                expectedRevisionHash: original.revisionHash,
+                content: "# Revoked revision\n",
+                assertCommitAllowed,
+              });
+        await expect(writing).rejects.toThrow("caller revoked after staging");
+      } finally {
+        staging.mockRestore();
+      }
+      if (!staged) {
+        throw new Error("Expected complete generation before revocation");
+      }
+      const generationFile = testState.statePath(
+        proposalGeneration.proposalBundleRelativePath(staged.record, "PROPOSAL.md"),
+      );
+      await expect(fs.access(path.dirname(generationFile))).rejects.toThrow();
+      expect(await inspectSkillProposal(original.record.id, options)).toMatchObject({
+        revisionHash: original.revisionHash,
+        content: original.content,
+        record: { status: "pending" },
+      });
+      const proposals = await listSkillProposals(options);
+      expect(proposals.proposals.map((entry) => entry.id)).toEqual([original.record.id]);
+    },
+  );
+
   it("inspects terminal generations without write leases and rechecks file integrity", async () => {
     const options = {
       workspaceDir: testState.stateDir,

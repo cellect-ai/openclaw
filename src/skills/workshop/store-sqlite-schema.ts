@@ -22,6 +22,7 @@ export type SkillWorkshopDatabase = Pick<
 >;
 export type SkillProposalRow = Selectable<SkillWorkshopDatabase["skill_workshop_proposals"]>;
 export type SkillWorkshopStoreOptions = {
+  assertCommitAllowed?: () => void;
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
   agentId?: string;

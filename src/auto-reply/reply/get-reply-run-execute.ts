@@ -52,6 +52,7 @@ import { hasInboundAudio } from "./inbound-media.js";
 import { normalizeMessageTimestampMs } from "./message-timestamp.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplyToMode } from "./reply-threading.js";
+import { prepareReplyWorkshopAuthoring } from "./reply-workshop-authoring.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import {
   bindSourceReplyDeliveryRuntime,
@@ -574,6 +575,13 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
           }
         : {}),
       ...(opts?.skillLibraryAuthoring ? { skillLibraryAuthoring: opts.skillLibraryAuthoring } : {}),
+      skillWorkshopWorkspaceAuthoring: prepareReplyWorkshopAuthoring(ctx, {
+        agentId,
+        sessionKey,
+        provider,
+        model,
+        freshHuman: freshChannelCronAuthorityTurn,
+      }),
       ...(!useFastReplyRuntime &&
       isReasoningTagProvider(provider, { config: cfg, workspaceDir, modelId: model })
         ? { enforceFinalTag: true }

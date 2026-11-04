@@ -218,15 +218,27 @@ export async function applyWorkspaceSkillMutation(
   writeFile: (
     file: PreparedWorkspaceSkillFileMutation,
     overwrite: boolean,
+    assertCommitAllowed?: () => void,
   ) => Promise<void> = writeWorkspaceSkillFile,
+  assertCommitAllowed?: () => void,
 ): Promise<void> {
   const written: PreparedWorkspaceSkillFileMutation[] = [];
   try {
     for (const file of mutation.supportFiles) {
-      await writePreparedWorkspaceFile(file, mutation.mode === "update", writeFile);
+      await writePreparedWorkspaceFile(
+        file,
+        mutation.mode === "update",
+        writeFile,
+        assertCommitAllowed,
+      );
       written.push(file);
     }
-    await writePreparedWorkspaceFile(mutation.skillFile, mutation.mode === "update", writeFile);
+    await writePreparedWorkspaceFile(
+      mutation.skillFile,
+      mutation.mode === "update",
+      writeFile,
+      assertCommitAllowed,
+    );
   } catch (error) {
     try {
       await restorePreparedWorkspaceFiles(written.toReversed());
@@ -301,10 +313,17 @@ function normalizeSupportFiles(
 async function writePreparedWorkspaceFile(
   file: PreparedWorkspaceSkillFileMutation,
   overwrite: boolean,
-  writeFile: (file: PreparedWorkspaceSkillFileMutation, overwrite: boolean) => Promise<void>,
+  writeFile: (
+    file: PreparedWorkspaceSkillFileMutation,
+    overwrite: boolean,
+    assertCommitAllowed?: () => void,
+  ) => Promise<void>,
+  assertCommitAllowed?: () => void,
 ): Promise<void> {
   try {
-    await writeFile(file, overwrite);
+    assertCommitAllowed?.();
+    await writeFile(file, overwrite, assertCommitAllowed);
+    assertCommitAllowed?.();
   } catch (error) {
     // fs-safe commits writes atomically, but its post-write identity check can
     // reject after commit. Restore only our exact bytes; preserve external edits.
@@ -327,8 +346,10 @@ async function writePreparedWorkspaceFile(
 async function writeWorkspaceSkillFile(
   file: PreparedWorkspaceSkillFileMutation,
   overwrite: boolean,
+  assertCommitAllowed?: () => void,
 ): Promise<void> {
-  const targetRoot = await root(file.rootDir);
+  const targetRoot = await root(file.rootDir, { assertBeforeMutation: assertCommitAllowed });
+  assertCommitAllowed?.();
   await targetRoot.write(file.relativePath, file.content, {
     encoding: "utf8",
     mkdir: true,

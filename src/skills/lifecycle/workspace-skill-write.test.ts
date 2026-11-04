@@ -30,6 +30,39 @@ async function mutationPaths(slug: string) {
 }
 
 describe("workspace skill mutations", () => {
+  it("rolls back its exact written bundle when caller authority closes across an awaited write", async () => {
+    const { workspaceDir, skillDir, skillFile, supportFile } =
+      await mutationPaths("authority-revoked");
+    await fs.mkdir(path.dirname(supportFile), { recursive: true });
+    await fs.writeFile(skillFile, "# Original\n");
+    await fs.writeFile(supportFile, "original support\n");
+    const mutation = await prepareWorkspaceSkillMutation({
+      skillsRoot: workspaceDir,
+      skillDir,
+      skillFile,
+      mode: "update",
+      content: "# Unauthorized\n",
+      supportFiles: [{ path: "references/proof.md", content: "unauthorized support\n" }],
+    });
+    let active = true;
+    await expect(
+      applyWorkspaceSkillMutation(
+        mutation,
+        async (file) => {
+          await fs.writeFile(path.join(file.rootDir, file.relativePath), file.content);
+          active = false;
+        },
+        () => {
+          if (!active) {
+            throw new Error("caller revoked");
+          }
+        },
+      ),
+    ).rejects.toThrow("caller revoked");
+    expect(await fs.readFile(skillFile, "utf8")).toBe("# Original\n");
+    expect(await fs.readFile(supportFile, "utf8")).toBe("original support\n");
+  });
+
   it("removes support files when the activating SKILL.md write fails", async () => {
     const { workspaceDir, skillDir, skillFile, supportFile } =
       await mutationPaths("partial-create");

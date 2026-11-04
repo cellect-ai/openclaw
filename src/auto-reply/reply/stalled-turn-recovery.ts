@@ -62,6 +62,7 @@ export function buildStalledTurnRecoveryRun(base: FollowupRun): FollowupRun {
     run: {
       ...base.run,
       suppressNextUserMessagePersistence: true,
+      skillWorkshopWorkspaceAuthoring: undefined,
       skillLibraryAuthoring: base.run.skillLibraryAuthoring && {
         target: "personal",
         defaultTarget: "personal",

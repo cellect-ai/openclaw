@@ -52,7 +52,14 @@ export type SkillWorkshopProposalRevisionConstraint = {
   readonly expectedRevisionHash: string;
 };
 
+export type SkillWorkshopWorkspaceAuthoring = Readonly<{
+  agentId: string;
+  bind: (context: import("../../agents/admitted-run-context.js").AdmittedRunContext) => void;
+  assertCurrent: () => void;
+}>;
+
 export type SkillWorkshopRunOptions = {
+  workspaceAuthoring?: SkillWorkshopWorkspaceAuthoring;
   libraryAuthoring?: import("../library/authoring.js").SkillLibraryAuthoringCapability;
   env?: NodeJS.ProcessEnv;
   proposalOnly?: boolean;
@@ -116,6 +123,8 @@ export type SkillProposalSupportFileInput = NonNullable<
 >[number];
 
 type SkillProposalContext = {
+  /** Exact caller-owned synchronous fence retained by store and file publishers. */
+  assertCommitAllowed?: () => void;
   workspaceDir: string;
   agentId?: string;
   eventActor?: SkillProposalEventActor;

@@ -6,6 +6,7 @@ import {
   createQueueTestRun as createRun,
   installQueueRuntimeErrorSilencer,
 } from "../queue.test-helpers.js";
+import { requiresIndividualCollectDrain } from "./collected-run.js";
 import { clearFollowupDrainCallback } from "./drain.js";
 import { clearFollowupQueue, FOLLOWUP_QUEUES } from "./state.js";
 import type { FollowupRun, QueueSettings } from "./types.js";
@@ -20,6 +21,17 @@ describe("drain finally identity guard — late D1 must not orphan Q2", () => {
       clearFollowupQueue(key);
       clearFollowupDrainCallback(key);
     }
+  });
+
+  it("keeps a host-bound Workshop turn out of collected aggregates", () => {
+    const source = createRun({ prompt: "Edit your own procedure" });
+    expect(requiresIndividualCollectDrain(source)).toBe(false);
+    source.run.skillWorkshopWorkspaceAuthoring = {
+      agentId: "agent",
+      bind: () => {},
+      assertCurrent: () => {},
+    };
+    expect(requiresIndividualCollectDrain(source)).toBe(true);
   });
 
   it("preserves Q2 map entry after reset when D1 finally runs late", async () => {

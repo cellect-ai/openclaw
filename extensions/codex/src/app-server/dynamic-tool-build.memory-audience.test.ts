@@ -26,6 +26,26 @@ describe("Codex dynamic tool memory authority", () => {
     vi.unstubAllEnvs();
   });
 
+  it("retains the host-private Workshop capability at the actual dynamic tool factory", async () => {
+    const workspaceDir = path.join(tempDir, "workshop-workspace");
+    const params = createParams(path.join(tempDir, "workshop-session.jsonl"), workspaceDir);
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    params.skillWorkshopWorkspaceAuthoring = Object.freeze({
+      agentId: "main",
+      bind: () => {},
+      assertCurrent: () => {},
+    });
+    const factory = vi.fn((_options: Parameters<typeof createOpenClawCodingTools>[0]) => []);
+    setCodexTestToolFactory(params, factory);
+    await buildDynamicToolsForTest(params, workspaceDir);
+    expect(factory).toHaveBeenCalledOnce();
+    expect(factory.mock.calls[0]?.[0]?.skillWorkshop?.workspaceAuthoring).toBe(
+      params.skillWorkshopWorkspaceAuthoring,
+    );
+    expect(factory.mock.calls[0]?.[0]?.skillWorkshop?.libraryAuthoring).toBeUndefined();
+  });
+
   it("preserves the exact memory audience through tool construction", async () => {
     const workspaceDir = path.join(tempDir, "memory-audience-workspace");
     const params = createParams(path.join(tempDir, "memory-audience-session.jsonl"), workspaceDir);

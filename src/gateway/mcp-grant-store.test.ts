@@ -477,6 +477,11 @@ describe("mcp-grant-store", () => {
         throw new Error("unused");
       },
     };
+    const skillWorkshopWorkspaceAuthoring = {
+      agentId: "main",
+      bind: () => {},
+      assertCurrent: () => {},
+    };
     const stable = mintMcpLoopbackClientGrant({
       context: { sessionKey: "agent:main:first", runId: "run-first-turn", senderIsOwner: false },
       runtimeOwnerToken: "runtime-one",
@@ -489,6 +494,7 @@ describe("mcp-grant-store", () => {
       admittedRunContext: nextAdmission,
       abortSignal: nextController.signal,
       skillLibraryAuthoring,
+      skillWorkshopWorkspaceAuthoring,
       toolAuth: {
         agentDir: "/tmp/next-agent",
         store: { version: 1, profiles: {} },
@@ -564,6 +570,7 @@ describe("mcp-grant-store", () => {
       },
       admittedRunContext: nextAdmission,
       skillLibraryAuthoring,
+      skillWorkshopWorkspaceAuthoring,
       toolAuth: {
         agentDir: "/tmp/next-agent",
         store: { version: 1, profiles: {} },
@@ -575,6 +582,8 @@ describe("mcp-grant-store", () => {
       captureKey: "next-capture",
     });
     expect(transferred?.skillLibraryAuthoring).toBe(skillLibraryAuthoring);
+    expect(transferred?.skillWorkshopWorkspaceAuthoring).toBe(skillWorkshopWorkspaceAuthoring);
+    expect(transferred?.context).not.toHaveProperty("skillWorkshop.workspaceAuthoring");
     expect(transferred?.isCurrent()).toBe(true);
     expect(first?.isCurrent()).toBe(false);
     expect(

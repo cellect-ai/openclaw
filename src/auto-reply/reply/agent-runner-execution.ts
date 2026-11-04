@@ -508,6 +508,7 @@ async function executeAgentTurnInternal(
       bindGatewayContextResolver(context, gatewayContextResolver);
       admittedRunContext.current = context;
       params.followupRun.run.skillLibraryAuthoring?.bind(context);
+      params.followupRun.run.skillWorkshopWorkspaceAuthoring?.bind(context);
     },
   });
   const deferredLifecycle = createDeferredEmbeddedRunLifecycleManager({

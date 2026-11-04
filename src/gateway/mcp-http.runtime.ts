@@ -66,6 +66,7 @@ type McpLoopbackScopeParams = {
   authProfileStore?: AuthProfileStore;
   authProfileStoreAgentDir?: string;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+  skillWorkshopWorkspaceAuthoring?: import("../skills/workshop/types.js").SkillWorkshopWorkspaceAuthoring;
   rootedExecution?: PreparedRootedExecutionCapability;
   /** Host-selected coding owners for pre-grant projection only. */
   defaultMediatedToolNames?: readonly string[];
@@ -314,8 +315,12 @@ function constructMcpLoopbackTools(
     excludeToolNames.delete("exec");
   }
   const skillWorkshop =
-    context.skillWorkshop || params.skillLibraryAuthoring
-      ? { ...context.skillWorkshop, libraryAuthoring: params.skillLibraryAuthoring }
+    context.skillWorkshop || params.skillLibraryAuthoring || params.skillWorkshopWorkspaceAuthoring
+      ? {
+          ...context.skillWorkshop,
+          libraryAuthoring: params.skillLibraryAuthoring,
+          workspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
+        }
       : undefined;
   const scoped = resolveGatewayScopedTools({
     ...context,

@@ -39,7 +39,7 @@ export async function transitionPendingSkillProposalToStale(params: {
   reason: string;
   input: Pick<
     SkillProposalActionInput,
-    "agentId" | "config" | "correlationId" | "env" | "eventActor"
+    "agentId" | "config" | "correlationId" | "env" | "eventActor" | "assertCommitAllowed"
   >;
 }): Promise<{ record: SkillProposalRecord; event: SkillProposalEvent }> {
   const now = new Date().toISOString();
@@ -64,6 +64,7 @@ export async function transitionPendingSkillProposalToStale(params: {
       ...(params.input.env ? { env: params.input.env } : {}),
       ...(params.input.agentId ? { agentId: params.input.agentId } : {}),
       config: params.input.config,
+      assertCommitAllowed: params.input.assertCommitAllowed,
     },
     operationLabel: "skill-workshop.stale.commit",
   });
@@ -133,6 +134,7 @@ export async function inspectSkillProposal(
 }
 
 export async function resolvePendingSkillProposal(input: {
+  assertCommitAllowed?: () => void;
   agentId: string;
   config: OpenClawConfig;
   env?: NodeJS.ProcessEnv;

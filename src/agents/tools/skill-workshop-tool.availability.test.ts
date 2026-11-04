@@ -78,7 +78,7 @@ describe("Workshop construction and runtime allowlist", () => {
 
     if (sandboxed && !authorizedLibrary) {
       expect(tools).toEqual([]);
-      expect(error?.message).toContain("sandboxed run without library-authoring authority");
+      expect(error?.message).toContain("sandboxed run without host-issued authoring authority");
       expect(error?.message).toContain("non-sandboxed session");
       expect(error?.message).not.toContain("no registered tools matched");
       expect(error?.message).not.toContain("enable the plugin");

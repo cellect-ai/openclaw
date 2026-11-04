@@ -317,6 +317,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
               proposalMutationBudget: attempt.skillWorkshopProposalMutationBudget,
               proposalRevision: attempt.skillWorkshopProposalRevision,
               libraryAuthoring: attempt.skillLibraryAuthoring,
+              workspaceAuthoring: attempt.skillWorkshopWorkspaceAuthoring,
             },
             modelCompat: extractModelCompat(attempt.model),
             delegationCapability: attempt.delegationCapability,

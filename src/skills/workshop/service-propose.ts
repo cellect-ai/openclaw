@@ -85,6 +85,7 @@ export async function proposeCreateSkill(
     env: input.env,
     agentId: input.agentId,
     config: input.config,
+    assertCommitAllowed: input.assertCommitAllowed,
   });
   const request = {
     ...input,
@@ -168,6 +169,7 @@ export async function proposeUpdateSkill(
   input: SkillProposalUpdateInput,
 ): Promise<SkillProposalReadResult> {
   const store = captureSkillWorkshopStoreOptions({
+    assertCommitAllowed: input.assertCommitAllowed,
     env: input.env,
     agentId: input.agentId,
     config: input.config,

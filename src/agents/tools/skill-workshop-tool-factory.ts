@@ -43,5 +43,6 @@ export function createConfiguredSkillWorkshopTool(params: {
     modelContextWindowTokens: params.modelContextWindowTokens,
     proposalRevision: params.run?.proposalRevision,
     libraryAuthoring: params.run?.libraryAuthoring,
+    workspaceAuthoring: params.run?.workspaceAuthoring,
   });
 }

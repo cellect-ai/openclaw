@@ -148,6 +148,7 @@ export async function prepareEmbeddedAttemptToolCatalog(input: {
           skillWorkshop: {
             sandboxed: input.setup.sandbox?.enabled,
             libraryAuthoring: attempt.skillLibraryAuthoring,
+            workspaceAuthoring: attempt.skillWorkshopWorkspaceAuthoring,
           },
         });
     logAgentRuntimeToolDiagnostics({

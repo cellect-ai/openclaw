@@ -307,6 +307,7 @@ async function startMcpLoopbackServer(
                 ...(boundClientGrant?.skillLibraryAuthoring
                   ? { skillLibraryAuthoring: boundClientGrant.skillLibraryAuthoring }
                   : {}),
+                skillWorkshopWorkspaceAuthoring: boundClientGrant?.skillWorkshopWorkspaceAuthoring,
               }),
           );
         } catch (error) {

@@ -404,6 +404,7 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
     resolveSkillWorkshopToolConstructionBlock({
       sandboxed: options?.sandboxed,
       libraryAuthoring: options?.skillWorkshop?.libraryAuthoring,
+      workspaceAuthoring: options?.skillWorkshop?.workspaceAuthoring,
     }) || !resolvedConfig
       ? null
       : createConfiguredSkillWorkshopTool({

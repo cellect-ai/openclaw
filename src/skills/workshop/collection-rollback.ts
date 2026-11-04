@@ -6,11 +6,13 @@ import { pathExists } from "../../infra/fs-safe.js";
 import { logWarn } from "../../logger.js";
 
 export async function restoreSkillCollectionBackupTransaction(params: {
+  assertCommitAllowed?: () => void;
   skillsRoot: string;
   backupDir: string;
   skillDirs: readonly string[];
   resultSkillDirs: readonly string[];
 }): Promise<void> {
+  params.assertCommitAllowed?.();
   const rollbackDir = path.join(params.backupDir, `.restore-${randomUUID()}`);
   try {
     await fs.mkdir(path.join(rollbackDir, "skills"), { recursive: true });
@@ -28,6 +30,7 @@ export async function restoreSkillCollectionBackupTransaction(params: {
   let discardSnapshot = false;
   try {
     await restoreSkillCollectionBackup(params);
+    params.assertCommitAllowed?.();
     discardSnapshot = true;
   } catch (error) {
     try {
@@ -63,11 +66,13 @@ async function restoreSkillCollectionBackup(
   ]);
   for (const skillDir of [...removeDirs].toSorted((left, right) => right.length - left.length)) {
     if (await pathExists(skillDir)) {
-      await removeSkillCollectionDirectory(params.skillsRoot, skillDir);
+      params.assertCommitAllowed?.();
+      await removeSkillCollectionDirectory(params.skillsRoot, skillDir, params.assertCommitAllowed);
     }
   }
   for (const relativeDir of params.skillDirs) {
     await fs.mkdir(path.dirname(path.join(params.skillsRoot, relativeDir)), { recursive: true });
+    params.assertCommitAllowed?.();
     await fs.cp(
       path.join(params.backupDir, "skills", relativeDir),
       path.join(params.skillsRoot, relativeDir),
@@ -87,7 +92,11 @@ async function discardRestoreSnapshot(backupDir: string, rollbackDir: string): P
   });
 }
 
-async function removeSkillCollectionDirectory(skillsRoot: string, skillDir: string): Promise<void> {
+async function removeSkillCollectionDirectory(
+  skillsRoot: string,
+  skillDir: string,
+  assertCommitAllowed?: () => void,
+): Promise<void> {
   const relativePath = path.relative(skillsRoot, skillDir);
   if (
     !relativePath ||
@@ -98,6 +107,7 @@ async function removeSkillCollectionDirectory(skillsRoot: string, skillDir: stri
     throw new Error(`Skill directory must be inside the Skill Workshop directory: ${skillDir}`);
   }
   await removePathWithinRoot({
+    assertBeforeMutation: assertCommitAllowed,
     rootDir: skillsRoot,
     relativePath,
     recursive: true,

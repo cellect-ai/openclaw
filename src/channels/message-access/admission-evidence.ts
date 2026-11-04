@@ -178,7 +178,15 @@ class PreparedChannelAdmissionEvidence {
       evidence: current
         ? value.#evidence
         : unknownChannelAdmissionEvidence(AdmissionEvidence.read(value.#evidence)?.audit),
-      resolver: current ? value.#resolver : undefined,
+      resolver:
+        current && value.#resolver
+          ? () =>
+              !value.#owner ||
+              (value.#owner.isLive() &&
+                value.#owner.resolveGatewayContext?.() === value.#gatewayContext)
+                ? value.#resolver?.()
+                : undefined
+          : undefined,
     };
   }
 }

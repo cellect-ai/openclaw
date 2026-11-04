@@ -109,16 +109,23 @@ export async function readProposalForInspect(
   config: OpenClawConfig,
   env: NodeJS.ProcessEnv | undefined,
   agentId: string,
+  assertCommitAllowed?: () => void,
 ): Promise<SkillProposalReadResult> {
   const proposalId = readToolStringParam(params, "proposal_id", { label: "proposal_id" });
   if (proposalId) {
-    const proposal = await inspectSkillProposal(proposalId, { agentId, config, env });
+    const proposal = await inspectSkillProposal(proposalId, {
+      agentId,
+      config,
+      env,
+      assertCommitAllowed,
+    });
     if (!proposal) {
       throw new ToolInputError(`Skill proposal not found: ${proposalId}`);
     }
     return proposal;
   }
   return await resolvePendingSkillProposal({
+    assertCommitAllowed,
     name: readToolStringParam(params, "name", { required: true }),
     workspaceDir,
     config,

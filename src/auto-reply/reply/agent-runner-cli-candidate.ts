@@ -470,6 +470,7 @@ export async function runCliFallbackCandidate(
             toolsAllow: turn.opts?.toolsAllow,
             skillWorkshopProposalRevision: params.candidateRun.skillWorkshopProposalRevision,
             skillLibraryAuthoring: params.candidateRun.skillLibraryAuthoring,
+            skillWorkshopWorkspaceAuthoring: params.candidateRun.skillWorkshopWorkspaceAuthoring,
             disableTools: turn.opts?.disableTools,
             toolAuthorityFingerprint,
             abortSignal: params.runAbortSignal,

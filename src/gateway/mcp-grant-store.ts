@@ -156,6 +156,7 @@ type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   /** Original CLI policy, rebound only to this stored row's exact lifetime. */
   bindQuestionAnswerAuthority?: (assertActive: () => void) => PreparedQuestionAnswerAuthority;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+  skillWorkshopWorkspaceAuthoring?: SkillWorkshopRunOptions["workspaceAuthoring"];
   rootedExecution?: PreparedRootedExecutionCapability;
   activeCaptureKey?: string;
   /** Effective attempt authority, including plugin-owned timeout and cancellation. */
@@ -285,6 +286,7 @@ export function mintMcpLoopbackClientGrant(
     assertCurrent: params.assertCurrent,
     bindQuestionAnswerAuthority: params.bindQuestionAnswerAuthority,
     skillLibraryAuthoring: params.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
     rootedExecution: params.rootedExecution,
     ...(params.toolAuth ? { toolAuth: structuredClone(params.toolAuth) } : {}),
   };
@@ -482,6 +484,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       cronAuthorityCheck?: () => boolean;
       questionAnswerAuthority?: PreparedQuestionAnswerAuthority;
       skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+      skillWorkshopWorkspaceAuthoring?: SkillWorkshopRunOptions["workspaceAuthoring"];
       rootedExecution?: PreparedRootedExecutionCapability;
       isCurrent: () => boolean;
       toolAuth?: McpLoopbackToolAuth;
@@ -533,6 +536,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       : undefined,
     questionAnswerAuthority,
     skillLibraryAuthoring: grant.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: grant.skillWorkshopWorkspaceAuthoring,
     isCurrent,
     rootedExecution: grant.rootedExecution,
     ...(grant.toolAuth ? { toolAuth: grant.toolAuth } : {}),

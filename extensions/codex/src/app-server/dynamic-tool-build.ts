@@ -32,7 +32,7 @@ import {
   readCodexPluginConfig,
   type CodexPluginConfig,
 } from "./config.js";
-import { resolveCodexToolConstructionPlan } from "./dynamic-tool-construction-plan.js";
+import * as toolConstruction from "./dynamic-tool-construction-plan.js";
 import {
   filterCodexDynamicTools,
   filterCodexDynamicToolsForDisabledNativeSurface,
@@ -198,7 +198,7 @@ export async function buildDynamicTools(
   });
   const messageToolProvider = resolveCodexMessageToolProvider(params);
   const webFetchHostnameAllowlistRef: { value?: string[] } = {};
-  const toolConstructionPlan = resolveCodexToolConstructionPlan(
+  const toolConstructionPlan = toolConstruction.resolveCodexToolConstructionPlan(
     input.sandbox,
     input.nativeToolSurfaceEnabled,
     params.requireWorkspaceOnly,
@@ -254,9 +254,7 @@ export async function buildDynamicTools(
           }),
     config: params.config,
     skillsSnapshot: params.skillsSnapshot,
-    ...(params.skillLibraryAuthoring
-      ? { skillWorkshop: { libraryAuthoring: params.skillLibraryAuthoring } }
-      : {}),
+    skillWorkshop: toolConstruction.resolveWorkshopAuthoring(params),
     authProfileStore: params.toolAuthProfileStore ?? params.authProfileStore,
     abortSignal: input.runAbortController.signal,
     emitBeforeToolCallDiagnostics: false,

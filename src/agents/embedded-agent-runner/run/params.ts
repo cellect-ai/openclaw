@@ -133,6 +133,7 @@ export type RunEmbeddedAgentParams = {
   /** Bind an operator-requested revision turn to the exact proposal revision they reviewed. */
   skillWorkshopProposalRevision?: SkillWorkshopRunOptions["proposalRevision"];
   skillLibraryAuthoring?: SkillWorkshopRunOptions["libraryAuthoring"];
+  skillWorkshopWorkspaceAuthoring?: SkillWorkshopRunOptions["workspaceAuthoring"];
   /** Explicit system prompt mode override for trusted callers. */
   promptMode?: PromptMode;
   /** Keep the message tool available even when a narrow profile would omit it. */

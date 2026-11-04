@@ -117,6 +117,7 @@ function bindProposalRevisionConstraint(
 }
 
 type SkillWorkshopToolOptions = {
+  workspaceAuthoring?: import("../../skills/workshop/types.js").SkillWorkshopWorkspaceAuthoring;
   libraryAuthoring?: import("../../skills/library/authoring.js").SkillLibraryAuthoringCapability;
   workspaceDir: string;
   config: OpenClawConfig;
@@ -138,6 +139,25 @@ type SkillWorkshopToolOptions = {
 };
 
 export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyAgentTool {
+  const capability = options.workspaceAuthoring;
+  if (capability && capability.agentId !== options.agentId) {
+    throw new ToolInputError("Workshop authority belongs to another agent");
+  }
+  const tool = createWorkspaceSkillWorkshopTool(options);
+  return !capability
+    ? tool
+    : {
+        ...tool,
+        execute: async (...args) => {
+          capability.assertCurrent();
+          const result = await tool.execute(...args);
+          capability.assertCurrent();
+          return result;
+        },
+      };
+}
+
+function createWorkspaceSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyAgentTool {
   if (options.libraryAuthoring) {
     return createLibrarySkillWorkshopTool(
       options.libraryAuthoring,
@@ -241,6 +261,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
         const proposals = listProposalEntries({
           proposals: (
             await listSkillProposals({
+              assertCommitAllowed: options.workspaceAuthoring?.assertCurrent,
               agentId: options.agentId,
               config: options.config,
               env: options.env,
@@ -260,6 +281,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
           options.config,
           options.env,
           options.agentId,
+          options.workspaceAuthoring?.assertCurrent,
         );
         const artifactPath = readToolStringParam(params, "artifact_path", {
           label: "artifact_path",
@@ -294,6 +316,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
       }
 
       const proposalContext = {
+        assertCommitAllowed: options.workspaceAuthoring?.assertCurrent,
         workspaceDir: options.workspaceDir,
         agentId: options.agentId,
         eventActor: { type: "agent" as const, ...(options.agentId ? { id: options.agentId } : {}) },
@@ -501,6 +524,7 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
           let expectedRevisionHash = options.proposalRevision?.expectedRevisionHash;
           if (!proposalId) {
             const pendingProposal = await resolvePendingSkillProposal({
+              assertCommitAllowed: options.workspaceAuthoring?.assertCurrent,
               proposalId: readToolStringParam(params, "proposal_id", {
                 label: "proposal_id",
               }),
