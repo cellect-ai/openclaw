@@ -42,8 +42,9 @@ export function registerFiUserEsignTests(harness: EsignHarness) {
     });
     it("keeps missing write owner and missing status id refused", async () => {
       const tool = plugin().tool("fi_user_esign", context());
-      for (const action of ["resend", "send", "prepare", "send_envelope"])
+      for (const action of ["resend", "send", "prepare", "send_envelope"]) {
         await expect(tool.execute("refuse-owner", { action })).rejects.toThrow("exactly one");
+      }
       await expect(tool.execute("refuse-id", { action: "status" })).rejects.toThrow("submissionId");
       expect(
         calls.filter((entry) => /signature\/(list|show|send|prepare)$/.test(entry.url)),

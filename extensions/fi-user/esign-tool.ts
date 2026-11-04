@@ -229,8 +229,9 @@ export function createEsignTool(
         !input.company &&
         (input.action === "list" || input.action === "status")
       ) {
-        if (input.action === "status" && !input.submissionId)
+        if (input.action === "status" && !input.submissionId) {
           throw new Error("submissionId is required");
+        }
         const verb = input.action === "list" ? "list" : "show";
         return jsonResult(
           await delegatedJson(
