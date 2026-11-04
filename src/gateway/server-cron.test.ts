@@ -47,7 +47,10 @@ import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
-import { registerGatewayCronContextTests } from "./server-cron.context.test-support.js";
+import {
+  createSkillReviewCronConfig,
+  registerGatewayCronContextTests,
+} from "./server-cron.context.test-support.js";
 import {
   registerGatewayCronMutationAuthorityTests,
   registerGatewayCronStreamMutationTests,
@@ -597,10 +600,9 @@ describe("buildGatewayCronService", () => {
   });
 
   it("converges collection review delivery and runs without a configured channel", async () => {
-    const cfg = {
-      ...createCronConfig("server-cron-skill-review-delivery"),
-      skills: { workshop: { autonomous: { mode: "auto" } } },
-    } satisfies OpenClawConfig;
+    const cfg = await createSkillReviewCronConfig(
+      createCronConfig("server-cron-skill-review-delivery"),
+    );
     const state = loadCronService(cfg);
     const [spec] = resolveSkillCollectionReviewMonitorSpecs(cfg, [], {
       schedulerSeed: "test-seed",
@@ -635,10 +637,10 @@ describe("buildGatewayCronService", () => {
   });
 
   it("forwards cancellation, execution callbacks, and identity to collection review turns", async () => {
-    const cfg = {
-      ...createCronConfig("server-cron-skill-review-forwarding"),
-      skills: { workshop: { autonomous: { mode: "auto" } } },
-    } satisfies OpenClawConfig;
+    const cfg = await createSkillReviewCronConfig(
+      createCronConfig("server-cron-skill-review-forwarding"),
+      false,
+    );
     await withCronService(cfg, async (state) => {
       const abortController = new AbortController();
       const onExecutionStarted = vi.fn();
@@ -654,7 +656,7 @@ describe("buildGatewayCronService", () => {
       if (!job) {
         throw new Error("expected the skill collection review monitor");
       }
-      await getCronDeps(state).runIsolatedAgentJob({
+      const request = {
         job,
         deliveryAttemptFence: null,
         message: "review",
@@ -663,7 +665,14 @@ describe("buildGatewayCronService", () => {
         onExecutionPhase,
         onLaneWait,
         executionIdentity,
+      };
+      await expect(getCronDeps(state).runIsolatedAgentJob(request)).resolves.toMatchObject({
+        status: "skipped",
+        summary: "No Workshop skills to review.",
       });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+      await createSkillReviewCronConfig(cfg);
+      await getCronDeps(state).runIsolatedAgentJob(request);
 
       expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledWith(
         expect.objectContaining({

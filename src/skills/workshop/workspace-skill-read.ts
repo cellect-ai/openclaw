@@ -75,6 +75,13 @@ export function listWritableWorkshopSkillSummaries(
     .toSorted((left, right) => left.name.localeCompare(right.name));
 }
 
+/** Empty Workshop collections need no model turn and expose no managed workspace content. */
+export function prepareWorkshopCollectionReview(options: WorkshopSkillReadOptions) {
+  return listWritableWorkshopSkillSummaries(options).length === 0
+    ? { status: "skipped" as const, summary: "No Workshop skills to review." }
+    : { status: "ready" as const, executionRoot: workshopSkillsDir(options) };
+}
+
 export async function readWritableWorkshopSkill(
   skillName: string,
   options: WorkshopSkillReadOptions,

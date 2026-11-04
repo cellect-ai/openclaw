@@ -1,4 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import fs from "node:fs/promises";
+import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
@@ -9,6 +11,7 @@ import { getInProcessGatewayToolContext } from "../agents/tools/in-process-gatew
 import type { OpenClawConfig } from "../config/config.js";
 import type { CronServiceState } from "../cron/service/state.js";
 import { armTimer } from "../cron/service/timer.js";
+import { resolveCronJobsStorePathFromConfig } from "../cron/store.js";
 import type { CronJobCreate } from "../cron/types.js";
 import type { HeartbeatRunResult } from "../infra/heartbeat-wake.js";
 import {
@@ -18,11 +21,38 @@ import {
 import { getSpawnBroker, runWithSpawnBroker } from "../process/spawn-broker/context.js";
 import { useSpawnBrokerTestFixture } from "../process/spawn-broker/host.test-support.js";
 import { AsyncWorkScope, trackAsyncWork } from "../shared/async-work-scope.js";
+import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
 import {
   createGatewaySchedulerClock,
   createTestGatewayScheduler,
 } from "../test-utils/gateway-scheduler-clock.js";
 import type { buildGatewayCronService } from "./server-cron.js";
+
+export async function createSkillReviewCronConfig(
+  cfg: OpenClawConfig,
+  seed = true,
+): Promise<OpenClawConfig> {
+  const config: OpenClawConfig = {
+    ...cfg,
+    agents: {
+      entries: {
+        main: {
+          agentDir: path.join(path.dirname(resolveCronJobsStorePathFromConfig(cfg)), "agent"),
+        },
+      },
+    },
+    skills: { workshop: { autonomous: { mode: "auto" } } },
+  };
+  if (seed) {
+    const dir = path.join(resolveWorkshopSkillsDir(config, "main"), "ordinary");
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(
+      path.join(dir, "SKILL.md"),
+      "---\nname: ordinary\ndescription: A generated Workshop procedure\n---\nUse when asked.\n",
+    );
+  }
+  return config;
+}
 
 type CronFixture = ReturnType<typeof buildGatewayCronService>;
 type CronJobOverrides = Partial<Omit<CronJobCreate, "name" | "payload">>;
