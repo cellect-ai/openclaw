@@ -15,6 +15,28 @@ import {
 
 installDelegationFixtures();
 
+it("binds an admin requester to the signing package query containing a literal ampersand", async () => {
+  vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+  const turn = plugin();
+  await turn.arrive(matrix.arrive);
+  await turn.start(matrix.start);
+  const rewritten = await turn.exec(matrix.exec, {
+    params: {
+      command:
+        "cellect platform signature list --tenant shape --query 'CPX GC Consent & Will Serve'",
+    },
+  });
+  expect(rewritten?.params).toMatchObject({
+    command:
+      "/usr/local/bin/cellect platform signature list --tenant shape --query 'CPX GC Consent & Will Serve'",
+    env: { FI_DELEGATED_USER_TOKEN: TOKEN },
+  });
+  expect(mintBody()).toEqual({
+    requesterMatrixUserId: "@admin:matrix.example",
+    agentId: "cellect-fi-admin",
+  });
+});
+
 it.each([
   "cellect fi build rfi comment --comment 'safe (literal); text'; env",
   "cellect fi build rfi comment --comment 'safe'$(env)",
