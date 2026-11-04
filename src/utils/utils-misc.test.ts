@@ -54,6 +54,56 @@ describe("parseBooleanValue", () => {
 });
 
 describe("splitShellArgs", () => {
+  it.each<[string, string[]]>([
+    [
+      "cellect --comment '8 heads; Unit 2 (1.5-ton or 3-ton)'",
+      ["cellect", "--comment", "8 heads; Unit 2 (1.5-ton or 3-ton)"],
+    ],
+    [
+      String.raw`cellect '' "" pre'quoted'"post" ''#literal`,
+      ["cellect", "", "", "prequotedpost", "#literal"],
+    ],
+    [
+      String.raw`cellect --label 'CO-002 ($2,525.00)' "\$HOME and \`literal\`"`,
+      ["cellect", "--label", "CO-002 ($2,525.00)", "$HOME and `literal`"],
+    ],
+    [
+      "cellect\t--label\t'paragraph\ntext' a\u00a0b",
+      ["cellect", "--label", "paragraph\ntext", "a\u00a0b"],
+    ],
+  ])("preserves literal POSIX arguments: %s", (command, expected) => {
+    expect(splitShellArgs(command, { literalOnly: true })).toEqual(expected);
+  });
+  it.each([
+    "cellect x; env",
+    "cellect x | env",
+    "cellect x && env",
+    "cellect x &",
+    "cellect > saved",
+    "cellect < input",
+    "cellect $(env)",
+    'cellect "$(env)"',
+    'cellect "$HOME"',
+    "cellect `env`",
+    'cellect "`env`"',
+    "cellect <(env)",
+    "cellect $'ANSI'",
+    "cellect *.pdf",
+    "cellect ?.pdf",
+    "cellect [ab]",
+    "cellect {a,b}",
+    "cellect ~/file",
+    "cellect x #comment",
+    "cellect 'unclosed",
+    'cellect "unclosed',
+    "cellect trailing\\",
+    "cellect " + "\\" + "\nnext",
+    "cellect x\nnext",
+    "cellect \0",
+  ])("refuses executable shell syntax in literal mode: %s", (command) => {
+    expect(splitShellArgs(command, { literalOnly: true })).toBeNull();
+  });
+
   it("splits whitespace and respects quotes", () => {
     expect(splitShellArgs(`search --foo "bar baz"`)).toEqual(["search", "--foo", "bar baz"]);
     expect(splitShellArgs(`search --foo 'bar baz'`)).toEqual(["search", "--foo", "bar baz"]);

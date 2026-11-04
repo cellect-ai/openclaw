@@ -112,7 +112,6 @@ describe("the admin agent's delegated user token", () => {
       { command: "/usr/local/bin/cellect --help", env: { NODE_OPTIONS: "--require fixture" } },
       { command: "/usr/local/bin/cellect --help", env: { FI_CLI_NODE: "/workspace/node" } },
       { command: "cat /workspace/skills/platform-documents/SKILL.md" },
-      { command: "cellect platform room show --display-name 'CO-002 ($2,525.00)'" },
     ])("keeps requester credentials out of raw shell work: %j", async (params) => {
       const turn = plugin({}, immutable);
       await turn.arrive();

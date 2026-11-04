@@ -2,7 +2,7 @@
 
 export { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
 export { resolveNodeRuntimeExecutable } from "../infra/node-runtime-executable.js";
-export { splitCommandArgs } from "../utils/shell-argv.js";
+export { splitCommandArgs, splitShellArgs } from "../utils/shell-argv.js";
 export {
   type CommandOptions,
   resolveCommandEnv,

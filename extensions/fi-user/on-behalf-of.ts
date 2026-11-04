@@ -1,4 +1,5 @@
 import { createHmac } from "node:crypto";
+import { splitShellArgs } from "openclaw/plugin-sdk/process-runtime";
 import type { AdminActionRecord } from "./admin-action.js";
 
 /**
@@ -33,8 +34,6 @@ const MAIL_REQUESTER_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 export function pinInstalledFiCliCommand(params: Record<string, unknown>): string | undefined {
   if (
     typeof params.command !== "string" ||
-    params.command.includes("\0") ||
-    /[\r\n;&|<>()`$\\]/.test(params.command) ||
     (params.env !== undefined &&
       (typeof params.env !== "object" ||
         params.env === null ||
@@ -43,7 +42,11 @@ export function pinInstalledFiCliCommand(params: Record<string, unknown>): strin
   ) {
     return undefined;
   }
-  const command = params.command.trim();
+  const command = params.command.replace(/^[ \t]+|[ \t]+$/gu, "");
+  const argv = splitShellArgs(command, { literalOnly: true });
+  if (!argv || !["cellect", "/usr/local/bin/cellect"].includes(argv[0] ?? "")) {
+    return undefined;
+  }
   return /^(?:cellect|\/usr\/local\/bin\/cellect)(?:[ \t]|$)/.test(command)
     ? command.replace(/^(?:cellect|\/usr\/local\/bin\/cellect)/, "/usr/local/bin/cellect")
     : undefined;

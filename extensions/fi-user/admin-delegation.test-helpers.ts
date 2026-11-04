@@ -78,7 +78,7 @@ export const slackThread = (sessionKey = SLACK_THREAD) => ({
 });
 export type Env = Record<string, string>;
 export type Rewrite =
-  | { params: { env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
+  | { params: { command?: string; env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
   | undefined;
 export const HELD =
   "This sandbox still holds another requester's command state. Retry after its requester token expires.";

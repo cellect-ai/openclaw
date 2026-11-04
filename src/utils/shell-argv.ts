@@ -53,8 +53,8 @@ export function hasTopLevelShellControlOperator(raw: string): boolean {
 }
 
 /** Splits a shell-like argv string into tokens, returning null for unterminated quotes or escapes. */
-export function splitShellArgs(raw: string): string[] | null {
-  return splitQuotedArgs(raw, "shell");
+export function splitShellArgs(raw: string, options?: { literalOnly?: boolean }): string[] | null {
+  return splitQuotedArgs(raw, "shell", false, options?.literalOnly);
 }
 
 /** Groups quoted process arguments, preserving literal backslashes and hash characters. */
@@ -74,22 +74,28 @@ function splitQuotedArgs(
   raw: string,
   syntax: "shell" | "command",
   allowUnclosedQuotes = false,
+  literalOnly = false,
 ): string[] | null {
   const backslashEscapes = syntax === "shell";
   const tokens: string[] = [];
   let buf = "";
   let quote: "'" | '"' | undefined;
   let escaped = false;
+  let started = false;
 
   const pushToken = () => {
-    if (buf.length > 0) {
+    if (buf.length > 0 || (literalOnly && started)) {
       tokens.push(buf);
       buf = "";
     }
+    started = false;
   };
 
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw.charAt(i);
+    if (literalOnly && (ch === "\0" || (escaped && /[\r\n]/u.test(ch)))) {
+      return null;
+    }
     if (escaped) {
       buf += ch;
       escaped = false;
@@ -97,12 +103,16 @@ function splitQuotedArgs(
     }
     if (backslashEscapes && !quote && ch === "\\") {
       escaped = true;
+      started = true;
       continue;
     }
     if (quote) {
       const next = raw[i + 1];
       // Inside double quotes, only POSIX-recognized escapes consume the backslash.
       if (quote === '"' && backslashEscapes && ch === "\\" && isDoubleQuoteEscape(next)) {
+        if (literalOnly && /[\r\n]/u.test(next)) {
+          return null;
+        }
         buf += next;
         i += 1;
         continue;
@@ -110,24 +120,37 @@ function splitQuotedArgs(
       if (ch === quote) {
         quote = undefined;
       } else {
+        if (literalOnly && quote === '"' && (ch === "$" || ch === "`")) {
+          return null;
+        }
         buf += ch;
       }
       continue;
     }
     if (ch === "'" || ch === '"') {
       quote = ch;
+      started = true;
       continue;
+    }
+    // Credential-bearing direct commands may contain only literal arguments:
+    // expansions, control syntax and redirects are shell work, quoted text is data.
+    if (literalOnly && /[;&|<>()`$\r\n*?\[\]{}~]/u.test(ch)) {
+      return null;
     }
     // In POSIX shells, "#" starts a comment only when it begins a word; keep
     // inline hashes inside tokens so URLs/fragments are not truncated.
-    if (syntax === "shell" && ch === "#" && buf.length === 0) {
+    if (syntax === "shell" && ch === "#" && buf.length === 0 && (!literalOnly || !started)) {
+      if (literalOnly) {
+        return null;
+      }
       break;
     }
-    if (/\s/.test(ch)) {
+    if (literalOnly ? ch === " " || ch === "\t" : /\s/.test(ch)) {
       pushToken();
       continue;
     }
     buf += ch;
+    started = true;
   }
 
   if (escaped || (!allowUnclosedQuotes && quote)) {

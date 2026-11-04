@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
-import { splitCommandArgs } from "openclaw/plugin-sdk/process-runtime";
+import { splitShellArgs } from "openclaw/plugin-sdk/process-runtime";
 import { brokerToken, type ResolvedPluginConfig } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import { sessionThreadId } from "./matrix-turn-origin.js";
@@ -16,7 +16,7 @@ export function operationCommandFailure() {
 }
 
 export function operationCommandArgs(command: string): string[] | undefined {
-  const argv = splitCommandArgs(command);
+  const argv = splitShellArgs(command, { literalOnly: true });
   return argv && argv.slice(1, 5).join(" ") === "fi build rfi attach" ? argv : undefined;
 }
 

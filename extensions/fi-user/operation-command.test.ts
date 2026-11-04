@@ -99,6 +99,27 @@ const execute = (
     { toolName: "sandbox_exec", params: { command: text } },
   );
 
+it("binds a literal escaped workspace filename to the same operation receipt and file hash", async () => {
+  const name = "drawing's (rev 2).pdf";
+  await fs.writeFile(path.join(workspace, name), source);
+  const turn = operator();
+  await admit(turn);
+  const rewritten = await execute(
+    turn,
+    {},
+    command.replace("/workspace/excerpt.pdf", String.raw`/workspace/drawing\'s\ \(rev\ 2\).pdf`),
+  );
+  expect(rewritten?.params.env?.FI_OPERATION_RECEIPT_TOKEN).toBe(TOKEN);
+  expect(receiptRequests).toHaveLength(1);
+  expect(receiptRequests[0]).toMatchObject({
+    operationCommand: {
+      file: { name, sha256: createHash("sha256").update(source).digest("hex") },
+      argv: expect.arrayContaining([`/workspace/${name}`]),
+    },
+  });
+  expect(mints()).toHaveLength(0);
+});
+
 it("forwards only a file-bound operation receipt from the actual operator/no-tenant configuration", async () => {
   const turn = operator();
   await admit(turn);
