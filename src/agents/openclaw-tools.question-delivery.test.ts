@@ -1,5 +1,9 @@
 import { expect, it, vi } from "vitest";
-import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import {
+  awaitGateBeforeSettlement,
+  createDeferred,
+  withinTest,
+} from "../../test/helpers/promise.js";
 import type { ChannelOutboundPayloadContext } from "../channels/plugins/outbound.types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -15,7 +19,7 @@ import { withQuestionGateway } from "./harness/gateway-question.test-support.js"
 import { createOpenClawTools } from "./openclaw-tools.js";
 import { createChannelQuestionPromptDelivery } from "./tools/question-prompt-send.js";
 
-it.each(["tool", "subscriber"] as const)(
+it.for(["tool", "subscriber"] as const)(
   "delivers one routed question through the %s owner and resumes with the answer",
   async (owner, { signal }) => {
     await withOpenClawTestState({ prefix: "routed-question-delivery-" }, async (state) => {
@@ -102,7 +106,14 @@ it.each(["tool", "subscriber"] as const)(
           }
           execution = tool.execute("routed-question", args, fixture.backingRun.signal);
           // This is the actual durable delivery's channel adapter, not callback metadata.
-          const prompt = await withinTest(delivered.promise, signal);
+          const prompt = await withinTest(
+            awaitGateBeforeSettlement(
+              delivered.promise,
+              execution,
+              "routed question completed before its prompt reached the conversation",
+            ),
+            signal,
+          );
           expect(prompt).toMatchObject({
             to: routing.to,
             accountId: routing.accountId,

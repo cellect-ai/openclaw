@@ -283,6 +283,7 @@ export class PreparedModelRuntimeAuthPublicationOwner {
         try {
           if (owners.length > 0) {
             const publish = async () => {
+              let superseded: PreparedModelRuntimePublicationSupersededError | undefined;
               try {
                 await params.publish(
                   owners,
@@ -290,37 +291,47 @@ export class PreparedModelRuntimeAuthPublicationOwner {
                   !retrying,
                 );
               } catch (error) {
-                const transaction = this.#transaction;
-                if (
-                  !(error instanceof PreparedModelRuntimePublicationSupersededError) ||
-                  !transaction ||
-                  transaction.adoptedBy
-                ) {
+                if (!(error instanceof PreparedModelRuntimePublicationSupersededError)) {
                   throw error;
                 }
-                const authGates = new Set(
-                  [...transaction.ownerGates.values()].map((gate) => gate.promise),
-                );
-                const replacements = componentOwners.flatMap((owner) => {
-                  const published =
-                    params.owners.get(ownerKey(owner.input)) ??
-                    resolveConfiguredOwner(params.owners, owner.input);
-                  const gate = transaction.ownerGates.get(owner);
-                  if (!published || !gate) {
-                    return [];
-                  }
-                  if (published.pending && !authGates.has(published.pending)) {
-                    return [published.pending];
-                  }
-                  return published.snapshot && !published.needsRefresh
-                    ? [Promise.resolve(published.snapshot)]
-                    : [];
-                });
-                if (replacements.length !== componentOwners.length) {
-                  throw error;
+                superseded = error;
+              }
+              const transaction = this.#transaction;
+              if (!transaction || transaction.adoptedBy) {
+                if (superseded) {
+                  throw superseded;
                 }
-                // Join one current publication; do not spend another generation retry or
-                // wait on our own auth gates. Settlement rechecks the registered owners.
+                return;
+              }
+              const authGates = new Set(
+                [...transaction.ownerGates.values()].map((gate) => gate.promise),
+              );
+              let hasPendingSuccessor = false;
+              const replacements = componentOwners.flatMap((owner) => {
+                const published =
+                  params.owners.get(ownerKey(owner.input)) ??
+                  resolveConfiguredOwner(params.owners, owner.input);
+                const gate = transaction.ownerGates.get(owner);
+                if (!published || !gate) {
+                  return [];
+                }
+                if (published.pending && !authGates.has(published.pending)) {
+                  hasPendingSuccessor = true;
+                  return [published.pending];
+                }
+                return published.snapshot && !published.needsRefresh
+                  ? [Promise.resolve(published.snapshot)]
+                  : [];
+              });
+              if (replacements.length !== componentOwners.length) {
+                if (superseded) {
+                  throw superseded;
+                }
+                return;
+              }
+              // A batch can settle current siblings while omitting a superseded candidate.
+              // Join its successor before settling the auth gates captured by dispatch readers.
+              if (superseded || hasPendingSuccessor) {
                 await Promise.all(replacements);
               }
             };
