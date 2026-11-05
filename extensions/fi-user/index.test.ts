@@ -156,7 +156,10 @@ describe("Fi user requester-bound Google Drive", () => {
       "fi_user_budget_import",
       "request_admin_action",
     ];
-    expect(registeredTools(slackContext()).map((tool) => tool.name)).toEqual(names);
+    expect(registeredTools(slackContext()).map((tool) => tool.name)).toEqual([
+      "fi_workbook",
+      ...names,
+    ]);
     expect(
       registeredTools(
         slackContext({

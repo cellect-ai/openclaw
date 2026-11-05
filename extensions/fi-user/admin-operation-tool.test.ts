@@ -149,14 +149,16 @@ describe("registered Fi-admin structured operation transport", () => {
     });
     await turn.arrive(matrix.arrive);
     await turn.start({ ...matrix.start, accountId: "admindev" });
-    const tool = turn.tools(
-      context({
-        sessionKey: MATRIX_SESSION,
-        messageChannel: "matrix",
-        requesterSenderId: "@admin:matrix.example",
-        agentAccountId: "admindev",
-      }),
-    )[0]!;
+    const tool = turn
+      .tools(
+        context({
+          sessionKey: MATRIX_SESSION,
+          messageChannel: "matrix",
+          requesterSenderId: "@admin:matrix.example",
+          agentAccountId: "admindev",
+        }),
+      )
+      .find((tool) => tool.name === "fi_admin_operation")!;
     fetchMock.mockImplementation(async (url: string) =>
       url.endsWith("openclaw-user-delegation") ? minted() : catalog(),
     );
@@ -188,7 +190,7 @@ describe("registered Fi-admin structured operation transport", () => {
       assertCurrent: current,
     };
     await turn.start({ requesterContinuation: continuation, sessionId: "session-1" });
-    const tool = turn.tools(context())[0]!;
+    const tool = turn.tools(context()).find((tool) => tool.name === "fi_admin_operation")!;
     await tool.execute("continued", { action: "discover" });
     expect(mints()).toHaveLength(1);
     current.mockImplementation(() => {
@@ -238,9 +240,11 @@ describe("registered Fi-admin structured operation transport", () => {
       chatId: roomId,
       channelContext: { sender: { id: senderId }, chat: { id: roomId, eventId } },
     });
-    const tool = turn.tools(
-      context({ sessionKey: SLACK_THREAD, messageChannel: "slack", requesterSenderId: senderId }),
-    )[0]!;
+    const tool = turn
+      .tools(
+        context({ sessionKey: SLACK_THREAD, messageChannel: "slack", requesterSenderId: senderId }),
+      )
+      .find((tool) => tool.name === "fi_admin_operation")!;
     await tool.execute("projected", { action: "discover" });
     expect(mintBody()).toEqual({ requesterMatrixUserId: senderId, agentId: "cellect-fi-admin" });
   });
@@ -254,14 +258,16 @@ describe("registered Fi-admin structured operation transport", () => {
     const turn = plugin({ matrixEnvironments: environments });
     await turn.arrive(matrix.arrive);
     await turn.start(matrix.start);
-    const tool = turn.tools(
-      context({
-        sessionKey: MATRIX_SESSION,
-        messageChannel: "matrix",
-        requesterSenderId: "@admin:matrix.example",
-        agentAccountId: "adminprod",
-      }),
-    )[0]!;
+    const tool = turn
+      .tools(
+        context({
+          sessionKey: MATRIX_SESSION,
+          messageChannel: "matrix",
+          requesterSenderId: "@admin:matrix.example",
+          agentAccountId: "adminprod",
+        }),
+      )
+      .find((tool) => tool.name === "fi_admin_operation")!;
     fetchMock.mockImplementation(async () => {
       environments.prod.baseUrl = "https://other.example.test/fi";
       return minted();
@@ -282,14 +288,16 @@ describe("registered Fi-admin structured operation transport", () => {
         chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
       },
     });
-    const tool = turn.tools(
-      context({
-        sessionKey: THREAD,
-        messageChannel: "matrix",
-        requesterSenderId: "@admin:matrix.example",
-        agentAccountId: "adminprod",
-      }),
-    )[0]!;
+    const tool = turn
+      .tools(
+        context({
+          sessionKey: THREAD,
+          messageChannel: "matrix",
+          requesterSenderId: "@admin:matrix.example",
+          agentAccountId: "adminprod",
+        }),
+      )
+      .find((tool) => tool.name === "fi_admin_operation")!;
     await tool.execute("voice", { action: "discover" });
     expect(mintBody()).toEqual({
       requesterMatrixUserId: "@admin:matrix.example",
