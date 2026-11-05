@@ -38,7 +38,34 @@ const toolContext = (): OpenClawPluginToolContext<2> => ({
   assertInvocationCurrent: vi.fn(),
 });
 const fetchMock = vi.fn();
-function fixture() {
+function fixture(agentId = "cellect-main", channel: "matrix" | "slack" = "matrix") {
+  const nativeSession =
+    channel === "matrix"
+      ? `agent:${agentId}:matrix:channel:${room}:thread:${root}`
+      : `agent:${agentId}:slack:channel:c0channel1:thread:1792190933.152459`;
+  const senderId = channel === "matrix" ? sender : "U0ADMIN001";
+  const nativeHookContext = {
+    ...hookContext,
+    agentId,
+    sessionKey: nativeSession,
+    channel,
+    senderId,
+    trigger: "user",
+    channelContext: {
+      sender: { id: senderId },
+      chat: {
+        id: channel === "matrix" ? room : "C0CHANNEL1",
+        eventId: channel === "matrix" ? "$event" : "1792190933.152459",
+      },
+    },
+  };
+  const nativeToolContext = () => ({
+    ...toolContext(),
+    agentId,
+    sessionKey: nativeSession,
+    messageChannel: channel,
+    requesterSenderId: senderId,
+  });
   const hooks = new Map<string, Hook[]>(),
     subscriptions: PluginAgentEventSubscriptionRegistration[] = [];
   let factory: Factory;
@@ -49,7 +76,9 @@ function fixture() {
         "fi-user": {
           enabled: true,
           config: {
-            operatorAgentId: "cellect-main",
+            ...(agentId === "cellect-main"
+              ? { operatorAgentId: "cellect-main" }
+              : { tenantOrgId: "admitted-org" }),
             baseUrl: "https://fi.test/fi",
             brokerTokenEnv: "WORKBOOK_TEST_BROKER",
           },
@@ -72,16 +101,37 @@ function fixture() {
     }),
   );
   return {
+    config: cfg,
+    async arriveSlack() {
+      const event = {
+        content: "Edit workbook",
+        channel: "slack",
+        sessionKey: nativeSession,
+        senderId,
+        isGroup: true,
+        messageId: "1792190933.152459",
+        senderAuthentication: "verified",
+      };
+      for (const name of ["message_received", "before_dispatch"]) {
+        for (const h of hooks.get(name) ?? []) {
+          await h(event as never, { channelId: "slack", sessionKey: nativeSession } as never);
+        }
+      }
+    },
     async admit(extra = {}) {
       for (const h of hooks.get("before_agent_reply") ?? []) {
-        const result = await h({} as never, { ...hookContext, ...extra } as never);
+        const result = await h({} as never, { ...nativeHookContext, ...extra } as never);
         if (result) {
           return result;
         }
       }
       return undefined;
     },
-    tool(context = toolContext()) {
+    tools(context = nativeToolContext()) {
+      const result = factory.create(context);
+      return Array.isArray(result) ? result : result ? [result] : [];
+    },
+    tool(context = nativeToolContext()) {
       const result = factory.create(context);
       return (Array.isArray(result) ? result : result ? [result] : []).find(
         (t) => t.name === "fi_workbook",
@@ -101,13 +151,13 @@ function fixture() {
     },
   };
 }
-const allow = () =>
+const allow = (agentId = "cellect-main") =>
   new Response(
     JSON.stringify({
       ok: true,
-      credentialClass: "operator",
+      credentialClass: agentId === "cellect-main" ? "operator" : "tenant",
       orgId: "admitted-org",
-      agentId: "cellect-main",
+      agentId,
     }),
   );
 const workbook = () =>
@@ -128,8 +178,8 @@ beforeEach(() => {
   vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ operatorprod: "prod" }));
   fetchMock
     .mockReset()
-    .mockImplementation(async (url: string) =>
-      url.endsWith("/agent-authorize") ? allow() : workbook(),
+    .mockImplementation(async (url: string, init?: RequestInit) =>
+      url.endsWith("/agent-authorize") ? allow(JSON.parse(String(init?.body)).agentId) : workbook(),
     );
 });
 afterEach(() => {
@@ -155,6 +205,7 @@ it("offers the native API reader only after the genuine operator Matrix turn is 
     action: "get",
     target: { roomId: "data-room", fieldId: "workbook-field" },
     proof: {
+      agentId: "cellect-main",
       roomId: room,
       eventId: "$event",
       threadRootEventId: root,
@@ -367,4 +418,256 @@ it.each([
   fetchMock.mockClear();
   await expect(f.tool()!.execute("bad-import", { ...importArguments, ...extra })).rejects.toThrow();
   expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it.each(["cellect-fi-admin", "cellect-fi-user"])(
+  "offers the native workbook API to admitted tenant agent %s",
+  async (agentId) => {
+    const f = fixture(agentId);
+    expect(f.tool()).toBeUndefined();
+    await f.admit();
+    expect(f.tool()).toBeDefined();
+    if (agentId === "cellect-fi-user") {
+      expect(f.tools().map((tool) => tool.name)).toContain("fi_user_api");
+    }
+    await f
+      .tool()!
+      .execute("read", { action: "get", roomId: "data-room", fieldId: "workbook-field" });
+    const request = JSON.parse(
+      fetchMock.mock.calls.find(([url]) => url.endsWith("/workbook"))![1].body,
+    );
+    expect(request.proof).toMatchObject({
+      agentId,
+      sessionKey: `agent:${agentId}:matrix:channel:${room}:thread:${root}`,
+      senderMxid: sender,
+    });
+  },
+);
+const editArguments = {
+  action: "edit",
+  roomId: "data-room",
+  fieldId: "workbook-field",
+  collabSessionId: importArguments.collabSessionId,
+  expectedCollabRevision: 81,
+  roomVersion: 865,
+  operationId: "native-edit-stable-operation-0001",
+  mutations: [
+    {
+      id: "sheet.mutation.set-range-values",
+      params: { unitId: "unit", subUnitId: "existing", cellValue: { 0: { 0: { s: { bl: 1 } } } } },
+    },
+  ],
+};
+it("withdraws an admitted tenant workbook tool when the configured tenant changes", async () => {
+  const f = fixture("cellect-fi-admin");
+  await f.admit();
+  const tool = f.tool()!;
+  Object.assign(f.config.plugins.entries["fi-user"].config, { tenantOrgId: "another-org" });
+  fetchMock.mockClear();
+  await expect(tool.execute("edit", editArguments)).rejects.toThrow("Access verification");
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+it("passes native formatting mutations unchanged and retains write receipts for the tenant admin", async () => {
+  const f = fixture("cellect-fi-admin");
+  await f.admit();
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        ok: true,
+        orgId: "admitted-org",
+        sheet: { fieldId: "workbook-field" },
+        operationId: editArguments.operationId,
+        outcome: "preview",
+        automaticRetry: false,
+      }),
+    ),
+  );
+  const result = await f.tool()!.execute("edit", { ...editArguments, dryRun: true });
+  const request = JSON.parse(fetchMock.mock.calls.at(-1)![1].body);
+  expect(request.mutations).toEqual(editArguments.mutations);
+  expect(request).toMatchObject({
+    action: "edit",
+    operationId: editArguments.operationId,
+    expectedCollabRevision: 81,
+    dryRun: true,
+  });
+  expect(result.details).toMatchObject({
+    outcome: "preview",
+    operationId: editArguments.operationId,
+  });
+});
+it("does not retry a native edit after uncertain dispatch", async () => {
+  const f = fixture("cellect-fi-admin");
+  await f.admit();
+  fetchMock.mockClear();
+  fetchMock.mockRejectedValueOnce(new Error("disconnected"));
+  await expect(f.tool()!.execute("edit", editArguments)).rejects.toThrow(editArguments.operationId);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+});
+it("creates through the fixed API and accepts only the server assigned workbook identity", async () => {
+  const f = fixture("cellect-fi-admin");
+  await f.admit();
+  const input = {
+    action: "create",
+    roomId: "data-room",
+    displayName: "New workbook",
+    roomVersion: 865,
+    operationId: "native-create-operation-0001",
+  };
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        ok: true,
+        orgId: "admitted-org",
+        sheet: { fieldId: "server-created" },
+        operationId: input.operationId,
+        outcome: "accepted",
+        automaticRetry: false,
+      }),
+    ),
+  );
+  const result = await f.tool()!.execute("create", input);
+  expect(result.details).toMatchObject({ sheet: { fieldId: "server-created" } });
+  expect(JSON.parse(fetchMock.mock.calls.at(-1)![1].body)).toMatchObject({
+    action: "create",
+    target: { roomId: "data-room" },
+    displayName: "New workbook",
+  });
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        ok: true,
+        orgId: "other",
+        sheet: { fieldId: "server-created" },
+        operationId: input.operationId,
+        outcome: "accepted",
+        automaticRetry: false,
+      }),
+    ),
+  );
+  await expect(f.tool()!.execute("create", input)).rejects.toThrow("does not match");
+});
+it.each([
+  { mutations: [] },
+  { mutations: Array(101).fill(editArguments.mutations[0]) },
+  { mutations: [{ id: "some", params: null }] },
+  { method: "PUT" },
+  { actor: "other@example.test" },
+])("rejects malformed or authority-bearing native edit input case %#", async (extra) => {
+  const f = fixture();
+  await f.admit();
+  fetchMock.mockClear();
+  await expect(f.tool()!.execute("edit", { ...editArguments, ...extra })).rejects.toThrow(
+    "Invalid workbook operation",
+  );
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it("preserves an explicit create refusal before a workbook identity exists", async () => {
+  const f = fixture("cellect-fi-admin");
+  await f.admit();
+  const input = {
+    action: "create",
+    roomId: "data-room",
+    displayName: "New workbook",
+    roomVersion: 865,
+    operationId: "native-create-operation-0001",
+  };
+  fetchMock.mockResolvedValueOnce(
+    new Response(
+      JSON.stringify({
+        ok: false,
+        orgId: "admitted-org",
+        sheet: { fieldId: null },
+        operationId: input.operationId,
+        outcome: "rejected",
+        automaticRetry: false,
+        error: "room_version_changed",
+      }),
+      { status: 409 },
+    ),
+  );
+  const result = await f.tool()!.execute("create", input);
+  expect(result.details).toMatchObject({
+    outcome: "rejected",
+    error: "room_version_changed",
+    operationId: input.operationId,
+  });
+});
+
+it.each(["cellect-fi-admin", "cellect-fi-user"])(
+  "uses the existing requester delegation for a genuine Slack %s workbook edit",
+  async (agentId) => {
+    const f = fixture(agentId, "slack");
+    if (agentId === "cellect-fi-admin") {
+      expect(f.tool()).toBeUndefined();
+    }
+    await f.arriveSlack();
+    await f.admit();
+    const tool = f.tool();
+    expect(tool).toBeDefined();
+    fetchMock.mockImplementation(async (url: string) =>
+      url.endsWith("/openclaw-user-delegation")
+        ? new Response(
+            JSON.stringify({
+              user: {
+                orgId: "admitted-org",
+                orgSlug: "shape",
+                email: "verified@example.test",
+                role: "admin",
+              },
+              fi: { token: "private-delegation", expiresAt: 9999999999 },
+            }),
+          )
+        : new Response(
+            JSON.stringify({
+              ok: true,
+              orgId: "admitted-org",
+              sheet: { fieldId: "workbook-field" },
+              operationId: editArguments.operationId,
+              outcome: "preview",
+              automaticRetry: false,
+            }),
+          ),
+    );
+    const result = await tool!.execute("slack-edit", { ...editArguments, dryRun: true });
+    expect(
+      JSON.parse(
+        fetchMock.mock.calls.find(([url]) => url.endsWith("/openclaw-user-delegation"))![1].body,
+      ),
+    ).toEqual({ requesterSenderId: "U0ADMIN001", agentId });
+    const [requestUrl, request] = fetchMock.mock.calls.find(([url]) =>
+      url.endsWith("/shape/workbook"),
+    )!;
+    expect(requestUrl).toBe("https://fi.test/fi/api/shape/workbook");
+    expect(request.headers.authorization).toBe("Bearer private-delegation");
+    expect(JSON.parse(request.body)).not.toHaveProperty("proof");
+    expect(JSON.parse(request.body).mutations).toEqual(editArguments.mutations);
+    expect(JSON.stringify(result)).not.toContain("private-delegation");
+  },
+);
+it("does not expose a workbook transport for a Slack operator without a requester owner", async () => {
+  const f = fixture("cellect-main", "slack");
+  await f.arriveSlack();
+  await f.admit();
+  expect(f.tool()).toBeUndefined();
+});
+it("does not dispatch a Slack edit when requester custody ends during delegation", async () => {
+  const f = fixture("cellect-fi-admin", "slack");
+  await f.arriveSlack();
+  await f.admit();
+  const tool = f.tool()!;
+  fetchMock.mockClear();
+  fetchMock.mockImplementationOnce(async () => {
+    await f.retire();
+    return new Response(
+      JSON.stringify({
+        user: { orgId: "admitted-org", orgSlug: "shape" },
+        fi: { token: "private-delegation", expiresAt: 9999999999 },
+      }),
+    );
+  });
+  await expect(tool.execute("stale-slack", editArguments)).rejects.toThrow("scope unavailable");
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0]![0]).toContain("openclaw-user-delegation");
 });

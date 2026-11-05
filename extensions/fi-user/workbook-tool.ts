@@ -1,15 +1,9 @@
-import type {
-  AnyAgentTool,
-  OpenClawPluginApi,
-  OpenClawPluginToolContext,
-} from "openclaw/plugin-sdk/core";
+import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { brokerToken, configFromRuntime, matrixConnection, pathSegment } from "./fi-delegation.js";
-import type { MatrixEntitlements } from "./matrix-entitlements.js";
-
-type WorkbookTurn = NonNullable<ReturnType<MatrixEntitlements["workbookTurn"]>>;
+import { pathSegment } from "./fi-delegation.js";
+import type { WorkbookTransport } from "./workbook-transport.js";
 
 const readSchema = Type.Object(
   {
@@ -50,96 +44,125 @@ const importSchema = Type.Object(
   },
   { additionalProperties: false },
 );
-const workbookSchema = Type.Union([readSchema, importSchema]);
+const editSchema = Type.Object(
+  {
+    action: Type.Literal("edit"),
+    roomId: Type.String({ minLength: 1, maxLength: 200 }),
+    fieldId: Type.String({ minLength: 1, maxLength: 200 }),
+    collabSessionId: Type.String({
+      pattern: "^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$",
+    }),
+    expectedCollabRevision: Type.Integer({ minimum: 0 }),
+    roomVersion: Type.Integer({ minimum: 0 }),
+    operationId: Type.String({ pattern: "^[A-Za-z0-9._:-]{16,200}$" }),
+    dryRun: Type.Optional(Type.Boolean()),
+    mutations: Type.Array(
+      Type.Object(
+        {
+          id: Type.String({ minLength: 1, maxLength: 200 }),
+          params: Type.Record(Type.String(), Type.Unknown()),
+        },
+        { additionalProperties: false },
+      ),
+      { minItems: 1, maxItems: 100 },
+    ),
+  },
+  { additionalProperties: false },
+);
+const createSchema = Type.Object(
+  {
+    action: Type.Literal("create"),
+    roomId: Type.String({ minLength: 1, maxLength: 200 }),
+    displayName: Type.String({ minLength: 1, maxLength: 240 }),
+    visibility: Type.Optional(Type.Union([Type.Literal("internal"), Type.Literal("shared")])),
+    roomVersion: Type.Integer({ minimum: 0 }),
+    operationId: Type.String({ pattern: "^[A-Za-z0-9._:-]{16,200}$" }),
+    workbook: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+  },
+  { additionalProperties: false },
+);
+const workbookSchema = Type.Union([readSchema, importSchema, editSchema, createSchema]);
+
+function operationBody(input: Static<typeof workbookSchema>) {
+  const { action: _action, roomId: _roomId, ...body } = input;
+  if ("fieldId" in body) {
+    const { fieldId: _fieldId, ...operation } = body;
+    return operation;
+  }
+  return body;
+}
 
 /** Gateway-held API adapter. No credential is returned to the model or shell. */
 export function createWorkbookTool(
-  api: OpenClawPluginApi,
   context: OpenClawPluginToolContext<2>,
-  turn: WorkbookTurn,
+  transport: WorkbookTransport,
 ): AnyAgentTool {
   return {
     name: "fi_workbook",
     label: "Fi workbook",
     description:
-      "Read a room's native Univer workbook as the current verified Matrix requester. Returns a bounded tab summary and optional cell range with its collaboration revision. Import tabs only from a document already registered in the same room, preserving current sheets. First preview with dryRun true. Reuse the exact operationId, source checksum and collaboration revision on retry; reconcile unknown outcomes before another attempt. Never generates an operation key or retries automatically. No tenant, actor, URL, method or credentials may be supplied.",
+      "Read, create, import or edit a room workbook through the authenticated API as the current verified requester. Get returns a bounded tab summary, optional cell range, unitId and collaboration revision. Edit submits native Univer mutations (including cell values, formatting and structure) to the same collaboration owner as the editor; use the returned unitId in mutation params. Import tabs only from a document registered in the same room. Create accepts native Univer workbook data or an empty workbook, default visibility internal. Preview edits/imports with dryRun true. Preserve the exact operationId and payload on retry; reconcile unknown outcomes before another attempt. No automatic retries. No tenant, actor, URL, method or credentials may be supplied.",
     parameters: workbookSchema,
     async execute(_id, raw, signal) {
       context.assertInvocationCurrent();
-      turn.assertCurrent();
+      transport.assertCurrent();
       if (!Value.Check(workbookSchema, raw)) {
         throw new Error("Invalid workbook operation");
       }
       const input = raw as Static<typeof workbookSchema>;
-      const importing = input.action === "import-tabs";
+      const writing = input.action !== "get";
       pathSegment(input.roomId, "roomId");
-      pathSegment(input.fieldId, "fieldId");
-      const config = configFromRuntime(api);
-      if (
-        config.operatorAgentId !== "cellect-main" ||
-        config.tenantOrgId ||
-        config.tenantOrgConflict
-      ) {
-        throw new Error("Workbook requester scope unavailable");
+      if (input.action !== "create") {
+        pathSegment(input.fieldId, "fieldId");
       }
-      const connection = matrixConnection(config, turn.accountId);
-      const token = connection && brokerToken(connection);
-      if (!connection || !token) {
-        throw new Error("Workbook requester scope unavailable");
-      }
-      const { roomId, eventId, threadRootEventId, senderMxid, accountId, runId, sessionKey } = turn;
       const abort = AbortSignal.any([
-        turn.signal,
-        AbortSignal.timeout(importing ? 90_000 : 30_000),
+        ...(transport.signal ? [transport.signal] : []),
+        AbortSignal.timeout(writing ? 90_000 : 30_000),
         ...(signal ? [signal] : []),
       ]);
       abort.throwIfAborted();
-      turn.assertCurrent();
+      transport.assertCurrent();
+      const authorized = await transport.authorize(abort);
+      transport.assertCurrent();
       let response: Response;
       try {
-        response = await fetch(`${connection.baseUrl}/api/threads/workbook`, {
+        response = await fetch(authorized.url, {
           method: "POST",
           signal: abort,
           redirect: "error",
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${authorized.token}`,
+            "content-type": "application/json",
+          },
           body: JSON.stringify({
             action: input.action,
-            target: { roomId: input.roomId, fieldId: input.fieldId },
-            proof: { roomId, eventId, threadRootEventId, senderMxid, accountId, runId, sessionKey },
-            ...(importing
-              ? {
-                  sourceDocumentId: input.sourceDocumentId,
-                  sourceSha256: input.sourceSha256,
-                  collabSessionId: input.collabSessionId,
-                  expectedCollabRevision: input.expectedCollabRevision,
-                  roomVersion: input.roomVersion,
-                  operationId: input.operationId,
-                  ...(input.dryRun !== undefined ? { dryRun: input.dryRun } : {}),
-                }
-              : input.range !== undefined
-                ? { range: input.range }
-                : {}),
+            target: {
+              roomId: input.roomId,
+              ...(input.action !== "create" ? { fieldId: input.fieldId } : {}),
+            },
+            ...(authorized.proof ? { proof: authorized.proof } : {}),
+            ...operationBody(input),
           }),
         });
       } catch (error) {
-        if (importing) {
+        if (writing) {
           throw new Error(
-            `Workbook import outcome unconfirmed for operation ${input.operationId}; reconcile that exact operation before retrying`,
+            `Workbook write outcome unconfirmed for operation ${input.operationId}; reconcile that exact operation before retrying`,
             { cause: error },
           );
         }
         throw error;
       }
-      turn.assertCurrent();
+      transport.assertCurrent();
       context.assertInvocationCurrent();
       abort.throwIfAborted();
-      if (!response.ok && !importing) {
+      if (!response.ok && !writing) {
         throw new Error(`Workbook API refused or unavailable (${response.status})`);
       }
       const responseError = (message: string) =>
         new Error(
-          importing
-            ? `Workbook import outcome unconfirmed for operation ${input.operationId}; reconcile that exact operation before retrying (${message})`
+          writing
+            ? `Workbook write outcome unconfirmed for operation ${input.operationId}; reconcile that exact operation before retrying (${message})`
             : message,
         );
       let text: string;
@@ -164,17 +187,20 @@ export function createWorkbookTool(
       } catch {
         throw responseError("Invalid workbook API response");
       }
-      turn.assertCurrent();
+      transport.assertCurrent();
       context.assertInvocationCurrent();
       abort.throwIfAborted();
       if (
-        (importing
+        (writing
           ? result.operationId !== input.operationId ||
             result.automaticRetry !== false ||
-            !["preview", "accepted", "unconfirmed"].includes(String(result.outcome))
+            !["preview", "accepted", "rejected", "unconfirmed"].includes(String(result.outcome))
           : result.ok !== true) ||
-        result.orgId !== turn.orgId ||
-        result.sheet?.fieldId !== input.fieldId
+        result.orgId !== authorized.orgId ||
+        (input.action === "create"
+          ? result.outcome === "accepted" &&
+            (typeof result.sheet?.fieldId !== "string" || !result.sheet.fieldId)
+          : result.sheet?.fieldId !== input.fieldId)
       ) {
         throw responseError("Workbook response does not match this native turn");
       }

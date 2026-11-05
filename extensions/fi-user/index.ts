@@ -70,6 +70,7 @@ import {
 import { projectionFailureKind } from "./projection-failure.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 import { createWorkbookTool } from "./workbook-tool.js";
+import { delegatedWorkbookTransport, matrixWorkbookTransport } from "./workbook-transport.js";
 
 const MAX_DRIVE_TEXT_CHARS = 200_000;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
@@ -676,13 +677,17 @@ export default definePluginEntry({
       contextVersion: 2,
       create: (context: OpenClawPluginToolContext<2>) => {
         const workbookTurn = matrixEntitlements.workbookTurn(context);
-        if (workbookTurn) {
-          return [createWorkbookTool(api, context, workbookTurn)];
-        }
+        const workbookTransport = workbookTurn
+          ? matrixWorkbookTransport(api, workbookTurn)
+          : delegatedWorkbookTransport(api, context, adminDelegation.provenToolRequester);
+        const workbookTools = workbookTransport
+          ? [createWorkbookTool(context, workbookTransport)]
+          : [];
         if (!isFiUserTurn(context)) {
-          return null;
+          return workbookTools.length ? workbookTools : null;
         }
         const tools = [
+          ...workbookTools,
           createFiUserApiTool(api, context),
           createGmailTool(api, context),
           createGDriveTool(api, context),

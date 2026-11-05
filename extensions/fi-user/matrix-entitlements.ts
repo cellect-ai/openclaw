@@ -308,11 +308,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         const config = configFromRuntime(api);
         const root = sessionThreadId(turn.sessionKey);
         if (
-          config.operatorAgentId !== "cellect-main" ||
-          config.tenantOrgId ||
-          config.tenantOrgConflict ||
+          !hasAuthorizationScope(config, turn.agentId) ||
+          (config.tenantOrgId && config.tenantOrgId !== turn.orgId) ||
           !turn.externalInput ||
-          turn.agentId !== "cellect-main" ||
+          !["cellect-main", "cellect-fi-admin", "cellect-fi-user"].includes(turn.agentId) ||
           turn.mode !== "text" ||
           !root ||
           !turn.orgId
@@ -320,6 +319,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           return undefined;
         }
         return {
+          agentId: turn.agentId,
           runId,
           sessionKey: turn.sessionKey,
           roomId: turn.roomId,
@@ -329,7 +329,16 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           accountId: turn.accountId,
           orgId: turn.orgId,
           signal: turn.authorization.signal,
-          assertCurrent,
+          assertCurrent() {
+            assertCurrent();
+            const current = configFromRuntime(api);
+            if (
+              !hasAuthorizationScope(current, turn.agentId) ||
+              (current.tenantOrgId && current.tenantOrgId !== turn.orgId)
+            ) {
+              throw new Error(UNAVAILABLE);
+            }
+          },
         };
       },
       async authorizeRequester(
