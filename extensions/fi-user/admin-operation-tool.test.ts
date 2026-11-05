@@ -83,6 +83,19 @@ async function ready(overrides: Partial<OpenClawPluginToolContext<2>> = {}) {
 }
 
 describe("registered Fi-admin structured operation transport", () => {
+  it("does not advertise requester operations to a configured noncanonical admin", () => {
+    const turn = plugin({ adminAgentId: "custom-admin" });
+    expect(turn.tools(context({ agentId: "custom-admin" }))).toEqual([]);
+    expect(turn.tools(context())).toEqual([]);
+  });
+
+  it("accepts the server catalog pagination bounds", async () => {
+    respond();
+    const { tool } = await ready();
+    await tool.execute("pagination", { action: "discover", limit: 50, offset: 100000 });
+    expect(catalogs()[0]![0]).toBe(`${ROOT}?limit=50&offset=100000`);
+  });
+
   it("discovers through the current requester's catalog and preserves its envelope", async () => {
     respond();
     const { tool } = await ready();
@@ -126,11 +139,12 @@ describe("registered Fi-admin structured operation transport", () => {
   });
 
   it("uses the Matrix requester's selected environment", async () => {
-    respond();
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ admindev: "dev" }));
+    fetchMock.mockResolvedValue(json({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }));
     vi.stubEnv("FIXTURE_DEV_BROKER", "fixture-dev-credential");
     const turn = plugin({
       matrixEnvironments: {
-        admindev: { baseUrl: "https://dev.example.test/fi", brokerTokenEnv: "FIXTURE_DEV_BROKER" },
+        dev: { baseUrl: "https://dev.example.test/fi", brokerTokenEnv: "FIXTURE_DEV_BROKER" },
       },
     });
     await turn.arrive(matrix.arrive);
@@ -233,8 +247,9 @@ describe("registered Fi-admin structured operation transport", () => {
 
   it("refuses a Matrix environment changed while minting for the same person", async () => {
     respond();
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
     const environments = {
-      adminprod: { baseUrl: "https://fi.example.test/fi", brokerTokenEnv: "FIXTURE_BROKER" },
+      prod: { baseUrl: "https://fi.example.test/fi", brokerTokenEnv: "FIXTURE_BROKER" },
     };
     const turn = plugin({ matrixEnvironments: environments });
     await turn.arrive(matrix.arrive);
@@ -248,7 +263,7 @@ describe("registered Fi-admin structured operation transport", () => {
       }),
     )[0]!;
     fetchMock.mockImplementation(async () => {
-      environments.adminprod.baseUrl = "https://other.example.test/fi";
+      environments.prod.baseUrl = "https://other.example.test/fi";
       return minted();
     });
     await expect(tool.execute("changed-environment", execute)).rejects.toThrow("changed");
@@ -353,6 +368,8 @@ describe("registered Fi-admin structured operation transport", () => {
   });
 
   it.each([
+    { action: "discover", limit: 51 },
+    { action: "discover", offset: 100001 },
     { action: "execute", operation: "../other", variant: "default", input: {} },
     { ...execute, file: "/workspace/file.pdf" },
     { ...execute, tenant: "other" },

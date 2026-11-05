@@ -684,7 +684,10 @@ export default definePluginEntry({
         const workbookTools = workbookTransport
           ? [createWorkbookTool(context, workbookTransport)]
           : [];
-        if (context.agentId?.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase()) {
+        if (
+          context.agentId?.toLowerCase() === FI_ADMIN_DELEGATION_AGENT_ID &&
+          context.agentId.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase()
+        ) {
           return [
             ...workbookTools,
             createAdminOperationTool(context, () => adminDelegation.provenToolRequester(context)),
