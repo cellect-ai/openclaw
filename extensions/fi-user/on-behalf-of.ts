@@ -30,7 +30,11 @@ const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
 const MAIL_WAKE_SESSION = /(?:^|:)hook:fi-mail:/i;
 const MAIL_REQUESTER_EMAIL = /^[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$/;
 
-/** Pin ordinary CLI calls to the installed wrapper, never caller-controlled PATH/env. */
+const MAIL_STATE_SCRIPT = "/workspace/skills/shared-shape-mail/scripts/mail-state.mjs";
+const INSTALLED_MAIL_STATE_SCRIPT =
+  "/repos/fi-runtime/fi/skills/tenants/shape/shared-shape-mail/scripts/mail-state.mjs";
+
+/** Pin maintained commands to the immutable runtime, never caller-controlled PATH/code/env. */
 export function pinInstalledFiCliCommand(params: Record<string, unknown>): string | undefined {
   if (
     typeof params.command !== "string" ||
@@ -44,7 +48,21 @@ export function pinInstalledFiCliCommand(params: Record<string, unknown>): strin
   }
   const command = params.command.replace(/^[ \t]+|[ \t]+$/gu, "");
   const argv = splitShellArgs(command, { literalOnly: true });
-  if (!argv || !["cellect", "/usr/local/bin/cellect"].includes(argv[0] ?? "")) {
+  if (!argv) {
+    return undefined;
+  }
+  // The mail checkpoint writer owns private source coordination, outside the
+  // public CLI taxonomy. Its workspace spelling is a dispatch alias only:
+  // neither that script nor a PATH-selected interpreter may see a credential.
+  if (
+    ["node", "/repos/fi-runtime/node"].includes(argv[0] ?? "") &&
+    [MAIL_STATE_SCRIPT, INSTALLED_MAIL_STATE_SCRIPT].includes(argv[1] ?? "")
+  ) {
+    return ["/repos/fi-runtime/node", INSTALLED_MAIL_STATE_SCRIPT, ...argv.slice(2)]
+      .map((arg) => `'${arg.replaceAll("'", "'\\''")}'`)
+      .join(" ");
+  }
+  if (!["cellect", "/usr/local/bin/cellect"].includes(argv[0] ?? "")) {
     return undefined;
   }
   return /^(?:cellect|\/usr\/local\/bin\/cellect)(?:[ \t]|$)/.test(command)

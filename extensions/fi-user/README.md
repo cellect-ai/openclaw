@@ -114,10 +114,16 @@ The call:
 
 - It is OpenClaw's own `exec` (`sandbox_exec` included) with no `host` other
   than `sandbox`, no `node`, not `elevated`, not `pty` and not `background`.
-- It invokes only the installed `cellect` CLI, with no shell composition,
-  metacharacters or caller-supplied environment. Both `/usr/local/bin/cellect`
-  and `/repos/fi-runtime` must be immutable read-only mounts. Values with shell
-  metacharacters use the CLI's structured `--input` file transport.
+- It invokes the installed `cellect` CLI or the maintained shared-mail state
+  writer, with no shell composition or caller-supplied environment. Both
+  `/usr/local/bin/cellect` and `/repos/fi-runtime` must be immutable read-only
+  mounts. Quoted literal punctuation is preserved; executable shell syntax is
+  refused. The exact `node /workspace/skills/shared-shape-mail/scripts/mail-state.mjs`
+  spelling dispatches to the interpreter and script under `/repos/fi-runtime`;
+  workspace code, PATH interpreters and Node flags never receive the credential.
+  This writer uses the existing private source-lock API and persists only its
+  private lease receipts, never the requester credential. It adds no public CLI
+  noun or business permission.
 - Its native run and tool-call identity uniquely identify the command whose
   process-tree cleanup releases the credential custody.
 - Its own `FI_APP_URL`, if it passes one, equals the selected connection's
