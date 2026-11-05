@@ -1,5 +1,7 @@
 import type {
+  AnyAgentTool,
   OpenClawPluginApi,
+  OpenClawPluginToolContext,
   PluginAgentEventSubscriptionRegistration,
   PluginJsonValue,
 } from "openclaw/plugin-sdk/core";
@@ -123,6 +125,7 @@ export function plugin(
   const info = vi.fn();
   const runContexts = new Map<string, PluginJsonValue>();
   const runtimeContexts = vi.fn();
+  const tools: Parameters<OpenClawPluginApi["registerTool"]>[0][] = [];
   let toolCallNumber = 0;
   fiUserPlugin.register?.(
     createTestPluginApi({
@@ -167,6 +170,7 @@ export function plugin(
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
       registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
       registerAgentToolResultMiddleware: middleware,
+      registerTool: (tool) => tools.push(tool),
     }),
   );
   const hook = async (name: string, event: unknown, context: unknown) => {
@@ -181,6 +185,16 @@ export function plugin(
   return {
     warn,
     info,
+    tools: (context: OpenClawPluginToolContext<2>): AnyAgentTool[] =>
+      tools.flatMap((registration) => {
+        const result =
+          typeof registration === "function"
+            ? registration(context)
+            : "create" in registration
+              ? registration.create(context)
+              : registration;
+        return result ? (Array.isArray(result) ? result : [result]) : [];
+      }),
     diagnosticRunContextSize: () => runContexts.size,
     /** Input the host accepts for the session without dispatching it: an injection into a run. */
     inject: (overrides: Record<string, unknown> = {}) =>

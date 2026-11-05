@@ -19,6 +19,7 @@ import {
   decideAdminApproval,
 } from "./admin-action.js";
 import { registerAdminDelegation } from "./admin-delegation.js";
+import { createAdminOperationTool } from "./admin-operation-tool.js";
 import { projectSlackChannelThread } from "./channel-projection-publisher.js";
 import {
   registerSlackChannelProjection,
@@ -683,6 +684,12 @@ export default definePluginEntry({
         const workbookTools = workbookTransport
           ? [createWorkbookTool(context, workbookTransport)]
           : [];
+        if (context.agentId?.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase()) {
+          return [
+            ...workbookTools,
+            createAdminOperationTool(context, () => adminDelegation.provenToolRequester(context)),
+          ];
+        }
         if (!isFiUserTurn(context)) {
           return workbookTools.length ? workbookTools : null;
         }

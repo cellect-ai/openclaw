@@ -3,10 +3,11 @@
   "activation": { "onStartup": true },
   "enabledByDefault": false,
   "name": "Fi User Delegation",
-  "description": "Requester-bound Fi, Gmail, Google Drive, data-room, e-sign and admin-request tools for the Cellect Fi agent, plus requester attribution for Cellect Fi Admin shell work.",
+  "description": "Requester-bound Fi, Gmail, Google Drive, data-room, e-sign and admin-request tools, plus typed administrator operations and requester attribution for Cellect Fi Admin shell work.",
   "contracts": {
     "tools": [
       "fi_user_api",
+      "fi_admin_operation",
       "fi_workbook",
       "fi_user_gmail",
       "fi_user_gdrive",
