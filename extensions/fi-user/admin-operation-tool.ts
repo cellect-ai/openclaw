@@ -2,12 +2,9 @@ import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sd
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import type { registerAdminDelegation } from "./admin-delegation.js";
 import { delegatedFetch, FI_ADMIN_DELEGATION_AGENT_ID, lookupDelegation } from "./fi-delegation.js";
+import type { ProvenRequester } from "./requester-proof.js";
 
-type Requester = NonNullable<
-  ReturnType<ReturnType<typeof registerAdminDelegation>["provenToolRequester"]>
->;
 type JsonRecord = Record<string, unknown>;
 const operation = Type.String({
   pattern: "^[a-z][a-z0-9-]*(?:\\.[a-z][a-z0-9-]*)+$",
@@ -45,7 +42,7 @@ function isRecord(value: unknown): value is JsonRecord {
 }
 
 /** Compare identity and environment, never just a person who may exist in both environments. */
-function identity(proof: Requester): string {
+function identity(proof: ProvenRequester): string {
   return JSON.stringify({
     body: proof.body,
     baseUrl: proof.connection.baseUrl,
@@ -97,7 +94,7 @@ async function envelope(response: Response): Promise<JsonRecord | undefined> {
 /** Gateway-owned transport. Fi's registry and dispatcher remain the operation and permission owners. */
 export function createAdminOperationTool(
   context: OpenClawPluginToolContext<2>,
-  proven: () => Requester | undefined,
+  proven: () => ProvenRequester | undefined,
 ): AnyAgentTool {
   return {
     name: "fi_admin_operation",

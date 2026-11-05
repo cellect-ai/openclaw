@@ -6,8 +6,8 @@ import {
   FI_ADMIN_DELEGATION_AGENT_ID,
   lookupDelegation,
   readFiResponse,
-  type ResolvedPluginConfig,
 } from "./fi-delegation.js";
+import type { ProvenRequester } from "./requester-proof.js";
 
 /** Fi's own import limit (`STANDARD_UPLOAD_MAX_BYTES`). */
 const MAX_IMPORT_BYTES = 200 * 1024 * 1024;
@@ -44,11 +44,6 @@ export type MailImportDestination = {
   dateDoc?: string;
   filenameDate?: string;
   filenameDateBasis?: string;
-};
-
-export type ProvenRequester = {
-  connection: ResolvedPluginConfig;
-  body: { requesterSenderId: string } | { requesterMatrixUserId: string };
 };
 
 type DownloadedFile = {

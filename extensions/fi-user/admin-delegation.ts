@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
@@ -36,6 +36,7 @@ import {
   forgetProjectedMatrixSession,
   rememberProjectedMatrixRun,
 } from "./projected-matrix-runs.js";
+import type { RequesterProofReader } from "./requester-proof.js";
 
 /**
  * The host gives every before_tool_call handler 15 s in all, and the Matrix
@@ -1208,17 +1209,7 @@ export function registerAdminDelegation(
    * that answers for them: the same proof a sandbox command needs for its
    * token, for a Fi call the plugin makes itself. Nothing when unproven.
    */
-  const provenToolRequester = (
-    ctx: Pick<
-      OpenClawPluginToolContext,
-      "runId" | "agentId" | "sessionKey" | "messageChannel" | "requesterSenderId" | "agentAccountId"
-    >,
-  ):
-    | {
-        connection: ResolvedPluginConfig;
-        body: { requesterSenderId: string } | { requesterMatrixUserId: string };
-      }
-    | undefined => {
+  const provenToolRequester: RequesterProofReader = (ctx) => {
     const config = configFromRuntime(api);
     const agentId = ctx.agentId?.toLowerCase();
     const sessionKey = ctx.sessionKey?.toLowerCase();

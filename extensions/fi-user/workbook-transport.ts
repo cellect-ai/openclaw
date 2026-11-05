@@ -1,5 +1,4 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
-import type { registerAdminDelegation } from "./admin-delegation.js";
 import {
   brokerToken,
   configFromRuntime,
@@ -11,6 +10,7 @@ import {
   requesterIdentity,
 } from "./fi-delegation.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
+import type { RequesterProofReader } from "./requester-proof.js";
 
 export type WorkbookTransport = {
   signal?: AbortSignal;
@@ -70,7 +70,7 @@ export function matrixWorkbookTransport(
 export function delegatedWorkbookTransport(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext<2>,
-  adminRequester: ReturnType<typeof registerAdminDelegation>["provenToolRequester"],
+  adminRequester: RequesterProofReader,
 ): WorkbookTransport | undefined {
   // Native Matrix text uses its event-admission owner above. A missing native
   // proof must never become a less-specific member delegation.

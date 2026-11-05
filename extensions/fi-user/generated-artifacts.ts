@@ -5,12 +5,9 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import { PlatformMessageNotDispatchedError } from "openclaw/plugin-sdk/error-runtime";
 import { root } from "openclaw/plugin-sdk/file-access-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
-import {
-  importMailAttachment,
-  mailImportDestination,
-  type ProvenRequester,
-} from "./admin-mail-import.js";
+import { importMailAttachment, mailImportDestination } from "./admin-mail-import.js";
 import { exchange, FI_USER_AGENT_ID } from "./fi-delegation.js";
+import type { RequesterProofReader } from "./requester-proof.js";
 import {
   downloadSlackFile,
   MAX_SLACK_FILE_BYTES,
@@ -197,7 +194,7 @@ export function registerFileArtifactRuntime(
   api: OpenClawPluginApi,
   admin?: {
     isAdminAgent: (agentId: string | undefined) => boolean;
-    provenToolRequester: (context: OpenClawPluginToolContext) => ProvenRequester | undefined;
+    provenToolRequester: RequesterProofReader;
   },
 ) {
   for (const channelId of ["matrix", "slack", "webchat"]) {
