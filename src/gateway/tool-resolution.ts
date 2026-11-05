@@ -49,7 +49,6 @@ import {
   type CronCreatorToolAllowlistEntry,
   type CronToolsAllowCaptureRef,
 } from "../agents/tools/cron-tool.js";
-import { createChannelQuestionPromptDelivery } from "../agents/tools/question-prompt-send.js";
 import { prepareSessionPortalToolTarget } from "../agents/tools/session-portal-target.js";
 import {
   hasSessionControlAuthority,
@@ -404,13 +403,6 @@ export function resolveGatewayScopedTools(
     requesterAgentIdOverride: sessionAgentId,
     agentChannel: params.messageProvider ?? undefined,
     agentAccountId: params.accountId,
-    questionPrompt: createChannelQuestionPromptDelivery({
-      cfg: params.cfg,
-      channel: params.messageProvider,
-      to: params.currentChannelId ?? params.agentTo,
-      accountId: params.accountId,
-      threadId: params.currentThreadTs ?? params.agentThreadId,
-    }),
     gatewayCallerAccountId: gatewayCaller.accountId,
     gatewayCallerChannel: gatewayCaller.channel,
     gatewayCallerLocal: gatewayCaller.local,

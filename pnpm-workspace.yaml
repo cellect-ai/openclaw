@@ -52,7 +52,9 @@ overrides:
   "@aws-sdk/xml-builder": 3.972.40
   "@hono/node-server": 2.1.1
   axios: 1.20.0
-  fast-uri: 4.2.1
+  # Reject malformed URI schemes/hosts and preserve relative reference semantics.
+  # GHSA-w74x-v6f9-j3xg, GHSA-wjr9-j795-jxcr, GHSA-xhq7-xmqj-769h, GHSA-333x-w4r6-6crp.
+  fast-uri: 4.2.3
   follow-redirects: 1.16.0
   defu: 6.1.7
   fast-xml-parser: 5.11.1
@@ -66,7 +68,8 @@ overrides:
   form-data: 4.0.6
   "werift-ice@0.2.2>ip": "npm:neoip@3.1.0"
   ip-address: 10.7.2
-  "mailauth@5.0.3>nodemailer": 10.0.10
+  "mailauth@5.0.3>nodemailer": 10.1.4
+  "mailparser@3.9.28>nodemailer": 10.1.4
   "mailauth@5.0.3>joi": 18.2.9
   # Mailauth pins vulnerable Undici; remove when its direct dependency is fixed.
   "mailauth@5.0.3>undici": 8.12.2

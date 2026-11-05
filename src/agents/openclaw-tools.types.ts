@@ -3,8 +3,8 @@ import type { InboundEventKind } from "../channels/inbound-event/kind.js";
 import type { ConversationReadInvocationOrigin } from "../channels/plugins/conversation-read-origin.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
-import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import type { MediaFact } from "../media/media-facts.js";
+import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import type { SkillWorkshopRunOptions } from "../skills/workshop/types.js";
 import type { HookContext } from "./agent-tools.before-tool-call.js";
 import type { AgentRunClientContext, AgentRunMessageContext } from "./command/shared-types.js";
@@ -25,10 +25,9 @@ export type OpenClawSharedToolsOptions = {
   /** Complete model-discoverable catalog, prepared by the current host. */
   installedSkills?: readonly InstalledSkill[];
   /**
-   * How this run shows a blocking question tool's prompt. Harnesses that run tools
-   * through the embedded tool lifecycle reserve the prompt themselves and leave this
-   * unset; harnesses that dispatch tools directly pass it so the question still
-   * reaches the person being asked.
+   * Overrides how this run shows a blocking question tool's prompt. Without an
+   * override, tools use the originating channel unless the embedded tool lifecycle
+   * already reserved delivery.
    */
   questionPrompt?: QuestionPromptDelivery;
   toolBindings?: Readonly<Record<string, unknown>>;

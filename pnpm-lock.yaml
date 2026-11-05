@@ -181,7 +181,7 @@ overrides:
   '@aws-sdk/xml-builder': 3.972.40
   '@hono/node-server': 2.1.1
   axios: 1.20.0
-  fast-uri: 4.2.1
+  fast-uri: 4.2.3
   follow-redirects: 1.16.0
   defu: 6.1.7
   fast-xml-parser: 5.11.1
@@ -194,7 +194,8 @@ overrides:
   form-data: 4.0.6
   werift-ice@0.2.2>ip: npm:neoip@3.1.0
   ip-address: 10.7.2
-  mailauth@5.0.3>nodemailer: 10.0.10
+  mailauth@5.0.3>nodemailer: 10.1.4
+  mailparser@3.9.28>nodemailer: 10.1.4
   mailauth@5.0.3>joi: 18.2.9
   mailauth@5.0.3>undici: 8.12.2
   minimatch: 10.2.6
@@ -5597,6 +5598,7 @@ packages:
   '@smithy/core@3.34.1':
     resolution: {integrity: sha512-dLcOUxz8YCv1RZUMKq6GbyUf95pLbrqh34bPvpCZ1+CByFF31BEAFewZjsGCnVsZTKdThNENfGyAgk2TJqVwSw==}
     engines: {node: '>=18.0.0'}
+    deprecated: Deprecated due to a bug in custom logger data redaction. See https://github.com/aws/aws-sdk-js-v3/issues/8393.
 
   '@smithy/credential-provider-imds@4.5.2':
     resolution: {integrity: sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==}
@@ -7450,8 +7452,8 @@ packages:
   fast-string-width@3.0.2:
     resolution: {integrity: sha512-gX8LrtNEI5hq8DVUfRQMbr5lpaS4nMIWV+7XEbXk2b8kiQIizgnlr12B4dA3ZEx3308ze0O4Q1R+cHts8kyUJg==}
 
-  fast-uri@4.2.1:
-    resolution: {integrity: sha512-TmHQgewjHtMq1E5QKA0tOE0yeYGQs25KZC/ziJpubRtWI15W92e6vPFydWOeZBVROSHBYw/QhD9d5OefdD6LDg==}
+  fast-uri@4.2.3:
+    resolution: {integrity: sha512-I1PXwP5eAhlNlcdpjt9CgB59op2ZvZfxw+BkqGFVIUOgNpCVTcTqp3HhTX7brxj5vsip+nSY4nTvff+eIA76hg==}
 
   fast-wrap-ansi@0.2.2:
     resolution: {integrity: sha512-7F2Fl+TjRSenLqlU3UjSH0iyqopqoZIu7eZVpEirP2g1GtWa2G/ecEmBdgz31+Mxr+ELclgg6sokpSFIQiZ02Q==}
@@ -8732,8 +8734,8 @@ packages:
   node-pty@1.2.0-beta.15:
     resolution: {integrity: sha512-vORSzHXi4Ofl7HemVWpuudLqCPdaQb4LfpRCUpE5HPxhp4JYscl8zZwxh11p26v2wvW24WMwnMfLjhRLixrfxA==}
 
-  nodemailer@10.0.10:
-    resolution: {integrity: sha512-He9XskOFms62SyAKkLu8CcGcYHAo+BSHSsORI8s4PJH8qZgZY4L4lDfvyN0twvmbpyG+eGrxpyBlskj9d9rJ8A==}
+  nodemailer@10.1.4:
+    resolution: {integrity: sha512-EsMnOR2oRv4LGnWvHgcVYkkQ4O2j8KO4WTw6l+PHR4sOXo8SAgIraxtEnGDmotjbhv0hDsu3IuDIFZm8iXwO4A==}
     engines: {node: '>=20.0.0'}
 
   normalize-path@3.0.0:
@@ -14095,7 +14097,7 @@ snapshots:
   ajv@8.20.0:
     dependencies:
       fast-deep-equal: 3.1.3
-      fast-uri: 4.2.1
+      fast-uri: 4.2.3
       json-schema-traverse: 1.0.0
       require-from-string: 2.0.2
 
@@ -15082,7 +15084,7 @@ snapshots:
     dependencies:
       fast-string-truncated-width: 3.0.3
 
-  fast-uri@4.2.1: {}
+  fast-uri@4.2.3: {}
 
   fast-wrap-ansi@0.2.2:
     dependencies:
@@ -16101,7 +16103,7 @@ snapshots:
       ipaddr.js: 2.5.0
       joi: 18.2.9
       libmime: 5.4.1
-      nodemailer: 10.0.10
+      nodemailer: 10.1.4
       punycode.js: 2.3.1
       tldts: 7.4.10
       undici: 8.12.2
@@ -16115,7 +16117,7 @@ snapshots:
       iconv-lite: 0.7.3
       libmime: 5.4.4
       linkify-it: 5.0.2
-      nodemailer: 10.0.10
+      nodemailer: 10.1.4
       punycode.js: 2.3.1
       tlds: 1.261.0
 
@@ -16713,7 +16715,7 @@ snapshots:
     dependencies:
       node-addon-api: 7.1.1
 
-  nodemailer@10.0.10: {}
+  nodemailer@10.1.4: {}
 
   normalize-path@3.0.0: {}
 

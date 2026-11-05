@@ -69,6 +69,7 @@ import { createNodesTool } from "./tools/nodes-tool.js";
 import { createPdfTool } from "./tools/pdf-tool.js";
 import { createAvailablePortalTools } from "./tools/portal-tool.js";
 import { createProgressCardTool } from "./tools/progress-card-tool.js";
+import { createChannelQuestionPromptDelivery } from "./tools/question-prompt-send.js";
 import { createScreenTool } from "./tools/screen-tool.js";
 import { createSecretsTool } from "./tools/secrets-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
@@ -430,6 +431,12 @@ export function createOpenClawTools(options?: OpenClawToolsOptions): AnyAgentToo
       })
         ? createTool({
             ...options,
+            questionPrompt:
+              options?.questionPrompt ??
+              createChannelQuestionPromptDelivery({
+                cfg: resolvedConfig ?? getRuntimeConfig(),
+                ...deliveryContext,
+              }),
             agentId: sessionAgentId,
             sessionKey: options?.runSessionKey ?? options?.agentSessionKey,
           })
