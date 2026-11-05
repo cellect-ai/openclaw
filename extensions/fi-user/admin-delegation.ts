@@ -1054,7 +1054,7 @@ export function registerAdminDelegation(
     }
     // Raw shell work can persist an environment credential in arbitrary files.
     // Do not issue it a token and then reserve the entire thread until expiry.
-    // The installed CLI's no-persistence contract and native cleanup identity
+    // The maintained command's no-persistence contract and native cleanup identity
     // are both required before asking Fi to mint a command credential.
     const pinnedCommand = posture(agentId).readonlyCli
       ? pinInstalledFiCliCommand(event.params)
