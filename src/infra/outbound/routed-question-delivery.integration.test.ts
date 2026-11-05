@@ -3,21 +3,21 @@ import {
   awaitGateBeforeSettlement,
   createDeferred,
   withinTest,
-} from "../../test/helpers/promise.js";
-import type { ChannelOutboundPayloadContext } from "../channels/plugins/outbound.types.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
+} from "../../../test/helpers/promise.js";
+import { handleToolExecutionStart } from "../../agents/embedded-agent-subscribe.handlers.tools.js";
+import { createTestContext } from "../../agents/embedded-agent-subscribe.handlers.tools.test-support.js";
+import { withQuestionGateway } from "../../agents/harness/gateway-question.test-support.js";
+import { createOpenClawTools } from "../../agents/openclaw-tools.js";
+import { createChannelQuestionPromptDelivery } from "../../agents/tools/question-prompt-send.js";
+import type { ChannelOutboundPayloadContext } from "../../channels/plugins/outbound.types.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {
   captureActivePluginRegistrySnapshot,
   restoreActivePluginRegistrySnapshot,
   setActivePluginRegistry,
-} from "../plugins/runtime.js";
-import { createOutboundTestPlugin, createTestRegistry } from "../test-utils/channel-plugins.js";
-import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import { handleToolExecutionStart } from "./embedded-agent-subscribe.handlers.tools.js";
-import { createTestContext } from "./embedded-agent-subscribe.handlers.tools.test-support.js";
-import { withQuestionGateway } from "./harness/gateway-question.test-support.js";
-import { createOpenClawTools } from "./openclaw-tools.js";
-import { createChannelQuestionPromptDelivery } from "./tools/question-prompt-send.js";
+} from "../../plugins/runtime.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 
 it.for(["tool", "subscriber"] as const)(
   "delivers one routed question through the %s owner and resumes with the answer",
@@ -49,7 +49,12 @@ it.for(["tool", "subscriber"] as const)(
               source: "test",
               plugin: createOutboundTestPlugin({
                 id: "matrix",
-                outbound: { deliveryMode: "direct", sendPayload },
+                outbound: {
+                  deliveryMode: "direct",
+                  sendPayload,
+                  sendText: (context) =>
+                    sendPayload({ ...context, payload: { text: context.text } }),
+                },
               }),
             },
           ]),
