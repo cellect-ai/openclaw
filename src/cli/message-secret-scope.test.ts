@@ -55,6 +55,12 @@ describe("resolveMessageSecretScope", () => {
     });
   });
 
+  it("preserves a designated delivery account when no source provider exists", () => {
+    expect(
+      resolveMessageSecretScope({ channel: "discord", fallbackAccountId: "scheduled-delivery" }),
+    ).toEqual({ channel: "discord", accountId: "scheduled-delivery" });
+  });
+
   it("does not reuse a source provider's account for a different destination", () => {
     expect(
       resolveMessageSecretScope({

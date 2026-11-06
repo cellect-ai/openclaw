@@ -74,7 +74,7 @@ export function resolveMessageSecretScope(params: {
   const fallbackChannel = resolveScopedChannelCandidate(params.fallbackChannel);
   const accountId =
     resolveScopedAccountId(params.accountId) ??
-    (channel === fallbackChannel
+    (!normalizeOptionalString(params.fallbackChannel) || channel === fallbackChannel
       ? resolveScopedAccountId(params.fallbackAccountId ?? undefined)
       : undefined);
 
