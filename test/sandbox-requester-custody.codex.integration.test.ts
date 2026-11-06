@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createCodexDynamicToolBridge } from "../../extensions/codex/src/app-server/dynamic-tools.js";
-import { createSandboxExecProjection } from "../../extensions/codex/src/app-server/shell-dynamic-tools.js";
+import {
+  createCodexDynamicToolBridge,
+  createSandboxExecProjection,
+} from "../extensions/codex/test-api.js";
 import {
   HELD,
   UNPROVEN_HOLD,
@@ -10,22 +12,22 @@ import {
   slackThread,
   SLACK_THREAD,
   TOKEN,
-} from "../../extensions/fi-user/admin-delegation.test-helpers.js";
-import { emitAgentEvent, onAgentEvent } from "../infra/agent-events.js";
+} from "../extensions/fi-user/test-api.js";
+import { wrapToolWithBeforeToolCallHook } from "../src/agents/agent-tools.before-tool-call.js";
+import { createExecTool } from "../src/agents/bash-tools.exec-run.js";
+import { createRunExit } from "../src/agents/bash-tools.exec-runtime.test-support.js";
+import { emitAgentEvent, onAgentEvent } from "../src/infra/agent-events.js";
 import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
-} from "../plugins/hook-runner-global.js";
-import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import { setActivePluginRegistry } from "../plugins/runtime.js";
-import { withPluginRuntimeGenerationRegistryScope } from "../plugins/runtime/generation-state.js";
-import { createDeferredCore } from "../shared/deferred.js";
-import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
-import { createExecTool } from "./bash-tools.exec-run.js";
-import { createRunExit } from "./bash-tools.exec-runtime.test-support.js";
+} from "../src/plugins/hook-runner-global.js";
+import { createEmptyPluginRegistry } from "../src/plugins/registry-empty.js";
+import { setActivePluginRegistry } from "../src/plugins/runtime.js";
+import { withPluginRuntimeGenerationRegistryScope } from "../src/plugins/runtime/generation-state.js";
+import { createDeferredCore } from "../src/shared/deferred.js";
 
 const processBoundary = vi.hoisted(() => ({ envs: [] as Array<Record<string, string>> }));
-vi.mock("../process/supervisor/index.js", () => ({
+vi.mock("../src/process/supervisor/index.js", () => ({
   getProcessSupervisor: () => ({
     spawn: async (input: { env: Record<string, string> }) => {
       processBoundary.envs.push(input.env);

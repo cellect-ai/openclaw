@@ -31,6 +31,7 @@ import { buildCodexParentLocalInstructions } from "./src/app-server/turn-params.
 
 export { CODEX_APP_SERVER_VERSION } from "./src/app-server/version.js";
 export { createCodexDynamicToolBridge };
+export { createSandboxExecProjection } from "./src/app-server/shell-dynamic-tools.js";
 
 /** Keeps host integration tests on the plugin's test boundary without exposing runtime internals. */
 export async function createCodexSessionInitializationFixtureForTest(params: {
