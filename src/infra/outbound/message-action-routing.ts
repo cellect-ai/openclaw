@@ -89,12 +89,22 @@ export function resolveTargetBoundAccountId(params: {
   if (!params.agentId) {
     return undefined;
   }
+  const resolveAccountScope = params.channelPlugin?.messaging?.resolveAccountBindingScope;
+  const accountScope = resolveAccountScope
+    ? (accountId: string) =>
+        resolveAccountScope({
+          cfg: params.cfg,
+          accountId,
+          target: readTrimmedStringAlias(params.args, ["to", "channelId"]),
+        })
+    : undefined;
   const target = readTrimmedStringAlias(params.args, ["to", "channelId"]);
   if (!target) {
     return resolveFirstBoundAccountId({
       cfg: params.cfg,
       channelId: params.channel,
       agentId: params.agentId,
+      resolveAccountScope: accountScope,
     });
   }
 
@@ -112,6 +122,7 @@ export function resolveTargetBoundAccountId(params: {
     peerId,
     exactPeerIdAliases,
     peerKind: inferPeerKindForAccountBinding(params.channel, target, params.channelPlugin),
+    resolveAccountScope: accountScope,
   });
 }
 

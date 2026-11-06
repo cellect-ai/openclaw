@@ -57,6 +57,9 @@ export function resolveFirstBoundAccountId(params: {
   peerKind?: ChatType;
   groupSpace?: string | null;
   memberRoleIds?: string[];
+  resolveAccountScope?: (
+    accountId: string,
+  ) => { groupSpace?: string; memberRoleIds?: string[] } | undefined;
 }): string | undefined {
   const normalizedChannel = normalizeRouteBindingChannelId(params.channelId);
   if (!normalizedChannel) {
@@ -92,7 +95,9 @@ export function resolveFirstBoundAccountId(params: {
     ) {
       continue;
     }
-    if (!routeBindingScopeMatches(resolved, scope)) {
+    if (
+      !routeBindingScopeMatches(resolved, params.resolveAccountScope?.(resolved.accountId) ?? scope)
+    ) {
       continue;
     }
     if (!hasPeerContext) {

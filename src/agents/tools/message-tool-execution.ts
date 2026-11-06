@@ -17,12 +17,14 @@ import { getRuntimeConfig } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import * as messageActionTurnCapability from "../../gateway/message-action-turn-capability.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
+import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
 import {
   resolveMessageBroadcastAccountPlan,
   validateExplicitMessageAccountSelection,
 } from "../../infra/outbound/message-account-selection.js";
 import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
+import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import { projectGatewayQueuedDeliveryResult } from "../../infra/outbound/message-action-execution.js";
 import { hasAcceptedMessageActionResult } from "../../infra/outbound/message-action-result-acceptance.js";
 import { resolveTargetBoundAccountId } from "../../infra/outbound/message-action-routing.js";
@@ -31,6 +33,7 @@ import { isDeliveredCurrentSourceReplyAsync } from "../../infra/outbound/source-
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { getPreparedMessageToolCatalog } from "../../plugins/prepared-message-tool-catalog.js";
+import { listAgentBoundAccountCandidates } from "../../routing/bound-account-read.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
@@ -413,11 +416,34 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       ) {
         // Use the outbound owner's destination binding for both secret scope
         // and delivery, before resolving any provider credentials.
-        scope.accountId = resolveTargetBoundAccountId({
-          cfg: rawConfig,
-          channel: scope.channel,
-          agentId: resolvedAgentId,
-          args: { ...params, to: params.target ?? params.to },
+        const destinationChannel = scope.channel;
+        const destinationAgent = resolvedAgentId;
+        scope.accountId = decisions.runBoundary(() => {
+          const accountId = resolveTargetBoundAccountId({
+            cfg: rawConfig,
+            channel: destinationChannel,
+            channelPlugin: resolveOutboundChannelPlugin({
+              cfg: rawConfig,
+              channel: destinationChannel,
+            }),
+            agentId: destinationAgent,
+            args: { ...params, to: params.target ?? params.to },
+          });
+          if (
+            !accountId &&
+            listAgentBoundAccountCandidates({
+              cfg: rawConfig,
+              channelId: destinationChannel,
+              agentId: destinationAgent,
+            }).length
+          ) {
+            throw new MessageActionDeniedError(
+              "No destination account binding matches the provider's current authenticated scope.",
+              "message_account_binding_required",
+              "message-account:agent-binding",
+            );
+          }
+          return accountId;
         });
       }
       // Broadcast execution only narrows on an explicit non-all channel. Target
