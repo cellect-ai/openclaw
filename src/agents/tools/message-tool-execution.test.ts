@@ -288,99 +288,114 @@ function createFailingMessageTool(error: Error) {
 
 describe("message tool destination account selection", () => {
   afterEach(() => resetPluginRuntimeStateForTest());
-  it.each(["matching-team", "wrong-team", "bare-target", "bare-channel", "explicit-account"])(
-    "uses provider-owned account scope and target grammar: %s",
-    async (mode) => {
-      const plugin: ChannelPlugin = {
-        ...createChannelTestPluginBase({
-          id: "slack",
-          config: { listAccountIds: () => ["slack-admin", "explicit-slack", "fallback"] },
+  it.each([
+    "matching-team",
+    "wrong-team",
+    "changed-team",
+    "bare-target",
+    "bare-channel",
+    "explicit-account",
+  ])("uses provider-owned account scope and target grammar: %s", async (mode) => {
+    let authenticatedTeam = mode === "wrong-team" ? "T_OTHER" : "T_EXPECTED";
+    const plugin: ChannelPlugin = {
+      ...createChannelTestPluginBase({
+        id: "slack",
+        config: { listAccountIds: () => ["slack-admin", "explicit-slack", "fallback"] },
+      }),
+      messaging: {
+        resolveAccountBindingScope: () => ({
+          groupSpace: authenticatedTeam,
         }),
-        messaging: {
-          resolveAccountBindingScope: () => ({
-            groupSpace: mode === "wrong-team" ? "T_OTHER" : "T_EXPECTED",
-          }),
-          inferTargetChatType: ({ to }) =>
-            to.startsWith("U") ? "direct" : to.startsWith("C") ? "channel" : undefined,
-        },
-        actions: { describeMessageTool: () => ({ actions: ["send"] }) },
-      };
-      setActivePluginRegistry(createTestRegistry([{ pluginId: "slack", plugin, source: "test" }]));
-      const getScoped = vi.fn(secretDeps.getScopedChannelsCommandSecretTargets);
-      const runAction = vi.fn(async (_input: MessageActionInput): Promise<MessageActionResult> => ({
-        kind: "send",
-        channel: "slack",
-        action: "send",
-        to: "user:recipient",
-        handledBy: "plugin",
-        payload: { ok: true, messageId: "sent-fixture" },
-        dryRun: false,
-      }));
-      const tool = createMessageTool({
-        config: {
-          bindings: [
-            {
-              agentId: "fixture-admin",
-              match: {
-                channel: "slack",
-                accountId: "slack-admin",
-                teamId: "T_EXPECTED",
-                ...(mode === "bare-target" || mode === "bare-channel"
-                  ? {
-                      peer: {
-                        kind: mode === "bare-target" ? ("direct" as const) : ("channel" as const),
-                        id: "*",
-                      },
-                    }
-                  : {}),
-              },
+        inferTargetChatType: ({ to }) =>
+          to.startsWith("U") ? "direct" : to.startsWith("C") ? "channel" : undefined,
+      },
+      actions: { describeMessageTool: () => ({ actions: ["send"] }) },
+    };
+    setActivePluginRegistry(createTestRegistry([{ pluginId: "slack", plugin, source: "test" }]));
+    const getScoped = vi.fn(secretDeps.getScopedChannelsCommandSecretTargets);
+    const runAction = vi.fn(async (_input: MessageActionInput): Promise<MessageActionResult> => ({
+      kind: "send",
+      channel: "slack",
+      action: "send",
+      to: "user:recipient",
+      handledBy: "plugin",
+      payload: { ok: true, messageId: "sent-fixture" },
+      dryRun: false,
+    }));
+    const tool = createMessageTool({
+      config: {
+        bindings: [
+          {
+            agentId: "fixture-admin",
+            match: {
+              channel: "slack",
+              accountId: "slack-admin",
+              teamId: "T_EXPECTED",
+              ...(mode === "bare-target" || mode === "bare-channel"
+                ? {
+                    peer: {
+                      kind: mode === "bare-target" ? ("direct" as const) : ("channel" as const),
+                      id: "*",
+                    },
+                  }
+                : {}),
             },
-            ...(mode === "bare-target" || mode === "bare-channel"
-              ? [{ agentId: "fixture-admin", match: { channel: "slack", accountId: "fallback" } }]
-              : []),
-          ],
-        },
-        agentId: "fixture-admin",
-        agentAccountId: "matrix-admin",
-        currentChannelProvider: "matrix",
-        currentChannelId: "!source:example.test",
-        preparedMessageToolCatalog: EMPTY_CATALOG,
-        ...secretDeps,
-        getScopedChannelsCommandSecretTargets: getScoped,
-        runMessageAction: runAction,
-      });
-      const send = tool.execute("cross-provider", {
-        action: "send",
+          },
+          ...(mode === "bare-target" || mode === "bare-channel"
+            ? [{ agentId: "fixture-admin", match: { channel: "slack", accountId: "fallback" } }]
+            : []),
+        ],
+      },
+      agentId: "fixture-admin",
+      agentAccountId: "matrix-admin",
+      currentChannelProvider: "matrix",
+      currentChannelId: "!source:example.test",
+      preparedMessageToolCatalog: EMPTY_CATALOG,
+      ...secretDeps,
+      resolveCommandSecretRefsViaGateway: async (input) => {
+        const result = await secretDeps.resolveCommandSecretRefsViaGateway(input);
+        if (mode === "changed-team") authenticatedTeam = "T_OTHER";
+        return result;
+      },
+      getScopedChannelsCommandSecretTargets: getScoped,
+      runMessageAction: runAction,
+    });
+    const send = tool.execute("cross-provider", {
+      action: "send",
+      channel: "slack",
+      target:
+        mode === "bare-target"
+          ? "U_RECIPIENT"
+          : mode === "bare-channel"
+            ? "C_TARGET"
+            : "user:recipient",
+      ...(mode === "explicit-account" ? { accountId: "explicit-slack" } : {}),
+      message: "Requested fixture DM",
+    });
+    if (mode === "wrong-team") {
+      await expect(send).rejects.toThrow("No destination account binding matches");
+      expect(runAction).not.toHaveBeenCalled();
+      expect(getScoped).not.toHaveBeenCalled();
+      return;
+    }
+    if (mode === "changed-team") {
+      await expect(send).rejects.toThrow("authenticated binding scope changed before delivery");
+      expect(runAction).not.toHaveBeenCalled();
+      return;
+    }
+    await send;
+    expect(getScoped).toHaveBeenCalledWith(
+      expect.objectContaining({
         channel: "slack",
-        target:
-          mode === "bare-target"
-            ? "U_RECIPIENT"
-            : mode === "bare-channel"
-              ? "C_TARGET"
-              : "user:recipient",
-        ...(mode === "explicit-account" ? { accountId: "explicit-slack" } : {}),
-        message: "Requested fixture DM",
-      });
-      if (mode === "wrong-team") {
-        await expect(send).rejects.toThrow("No destination account binding matches");
-        expect(runAction).not.toHaveBeenCalled();
-        expect(getScoped).not.toHaveBeenCalled();
-        return;
-      }
-      await send;
-      expect(getScoped).toHaveBeenCalledWith(
-        expect.objectContaining({
-          channel: "slack",
-          accountId: mode === "explicit-account" ? "explicit-slack" : "slack-admin",
-        }),
-      );
-      expect(runAction).toHaveBeenCalledWith(
-        expect.objectContaining({
-          defaultAccountId: mode === "explicit-account" ? "explicit-slack" : "slack-admin",
-        }),
-      );
-    },
-  );
+        accountId: mode === "explicit-account" ? "explicit-slack" : "slack-admin",
+      }),
+    );
+    expect(runAction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        defaultAccountId: mode === "explicit-account" ? "explicit-slack" : "slack-admin",
+      }),
+    );
+  });
 });
 
 function sentIdempotencyKey(runMessageAction: ReturnType<typeof vi.fn>, call: number) {

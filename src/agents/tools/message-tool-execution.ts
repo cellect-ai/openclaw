@@ -298,6 +298,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         decisions.recordTurnCapabilityInactive();
         throw new Error("message action turn capability is no longer active");
       }
+      let assertDestinationAccountCurrent: (() => void) | undefined;
       const assertActionCurrent = () => {
         assertCaller();
         turnAuthority.assertCurrent();
@@ -306,6 +307,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           ? (scheduled?.assertSourceCurrent ?? scheduled?.assertCurrent)
           : scheduled?.assertCurrent)?.();
         assertDashboardReadCurrent?.();
+        assertDestinationAccountCurrent?.();
       };
       assertActionCurrent();
       if (options?.sourceReplyOnly) {
@@ -445,6 +447,28 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
           }
           return accountId;
         });
+        const selectedAccount = scope.accountId;
+        if (selectedAccount) {
+          assertDestinationAccountCurrent = () =>
+            decisions.runBoundary(() => {
+              const currentAccount = resolveTargetBoundAccountId({
+                cfg: rawConfig,
+                channel: destinationChannel,
+                channelPlugin: resolveOutboundChannelPlugin({
+                  cfg: rawConfig,
+                  channel: destinationChannel,
+                }),
+                agentId: destinationAgent,
+                args: { ...params, to: params.target ?? params.to },
+              });
+              if (currentAccount !== selectedAccount)
+                throw new MessageActionDeniedError(
+                  "The destination account's authenticated binding scope changed before delivery.",
+                  "message_account_binding_required",
+                  "message-account:agent-binding",
+                );
+            });
+        }
       }
       // Broadcast execution only narrows on an explicit non-all channel. Target
       // prefixes cannot authorize fewer providers than the runner will execute.
