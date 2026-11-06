@@ -36,7 +36,9 @@ import { createEmptyPluginRegistry } from "./registry-empty.js";
 import {
   adoptPluginRegistryRecords,
   bindPluginRegistryGatewayOwner,
+  capturePluginRegistryLifecycleEpoch,
   getPluginRegistryResourceOwner,
+  isPluginRegistryRetired,
   markPluginRegistryActive,
   markPluginRegistryRetired,
   preparePluginRegistryCacheShutdown,
@@ -47,7 +49,11 @@ import type { PluginRegistry } from "./registry-types.js";
 import { getActivePluginChannelRegistrySnapshotFromState } from "./runtime-channel-state.js";
 import { PluginRuntimeCloseRetainedError } from "./runtime-close-error.js";
 import { PLUGIN_REGISTRY_STATE, type RegistryState } from "./runtime-state.js";
-import { getPluginRegistryForContext } from "./runtime/gateway-request-scope.js";
+import {
+  getPluginRegistryForContext,
+  getPluginRuntimeGatewayRequestScope,
+} from "./runtime/gateway-request-scope.js";
+import { getPluginRuntimeGenerationRegistry } from "./runtime/generation-state.js";
 export { getPluginRegistryForContext } from "./runtime/gateway-request-scope.js";
 
 const log = createSubsystemLogger("plugins/runtime");
@@ -259,12 +265,47 @@ function syncPluginAgentEventBridge(): void {
   }
   const version = state.activeVersion;
   state.agentEventBridgeUnsubscribe = onAgentEvent((event) => {
+    // Hooks mint run state in the prepared registry, which need not be the
+    // published root. Native process cleanup must reach that same instance.
+    const generation = getPluginRuntimeGenerationRegistry();
+    const request = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
+    const scoped = generation ?? request;
+    // A known expired owner must never be reinterpreted as an unscoped event
+    // for a successor plugin instance, even if its subscription id is equal.
+    if (scoped && isPluginRegistryRetired(scoped)) {
+      return;
+    }
+    const epoch = scoped && capturePluginRegistryLifecycleEpoch(scoped);
+    const subscriptions = scoped?.agentEventSubscriptions ?? [];
+    const overrides = new Set(
+      subscriptions.map((entry) => `${entry.pluginId}\0${entry.subscription.id}`),
+    );
+    const selected =
+      scoped && scoped !== registry
+        ? {
+            ...scoped,
+            agentEventSubscriptions:
+              scoped === generation
+                ? subscriptions
+                : [
+                    ...registry.agentEventSubscriptions.filter(
+                      (entry) => !overrides.has(`${entry.pluginId}\0${entry.subscription.id}`),
+                    ),
+                    ...subscriptions,
+                  ],
+          }
+        : registry;
     dispatchPluginAgentEventSubscriptions({
-      registry,
+      registry: selected,
       event,
       // The registry object can become active again after rollback. Its version
       // keeps already-dispatched callback authority bound to this exact cutover.
-      isLive: () => state.activeRegistry === registry && state.activeVersion === version,
+      isLive: () =>
+        (!scoped ||
+          (!isPluginRegistryRetired(scoped) &&
+            capturePluginRegistryLifecycleEpoch(scoped) === epoch)) &&
+        state.activeRegistry === registry &&
+        state.activeVersion === version,
     });
   });
 }

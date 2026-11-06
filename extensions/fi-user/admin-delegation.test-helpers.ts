@@ -185,6 +185,8 @@ export function plugin(
   return {
     warn,
     info,
+    /** Real registered callbacks, for composition with the native hook/event owners. */
+    registrations: { hooks, subscriptions },
     tools: (context: OpenClawPluginToolContext<2>): AnyAgentTool[] =>
       tools.flatMap((registration) => {
         const result =
