@@ -14,6 +14,7 @@ import type {
   ChannelMessageActionName,
   ChannelPlugin,
 } from "../../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../../config/config.js";
 import {
   mintMessageActionTurnCapability,
   revokeMessageActionTurnCapability,
@@ -385,7 +386,7 @@ function createChannelPlugin(params: {
   message?: ChannelMessageAdapterShape;
   messaging?: ChannelPlugin["messaging"];
   outbound?: ChannelPlugin["outbound"];
-}): ChannelPlugin {
+}): ChannelPlugin & { actions: NonNullable<ChannelPlugin["actions"]> } {
   return {
     id: params.id as ChannelPlugin["id"],
     meta: {
