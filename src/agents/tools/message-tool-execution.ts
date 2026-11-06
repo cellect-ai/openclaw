@@ -25,6 +25,7 @@ import {
 import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
 import { projectGatewayQueuedDeliveryResult } from "../../infra/outbound/message-action-execution.js";
 import { hasAcceptedMessageActionResult } from "../../infra/outbound/message-action-result-acceptance.js";
+import { resolveTargetBoundAccountId } from "../../infra/outbound/message-action-routing.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
 import { isDeliveredCurrentSourceReplyAsync } from "../../infra/outbound/source-reply-mirror.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
@@ -404,6 +405,21 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
         }),
       );
       if (boundReadAccountId) scope.accountId = boundReadAccountId;
+      if (
+        scope.channel &&
+        scope.channel !== normalizeMessageChannel(effectiveCurrentChannel.currentChannelProvider) &&
+        !scope.accountId &&
+        resolvedAgentId
+      ) {
+        // Use the outbound owner's destination binding for both secret scope
+        // and delivery, before resolving any provider credentials.
+        scope.accountId = resolveTargetBoundAccountId({
+          cfg: rawConfig,
+          channel: scope.channel,
+          agentId: resolvedAgentId,
+          args: { ...params, to: params.target ?? params.to },
+        });
+      }
       // Broadcast execution only narrows on an explicit non-all channel. Target
       // prefixes cannot authorize fewer providers than the runner will execute.
       const unscopedExplicitBroadcast =
@@ -458,7 +474,7 @@ export function createMessageTool(options?: MessageToolOptions): AnyAgentTool {
       assertActionCurrent();
 
       const accountId =
-        explicitAccountId ?? boundReadAccountId ?? scheduledAccountId ?? agentAccountId;
+        explicitAccountId ?? boundReadAccountId ?? scheduledAccountId ?? scope.accountId;
       const pollVoteEchoRoute = resolvePollVoteEchoRoute({
         action,
         args: params,

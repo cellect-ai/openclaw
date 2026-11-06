@@ -79,7 +79,7 @@ function inferPeerKindForAccountBinding(
   return undefined;
 }
 
-function resolveTargetBoundAccountId(params: {
+export function resolveTargetBoundAccountId(params: {
   cfg: OpenClawConfig;
   channel: ChannelId;
   channelPlugin?: ChannelPlugin;

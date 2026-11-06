@@ -69,9 +69,14 @@ export function resolveMessageSecretScope(params: {
     resolveChannelFromTargets(params.targets) ??
     resolveScopedChannelCandidate(params.fallbackChannel);
 
+  // Account IDs are scoped to their provider. A Matrix source account cannot
+  // select Slack credentials when the requested destination changes provider.
+  const fallbackChannel = resolveScopedChannelCandidate(params.fallbackChannel);
   const accountId =
     resolveScopedAccountId(params.accountId) ??
-    resolveScopedAccountId(params.fallbackAccountId ?? undefined);
+    (channel === fallbackChannel
+      ? resolveScopedAccountId(params.fallbackAccountId ?? undefined)
+      : undefined);
 
   return {
     ...(channel ? { channel } : {}),

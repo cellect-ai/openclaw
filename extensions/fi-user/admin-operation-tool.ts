@@ -17,7 +17,14 @@ const schema = Type.Union([
       action: Type.Literal("discover"),
       operation: Type.Optional(operation),
       variant: Type.Optional(variant),
-      limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 50 })),
+      limit: Type.Optional(
+        Type.Integer({
+          minimum: 1,
+          maximum: 100000,
+          description:
+            "Requested page size; responses are capped at 50. Continue with response.nextOffset.",
+        }),
+      ),
       offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })),
     },
     { additionalProperties: false },
@@ -100,7 +107,7 @@ export function createAdminOperationTool(
     name: "fi_admin_operation",
     label: "Fi administrator operation",
     description:
-      "Discover and execute existing Fi operations as this turn's verified requester, without shell commands. Discover lists current server operations; provide operation and variant for their schema and constraints. Execute accepts that operation, variant, structured input and optional dryRun. Fi applies the requester's current permissions and binds their actor identity. Never supply URLs, headers, credentials, tenant overrides, local paths or attachments. File variants need the existing CLI or verified artifact workflow. Preserve warnings and receipts. An unconfirmed or partially completed operation must be reconciled before retry; this tool never retries a write.",
+      "Discover and execute existing Fi operations as this turn's verified requester, without shell commands. Discover lists current server operations in pages of at most 50; continue with response.nextOffset, or provide the exact operation and variant for their schema and constraints. Execute accepts that operation, variant, structured input and optional dryRun. Fi applies the requester's current permissions and binds their actor identity. Never supply URLs, headers, credentials, tenant overrides, local paths or attachments. File variants need the existing CLI or verified artifact workflow. Preserve warnings and receipts. An unconfirmed or partially completed operation must be reconciled before retry; this tool never retries a write.",
     parameters: schema,
     async execute(_toolCallId, raw, signal) {
       context.assertInvocationCurrent();
@@ -153,7 +160,7 @@ export function createAdminOperationTool(
       if (input.operation) query.set("operation", input.operation);
       if (input.variant) query.set("variant", input.variant);
       if (input.action === "discover") {
-        if (input.limit !== undefined) query.set("limit", String(input.limit));
+        if (input.limit !== undefined) query.set("limit", String(Math.min(input.limit, 50)));
         if (input.offset !== undefined) query.set("offset", String(input.offset));
       }
       const response = await delegatedFetch(requester.connection, delegation, `${root}?${query}`, {

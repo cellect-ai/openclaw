@@ -96,6 +96,14 @@ describe("registered Fi-admin structured operation transport", () => {
     expect(catalogs()[0]![0]).toBe(`${ROOT}?limit=50&offset=100000`);
   });
 
+  it("bounds an oversized discovery request and preserves the continuation offset", async () => {
+    respond({ catalog: () => catalog({ nextOffset: 50 }) });
+    const { tool } = await ready();
+    const result = await tool.execute("pagination", { action: "discover", limit: 200 });
+    expect(catalogs()[0]![0]).toBe(`${ROOT}?limit=50`);
+    expect(result.details).toMatchObject({ response: { nextOffset: 50 } });
+  });
+
   it("discovers through the current requester's catalog and preserves its envelope", async () => {
     respond();
     const { tool } = await ready();
@@ -376,7 +384,7 @@ describe("registered Fi-admin structured operation transport", () => {
   });
 
   it.each([
-    { action: "discover", limit: 51 },
+    { action: "discover", limit: 100001 },
     { action: "discover", offset: 100001 },
     { action: "execute", operation: "../other", variant: "default", input: {} },
     { ...execute, file: "/workspace/file.pdf" },

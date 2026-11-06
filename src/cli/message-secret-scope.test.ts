@@ -54,4 +54,29 @@ describe("resolveMessageSecretScope", () => {
       accountId: "chat",
     });
   });
+
+  it("does not reuse a source provider's account for a different destination", () => {
+    expect(
+      resolveMessageSecretScope({
+        channel: "slack",
+        fallbackChannel: "matrix",
+        fallbackAccountId: "source-account",
+      }),
+    ).toEqual({ channel: "slack" });
+    expect(
+      resolveMessageSecretScope({
+        target: "slack:user:recipient",
+        fallbackChannel: "matrix",
+        fallbackAccountId: "source-account",
+      }),
+    ).toEqual({ channel: "slack" });
+    expect(
+      resolveMessageSecretScope({
+        channel: "slack",
+        accountId: "destination-account",
+        fallbackChannel: "matrix",
+        fallbackAccountId: "source-account",
+      }),
+    ).toEqual({ channel: "slack", accountId: "destination-account" });
+  });
 });

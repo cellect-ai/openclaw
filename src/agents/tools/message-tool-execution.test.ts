@@ -286,6 +286,48 @@ function createFailingMessageTool(error: Error) {
   return { tool, runMessageAction };
 }
 
+describe("message tool destination account selection", () => {
+  it("uses the destination binding for credentials and sending from a different provider", async () => {
+    const getScoped = vi.fn(secretDeps.getScopedChannelsCommandSecretTargets);
+    const runAction = vi.fn(async (_input: MessageActionInput): Promise<MessageActionResult> => ({
+      kind: "send",
+      channel: "slack",
+      action: "send",
+      to: "user:recipient",
+      handledBy: "plugin",
+      payload: { ok: true, messageId: "sent-fixture" },
+      dryRun: false,
+    }));
+    const tool = createMessageTool({
+      config: {
+        bindings: [
+          { agentId: "fixture-admin", match: { channel: "slack", accountId: "slack-admin" } },
+        ],
+      },
+      agentId: "fixture-admin",
+      agentAccountId: "matrix-admin",
+      currentChannelProvider: "matrix",
+      currentChannelId: "!source:example.test",
+      preparedMessageToolCatalog: EMPTY_CATALOG,
+      ...secretDeps,
+      getScopedChannelsCommandSecretTargets: getScoped,
+      runMessageAction: runAction,
+    });
+    await tool.execute("cross-provider", {
+      action: "send",
+      channel: "slack",
+      target: "user:recipient",
+      message: "Requested fixture DM",
+    });
+    expect(getScoped).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: "slack", accountId: "slack-admin" }),
+    );
+    expect(runAction).toHaveBeenCalledWith(
+      expect.objectContaining({ defaultAccountId: "slack-admin" }),
+    );
+  });
+});
+
 function sentIdempotencyKey(runMessageAction: ReturnType<typeof vi.fn>, call: number) {
   const request = runMessageAction.mock.calls[call]?.[0] as
     | { params?: { idempotencyKey?: string } }
