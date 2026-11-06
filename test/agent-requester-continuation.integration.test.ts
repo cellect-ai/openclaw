@@ -9,21 +9,21 @@ import {
   SLACK_THREAD,
   THREAD,
   TOKEN,
-} from "../../../extensions/fi-user/admin-delegation.test-helpers.js";
-import { prepareSystemAgentRunAdmission } from "../../agents/admitted-run-context.js";
-import { buildEmbeddedAgentHookContext } from "../../agents/embedded-agent-runner/run/agent-hook-context.js";
-import { buildChannelSourceTurnId } from "../../auto-reply/reply/source-turn-id.js";
-import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
+} from "../extensions/fi-user/test-api.js";
+import { prepareSystemAgentRunAdmission } from "../src/agents/admitted-run-context.js";
+import { buildEmbeddedAgentHookContext } from "../src/agents/embedded-agent-runner/run/agent-hook-context.js";
+import { buildChannelSourceTurnId } from "../src/auto-reply/reply/source-turn-id.js";
+import {
+  prepareAgentRestartRecoveryContext,
+  restoreRestartRecoveryRequesterEvent,
+} from "../src/gateway/agent-turn/agent-restart-recovery-requester.js";
+import { clearAgentRunContext, registerAgentRunContext } from "../src/infra/agent-run-registry.js";
 import {
   beginSessionWorkAdmission,
   consumeSessionWorkAdmissionHandoff,
   startSessionWorkAdmissionInterruption,
-} from "../../sessions/session-lifecycle-admission.js";
-import { buildPersistedUserTurnMessage } from "../../sessions/user-turn-transcript.message.js";
-import {
-  prepareAgentRestartRecoveryContext,
-  restoreRestartRecoveryRequesterEvent,
-} from "./agent-restart-recovery-requester.js";
+} from "../src/sessions/session-lifecycle-admission.js";
+import { buildPersistedUserTurnMessage } from "../src/sessions/user-turn-transcript.message.js";
 
 installDelegationFixtures();
 const AGENT = "cellect-fi-admin";

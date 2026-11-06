@@ -37,3 +37,4 @@ export type {
   MatrixVerificationSummary,
 } from "./src/matrix/sdk/verification-manager.js";
 export { setMatrixRuntime } from "./src/runtime.js";
+export { createMatrixThreadBindingManager } from "./src/matrix/thread-bindings.js";

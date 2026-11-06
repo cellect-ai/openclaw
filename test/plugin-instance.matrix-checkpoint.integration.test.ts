@@ -1,12 +1,17 @@
 import { afterEach, expect, it, vi } from "vitest";
-import { createMatrixThreadBindingManager } from "../../extensions/matrix/api.js";
-import { setMatrixRuntime } from "../../extensions/matrix/runtime-setter-api.js";
-import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { getSessionBindingService, testing } from "../infra/outbound/session-binding-service.js";
-import { createPluginStateKeyedStore } from "../plugin-state/plugin-state-store.js";
-import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
-import { PluginInstance } from "./plugin-instance.js";
-import type { PluginRuntime } from "./runtime/types.js";
+import {
+  createMatrixThreadBindingManager,
+  setMatrixRuntime,
+} from "../extensions/matrix/test-api.js";
+import {
+  getSessionBindingService,
+  testing,
+} from "../src/infra/outbound/session-binding-service.js";
+import { createPluginStateKeyedStore } from "../src/plugin-state/plugin-state-store.js";
+import { PluginInstance } from "../src/plugins/plugin-instance.js";
+import type { PluginRuntime } from "../src/plugins/runtime/types.js";
+import { closeOpenClawStateDatabaseAsync } from "../src/state/openclaw-state-db.js";
+import { useAutoCleanupTempDirTracker } from "./helpers/temp-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
