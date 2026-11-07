@@ -418,9 +418,8 @@ export function startChatDispatch(params: StartChatDispatchParams): void {
                 images: replyOptionImages,
                 imageOrder: imageOrder.length > 0 ? imageOrder : undefined,
                 media: replyOptionMedia,
-                ...(p.timeoutMs !== undefined || entry?.timeoutSeconds !== undefined
-                  ? { timeoutOverrideMs: timeoutMs }
-                  : {}),
+                // Admission owns the deadline, including a configured default.
+                timeoutOverrideMs: timeoutMs,
                 thinkingLevelOverride: p.thinking,
                 fastModeOverride: p.fastMode,
                 queueModeOverride: p.queueMode,

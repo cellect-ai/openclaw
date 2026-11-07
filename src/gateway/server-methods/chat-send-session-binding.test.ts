@@ -10,6 +10,7 @@ import { createReplyOperation } from "../../auto-reply/reply/reply-run-registry.
 import { getRuntimeConfig } from "../../config/config.js";
 import {
   loadExactSessionEntryReadOnly,
+  patchSessionEntryCore,
   loadTranscriptEvents,
   upsertSessionEntryCore,
 } from "../../config/sessions/session-accessor.js";
@@ -33,6 +34,7 @@ import type { GatewayClient, GatewayRequestContext } from "./types.js";
 type DispatchOptions = Parameters<typeof dispatch.dispatchInboundMessageWithProjectedDispatcher>[0];
 
 const admissionScenarios = [
+  "timeout-change",
   "removed",
   "replaced",
   "aborted",
@@ -63,7 +65,9 @@ it.each(admissionScenarios)(
           ? "aborted"
           : dashboard
             ? "released"
-            : scenario;
+            : scenario === "timeout-change"
+              ? "released"
+              : scenario;
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const runId = "retained-preparation";
       const sessionKey = scenario === "dashboard" ? "agent:main:main" : "agent:main:binding";
@@ -87,14 +91,15 @@ it.each(admissionScenarios)(
         : profile;
       const initialSessionId = membershipRequired ? "member-session" : runId;
       const createdActor = { type: "human", source: "profile", id: owner.id } as const;
-      if (membershipRequired) {
+      if (membershipRequired || scenario === "timeout-change") {
         await upsertSessionEntryCore(scope, {
           sessionId: initialSessionId,
           updatedAt: Date.now(),
-          visibility: "suggest",
+          ...(membershipRequired ? { visibility: "suggest" as const } : {}),
           createdActor,
         });
-        addSessionMember(scope, { identityId: profile.id, addedBy: owner.id });
+        if (membershipRequired)
+          addSessionMember(scope, { identityId: profile.id, addedBy: owner.id });
       }
       const connection = new AbortController();
       const hasCurrentClientAuthority = vi.fn(() => true);
@@ -137,7 +142,22 @@ it.each(admissionScenarios)(
       const namespaceRun = prepareSystemAgentRunAdmission({}, runId, "main", "test");
       const entered = createDeferred<DispatchOptions>();
       const release = createDeferred();
-      const observeDispatch = vi.spyOn(chatDispatch, "startChatDispatch");
+      const setupWaiting = createDeferred();
+      const preferenceChanged = createDeferred();
+      const startDispatch = chatDispatch.startChatDispatch;
+      const observeDispatch = vi
+        .spyOn(chatDispatch, "startChatDispatch")
+        .mockImplementation((prepared) => {
+          if (scenario === "timeout-change") {
+            const media = prepared.turn.pluginBoundMediaPromise;
+            prepared.turn.pluginBoundMediaPromise = media.then(async (value) => {
+              setupWaiting.resolve();
+              await preferenceChanged.promise;
+              return value;
+            });
+          }
+          startDispatch(prepared);
+        });
       const holdDispatch = vi
         .spyOn(dispatch, "dispatchInboundMessageWithProjectedDispatcher")
         .mockImplementation(async (options) => {
@@ -198,6 +218,12 @@ it.each(admissionScenarios)(
         } else {
           await sendChat(request);
         }
+        if (scenario === "timeout-change") {
+          await setupWaiting.promise;
+          // A separate actor edits the preference while this run awaits media setup.
+          await patchSessionEntryCore(scope, () => ({ timeoutSeconds: 86400 }));
+          preferenceChanged.resolve();
+        }
         expect(respond).toHaveBeenCalledWith(
           true,
           dashboard
@@ -217,6 +243,11 @@ it.each(admissionScenarios)(
         }
         // Initial resolution needs detached entries; later admission must not clone unrelated rows.
         expect.soft(unrelatedCloneCount()).toBeLessThanOrEqual(1);
+        if (scenario === "timeout-change") {
+          expect(owned.session.entry?.timeoutSeconds).toBeUndefined();
+          expect(loadExactSessionEntryReadOnly(scope)?.entry.timeoutSeconds).toBe(86400);
+          expect(options.replyOptions?.timeoutOverrideMs).toBe(owned.session.timeoutMs);
+        }
         const capability = owned.skillLibraryAuthoring;
         const admittedContext = await namespaceRun.admit("embedded");
         capability.bind(admittedContext);
@@ -339,6 +370,7 @@ it.each(admissionScenarios)(
           ).toEqual([]);
         }
       } finally {
+        preferenceChanged.resolve();
         namespaceRun.close();
         options?.replyOptions?.turnAdoptionLifecycle?.onSettled?.();
         reply?.complete();

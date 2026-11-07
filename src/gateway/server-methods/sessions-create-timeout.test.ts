@@ -1,3 +1,4 @@
+import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ChatAbortControllerEntry } from "../chat-abort.js";
 import {
@@ -46,11 +47,9 @@ test.each([1800000, 0, undefined])(
       key = created.payload!.key;
       await vi.waitFor(() => expect(received).toHaveBeenCalledOnce());
       const request = received.mock.calls[0]![0];
-      if (timeoutMs === undefined) {
-        expect(request).not.toHaveProperty("replyOptions.timeoutOverrideMs");
-      } else {
-        expect(request).toHaveProperty("replyOptions.timeoutOverrideMs", timeoutMs);
-      }
+      // The admitted allowance stays fixed even if preferences change in setup.
+      const expected = timeoutMs === 0 ? MAX_TIMER_TIMEOUT_MS : (timeoutMs ?? 180000);
+      expect(request).toHaveProperty("replyOptions.timeoutOverrideMs", expected);
     } finally {
       await settleWorkspaceRuns(context, storePath, key, true);
     }
