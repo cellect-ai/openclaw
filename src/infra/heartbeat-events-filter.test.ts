@@ -156,6 +156,8 @@ describe("heartbeat event prompts", () => {
 
     expect(prompt).toContain("heartbeat_respond");
     expect(prompt).toContain("notify=false");
+    expect(prompt).toContain("reply NO_REPLY when nothing needs the user's attention");
+    expect(prompt).toContain("when the user should be interrupted, reply with only the alert text");
     expect(prompt).not.toContain("HEARTBEAT_OK");
   });
 
@@ -166,6 +168,31 @@ describe("heartbeat event prompts", () => {
     expect(prompt).toContain("notify=false");
     expect(prompt).not.toContain("HEARTBEAT_OK");
   });
+
+  it.each([
+    { events: ["Exec completed (report-job, code 0) :: Report ready"], opts: {} },
+    {
+      events: ["Exec completed (report-job, code 0) :: Report ready"],
+      opts: { followsDeliveredFinal: true },
+    },
+    {
+      events: ["Exec completed (report-job, code 0) :: Report ready"],
+      opts: { deliverToUser: false },
+    },
+    { events: [""], opts: {} },
+  ])(
+    "provides quiet and alert outcomes when an exec backend lacks the response tool: $opts",
+    ({ events, opts }) => {
+      const prompt = buildExecEventPrompt(events, { ...opts, useHeartbeatResponseTool: true });
+
+      expect(prompt).toContain(
+        "If the heartbeat_respond tool is not available in this run, reply NO_REPLY when nothing needs the user's attention",
+      );
+      expect(prompt).toContain(
+        "when the user should be interrupted, reply with only the alert text",
+      );
+    },
+  );
 });
 
 describe("heartbeat event classification", () => {

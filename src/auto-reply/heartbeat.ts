@@ -10,11 +10,13 @@ const HEARTBEAT_CRON_TASK_GUIDANCE =
 const HEARTBEAT_CONTEXT_PROMPT = `Follow the heartbeat monitor scratch context when provided. ${HEARTBEAT_CRON_TASK_GUIDANCE} Do not infer or repeat old tasks from prior chats.`;
 /** Default prompt for heartbeat turns when config does not override it. */
 export const HEARTBEAT_PROMPT = `${HEARTBEAT_CONTEXT_PROMPT} If nothing needs attention, reply ${SILENT_REPLY_TOKEN}.`;
-export const HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS =
-  "Use heartbeat_respond to report the wake outcome. Set notify=false when nothing needs the user's attention. Set notify=true with notificationText only when the user should be interrupted.";
 // A fallback backend may lack the direct-only tool; preserve both quiet and alert outcomes.
 const HEARTBEAT_RESPONSE_TOOL_FALLBACK_INSTRUCTIONS = `If the heartbeat_respond tool is not available in this run, reply ${SILENT_REPLY_TOKEN} when nothing needs the user's attention; when the user should be interrupted, reply with only the alert text instead of a prose report.`;
-export const HEARTBEAT_RESPONSE_TOOL_PROMPT = `${HEARTBEAT_CONTEXT_PROMPT} ${HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS} ${HEARTBEAT_RESPONSE_TOOL_FALLBACK_INSTRUCTIONS}`;
+// Exec and cron wakes consume these instructions without the full heartbeat prompt.
+export const HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS =
+  "Use heartbeat_respond to report the wake outcome. Set notify=false when nothing needs the user's attention. Set notify=true with notificationText only when the user should be interrupted. " +
+  HEARTBEAT_RESPONSE_TOOL_FALLBACK_INSTRUCTIONS;
+export const HEARTBEAT_RESPONSE_TOOL_PROMPT = `${HEARTBEAT_CONTEXT_PROMPT} ${HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS}`;
 export const INTERNAL_WAKE_TRANSCRIPT_PROMPTS = {
   heartbeat: "[OpenClaw heartbeat poll]",
   exec: "[OpenClaw exec completion]\nDisable automatic completion turns with tools.exec.notifyOnExit=false; check per-agent overrides. Background exec and process poll remain available.",
