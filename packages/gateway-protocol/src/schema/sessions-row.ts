@@ -144,6 +144,7 @@ export const SessionRowSchema = Type.Object(
       Type.Union([Type.Literal("direct"), Type.Literal("group"), Type.Literal("channel")]),
     ),
     activitySummary: Type.Optional(SessionActivitySummarySchema),
+    timeoutSeconds: Type.Optional(Type.Integer({ minimum: 0 })),
     updatedAt: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
     /** Gateway sampling time, retained when a read reuses a cached projection. */
     snapshotAt: Type.Optional(Type.Number()),

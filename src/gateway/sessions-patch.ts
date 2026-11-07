@@ -400,6 +400,15 @@ function* projectSessionPatchSteps(
     return { ok: false, error: lifecycleFlagsError };
   }
 
+  if (patch.timeoutSeconds === null) {
+    delete next.timeoutSeconds;
+  } else if (patch.timeoutSeconds !== undefined) {
+    if (!Number.isSafeInteger(patch.timeoutSeconds) || patch.timeoutSeconds < 0) {
+      return invalid("timeoutSeconds must be a nonnegative integer or null");
+    }
+    next.timeoutSeconds = patch.timeoutSeconds;
+  }
+
   const rawThinking = patch.thinkingLevel;
   if (rawThinking === null) {
     delete next.thinkingLevel;

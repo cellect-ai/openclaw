@@ -532,6 +532,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     abortedLastRun: entry?.abortedLastRun,
     restartRecoveryStatus: entry?.mainRestartRecovery?.tombstone ? "tombstoned" : undefined,
     thinkingLevel: input.thinkingProjection.thinkingLevel,
+    timeoutSeconds: entry?.timeoutSeconds,
     contextWindow: input.contextWindowProfile.contextWindow,
     contextWindows: input.contextWindowProfile.contextWindows,
     contextWindowDefault: input.contextWindowProfile.contextWindowDefault,

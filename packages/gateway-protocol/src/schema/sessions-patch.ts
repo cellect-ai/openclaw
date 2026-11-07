@@ -50,6 +50,7 @@ const SessionsPatchMutationProperties = {
     Type.Boolean({ description: "Set true to mark unread; false records the session as read." }),
   ),
   contextWindow: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
+  timeoutSeconds: Type.Optional(Type.Union([Type.Integer({ minimum: 0 }), Type.Null()])),
   thinkingLevel: Type.Optional(Type.Union([NonEmptyString, Type.Null()])),
   fastMode: Type.Optional(
     Type.Union([Type.Boolean(), Type.Literal("auto"), Type.Literal("ultrafast"), Type.Null()]),

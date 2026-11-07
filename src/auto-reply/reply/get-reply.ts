@@ -379,21 +379,18 @@ export async function getReplyFromConfig(
     }
   }
 
-  const { workspaceDirRaw, workspaceDirForNativeCommand, agentDir, timeoutMs } =
-    resolverTiming.measureSync("reply.resolve_workspace_agent_dir", () => {
+  const { workspaceDirRaw, workspaceDirForNativeCommand, agentDir } = resolverTiming.measureSync(
+    "reply.resolve_workspace_agent_dir",
+    () => {
       const workspaceDirRawLocal =
         resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
       return {
         workspaceDirRaw: workspaceDirRawLocal,
         workspaceDirForNativeCommand: preparedWorkspaceDir ?? workspaceDirRawLocal,
         agentDir: preparedAgentDir ?? resolveAgentDir(cfg, agentId),
-        timeoutMs: resolveAgentTimeoutMs({
-          cfg,
-          overrideSeconds: opts?.timeoutOverrideSeconds,
-          overrideMs: opts?.timeoutOverrideMs,
-        }),
       };
-    });
+    },
+  );
   const typing = resolverTiming.measureSync("reply.create_typing_controller", () => {
     const configuredTypingSeconds = agentCfg?.typingIntervalSeconds;
     const typingIntervalSeconds =
@@ -678,6 +675,12 @@ export async function getReplyFromConfig(
     triggerBodyNormalized,
     bodyStripped,
   } = sessionState;
+  const timeoutMs = resolveAgentTimeoutMs({
+    cfg,
+    sessionSeconds: sessionEntry.timeoutSeconds,
+    overrideSeconds: opts?.timeoutOverrideSeconds,
+    overrideMs: opts?.timeoutOverrideMs,
+  });
   const sessionModelSelectionLocked = isModelSelectionLocked(sessionEntry);
   if (sessionModelSelectionLocked && hasResolvedHeartbeatModelOverride) {
     // Heartbeat routing is turn-local. A native harness lock owns the durable

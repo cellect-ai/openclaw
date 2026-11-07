@@ -1,6 +1,7 @@
 import { MAX_TIMER_TIMEOUT_MS } from "@openclaw/normalization-core/number-coercion";
 import { afterEach, expect, it, vi } from "vitest";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
+import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -24,6 +25,7 @@ afterEach(async () => {
 async function runReply(
   ctx: Parameters<typeof finalizeInboundContext>[0],
   options?: GetReplyOptions,
+  sessionTimeoutSeconds?: number,
 ) {
   state = await createOpenClawTestState({
     label: "reply-runtime",
@@ -43,6 +45,15 @@ async function runReply(
     commands: { text: true },
   });
   await state.writeConfig(cfg);
+  if (sessionTimeoutSeconds !== undefined)
+    await upsertSessionEntryCore(
+      { agentId: "main", env: process.env, sessionKey: "agent:main:dashboard:runtime-proof" },
+      {
+        sessionId: "runtime-proof",
+        updatedAt: Date.now(),
+        timeoutSeconds: sessionTimeoutSeconds,
+      },
+    );
   const reply = await getReplyFromConfig(
     finalizeInboundContext({
       Provider: "webchat",
@@ -86,3 +97,19 @@ it("runs the task following a text exec policy", async () => {
   expect(run.prompt).not.toContain("/exec");
   expect(run.execOverrides).toMatchObject({ security: "deny", ask: "always" });
 });
+
+// A Matrix channel enters the same getReply pipeline with no per-run override.
+it.each([
+  [86400, undefined, 86400000],
+  [1800, undefined, 1800000],
+  [0, undefined, MAX_TIMER_TIMEOUT_MS],
+  [86400, { timeoutOverrideSeconds: 3 }, 3000],
+  [86400, { timeoutOverrideMs: 0 }, MAX_TIMER_TIMEOUT_MS],
+])(
+  "applies persisted session allowance %s below explicit override %s",
+  async (seconds, options, expected) => {
+    const run = await runReply({ Body: "Continue the investigation" }, options, seconds);
+    expect(run.timeoutMs).toBe(expected);
+    expect(run.runTimeoutOverrideMs).toBe(expected);
+  },
+);

@@ -16,6 +16,8 @@ const NO_TIMEOUT_MS = MAX_TIMER_TIMEOUT_MS;
 
 export function resolveAgentTimeoutMs(opts: {
   cfg?: OpenClawConfig;
+  /** Persisted session preference, below explicit per-run overrides. */
+  sessionSeconds?: number | null;
   overrideMs?: number | null;
   overrideSeconds?: number | null;
   minMs?: number;
@@ -23,6 +25,7 @@ export function resolveAgentTimeoutMs(opts: {
   const minMs = Math.max(resolveOptionalIntegerOption(opts.minMs) ?? 1, 1);
   const clampTimeoutMs = (valueMs: number) => clampTimerTimeoutMs(valueMs, minMs) ?? minMs;
   const seconds =
+    resolveOptionalIntegerOption(opts.sessionSeconds) ??
     resolveOptionalIntegerOption(opts.cfg?.agents?.defaults?.timeoutSeconds) ??
     DEFAULT_AGENT_TIMEOUT_SECONDS;
   // Config and per-run zero share the exact timer-safe unlimited sentinel.

@@ -39,6 +39,7 @@ import {
 } from "./sessions-mutations.owner.test-support.js";
 import { registerSessionSandboxMutationTests } from "./sessions-mutations.sandbox.test-support.js";
 import { setupSessionMutationState } from "./sessions-mutations.state.test-support.js";
+import { sessionByKeyReadHandlers } from "./sessions-read-by-key.js";
 import { initializeSessionReadContext } from "./sessions-read-cache.test-support.js";
 import type {
   GatewayClient,
@@ -83,6 +84,54 @@ async function invoke(params: {
 registerSessionSandboxMutationTests({ client, context, withState: withSessionMutationState });
 
 describe("sessions.patch", () => {
+  it("persists and clears subsequent-run time allowances across database reopen", async () => {
+    await withSessionMutationState(async (state) => {
+      const sessionKey = "agent:main:time-allowance";
+      const scope = { agentId: "main", env: state.env, sessionKey };
+      await upsertSessionEntryCore(scope, { sessionId: "time-allowance", updatedAt: 1 });
+      const patch = async (timeoutSeconds: number | null) => {
+        const respond = vi.fn();
+        await sessionMutationHandlers["sessions.patch"]!({
+          params: { key: sessionKey, timeoutSeconds },
+          client: client(),
+          context: context({}),
+          respond,
+        } as never);
+        expect(respond).toHaveBeenCalledWith(
+          true,
+          expect.objectContaining({
+            entry: expect.objectContaining(timeoutSeconds === null ? {} : { timeoutSeconds }),
+          }),
+          undefined,
+        );
+      };
+      await patch(86400);
+      const database = openOpenClawAgentDatabase({ agentId: "main", env: state.env });
+      expect(await closeOpenClawAgentDatabaseByPathAsync(database.path)).toBe(true);
+      expect(loadSessionEntry(scope)?.timeoutSeconds).toBe(86400);
+      const readContext = context({});
+      await initializeSessionReadContext(readContext);
+      const describe = vi.fn();
+      await sessionByKeyReadHandlers["sessions.describe"]!({
+        params: { key: sessionKey },
+        client: client(),
+        context: readContext,
+        isWebchatConnect: () => false,
+        respond: describe,
+      } as never);
+      expect(describe).toHaveBeenCalledWith(
+        true,
+        expect.objectContaining({ session: expect.objectContaining({ timeoutSeconds: 86400 }) }),
+      );
+      await patch(1800);
+      expect(loadSessionEntry(scope)?.timeoutSeconds).toBe(1800);
+      await patch(0);
+      expect(loadSessionEntry(scope)?.timeoutSeconds).toBe(0);
+      await patch(null);
+      expect(loadSessionEntry(scope)?.timeoutSeconds).toBeUndefined();
+    });
+  });
+
   it("saves and reads dashboard defaults through the agent tool without connected clients", async () => {
     await withSessionMutationState(async (state) => {
       const sessionKey = "agent:main:dashboard-default";

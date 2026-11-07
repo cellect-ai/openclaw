@@ -144,9 +144,11 @@ export async function prepareAgentRunDispatch(
           agentId: params.activeSessionAgentId,
           admittedSessionId: params.getAdmittedSessionId(),
           admittedSessionEntry,
-        });
+        }) ??
+        admittedSessionEntry?.timeoutSeconds;
       const timeoutMs = resolveAgentTimeoutMs({
         cfg: params.cfgForAgent ?? params.cfg,
+        sessionSeconds: admittedSessionEntry?.timeoutSeconds,
         overrideSeconds: timeoutSeconds,
       });
       operationalRunInstance = createOperationalRunInstanceRef(params.runId);

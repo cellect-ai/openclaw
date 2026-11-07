@@ -32,7 +32,6 @@ import { isBrowserOperatorUiClient } from "../../utils/message-channel.js";
 import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
-import { resolveChatSendActiveScopeKey } from "./chat-origin-routing.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
 import { resolveOperatorSessionCreation } from "../session-creation-provenance.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -44,6 +43,7 @@ import {
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
 import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
+import { resolveChatSendActiveScopeKey } from "./chat-origin-routing.js";
 import { createRestartSafeChatRequest } from "./chat-restart-recovery.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { roundedChatSendTimingMs } from "./chat-server-timing.js";
@@ -207,7 +207,11 @@ export function prepareChatSendSession(params: {
   const resolvedSessionAuthProvider = resolveProviderIdForAuth(resolvedSessionModel.provider, {
     config: cfg,
   });
-  const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideMs: p.timeoutMs });
+  const timeoutMs = resolveAgentTimeoutMs({
+    cfg,
+    sessionSeconds: entry?.timeoutSeconds,
+    overrideMs: p.timeoutMs,
+  });
   const now = Date.now();
   const restartSafeRequest = createRestartSafeChatRequest({
     goalRequestFingerprint: request.goalOperation?.requestFingerprint,

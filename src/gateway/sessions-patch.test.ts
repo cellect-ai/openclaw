@@ -252,6 +252,18 @@ describe("gateway sessions patch", () => {
     resetPluginRuntimeStateForTest();
   });
 
+  test.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid session timeout %s",
+    async (timeoutSeconds) => {
+      const store = mainStoreEntry({ timeoutSeconds: 1800 });
+      expectPatchError(
+        await runPatch({ store, patch: { key: MAIN_SESSION_KEY, timeoutSeconds } }),
+        "timeoutSeconds",
+      );
+      expect(store[MAIN_SESSION_KEY].timeoutSeconds).toBe(1800);
+    },
+  );
+
   test("keeps a custom SVG icon through store normalization, unrelated patches, and clearing", async () => {
     const svg =
       '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/></svg>';

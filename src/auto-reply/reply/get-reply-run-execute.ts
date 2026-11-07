@@ -547,7 +547,9 @@ export async function executePreparedReplyRun(state: PreparedReplyRunAdmission) 
       },
       timeoutMs,
       runTimeoutOverrideMs:
-        opts?.timeoutOverrideMs !== undefined || opts?.timeoutOverrideSeconds !== undefined
+        opts?.timeoutOverrideMs !== undefined ||
+        opts?.timeoutOverrideSeconds !== undefined ||
+        preparedSessionState.sessionEntry?.timeoutSeconds !== undefined
           ? timeoutMs
           : undefined,
       blockReplyBreak: resolvedBlockStreamingBreak,
