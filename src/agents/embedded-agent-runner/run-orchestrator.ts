@@ -73,6 +73,7 @@ import {
   type SessionSuspensionParams,
 } from "../session-suspension.js";
 import { SessionManager } from "../sessions/session-manager.js";
+import { shadowHookRunParams } from "../shadow-hook-tool-policy.js";
 import { resolveSystemPromptRepoRoot } from "../system-prompt-params.js";
 import { redactRunIdentifier } from "../workspace-run.js";
 import { runEmbeddedAgentViaCliBackendIfEligible } from "./cli-backend-dispatch.js";
@@ -179,6 +180,8 @@ async function runEmbeddedAgentInternal(
     sessionTarget: runSessionTarget,
     sessionFile: runSessionTarget.sessionKey,
     skillWorkshopProposalMutationBudget,
+    // A Fi shadow hook run never gets more than its two tools, whoever asked.
+    ...shadowHookRunParams(runSessionTarget.sessionKey, paramsBase),
   });
   const sessionLane = resolveSessionLane(params.sessionKey?.trim() || params.sessionId);
   const globalLane = resolveGlobalLane(params.lane, params);

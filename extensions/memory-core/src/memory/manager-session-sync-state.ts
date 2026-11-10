@@ -6,6 +6,7 @@ import type {
 import {
   isCronRunSessionKey,
   isDreamingNarrativeSessionStoreKey,
+  isShadowHookSessionKey,
 } from "openclaw/plugin-sdk/session-key-runtime";
 import type { MemorySourceFileStateRow } from "./manager-source-state.js";
 
@@ -16,10 +17,14 @@ export function isMemorySessionIndexable(
     SessionTranscriptCorpusEntry,
     "generatedByDreamingNarrative" | "generatedByCronRun" | "sessionKind"
   > &
-    Partial<Pick<SessionFileEntry, "lineProvenance">>,
+    Partial<Pick<SessionFileEntry, "lineProvenance">> &
+    Partial<Pick<SessionTranscriptCorpusEntry, "sessionKey">>,
   archivedSessionKey?: string,
 ): boolean {
   return !(
+    // A Fi shadow turn reads untrusted mail with a member's data: never memory.
+    isShadowHookSessionKey(entry.sessionKey) ||
+    isShadowHookSessionKey(archivedSessionKey) ||
     entry.generatedByDreamingNarrative ||
     entry.generatedByCronRun ||
     entry.sessionKind === "cron" ||

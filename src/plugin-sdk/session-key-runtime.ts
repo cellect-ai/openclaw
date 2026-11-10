@@ -10,4 +10,5 @@ export {
   isCronRunSessionKey,
   isDreamingNarrativeSessionStoreKey,
 } from "../sessions/session-key-utils.js";
+export { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
 export { parseUsageCountedSessionIdFromFileName } from "../config/sessions/artifacts.js";
