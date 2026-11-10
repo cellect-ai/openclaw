@@ -24,6 +24,9 @@ export const FI_USER_API_READ_ROUTES: readonly RegExp[] = [
   /^debt\/[^/]+\/statement\/text$/,
   /^documents\/search$/,
   /^fi-view\/context$/,
+  /^mail-agent\/items$/,
+  /^mail-agent\/items\/[^/]+\/context$/,
+  /^mail-agent\/items\/[^/]+\/conversations\/[^/]+\/text$/,
   /^nav\/search$/,
   /^slack-channels\/[^/]+\/project$/,
 ];

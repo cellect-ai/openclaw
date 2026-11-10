@@ -241,6 +241,59 @@ describe("fi_user_api", () => {
     expect(fiUserApiPath("shape", path)).toBe(`/api/shape/${path}`);
   });
 
+  it.each([
+    "mail-agent/items",
+    "mail-agent/items/item-12345678/context",
+    "mail-agent/items/item-12345678/conversations/conv-1/text",
+  ])("accepts the mail item read route %s", (path) => {
+    expect(fiUserApiPath("shape", path)).toBe(`/api/shape/${path}`);
+  });
+
+  it.each([
+    "mail-agent/items/item-12345678",
+    "mail-agent/items/item-12345678/control",
+    "mail-agent/items/item-12345678/context/extra",
+    "mail-agent/items/item-12345678/conversations/conv-1",
+    "mail-agent/items/item-12345678/conversations/conv-1/text/more",
+    "mail-agent/items/a/b/context",
+    "mail-agent/workspace",
+    "mail-agent/tasks/item-12345678",
+    "mail-agent/items/../enrollment",
+  ])("denies %s", (path) => {
+    expect(() => fiUserApiPath("shape", path)).toThrow();
+  });
+
+  it("offers fi_user_mail_items to a normal user turn and posts a strict control body", async () => {
+    const mailTool = plugin().tool("fi_user_mail_items", context());
+    routes.push((url) =>
+      url.pathname === "/api/shape/mail-agent/items/item-12345678/control"
+        ? json({ ok: true })
+        : undefined,
+    );
+    await mailTool.execute("m1", {
+      action: "control",
+      itemId: "item-12345678",
+      control: "pause",
+      reason: "later",
+      expectedRevision: 3,
+    });
+    const call = calls.find((entry) => entry.url.endsWith("/control"));
+    expect(call!.init.method).toBe("POST");
+    expect(authorization(call!.init)).toBe("Bearer delegated-token");
+    expect(bodyJson(call!.init)).toEqual({ kind: "pause", reason: "later", expectedRevision: 3 });
+    await expect(
+      mailTool.execute("m2", {
+        action: "control",
+        itemId: "item-12345678",
+        control: "drop",
+        text: "x",
+      }),
+    ).rejects.toThrow(/does not accept/);
+    await expect(
+      mailTool.execute("m3", { action: "control", itemId: "../x", control: "resume" }),
+    ).rejects.toThrow(/itemId/);
+  });
+
   it("reads a reviewed Fi text route with the requester's delegation token", async () => {
     routes.push((url) =>
       url.pathname === "/api/shape/305-third/budget/text" ? new Response("budget text") : undefined,

@@ -120,6 +120,19 @@ describe("fi-user on a Fi shadow hook turn", () => {
     });
   });
 
+  it("never offers the mail item control tool to a shadow run, and offers it to a normal user turn", () => {
+    const shadow = shadowTools({
+      sessionKey: SHADOW_SESSION,
+      hookRequesterAttestation: ATTESTATION,
+    });
+    expect(shadow.map((tool) => tool.name)).toEqual(["fi_user_api"]);
+    const normal = shadowTools({
+      sessionKey: "agent:cellect-fi-user:webchat:abc",
+      messageChannel: "webchat",
+    });
+    expect(normal.map((tool) => tool.name)).toContain("fi_user_mail_items");
+  });
+
   it.each([
     ["no attestation", { sessionKey: SHADOW_SESSION }],
     [

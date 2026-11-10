@@ -59,6 +59,7 @@ import {
   withoutInternalDownloadLinks,
 } from "./generated-artifacts.js";
 import { registerLetMeKnow } from "./let-me-know.js";
+import { createMailItemsTool, offersMailItemsTool } from "./mail-items-tool.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import { createBudgetImportTool, createDeliverFileTool } from "./member-tools.js";
 import {
@@ -713,6 +714,7 @@ export default definePluginEntry({
           createEsignTool(api, context),
           createBudgetImportTool(api, context),
           createRequestAdminActionTool(api, context),
+          ...(offersMailItemsTool(context) ? [createMailItemsTool(api, context)] : []),
         ];
         return tools;
       },
