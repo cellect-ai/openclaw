@@ -37,6 +37,7 @@ import {
   rememberProjectedMatrixRun,
 } from "./projected-matrix-runs.js";
 import type { RequesterProofReader } from "./requester-proof.js";
+import { shadowWakeAttestation } from "./shadow-requester.js";
 
 /**
  * The host gives every before_tool_call handler 15 s in all, and the Matrix
@@ -157,7 +158,12 @@ type Run = {
   continuation?: PluginHookToolContext["requesterContinuation"];
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
   matrixOrigin?: MatrixOrigin;
+  /** Fi's attestation of a `hook:fi-shadow:` run; Fi, not this plugin, names the member. */
+  shadowAttestation?: string;
 };
+/** The one requester of a shadow run; the attestation stays on the run, never in a claim. */
+const SHADOW_REQUESTER = { requester_shadow: true } as const;
+type ShadowRequester = typeof SHADOW_REQUESTER;
 /**
  * The Matrix requester of a run admitted from a verified source-session reply,
  * when the host names that run's sender but reports the session's own channel.
@@ -632,6 +638,20 @@ export function registerAdminDelegation(
         diagnose({ runId, sessionKey }, run.sender ? "turn-admitted" : "turn-unproven");
         return undefined;
       }
+      // A Fi shadow hook carries an attestation Fi minted for one member.
+      if (context.trigger === "cron") {
+        const shadow = shadowWakeAttestation(
+          sessionKey,
+          context.trigger,
+          context.hookRequesterAttestation,
+        );
+        if (shadow) {
+          run.shadowAttestation = shadow;
+          run.sender = JSON.stringify(SHADOW_REQUESTER);
+          diagnose({ runId, sessionKey }, "turn-admitted");
+          return undefined;
+        }
+      }
       // A shared-mail hook is a cron turn whose sender the hooks caller
       // attested. It does not consume a channel arrival.
       if (context.trigger === "cron") {
@@ -974,10 +994,11 @@ export function registerAdminDelegation(
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
     const mail = mailWakeRequester(sessionKey, ctx.requester?.senderId);
-    const requester =
-      mail ??
-      onBehalfOfRequester(run?.continuation ?? ctx.requester) ??
-      matrixOriginRequester(run, ctx.requester?.senderId);
+    const requester: OnBehalfOfRequester | ShadowRequester | undefined = run?.shadowAttestation
+      ? SHADOW_REQUESTER
+      : (mail ??
+        onBehalfOfRequester(run?.continuation ?? ctx.requester) ??
+        matrixOriginRequester(run, ctx.requester?.senderId));
     const suppliedRequester = onBehalfOfRequester(ctx.requester);
     const sender = requester && JSON.stringify(requester);
     if (
@@ -1022,6 +1043,9 @@ export function registerAdminDelegation(
           ? undefined
           : matrixConnection(config, originAccount ?? toolMatrixAccount)
         : matrixConnection(config, run.continuation?.accountId ?? ctx.requester?.accountId);
+    } else if ("requester_shadow" in requester && run.shadowAttestation) {
+      body = { shadowAttestation: run.shadowAttestation };
+      connection = config;
     } else if (mail && "requester_email" in requester) {
       body = { requesterEmail: requester.requester_email };
       connection = config;

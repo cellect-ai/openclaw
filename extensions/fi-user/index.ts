@@ -36,6 +36,7 @@ import {
   isAdminAgent,
   exchange,
   FI_ADMIN_DELEGATION_AGENT_ID,
+  isFiUserShadowTurn,
   isFiUserTurn,
   rememberWebchatContext,
   type Delegation,
@@ -677,6 +678,12 @@ export default definePluginEntry({
     api.registerTool({
       contextVersion: 2,
       create: (context: OpenClawPluginToolContext<2>) => {
+        // Inbound email is untrusted and the turn reads private data, so a
+        // shadow turn only reads Fi as its member: nothing that sends, shares,
+        // signs or writes. Its mailbox tools belong to the requester plugin.
+        if (isFiUserShadowTurn(context)) {
+          return [createFiUserApiTool(api, context)];
+        }
         const workbookTurn = matrixEntitlements.workbookTurn(context);
         const workbookTransport = workbookTurn
           ? matrixWorkbookTransport(api, workbookTurn)

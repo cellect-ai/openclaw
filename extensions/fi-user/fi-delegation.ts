@@ -1,6 +1,7 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { projectedMatrixRun } from "./projected-matrix-runs.js";
 import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
+import { shadowToolAttestation } from "./shadow-requester.js";
 
 export type PluginConfig = {
   baseUrl?: string;
@@ -255,7 +256,9 @@ function webchatContextToken(sessionKey: string | undefined): string | undefined
 export type RequesterIdentity =
   | { channel: "slack"; requesterSenderId: string }
   | { channel: "matrix"; requesterMatrixUserId: string }
-  | { channel: "webchat"; appContextToken: string };
+  | { channel: "webchat"; appContextToken: string }
+  /** A Fi shadow turn: Fi names the member from the attestation it minted. */
+  | { channel: "shadow" };
 
 /**
  * The trusted requester of this Fi-user turn, as the channel proved it.
@@ -296,10 +299,18 @@ export function requesterIdentity(context: OpenClawPluginToolContext): Requester
  * missing one; Slack and Matrix turns, voice included, need a proven sender.
  */
 export function isFiUserTurn(context: OpenClawPluginToolContext): boolean {
+  if (isFiUserShadowTurn(context)) {
+    return true;
+  }
   if (context.agentId !== FI_USER_AGENT_ID || !FI_USER_CHANNELS.has(context.messageChannel ?? "")) {
     return false;
   }
   return context.messageChannel === "webchat" || requesterIdentity(context) !== null;
+}
+
+/** A Fi-user shadow-hook run whose host context carries Fi's attestation. */
+export function isFiUserShadowTurn(context: OpenClawPluginToolContext): boolean {
+  return context.agentId === FI_USER_AGENT_ID && shadowToolAttestation(context) !== undefined;
 }
 
 export async function exchange(
@@ -307,6 +318,17 @@ export async function exchange(
   context: OpenClawPluginToolContext,
 ): Promise<{ delegation: Delegation; config: ResolvedPluginConfig; identity: RequesterIdentity }> {
   const config = pluginConfig(api, context);
+  // Fi decides whom the attestation names; it is never kept in the identity.
+  const shadowAttestation = isFiUserShadowTurn(context)
+    ? shadowToolAttestation(context)
+    : undefined;
+  if (shadowAttestation) {
+    const delegation = await lookupDelegation(config, { shadowAttestation });
+    if (!delegation) {
+      throw new Error("The shadow turn's requester is not linked to an active Fi member");
+    }
+    return { delegation, config, identity: { channel: "shadow" } };
+  }
   const identity = requesterIdentity(context);
   if (!identity) {
     throw new Error(
