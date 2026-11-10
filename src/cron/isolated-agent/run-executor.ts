@@ -38,6 +38,7 @@ import type { VerboseLevel } from "../../auto-reply/thinking.js";
 import type { CliSessionBinding } from "../../config/sessions.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
+import { registerHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
@@ -254,6 +255,14 @@ function createCronPromptExecutor(
     } catch {
       // Non-canonicalizable job config: no grant registration for this run.
     }
+    // A shadow hook's attestation is plugin run context for this run only.
+    const releaseHookRequesterAttestation = registerHookRequesterAttestation({
+      runId,
+      sessionKey: params.runSessionKey,
+      attestation: params.agentSessionKey.toLowerCase().includes(":hook:fi-shadow:")
+        ? params.hookRequesterAttestation
+        : undefined,
+    });
     const fallbackResult = await runEmbeddedAgentEntry({
       preparedRunAdmission,
       selection: {
@@ -663,6 +672,7 @@ function createCronPromptExecutor(
       })
       .finally(() => {
         unregisterCronRunExecSource();
+        releaseHookRequesterAttestation();
         closePromptAdmission();
       });
     const executionError =

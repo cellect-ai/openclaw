@@ -15,6 +15,7 @@ import {
   getAgentEventLifecycleGeneration,
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
+import { lookupHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
 import {
   buildHandledBeforeAgentReplyPayloads,
   runBeforeAgentReplyForTurn,
@@ -502,12 +503,19 @@ async function runEmbeddedAgentInternal(
                 ...buildAgentHookContextChannelFields(params),
                 ...buildAgentHookContextIdentityFields(params),
               };
+              const hookRequesterAttestation =
+                params.trigger === "cron"
+                  ? lookupHookRequesterAttestation(params.runId, resolvedSessionKey)
+                  : undefined;
               const hookResult = await runBeforeAgentReplyForTurn({
                 assertCurrent: preReplyAssertCurrent,
                 runId: params.runId,
                 trigger: params.trigger,
                 event: { cleanedBody: params.prompt },
-                context: hookCtx,
+                // Only this hook sees the attestation; later hooks reuse hookCtx.
+                context: hookRequesterAttestation
+                  ? { ...hookCtx, hookRequesterAttestation }
+                  : hookCtx,
                 onDispatch: () =>
                   notifyExecutionPhase("before_agent_reply", { provider, model: modelId }),
                 onDeclined: () =>

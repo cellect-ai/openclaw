@@ -69,6 +69,12 @@ type OpenClawPluginToolContextBase = {
   requesterSenderId?: string;
   /** Trusted owner bit from inbound context (runtime-provided, not tool args). */
   senderIsOwner?: boolean;
+  /**
+   * Opaque Fi shadow-turn attestation forwarded by the authenticated hooks
+   * caller. Present only on the isolated run a `hook:fi-shadow:` hook started.
+   * The gateway does not verify it; Fi does.
+   */
+  hookRequesterAttestation?: string;
   /** Host-resolved memory partition for this turn. Providers must not reconstruct it. */
   memoryAudience?: MemoryAudience;
   /** Stable identity for one provider-owned pre-compaction flush cycle. */

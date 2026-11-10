@@ -21,6 +21,10 @@ import type { CronJob } from "../../cron/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
+import {
+  isShadowHookSessionKey,
+  parseHookRequesterAttestation,
+} from "../../infra/hook-requester-attestation.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
 import { validateExplicitMessageAccountSelection } from "../../infra/outbound/message-account-selection.js";
@@ -302,6 +306,21 @@ export function createGatewayHookDispatcher(params: {
     const jobId = randomUUID();
     const runId = randomUUID();
     const completion = createDeferredCore<HookAgentCompletion>();
+    // A Fi shadow session and its attestation come together or not at all,
+    // whichever ingress (request, mapping, plugin) produced the dispatch.
+    const hookRequesterAttestation = parseHookRequesterAttestation(value.requesterAttestation);
+    if (
+      value.requesterAttestation !== undefined
+        ? !hookRequesterAttestation || !isShadowHookSessionKey(sessionKey)
+        : isShadowHookSessionKey(sessionKey)
+    ) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "hook:fi-shadow: sessions require exactly one well-formed requesterAttestation",
+        runId,
+      };
+    }
     const logContext = sanitizeHookLogMetadata({
       runId,
       jobId,
@@ -561,6 +580,8 @@ export function createGatewayHookDispatcher(params: {
                 message: acceptedValue.message,
                 sessionKey,
                 ...(mailRequesterSenderId ? { mailRequesterSenderId } : {}),
+                // Run context only: never the message, the job payload or a sender.
+                ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
                 // Isolated runs derive their lifecycle key from random jobId (or an
                 // already-stable cron: key), so accepted agentId closes reload drift.
                 agentId,

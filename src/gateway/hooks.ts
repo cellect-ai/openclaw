@@ -15,6 +15,7 @@ import {
 } from "../config/sessions/session-store-owner.js";
 import type { HookSessionMode } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizeHookRequesterAttestation } from "../infra/hook-requester-attestation.js";
 import { readJsonBodyWithLimit, requestBodyErrorToText } from "../infra/http-body.js";
 import {
   normalizeAgentId,
@@ -347,6 +348,12 @@ type HookAgentPayload = {
    */
   mailRequesterEmail?: string;
   mailRequesterSlackUserId?: string;
+  /**
+   * Fi-minted shadow-turn attestation, forwarded opaquely to the run's plugin
+   * contexts. Accepted only when sessionKey starts with `hook:fi-shadow:`,
+   * and required there. Never part of the message, job or transcript.
+   */
+  requesterAttestation?: string;
 };
 
 /** Normalized agent dispatch payload after hook policy/session resolution. */
@@ -723,6 +730,10 @@ export function normalizeAgentPayload(
   if (!mailRequester.ok) {
     return mailRequester;
   }
+  const shadowRequester = normalizeHookRequesterAttestation(payload, sessionKey);
+  if (!shadowRequester.ok) {
+    return shadowRequester;
+  }
   const timeoutRaw = payload.timeoutSeconds;
   const timeoutSeconds =
     typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw > 0
@@ -743,6 +754,7 @@ export function normalizeAgentPayload(
       thinking,
       timeoutSeconds,
       ...mailRequester.value,
+      ...shadowRequester.value,
     },
   };
 }

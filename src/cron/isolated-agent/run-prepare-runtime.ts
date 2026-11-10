@@ -44,6 +44,11 @@ export type RunCronAgentTurnParams = {
    * or from persisted cron state.
    */
   mailRequesterSenderId?: string;
+  /**
+   * Fi shadow-turn attestation for a `hook:fi-shadow:` hook. Held as run
+   * context for plugins only; never a sender, prompt text or cron state.
+   */
+  hookRequesterAttestation?: string;
 };
 
 export type WithRunSession = (

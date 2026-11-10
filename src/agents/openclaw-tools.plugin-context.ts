@@ -8,6 +8,7 @@ import {
  * Normalizes workspace, delivery, browser, sandbox, and active-model inputs before plugin tool invocation.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { lookupHookRequesterAttestation } from "../infra/hook-requester-attestation.js";
 import {
   assertMemoryAudienceCurrent,
   assertMemoryAudienceSession,
@@ -103,6 +104,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       : undefined;
   // Delivery context is normalized once here so plugin tools receive the same
   // channel/account/thread shape as gateway-delivered agent tools.
+  const hookRequesterAttestation = lookupHookRequesterAttestation(options?.runId, sessionKey);
   const deliveryContext = normalizeDeliveryContext({
     channel: options?.agentChannel,
     to: options?.agentTo ?? options?.currentMessagingTarget ?? options?.currentChannelId,
@@ -138,6 +140,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       currentMessageId: options?.currentMessageId,
       requesterSenderId: options?.requesterSenderId ?? undefined,
       senderIsOwner: options?.senderIsOwner,
+      ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
       memoryAudience: options?.memoryAudience,
       memoryFlush: options?.memoryFlush,
       assertMemoryAudienceCurrent: options?.memoryAudience

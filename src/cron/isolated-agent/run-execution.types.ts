@@ -49,6 +49,7 @@ export type CronRunExecutionParams = Pick<
     | "admissionSource"
     | "deliveryAttemptFence"
     | "mailRequesterSenderId"
+    | "hookRequesterAttestation"
   > & {
     runId: string;
     agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];

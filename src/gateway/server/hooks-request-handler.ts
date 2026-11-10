@@ -469,6 +469,10 @@ export function createHooksRequestHandler(
           ...(normalized.value.mailRequesterSlackUserId
             ? { mailRequesterSlackUserId: normalized.value.mailRequesterSlackUserId }
             : {}),
+          // The scope is hashed; a different attestation is a different dispatch.
+          ...(normalized.value.requesterAttestation
+            ? { requesterAttestation: normalized.value.requesterAttestation }
+            : {}),
         },
       });
       const replay = resolveHookReplay(replayKey);

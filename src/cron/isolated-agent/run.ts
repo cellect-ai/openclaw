@@ -284,6 +284,7 @@ async function runCronIsolatedAgentTurnInTrace(
               executionIdentity: params.executionIdentity,
               admissionSource: params.admissionSource,
               mailRequesterSenderId: params.mailRequesterSenderId,
+              hookRequesterAttestation: params.hookRequesterAttestation,
             };
             const execution = await prepared.context.sessionWorkAdmission.run(() =>
               withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>

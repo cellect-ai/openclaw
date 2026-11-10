@@ -73,6 +73,11 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   inputProvenance?: InputProvenance;
   /** Host-owned capability; absent for unbound operator or inter-session input. */
   requesterContinuation?: PluginHookRequesterContinuation;
+  /**
+   * Opaque Fi shadow-turn attestation of a `hook:fi-shadow:` cron run. Given
+   * to before_agent_reply only; Fi, not the gateway, verifies it.
+   */
+  hookRequesterAttestation?: string;
   /** @deprecated Use `channelContext.sender` for channel-specific identities. */
   senderExternalId?: string;
   /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */

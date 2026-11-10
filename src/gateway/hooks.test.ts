@@ -348,6 +348,46 @@ describe("gateway hooks helpers", () => {
     });
   });
 
+  test("normalizeAgentPayload enforces the shadow attestation in both directions", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const accepted = normalizeAgentPayload({
+      message: "prepare",
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: attestation,
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.value.requesterAttestation).toBe(attestation);
+      expect(accepted.value.message).toBe("prepare");
+    }
+    for (const sessionKey of ["hook:fi-mail:abc", "hook:gmail:1", "hook:fi-shadow-x:1"]) {
+      expect(
+        normalizeAgentPayload({ message: "x", sessionKey, requesterAttestation: attestation }).ok,
+      ).toBe(false);
+    }
+    expect(
+      normalizeAgentPayload({
+        message: "x",
+        requesterAttestation: attestation,
+      }).ok,
+    ).toBe(false);
+    expect(normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-shadow:abc" })).toEqual({
+      ok: false,
+      error: "requesterAttestation is required on a hook:fi-shadow: session",
+    });
+    for (const bad of ["fsa:a:short", `fsa:a:b:${"A".repeat(43)}`, `xyz:a:${"A".repeat(43)}`, 7]) {
+      expect(
+        normalizeAgentPayload({
+          message: "x",
+          sessionKey: "hook:fi-shadow:abc",
+          requesterAttestation: bad,
+        }),
+      ).toEqual({ ok: false, error: "requesterAttestation is malformed" });
+    }
+    // Shared mail keeps its own behaviour and accepts no attestation field.
+    expect(normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-mail:abc" }).ok).toBe(true);
+  });
+
   test("normalizeAgentPayload accepts a mail requester only on a shared-mail hook", () => {
     const accepted = normalizeAgentPayload({
       message: "file this",
