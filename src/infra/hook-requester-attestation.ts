@@ -28,6 +28,20 @@ export function parseHookRequesterAttestation(value: unknown): string | undefine
     : undefined;
 }
 
+/** The first delivery or content-trust field a shadow request may not carry. */
+function shadowHookDeliveryKnob(payload: Record<string, unknown>): string | undefined {
+  if (payload.deliver === true) {
+    return "deliver";
+  }
+  for (const key of ["channel", "to", "accountId"]) {
+    if (payload[key] !== undefined) {
+      return key;
+    }
+  }
+  const unsafe = payload.allowUnsafeExternalContent;
+  return unsafe !== undefined && unsafe !== false ? "allowUnsafeExternalContent" : undefined;
+}
+
 /**
  * The attestation of a `/hooks/agent` request. Both directions are refused:
  * an attestation on any other session, and a shadow session without one.
@@ -37,6 +51,14 @@ export function normalizeHookRequesterAttestation(
   sessionKey: string | undefined,
 ): Result<{ requesterAttestation?: string }, string> {
   const raw = payload.requesterAttestation;
+  if (isShadowHookSessionKey(sessionKey)) {
+    // A shadow turn is silent background work: nothing it produces is routed,
+    // delivered or trusted as external content by the caller's say-so.
+    const knob = shadowHookDeliveryKnob(payload);
+    if (knob) {
+      return { ok: false, error: `${knob} is not accepted on a hook:fi-shadow: session` };
+    }
+  }
   const shadow = sessionKey?.startsWith(SHADOW_HOOK_SESSION_PREFIX) === true;
   if (raw === undefined) {
     return isShadowHookSessionKey(sessionKey)

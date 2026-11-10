@@ -321,6 +321,23 @@ export function createGatewayHookDispatcher(params: {
         runId,
       };
     }
+    // Whatever the ingress (request, mapping, plugin), a shadow turn is never
+    // delivered, routed or run with unsafe external content.
+    if (
+      isShadowHookSessionKey(sessionKey) &&
+      (value.deliver !== false ||
+        value.delivery.mode !== "none" ||
+        value.to !== undefined ||
+        value.allowUnsafeExternalContent === true ||
+        (value.channel !== undefined && value.channel !== "last"))
+    ) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "hook:fi-shadow: sessions do not accept delivery or unsafe-content options",
+        runId,
+      };
+    }
     const logContext = sanitizeHookLogMetadata({
       runId,
       jobId,

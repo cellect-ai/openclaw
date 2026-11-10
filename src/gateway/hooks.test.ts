@@ -388,6 +388,36 @@ describe("gateway hooks helpers", () => {
     expect(normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-mail:abc" }).ok).toBe(true);
   });
 
+  test("normalizeAgentPayload refuses delivery knobs on a shadow session and never delivers it", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const base = {
+      message: "x",
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: attestation,
+    };
+    const ok = normalizeAgentPayload(base);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      // An omitted `deliver` means true elsewhere; a shadow turn is never delivered.
+      expect(ok.value.deliver).toBe(false);
+      expect(ok.value.delivery).toEqual({ mode: "none" });
+    }
+    for (const knob of [
+      { deliver: true },
+      { channel: "slack" },
+      { to: "u1" },
+      { accountId: "work" },
+      { allowUnsafeExternalContent: true },
+    ]) {
+      const result = normalizeAgentPayload({ ...base, ...knob });
+      expect(result.ok).toBe(false);
+    }
+    expect(normalizeAgentPayload({ ...base, deliver: false }).ok).toBe(true);
+    // Other sessions keep their delivery behaviour.
+    const plain = normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-mail:abc" });
+    expect(plain.ok && plain.value.deliver).toBe(true);
+  });
+
   test("normalizeAgentPayload accepts a mail requester only on a shared-mail hook", () => {
     const accepted = normalizeAgentPayload({
       message: "file this",

@@ -205,6 +205,48 @@ describe("dispatchAgentHook trust handling", () => {
     vi.restoreAllMocks();
   });
 
+  describe("Fi shadow sessions", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const shadowKey = "hook:fi-shadow:abc";
+
+    it.each([
+      ["a shadow session without an attestation", { sessionKey: shadowKey }],
+      [
+        "an attestation on another session",
+        { sessionKey: "hook:fi-mail:abc", requesterAttestation: attestation },
+      ],
+      [
+        "a malformed attestation on a shadow session",
+        { sessionKey: shadowKey, requesterAttestation: "fsa:x:short" },
+      ],
+    ])("refuses %s before any run", async (_name, extra) => {
+      const result = await dispatchAgentHook({ ...buildAgentPayload("Shadow"), ...extra });
+      expect(result).toMatchObject({ ok: false, statusCode: 400 });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["deliver", { deliver: true }],
+      ["an announce delivery", { delivery: { mode: "announce", channel: "slack", to: "u1" } }],
+      ["a destination", { to: "u1" }],
+      ["a channel", { channel: "slack" }],
+      ["unsafe external content", { allowUnsafeExternalContent: true }],
+    ])("refuses %s on a shadow session whatever the ingress", async (_name, extra) => {
+      const result = await dispatchAgentHook({
+        ...buildAgentPayload("Shadow"),
+        sessionKey: shadowKey,
+        requesterAttestation: attestation,
+        ...extra,
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        statusCode: 400,
+        error: "hook:fi-shadow: sessions do not accept delivery or unsafe-content options",
+      });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+    });
+  });
+
   it("queues and targets a mapped global wake for the same agent", () => {
     loadConfigMock.mockReturnValue({
       agents: { entries: { main: {}, hooks: {} } },

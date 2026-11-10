@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   lookupHookRequesterAttestation,
+  normalizeHookRequesterAttestation,
   registerHookRequesterAttestation,
 } from "./hook-requester-attestation.js";
 
@@ -33,5 +34,34 @@ describe("hook requester attestation run context", () => {
       registerHookRequesterAttestation({ runId: "run-3", sessionKey, attestation });
       expect(lookupHookRequesterAttestation("run-3", sessionKey)).toBeUndefined();
     }
+  });
+});
+
+describe("shadow hook ingress delivery knobs", () => {
+  it.each([
+    ["deliver", { deliver: true }],
+    ["channel", { channel: "slack" }],
+    ["to", { to: "u1" }],
+    ["accountId", { accountId: "work" }],
+    ["allowUnsafeExternalContent", { allowUnsafeExternalContent: true }],
+  ])("rejects %s on a shadow session", (name, extra) => {
+    expect(
+      normalizeHookRequesterAttestation(
+        { requesterAttestation: ATTESTATION, ...extra },
+        "hook:fi-shadow:abc",
+      ),
+    ).toEqual({ ok: false, error: `${name} is not accepted on a hook:fi-shadow: session` });
+  });
+
+  it("accepts the quiet form and leaves other sessions alone", () => {
+    expect(
+      normalizeHookRequesterAttestation(
+        { requesterAttestation: ATTESTATION, deliver: false, allowUnsafeExternalContent: false },
+        "hook:fi-shadow:abc",
+      ),
+    ).toEqual({ ok: true, value: { requesterAttestation: ATTESTATION } });
+    expect(
+      normalizeHookRequesterAttestation({ deliver: true, channel: "slack" }, "hook:fi-mail:abc"),
+    ).toEqual({ ok: true, value: {} });
   });
 });
