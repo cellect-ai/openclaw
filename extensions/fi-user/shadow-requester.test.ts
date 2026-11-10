@@ -115,6 +115,7 @@ describe("fi-user on a Fi shadow hook turn", () => {
     expect(result?.details).toMatchObject({ status: 200 });
     expect(delegationRequest()).toEqual({
       shadowAttestation: ATTESTATION,
+      sessionKey: SHADOW_SESSION,
       agentId: "cellect-fi-user",
     });
   });

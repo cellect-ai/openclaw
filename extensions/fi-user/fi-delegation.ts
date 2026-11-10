@@ -323,7 +323,10 @@ export async function exchange(
     ? shadowToolAttestation(context)
     : undefined;
   if (shadowAttestation) {
-    const delegation = await lookupDelegation(config, { shadowAttestation });
+    const delegation = await lookupDelegation(config, {
+      shadowAttestation,
+      sessionKey: context.sessionKey ?? "",
+    });
     if (!delegation) {
       throw new Error("The shadow turn's requester is not linked to an active Fi member");
     }
