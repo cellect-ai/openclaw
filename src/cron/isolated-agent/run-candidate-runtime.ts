@@ -1,14 +1,29 @@
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
+import { isShadowHookRun } from "../../agents/shadow-hook-tool-policy.js";
 import { isCliProvider } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { resolveEffectiveAgentRuntime } from "./run.runtime.js";
+
+export const SHADOW_CLI_REFUSAL =
+  "hook:fi-shadow: sessions cannot run on a CLI backend (its native tools sit outside the shadow tool cap)";
+
+/** Fails a shadow run that would execute on a CLI backend; never falls back. */
+export function assertShadowRunNotCli(
+  sessionKeys: Array<string | undefined | null>,
+  cliExecution: boolean,
+): void {
+  if (cliExecution && isShadowHookRun(...sessionKeys)) {
+    throw new Error(SHADOW_CLI_REFUSAL);
+  }
+}
 
 /** Shares candidate execution policy between harness preparation and dispatch. */
 export function createCronCandidateExecutionResolver(
   params: Pick<
     CronRunExecutionParams,
     "cfgWithAgentDefaults" | "agentId" | "runSessionKey" | "cronSession"
-  >,
+  > &
+    Partial<Pick<CronRunExecutionParams, "agentSessionKey">>,
 ) {
   return (provider: string, model: string, sessionRuntimeOverride: string | undefined) => {
     const executionProvider = sessionRuntimeOverride
@@ -31,6 +46,10 @@ export function createCronCandidateExecutionResolver(
         sessionKey: params.runSessionKey,
         sessionEntry: params.cronSession.sessionEntry,
       });
+    const cliExecution =
+      isCliProvider(executionProvider, params.cfgWithAgentDefaults) ||
+      isCliProvider(runtime, params.cfgWithAgentDefaults);
+    assertShadowRunNotCli([params.runSessionKey, params.agentSessionKey], cliExecution);
     return {
       sessionRuntimeOverride,
       executionProvider,

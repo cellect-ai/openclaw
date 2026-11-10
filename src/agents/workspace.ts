@@ -8,6 +8,7 @@ import type { ChatType } from "../channels/chat-type.js";
 import type { OptionalBootstrapFileName } from "../config/types.agent-defaults.js";
 import { isRootFileMissingFailure } from "../infra/boundary-file-read.js";
 import { pathExists } from "../infra/fs-safe.js";
+import { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
 import { retainMutationAuthority } from "../infra/mutation-authority.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { retryAsync } from "../infra/retry.js";
@@ -975,6 +976,14 @@ export async function loadWorkspaceBootstrapFiles(
 
 const SUBAGENT_BOOTSTRAP_ALLOWLIST = new Set([DEFAULT_AGENTS_FILENAME]);
 
+// A Fi shadow hook turn reads untrusted mail for one member: instruction files
+// only. No USER/MEMORY/daily notes, which hold other people's private content.
+const SHADOW_BOOTSTRAP_ALLOWLIST = new Set([
+  DEFAULT_AGENTS_FILENAME,
+  DEFAULT_SOUL_FILENAME,
+  DEFAULT_IDENTITY_FILENAME,
+]);
+
 const CRON_BOOTSTRAP_ALLOWLIST = new Set([
   DEFAULT_AGENTS_FILENAME,
   DEFAULT_SOUL_FILENAME,
@@ -1016,6 +1025,9 @@ export function filterBootstrapFilesForSession(
 ): WorkspaceBootstrapFile[] {
   const { sessionKey, chatType, workspaceDir }: BootstrapSessionContext =
     typeof session === "string" ? { sessionKey: session } : (session ?? {});
+  if (isShadowHookSessionKey(sessionKey)) {
+    return files.filter((file) => SHADOW_BOOTSTRAP_ALLOWLIST.has(file.name) && !file.personalUser);
+  }
   const isSubagent = isSubagentSessionKey(sessionKey);
   const isCron = isCronSessionKey(sessionKey);
   const effectiveChatType = chatType ?? deriveSessionChatTypeFromKey(sessionKey);

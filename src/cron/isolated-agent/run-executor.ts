@@ -32,6 +32,7 @@ import {
 } from "../../agents/scheduled-tool-policy.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
+import { isShadowHookRun } from "../../agents/shadow-hook-tool-policy.js";
 import { needsThinkHydration } from "../../agents/thinking-runtime.js";
 import { resolveAgentLifecycleTerminalMetadata } from "../../auto-reply/reply/agent-lifecycle-terminal.js";
 import type { VerboseLevel } from "../../auto-reply/thinking.js";
@@ -57,7 +58,10 @@ import {
 import { resolveCronPayloadOutcome } from "./helpers.js";
 import { resolveIsolatedCronPromptCacheKey } from "./prompt-cache-key.js";
 import { assertCronRuntimeAuthorityCandidate } from "./run-admission.js";
-import { createCronCandidateExecutionResolver } from "./run-candidate-runtime.js";
+import {
+  assertShadowRunNotCli,
+  createCronCandidateExecutionResolver,
+} from "./run-candidate-runtime.js";
 import { finalizeCronPromptForResolvedTools } from "./run-delivery-trace.js";
 import {
   getCliSessionBinding,
@@ -259,7 +263,7 @@ function createCronPromptExecutor(
     const releaseHookRequesterAttestation = registerHookRequesterAttestation({
       runId,
       sessionKey: params.runSessionKey,
-      attestation: params.agentSessionKey.toLowerCase().includes(":hook:fi-shadow:")
+      attestation: isShadowHookRun(params.agentSessionKey, params.runSessionKey)
         ? params.hookRequesterAttestation
         : undefined,
     });
@@ -525,6 +529,7 @@ function createCronPromptExecutor(
                   cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
                     ? cliSessionBinding
                     : undefined;
+                assertShadowRunNotCli([params.runSessionKey, params.agentSessionKey], true);
                 const candidateResult = await runCliAgent({
                   ...buildCommonRunParams(),
                   diagnosticOwner,

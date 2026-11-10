@@ -247,6 +247,29 @@ describe("dispatchAgentHook trust handling", () => {
     });
   });
 
+  it("admits channel last on a shadow session only with delivery none and deliver false", async () => {
+    const result = await dispatchAgentHook({
+      ...buildAgentPayload("Shadow"),
+      sessionKey: "agent:cellect-fi-user:hook:fi-shadow:abc",
+      requesterAttestation: `fsa:job-1:${"A".repeat(43)}`,
+      channel: "last",
+      delivery: { mode: "none" },
+      deliver: false,
+    });
+    expect(result).not.toMatchObject({ statusCode: 400 });
+    expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledTimes(1);
+    runCronIsolatedAgentTurnMock.mockClear();
+    const refused = await dispatchAgentHook({
+      ...buildAgentPayload("Shadow"),
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: `fsa:job-1:${"A".repeat(43)}`,
+      channel: "last",
+      delivery: { mode: "announce", channel: "last" },
+    });
+    expect(refused).toMatchObject({ ok: false, statusCode: 400 });
+    expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+  });
+
   it("queues and targets a mapped global wake for the same agent", () => {
     loadConfigMock.mockReturnValue({
       agents: { entries: { main: {}, hooks: {} } },

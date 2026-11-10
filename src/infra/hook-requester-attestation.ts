@@ -59,7 +59,7 @@ export function normalizeHookRequesterAttestation(
       return { ok: false, error: `${knob} is not accepted on a hook:fi-shadow: session` };
     }
   }
-  const shadow = sessionKey?.startsWith(SHADOW_HOOK_SESSION_PREFIX) === true;
+  const shadow = isShadowHookSessionKey(sessionKey);
   if (raw === undefined) {
     return isShadowHookSessionKey(sessionKey)
       ? { ok: false, error: "requesterAttestation is required on a hook:fi-shadow: session" }

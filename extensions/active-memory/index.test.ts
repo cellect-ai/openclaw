@@ -1683,6 +1683,18 @@ describe("active-memory plugin", () => {
     },
   );
 
+  it.each(["hook:fi-shadow:abc", "agent:main:hook:fi-shadow:abc"])(
+    "never recalls memory into a Fi shadow hook turn (%s)",
+    async (sessionKey) => {
+      const result = await runPromptBuild({ prompt: "what wings should i order?" }, { sessionKey });
+
+      expect(result).toBeUndefined();
+      expect(hoisted.getActiveMemorySearchManager).not.toHaveBeenCalled();
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(hasInfoLine("active-memory: recall skipped reason=fi_shadow_session")).toBe(true);
+    },
+  );
+
   it("does not run for agents that are not explicitly targeted", async () => {
     const result = await runPromptBuild(
       { prompt: "what wings should i order?" },

@@ -48,6 +48,7 @@ describe("Fi shadow hook tool cap", () => {
       toolsAllow: ["fi_user_api", "m365_shadow_mail"],
       toolExecutionAllow: ["fi_user_api"],
       disableMessageTool: true,
+      disableToolSearch: true,
       forceMessageTool: false,
       forceCodeModeTools: false,
       codeModeOverride: false,

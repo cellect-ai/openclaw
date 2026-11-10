@@ -52,6 +52,24 @@ describe("workspace bootstrap source identity", () => {
 });
 
 describe("filterBootstrapFilesForSession privacy", () => {
+  it.each(["hook:fi-shadow:abc", "agent:cellect-fi-user:hook:fi-shadow:abc"])(
+    "keeps only instruction files for a Fi shadow hook session (%s)",
+    (sessionKey) => {
+      const personal: WorkspaceBootstrapFile = {
+        name: "USER.md",
+        path: "/w/users/u1/USER.md",
+        content: "private",
+        missing: false,
+        personalUser: true,
+      };
+      const kept = filterBootstrapFilesForSession([...mockFiles, personal], {
+        sessionKey,
+        chatType: "direct",
+      });
+      expect(kept.map((file) => file.name)).toEqual(["AGENTS.md", "SOUL.md", "IDENTITY.md"]);
+    },
+  );
+
   it("prefers authoritative chat type over the session-key fallback", () => {
     const shared = filterBootstrapFilesForSession(mockFiles, {
       sessionKey: "agent:default:opaque:binding",

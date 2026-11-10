@@ -34,6 +34,7 @@ export function shadowHookRunParams(
       toolsAllow: string[];
       toolExecutionAllow: string[];
       disableMessageTool: true;
+      disableToolSearch: true;
       forceMessageTool: false;
       forceCodeModeTools: false;
       codeModeOverride: false;
@@ -49,6 +50,9 @@ export function shadowHookRunParams(
       toolsAllow.includes(tool),
     ),
     disableMessageTool: true,
+    // Tool Search controls are exempt from the execution gate; with two tools
+    // there is nothing to discover, and a catalog must not widen the cap.
+    disableToolSearch: true,
     forceMessageTool: false,
     forceCodeModeTools: false,
     codeModeOverride: false,
