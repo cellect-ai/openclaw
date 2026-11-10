@@ -498,27 +498,12 @@ describe("the admin agent's delegated user token", () => {
 
   describe("Fi shadow hook turns", () => {
     const ATTESTATION = `fsa:job-1:${"A".repeat(43)}`;
-    const shadowSession = "agent:cellect-fi-admin:hook:fi-shadow:abc";
-
-    it("mints an admin-tier shadow run with the attestation alone", async () => {
-      const turn = plugin();
-      await turn.start({
-        sessionKey: shadowSession,
-        channel: "last",
-        trigger: "cron",
-        hookRequesterAttestation: ATTESTATION,
-      });
-      const result = await turn.exec({ sessionKey: shadowSession, requester: undefined });
-      expect(result?.params.env).toMatchObject({ FI_DELEGATED_USER_TOKEN: TOKEN });
-      expect(mintBody()).toEqual({ shadowAttestation: ATTESTATION, agentId: "cellect-fi-admin" });
-      // No signed assertion: the attestation names nobody the gateway could vouch for.
-      expect(result?.params.env).not.toHaveProperty("FI_ON_BEHALF_OF");
-    });
 
     it.each([
+      ["an admin shadow session", "agent:cellect-fi-admin:hook:fi-shadow:abc"],
       ["a non-shadow cron session", "agent:cellect-fi-admin:cron:job"],
       ["a shared-mail session", "agent:cellect-fi-admin:hook:fi-mail:abc"],
-    ])("does not admit an attestation on %s", async (_name, sessionKey) => {
+    ])("never mints an attestation carried on %s", async (_name, sessionKey) => {
       const turn = plugin();
       await turn.start({
         sessionKey,
@@ -528,16 +513,6 @@ describe("the admin agent's delegated user token", () => {
       });
       const result = await turn.exec({ sessionKey, requester: undefined });
       expect(result?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
-      expect(mints()).toHaveLength(0);
-    });
-
-    it("does not admit a shadow run without an attestation or outside cron", async () => {
-      const turn = plugin();
-      await turn.start({ sessionKey: shadowSession, channel: "last", trigger: "cron" });
-      expect(
-        (await turn.exec({ sessionKey: shadowSession, requester: undefined }))?.params?.env
-          ?.FI_DELEGATED_USER_TOKEN,
-      ).toBeUndefined();
       expect(mints()).toHaveLength(0);
     });
   });
