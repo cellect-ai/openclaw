@@ -11,6 +11,9 @@ import { normalizeToolPolicyName } from "./tool-policy.js";
 
 export const SHADOW_HOOK_TOOL_ALLOWLIST: readonly string[] = ["fi_user_api", "m365_shadow_mail"];
 
+export const SHADOW_CLI_REFUSAL =
+  "hook:fi-shadow: sessions cannot run on a CLI backend (its native tools sit outside the shadow tool cap)";
+
 /** True when any of the run's session keys names a Fi shadow hook. */
 export function isShadowHookRun(...sessionKeys: Array<string | undefined | null>): boolean {
   return sessionKeys.some((key) => isShadowHookSessionKey(key));

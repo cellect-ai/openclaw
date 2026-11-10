@@ -320,6 +320,23 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
     expect(resolveModelAuthMode).not.toHaveBeenCalled();
   });
 
+  it("keeps shadow sessions embedded even with a pinned subscription profile", async () => {
+    ensureAuthProfileStore.mockReturnValue({
+      profiles: { "anthropic:claude-cli": { type: "oauth", provider: "claude-cli" } },
+    });
+    for (const sessionKey of ["hook:fi-shadow:abc", "agent:main:hook:fi-shadow:abc"]) {
+      expect(await runGate({ sessionKey, authProfileId: "anthropic:claude-cli" })).toBeUndefined();
+    }
+    expect(runCliAgent).not.toHaveBeenCalled();
+    expect(
+      resolveEmbeddedCliBackendDispatchEligibility({
+        provider: "claude-cli",
+        sessionKey: "hook:fi-shadow:abc",
+        authProfileId: "anthropic:claude-cli",
+      }),
+    ).toBeUndefined();
+  });
+
   it("keeps the passthrough without a caller-owned session file", async () => {
     expect(await runGate({ sessionFile: undefined })).toBeUndefined();
   });

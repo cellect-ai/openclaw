@@ -1,11 +1,10 @@
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
-import { isShadowHookRun } from "../../agents/shadow-hook-tool-policy.js";
+import { isShadowHookRun, SHADOW_CLI_REFUSAL } from "../../agents/shadow-hook-tool-policy.js";
 import { isCliProvider } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { resolveEffectiveAgentRuntime } from "./run.runtime.js";
 
-export const SHADOW_CLI_REFUSAL =
-  "hook:fi-shadow: sessions cannot run on a CLI backend (its native tools sit outside the shadow tool cap)";
+export { SHADOW_CLI_REFUSAL };
 
 /** Fails a shadow run that would execute on a CLI backend; never falls back. */
 export function assertShadowRunNotCli(

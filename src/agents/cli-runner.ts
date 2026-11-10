@@ -80,6 +80,7 @@ import {
   runAgentHarnessLlmOutputHook,
 } from "./harness/lifecycle-hook-helpers.js";
 import { resolveReplyExpectation } from "./reply-completion.js";
+import { isShadowHookRun, SHADOW_CLI_REFUSAL } from "./shadow-hook-tool-policy.js";
 
 const log = createSubsystemLogger("agents/cli-runner");
 
@@ -113,6 +114,17 @@ export async function isCliBindingFlushed(
 }
 
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
+  // Single choke point: a Fi shadow run never reaches a CLI backend, whose native
+  // tools sit outside the shadow tool cap, however the run was routed here.
+  if (
+    isShadowHookRun(
+      paramsInput.sessionKey,
+      paramsInput.runtimePolicySessionKey,
+      paramsInput.sessionTarget?.sessionKey,
+    )
+  ) {
+    return Promise.reject(new Error(SHADOW_CLI_REFUSAL));
+  }
   const lifecycleGeneration =
     paramsInput.lifecycleGeneration ?? captureAgentRunLifecycleGeneration(paramsInput.runId);
   const params = {
