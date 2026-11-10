@@ -6,6 +6,7 @@ import type {
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { delegatedFetch, exchange, readFiResponse } from "./fi-delegation.js";
+import { mailItemsPrivateRoomId } from "./mail-items-tool.js";
 
 /**
  * Read endpoints fi-user may call, relative to `/api/<requester org>/`. This
@@ -231,7 +232,13 @@ export function createFiUserApiTool(
     parameters: ApiSchema,
     async execute(_toolCallId, raw) {
       const input = raw as { path: string; query?: Record<string, string> };
-      const { delegation, config } = await exchange(api, context);
+      // Same host-derived predicate as fi_user_mail_items; minted per call, never cached.
+      const roomId = mailItemsPrivateRoomId(context);
+      const { delegation, config } = await exchange(
+        api,
+        context,
+        roomId ? { privateConversation: { roomId } } : {},
+      );
       const pathname = fiUserApiPath(delegation.user.orgSlug, input.path);
       const entries = Object.entries(input.query ?? {});
       if (entries.length > MAX_QUERY_PARAMS) {

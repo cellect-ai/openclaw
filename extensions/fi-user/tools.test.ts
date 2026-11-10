@@ -357,6 +357,27 @@ describe("fi_user_api", () => {
     });
   });
 
+  it("requests a private-conversation delegation for fi_user_api only in the private Matrix room", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/mail-agent/items" ? json({ items: [] }) : undefined,
+    );
+    const mint = async (ctx: OpenClawPluginToolContext) => {
+      calls.length = 0;
+      await plugin().tool("fi_user_api", ctx).execute("p", { path: "mail-agent/items" });
+      return delegationBody();
+    };
+    expect(await mint(privateMatrixContext())).toMatchObject({
+      privateConversation: { roomId: "!private:threads.example" },
+    });
+    expect(await mint(context())).not.toHaveProperty("privateConversation");
+    expect(
+      await mint(privateMatrixContext({ nativeChannelId: "!other:threads.example" })),
+    ).not.toHaveProperty("privateConversation");
+    expect(await mint(privateMatrixContext())).toMatchObject({
+      privateConversation: { roomId: "!private:threads.example" },
+    });
+  });
+
   registerFiUserMatrixEnvironmentTests({
     BROKER,
     authorization,
