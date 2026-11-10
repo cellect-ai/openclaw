@@ -6,8 +6,10 @@ import type {
 import { isShadowHookSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
-import { delegatedFetch, exchange, readFiResponse } from "./fi-delegation.js";
+import { delegatedFetch, exchange, readFiResponse, requesterIdentity } from "./fi-delegation.js";
 
+const MATRIX_ROOM_ID = /^![^\s:]+:[^\s]+$/;
+const REVISION = /^[0-9]{1,19}$/;
 const ITEM_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{7,63}$/;
 
 const Schema = Type.Object(
@@ -35,9 +37,14 @@ const Schema = Type.Object(
     ),
     until: Type.Optional(Type.String({ format: "date-time" })),
     reason: Type.Optional(Type.String({ maxLength: 500 })),
-    text: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
+    text: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
     priority: Type.Optional(Type.String({ maxLength: 8 })),
-    expectedRevision: Type.Optional(Type.Integer({ minimum: 0 })),
+    expectedRevision: Type.Optional(
+      Type.String({
+        pattern: "^[0-9]{1,19}$",
+        description: "The item's revision from list, as a decimal string.",
+      }),
+    ),
   },
   { additionalProperties: false },
 );
@@ -50,7 +57,7 @@ type Input = {
   reason?: string;
   text?: string;
   priority?: string;
-  expectedRevision?: number;
+  expectedRevision?: string;
 };
 
 /** The strict body of Fi's `POST mail-agent/items/<id>/control`: only the fields its variant allows. */
@@ -65,6 +72,12 @@ function controlBody(input: Input): Record<string, unknown> {
   const kind = input.control;
   if (!kind || !(kind in allowed)) {
     throw new Error("control requires one of pause, drop, note, reprioritize, resume");
+  }
+  if (
+    input.expectedRevision !== undefined &&
+    (typeof input.expectedRevision !== "string" || !REVISION.test(input.expectedRevision))
+  ) {
+    throw new Error("expectedRevision must be a decimal string of up to 19 digits");
   }
   const fields = allowed[kind]!;
   const extra = (["until", "reason", "text", "priority"] as const).filter(
@@ -85,9 +98,37 @@ function controlBody(input: Input): Record<string, unknown> {
   };
 }
 
-/** Never offered to a background (shadow) run: it may read items, not steer them. */
+/**
+ * The Matrix room of a turn admitted for its verified Matrix requester, or
+ * undefined. Slack and webchat have no private-conversation proof Fi can verify.
+ */
+export function mailItemsPrivateRoomId(context: OpenClawPluginToolContext): string | undefined {
+  if (
+    isShadowHookSessionKey(context.sessionKey) ||
+    context.messageChannel !== "matrix" ||
+    requesterIdentity(context)?.channel !== "matrix"
+  ) {
+    return undefined;
+  }
+  const route = context.deliveryContext;
+  if (route?.channel !== undefined && route.channel !== "matrix") {
+    return undefined;
+  }
+  const routed = route?.to?.replace(/^room:/, "");
+  const native = context.nativeChannelId;
+  if (routed && native && routed !== native) {
+    return undefined;
+  }
+  const roomId = routed || native;
+  return roomId && MATRIX_ROOM_ID.test(roomId) ? roomId : undefined;
+}
+
+/**
+ * Offered only in the requester's own Matrix conversation (Fi verifies it is
+ * their private room); never in shared rooms, Slack or a background (shadow) run.
+ */
 export function offersMailItemsTool(context: OpenClawPluginToolContext): boolean {
-  return !isShadowHookSessionKey(context.sessionKey);
+  return mailItemsPrivateRoomId(context) !== undefined;
 }
 
 export function createMailItemsTool(
@@ -102,7 +143,13 @@ export function createMailItemsTool(
     parameters: Schema,
     async execute(_toolCallId, raw) {
       const input = raw as Input;
-      const { delegation, config } = await exchange(api, context);
+      const roomId = mailItemsPrivateRoomId(context);
+      if (!roomId) {
+        throw new Error("Mail work items are available only in your own private Fi conversation");
+      }
+      const { delegation, config } = await exchange(api, context, {
+        privateConversation: { roomId },
+      });
       const base = `/api/${encodeURIComponent(delegation.user.orgSlug)}/mail-agent/items`;
       if (input.action === "list") {
         const response = await delegatedFetch(config, delegation, base, {

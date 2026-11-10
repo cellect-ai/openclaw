@@ -127,8 +127,11 @@ describe("fi-user on a Fi shadow hook turn", () => {
     });
     expect(shadow.map((tool) => tool.name)).toEqual(["fi_user_api"]);
     const normal = shadowTools({
-      sessionKey: "agent:cellect-fi-user:webchat:abc",
-      messageChannel: "webchat",
+      sessionKey: "agent:cellect-fi-user:matrix:room:!private",
+      messageChannel: "matrix",
+      requesterSenderId: "@member:threads.example",
+      nativeChannelId: "!private:threads.example",
+      agentAccountId: "fi-user",
     });
     expect(normal.map((tool) => tool.name)).toContain("fi_user_mail_items");
   });

@@ -316,6 +316,7 @@ export function isFiUserShadowTurn(context: OpenClawPluginToolContext): boolean 
 export async function exchange(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
+  options: { privateConversation?: { roomId: string } } = {},
 ): Promise<{ delegation: Delegation; config: ResolvedPluginConfig; identity: RequesterIdentity }> {
   const config = pluginConfig(api, context);
   // Fi decides whom the attestation names; it is never kept in the identity.
@@ -341,7 +342,7 @@ export async function exchange(
     );
   }
   const { channel: _channel, ...requester } = identity;
-  const delegation = await lookupDelegation(config, requester);
+  const delegation = await lookupDelegation(config, requester, options);
   if (!delegation) {
     throw new Error("The current requester is not linked to an active Fi member");
   }
@@ -394,6 +395,8 @@ export async function lookupDelegation(
   options: {
     agentId?: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID;
     signal?: AbortSignal;
+    /** Fi verifies the room is the requester's private one before it stamps audience "private". */
+    privateConversation?: { roomId: string };
   } = {},
 ): Promise<Delegation | null> {
   if (config.tenantOrgConflict) {
@@ -412,7 +415,11 @@ export async function lookupDelegation(
       authorization: `Bearer ${token}`,
       "content-type": "application/json",
     },
-    body: JSON.stringify({ ...requester, agentId: options.agentId ?? FI_USER_AGENT_ID }),
+    body: JSON.stringify({
+      ...requester,
+      agentId: options.agentId ?? FI_USER_AGENT_ID,
+      ...(options.privateConversation ? { privateConversation: options.privateConversation } : {}),
+    }),
     ...(options.signal ? { signal: options.signal } : {}),
   });
   if (response.status === 404) {

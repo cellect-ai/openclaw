@@ -25,6 +25,7 @@ import { approvalStores } from "./admin-action.test-support.js";
 import { fiUserApiPath } from "./fi-api-tool.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
+import { offersMailItemsTool } from "./mail-items-tool.js";
 import { registerFiUserEsignTests } from "./tools.esign.test-support.js";
 import { registerFiUserMatrixEnvironmentTests } from "./tools.matrix-environment.test-support.js";
 import { registerFiUserWorkflowTests } from "./tools.workflow.test-support.js";
@@ -142,6 +143,17 @@ function context(overrides: Partial<OpenClawPluginToolContext> = {}) {
     getRuntimeConfig: () => runtimeConfig,
     ...overrides,
   } as OpenClawPluginToolContext;
+}
+
+function privateMatrixContext(overrides: Partial<OpenClawPluginToolContext> = {}) {
+  return context({
+    messageChannel: "matrix",
+    requesterSenderId: "@member:threads.example",
+    sessionKey: "agent:cellect-fi-user:matrix:room:!private",
+    nativeChannelId: "!private:threads.example",
+    deliveryContext: { channel: "matrix", to: "room:!private:threads.example" },
+    ...overrides,
+  } as Partial<OpenClawPluginToolContext>);
 }
 
 type Route = (url: URL, init: RequestInit) => Response | Promise<Response> | undefined;
@@ -264,7 +276,7 @@ describe("fi_user_api", () => {
   });
 
   it("offers fi_user_mail_items to a normal user turn and posts a strict control body", async () => {
-    const mailTool = plugin().tool("fi_user_mail_items", context());
+    const mailTool = plugin().tool("fi_user_mail_items", privateMatrixContext());
     routes.push((url) =>
       url.pathname === "/api/shape/mail-agent/items/item-12345678/control"
         ? json({ ok: true })
@@ -275,12 +287,16 @@ describe("fi_user_api", () => {
       itemId: "item-12345678",
       control: "pause",
       reason: "later",
-      expectedRevision: 3,
+      expectedRevision: "3",
+    });
+    const delegation = calls.find((entry) => entry.url.endsWith("/api/openclaw-user-delegation"));
+    expect(JSON.parse(String(delegation!.init.body)).privateConversation).toEqual({
+      roomId: "!private:threads.example",
     });
     const call = calls.find((entry) => entry.url.endsWith("/control"));
     expect(call!.init.method).toBe("POST");
     expect(authorization(call!.init)).toBe("Bearer delegated-token");
-    expect(bodyJson(call!.init)).toEqual({ kind: "pause", reason: "later", expectedRevision: 3 });
+    expect(bodyJson(call!.init)).toEqual({ kind: "pause", reason: "later", expectedRevision: "3" });
     await expect(
       mailTool.execute("m2", {
         action: "control",
@@ -292,6 +308,36 @@ describe("fi_user_api", () => {
     await expect(
       mailTool.execute("m3", { action: "control", itemId: "../x", control: "resume" }),
     ).rejects.toThrow(/itemId/);
+  });
+
+  it("rejects a non-string or malformed expectedRevision before calling Fi", async () => {
+    const mailTool = plugin().tool("fi_user_mail_items", privateMatrixContext());
+    for (const bad of [3, "-1", "1.5", "12345678901234567890", ""]) {
+      await expect(
+        mailTool.execute("r", {
+          action: "control",
+          itemId: "item-12345678",
+          control: "resume",
+          expectedRevision: bad,
+        }),
+      ).rejects.toThrow(/expectedRevision/);
+    }
+    expect(calls.some((entry) => entry.url.endsWith("/control"))).toBe(false);
+    const schema = JSON.stringify(mailTool.parameters);
+    expect(schema).toContain("^[0-9]{1,19}$");
+    expect(schema).toContain('"maxLength":2000');
+  });
+
+  it("offers fi_user_mail_items only in the requester's own Matrix room, never Slack or webchat", () => {
+    const offered = (ctx: OpenClawPluginToolContext) => (offersMailItemsTool(ctx) ? "yes" : "no");
+    expect(offered(privateMatrixContext())).toBe("yes");
+    expect(offered(context())).toBe("no");
+    expect(offered(context({ messageChannel: "webchat" }))).toBe("no");
+    expect(offered(privateMatrixContext({ nativeChannelId: "!other:threads.example" }))).toBe("no");
+    expect(offered(privateMatrixContext({ requesterSenderId: undefined }))).toBe("no");
+    expect(
+      offered(privateMatrixContext({ sessionKey: "agent:cellect-fi-user:hook:fi-shadow:abc123" })),
+    ).toBe("no");
   });
 
   it("reads a reviewed Fi text route with the requester's delegation token", async () => {
