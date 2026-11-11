@@ -307,12 +307,24 @@ export function resolveFollowupRunToolAuthorityFingerprint(
   assertCurrentOperatorAuthority(authority);
   const screenTarget = resolveReplyScreenToolTarget(snapshot, capabilityProfile);
   const themeProfileId = resolveReplyThemeProfileId(snapshot, capabilityProfile);
+  // Owner-only tools are gated on the sender, so ownership always splits steering.
+  // A channel sender in a shared room has no hashed operator authority; its identity
+  // is the only key to per-sender grants, so another sender queues instead of steering.
+  // Operator participants are compared by the authority above and resolved per person.
+  const sharedChannelSender = !authority && normalizeChatType(execution.chatType) !== "direct";
   return createHash("sha256")
     .update(
       stableStringify({
         provider,
         model,
         policy: capabilityProfile.policy,
+        sender: {
+          // Unset ownership is not a proven non-owner; keep it distinct from false.
+          isOwner: execution.senderIsOwner ?? null,
+          ...(sharedChannelSender
+            ? { id: execution.senderId ?? "", e164: execution.senderE164 ?? "" }
+            : {}),
+        },
         operatorAuthority: authority
           ? {
               scopes: [...new Set(authority.scopes)].toSorted(),

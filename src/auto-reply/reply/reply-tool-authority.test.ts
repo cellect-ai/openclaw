@@ -111,6 +111,7 @@ describe("reply tool authority", () => {
       const other = ensureProfileForEmail("participant@example.test");
       const participantId = other.id;
       const run = createQueueTestRun({ prompt: "Session owner's turn" });
+      run.run.senderIsOwner = false;
       run.run.bootstrapUserProfileId = owner.id;
       run.run.senderId = "first-participant";
       run.run.permissionMode = "full";
@@ -182,6 +183,103 @@ describe("reply tool authority", () => {
     }));
 
   it.each([
+    ["non-owner into an owner's shared-room run", "group", true, "owner", false, "guest", false],
+    ["owner into a non-owner's shared-room run", "group", false, "guest", true, "owner", false],
+    ["another channel sender in a shared room", "channel", false, "alice", false, "bob", false],
+    ["the same sender in a shared room", "group", true, "owner", true, "owner", true],
+    ["another sender in a direct chat", "direct", true, "owner", true, "owner-device", true],
+    ["a non-owner in a direct chat", "direct", true, "owner", false, "owner", false],
+  ] as const)(
+    "binds steering to the sender for %s",
+    async (_name, chatType, activeOwner, activeSender, nextOwner, nextSender, accepted) => {
+      const run = createQueueTestRun({ prompt: "owner request" });
+      run.run.chatType = chatType;
+      run.run.senderIsOwner = activeOwner;
+      run.run.senderId = activeSender;
+      const operation = createTestReplyOperation({ sessionId: "sender-steering" });
+      operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
+      const fingerprint = operation.bindToolAuthorityRoute(run.run);
+      const queueMessage = vi.fn(async () => {});
+      operation.attachBackend({ kind: "embedded", cancel: vi.fn(), queueMessage });
+      operation.setPhase("running");
+      const incoming = {
+        ...run,
+        run: { ...run.run, senderIsOwner: nextOwner, senderId: nextSender },
+      };
+
+      expect(resolveFollowupRunToolAuthorityFingerprint(incoming) === fingerprint).toBe(accepted);
+      for (const options of [
+        { toolAuthorityFingerprint: resolveFollowupRunToolAuthorityFingerprint(incoming) },
+        { toolAuthorityOverlay: toolAuthorityOverlay(incoming) },
+      ]) {
+        await expect(
+          queueCurrentReplyRunMessage("sender-steering", "use the owner's tools", {
+            isInboundUserMessage: true,
+            ...options,
+          }),
+        ).resolves.toMatchObject(
+          accepted
+            ? { status: "accepted" }
+            : { status: "rejected", reason: "tool_authority_mismatch" },
+        );
+      }
+      // A rejected message never reaches the running turn; it queues as its own turn.
+      expect(queueMessage).toHaveBeenCalledTimes(accepted ? 2 : 0);
+      expect(operation.toolAuthorityFingerprint).toBe(fingerprint);
+    },
+  );
+
+  it("keeps unset sender ownership distinct from a proven non-owner", () => {
+    const run = createQueueTestRun({ prompt: "unset ownership" });
+    run.run.chatType = "direct";
+    const unset = resolveFollowupRunToolAuthorityFingerprint(run);
+    const nonOwner = resolveFollowupRunToolAuthorityFingerprint({
+      ...run,
+      run: { ...run.run, senderIsOwner: false },
+    });
+    const owner = resolveFollowupRunToolAuthorityFingerprint({
+      ...run,
+      run: { ...run.run, senderIsOwner: true },
+    });
+
+    expect(new Set([unset, nonOwner, owner]).size).toBe(3);
+  });
+
+  it("does not let a non-owner operator participant steer an owner's run", async () => {
+    const run = createQueueTestRun({ prompt: "owner request" });
+    run.run.chatType = "group";
+    run.run.senderIsOwner = true;
+    run.run.senderId = "owner";
+    run.operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "owner-profile",
+      scopes: ["operator.read", "operator.write"],
+      source: {},
+      assertCurrent: () => {},
+    });
+    const operation = createTestReplyOperation({ sessionId: "operator-sender-steering" });
+    operation.bindToolAuthoritySnapshot(prepareReplyToolAuthority(run));
+    operation.bindToolAuthorityRoute(run.run);
+    const queueMessage = vi.fn(async () => {});
+    operation.attachBackend({ kind: "embedded", cancel: vi.fn(), queueMessage });
+    operation.setPhase("running");
+    const participant = { ...run, run: { ...run.run, senderId: "participant" } };
+
+    await expect(
+      queueCurrentReplyRunMessage("operator-sender-steering", "same owner class", {
+        isInboundUserMessage: true,
+        toolAuthorityOverlay: toolAuthorityOverlay(participant),
+      }),
+    ).resolves.toMatchObject({ status: "accepted" });
+    await expect(
+      queueCurrentReplyRunMessage("operator-sender-steering", "non-owner participant", {
+        isInboundUserMessage: true,
+        toolAuthorityOverlay: { ...toolAuthorityOverlay(participant), senderIsOwner: false },
+      }),
+    ).resolves.toMatchObject({ status: "rejected", reason: "tool_authority_mismatch" });
+    expect(queueMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
     ["automatic rotation", "auto", "auto", "backup", "full", true],
     ["unchanged user pin", "user", "user", "primary", "full", true],
     ["changed user pin", "user", "user", "backup", "full", false],
@@ -230,6 +328,7 @@ describe("reply tool authority", () => {
     "requires a snapshot for route preparation and rejects it after %s",
     (close) => {
       const run = createQueueTestRun({ prompt: "operation projection" });
+      run.run.senderIsOwner = false;
       const operation = createTestReplyOperation({ sessionId: "session-projector" });
       const snapshot = prepareReplyToolAuthority(run);
       const overlay = toolAuthorityOverlay(run);
@@ -259,6 +358,7 @@ describe("reply tool authority", () => {
 
   it("keeps the initial policy snapshot while tracking concrete fallback authority", () => {
     const run = createQueueTestRun({ prompt: "route authority" });
+    run.run.senderIsOwner = false;
     const operation = createTestReplyOperation({ sessionId: "session-route" });
     const snapshot = prepareReplyToolAuthority(run);
     const primary = { provider: "openai", model: "gpt-primary" };

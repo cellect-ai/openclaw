@@ -514,6 +514,7 @@ describe("question response custody through reply adoption", () => {
         prompt: text,
         messageId: `recovery-${entrypoint}-${mode}-${hidden}`,
       });
+      run.run.senderIsOwner = false;
       await withQuestionGateway(async (fixture) =>
         withQuestionCreator(key, run, async (operation, fingerprint) => {
           const hold = fixture.holdWaitAnswerResponse();

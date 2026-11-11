@@ -199,6 +199,7 @@ describe("queued turn steering", () => {
       assertCurrent: () => {},
     });
     turn.queued.operatorAuthority = operatorAuthority;
+    turn.queued.run.senderIsOwner = false;
     const queueMessage = vi.fn(async () => {});
     state.execute.mockImplementation(async () => {
       operation.bindToolAuthorityRoute({ provider: "anthropic", model: "claude" });
