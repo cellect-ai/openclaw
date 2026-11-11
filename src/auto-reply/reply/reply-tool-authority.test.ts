@@ -111,6 +111,7 @@ describe("reply tool authority", () => {
       const other = ensureProfileForEmail("participant@example.test");
       const participantId = other.id;
       const run = createQueueTestRun({ prompt: "Session owner's turn" });
+      run.run.senderIsOwner = false;
       run.run.bootstrapUserProfileId = owner.id;
       run.run.senderId = "first-participant";
       run.run.permissionMode = "full";
@@ -327,6 +328,7 @@ describe("reply tool authority", () => {
     "requires a snapshot for route preparation and rejects it after %s",
     (close) => {
       const run = createQueueTestRun({ prompt: "operation projection" });
+      run.run.senderIsOwner = false;
       const operation = createTestReplyOperation({ sessionId: "session-projector" });
       const snapshot = prepareReplyToolAuthority(run);
       const overlay = toolAuthorityOverlay(run);
@@ -356,6 +358,7 @@ describe("reply tool authority", () => {
 
   it("keeps the initial policy snapshot while tracking concrete fallback authority", () => {
     const run = createQueueTestRun({ prompt: "route authority" });
+    run.run.senderIsOwner = false;
     const operation = createTestReplyOperation({ sessionId: "session-route" });
     const snapshot = prepareReplyToolAuthority(run);
     const primary = { provider: "openai", model: "gpt-primary" };
