@@ -6,6 +6,8 @@ import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./j
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
   loadRunCronIsolatedAgentTurn,
+  makeCronSession,
+  makeCronSessionEntry,
   mockRunCronFallbackPassthrough,
   resolveCronSessionMock,
   runEmbeddedAgentMock,
@@ -92,6 +94,80 @@ it("keeps an isolated shadow hook run on its agent-qualified shadow session", as
     disableMessageTool: true,
     disableToolSearch: true,
   });
+});
+
+it("reuses one persistent shadow transcript and isolates each turn's attestation and tool cap", async () => {
+  mockRunCronFallbackPassthrough();
+  const sessionKey = "hook:fi-shadow:thread";
+  const qualified = "agent:cellect-fi-user:hook:fi-shadow:thread";
+  const firstAttestation = `fsa:job-1:${"A".repeat(43)}`;
+  const secondAttestation = `fsa:job-2:${"B".repeat(43)}`;
+  let sharedSessionId: string | undefined;
+  resolveCronSessionMock.mockImplementation(() => {
+    if (!sharedSessionId) {
+      const created = makeCronSession();
+      sharedSessionId = created.sessionEntry.sessionId;
+      return created;
+    }
+    return makeCronSession({
+      isNewSession: false,
+      sessionEntry: makeCronSessionEntry({ sessionId: sharedSessionId }),
+    });
+  });
+  const seen: Array<{ runId: string; sessionKey: string; attestation: string | undefined }> = [];
+  const defaultRun = runEmbeddedAgentMock.getMockImplementation();
+  runEmbeddedAgentMock.mockImplementation(async (args: Record<string, unknown>) => {
+    const runId = args.runId as string;
+    const runSessionKey = args.sessionKey as string;
+    if (seen.length === 1) {
+      expect(lookupHookRequesterAttestation(seen[0]?.runId, runSessionKey)).toBeUndefined();
+    }
+    seen.push({
+      runId,
+      sessionKey: runSessionKey,
+      attestation: lookupHookRequesterAttestation(runId, runSessionKey),
+    });
+    return defaultRun?.(args);
+  });
+  const job = makeIsolatedAgentJobFixture({ sessionTarget: `session:${sessionKey}` });
+
+  const first = await runCronIsolatedAgentTurn(
+    makeIsolatedAgentParamsFixture({
+      agentId: "cellect-fi-user",
+      sessionKey,
+      hookRequesterAttestation: firstAttestation,
+      job,
+    }),
+  );
+  const second = await runCronIsolatedAgentTurn(
+    makeIsolatedAgentParamsFixture({
+      agentId: "cellect-fi-user",
+      sessionKey,
+      hookRequesterAttestation: secondAttestation,
+      job,
+    }),
+  );
+
+  expect(first).toMatchObject({ status: "ok", sessionId: sharedSessionId });
+  expect(second).toMatchObject({ status: "ok", sessionId: sharedSessionId });
+  expect(seen.map((entry) => entry.sessionKey)).toEqual([qualified, qualified]);
+  expect(seen[0]?.runId).not.toBe(seen[1]?.runId);
+  expect(seen[0]?.attestation).toBe(firstAttestation);
+  expect(seen[1]?.attestation).toBe(secondAttestation);
+  expect(lookupHookRequesterAttestation(seen[0]?.runId, qualified)).toBeUndefined();
+  expect(lookupHookRequesterAttestation(seen[1]?.runId, qualified)).toBeUndefined();
+  expect(JSON.stringify(runEmbeddedAgentMock.mock.calls)).not.toContain(firstAttestation);
+  expect(JSON.stringify(runEmbeddedAgentMock.mock.calls)).not.toContain(secondAttestation);
+  for (const call of resolveCronSessionMock.mock.calls) {
+    expect(call[0]).toMatchObject({ sessionKey: qualified, forceNew: false });
+  }
+  for (const entry of seen) {
+    expect(shadowHookRunParams(entry.sessionKey, { toolsAllow: ["*"] })).toMatchObject({
+      toolsAllow: ["fi_user_api", "m365_shadow_mail"],
+      disableMessageTool: true,
+      disableToolSearch: true,
+    });
+  }
 });
 
 it("keeps ordinary isolated hook runs on a random cron run session", async () => {
