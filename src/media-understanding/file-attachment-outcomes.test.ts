@@ -88,6 +88,14 @@ describe("renderFileAttachmentOutcome", () => {
     expect(render(outcome)).toBe(expected);
   });
 
+  it("renders too-large as a staged-file hint, not a read failure", () => {
+    const text = render({ kind: "too-large", limitBytes: 20 * 1024 * 1024 });
+    expect(text).toContain("too large to read inline (inline limit 20 MiB)");
+    expect(text).toContain("staged");
+    expect(text).not.toContain("could not be read");
+    expect(render({ kind: "too-large" })).toContain("too large to read inline.");
+  });
+
   it.each([
     { localPath: "/state/media/inbound/report.docx", mime: ooxmlMime, guidance: ooxmlGuidance },
     {

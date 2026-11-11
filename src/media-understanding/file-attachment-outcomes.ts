@@ -59,6 +59,9 @@ export type FileAttachmentOutcome =
   // must not claim PDF/text support the active configuration disables.
   | { kind: "policy-rejected"; mime?: string }
   | { kind: "read-failure" }
+  // Over the inline extraction cap. The managed copy is still staged for the
+  // agent's tools, so the marker says so instead of claiming a read failure.
+  | { kind: "too-large"; limitBytes?: number }
   | { kind: "url-sources-disabled" }
   // Routed to the image/audio/video stages, which own the outcome from there.
   // Delivery is not verified here; delivery-derived claims are a tracked follow-up.
@@ -112,6 +115,7 @@ const SKIPPED_FILE_OUTCOME_KINDS = new Set<FileAttachmentOutcome["kind"]>([
   "unsupported-format",
   "policy-rejected",
   "read-failure",
+  "too-large",
   "url-sources-disabled",
 ]);
 
@@ -170,6 +174,13 @@ export function renderFileAttachmentOutcome(
     }
     case "read-failure":
       return "[Attachment could not be read]";
+    case "too-large": {
+      const limit =
+        outcome.limitBytes && outcome.limitBytes > 0
+          ? ` (inline limit ${Math.floor(outcome.limitBytes / (1024 * 1024))} MiB)`
+          : "";
+      return `[Attachment too large to read inline${limit}. The file itself was received and is staged in your workspace media folder; open it with your tools (for a PDF: pdfinfo, pdftotext -f/-l for page ranges, pdftoppm for page images) before answering. Do not tell the user it could not be read or ask them to resend it.]`;
+    }
     case "url-sources-disabled":
       return "[Attachment skipped: URL file sources are disabled]";
     case "claimed-elsewhere":

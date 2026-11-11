@@ -4,6 +4,7 @@ import {
   type AttachmentClassification,
 } from "@openclaw/media-core/attachment-classify";
 import { mimeTypeFromFilePath, normalizeMimeType } from "@openclaw/media-core/mime";
+import { isMediaUnderstandingSkipError } from "../../packages/media-understanding-common/src/errors.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
@@ -106,6 +107,12 @@ async function classifyFileAttachment(params: {
   } catch (err) {
     if (shouldLogVerbose()) {
       logVerbose(`media: file attachment skipped (buffer): ${String(err)}`);
+    }
+    if (isMediaUnderstandingSkipError(err) && err.reason === "maxBytes") {
+      return {
+        outcome: { kind: "too-large", limitBytes: limits.maxBytes },
+        filename: displayFilename,
+      };
     }
     return { outcome: { kind: "read-failure" }, filename: displayFilename };
   }
