@@ -12,6 +12,8 @@ import {
   mints,
   MINT_URL,
   plugin,
+  RESOLVE_URL,
+  resolveMock,
   SESSION,
   SLACK_CHANNEL,
   slackThread,
@@ -248,5 +250,91 @@ describe("two senders, one shared session, through the Codex harness prompt buil
     expect(two.prompt).not.toContain("admin@example.com");
     expect(two.developerInstructions).not.toContain("Fi requester");
     expect(two.prompt).toContain(secondKnown ? "Fi requester: other@example.com." : UNCONFIRMED);
+  });
+
+  describe("with Fi's resolve-only route", () => {
+    const resolved = (email: string, userEmail = email) =>
+      new Response(
+        JSON.stringify({
+          ok: true,
+          user: { email: userEmail },
+          requester: { channel: "slack", email },
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+
+    it("uses it instead of the mint, with the mint's request body, and holds no token", async () => {
+      resolveMock.mockImplementation(async () => resolved("admin@example.com"));
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const { turnContext } = await promptResults(turn, run());
+      expect(turnContext).toContain("Fi requester: admin@example.com.");
+      expect(mints()).toHaveLength(0);
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(resolveMock.mock.calls[0]![0]).toBe(RESOLVE_URL);
+      expect(JSON.parse(String((resolveMock.mock.calls[0]![1] as RequestInit).body))).toEqual({
+        requesterSenderId: "U0ADMIN001",
+        agentId: "cellect-fi-admin",
+      });
+    });
+
+    it("refuses an email that is not the resolved user's own", async () => {
+      resolveMock.mockImplementation(async () =>
+        resolved("other@example.com", "admin@example.com"),
+      );
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      const { turnContext } = await promptResults(turn, run());
+      expect(turnContext).toContain(UNCONFIRMED);
+      expect(turnContext).not.toContain("@example.com");
+    });
+
+    it("says not confirmed, without falling back, when the route answers its own not-found", async () => {
+      resolveMock.mockImplementation(async () => new Response("Not found", { status: 404 }));
+      mintPerSender({ U0ADMIN001: "admin@example.com" });
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      expect((await promptResults(turn, run())).turnContext).toContain(UNCONFIRMED);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it("says not confirmed, without falling back, when the route refuses", async () => {
+      resolveMock.mockImplementation(async () => new Response("Forbidden", { status: 403 }));
+      mintPerSender({ U0ADMIN001: "admin@example.com" });
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      expect((await promptResults(turn, run())).turnContext).toContain(UNCONFIRMED);
+      expect(mints()).toHaveLength(0);
+    });
+
+    it("falls back to the mint when Fi has no such route, and stops asking for a while", async () => {
+      mintPerSender({ U0ADMIN001: "admin@example.com" });
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      expect((await promptResults(turn, run("run-1"))).turnContext).toContain(
+        "Fi requester: admin@example.com.",
+      );
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(mints()).toHaveLength(1);
+      await promptResults(turn, run("run-1"));
+      expect(resolveMock).toHaveBeenCalledTimes(1);
+      expect(mints()).toHaveLength(2);
+    });
+
+    it("drops the answer when the run's sender changed while Fi answered", async () => {
+      const turn = plugin();
+      await turn.arrive();
+      await turn.start();
+      resolveMock.mockImplementation(async () => {
+        await turn.arrive({ senderId: "U0OTHER002" });
+        return resolved("admin@example.com");
+      });
+      expect((await promptResults(turn, run())).turnContext).toContain(UNCONFIRMED);
+    });
   });
 });

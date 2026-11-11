@@ -473,6 +473,81 @@ export async function lookupDelegation(
   return delegation as Delegation;
 }
 
+/** How long a Fi without the resolve-only route is remembered, so each turn does not pay a failed call. */
+const RESOLVE_ROUTE_UNAVAILABLE_MS = 60_000;
+let resolveRouteUnavailableUntil = 0;
+
+/** Test seam: forget that the resolve-only route was found missing. */
+export function resetResolveRouteAvailability(): void {
+  resolveRouteUnavailableUntil = 0;
+}
+
+/**
+ * The requester email Fi resolves for a turn, without a Fi token.
+ *
+ * Asks `POST /api/openclaw-user-delegation/resolve` (same body and refusals as the mint, no token
+ * issued). A Fi that predates the route answers 404 with something other than the route's own
+ * "Not found" (which means no member): then, and only then, this falls back to the full mint via
+ * `lookupDelegation` so the gateway works before and after that Fi release. The email is returned
+ * only when it is a plain address equal to the resolved user's.
+ */
+export async function lookupRequesterEmail(
+  config: Pick<
+    ResolvedPluginConfig,
+    "baseUrl" | "brokerTokenEnv" | "tenantOrgId" | "tenantOrgConflict"
+  >,
+  requester: Record<string, string>,
+  options: {
+    agentId?: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID;
+    signal?: AbortSignal;
+    privateConversation?: { roomId: string };
+  } = {},
+): Promise<string | undefined> {
+  if (config.tenantOrgConflict) {
+    throw new Error("This runtime's tenant is configured inconsistently");
+  }
+  if (!config.tenantOrgId) {
+    throw new Error("This runtime has no Fi organization configured");
+  }
+  const token = brokerToken(config);
+  if (!token) {
+    throw new Error("Fi user delegation broker is not configured");
+  }
+  if (Date.now() >= resolveRouteUnavailableUntil) {
+    const response = await fetch(`${config.baseUrl}/api/openclaw-user-delegation/resolve`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({
+        ...requester,
+        agentId: options.agentId ?? FI_USER_AGENT_ID,
+        ...(options.privateConversation
+          ? { privateConversation: options.privateConversation }
+          : {}),
+      }),
+      ...(options.signal ? { signal: options.signal } : {}),
+    });
+    if (response.status === 404) {
+      const body = await response.text().catch(() => "");
+      if (body.trim() === "Not found") {
+        return undefined;
+      }
+      resolveRouteUnavailableUntil = Date.now() + RESOLVE_ROUTE_UNAVAILABLE_MS;
+    } else if (!response.ok) {
+      throw new Error(`Fi requester resolve failed (${response.status})`);
+    } else {
+      const resolved = (await response.json().catch(() => null)) as {
+        user?: { email?: unknown };
+        requester?: { email?: unknown };
+      } | null;
+      return mintedRequesterEmail({
+        user: { email: resolved?.user?.email },
+        requester: resolved?.requester,
+      } as Delegation);
+    }
+  }
+  return mintedRequesterEmail(await lookupDelegation(config, requester, options));
+}
+
 export async function delegatedFetch(
   config: Pick<ResolvedPluginConfig, "baseUrl">,
   delegation: Delegation,

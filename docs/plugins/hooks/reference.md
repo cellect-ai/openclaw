@@ -153,16 +153,17 @@ contracts above; a modifying hook is not an observation hook.
 
 **Messages and delivery**
 
-| Hook                        | Kind          | Purpose                                                                    |
-| --------------------------- | ------------- | -------------------------------------------------------------------------- |
-| `inbound_claim`             | Claim         | Claim an inbound message for the plugin that owns its conversation binding |
-| `channel_pairing_requested` | Observe       | Observe newly created DM pairing requests                                  |
-| `message_received`          | Observe       | Observe inbound content, sender, thread, and metadata                      |
-| `message_sending`           | Modify / gate | Rewrite outbound content or cancel delivery                                |
-| `reply_payload_sending`     | Modify / gate | Mutate or cancel normalized reply payloads before delivery                 |
-| `message_sent`              | Observe       | Observe outbound delivery success or failure                               |
-| `before_dispatch`           | Claim         | Handle an inbound message before the normal model dispatch                 |
-| `reply_dispatch`            | Claim         | Own reply generation and dispatch instead of the default model path        |
+| Hook                        | Kind          | Purpose                                                                               |
+| --------------------------- | ------------- | ------------------------------------------------------------------------------------- |
+| `inbound_claim`             | Claim         | Claim an inbound message for the plugin that owns its conversation binding            |
+| `channel_pairing_requested` | Observe       | Observe newly created DM pairing requests                                             |
+| `message_received`          | Observe       | Observe inbound content, sender, thread, and metadata                                 |
+| `message_sending`           | Modify / gate | Rewrite outbound content or cancel delivery                                           |
+| `reply_payload_sending`     | Modify / gate | Mutate or cancel normalized reply payloads before delivery                            |
+| `message_sent`              | Observe       | Observe outbound delivery success or failure                                          |
+| `before_dispatch`           | Claim         | Handle an inbound message before the normal model dispatch                            |
+| `before_steer`              | Claim         | Keep a message out of the active run: queue it as its own turn instead of steering it |
+| `reply_dispatch`            | Claim         | Own reply generation and dispatch instead of the default model path                   |
 
 `inbound_claim` is not a global pre-routing broadcast. OpenClaw invokes it only
 for the plugin that owns the message's core-managed conversation binding. To
@@ -170,6 +171,15 @@ suppress an ordinary agent turn before model input without retaining the
 original prompt in transcript, use `before_agent_run` on a supported runner.
 To short-circuit an agent turn with a synthetic reply or silence, use
 `before_agent_reply`.
+
+`before_steer` is asked in the reply runner just before a channel message for a
+session with an active run would be steered (injected) into that run. The event
+carries `messageId`, `channel`, `sessionKey`, `senderId` and `isGroup`; return
+`{ handled: true }` to have the message queued on the existing FIFO followup path
+instead, so it runs as its own turn with its own `before_dispatch` proof and the
+usual message-id dedupe. Handlers must answer from memory: errors and timeouts
+fail open and the message is steered as before. Use it when the active run cannot
+act for the sender (for example a run proven for a different sender).
 
 **Sessions and compaction**
 

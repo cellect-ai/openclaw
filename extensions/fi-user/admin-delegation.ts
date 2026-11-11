@@ -11,7 +11,7 @@ import {
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
   lookupDelegation,
-  mintedRequesterEmail,
+  lookupRequesterEmail,
   requesterContextLine,
   REQUESTER_UNCONFIRMED_LINE,
   matrixConnection,
@@ -695,11 +695,10 @@ export function registerAdminDelegation(
       return unconfirmed;
     }
     try {
-      const delegation = await lookupDelegation(proof.connection, proof.body, {
+      const email = await lookupRequesterEmail(proof.connection, proof.body, {
         agentId: FI_ADMIN_DELEGATION_AGENT_ID,
         signal: AbortSignal.timeout(REQUESTER_LINE_MINT_MS),
       });
-      const email = mintedRequesterEmail(delegation);
       if (!email || runs.get(runId) !== run || run.sender !== sender) {
         return unconfirmed;
       }

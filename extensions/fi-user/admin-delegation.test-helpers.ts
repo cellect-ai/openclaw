@@ -7,6 +7,7 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { afterEach, beforeEach, expect, vi } from "vitest";
+import { resetResolveRouteAvailability } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
 export const BROKER = "fixture-broker-credential";
 export const TOKEN = "fixtureheader.fixturepayload.fixturesignature";
@@ -56,6 +57,11 @@ export const thread = (senderId = "@admin:matrix.example", eventId = "$e1") => (
   },
 });
 export const MINT_URL = "https://fi.example.test/fi/api/openclaw-user-delegation";
+export const RESOLVE_URL = `${MINT_URL}/resolve`;
+/** Fi's resolve-only route. By default an older Fi: the route does not exist (framework 404 page). */
+export const resolveMock = vi.fn();
+const noResolveRoute = async () =>
+  new Response("<html>404: This page could not be found.</html>", { status: 404 });
 export const SLACK_CHANNEL = "C0CHANNEL1";
 export const SLACK_THREAD =
   "agent:cellect-fi-admin:slack:channel:c0channel1:thread:1792189039.487369";
@@ -335,6 +341,9 @@ export const mintBody = () =>
 export function installDelegationFixtures() {
   beforeEach(() => {
     fetchMock.mockReset();
+    resolveMock.mockReset();
+    resolveMock.mockImplementation(noResolveRoute);
+    resetResolveRouteAvailability();
     sendText.mockClear();
     // The Matrix admission gate asks Fi about the turn; everything else here is a mint.
     fetchMock.mockImplementation(async (url: string) =>
@@ -342,7 +351,9 @@ export function installDelegationFixtures() {
         ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }))
         : minted(),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", (url: string, init?: RequestInit) =>
+      url === RESOLVE_URL ? resolveMock(url, init) : fetchMock(url, init),
+    );
     vi.stubEnv("FIXTURE_BROKER", BROKER);
   });
   afterEach(() => {
