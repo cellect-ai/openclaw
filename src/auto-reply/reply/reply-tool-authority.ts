@@ -319,7 +319,8 @@ export function resolveFollowupRunToolAuthorityFingerprint(
         model,
         policy: capabilityProfile.policy,
         sender: {
-          isOwner: execution.senderIsOwner === true,
+          // Unset ownership is not a proven non-owner; keep it distinct from false.
+          isOwner: execution.senderIsOwner ?? null,
           ...(sharedChannelSender
             ? { id: execution.senderId ?? "", e164: execution.senderE164 ?? "" }
             : {}),

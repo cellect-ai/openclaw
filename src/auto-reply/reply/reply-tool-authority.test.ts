@@ -228,6 +228,22 @@ describe("reply tool authority", () => {
     },
   );
 
+  it("keeps unset sender ownership distinct from a proven non-owner", () => {
+    const run = createQueueTestRun({ prompt: "unset ownership" });
+    run.run.chatType = "direct";
+    const unset = resolveFollowupRunToolAuthorityFingerprint(run);
+    const nonOwner = resolveFollowupRunToolAuthorityFingerprint({
+      ...run,
+      run: { ...run.run, senderIsOwner: false },
+    });
+    const owner = resolveFollowupRunToolAuthorityFingerprint({
+      ...run,
+      run: { ...run.run, senderIsOwner: true },
+    });
+
+    expect(new Set([unset, nonOwner, owner]).size).toBe(3);
+  });
+
   it("does not let a non-owner operator participant steer an owner's run", async () => {
     const run = createQueueTestRun({ prompt: "owner request" });
     run.run.chatType = "group";
