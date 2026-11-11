@@ -236,6 +236,20 @@ export function fiUserApiPath(
   return `/api/${encodeURIComponent(orgSlug)}/${relative}`;
 }
 
+/**
+ * Whether a requested path is one of Fi's personal mail-item reads, which only
+ * a private-audience delegation reaches. Decided on the path as given, before
+ * the mint; `fiUserApiPath` still validates it afterwards.
+ */
+export function fiUserApiNeedsPrivateAudience(requested: string): boolean {
+  const relative = requested
+    .trim()
+    .replace(/^\/+/, "")
+    .replace(/^fi\//, "")
+    .replace(/^api\/[^/]+\//, "");
+  return /^mail-agent(?:\/|$)/.test(relative);
+}
+
 /** JSON and text are the only bodies fi_user_api reads; anything else is a file. */
 function isReadableContentType(response: Response): boolean {
   const type = (response.headers.get("content-type") ?? "").split(";")[0]!.trim().toLowerCase();
@@ -345,8 +359,13 @@ export function createFiUserApiTool(
     parameters: ApiSchema,
     async execute(_toolCallId, raw) {
       const input = raw as { path: string; query?: Record<string, string | number | boolean> };
-      // Same host-derived predicate as fi_user_mail_items; minted per call, never cached.
-      const roomId = mailItemsPrivateRoomId(context);
+      // Only the mail-item reads need Fi's private audience. Asking for it on any
+      // other read makes Fi refuse the whole mint outside the requester's own
+      // private room, so ordinary reads in shared rooms never ask. Minted per
+      // call, never cached; a refused private mint is not retried without it.
+      const roomId = fiUserApiNeedsPrivateAudience(input.path)
+        ? mailItemsPrivateRoomId(context)
+        : undefined;
       // A shadow-hook session is held to the shadow list even if its attestation is missing.
       const shadow = isFiUserShadowTurn(context) || isShadowHookSessionKey(context.sessionKey);
       const { delegation, config } = await exchange(

@@ -203,6 +203,12 @@ beforeEach(() => {
         url.pathname === "/api/openclaw-user-delegation"
       ) {
         const requester = bodyJson(init) as Record<string, string> | null;
+        // Fi refuses the whole mint when the asked-for private room is not the requester's own.
+        const privateRoom = (requester as { privateConversation?: { roomId?: string } } | null)
+          ?.privateConversation?.roomId;
+        if (privateRoom !== undefined && privateRoom !== "!private:threads.example") {
+          return new Response("Forbidden", { status: 403 });
+        }
         const email =
           members[requester?.requesterSenderId ?? ""] ??
           members[requester?.requesterMatrixUserId ?? ""];
@@ -374,6 +380,67 @@ describe("fi_user_api", () => {
       await mint(privateMatrixContext({ nativeChannelId: "!other:threads.example" })),
     ).not.toHaveProperty("privateConversation");
     expect(await mint(privateMatrixContext())).toMatchObject({
+      privateConversation: { roomId: "!private:threads.example" },
+    });
+  });
+
+  it.each(["305-third/budget/text", "documents/search", "fi-view/context"])(
+    "mints an ordinary %s read without a private audience, even in the private room",
+    async (path) => {
+      routes.push((url) =>
+        url.pathname.startsWith("/api/shape/") ? json({ ok: true }) : undefined,
+      );
+      await plugin().tool("fi_user_api", privateMatrixContext()).execute("o", { path });
+      expect(delegationBody()).not.toHaveProperty("privateConversation");
+    },
+  );
+
+  it("reads Fi from a shared Matrix room: no private audience is asked, so the mint succeeds", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/305-third/budget/text" ? new Response("budget text") : undefined,
+    );
+    const shared = privateMatrixContext({
+      sessionKey: "agent:cellect-fi-user:matrix:room:!shared",
+      nativeChannelId: "!shared:threads.example",
+      deliveryContext: { channel: "matrix", to: "room:!shared:threads.example" },
+    } as Partial<OpenClawPluginToolContext>);
+    const result = await plugin()
+      .tool("fi_user_api", shared)
+      .execute("s", { path: "305-third/budget/text" });
+    expect(result.details).toMatchObject({ status: 200, result: "budget text" });
+    expect(delegationBody()).toEqual({
+      requesterMatrixUserId: "@member:threads.example",
+      agentId: "cellect-fi-user",
+    });
+    // Mail items there still ask for the private audience, and Fi refuses it; nothing retries.
+    calls.length = 0;
+    await expect(
+      plugin().tool("fi_user_api", shared).execute("m", { path: "mail-agent/items" }),
+    ).rejects.toThrow(/Fi user delegation failed \(403\)/);
+    await expect(
+      plugin().tool("fi_user_mail_items", shared).execute("mi", { action: "list" }),
+    ).rejects.toThrow(/Fi user delegation failed \(403\)/);
+    const mintBodies = calls
+      .filter((entry) => entry.url.endsWith("/api/openclaw-user-delegation"))
+      .map((entry) => bodyJson(entry.init));
+    expect(mintBodies).toHaveLength(2);
+    expect(
+      mintBodies.every((body) => body.privateConversation?.roomId === "!shared:threads.example"),
+    ).toBe(true);
+    expect(calls.some((entry) => entry.url.includes("/mail-agent/"))).toBe(false);
+  });
+
+  it("still lists mail items in the requester's own private room", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/mail-agent/items"
+        ? json({ items: [{ id: "item-1" }] })
+        : undefined,
+    );
+    const result = await plugin()
+      .tool("fi_user_mail_items", privateMatrixContext())
+      .execute("pl", { action: "list" });
+    expect(result.details).toMatchObject({ status: 200, result: { items: [{ id: "item-1" }] } });
+    expect(delegationBody()).toMatchObject({
       privateConversation: { roomId: "!private:threads.example" },
     });
   });
