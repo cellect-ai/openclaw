@@ -208,6 +208,12 @@ function remember<V>(tracked: Map<string, V>, key: string, value: V): void {
 }
 type Run = {
   agentId: string;
+  /**
+   * Counts every input that tried to take this run's proof, even one that found it already gone,
+   * so a proof taken for a message the host then queued is given back only if nothing else was
+   * injected into the run since.
+   */
+  stripSeq?: number;
   sessionKey: string;
   sender?: string;
   continuation?: PluginHookToolContext["requesterContinuation"];
@@ -405,7 +411,7 @@ export function registerAdminDelegation(
    * that a message the host then queues instead of injecting gives them back: only an injected
    * input can have changed what a run does, and a queued one runs on its own proof.
    */
-  const strippedByArrival = new Map<string, Array<[Run, string]>>();
+  const strippedByArrival = new Map<string, Array<[Run, string, number]>>();
   const trimSet = (set: Set<string>, max: number): void => {
     for (const oldest of set) {
       if (set.size <= max) {
@@ -961,6 +967,7 @@ export function registerAdminDelegation(
     for (const run of runs.values()) {
       if (run.sessionKey === sessionKey && run.sender !== sender) {
         delete run.sender;
+        run.stripSeq = (run.stripSeq ?? 0) + 1;
       }
     }
   };
@@ -1012,6 +1019,15 @@ export function registerAdminDelegation(
     }
     const eventId = message.messageId?.trim();
     const snapshot: Array<[Run, string]> = [];
+    const restore = (run: Run, sender: string, seq: number): void => {
+      if (
+        run.sender === undefined &&
+        (run.stripSeq ?? 0) === seq &&
+        [...runs.values()].includes(run)
+      ) {
+        run.sender = sender;
+      }
+    };
     if (
       eventId &&
       configFromRuntime(api).crossChannelCustody === true &&
@@ -1031,6 +1047,7 @@ export function registerAdminDelegation(
     for (const run of runs.values()) {
       if (run.continuation && run.sessionKey === session.sessionKey.toLowerCase()) {
         delete run.sender;
+        run.stripSeq = (run.stripSeq ?? 0) + 1;
       }
     }
     // Only channel input can be the allowed Matrix person here; a sender id
@@ -1041,15 +1058,18 @@ export function registerAdminDelegation(
       : onBehalfOfRequester(message);
     const talk = talkConsultSender(session.adminAgentId, session.sessionKey, message);
     observe(session.sessionKey, talk ?? (requester ? JSON.stringify(requester) : UNPROVEN));
-    const stripped = snapshot.filter(([run]) => run.sender === undefined);
+    // The sequence is read after this message's own strip: only a later input changes it.
+    const stripped = snapshot
+      .filter(([run]) => run.sender === undefined)
+      .map(([run, sender]): [Run, string, number] => [run, sender, run.stripSeq ?? 0]);
     if (
       eventId &&
       stripped.length > 0 &&
       queuedBySteerGate.has(`${session.sessionKey}\0${eventId}`)
     ) {
       // The gate already claimed this message: it was never injected.
-      for (const [run, sender] of stripped) {
-        run.sender = sender;
+      for (const [run, sender, seq] of stripped) {
+        restore(run, sender, seq);
       }
     } else if (eventId && stripped.length > 0) {
       const key = `${session.sessionKey}\0${eventId}`;
@@ -1148,9 +1168,14 @@ export function registerAdminDelegation(
         }
       }
       // Queued, not injected: the active run keeps the proof its own sender gave it.
-      for (const [run, sender] of strippedByArrival.get(`${session.sessionKey}\0${eventId}`) ??
+      for (const [run, sender, seq] of strippedByArrival.get(`${session.sessionKey}\0${eventId}`) ??
         []) {
-        if (run.sender === undefined && [...runs.values()].includes(run)) {
+        // Skipped when another input was injected in between: it is inside the run now.
+        if (
+          run.sender === undefined &&
+          (run.stripSeq ?? 0) === seq &&
+          [...runs.values()].includes(run)
+        ) {
           run.sender = sender;
         }
       }

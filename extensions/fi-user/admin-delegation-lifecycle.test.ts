@@ -1270,6 +1270,27 @@ describe("the host asks before steering a message into the active run (FU-B4)", 
       expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
     });
 
+    it("but not when another input was injected into the run in between", async () => {
+      const turn = plugin(CROSS, SANDBOXED, true);
+      await turn.arrive();
+      await turn.start();
+      await turn.inject(other("1792189039.000800"));
+      // B reaches the run directly (no event id, so it is never claimed), inside A's window.
+      await turn.inject({ ...other(), messageId: undefined, senderId: "U0THIRD003" });
+      expect(await turn.steer(other("1792189039.000800"))).toEqual({ handled: true });
+      expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+    });
+
+    it("also when the gate answers first and B is injected before A's message_received", async () => {
+      const turn = plugin(CROSS, SANDBOXED, true);
+      await turn.arrive();
+      await turn.start();
+      await turn.inject({ ...other(), messageId: undefined, senderId: "U0THIRD003" });
+      expect(await turn.steer(other("1792189039.000900"))).toEqual({ handled: true });
+      await turn.inject(other("1792189039.000900"));
+      expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+    });
+
     it("but an injected one (never claimed) still does", async () => {
       const turn = plugin(CROSS, SANDBOXED, true);
       await turn.arrive();
