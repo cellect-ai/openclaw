@@ -359,7 +359,11 @@ export function createGatewayHookDispatcher(params: {
           deliveryError: result.deliveryError,
           deliverySuppressionReason: result.deliverySuppressionReason,
           model: result.model ?? value.model,
-          summary: result.status !== "ok" ? resolveHookRunSummary(result) : undefined,
+          // A shadow summary can be the run text. Log the status, not that text.
+          summary:
+            result.status !== "ok" && !isShadowHookSessionKey(sessionKey)
+              ? resolveHookRunSummary(result)
+              : undefined,
         }),
       };
       const details = ["runId", "status", "deliveryError", "summary", "model"].flatMap((key) =>
@@ -427,6 +431,11 @@ export function createGatewayHookDispatcher(params: {
       status: string,
       reason: string,
     ) => {
+      // Shadow runs are traces. Failure and terminal summaries stay out of the
+      // owning agent's main session, whatever the hook mode.
+      if (isShadowHookSessionKey(sessionKey)) {
+        return;
+      }
       if (status !== "ok" && !claimFailureNotice(value.replayKey)) {
         return;
       }
