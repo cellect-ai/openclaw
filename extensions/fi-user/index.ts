@@ -589,6 +589,21 @@ export default definePluginEntry({
       // Keep source-channel delivery independent of Fi/Matrix latency.
       void projectVerifiedSlackMessage(api, event, context, slackProjection);
     });
+    // The host asks before it injects a channel message into the run already
+    // active in its session; a claim queues the message as its own turn.
+    api.on("before_steer", (event, context) =>
+      adminDelegation.steerGate({
+        channel: context.channelId ?? event.channel,
+        senderId: event.senderId ?? context.senderId,
+        sessionKey: event.sessionKey ?? context.sessionKey,
+        channelContext: context.channelContext,
+        messageId: event.messageId ?? context.messageId,
+        accountId: context.accountId,
+        conversationId: context.conversationId,
+      })
+        ? { handled: true }
+        : undefined,
+    );
     // An approver's reply to an admin-action card is decided here and claimed,
     // so the same text is not also run as an agent turn. message_received only
     // observes: handling it there left "approve <ID>" to reach the model too.

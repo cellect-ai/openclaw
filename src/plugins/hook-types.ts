@@ -154,6 +154,7 @@ const PLUGIN_HOOK_NAMES = [
   "skill_proposal_changed",
   "skill_changed",
   "before_dispatch",
+  "before_steer",
   "reply_dispatch",
   "before_install",
   "before_agent_run",
@@ -426,6 +427,26 @@ export type PluginHookBeforeDispatchContext = {
 export type PluginHookBeforeDispatchResult = {
   handled: boolean;
   text?: string;
+};
+
+/**
+ * Asked before the host injects a channel message into the run that is already
+ * active in its session. A handler that returns `{ handled: true }` keeps the
+ * message out of that run: the host queues it as its own turn instead, after
+ * the active run settles, where `before_dispatch` proves its sender anew.
+ * Handlers must answer from memory; errors and timeouts let the steer proceed.
+ */
+export type PluginHookBeforeSteerEvent = {
+  messageId?: string;
+  channel?: string;
+  sessionKey?: string;
+  senderId?: string;
+  isGroup?: boolean;
+};
+
+export type PluginHookBeforeSteerResult = {
+  /** True: do not steer; queue the message as its own turn. */
+  handled: boolean;
 };
 
 export type PluginHookReplyDispatchEvent = {
@@ -939,6 +960,11 @@ export type PluginHookHandlerMap = {
     PluginHookBeforeDispatchEvent,
     PluginHookBeforeDispatchContext,
     PluginHookBeforeDispatchResult
+  >;
+  before_steer: AsyncPluginHook<
+    PluginHookBeforeSteerEvent,
+    PluginHookMessageContext,
+    PluginHookBeforeSteerResult
   >;
   reply_dispatch: AsyncPluginHook<
     PluginHookReplyDispatchEvent,

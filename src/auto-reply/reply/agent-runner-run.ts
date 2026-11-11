@@ -9,16 +9,22 @@ import { updateSessionEntry } from "../../config/sessions/session-accessor.js";
 import { readSessionEntryInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { logVerbose } from "../../globals.js";
 import {
+  deriveInboundMessageHookContext,
+  toPluginMessageContext,
+} from "../../hooks/message-hook-mappers.js";
+import {
   assertAgentRunLifecycleGenerationCurrent,
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { hasOutboundReplyContent } from "../../plugin-sdk/reply-payload.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
+import type { FinalizedMsgContext } from "../templating.js";
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import {
@@ -73,6 +79,46 @@ import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
+/**
+ * A plugin may refuse to have a channel message written into the run that is
+ * active (it cannot act for that message's sender). The message then takes the
+ * existing FIFO followup path and runs as its own turn, keeping its channel
+ * proof and its message-id dedupe. A failing plugin never blocks steering.
+ */
+async function askPluginsToQueueSteer(params: {
+  sessionCtx: RunReplyAgentParams["sessionCtx"];
+  sessionKey: string | undefined;
+  messageId: string | undefined;
+}): Promise<boolean> {
+  const runner = getGlobalHookRunner();
+  if (!runner?.hasHooks("before_steer")) {
+    return false;
+  }
+  try {
+    const context = toPluginMessageContext(
+      deriveInboundMessageHookContext(params.sessionCtx as FinalizedMsgContext, {
+        messageId: params.messageId,
+      }),
+    );
+    const result = await runner.runBeforeSteer(
+      {
+        ...(params.messageId ? { messageId: params.messageId } : {}),
+        ...(context.channelId ? { channel: context.channelId } : {}),
+        ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+        ...(context.senderId ? { senderId: context.senderId } : {}),
+      },
+      context,
+    );
+    if (result?.handled) {
+      logVerbose("queue: a plugin kept this message out of the active run; queuing instead");
+      return true;
+    }
+  } catch {
+    // Fail open: a plugin fault must not change steering.
+  }
+  return false;
+}
+
 export async function runReplyAgent(
   input: RunReplyAgentParams,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
@@ -224,8 +270,20 @@ export async function runReplyAgent(
     ? (replyRunRegistry.get(sessionKey) ?? providedReplyOperation)
     : providedReplyOperation;
   const steeringAuthority = resolveReplySteeringAuthority(followupRun, activeReplyOperation);
+  const pluginQueuesSteer =
+    effectiveShouldSteer &&
+    isActive &&
+    !steeringAuthority.shouldQueueAuthorityMismatch &&
+    messageInjectionDisposition === "none" &&
+    (await askPluginsToQueueSteer({
+      sessionCtx,
+      sessionKey,
+      messageId: followupRun.messageId,
+    }));
   const shouldQueueAuthorityMismatch =
-    effectiveShouldSteer && isActive && steeringAuthority.shouldQueueAuthorityMismatch;
+    effectiveShouldSteer &&
+    isActive &&
+    (steeringAuthority.shouldQueueAuthorityMismatch || pluginQueuesSteer);
   if (shouldQueueAuthorityMismatch) {
     logVerbose(
       `queue: active session ${activeReplyOperation?.sessionId ?? followupRun.run.sessionId} has different or unknown tool authority; queuing instead of steering`,

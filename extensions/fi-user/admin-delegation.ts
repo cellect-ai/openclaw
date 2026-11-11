@@ -161,7 +161,14 @@ type Custody = {
   subject?: string;
 };
 type Held = { block: true; blockReason: string };
-type NoticeRoute = { channel: string; to: string; threadId?: string | number; accountId?: string };
+type NoticeRoute = {
+  channel: string;
+  to: string;
+  threadId?: string | number;
+  accountId?: string;
+  /** The channel event the notice is about, so a message the host queued can retract it. */
+  messageId?: string;
+};
 /** Told, at most once per run, to whoever wrote into a run that cannot act for them. */
 export const INJECTED_NOTICE =
   "I couldn't act on that while another task was running. Please send it again.";
@@ -391,6 +398,16 @@ export function registerAdminDelegation(
    * run that may carry their queued words proves nobody, as on the admin side.
    */
   const fiUserTainted = new Set<string>();
+  /** Events (session, event id) the host was told to queue rather than steer. */
+  const queuedBySteerGate = new Set<string>();
+  const trimSet = (set: Set<string>, max: number): void => {
+    for (const oldest of set) {
+      if (set.size <= max) {
+        break;
+      }
+      set.delete(oldest);
+    }
+  };
   /** Notices waiting out NOTICE_GRACE_MS after their run settled, by session. */
   const pendingNotices = new Map<string, Set<ReturnType<typeof setTimeout>>>();
   const cancelNotices = (sessionKey: string): void => {
@@ -404,6 +421,7 @@ export function registerAdminDelegation(
       cancelNotices(key);
     }
     fiUserTainted.clear();
+    queuedBySteerGate.clear();
     arrivals.clear();
     runs.clear();
     fiUserReplies.clear();
@@ -1022,6 +1040,10 @@ export function registerAdminDelegation(
    * proof. A re-sent message is a new arrival and needs its own proof.
    */
   const noticeUnprovenRun = (sessionKey: string, message: Inbound): void => {
+    const eventId = message.messageId?.trim();
+    if (eventId && queuedBySteerGate.has(`${sessionKey}\0${eventId}`)) {
+      return;
+    }
     let target: Run | undefined;
     for (const run of runs.values()) {
       if (run.sessionKey === sessionKey && !run.sender) {
@@ -1040,7 +1062,54 @@ export function registerAdminDelegation(
       to,
       ...(threadId !== undefined && threadId !== "" ? { threadId } : {}),
       ...(accountId ? { accountId } : {}),
+      ...(eventId ? { messageId: eventId } : {}),
     };
+  };
+
+  /**
+   * Whether the host should keep this channel message out of the run that is
+   * active in its session and queue it as its own turn (`before_steer`). Only
+   * with crossChannelCustody. A message that cannot act through the active run
+   * (it proves nobody, or another person than the sender) is not injected: it
+   * runs after that run settles, under its own `before_dispatch` proof, with the
+   * host's message-id dedupe, so nothing is replayed and no "send it again"
+   * notice is needed for it. Answers from memory; an internal fault queues.
+   */
+  const steerGate = (message: Inbound): boolean => {
+    try {
+      if (configFromRuntime(api).crossChannelCustody !== true) {
+        return false;
+      }
+      const session = adminSession(message);
+      if (!session || (message.channel !== "matrix" && message.channel !== "slack")) {
+        return false;
+      }
+      if (talkConsultSender(session.adminAgentId, session.sessionKey, message)) {
+        return false;
+      }
+      const live = [...runs.values()].filter((run) => run.sessionKey === session.sessionKey);
+      if (live.length === 0) {
+        return false;
+      }
+      const requester = inboundRequester(session.sessionKey, message);
+      const incoming = requester ? JSON.stringify(requester) : undefined;
+      if (incoming && live.every((run) => run.sender === incoming)) {
+        return false;
+      }
+      const eventId = message.messageId?.trim();
+      if (eventId) {
+        queuedBySteerGate.add(`${session.sessionKey}\0${eventId}`);
+        trimSet(queuedBySteerGate, MAX_TRACKED);
+        for (const run of live) {
+          if (run.notice?.messageId === eventId) {
+            delete run.notice;
+          }
+        }
+      }
+      return true;
+    } catch {
+      return true;
+    }
   };
   const scheduleNotice = (sessionKey: string, route: NoticeRoute): void => {
     const timers = pendingNotices.get(sessionKey) ?? new Set();
@@ -1528,5 +1597,5 @@ export function registerAdminDelegation(
       : undefined;
   };
 
-  return { dispatched, received, held, decidesAfterMint, mint, provenToolRequester };
+  return { dispatched, received, steerGate, held, decidesAfterMint, mint, provenToolRequester };
 }

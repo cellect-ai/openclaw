@@ -632,6 +632,7 @@ describe("the admin agent's delegated user token", () => {
           "before_prompt_build",
           "before_prompt_build",
           "before_prompt_build",
+          "before_steer",
           "before_tool_call",
           "message_received",
           "message_received",
@@ -1129,5 +1130,88 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
     // Once the admin's command is cleaned up, their own token runs.
     await turn.cleanup({ sessionKey: SLACK_THREAD });
     expect((await turn.exec(resent))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(otherToken);
+  });
+});
+
+describe("the host asks before steering a message into the active run (FU-B4)", () => {
+  const GRACE = 30_000;
+  const dm = (senderId = "U0ADMIN001", messageId = "1792189039.000100") => ({
+    channel: "slack",
+    senderId,
+    messageId,
+    conversationId: "user:U0ADMIN001",
+    threadId: "1792189039.487369",
+  });
+  const wake = async (config: Record<string, unknown> = CROSS) => {
+    const turn = plugin(config, SANDBOXED, true);
+    await turn.start({ runId: "wake-1", trigger: "cron", senderId: undefined });
+    return turn;
+  };
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("queues a message the active unproven run cannot act on, and retracts its notice", async () => {
+    const turn = await wake();
+    // message_received fires first and records the notice route; the steer gate follows.
+    await turn.inject(dm());
+    expect(await turn.steer(dm())).toEqual({ handled: true });
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("does not notice a queued message whose message_received arrives after the gate", async () => {
+    const turn = await wake();
+    expect(await turn.steer(dm())).toEqual({ handled: true });
+    await turn.inject(dm());
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("still sends the notice for an event the gate was never asked about", async () => {
+    const turn = await wake();
+    await turn.inject(dm("U0ADMIN001", "1792189039.000200"));
+    expect(await turn.steer(dm("U0ADMIN001", "1792189039.000300"))).toEqual({ handled: true });
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+  });
+
+  it("queues another person's message into a run proven for someone else", async () => {
+    const turn = plugin(CROSS, SANDBOXED, true);
+    await turn.arrive();
+    await turn.start();
+    expect(await turn.steer(dm("U0OTHER002"))).toEqual({ handled: true });
+  });
+
+  it("lets the same person's message steer into their own proven run", async () => {
+    const turn = plugin(CROSS, SANDBOXED, true);
+    await turn.arrive();
+    await turn.start();
+    expect(await turn.steer(dm("U0ADMIN001"))).toBeUndefined();
+  });
+
+  it.each([
+    ["the flag is off", {}],
+    ["the flag is not exactly true", { crossChannelCustody: "true" }],
+  ])("is today's behaviour when %s: never claims the steer", async (_name, config) => {
+    const turn = await wake(config);
+    expect(await turn.steer(dm())).toBeUndefined();
+    await turn.inject(dm());
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("does not claim a steer when no run is active in the session or the channel is not a person's", async () => {
+    const idle = plugin(CROSS, SANDBOXED, true);
+    expect(await idle.steer(dm())).toBeUndefined();
+    const turn = await wake();
+    expect(await turn.steer({ ...dm(), channel: "webchat" })).toBeUndefined();
   });
 });

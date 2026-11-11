@@ -216,6 +216,13 @@ export function plugin(
         { from: "x", content: "also do this", senderId: "U0ADMIN001", ...overrides },
         messageContext(overrides),
       ),
+    /** The host asks whether to steer a message into the session's active run. */
+    steer: (overrides: Record<string, unknown> = {}) =>
+      hook(
+        "before_steer",
+        { channel: "slack", sessionKey: SESSION, senderId: "U0ADMIN001", ...overrides },
+        messageContext(overrides),
+      ),
     /** A message the host receives and then dispatches to the session. */
     arrive: async (overrides: Record<string, unknown> = {}) => {
       await hook(

@@ -30,6 +30,7 @@ import {
   isHookDecision,
 } from "./hook-decision-types.js";
 import { cloneHookIsolationValue, HookIsolationError } from "./hook-isolation.js";
+import type { PluginHookMessageContext } from "./hook-message.types.js";
 import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-registry.types.js";
 import { acceptPluginReplyPayload, toPluginReplyPayload } from "./hook-reply-payload.js";
 import type {
@@ -50,6 +51,8 @@ import type {
   PluginHookBeforeDispatchContext,
   PluginHookBeforeDispatchEvent,
   PluginHookBeforeDispatchResult,
+  PluginHookBeforeSteerEvent,
+  PluginHookBeforeSteerResult,
   PluginHookHandlerMap,
   PluginHookBeforeModelResolveResult,
   PluginHookBeforePromptBuildEvent,
@@ -982,6 +985,14 @@ export function createHookRunner(
     );
   }
 
+  /** First claim wins: a claimed steer is queued as its own turn instead of injected. */
+  async function runBeforeSteer(
+    event: PluginHookBeforeSteerEvent,
+    ctx: PluginHookMessageContext,
+  ): Promise<PluginHookBeforeSteerResult | undefined> {
+    return runClaimingHook<"before_steer", PluginHookBeforeSteerResult>("before_steer", event, ctx);
+  }
+
   /** After session preparation, the first block wins; void handlers allow inference. */
   async function runBeforeAgentRun(
     event: PluginHookBeforeAgentRunEvent,
@@ -1201,6 +1212,7 @@ export function createHookRunner(
     runChannelPairingRequested: bindVoidHook("channel_pairing_requested"),
     runMessageReceived: bindVoidHook("message_received"),
     runBeforeDispatch,
+    runBeforeSteer,
     runReplyDispatch: bindClaimingHook("reply_dispatch"),
     runReplyPayloadSending: bindModifyingHook("reply_payload_sending", {
       // Handlers see the latest payload without inheriting host-only media trust.
