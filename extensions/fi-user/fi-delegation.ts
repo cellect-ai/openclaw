@@ -90,6 +90,10 @@ export function requesterContextLine(email: string): string {
   return `Fi requester: ${email}. This turn acts as that member. Pass --actor ${email} on every Fi command.`;
 }
 
+/** A user turn whose requester Fi did not confirm: an earlier turn's line is not this one's. */
+export const REQUESTER_UNCONFIRMED_LINE =
+  "Fi requester: not confirmed for this turn. A Fi requester line from an earlier turn belongs to that turn and may name someone else: never reuse it. If a command needs --actor, say you cannot confirm this requester's Fi email.";
+
 export const FI_USER_AGENT_ID = "cellect-fi-user";
 /**
  * Fi's protocol name for the token an admin agent's sandbox command carries,

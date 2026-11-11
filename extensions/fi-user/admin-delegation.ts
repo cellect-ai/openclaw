@@ -13,6 +13,7 @@ import {
   lookupDelegation,
   mintedRequesterEmail,
   requesterContextLine,
+  REQUESTER_UNCONFIRMED_LINE,
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
@@ -582,17 +583,29 @@ export function registerAdminDelegation(
     },
   });
   /**
-   * State the requester's own Fi email in the system context of an admin turn
-   * whose sender this run proved, so `--actor` is never guessed. The email is
-   * Fi's answer to a mint for exactly this run's sender: asked at prompt
-   * build, per run, never cached or reused for another sender in a shared
-   * room. The minted token is not kept or injected anywhere; no sandbox is
-   * held. No proof, no answer, or a sender change while Fi answered: no line.
+   * State the requester's own Fi email in this admin turn's own input, so
+   * `--actor` is never guessed. The email is Fi's answer to a mint for exactly
+   * this run's sender: asked at prompt build, per run, never cached or reused
+   * for another sender in a shared room. The minted token is not kept or
+   * injected anywhere; no sandbox is held.
+   *
+   * It is per-turn context (`prependContext`), not system context: on the
+   * Codex harness system context becomes the thread's generic policy, which is
+   * persisted in the native thread. A user turn without a confirmed email
+   * (no proof, no answer, or a sender change while Fi answered) says so, so an
+   * earlier turn's line in shared history is never taken for this sender's.
    * (Registered before before_agent_reply, which stays this owner's last hook.)
    */
   api.on("before_prompt_build", async (_event, context) => {
     const runId = context.runId;
-    const run = runId ? runs.get(runId) : undefined;
+    const agentId = context.agentId?.toLowerCase();
+    if (!runId || !agentId || agentId !== configFromRuntime(api).adminAgentId.toLowerCase()) {
+      return undefined;
+    }
+    // A mail wake carries Fi's own line in its message; other non-user runs name nobody.
+    const unconfirmed =
+      context.trigger === "user" ? { prependContext: REQUESTER_UNCONFIRMED_LINE } : undefined;
+    const run = runs.get(runId);
     const sender = run?.sender;
     const proof = provenToolRequester({
       runId,
@@ -603,7 +616,7 @@ export function registerAdminDelegation(
       agentAccountId: context.accountId,
     });
     if (!proof || !run || !sender) {
-      return undefined;
+      return unconfirmed;
     }
     try {
       const delegation = await lookupDelegation(proof.connection, proof.body, {
@@ -611,12 +624,12 @@ export function registerAdminDelegation(
         signal: AbortSignal.timeout(REQUESTER_LINE_MINT_MS),
       });
       const email = mintedRequesterEmail(delegation);
-      if (!email || runs.get(runId!) !== run || run.sender !== sender) {
-        return undefined;
+      if (!email || runs.get(runId) !== run || run.sender !== sender) {
+        return unconfirmed;
       }
-      return { appendSystemContext: requesterContextLine(email) };
+      return { prependContext: requesterContextLine(email) };
     } catch {
-      return undefined;
+      return unconfirmed;
     }
   });
 

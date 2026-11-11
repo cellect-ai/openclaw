@@ -1,4 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { resolveAgentHarnessBeforePromptBuildResult } from "openclaw/plugin-sdk/agent-harness-runtime";
+import {
+  createMockPluginRegistry,
+  initializeGlobalHookRunner,
+  resetGlobalHookRunner,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   installDelegationFixtures,
   fetchMock,
@@ -9,32 +15,69 @@ import {
   SESSION,
   SLACK_CHANNEL,
   slackThread,
+  thread,
+  THREAD,
   TOKEN,
 } from "./admin-delegation.test-helpers.js";
 
 installDelegationFixtures();
+afterEach(() => resetGlobalHookRunner());
 
 type Turn = ReturnType<typeof plugin>;
+type PromptResult = { prependContext?: string; appendSystemContext?: string };
 
-/** Every before_prompt_build handler, as the host composes them: appended system context. */
-async function systemContext(turn: Turn, context: Record<string, unknown>): Promise<string> {
-  const parts: string[] = [];
+const UNCONFIRMED = "Fi requester: not confirmed for this turn.";
+
+/** Every before_prompt_build handler of the plugin, results kept separately. */
+async function promptResults(turn: Turn, context: Record<string, unknown>) {
+  const results: PromptResult[] = [];
   for (const handler of turn.registrations.hooks.get("before_prompt_build") ?? []) {
     const result = (await handler({ prompt: "x", messages: [] } as never, context as never)) as
-      | { appendSystemContext?: string }
+      | PromptResult
       | undefined;
-    if (result?.appendSystemContext) {
-      parts.push(result.appendSystemContext);
+    if (result) {
+      results.push(result);
     }
   }
-  return parts.join("\n");
+  return {
+    turnContext: results.map((result) => result.prependContext ?? "").join("\n"),
+    systemContext: results.map((result) => result.appendSystemContext ?? "").join("\n"),
+  };
 }
 
-const slackRun = (runId = "run-1", senderId = "U0ADMIN001", sessionKey = SESSION) => ({
+/**
+ * The Codex harness's own prompt build over the plugin's registered hooks:
+ * `prompt` is the turn input, `developerInstructions` the thread's persisted
+ * generic policy.
+ */
+async function codexPromptBuild(turn: Turn, context: Record<string, unknown>) {
+  initializeGlobalHookRunner(
+    createMockPluginRegistry(
+      (turn.registrations.hooks.get("before_prompt_build") ?? []).map((handler) => ({
+        hookName: "before_prompt_build",
+        pluginId: "fi-user",
+        handler: handler as (...args: unknown[]) => unknown,
+      })),
+    ),
+  );
+  return resolveAgentHarnessBeforePromptBuildResult({
+    prompt: "Current message: list rooms for 305 Third",
+    developerInstructions: "base generic policy",
+    messages: [],
+    ctx: context,
+  });
+}
+
+const run = (
+  runId = "run-1",
+  senderId = "U0ADMIN001",
+  sessionKey = SESSION,
+  channel = "slack",
+) => ({
   runId,
   agentId: "cellect-fi-admin",
   sessionKey,
-  channel: "slack",
+  channel,
   senderId,
   trigger: "user",
 });
@@ -43,36 +86,38 @@ const slackRun = (runId = "run-1", senderId = "U0ADMIN001", sessionKey = SESSION
 function mintPerSender(emails: Record<string, string | undefined>, withRequester = true) {
   fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
     if (url !== MINT_URL) {
-      return new Response("{}");
+      return new Response(
+        JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+      );
     }
-    const body = JSON.parse(String(init?.body)) as { requesterSenderId?: string };
-    const email = emails[body.requesterSenderId ?? ""];
+    const body = JSON.parse(String(init?.body)) as {
+      requesterSenderId?: string;
+      requesterMatrixUserId?: string;
+    };
+    const email = emails[body.requesterSenderId ?? body.requesterMatrixUserId ?? ""];
     if (!email) {
       return new Response("not linked", { status: 404 });
     }
-    const response = minted({}, { email });
-    if (!withRequester) {
-      return response;
-    }
-    const json = (await response.json()) as Record<string, unknown>;
-    return new Response(JSON.stringify({ ...json, requester: { channel: "slack", email } }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
-    });
+    const json = (await minted({}, { email }).json()) as Record<string, unknown>;
+    return new Response(
+      JSON.stringify(withRequester ? { ...json, requester: { channel: "slack", email } } : json),
+      { status: 200, headers: { "content-type": "application/json" } },
+    );
   });
 }
 
 describe("the admin turn's Fi requester line", () => {
-  it("states the email Fi resolved for this run's proven sender, in system context", async () => {
+  it("states the email Fi resolved for this run's proven sender, as this turn's context", async () => {
     mintPerSender({ U0ADMIN001: "admin@example.com" });
     const turn = plugin();
     await turn.arrive();
     await turn.start();
-    const context = await systemContext(turn, slackRun());
-    expect(context).toContain(
+    const { turnContext, systemContext } = await promptResults(turn, run());
+    expect(turnContext).toContain(
       "Fi requester: admin@example.com. This turn acts as that member. Pass --actor admin@example.com on every Fi command.",
     );
-    expect(context).not.toContain(TOKEN);
+    expect(systemContext).not.toContain("Fi requester");
+    expect(turnContext).not.toContain(TOKEN);
     expect(mints()).toHaveLength(1);
     expect(JSON.parse(String((mints()[0]![1] as RequestInit).body))).toEqual({
       requesterSenderId: "U0ADMIN001",
@@ -80,20 +125,17 @@ describe("the admin turn's Fi requester line", () => {
     });
   });
 
-  it("adds no line when Fi's answer carries no requester email (older Fi)", async () => {
-    mintPerSender({ U0ADMIN001: "admin@example.com" }, false);
+  it.each([
+    ["Fi's answer carries no requester email (older Fi)", false, "admin@example.com"],
+    ["the mint fails", true, undefined],
+  ])("says the requester is not confirmed when %s", async (_label, withRequester, email) => {
+    mintPerSender({ U0ADMIN001: email }, withRequester);
     const turn = plugin();
     await turn.arrive();
     await turn.start();
-    expect(await systemContext(turn, slackRun())).not.toContain("Fi requester:");
-  });
-
-  it("adds no line when the mint fails", async () => {
-    mintPerSender({});
-    const turn = plugin();
-    await turn.arrive();
-    await turn.start();
-    expect(await systemContext(turn, slackRun())).not.toContain("Fi requester:");
+    const { turnContext } = await promptResults(turn, run());
+    expect(turnContext).toContain(UNCONFIRMED);
+    expect(turnContext).not.toContain("@example.com");
   });
 
   it("asks Fi nothing for a run whose sender is not proven", async () => {
@@ -102,42 +144,21 @@ describe("the admin turn's Fi requester line", () => {
     await turn.arrive();
     await turn.arrive({ senderId: "U0OTHER002" });
     await turn.start();
-    expect(await systemContext(turn, slackRun())).not.toContain("Fi requester:");
+    expect((await promptResults(turn, run())).turnContext).toContain(UNCONFIRMED);
     expect(mints()).toHaveLength(0);
   });
 
-  it("never lets one sender's email reach another sender's turn in a shared thread", async () => {
-    mintPerSender({ U0ADMIN001: "admin@example.com", U0OTHER002: "other@example.com" });
+  it("adds nothing to a non-user run or another agent's turn", async () => {
+    mintPerSender({ U0ADMIN001: "admin@example.com" });
     const turn = plugin();
-    const first = slackThread();
-    await turn.arrive(first.arrive);
-    await turn.start(first.start);
-    const firstContext = await systemContext(
-      turn,
-      slackRun("run-1", "U0ADMIN001", first.start.sessionKey),
-    );
-    expect(firstContext).toContain("Fi requester: admin@example.com.");
-
-    const senderId = "U0OTHER002";
-    await turn.arrive({ ...first.arrive, senderId, messageId: "1792190934.152459" });
-    await turn.start({
-      ...first.start,
-      runId: "run-2",
-      senderId,
-      channelContext: {
-        sender: { id: senderId },
-        chat: { id: SLACK_CHANNEL, eventId: "1792190934.152459" },
-      },
+    expect(await promptResults(turn, { ...run(), trigger: "cron" })).toEqual({
+      turnContext: "",
+      systemContext: "",
     });
-    const second = await systemContext(turn, slackRun("run-2", senderId, first.start.sessionKey));
-    expect(second).toContain("Fi requester: other@example.com.");
-    expect(second).not.toContain("admin@example.com");
-    // The first run is no longer proven once someone else wrote: it gets no line again.
     expect(
-      await systemContext(turn, slackRun("run-1", "U0ADMIN001", first.start.sessionKey)),
-    ).not.toContain("Fi requester:");
-    // One mint per proven run; nothing reused across senders.
-    expect(mints()).toHaveLength(2);
+      (await promptResults(turn, { ...run(), agentId: "cellect-fi-user" })).turnContext,
+    ).not.toContain("Fi requester");
+    expect(mints()).toHaveLength(0);
   });
 
   it("refuses an email that is not the delegated member's own", async () => {
@@ -157,6 +178,75 @@ describe("the admin turn's Fi requester line", () => {
     const turn = plugin();
     await turn.arrive();
     await turn.start();
-    expect(await systemContext(turn, slackRun())).not.toContain("Fi requester:");
+    const { turnContext } = await promptResults(turn, run());
+    expect(turnContext).toContain(UNCONFIRMED);
+    expect(turnContext).not.toContain("someone-else@example.com");
+  });
+});
+
+describe("two senders, one shared session, through the Codex harness prompt build", () => {
+  it.each([
+    ["Slack thread", "Fi mints for the second sender", "other@example.com"],
+    ["Slack thread", "the second sender's mint fails", undefined],
+  ])("%s: turn 2 never carries turn 1's line when %s", async (_where, _case, secondEmail) => {
+    mintPerSender({ U0ADMIN001: "admin@example.com", U0OTHER002: secondEmail });
+    const turn = plugin();
+    const first = slackThread();
+    await turn.arrive(first.arrive);
+    await turn.start(first.start);
+    const one = await codexPromptBuild(turn, run("run-1", "U0ADMIN001", first.start.sessionKey));
+    expect(one.prompt).toContain("Fi requester: admin@example.com.");
+    // Per-turn input, never the persisted thread policy.
+    expect(one.developerInstructions).not.toContain("Fi requester");
+
+    const senderId = "U0OTHER002";
+    await turn.arrive({ ...first.arrive, senderId, messageId: "1792190934.152459" });
+    await turn.start({
+      ...first.start,
+      runId: "run-2",
+      senderId,
+      channelContext: {
+        sender: { id: senderId },
+        chat: { id: SLACK_CHANNEL, eventId: "1792190934.152459" },
+      },
+    });
+    const two = await codexPromptBuild(turn, run("run-2", senderId, first.start.sessionKey));
+    expect(two.prompt).not.toContain("admin@example.com");
+    expect(two.developerInstructions).not.toContain("Fi requester");
+    expect(two.prompt).toContain(secondEmail ? `Fi requester: ${secondEmail}.` : UNCONFIRMED);
+    // One mint per proven run; nothing reused across senders.
+    expect(mints()).toHaveLength(2);
+  });
+
+  it.each([
+    ["Fi mints for the second sender", "@other:matrix.example"],
+    ["the second sender's mint fails", undefined],
+  ])("Matrix thread: turn 2 never carries turn 1's line when %s", async (_case, secondKnown) => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+    mintPerSender({
+      "@admin:matrix.example": "admin@example.com",
+      ...(secondKnown ? { [secondKnown]: "other@example.com" } : {}),
+    });
+    const turn = plugin();
+    const first = thread();
+    await turn.arrive(first.arrive);
+    await turn.start(first.start);
+    const one = await codexPromptBuild(turn, {
+      ...run("run-1", "@admin:matrix.example", THREAD, "matrix"),
+      accountId: "adminprod",
+    });
+    expect(one.prompt).toContain("Fi requester: admin@example.com.");
+    expect(one.developerInstructions).not.toContain("Fi requester");
+
+    const second = thread("@other:matrix.example", "$e2");
+    await turn.arrive(second.arrive);
+    await turn.start({ ...second.start, runId: "run-2" });
+    const two = await codexPromptBuild(turn, {
+      ...run("run-2", "@other:matrix.example", THREAD, "matrix"),
+      accountId: "adminprod",
+    });
+    expect(two.prompt).not.toContain("admin@example.com");
+    expect(two.developerInstructions).not.toContain("Fi requester");
+    expect(two.prompt).toContain(secondKnown ? "Fi requester: other@example.com." : UNCONFIRMED);
   });
 });

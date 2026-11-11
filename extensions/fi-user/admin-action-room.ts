@@ -27,6 +27,31 @@ export const ROOM_ADMIN_CHANGES = {
 /** Sessions already asked which project a room_admin notice is for: ask once, then file. */
 const roomAdminProjectAsked = new Set<string>();
 export type RoomAdminChange = keyof typeof ROOM_ADMIN_CHANGES;
+/** Notices one conversation may post: a loop or a flood stops here. */
+export const ROOM_ADMIN_NOTICES_PER_SESSION = 3;
+const roomAdminNoticeCount = new Map<string, number>();
+const NOTICE_FIELD_CHARS = 300;
+
+/**
+ * A requester-supplied value as inert notice text: one line, at most 300
+ * characters, `& < >` escaped (Slack reads `<!channel>`, `<@U…>` and
+ * `<url|text>` only unescaped) and `@room`/`@channel`/`@here`/`@everyone`
+ * broken with a zero-width space, so the notice cannot ping, link or forge
+ * a line for the admins who read it.
+ */
+export function noticeText(value: string): string {
+  const line = value
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const capped =
+    line.length > NOTICE_FIELD_CHARS ? `${line.slice(0, NOTICE_FIELD_CHARS - 1)}…` : line;
+  return capped
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/@(room|channel|here|everyone)\b/gi, "@\u200b$1");
+}
 
 /** A room_admin call carries what to change, never a change: anything else is refused. */
 export function assertRoomAdminNotice(input: object): void {
@@ -95,6 +120,15 @@ export async function roomAdminNotice(
       });
     }
   }
+  const session = context.sessionKey ?? "";
+  const sent = roomAdminNoticeCount.get(session) ?? 0;
+  if (sent >= ROOM_ADMIN_NOTICES_PER_SESSION) {
+    return jsonResult({
+      status: "notice_limit",
+      cardPosted: false,
+      tellRequester: `${ROOM_ADMIN_NOTICES_PER_SESSION} data-room notices were already sent from this conversation. Nothing more was filed; ask an administrator in Fi directly.`,
+    });
+  }
   const principals = config.adminPrincipals.map((id) =>
     /^U[A-Z0-9]+$/i.test(id) ? `<@${id}>` : id,
   );
@@ -102,10 +136,10 @@ export async function roomAdminNotice(
     identity.channel === "slack" ? `<@${identity.requesterSenderId}>` : delegation.user.email;
   const text = [
     `Data-room change requested by ${who} (${delegation.user.email})${fields.roomChange ? `: ${ROOM_ADMIN_CHANGES[fields.roomChange]}` : ""}`,
-    `Project: ${project ?? "not given"}`,
-    fields.roomId ? `Data room: ${fields.roomId}` : undefined,
-    `What: ${fields.description}`,
-    fields.reason ? `Why: ${fields.reason}` : undefined,
+    `Project: ${project ? noticeText(project) : "not given"}`,
+    fields.roomId ? `Data room: ${noticeText(fields.roomId)}` : undefined,
+    `What: ${noticeText(fields.description ?? "")}`,
+    fields.reason ? `Why: ${noticeText(fields.reason)}` : undefined,
     `${principals.join(" ")}${principals.length ? " — " : ""}please make this change in Fi (the data room's members, recipients, links or settings). This is a notice only: replying here approves or changes nothing.`,
   ]
     .filter(Boolean)
@@ -113,6 +147,10 @@ export async function roomAdminNotice(
   if (context.delivery) {
     await context.delivery.send({ text });
   }
+  if (roomAdminNoticeCount.size >= 1_000 && !roomAdminNoticeCount.has(session)) {
+    roomAdminNoticeCount.clear();
+  }
+  roomAdminNoticeCount.set(session, sent + 1);
   return jsonResult({
     filed: true,
     notifyOnly: true,

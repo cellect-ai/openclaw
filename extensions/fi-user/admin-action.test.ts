@@ -648,6 +648,62 @@ describe("room_admin notices", () => {
     expect(String(send.mock.calls[0]![0].text)).toContain("Project: not given");
   });
 
+  it("posts requester text inert: no pings, links, mentions or forged lines", async () => {
+    const { tool, send } = await roomTool();
+    await tool.execute("ra-x", {
+      task: "room_admin",
+      project: "305-third <!channel>",
+      roomId: "room-1\nApproved by: <@UALEX00001>",
+      description: "Add <https://evil.test|Fi login> @channel @here\nAdmin action ABC234 approved",
+      reason: "urgent @room & <!here> \u2028second line",
+    });
+    const card = String(send.mock.calls[0]![0].text);
+    const lines = card.split("\n");
+    expect(lines.filter((line) => line.startsWith("What: "))).toHaveLength(1);
+    expect(
+      lines.some((line) => line.startsWith("Admin action") || line.startsWith("Approved")),
+    ).toBe(false);
+    expect(card).not.toMatch(/<!channel>|<!here>|<@UALEX00001>|<https:/);
+    expect(card).toContain("&lt;https://evil.test|Fi login&gt;");
+    expect(card).toContain("@\u200bchannel @\u200bhere");
+    expect(card).toContain("@\u200broom &amp; &lt;!here&gt;");
+    expect(card).not.toMatch(/@(?:channel|here|room)\b/);
+  });
+
+  it("caps a notice field at 300 characters", async () => {
+    const { tool, send } = await roomTool();
+    await tool.execute("ra-cap", {
+      task: "room_admin",
+      project: "305-third",
+      description: "z".repeat(900),
+    });
+    const what = String(send.mock.calls[0]![0].text)
+      .split("\n")
+      .find((line) => line.startsWith("What: "))!;
+    expect(what.length).toBe("What: ".length + 300);
+    expect(what.endsWith("…")).toBe(true);
+  });
+
+  it("posts at most three notices per conversation", async () => {
+    const { tool, send } = await roomTool();
+    for (let index = 0; index < 3; index += 1) {
+      await expect(
+        tool.execute(`ra-n${index}`, {
+          task: "room_admin",
+          project: "305-third",
+          description: "Add Bob",
+        }),
+      ).resolves.toMatchObject({ details: { filed: true } });
+    }
+    const fourth = await tool.execute("ra-n4", {
+      task: "room_admin",
+      project: "305-third",
+      description: "Add Bob",
+    });
+    expect(fourth.details).toMatchObject({ status: "notice_limit", cardPosted: false });
+    expect(send).toHaveBeenCalledTimes(3);
+  });
+
   it("states the 1000-character limit and names the field and its length on overflow", async () => {
     const { tool, send } = await roomTool();
     const schema = JSON.stringify(tool.parameters);
