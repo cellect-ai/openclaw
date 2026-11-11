@@ -1,10 +1,13 @@
 import { expect, it } from "vitest";
+import { resolveOpenClawPluginToolInputs } from "../../agents/openclaw-tools.plugin-context.js";
+import { isShadowHookRun, shadowHookRunParams } from "../../agents/shadow-hook-tool-policy.js";
 import { lookupHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
 import { makeIsolatedAgentJobFixture, makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
   loadRunCronIsolatedAgentTurn,
   mockRunCronFallbackPassthrough,
+  resolveCronSessionMock,
   runEmbeddedAgentMock,
 } from "./run.test-harness.js";
 
@@ -43,3 +46,64 @@ it.each([
     expect(lookupHookRequesterAttestation(call.runId, call.sessionKey)).toBeUndefined();
   },
 );
+
+// `/hooks/agent` builds `sessionTarget: "isolated"` unless the caller asks for
+// a persistent session, and Fi's shadow wake does not. The run must still be a
+// shadow run: the tool cap, the attestation and the plugins all key on its
+// session key, and Fi binds the attestation to exactly `agent:<agent>:<key>`.
+it("keeps an isolated shadow hook run on its agent-qualified shadow session", async () => {
+  mockRunCronFallbackPassthrough();
+  let pluginContext: Record<string, unknown> | undefined;
+  const defaultRun = runEmbeddedAgentMock.getMockImplementation();
+  runEmbeddedAgentMock.mockImplementation(async (args: Record<string, unknown>) => {
+    // The plugin tool context exactly as the embedded runner builds it.
+    pluginContext = resolveOpenClawPluginToolInputs({
+      options: { runId: args.runId as string, agentSessionKey: args.sessionKey as string },
+    }).context as Record<string, unknown>;
+    return defaultRun?.(args);
+  });
+  const result = await runCronIsolatedAgentTurn(
+    makeIsolatedAgentParamsFixture({
+      agentId: "cellect-fi-user",
+      sessionKey: "hook:fi-shadow:thread",
+      hookRequesterAttestation: ATTESTATION,
+      job: makeIsolatedAgentJobFixture({ sessionTarget: "isolated" }),
+    }),
+  );
+  expect(result).toMatchObject({ status: "ok" });
+  const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
+  expect(call.sessionKey).toBe("agent:cellect-fi-user:hook:fi-shadow:thread");
+  expect(JSON.stringify(call)).not.toContain(ATTESTATION);
+  // Still isolated: a fresh session on the shadow row, never a prior transcript.
+  expect(resolveCronSessionMock).toHaveBeenCalledWith(
+    expect.objectContaining({
+      sessionKey: "agent:cellect-fi-user:hook:fi-shadow:thread",
+      forceNew: true,
+    }),
+  );
+  // Plugins see the shadow session and its attestation ...
+  expect(pluginContext).toMatchObject({
+    sessionKey: "agent:cellect-fi-user:hook:fi-shadow:thread",
+    hookRequesterAttestation: ATTESTATION,
+  });
+  // ... and the gateway caps the same run to the two shadow tools.
+  expect(shadowHookRunParams(call.sessionKey, { toolsAllow: ["*"] })).toMatchObject({
+    toolsAllow: ["fi_user_api", "m365_shadow_mail"],
+    disableMessageTool: true,
+    disableToolSearch: true,
+  });
+});
+
+it("keeps ordinary isolated hook runs on a random cron run session", async () => {
+  mockRunCronFallbackPassthrough();
+  await runCronIsolatedAgentTurn(
+    makeIsolatedAgentParamsFixture({
+      agentId: "cellect-fi-user",
+      sessionKey: "hook:fi-mail:thread",
+      job: makeIsolatedAgentJobFixture({ sessionTarget: "isolated" }),
+    }),
+  );
+  const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
+  expect(call.sessionKey).toMatch(/^agent:cellect-fi-user:cron:test-job:run:[^:]+$/);
+  expect(isShadowHookRun(call.sessionKey)).toBe(false);
+});

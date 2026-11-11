@@ -11,6 +11,7 @@ import {
 } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
+import { isShadowHookSessionKey } from "../../infra/hook-requester-attestation.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -135,8 +136,16 @@ export async function prepareCronRunContext(params: {
     isDetachedCronSessionTarget(input.job.sessionTarget) || Boolean(currentBoundSourceKey);
   const baseSessionKeyIsCron =
     baseSessionKey.startsWith("cron:") || isCronSessionKey(baseSessionKey);
+  // A Fi shadow hook is identified only by its session key: the gateway tool
+  // cap, the attestation registry, both plugins and Fi (which binds the
+  // attestation to `agent:<agent>:<key>` exactly) all read it. A detached
+  // shadow run therefore stays on that key, fresh each run (forceNew below),
+  // instead of a `cron:<job>:run:<id>` key that silently drops the identity.
+  const shadowHookRun = isShadowHookSessionKey(baseSessionKey);
   const cronExecutionSessionKey =
-    usesDetachedRunSession && !baseSessionKeyIsCron ? `cron:${input.job.id}` : baseSessionKey;
+    usesDetachedRunSession && !baseSessionKeyIsCron && !shadowHookRun
+      ? `cron:${input.job.id}`
+      : baseSessionKey;
   const agentSessionKey = resolveCronAgentSessionKey({
     sessionKey: cronExecutionSessionKey,
     agentId,
@@ -193,7 +202,8 @@ export async function prepareCronRunContext(params: {
     }
     const runSessionId = cronSession.sessionEntry.sessionId;
     const currentRunSessionId = () => cronSession.sessionEntry.sessionId ?? runSessionId;
-    const usesExactRunSession = usesDetachedRunSession || baseSessionKey.startsWith("cron:");
+    const usesExactRunSession =
+      !shadowHookRun && (usesDetachedRunSession || baseSessionKey.startsWith("cron:"));
     const runSessionKey = usesExactRunSession
       ? `${agentSessionKey}:run:${runSessionId}`
       : agentSessionKey;
