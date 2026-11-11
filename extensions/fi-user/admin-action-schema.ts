@@ -1,6 +1,14 @@
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import { Type } from "typebox";
 
+/** The longest description or reason a request carries; longer text is refused, never cut. */
+export const ADMIN_ACTION_TEXT_LIMIT = 1_000;
+/**
+ * The schema admits longer text so the tool, not a generic validator, answers
+ * with the field and its length; this bound only caps what is accepted at all.
+ */
+const TEXT_ACCEPTED = 20_000;
+
 export function createAdminActionRequestSchema<T extends string>(tasks: readonly [T, ...T[]]) {
   return Type.Object(
     {
@@ -40,10 +48,26 @@ export function createAdminActionRequestSchema<T extends string>(tasks: readonly
         }),
       ),
       slackFileId: Type.Optional(Type.String({ pattern: "^F[A-Za-z0-9]{6,}$" })),
-      description: Type.Optional(Type.String({ maxLength: 1_000 })),
+      description: Type.Optional(
+        Type.String({
+          maxLength: TEXT_ACCEPTED,
+          description: `At most ${ADMIN_ACTION_TEXT_LIMIT} characters; longer text is refused, not truncated.`,
+        }),
+      ),
       targetType: Type.Optional(stringEnum(["org", "project", "company"] as const)),
       targetId: Type.Optional(Type.String({ maxLength: 200 })),
-      reason: Type.Optional(Type.String({ maxLength: 1_000 })),
+      reason: Type.Optional(
+        Type.String({
+          maxLength: TEXT_ACCEPTED,
+          description: `At most ${ADMIN_ACTION_TEXT_LIMIT} characters; longer text is refused, not truncated.`,
+        }),
+      ),
+      roomChange: Type.Optional(
+        stringEnum(["members", "recipients", "public_links", "settings"] as const, {
+          description:
+            "room_admin: which kind of data-room change an administrator should make in Fi. Descriptive only; nothing is changed.",
+        }),
+      ),
       displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
       roomName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
       order: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),

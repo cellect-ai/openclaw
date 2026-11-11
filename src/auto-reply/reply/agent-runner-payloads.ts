@@ -24,6 +24,7 @@ import { SILENT_REPLY_TOKEN } from "../tokens.js";
 import type { ReplyPayload, ReplyThreadingPolicy } from "../types.js";
 import { formatBunFetchSocketError, isBunFetchSocketError } from "./agent-runner-utils.js";
 import { createBlockReplyContentKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
+import { cellectChannelFailureCopy } from "./cellect-failure-copy.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { normalizeReplyPayloadDirectives, type DirectBlockDelivery } from "./reply-delivery.js";
 import { shouldRetryReplyDispatch } from "./reply-dispatch-outcome.js";
@@ -158,8 +159,14 @@ export async function buildReplyPayloads(params: {
   accountId?: string;
   extractMarkdownImages?: boolean;
   normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
+  /** The run these payloads answer; Slack and Matrix failure copy names it. */
+  runId?: string;
 }): Promise<{ replyPayloads: ReplyPayload[]; didLogHeartbeatStrip: boolean }> {
   let didLogHeartbeatStrip = params.didLogHeartbeatStrip;
+  const failureCopyChannel = resolveOriginMessageProvider({
+    originatingChannel: params.originatingChannel,
+    provider: params.messageProvider,
+  });
   const sanitizedPayloads: ReplyPayload[] = [];
   if (params.isHeartbeat) {
     for (const payload of params.payloads) {
@@ -185,7 +192,10 @@ export async function buildReplyPayloads(params: {
         text = stripped.text;
       }
       sanitizedPayloads.push(
-        copyPayloadWithSanitizedText(payload, text, params.conversationContext),
+        cellectChannelFailureCopy(
+          copyPayloadWithSanitizedText(payload, text, params.conversationContext),
+          { channel: failureCopyChannel, runId: params.runId },
+        ),
       );
     }
   }

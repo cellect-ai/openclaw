@@ -423,3 +423,19 @@ it("answers a model env that held only a forged token with an empty one", async 
   // Omitting env would let the host's merge hand the forged one back.
   expect(result?.params).toEqual({ command: "true", env: {} });
 });
+
+describe("the held-sandbox copy", () => {
+  it("states when the sandbox frees, in UTC, rounded up to the minute", async () => {
+    const { heldCopy } = await import("./admin-delegation.js");
+    expect(heldCopy(Date.UTC(2026, 10, 11, 14, 7, 30))).toBe(
+      "This sandbox is held by another person's command until ~14:08 UTC (at most 15 minutes). Tell the person; do not retry before then.",
+    );
+    expect(heldCopy(Date.UTC(2026, 10, 11, 23, 59, 0))).toContain("~23:59 UTC");
+  });
+
+  it("names nobody: no email, Slack or Matrix id", async () => {
+    const { heldCopy } = await import("./admin-delegation.js");
+    const copy = heldCopy(Date.now() + 10 * 60 * 1000);
+    expect(copy).not.toMatch(/@|\bU[A-Z0-9]{8,}\b/);
+  });
+});

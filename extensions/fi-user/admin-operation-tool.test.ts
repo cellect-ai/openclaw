@@ -383,6 +383,30 @@ describe("registered Fi-admin structured operation transport", () => {
     expect(posts()).toHaveLength(0);
   });
 
+  it("names the missing variant of an execute call, and how to find it, before minting", async () => {
+    const { tool } = await ready();
+    const error = await tool
+      .execute("no-variant", { action: "execute", operation: "build.rfi.show", input: {} })
+      .catch((caught: Error) => caught);
+    expect(String(error)).toContain("Invalid Fi operation request (variant: required, missing)");
+    expect(String(error)).toContain('{action:"discover", operation:"<area.noun.verb>"}');
+    expect(mints()).toHaveLength(0);
+  });
+
+  it("echoes a rejected operation value, at most 80 characters", async () => {
+    const { tool } = await ready();
+    const short = await tool
+      .execute("bad-op", { action: "discover", operation: "rfi" })
+      .catch((caught: Error) => caught);
+    expect(String(short)).toMatch(/operation: .*\(got "rfi"\)/);
+    const long = await tool
+      .execute("long-op", { action: "discover", operation: "x".repeat(300) })
+      .catch((caught: Error) => caught);
+    expect(String(long)).toContain(`(got "${"x".repeat(79)}…)`);
+    expect(String(long)).not.toContain("x".repeat(81));
+    expect(mints()).toHaveLength(0);
+  });
+
   it.each([
     { action: "discover", limit: 100001 },
     { action: "discover", offset: 100001 },

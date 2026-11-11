@@ -11,6 +11,8 @@ import {
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
   lookupDelegation,
+  mintedRequesterEmail,
+  requesterContextLine,
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
@@ -48,6 +50,8 @@ import type { RequesterProofReader } from "./requester-proof.js";
 const HOOK_BUDGET_MS = 13_000;
 const MAX_MINT_MS = 8_000;
 const MIN_MINT_MS = 500;
+/** The requester-line lookup at prompt build: a turn never waits long for it. */
+const REQUESTER_LINE_MINT_MS = 3_000;
 /** A token this close to expiry is not handed to a command. */
 const MIN_REMAINING_SECONDS = 60;
 /** Sessions, runs and sandboxes remembered at once; the oldest is dropped. */
@@ -65,9 +69,16 @@ const SOURCE_REPLY_TTL_MS = 5 * 60 * 1000;
  * no sandbox is held for longer on any answer's say-so.
  */
 const MAX_HOLD_MS = 15 * 60 * 1000;
-/** Shown to whoever reaches a sandbox that still holds another person's token. */
-const HELD =
-  "This sandbox still holds another requester's command state. Retry after its requester token expires.";
+/**
+ * Shown to whoever reaches a sandbox that still holds another person's token:
+ * when it frees, never whose it is. "Retry later" with no time made agents
+ * retry in a loop; a stated time lets them tell the person and stop.
+ */
+export function heldCopy(expiresAtMs: number): string {
+  const until = new Date(Math.ceil(expiresAtMs / 60_000) * 60_000);
+  const hhmm = `${String(until.getUTCHours()).padStart(2, "0")}:${String(until.getUTCMinutes()).padStart(2, "0")}`;
+  return `This sandbox is held by another person's command until ~${hhmm} UTC (at most 15 minutes). Tell the person; do not retry before then.`;
+}
 const UNPROVEN_HOLD =
   "This run has no verified requester proof for the sandbox's retained command state. A fresh authenticated message is required; this does not indicate another command is running.";
 /**
@@ -570,6 +581,45 @@ export function registerAdminDelegation(
       }
     },
   });
+  /**
+   * State the requester's own Fi email in the system context of an admin turn
+   * whose sender this run proved, so `--actor` is never guessed. The email is
+   * Fi's answer to a mint for exactly this run's sender: asked at prompt
+   * build, per run, never cached or reused for another sender in a shared
+   * room. The minted token is not kept or injected anywhere; no sandbox is
+   * held. No proof, no answer, or a sender change while Fi answered: no line.
+   * (Registered before before_agent_reply, which stays this owner's last hook.)
+   */
+  api.on("before_prompt_build", async (_event, context) => {
+    const runId = context.runId;
+    const run = runId ? runs.get(runId) : undefined;
+    const sender = run?.sender;
+    const proof = provenToolRequester({
+      runId,
+      agentId: context.agentId,
+      sessionKey: context.sessionKey,
+      messageChannel: context.channel,
+      requesterSenderId: context.senderId,
+      agentAccountId: context.accountId,
+    });
+    if (!proof || !run || !sender) {
+      return undefined;
+    }
+    try {
+      const delegation = await lookupDelegation(proof.connection, proof.body, {
+        agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+        signal: AbortSignal.timeout(REQUESTER_LINE_MINT_MS),
+      });
+      const email = mintedRequesterEmail(delegation);
+      if (!email || runs.get(runId!) !== run || run.sender !== sender) {
+        return undefined;
+      }
+      return { appendSystemContext: requesterContextLine(email) };
+    } catch {
+      return undefined;
+    }
+  });
+
   api.on(
     "before_agent_reply",
     (_event, context) => {
@@ -918,7 +968,7 @@ export function registerAdminDelegation(
       run.sender === holder.sender &&
       continuationCurrent(run, ctx)
       ? undefined
-      : { block: true, blockReason: run?.sender ? HELD : UNPROVEN_HOLD };
+      : { block: true, blockReason: run?.sender ? heldCopy(holder.expiresAt) : UNPROVEN_HOLD };
   };
 
   /**

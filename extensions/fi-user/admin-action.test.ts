@@ -537,3 +537,136 @@ describe("restricted filing destination", () => {
     ).rejects.toThrow(/restricted_filing requires: description/);
   });
 });
+
+describe("room_admin notices", () => {
+  async function roomTool(
+    overrides: Record<string, unknown> = {},
+    channelProject: { status: number; body: string } = {
+      status: 404,
+      body: "slack_channel: C0CHANNEL1\nproject: none\n",
+    },
+  ) {
+    vi.resetModules();
+    const actions = await import("./admin-action.js");
+    const openKeyedStore = vi.fn(approvalStores().openKeyedStore);
+    const api = {
+      config: runtimeConfig,
+      logger: { warn: vi.fn() },
+      runtime: {
+        config: { current: () => runtimeConfig },
+        state: { openKeyedStore },
+      },
+    } as unknown as OpenClawPluginApi;
+    const fetchMock = vi.mocked(fetch);
+    const base = fetchMock.getMockImplementation()!;
+    fetchMock.mockImplementation(async (input, init) =>
+      String(input).includes("/slack-channels/")
+        ? new Response(channelProject.body, {
+            status: channelProject.status,
+            headers: { "content-type": "text/plain" },
+          })
+        : base(input as string, init as RequestInit),
+    );
+    const send = vi.fn();
+    const context = {
+      agentId: "cellect-fi-user",
+      messageChannel: "slack",
+      requesterSenderId: "ULORENZO01",
+      nativeChannelId: "C0CHANNEL1",
+      sessionKey: "agent:cellect-fi-user:slack:channel:C0CHANNEL1:thread:1710000000.000100",
+      getRuntimeConfig: () => runtimeConfig,
+      delivery: { send },
+      ...overrides,
+    } as never;
+    return {
+      tool: actions.createRequestAdminActionTool(api, context),
+      send,
+      openKeyedStore,
+      fetchMock,
+    };
+  }
+
+  it("files a notice-only card that carries no executable action", async () => {
+    const { tool, send, openKeyedStore } = await roomTool();
+    const result = await tool.execute("ra1", {
+      task: "room_admin",
+      project: "305-third",
+      roomId: "room-1",
+      roomChange: "members",
+      description: "Add bob@example.com to the lender room",
+    });
+    expect(result.details).toMatchObject({ filed: true, notifyOnly: true, cardPosted: true });
+    expect(result.details).not.toHaveProperty("requestId");
+    const card = String(send.mock.calls[0]![0].text);
+    expect(card).toContain(
+      "Data-room change requested by <@ULORENZO01> (lorenzo@example.com): members",
+    );
+    expect(card).toContain("Project: 305-third");
+    expect(card).toContain("Data room: room-1");
+    expect(card).toContain("please make this change in Fi");
+    expect(card).not.toMatch(/approve [A-Z0-9]{6}/);
+    // Nothing is recorded for an approval reply to find and carry out.
+    expect(openKeyedStore).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{ operation: "member.add", member: "bob@example.com" }],
+    [{ recipientEmail: "bob@example.com" }],
+    [{ taskIds: ["t-1"] }],
+  ])("refuses a member call that tries to carry out a change: %o", async (extra) => {
+    const { tool, send, fetchMock } = await roomTool();
+    fetchMock.mockClear();
+    await expect(
+      tool.execute("ra2", {
+        task: "room_admin",
+        roomId: "room-1",
+        description: "add Bob",
+        ...extra,
+      }),
+    ).rejects.toThrow(/room_admin is a notice only/);
+    expect(send).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the channel's bound project when none is given", async () => {
+    const { tool, send } = await roomTool(
+      {},
+      { status: 200, body: "slack_channel: C0CHANNEL1\nproject_slug: 82-sussex\n" },
+    );
+    await tool.execute("ra3", { task: "room_admin", description: "Turn off the public link" });
+    expect(String(send.mock.calls[0]![0].text)).toContain("Project: 82-sussex");
+  });
+
+  it("asks once for the project when the channel has none, never a 404, then files", async () => {
+    const { tool, send } = await roomTool();
+    const first = await tool.execute("ra4", { task: "room_admin", description: "Add Bob" });
+    expect(first.details).toMatchObject({ status: "needs_project", cardPosted: false });
+    expect(JSON.stringify(first.details)).not.toMatch(/404|not found/i);
+    expect(send).not.toHaveBeenCalled();
+    const second = await tool.execute("ra5", { task: "room_admin", description: "Add Bob" });
+    expect(second.details).toMatchObject({ filed: true, notifyOnly: true });
+    expect(String(send.mock.calls[0]![0].text)).toContain("Project: not given");
+  });
+
+  it("states the 1000-character limit and names the field and its length on overflow", async () => {
+    const { tool, send } = await roomTool();
+    const schema = JSON.stringify(tool.parameters);
+    expect(schema).toContain("At most 1000 characters");
+    await expect(
+      tool.execute("ra6", {
+        task: "room_admin",
+        project: "305-third",
+        description: "x".repeat(1_342),
+      }),
+    ).rejects.toThrow("description is 1342 characters; the limit is 1000");
+    await expect(
+      tool.execute("ra7", {
+        task: "restricted_filing",
+        project: "305-third",
+        description: "ok",
+        reason: "y".repeat(1_001),
+      }),
+    ).rejects.toThrow("reason is 1001 characters; the limit is 1000");
+    expect(send).not.toHaveBeenCalled();
+  });
+});

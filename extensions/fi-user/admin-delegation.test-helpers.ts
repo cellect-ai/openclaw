@@ -6,7 +6,7 @@ import type {
   PluginJsonValue,
 } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { afterEach, beforeEach, vi } from "vitest";
+import { afterEach, beforeEach, expect, vi } from "vitest";
 import fiUserPlugin from "./index.js";
 export const BROKER = "fixture-broker-credential";
 export const TOKEN = "fixtureheader.fixturepayload.fixturesignature";
@@ -82,8 +82,10 @@ export type Env = Record<string, string>;
 export type Rewrite =
   | { params: { command?: string; env?: Env; host?: unknown; elevated?: unknown }; block?: boolean }
   | undefined;
-export const HELD =
-  "This sandbox still holds another requester's command state. Retry after its requester token expires.";
+/** The held copy for any expiry: a stated UTC time, never the holder. */
+export const HELD = expect.stringMatching(
+  /^This sandbox is held by another person's command until ~\d{2}:\d{2} UTC \(at most 15 minutes\)\. Tell the person; do not retry before then\.$/,
+);
 export const UNPROVEN_HOLD =
   "This run has no verified requester proof for the sandbox's retained command state. A fresh authenticated message is required; this does not indicate another command is running.";
 /** A runtime whose admin agent always runs in the sandbox, with elevation off. */

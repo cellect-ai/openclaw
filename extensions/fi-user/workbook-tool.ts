@@ -3,6 +3,7 @@ import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { pathSegment } from "./fi-delegation.js";
+import { actionBranch, firstSchemaError } from "./schema-errors.js";
 import type { WorkbookTransport } from "./workbook-transport.js";
 
 const readSchema = Type.Object(
@@ -107,7 +108,13 @@ export function createWorkbookTool(
       context.assertInvocationCurrent();
       transport.assertCurrent();
       if (!Value.Check(workbookSchema, raw)) {
-        throw new Error("Invalid workbook operation");
+        const detail = firstSchemaError(
+          actionBranch([readSchema, importSchema, editSchema, createSchema], workbookSchema, raw),
+          raw,
+        );
+        throw new Error(
+          `Invalid workbook operation${detail ? ` (${detail})` : ""}. get needs roomId and fieldId (the workbook's field id from the room read); a range reads at most 20 rows by 20 columns.`,
+        );
       }
       const input = raw as Static<typeof workbookSchema>;
       const writing = input.action !== "get";
@@ -157,7 +164,11 @@ export function createWorkbookTool(
       context.assertInvocationCurrent();
       abort.throwIfAborted();
       if (!response.ok && !writing) {
-        throw new Error(`Workbook API refused or unavailable (${response.status})`);
+        throw new Error(
+          response.status === 413
+            ? "Workbook API refused the read as too large (413); request a smaller range (fewer rows or columns, or one sheet at a time)"
+            : `Workbook API refused or unavailable (${response.status})`,
+        );
       }
       const responseError = (message: string) =>
         new Error(

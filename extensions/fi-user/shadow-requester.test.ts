@@ -120,6 +120,18 @@ describe("fi-user on a Fi shadow hook turn", () => {
     });
   });
 
+  it.each(["82-sussex/docs/doc-1/file", "82-sussex/esign", "82-sussex/esign/submissions/221"])(
+    "refuses %s on a shadow run before reading it",
+    async (path) => {
+      const api = shadowTools({
+        sessionKey: SHADOW_SESSION,
+        hookRequesterAttestation: ATTESTATION,
+      }).find((tool) => tool.name === "fi_user_api");
+      await expect(api?.execute("s-deny", { path })).rejects.toThrow(/not available to this turn/);
+      expect(calls.some((entry) => entry.url.includes(path))).toBe(false);
+    },
+  );
+
   it("never offers the mail item control tool to a shadow run, and offers it to a normal user turn", () => {
     const shadow = shadowTools({
       sessionKey: SHADOW_SESSION,

@@ -310,6 +310,7 @@ export async function prepareReplyAgentPayloads(state: {
       originatingThreadId: replyRouteThreadId,
       accountId: sessionCtx.AccountId,
       normalizeMediaPaths: replyMediaContext.normalizePayload,
+      runId,
     });
     didLogHeartbeatStrip = result.didLogHeartbeatStrip;
     return result.replyPayloads;

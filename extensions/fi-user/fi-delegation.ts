@@ -64,7 +64,31 @@ export type Delegation = {
   user: { email: string; orgSlug: string; orgId?: string; role: string };
   gmail: { enabled: boolean; mailbox: string | null };
   fi: { token: string; expiresAt: number };
+  /** Fi's resolved requester; `email` is the active member's own address. Older Fi omits it. */
+  requester?: { channel?: string; email?: string };
 };
+
+const REQUESTER_EMAIL = /^[^\s@<>"'`]{1,64}@[^\s@<>"'`]{1,190}$/;
+
+/**
+ * The requester email Fi resolved for this mint, only when it is a plain
+ * address and the same as the delegated user. Never taken from the model,
+ * the channel or a profile; absent on older Fi, and then there is none.
+ */
+export function mintedRequesterEmail(
+  delegation: Delegation | null | undefined,
+): string | undefined {
+  const email = delegation?.requester?.email;
+  if (typeof email !== "string" || !REQUESTER_EMAIL.test(email)) {
+    return undefined;
+  }
+  return email.toLowerCase() === delegation?.user?.email?.trim().toLowerCase() ? email : undefined;
+}
+
+/** The turn line a Fi mail wake already carries, for a turn whose requester Fi just resolved. */
+export function requesterContextLine(email: string): string {
+  return `Fi requester: ${email}. This turn acts as that member. Pass --actor ${email} on every Fi command.`;
+}
 
 export const FI_USER_AGENT_ID = "cellect-fi-user";
 /**

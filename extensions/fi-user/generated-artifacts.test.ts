@@ -736,6 +736,55 @@ describe("requester-bound generated artifact delivery", () => {
   });
 });
 
+describe("generated artifact delivery outside Slack", () => {
+  async function asMatrix(sessionKey: string) {
+    mocks.exchange.mockResolvedValue({
+      delegation: {
+        user: { orgId: "org-shape", email: "nicholas@example.test", orgSlug: "shape" },
+      },
+      identity: { channel: "matrix", requesterMatrixUserId: "@nicholas:threads.example" },
+    });
+    context.sessionKey = sessionKey;
+    const prepared = await generatedFileAction(api, context, { action: "prepare" });
+    output = path.join(
+      directory,
+      String(details(prepared).outputDirectory).replace(/^\/workspace\//, ""),
+    );
+    return register();
+  }
+
+  it("says a Matrix reply in a Slack thread cannot attach there, and sends nothing", async () => {
+    const artifactId = await asMatrix(
+      "agent:cellect-fi-user:slack:channel:CCHANNEL1:thread:1791917000.123456",
+    );
+    await expect(
+      createDeliverFileTool(api, context).execute("projected", { action: "deliver", artifactId }),
+    ).rejects.toThrow(/Matrix copy of a Slack conversation.*fi_user_dataroom.*Nothing was sent/);
+    expect(mocks.sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("points a Matrix room at filing instead of a Slack attachment", async () => {
+    const artifactId = await asMatrix("agent:cellect-fi-user:matrix:room:!abc");
+    await expect(
+      createDeliverFileTool(api, context).execute("matrix", { action: "deliver", artifactId }),
+    ).rejects.toThrow(
+      /attached only in a Slack conversation\. In Matrix, file it with fi_user_dataroom/,
+    );
+    expect(mocks.sendMedia).not.toHaveBeenCalled();
+  });
+
+  it("tells a Slack call that via=link is for existing documents", async () => {
+    const artifactId = await register();
+    await expect(
+      createDeliverFileTool(api, context).execute("link", {
+        action: "deliver",
+        artifactId,
+        via: "link",
+      }),
+    ).rejects.toThrow(/via=link is for existing Fi documents\. Omit via/);
+  });
+});
+
 describe("internal download links", () => {
   it.each(["</workspace/output.xlsx|Download>", "&lt;/workspace/output.xlsx|Download&gt;"])(
     "removes inaccessible Slack link %s",

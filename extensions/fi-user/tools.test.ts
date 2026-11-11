@@ -22,7 +22,7 @@ vi.mock("node:util", async (importOriginal) => ({
 vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentContent: vi.fn() }));
 
 import { approvalStores } from "./admin-action.test-support.js";
-import { fiUserApiPath } from "./fi-api-tool.js";
+import { FI_USER_API_SHADOW_READ_ROUTES, fiUserApiPath } from "./fi-api-tool.js";
 import { rememberWebchatContext } from "./fi-delegation.js";
 import fiUserPlugin from "./index.js";
 import { offersMailItemsTool } from "./mail-items-tool.js";
@@ -271,8 +271,8 @@ describe("fi_user_api", () => {
     "mail-agent/workspace",
     "mail-agent/tasks/item-12345678",
     "mail-agent/items/../enrollment",
-  ])("denies %s", (path) => {
-    expect(() => fiUserApiPath("shape", path)).toThrow();
+  ])("denies %s on the shadow route list", (path) => {
+    expect(() => fiUserApiPath("shape", path, FI_USER_API_SHADOW_READ_ROUTES)).toThrow();
   });
 
   it("offers fi_user_mail_items to a normal user turn and posts a strict control body", async () => {
@@ -695,23 +695,110 @@ describe("fi_user_api", () => {
   });
 
   it.each([
-    "305-third/budget",
-    "datarooms/room-1/members",
-    "305-third/rooms-search",
-    "nav/search/extra",
-    "nav",
-    "fi-view/context/extra",
     "api/other/305-third/budget/text",
     "305-third/../x/budget/text",
+    "305-third//budget/text",
+    "305-third/%2e%2e/budget/text",
     "305-third/budget/text?x=1",
-    "companies/c-1/valuation/text",
-    "apps/accounts-payable/vendor-portals/room-1/text/extra",
-    "apps/accounts-payable/vendor-portals/room-1/renew",
+    "305-third/budget/text#frag",
   ])("refuses %s before calling Fi", async (requested) => {
     await expect(
       plugin().tool("fi_user_api", context()).execute("c4", { path: requested }),
     ).rejects.toThrow();
     expect(calls.some((entry) => !entry.url.endsWith("/api/openclaw-user-delegation"))).toBe(false);
+  });
+
+  it("leaves route admission to Fi outside a shadow turn: an owner reads apps/invoices/text", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/apps/invoices/text"
+        ? new Response("Invoices: 3 open", { headers: { "content-type": "text/plain" } })
+        : undefined,
+    );
+    const result = await plugin()
+      .tool("fi_user_api", context({ requesterSenderId: "UALEX00001" }))
+      .execute("c-inv", { path: "apps/invoices/text" });
+    expect(result.details).toMatchObject({ status: 200, result: "Invoices: 3 open" });
+  });
+
+  it("says a route Fi does not admit for member tokens is not available to member agents", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/datarooms/room-1/members"
+        ? json(
+            {
+              error: "bearer_rejected",
+              message: "This route does not accept the presented bearer token.",
+            },
+            401,
+          )
+        : undefined,
+    );
+    await expect(
+      plugin().tool("fi_user_api", context()).execute("c-br", { path: "datarooms/room-1/members" }),
+    ).rejects.toThrow(/\/api\/shape\/datarooms\/room-1\/members is not available to member agents/);
+  });
+
+  it.each(["delegation_expired", "delegation_revoked"])(
+    "asks to re-authenticate, not the route copy, when Fi answers %s",
+    async (code) => {
+      routes.push((url) =>
+        url.pathname === "/api/shape/305-third/budget/text"
+          ? json({ error: code, message: "expired" }, 401)
+          : undefined,
+      );
+      const error = await plugin()
+        .tool("fi_user_api", context())
+        .execute("c-exp", { path: "305-third/budget/text" })
+        .catch((caught: Error) => caught);
+      expect(String(error)).toMatch(/re-authenticate/);
+      expect(String(error)).not.toMatch(/not available to member agents/);
+    },
+  );
+
+  it("passes Fi's own 403 copy through for a member without the grant", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/apps/invoices/text"
+        ? json({ error: "forbidden", message: "Invoices needs owner or admin" }, 403)
+        : undefined,
+    );
+    await expect(
+      plugin().tool("fi_user_api", context()).execute("c-403", { path: "apps/invoices/text" }),
+    ).rejects.toThrow(
+      /Fi returned 403 for \/api\/shape\/apps\/invoices\/text: .*Invoices needs owner or admin/,
+    );
+  });
+
+  it("refuses a document's bytes by content type without reading the body", async () => {
+    const pull = vi.fn();
+    const cancel = vi.fn();
+    routes.push((url) =>
+      url.pathname === "/api/shape/305-third/docs/doc-1/file"
+        ? new Response(new ReadableStream({ pull, cancel }, { highWaterMark: 0 }), {
+            headers: { "content-type": "application/pdf" },
+          })
+        : undefined,
+    );
+    await expect(
+      plugin()
+        .tool("fi_user_api", context())
+        .execute("c-bin", { path: "305-third/docs/doc-1/file" }),
+    ).rejects.toThrow(/^binary: .*fi_user_deliver_file/);
+    expect(cancel).toHaveBeenCalled();
+    expect(pull).not.toHaveBeenCalled();
+  });
+
+  it("sends number and boolean query values as text", async () => {
+    routes.push((url) =>
+      url.pathname === "/api/shape/documents/search" ? json({ items: [] }) : undefined,
+    );
+    await plugin()
+      .tool("fi_user_api", context())
+      .execute("c-q", { path: "documents/search", query: { q: "lease", limit: 5, exact: true } });
+    const call = calls.find((entry) => entry.url.includes("/documents/search"));
+    expect(new URL(call!.url).search).toBe("?q=lease&limit=5&exact=true");
+    const schema = plugin().tool("fi_user_api", context()).parameters;
+    const { Value } = await import("typebox/value");
+    expect(Value.Check(schema, { path: "documents/search", query: { limit: 5 } })).toBe(true);
+    expect(Value.Check(schema, { path: "documents/search", query: { limit: [5] } })).toBe(false);
   });
 });
 

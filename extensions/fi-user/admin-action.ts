@@ -12,7 +12,12 @@ import {
   prepareAdminActionOrigin,
 } from "./admin-action-card.js";
 import { prepareRoomFiling, type PreparedRoomFiling } from "./admin-action-filing.js";
-import { createAdminActionRequestSchema } from "./admin-action-schema.js";
+import {
+  assertRoomAdminNotice,
+  roomAdminNotice,
+  type RoomAdminChange,
+} from "./admin-action-room.js";
+import { ADMIN_ACTION_TEXT_LIMIT, createAdminActionRequestSchema } from "./admin-action-schema.js";
 import {
   prepareWiringRequest,
   type PreparedWiringRequest,
@@ -63,7 +68,14 @@ export const ADMIN_TASKS = {
     label: "Access request",
     required: ["targetType"],
   },
+  room_admin: {
+    label: "Data-room administration (notice only)",
+    // Members, recipients, public links and settings. A notice to an admin to
+    // act in Fi: no record, no approval, nothing it could carry out.
+    required: ["description"],
+  },
 } as const;
+
 export type AdminTask = keyof typeof ADMIN_TASKS;
 const TASK_NAMES = Object.keys(ADMIN_TASKS) as AdminTask[];
 
@@ -84,6 +96,7 @@ export type AdminActionFields = {
   targetType?: "org" | "project" | "company";
   targetId?: string;
   reason?: string;
+  roomChange?: RoomAdminChange;
   displayName?: string;
   roomName?: string;
   order?: string;
@@ -490,7 +503,7 @@ export function createRequestAdminActionTool(
     name: "request_admin_action",
     label: "Ask an administrator",
     description:
-      "Request a current administrator's decision in this Fi conversation. company_wiring_share requests an accessible company's verified receiving wire instructions for yourself or another named recipient: supply companyId and recipientEmail; only a current owner/admin can approve release of the recipient-verified link. Supply the existing requestId to recover delivery without creating another share. No email or payment is sent. Continue ordinary work under existing grants without approval. restricted_filing supports an exact existing documentId into an exact roomId, with displayName, roomName, section, order or noOrder, visibility, taskIds or noTask, and completion targets. Resolve exact targets first. Unsupported approved requests are not executed. access_request uses Fi's access-request workflow. Never tag or message the admin agent yourself.",
+      "Request a current administrator's decision in this Fi conversation. company_wiring_share requests an accessible company's verified receiving wire instructions for yourself or another named recipient: supply companyId and recipientEmail; only a current owner/admin can approve release of the recipient-verified link. Supply the existing requestId to recover delivery without creating another share. No email or payment is sent. Continue ordinary work under existing grants without approval. restricted_filing supports an exact existing documentId into an exact roomId, with displayName, roomName, section, order or noOrder, visibility, taskIds or noTask, and completion targets. Resolve exact targets first. Unsupported approved requests are not executed. access_request uses Fi's access-request workflow. room_admin (description; optional project, roomId, roomChange) asks an administrator to change a data room's members, recipients, public links or settings in Fi: a notice only, nothing is changed; without a project it uses the channel's bound project or asks once. description and reason: at most 1000 characters each. Never tag or message the admin agent yourself.",
     parameters: RequestSchema,
     async execute(_toolCallId, raw) {
       const input = raw as AdminActionFields & { task: AdminTask; requestId?: string };
@@ -505,6 +518,17 @@ export function createRequestAdminActionTool(
       if (missing.length > 0) {
         throw new Error(`${input.task} requires: ${missing.join(", ")}`);
       }
+      for (const field of ["description", "reason"] as const) {
+        const length = input[field]?.length ?? 0;
+        if (length > ADMIN_ACTION_TEXT_LIMIT) {
+          throw new Error(
+            `${field} is ${length} characters; the limit is ${ADMIN_ACTION_TEXT_LIMIT}. Shorten it and call again. Nothing was filed.`,
+          );
+        }
+      }
+      if (input.task === "room_admin") {
+        assertRoomAdminNotice(input);
+      }
       const { task: _task, requestId, ...fields } = input;
       if (requestId && input.task !== "company_wiring_share") {
         throw new Error("requestId retries only an existing wiring request.");
@@ -513,6 +537,10 @@ export function createRequestAdminActionTool(
         fields.destination = filingDestination(fields);
       }
       const { delegation, config, identity } = await exchange(api, context);
+
+      if (input.task === "room_admin") {
+        return roomAdminNotice(context, fields, { delegation, config, identity });
+      }
 
       if (input.task === "access_request") {
         const created = (await delegatedJson(

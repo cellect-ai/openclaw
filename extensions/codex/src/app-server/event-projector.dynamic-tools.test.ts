@@ -24,6 +24,7 @@ import {
   mockCallArg,
   forCurrentTurn,
   agentMessageDelta,
+  readAttemptTerminal,
   turnCompleted,
 } from "./event-projector.test-harness.js";
 
@@ -612,5 +613,55 @@ describe("CodexAppServerEventProjector dynamic tool projection", () => {
       toolName: "message",
       mutatingAction: false,
     });
+  });
+});
+
+describe("CodexAppServerEventProjector unresolved ask_user", () => {
+  it("makes an ask_user question left without a result the visible reply of a completed turn", async () => {
+    const projector = await createProjector();
+    projector.recordDynamicToolCall({
+      callId: "call-ask-1",
+      tool: "ask_user",
+      arguments: {
+        questions: [{ question: "Which project is the lender room for: 305 Third or 82 Sussex?" }],
+      },
+    });
+    await projector.handleNotification(turnCompleted());
+    const result = projector.buildResult(buildEmptyToolTelemetry());
+    expect(result.assistantTexts).toEqual([
+      "Which project is the lender room for: 305 Third or 82 Sussex?",
+    ]);
+    expect(JSON.stringify(result.lastAssistant?.content)).toContain("305 Third or 82 Sussex");
+    expect(result.currentAttemptAssistant).toBe(result.lastAssistant);
+    expect(readAttemptTerminal(result).promptError).toBeNull();
+  });
+
+  it("keeps the turn's own answer when it has one, and ignores an answered question", async () => {
+    const answered = await createProjector();
+    answered.recordDynamicToolCall({
+      callId: "call-ask-2",
+      tool: "ask_user",
+      arguments: { questions: [{ question: "Proceed?" }] },
+    });
+    answered.recordDynamicToolResult({
+      callId: "call-ask-2",
+      tool: "ask_user",
+      success: true,
+      contentItems: [{ type: "inputText", text: "yes" }],
+    });
+    await answered.handleNotification(turnCompleted());
+    expect(answered.buildResult(buildEmptyToolTelemetry()).assistantTexts).toEqual([]);
+
+    const withText = await createProjector();
+    withText.recordDynamicToolCall({
+      callId: "call-ask-3",
+      tool: "ask_user",
+      arguments: { questions: [{ question: "Proceed?" }] },
+    });
+    await withText.handleNotification(agentMessageDelta("Done; the room is filed."));
+    await withText.handleNotification(turnCompleted());
+    expect(withText.buildResult(buildEmptyToolTelemetry()).assistantTexts).toEqual([
+      "Done; the room is filed.",
+    ]);
   });
 });

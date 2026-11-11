@@ -200,7 +200,7 @@ export abstract class CodexTurnProjection {
     // Close this turn's audit scope without inventing process completion. The
     // existing unknown-outcome diagnostic remains distinct from execution failure.
     this.nativeToolLifecycleProjector.finalizeActive(undefined, retainedCommands);
-    const assistantTexts = this.assistantProjection.collectAssistantTexts();
+    let assistantTexts = this.assistantProjection.collectAssistantTexts();
     const asyncMessages = this.assistantProjection.collectAsyncMessages();
     const commentaryMessages = this.assistantProjection.collectCommentaryMessages();
     const reasoningText = this.reasoningProjection.reasoningText();
@@ -213,9 +213,21 @@ export abstract class CodexTurnProjection {
     const hasAssistantItemText = this.assistantProjection.hasAssistantItemTextForSynthesis();
     const legacyFailClosed =
       !completedTurn || completedTurn.status !== "completed" || hasAssistantItemText;
-    const hasDeliverableAssistantOnCompletedTurn =
+    let hasDeliverableAssistantOnCompletedTurn =
       completedTurn?.status === "completed" &&
       assistantTexts.some((text) => text.trim().length > 0);
+    // A completed turn that ends still asking: its unanswered question is the reply.
+    const unresolvedQuestion =
+      !aborted &&
+      !providerRefusal &&
+      completedTurn?.status === "completed" &&
+      !hasDeliverableAssistantOnCompletedTurn
+        ? this.toolTranscriptProjection.unresolvedQuestionText()
+        : undefined;
+    if (unresolvedQuestion) {
+      assistantTexts = [unresolvedQuestion];
+      hasDeliverableAssistantOnCompletedTurn = true;
+    }
     const synthesizedMissingToolResultError =
       this.toolTranscriptProjection.synthesizeMissingToolResults({
         synthesize: legacyFailClosed,
@@ -249,9 +261,10 @@ export abstract class CodexTurnProjection {
             assistantMessageOptions,
           )
         : undefined;
-    const currentAttemptAssistant = providerRefusal
-      ? lastAssistant
-      : this.assistantProjection.createCurrentAttemptAssistantMessage(assistantMessageOptions);
+    const currentAttemptAssistant =
+      providerRefusal || unresolvedQuestion
+        ? lastAssistant
+        : this.assistantProjection.createCurrentAttemptAssistantMessage(assistantMessageOptions);
     // Stable turn/item identities deduplicate retries and cross-turn replays
     // without collapsing identical text from distinct turns. Codex owns history;
     // this mirror supports OpenClaw history, search, and harness switching.

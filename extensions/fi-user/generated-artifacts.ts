@@ -372,9 +372,18 @@ export async function generatedFileAction(
     });
   }
   const artifact = await readGeneratedArtifact(api, context, input.artifactId ?? "");
-  if (current.identity.channel !== "slack" || input.via === "link") {
+  if (current.identity.channel !== "slack") {
+    // A Matrix reply in a Slack thread runs as the Matrix requester: the Slack
+    // thread is not where this person asked, so nothing is attached there.
     throw new Error(
-      "Generated artifacts can be attached in the current Slack conversation. For a Fi link, file the artifact in an authorized Library/room first.",
+      /^agent:[^:]+:slack:/i.test(context.sessionKey ?? "")
+        ? "This reply came from the Matrix copy of a Slack conversation, so the generated file cannot be attached in Slack from here. File it with fi_user_dataroom (upload_generated_artifact or upload_to_project_library) and tell the requester where it is, or ask them to repeat the request in the Slack thread. Nothing was sent."
+        : "Generated files are attached only in a Slack conversation. In Matrix, file it with fi_user_dataroom (upload_generated_artifact or upload_to_project_library) and tell the requester where it is. Nothing was sent.",
+    );
+  }
+  if (input.via === "link") {
+    throw new Error(
+      "via=link is for existing Fi documents. Omit via to attach this generated file in the current Slack conversation, or file it in an authorized Library/room first for a Fi link. Nothing was sent.",
     );
   }
   const inDirect = /^agent:[^:]+:slack:direct:/i.test(context.sessionKey ?? "");

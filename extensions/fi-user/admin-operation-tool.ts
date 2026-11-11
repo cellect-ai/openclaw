@@ -4,6 +4,7 @@ import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
 import { delegatedFetch, FI_ADMIN_DELEGATION_AGENT_ID, lookupDelegation } from "./fi-delegation.js";
 import type { ProvenRequester } from "./requester-proof.js";
+import { actionBranch, firstSchemaError } from "./schema-errors.js";
 
 type JsonRecord = Record<string, unknown>;
 const operation = Type.String({
@@ -11,35 +12,42 @@ const operation = Type.String({
   maxLength: 200,
 });
 const variant = Type.String({ pattern: "^[a-z][a-z0-9-]*$", maxLength: 80 });
-const schema = Type.Union([
-  Type.Object(
-    {
-      action: Type.Literal("discover"),
-      operation: Type.Optional(operation),
-      variant: Type.Optional(variant),
-      limit: Type.Optional(
-        Type.Integer({
-          minimum: 1,
-          maximum: 100000,
-          description:
-            "Requested page size; responses are capped at 50. Continue with response.nextOffset.",
-        }),
-      ),
-      offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })),
-    },
-    { additionalProperties: false },
-  ),
-  Type.Object(
-    {
-      action: Type.Literal("execute"),
-      operation,
-      variant,
-      input: Type.Record(Type.String(), Type.Unknown()),
-      dryRun: Type.Optional(Type.Boolean()),
-    },
-    { additionalProperties: false },
-  ),
-]);
+const discoverSchema = Type.Object(
+  {
+    action: Type.Literal("discover"),
+    operation: Type.Optional(operation),
+    variant: Type.Optional(variant),
+    limit: Type.Optional(
+      Type.Integer({
+        minimum: 1,
+        maximum: 100000,
+        description:
+          "Requested page size; responses are capped at 50. Continue with response.nextOffset.",
+      }),
+    ),
+    offset: Type.Optional(Type.Integer({ minimum: 0, maximum: 100000 })),
+  },
+  { additionalProperties: false },
+);
+const executeSchema = Type.Object(
+  {
+    action: Type.Literal("execute"),
+    operation,
+    variant,
+    input: Type.Record(Type.String(), Type.Unknown()),
+    dryRun: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+const schema = Type.Union([discoverSchema, executeSchema]);
+const DISCOVER_HINT =
+  'Execute needs operation, variant and input: call {action:"discover", operation:"<area.noun.verb>"} for its variants and input schema; discover without operation lists them.';
+
+/** Why the call failed the schema: the field, the rejected value and how to find valid ones. */
+function invalidRequest(raw: unknown): string {
+  const detail = firstSchemaError(actionBranch([discoverSchema, executeSchema], schema, raw), raw);
+  return `Invalid Fi operation request${detail ? ` (${detail})` : ""}; no operation was dispatched. ${DISCOVER_HINT}`;
+}
 const FILE_UNSUPPORTED =
   "This typed tool does not transfer files. Use the existing requester-bound CLI or verified artifact workflow for this variant; never supply a gateway or sandbox file path here.";
 const JWT = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
@@ -113,7 +121,7 @@ export function createAdminOperationTool(
       context.assertInvocationCurrent();
       signal?.throwIfAborted();
       if (!Value.Check(schema, raw)) {
-        throw new Error("Invalid Fi operation request; no operation was dispatched.");
+        throw new Error(invalidRequest(raw));
       }
       const input = raw as Static<typeof schema>;
       if (input.action === "discover" && input.variant && !input.operation) {

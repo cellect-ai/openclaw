@@ -671,3 +671,43 @@ it("does not dispatch a Slack edit when requester custody ends during delegation
   expect(fetchMock).toHaveBeenCalledTimes(1);
   expect(fetchMock.mock.calls[0]![0]).toContain("openclaw-user-delegation");
 });
+it("names the missing field of a near-valid get instead of an opaque refusal", async () => {
+  const f = fixture();
+  await f.admit();
+  fetchMock.mockClear();
+  const error = await f
+    .tool()!
+    .execute("no-field", { action: "get", roomId: "data-room" })
+    .catch((caught: Error) => caught);
+  expect(String(error)).toContain("Invalid workbook operation (fieldId: required, missing)");
+  expect(String(error)).toContain("get needs roomId and fieldId");
+  expect(fetchMock).not.toHaveBeenCalled();
+  const tooMany = await f
+    .tool()!
+    .execute("rows", {
+      action: "get",
+      roomId: "data-room",
+      fieldId: "workbook-field",
+      range: { sheetId: "s1", startRow: 0, startColumn: 0, rows: 40, columns: 5 },
+    })
+    .catch((caught: Error) => caught);
+  expect(String(error)).not.toBe(String(tooMany));
+  expect(String(tooMany)).toMatch(/range\.rows: .* \(got 40\)/);
+});
+it("suggests a smaller range when the workbook API refuses a read as too large", async () => {
+  const f = fixture();
+  await f.admit();
+  fetchMock.mockImplementation(async (url: string, init?: RequestInit) =>
+    url.endsWith("/agent-authorize")
+      ? allow(JSON.parse(String(init?.body)).agentId)
+      : new Response("too large", { status: 413 }),
+  );
+  await expect(
+    f.tool()!.execute("big", {
+      action: "get",
+      roomId: "data-room",
+      fieldId: "workbook-field",
+      range: { sheetId: "s1", startRow: 0, startColumn: 0, rows: 20, columns: 20 },
+    }),
+  ).rejects.toThrow(/too large \(413\); request a smaller range/);
+});

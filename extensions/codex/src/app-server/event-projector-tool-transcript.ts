@@ -23,6 +23,7 @@ import {
   itemName,
   itemStatus,
 } from "./event-projector-items.js";
+import { questionToolTexts, unresolvedQuestionText } from "./event-projector-question.js";
 import {
   isNativePostToolUseRelayItem,
   itemMeta,
@@ -65,7 +66,6 @@ const NATIVE_COMMAND_WORKSPACE_REJECTION_RE =
 const CODE_MODE_RESULT_RE =
   /^\s*Script (completed|failed)\s*\r?\nWall time\s+\d+(?:\.\d+)?\s+seconds\s*\r?\nOutput:\s*([\s\S]*?)\s*$/iu;
 const MAX_TOOL_APPROVAL_REVIEWS = 16;
-
 type ToolApprovalReviewOutcome = "approved" | "denied" | "reviewing";
 
 type ToolApprovalReviewState = {
@@ -96,6 +96,8 @@ export class CodexToolTranscriptProjection {
   private readonly rawNativeToolOutputByCallId = new Map<string, string>();
   private readonly pendingRawOutputIds = new Set<string>();
   private readonly rawCallsById = new Map<string, ToolTranscriptCallInput>();
+  /** Question texts of question-tool calls, by call id, until their result arrives. */
+  private readonly questionTextsById = new Map<string, string[]>();
   private readonly codeModeNativeCallsByCallId = new Map<
     string,
     {
@@ -539,6 +541,11 @@ export class CodexToolTranscriptProjection {
     });
   }
 
+  /** The unanswered ask_user question of this turn, which then is its reply (D2). */
+  unresolvedQuestionText(): string | undefined {
+    return unresolvedQuestionText(this.questionTextsById, this.resultIds);
+  }
+
   synthesizeMissingToolResults(params: {
     synthesize: boolean;
     terminalDisposition: "prompt_error" | "tool_error" | "diagnostic_only";
@@ -623,6 +630,10 @@ export class CodexToolTranscriptProjection {
       return;
     }
     this.namesById.set(params.id, params.name);
+    const texts = questionToolTexts(params.name, params.arguments);
+    if (texts.length > 0) {
+      this.questionTextsById.set(params.id, texts);
+    }
     this.progress.recordTranscriptCall(params);
     const message = attachCodexMirrorIdentity(
       this.createToolCallMessage(params),
