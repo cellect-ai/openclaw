@@ -892,6 +892,97 @@ describe("one person's sandbox hold across two channels (G-B3)", () => {
     expect(JSON.stringify(result)).not.toContain(ADMIN_MATRIX);
   });
 
+  it("holds when another person's holder replaced the sandbox while Fi answered", async () => {
+    const turn = await afterSlackCommand();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    let answer!: (response: Response) => void;
+    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) => {
+      if (url === AUTHORIZE_URL) {
+        return new Response(
+          JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+        );
+      }
+      const body = JSON.parse(init?.body ?? "{}") as Record<string, string>;
+      return body.requesterMatrixUserId
+        ? new Promise<Response>((resolve) => {
+            answer = resolve;
+          })
+        : minted({ token: OTHER_MATRIX }, { email: "other@example.com" });
+    });
+    const pending = turn.exec(reply.exec);
+    await vi.waitFor(() => expect(answer).toBeDefined());
+    // The admin's command finishes; someone else's command takes the sandbox.
+    await turn.cleanup({ sessionKey: SLACK_THREAD });
+    const other = {
+      sessionKey: "agent:cellect-fi-admin:slack:direct:u0other002",
+      senderId: "U0OTHER002",
+    };
+    await turn.arrive(other);
+    await turn.start({ ...other, runId: "run-o" });
+    expect(
+      (
+        await turn.exec({
+          runId: "run-o",
+          sessionKey: other.sessionKey,
+          requester: { channel: "slack", senderId: "U0OTHER002" },
+        })
+      )?.params.env?.FI_DELEGATED_USER_TOKEN,
+    ).toBe(OTHER_MATRIX);
+    answer(minted({ token: ADMIN_MATRIX }));
+    const result = await pending;
+    expect(result?.block).toBe(true);
+    expect(JSON.stringify(result)).not.toContain(ADMIN_MATRIX);
+  });
+
+  it("holds a minting-tool candidate that gets no token, with no token or assertion", async () => {
+    const turn = await afterSlackCommand();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const before = mints().length;
+    // Raw shell work is never pinned, so no token is asked for.
+    const result = await turn.exec(reply.exec, { params: { command: "env | sort" } });
+    expect(result).toEqual({ block: true, blockReason: HELD });
+    expect(JSON.stringify(result)).not.toContain("FI_DELEGATED_USER_TOKEN");
+    expect(JSON.stringify(result)).not.toContain("FI_ON_BEHALF_OF");
+    expect(mints()).toHaveLength(before);
+  });
+
+  it("matches nobody once the holder's own mints disagreed on the subject", async () => {
+    let slackMints = 0;
+    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) => {
+      if (url === AUTHORIZE_URL) {
+        return new Response(
+          JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+        );
+      }
+      const body = JSON.parse(init?.body ?? "{}") as Record<string, string>;
+      if (body.requesterMatrixUserId) {
+        return minted({ token: ADMIN_MATRIX });
+      }
+      slackMints += 1;
+      return minted({
+        token: slackMints === 1 ? ADMIN_SLACK : fiToken("relinked@example.com", "second"),
+      });
+    });
+    const turn = plugin(CROSS);
+    const slack = slackThread();
+    await turn.arrive(slack.arrive);
+    await turn.start(slack.start);
+    expect((await turn.exec(slack.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(ADMIN_SLACK);
+    // The holder's own run gets a token for another subject: its subject is cleared.
+    expect((await turn.exec(slack.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toContain(".second");
+    await turn.settle();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const result = await turn.exec(reply.exec);
+    expect(result).toEqual({ block: true, blockReason: HELD });
+    expect(JSON.stringify(result)).not.toContain(ADMIN_MATRIX);
+  });
+
   it.each([
     ["off by default", {}],
     ["off unless exactly true", { crossChannelCustody: "true" }],
@@ -908,6 +999,7 @@ describe("one person's sandbox hold across two channels (G-B3)", () => {
 });
 
 describe("input written into a run that cannot act for its sender (G-B4)", () => {
+  const GRACE = 30_000;
   const inject = (senderId = "U0ADMIN001") => ({
     channel: "slack",
     senderId,
@@ -915,16 +1007,29 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
     threadId: "1792189039.487369",
   });
   /** A run in the admin's DM that nobody proved, such as a completion wake. */
-  const wake = async (config: Record<string, unknown> = CROSS) => {
+  const wake = async (config: Record<string, unknown> = CROSS, runId = "wake-1") => {
     const turn = plugin(config, SANDBOXED, true);
-    await turn.start({ runId: "wake-1", trigger: "cron", senderId: undefined });
+    await turn.start({ runId, trigger: "cron", senderId: undefined });
     return turn;
   };
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
-  it("tells the sender once per run to send it again, where the host would reply", async () => {
+  it("tells the sender once per run, after the run settled and no message run followed", async () => {
     const turn = await wake();
     await turn.inject(inject());
     await turn.inject(inject());
+    // Nothing while the run is still going: the host may yet queue the input.
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE - 1);
+    expect(sendText).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
     expect(sendText).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -934,10 +1039,22 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
       }),
     );
     // The next run that cannot act gets its own notice.
-    await turn.settle("wake-1");
     await turn.start({ runId: "wake-2", trigger: "cron", senderId: undefined });
     await turn.inject(inject());
+    await turn.settle("wake-2");
+    await vi.advanceTimersByTimeAsync(GRACE);
     await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2));
+  });
+
+  it("says nothing when the message was queued and started its own proven run", async () => {
+    const turn = await wake();
+    // Received and dispatched while the wake runs; the host queues it.
+    await turn.arrive();
+    await turn.settle("wake-1");
+    await turn.start();
+    expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -947,9 +1064,8 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
   ])("says nothing when %s", async (_name, config, input, channelContext) => {
     const turn = await wake(config);
     await turn.inject({ ...input, ...(channelContext ? { channelContext } : {}) });
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
     expect(sendText).not.toHaveBeenCalled();
   });
 
@@ -959,17 +1075,16 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
     await turn.arrive();
     await turn.start();
     await turn.inject(inject());
-    await new Promise<void>((resolve) => {
-      setTimeout(resolve, 0);
-    });
-    expect(sendText).not.toHaveBeenCalled();
     expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    await turn.settle();
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
   });
 
   it("gives a re-sent message its own proof, never the original run's requester or custody", async () => {
     const other = "U0OTHER002";
     const otherToken = fiToken("other@example.com", "theirs");
-    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) =>
+    fetchMock.mockImplementation(async (_url: string, init?: { body?: string }) =>
       JSON.parse(init?.body ?? "{}").requesterSenderId === other
         ? minted({ token: otherToken }, { email: "other@example.com" })
         : minted({ token: ADMIN_SLACK }),
@@ -985,9 +1100,10 @@ describe("input written into a run that cannot act for its sender (G-B4)", () =>
       sessionKey: SLACK_THREAD,
       conversationId: SLACK_CHANNEL,
     });
-    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
     expect(await turn.exec(slack.exec)).toEqual({ block: true, blockReason: UNPROVEN_HOLD });
     await turn.settle();
+    await vi.advanceTimersByTimeAsync(GRACE);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
     // They send it again: a new arrival, a new run, proven by its own event.
     const eventId = "1792190999.000001";
     await turn.arrive({ ...slack.arrive, senderId: other, messageId: eventId });

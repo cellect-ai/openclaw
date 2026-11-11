@@ -191,9 +191,11 @@ and org) equals the holder's; a token minted for anyone else is dropped and
 the call is held, so Fi logs one minted token that was never used. A holder
 created without a readable subject matches nobody. The run's other sandbox
 tools, other sessions and unproven runs stay held. With the flag on, a person's
-input written into a run in the session that cannot act for them gets one
-notice per run, in the place the host would reply, asking them to send it
-again; it is never re-run, and the re-sent message needs its own proof.
+input written into a run in the session that cannot act for them is never
+re-run. The first such person per run is asked, in the place the host would
+reply, to send it again, but only 30 seconds after that run settled and only
+if no message run started in the session meanwhile (the host may have queued
+the input rather than steered it in). A re-sent message needs its own proof.
 
 ### Output is not scrubbed
 

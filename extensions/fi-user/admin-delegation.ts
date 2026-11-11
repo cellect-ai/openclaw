@@ -63,6 +63,12 @@ const MAX_TRACKED = 5_000;
  * also match one of the remembered events, so forgetting only refuses.
  */
 const ARRIVAL_TTL_MS = 6 * 60 * 60 * 1000;
+/**
+ * How long after an unproven run settles its "send it again" notice waits. A
+ * message the host queued instead of steering into that run starts its own
+ * run within this time, and then no notice is sent.
+ */
+const NOTICE_GRACE_MS = 30_000;
 /** Fi's source-reply check runs as the Matrix event is received, just before it is dispatched. */
 const SOURCE_REPLY_TTL_MS = 5 * 60 * 1000;
 /**
@@ -155,6 +161,7 @@ type Custody = {
   subject?: string;
 };
 type Held = { block: true; blockReason: string };
+type NoticeRoute = { channel: string; to: string; threadId?: string | number; accountId?: string };
 /** Told, at most once per run, to whoever wrote into a run that cannot act for them. */
 export const INJECTED_NOTICE =
   "I couldn't act on that while another task was running. Please send it again.";
@@ -199,8 +206,8 @@ type Run = {
   continuation?: PluginHookToolContext["requesterContinuation"];
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
   matrixOrigin?: MatrixOrigin;
-  /** INJECTED_NOTICE was sent for input written into this run. */
-  noticed?: true;
+  /** Where to tell the first person whose input was written into this run. */
+  notice?: NoticeRoute;
 };
 /**
  * The Matrix requester of a run admitted from a verified source-session reply,
@@ -384,7 +391,18 @@ export function registerAdminDelegation(
    * run that may carry their queued words proves nobody, as on the admin side.
    */
   const fiUserTainted = new Set<string>();
+  /** Notices waiting out NOTICE_GRACE_MS after their run settled, by session. */
+  const pendingNotices = new Map<string, Set<ReturnType<typeof setTimeout>>>();
+  const cancelNotices = (sessionKey: string): void => {
+    for (const timer of pendingNotices.get(sessionKey) ?? []) {
+      clearTimeout(timer);
+    }
+    pendingNotices.delete(sessionKey);
+  };
   const reset = () => {
+    for (const key of pendingNotices.keys()) {
+      cancelNotices(key);
+    }
     fiUserTainted.clear();
     arrivals.clear();
     runs.clear();
@@ -589,6 +607,10 @@ export function registerAdminDelegation(
         event.data.executionSettled === true &&
         (event.data.phase === "end" || event.data.phase === "error")
       ) {
+        const settled = runs.get(event.runId);
+        if (settled?.notice) {
+          scheduleNotice(settled.sessionKey, settled.notice);
+        }
         runs.delete(event.runId);
         forgetProjectedMatrixRun(event.runId);
       }
@@ -603,6 +625,7 @@ export function registerAdminDelegation(
         forgetProjectedMatrixRun(runId);
       } else if (sessionKey) {
         const key = sessionKey.toLowerCase();
+        cancelNotices(key);
         arrivals.delete(key);
         fiUserReplies.delete(key);
         fiUserTainted.delete(key);
@@ -720,6 +743,12 @@ export function registerAdminDelegation(
       // run does not take up what arrived for the next one.
       const run: Run = { agentId, sessionKey };
       remember(runs, runId, run);
+      // A run that may carry a message started: whatever input a settled run
+      // left waiting for a notice may be its own (queued, not steered), so say
+      // nothing. Only cron and heartbeat runs never carry one.
+      if (context.trigger !== "cron" && context.trigger !== "heartbeat") {
+        cancelNotices(sessionKey);
+      }
       const continuation = context.requesterContinuation;
       if (continuation) {
         run.continuation = continuation;
@@ -986,8 +1015,11 @@ export function registerAdminDelegation(
   /**
    * A person's input written into a run in this session that cannot act for
    * them (nobody proved it, or this input just took its proof away) is not
-   * re-run: they are told once per run, in the place the host would reply, to
-   * send it again. A re-sent message is a new arrival and needs its own proof.
+   * re-run. The first such person per run is told, in the place the host would
+   * reply, to send it again, but only after that run settled and no message run
+   * started in the session within NOTICE_GRACE_MS: the host may have queued the
+   * input instead of steering it in, and a queued message runs on its own
+   * proof. A re-sent message is a new arrival and needs its own proof.
    */
   const noticeUnprovenRun = (sessionKey: string, message: Inbound): void => {
     let target: Run | undefined;
@@ -998,26 +1030,44 @@ export function registerAdminDelegation(
     }
     const channel = message.channel;
     const to = message.conversationId?.trim();
-    if (!target || target.noticed || !channel || !to) {
+    if (!target || target.notice || !channel || !to) {
       return;
     }
-    target.noticed = true;
     const threadId = message.threadId;
     const accountId = message.accountId?.trim();
-    void (async () => {
-      const adapter = await api.runtime.channel.outbound.loadAdapter(channel);
-      if (!adapter?.sendText) {
-        throw new Error("no outbound adapter");
+    target.notice = {
+      channel,
+      to,
+      ...(threadId !== undefined && threadId !== "" ? { threadId } : {}),
+      ...(accountId ? { accountId } : {}),
+    };
+  };
+  const scheduleNotice = (sessionKey: string, route: NoticeRoute): void => {
+    const timers = pendingNotices.get(sessionKey) ?? new Set();
+    const timer = setTimeout(() => {
+      timers.delete(timer);
+      if (timers.size === 0) {
+        pendingNotices.delete(sessionKey);
       }
-      await adapter.sendText({
-        cfg: api.runtime.config?.current?.() ?? api.config,
-        to,
-        text: INJECTED_NOTICE,
-        ...(threadId !== undefined && threadId !== "" ? { threadId } : {}),
-        ...(accountId ? { accountId } : {}),
+      void sendNotice(route).catch(() => {
+        api.logger.warn("fi-user: injected-input notice not delivered");
       });
-    })().catch(() => {
-      api.logger.warn("fi-user: injected-input notice not delivered");
+    }, NOTICE_GRACE_MS);
+    timer.unref?.();
+    timers.add(timer);
+    pendingNotices.set(sessionKey, timers);
+  };
+  const sendNotice = async ({ channel, to, threadId, accountId }: NoticeRoute): Promise<void> => {
+    const adapter = await api.runtime.channel.outbound.loadAdapter(channel);
+    if (!adapter?.sendText) {
+      throw new Error("no outbound adapter");
+    }
+    await adapter.sendText({
+      cfg: api.runtime.config?.current?.() ?? api.config,
+      to,
+      text: INJECTED_NOTICE,
+      ...(threadId !== undefined ? { threadId } : {}),
+      ...(accountId ? { accountId } : {}),
     });
   };
 
