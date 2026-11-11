@@ -525,6 +525,13 @@ export async function runSessionCompactionIfNeeded(params: {
         `activeTranscriptBytes=${activeTranscriptBytes ?? "undefined"} ` +
         `maxActiveTranscriptBytes=${maxActiveTranscriptBytes ?? "undefined"}`,
     );
+    // Native compaction never reaches the pre-compaction hook below, so the checkpoint
+    // (which gates itself on token pressure and transcript size) would never run for Codex.
+    if (params.beforeCompaction && !params.isHeartbeat) {
+      const refreshed = await params.beforeCompaction(entry);
+      assertActive();
+      return refreshed ?? entry;
+    }
     return entry;
   }
   const transcriptPromptTokens = transcriptUsageTokens?.promptTokens;
