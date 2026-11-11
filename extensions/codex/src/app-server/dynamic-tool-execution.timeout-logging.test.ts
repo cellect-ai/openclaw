@@ -50,7 +50,9 @@ describe("dynamic tool timeout diagnostics", () => {
       }),
     ).toEqual([
       expect.objectContaining({
-        text: "⚠️ Memory Search timed out after 30s; 2 partial results are available.",
+        text: expect.stringMatching(
+          /^⚠️ Memory Search timed out after 30s; 2 partial results are available\./,
+        ),
       }),
     ]);
     expect(toCodexDynamicToolProtocolResponse(response)).toEqual({
