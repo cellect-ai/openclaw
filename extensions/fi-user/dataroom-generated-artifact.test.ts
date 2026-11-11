@@ -13,8 +13,13 @@ import { createDataRoomTool } from "./dataroom-tool.js";
 
 const bytes = Buffer.from("budget,line\nconcrete,100\n");
 const sha256 = createHash("sha256").update(bytes).digest("hex");
-const provenance = { artifactId: "ga_fixture", sha256, sessionId: "session-fixture" };
-const filingProvenance = { source: "generated_artifact", ...provenance };
+const provenance = {
+  source: "generated_artifact" as const,
+  artifactId: "ga_fixture",
+  sha256,
+  sessionId: "session-fixture",
+};
+const filingProvenance = provenance;
 const context = { sessionKey: "session-fixture" } as OpenClawPluginToolContext;
 // The frozen upload plan is retained in a keyed store; an in-memory one is enough here.
 const plans = new Map<string, unknown>();
