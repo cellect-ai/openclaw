@@ -660,4 +660,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["worktrees.retireSnapshot", "worktrees", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["talk.voice.preview", "talk", "operator.write", "2026.9"],
   ["talk.session.announce", "talk", "operator.talk", "2026.10"],
+  // Fi shadow reports deliver into an existing cellect-fi-user Matrix session.
+  ["fi.shadow.announce", "fi-shadow", "operator.admin", "2026.11"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

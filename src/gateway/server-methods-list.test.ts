@@ -277,6 +277,7 @@ describe("listGatewayMethods", () => {
       "worktrees.retireSnapshot",
       "talk.voice.preview",
       "talk.session.announce",
+      "fi.shadow.announce",
     ];
     expect(listGatewayMethods().slice(-expectedSuffix.length)).toEqual(expectedSuffix);
     const methods = listGatewayMethods();
@@ -569,6 +570,7 @@ describe("listGatewayMethods", () => {
       "worktrees.retireSnapshot",
       "talk.voice.preview",
       "talk.session.announce",
+      "fi.shadow.announce",
     ];
     expect(coreMethods.slice(-expectedCoreSuffix.length)).toEqual(expectedCoreSuffix);
     expect(methods.indexOf("approval.get")).toBeGreaterThan(methods.indexOf("tts.speak"));

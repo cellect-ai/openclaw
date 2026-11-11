@@ -11,6 +11,7 @@ import type {
   EnvironmentsSessionDestroyParams,
   EnvironmentsSessionExecParams,
 } from "./schema/environments.js";
+import type { FiShadowAnnounceParams } from "./schema/fi-shadow-announce.js";
 import type * as HumanMentionsSchema from "./schema/human-mentions.js";
 import type { LogsTailParams } from "./schema/logs-chat.js";
 import type * as PortalSchema from "./schema/portals.js";
@@ -99,4 +100,5 @@ export type GatewayCoreRequestParams = {
   "themes.get": ThemesGetParams;
   "themes.set": ThemesSetParams;
   "themes.import": ThemesImportParams;
+  "fi.shadow.announce": FiShadowAnnounceParams;
 };
