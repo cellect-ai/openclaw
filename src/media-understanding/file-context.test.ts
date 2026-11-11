@@ -58,4 +58,23 @@ describe("renderInboundDocumentContext", () => {
       expect(ctx).toEqual(original);
     },
   );
+
+  it("marks a file over the inline cap as staged, not unreadable", async () => {
+    const workspaceDir = tempDirs.make("openclaw-document-context-");
+    const mediaPath = path.join(workspaceDir, "big.pdf");
+    await fs.writeFile(mediaPath, Buffer.alloc(2 * 1024 * 1024, 0x20));
+    const ctx: MsgContext = {
+      Body: "see attached",
+      media: [{ path: mediaPath, contentType: "application/pdf" }],
+    };
+    const context = await renderInboundDocumentContext({
+      ctx,
+      cfg: {
+        gateway: { http: { endpoints: { responses: { files: { maxBytes: 1024 * 1024 } } } } },
+      },
+      workspaceDir,
+    });
+    expect(context.text).toContain("too large to read inline (inline limit 1 MiB)");
+    expect(context.text).not.toContain("[Attachment could not be read]");
+  });
 });

@@ -92,7 +92,7 @@ describe("renderFileAttachmentOutcome", () => {
     const text = render({ kind: "too-large", limitBytes: 20 * 1024 * 1024 });
     expect(text).toContain("too large to read inline (inline limit 20 MiB)");
     expect(text).toContain("staged");
-    expect(text).not.toContain("could not be read");
+    expect(text).not.toContain("[Attachment could not be read]");
     expect(render({ kind: "too-large" })).toContain("too large to read inline.");
   });
 
