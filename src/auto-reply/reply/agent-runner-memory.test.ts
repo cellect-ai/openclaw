@@ -2100,6 +2100,41 @@ describe("runMemoryFlushIfNeeded", () => {
     }
   });
 
+  it("runs the memory checkpoint for Codex sessions without host compaction", async () => {
+    const sessionEntry = createFlushSessionEntry({
+      agentHarnessId: "codex",
+      agentRuntimeOverride: "codex",
+    });
+    const refreshedEntry = { ...sessionEntry, totalTokens: 1 };
+    const beforeCompaction = vi.fn(async () => refreshedEntry);
+
+    const entry = await runCodexBytePreflight(sessionEntry, {
+      cfg: compactionConfig({ memoryFlush: {} }),
+      beforeCompaction,
+    });
+
+    expect(beforeCompaction).toHaveBeenCalledTimes(1);
+    expect(beforeCompaction).toHaveBeenCalledWith(sessionEntry);
+    expect(entry).toBe(refreshedEntry);
+    expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("skips the Codex memory checkpoint for heartbeat turns", async () => {
+    const sessionEntry = createFlushSessionEntry({
+      agentHarnessId: "codex",
+      agentRuntimeOverride: "codex",
+    });
+    const beforeCompaction = vi.fn(async () => sessionEntry);
+
+    await runCodexBytePreflight(sessionEntry, {
+      cfg: compactionConfig({ memoryFlush: {} }),
+      beforeCompaction,
+      isHeartbeat: true,
+    });
+
+    expect(beforeCompaction).not.toHaveBeenCalled();
+  });
+
   it("refreshes the Codex byte latch after maintenance shrinks an oversized transcript", async () => {
     const fixture = await createOversizedByteCompactionFixture();
     const sessionKey = "main";
