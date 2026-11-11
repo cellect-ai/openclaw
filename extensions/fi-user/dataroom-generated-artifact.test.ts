@@ -16,7 +16,24 @@ const sha256 = createHash("sha256").update(bytes).digest("hex");
 const provenance = { artifactId: "ga_fixture", sha256, sessionId: "session-fixture" };
 const filingProvenance = { source: "generated_artifact", ...provenance };
 const context = { sessionKey: "session-fixture" } as OpenClawPluginToolContext;
-const api = {} as OpenClawPluginApi;
+// The frozen upload plan is retained in a keyed store; an in-memory one is enough here.
+const plans = new Map<string, unknown>();
+const api = {
+  runtime: {
+    state: {
+      openKeyedStore: () => ({
+        withCurrent: () => ({
+          registerIfAbsent: async (key: string, value: unknown) => {
+            if (!plans.has(key)) {
+              plans.set(key, value);
+            }
+          },
+          lookup: async (key: string) => plans.get(key),
+        }),
+      }),
+    },
+  },
+} as unknown as OpenClawPluginApi;
 const tool = () => createDataRoomTool(api, context);
 const libraryInput = {
   action: "upload_to_project_library",
@@ -35,6 +52,7 @@ const roomInput = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  plans.clear();
   mocks.exchange.mockResolvedValue({
     config: {},
     identity: {},
