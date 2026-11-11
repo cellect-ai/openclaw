@@ -591,8 +591,8 @@ export default definePluginEntry({
     });
     // The host asks before it injects a channel message into the run already
     // active in its session; a claim queues the message as its own turn.
-    api.on("before_steer", (event, context) =>
-      adminDelegation.steerGate({
+    api.on("before_steer", (event, context) => {
+      const message = {
         channel: context.channelId ?? event.channel,
         senderId: event.senderId ?? context.senderId,
         sessionKey: event.sessionKey ?? context.sessionKey,
@@ -600,10 +600,14 @@ export default definePluginEntry({
         messageId: event.messageId ?? context.messageId,
         accountId: context.accountId,
         conversationId: context.conversationId,
-      })
-        ? { handled: true }
-        : undefined,
-    );
+      };
+      // The host reports back when it could not queue what this hook claimed.
+      if (event.queueRefused === true) {
+        adminDelegation.steerRefused(message);
+        return undefined;
+      }
+      return adminDelegation.steerGate(message) ? { handled: true } : undefined;
+    });
     // An approver's reply to an admin-action card is decided here and claimed,
     // so the same text is not also run as an agent turn. message_received only
     // observes: handling it there left "approve <ID>" to reach the model too.

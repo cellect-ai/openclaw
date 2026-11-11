@@ -442,6 +442,11 @@ export type PluginHookBeforeSteerEvent = {
   sessionKey?: string;
   senderId?: string;
   isGroup?: boolean;
+  /**
+   * Sent once, after an earlier claim, when the host could not queue the message (queue cap,
+   * drop policy "new"). It is a report, not a question: the result is ignored.
+   */
+  queueRefused?: true;
 };
 
 export type PluginHookBeforeSteerResult = {

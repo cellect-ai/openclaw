@@ -30,4 +30,18 @@ describe("buildMemoryFlushPlan", () => {
       });
     },
   );
+
+  it("tells the agent to attribute every note to who it is for and its scope", () => {
+    const plan = buildMemoryFlushPlan({});
+    for (const text of [plan?.prompt, plan?.systemPrompt]) {
+      expect(text).toContain("[for: <requester email");
+      expect(text).toContain('"Fi requester:"');
+      expect(text).toContain('or "unknown"');
+      expect(text).toContain("[scope: private | room:<conversation or room id> | org]");
+      expect(text).toContain("private DMs and private rooms");
+      expect(text).toContain("trusted person");
+      expect(text).toContain("[source: untrusted]");
+      expect(text).toContain("record them as facts");
+    }
+  });
 });

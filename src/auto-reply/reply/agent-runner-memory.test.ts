@@ -976,6 +976,24 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    ["its own key", "hook:fi-shadow:run-1", undefined],
+    ["its policy key", "agent:main:main", "hook:fi-shadow:run-2"],
+  ])(
+    "skips memory flush for a shadow hook run through %s",
+    async (_label, sessionKey, policyKey) => {
+      const sessionEntry = createFlushSessionEntry({ sessionId: "shadow-session" });
+
+      const result = await runDefaultMemoryFlush(sessionEntry, {
+        sessionKey,
+        ...(policyKey ? { runtimePolicySessionKey: policyKey } : {}),
+      });
+
+      expect(result).toEqual({ sessionEntry, outcome: "skipped" });
+      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("uses the policy owner's memory-flush writability for agent:other:main", async () => {
     const { agentId, sessionKey, runtimePolicySessionKey } = {
       agentId: "other",

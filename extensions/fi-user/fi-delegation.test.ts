@@ -1,6 +1,11 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { exchange, lookupDelegation } from "./fi-delegation.js";
+import {
+  exchange,
+  lookupDelegation,
+  lookupRequesterEmail,
+  resetResolveRouteAvailability,
+} from "./fi-delegation.js";
 
 const connection = { baseUrl: "https://fi.example.test", brokerTokenEnv: "TEST_BROKER_TOKEN" };
 const requester = { requesterSenderId: "U12345678" };
@@ -160,3 +165,45 @@ describe("the tenant applies to a Slack-only runtime", () => {
   });
 });
 
+describe("the resolve-route fallback is remembered per Fi origin", () => {
+  const cfg = (baseUrl: string) => ({ ...connection, baseUrl, tenantOrgId: "org-a" });
+  const routeMissing = () => new Response("<html>404</html>", { status: 404 });
+  beforeEach(() => resetResolveRouteAvailability());
+
+  it("does not skip the route on another Fi because one Fi lacked it", async () => {
+    const urls: string[] = [];
+    fetchMock.mockImplementation(async (url: string) => {
+      urls.push(url);
+      if (url === "https://old.example.test/api/openclaw-user-delegation/resolve") {
+        return routeMissing();
+      }
+      if (url === "https://new.example.test/api/openclaw-user-delegation/resolve") {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            user: { email: "member@example.com" },
+            requester: { channel: "slack", email: "member@example.com" },
+          }),
+        );
+      }
+      const mint = (await member({ orgId: "org-a" }).json()) as Record<string, unknown>;
+      return new Response(
+        JSON.stringify({ ...mint, requester: { channel: "slack", email: "member@example.com" } }),
+      );
+    });
+    await expect(lookupRequesterEmail(cfg("https://old.example.test"), requester)).resolves.toBe(
+      "member@example.com",
+    );
+    await expect(lookupRequesterEmail(cfg("https://new.example.test"), requester)).resolves.toBe(
+      "member@example.com",
+    );
+    expect(urls).toEqual([
+      "https://old.example.test/api/openclaw-user-delegation/resolve",
+      "https://old.example.test/api/openclaw-user-delegation",
+      "https://new.example.test/api/openclaw-user-delegation/resolve",
+    ]);
+    // The old Fi is not asked for the route again while its verdict stands.
+    await lookupRequesterEmail(cfg("https://old.example.test"), requester);
+    expect(urls.at(-1)).toBe("https://old.example.test/api/openclaw-user-delegation");
+  });
+});

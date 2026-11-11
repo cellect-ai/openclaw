@@ -1214,4 +1214,68 @@ describe("the host asks before steering a message into the active run (FU-B4)", 
     const turn = await wake();
     expect(await turn.steer({ ...dm(), channel: "webchat" })).toBeUndefined();
   });
+
+  it("does not claim a message without an event id: the host cannot dedupe a queued copy", async () => {
+    const turn = await wake();
+    const { messageId: _omit, ...noId } = dm();
+    expect(await turn.steer(noId)).toBeUndefined();
+    await turn.inject(noId);
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE);
+    // Today's path: the injected input is told to send it again.
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+  });
+
+  it("keeps the notice when the host reports it could not queue what the gate claimed", async () => {
+    const turn = await wake();
+    await turn.inject(dm());
+    expect(await turn.steer(dm())).toEqual({ handled: true });
+    expect(await turn.steer({ ...dm(), queueRefused: true })).toBeUndefined();
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE);
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    expect(sendText).toHaveBeenCalledWith(expect.objectContaining({ text: INJECTED_NOTICE }));
+  });
+
+  it("ignores a queue-refused report for a message the gate never claimed", async () => {
+    const turn = await wake();
+    expect(await turn.steer({ ...dm(), queueRefused: true })).toBeUndefined();
+    await turn.settle("wake-1");
+    await vi.advanceTimersByTimeAsync(GRACE * 2);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  describe("a claimed message never strips the active run's proof", () => {
+    const OTHER = "U0OTHER002";
+    const other = (messageId = "1792189039.000700") => ({
+      ...dm(OTHER, messageId),
+      conversationId: "user:U0ADMIN001",
+    });
+
+    it("when message_received comes first", async () => {
+      const turn = plugin(CROSS, SANDBOXED, true);
+      await turn.arrive();
+      await turn.start();
+      await turn.inject(other());
+      expect(await turn.steer(other())).toEqual({ handled: true });
+      expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    });
+
+    it("when the gate answers first", async () => {
+      const turn = plugin(CROSS, SANDBOXED, true);
+      await turn.arrive();
+      await turn.start();
+      expect(await turn.steer(other())).toEqual({ handled: true });
+      await turn.inject(other());
+      expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    });
+
+    it("but an injected one (never claimed) still does", async () => {
+      const turn = plugin(CROSS, SANDBOXED, true);
+      await turn.arrive();
+      await turn.start();
+      await turn.inject(other());
+      expect((await turn.exec())?.params.env).not.toHaveProperty("FI_DELEGATED_USER_TOKEN");
+    });
+  });
 });

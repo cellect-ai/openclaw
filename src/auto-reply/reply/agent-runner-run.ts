@@ -89,9 +89,12 @@ async function askPluginsToQueueSteer(params: {
   sessionCtx: RunReplyAgentParams["sessionCtx"];
   sessionKey: string | undefined;
   messageId: string | undefined;
+  /** Report that a claimed message could not be queued. */
+  queueRefused?: true;
 }): Promise<boolean> {
   const runner = getGlobalHookRunner();
-  if (!runner?.hasHooks("before_steer")) {
+  // Without a message id the queued copy cannot be deduplicated: steer as before.
+  if (!params.messageId || !runner?.hasHooks("before_steer")) {
     return false;
   }
   try {
@@ -102,14 +105,15 @@ async function askPluginsToQueueSteer(params: {
     );
     const result = await runner.runBeforeSteer(
       {
-        ...(params.messageId ? { messageId: params.messageId } : {}),
+        messageId: params.messageId,
+        ...(params.queueRefused ? { queueRefused: true as const } : {}),
         ...(context.channelId ? { channel: context.channelId } : {}),
         ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
         ...(context.senderId ? { senderId: context.senderId } : {}),
       },
       context,
     );
-    if (result?.handled) {
+    if (!params.queueRefused && result?.handled) {
       logVerbose("queue: a plugin kept this message out of the active run; queuing instead");
       return true;
     }
@@ -446,6 +450,14 @@ export async function runReplyAgent(
 
   if (activeRunQueueAction === "enqueue-followup") {
     bindQueueDisposition();
+    let refusedByQueueCap = false;
+    if (pluginQueuesSteer) {
+      const observeDisposition = followupRun.onQueueDisposition;
+      followupRun.onQueueDisposition = (disposition) => {
+        observeDisposition?.(disposition);
+        refusedByQueueCap ||= disposition === "queue-cap-new";
+      };
+    }
     const enqueued = enqueueFollowupRun(
       queueKey,
       followupRun,
@@ -455,6 +467,15 @@ export async function runReplyAgent(
       false,
     );
     if (!enqueued) {
+      if (pluginQueuesSteer && refusedByQueueCap) {
+        // A claimed message that runs nowhere: let the plugin keep its own notice.
+        await askPluginsToQueueSteer({
+          sessionCtx,
+          sessionKey,
+          messageId: followupRun.messageId,
+          queueRefused: true,
+        });
+      }
       releaseAdmissionTicket();
       typing.cleanup();
       return undefined;

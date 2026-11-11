@@ -67,14 +67,17 @@ function activeRun() {
   return { run, operation, delivered };
 }
 
-async function incoming(run: ReturnType<typeof createQueueTestRun>) {
+async function incoming(
+  run: ReturnType<typeof createQueueTestRun>,
+  resolvedQueue = { mode: "steer", debounceMs: 0 } as never,
+) {
   const state: ReplyOperationRunState = {};
   await runReplyAgent({
     commandBody: run.prompt,
     followupRun: run,
     opts: { runId: "incoming", [REPLY_OPERATION_RUN_STATE]: state },
     queueKey: KEY,
-    resolvedQueue: { mode: "steer", debounceMs: 0 },
+    resolvedQueue,
     shouldSteer: true,
     shouldFollowup: false,
     isActive: true,
@@ -175,6 +178,57 @@ describe("before_steer: a plugin keeps a message out of the active run", () => {
       expect(state.admission).toEqual({ status: "accepted", mode: "followup" });
       expect(delivered).toEqual([]);
       expect(hookState.calls).toHaveLength(0);
+    } finally {
+      operation.complete();
+    }
+  });
+
+  it("does not ask for a message without an id: it steers as before", async () => {
+    hookState.result = { handled: true };
+    const { run, operation, delivered } = activeRun();
+    run.messageId = undefined;
+    try {
+      const state = await incoming(run);
+      expect(state.admission).toEqual({ status: "accepted", mode: "steer" });
+      expect(delivered).toEqual(["also do this"]);
+      expect(hookState.calls).toHaveLength(0);
+    } finally {
+      operation.complete();
+    }
+  });
+
+  it("tells the plugin when a claimed message could not be queued (drop policy new, queue full)", async () => {
+    hookState.result = { handled: true };
+    const { run, operation, delivered } = activeRun();
+    const full = { mode: "steer", debounceMs: 0, cap: 1, dropPolicy: "new" } as never;
+    try {
+      // Another message already fills the one-slot queue.
+      const first = createQueueTestRun({ prompt: "earlier", messageId: "$event-0" });
+      first.run.agentId = "cellect-fi-admin";
+      first.run.sessionKey = KEY;
+      await incoming(first, full);
+      hookState.calls = [];
+      const state = await incoming(run, full);
+      expect(state.admission).toEqual({ status: "skipped", reason: "queue-cap" });
+      expect(delivered).toEqual([]);
+      expect(hookState.calls.map((call) => call.event.queueRefused)).toEqual([undefined, true]);
+      expect(hookState.calls[1]?.event).toMatchObject({ messageId: "$event-1" });
+    } finally {
+      operation.complete();
+    }
+  });
+
+  it("does not report a refusal for a redelivered duplicate", async () => {
+    hookState.result = { handled: true };
+    const { run, operation } = activeRun();
+    try {
+      await incoming(run);
+      hookState.calls = [];
+      const again = createQueueTestRun({ prompt: "also do this", messageId: "$event-1" });
+      again.run.agentId = "cellect-fi-admin";
+      again.run.sessionKey = KEY;
+      await incoming(again);
+      expect(hookState.calls.filter((call) => call.event.queueRefused)).toEqual([]);
     } finally {
       operation.complete();
     }

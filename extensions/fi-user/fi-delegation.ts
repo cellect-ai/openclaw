@@ -475,11 +475,12 @@ export async function lookupDelegation(
 
 /** How long a Fi without the resolve-only route is remembered, so each turn does not pay a failed call. */
 const RESOLVE_ROUTE_UNAVAILABLE_MS = 60_000;
-let resolveRouteUnavailableUntil = 0;
+/** Per Fi origin: another Fi (or the same one after its release) must not inherit the verdict. */
+const resolveRouteUnavailableUntil = new Map<string, number>();
 
 /** Test seam: forget that the resolve-only route was found missing. */
 export function resetResolveRouteAvailability(): void {
-  resolveRouteUnavailableUntil = 0;
+  resolveRouteUnavailableUntil.clear();
 }
 
 /**
@@ -513,7 +514,7 @@ export async function lookupRequesterEmail(
   if (!token) {
     throw new Error("Fi user delegation broker is not configured");
   }
-  if (Date.now() >= resolveRouteUnavailableUntil) {
+  if (Date.now() >= (resolveRouteUnavailableUntil.get(config.baseUrl) ?? 0)) {
     const response = await fetch(`${config.baseUrl}/api/openclaw-user-delegation/resolve`, {
       method: "POST",
       headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
@@ -531,7 +532,7 @@ export async function lookupRequesterEmail(
       if (body.trim() === "Not found") {
         return undefined;
       }
-      resolveRouteUnavailableUntil = Date.now() + RESOLVE_ROUTE_UNAVAILABLE_MS;
+      resolveRouteUnavailableUntil.set(config.baseUrl, Date.now() + RESOLVE_ROUTE_UNAVAILABLE_MS);
     } else if (!response.ok) {
       throw new Error(`Fi requester resolve failed (${response.status})`);
     } else {

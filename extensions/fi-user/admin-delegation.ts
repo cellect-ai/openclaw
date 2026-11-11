@@ -400,6 +400,12 @@ export function registerAdminDelegation(
   const fiUserTainted = new Set<string>();
   /** Events (session, event id) the host was told to queue rather than steer. */
   const queuedBySteerGate = new Set<string>();
+  /**
+   * Proofs that `received` took from active runs for a channel message, by (session, event id), so
+   * that a message the host then queues instead of injecting gives them back: only an injected
+   * input can have changed what a run does, and a queued one runs on its own proof.
+   */
+  const strippedByArrival = new Map<string, Array<[Run, string]>>();
   const trimSet = (set: Set<string>, max: number): void => {
     for (const oldest of set) {
       if (set.size <= max) {
@@ -422,6 +428,7 @@ export function registerAdminDelegation(
     }
     fiUserTainted.clear();
     queuedBySteerGate.clear();
+    strippedByArrival.clear();
     arrivals.clear();
     runs.clear();
     fiUserReplies.clear();
@@ -1003,6 +1010,22 @@ export function registerAdminDelegation(
     if (!session) {
       return;
     }
+    const eventId = message.messageId?.trim();
+    const snapshot: Array<[Run, string]> = [];
+    if (
+      eventId &&
+      configFromRuntime(api).crossChannelCustody === true &&
+      (message.channel === "matrix" || message.channel === "slack")
+    ) {
+      for (const run of runs.values()) {
+        if (
+          run.sender !== undefined &&
+          run.sessionKey.toLowerCase() === session.sessionKey.toLowerCase()
+        ) {
+          snapshot.push([run, run.sender]);
+        }
+      }
+    }
     // A retained task's authority does not cover additional injected instructions,
     // even when the injection repeats the original person's asserted sender id.
     for (const run of runs.values()) {
@@ -1018,6 +1041,23 @@ export function registerAdminDelegation(
       : onBehalfOfRequester(message);
     const talk = talkConsultSender(session.adminAgentId, session.sessionKey, message);
     observe(session.sessionKey, talk ?? (requester ? JSON.stringify(requester) : UNPROVEN));
+    const stripped = snapshot.filter(([run]) => run.sender === undefined);
+    if (
+      eventId &&
+      stripped.length > 0 &&
+      queuedBySteerGate.has(`${session.sessionKey}\0${eventId}`)
+    ) {
+      // The gate already claimed this message: it was never injected.
+      for (const [run, sender] of stripped) {
+        run.sender = sender;
+      }
+    } else if (eventId && stripped.length > 0) {
+      const key = `${session.sessionKey}\0${eventId}`;
+      strippedByArrival.set(key, stripped);
+      while (strippedByArrival.size > MAX_TRACKED) {
+        strippedByArrival.delete(strippedByArrival.keys().next().value as string);
+      }
+    }
     if (
       configFromRuntime(api).crossChannelCustody === true &&
       channelInput &&
@@ -1086,6 +1126,11 @@ export function registerAdminDelegation(
       if (talkConsultSender(session.adminAgentId, session.sessionKey, message)) {
         return false;
       }
+      // Without an event id the host cannot dedupe the queued copy: leave today's path.
+      const eventId = message.messageId?.trim();
+      if (!eventId) {
+        return false;
+      }
       const live = [...runs.values()].filter((run) => run.sessionKey === session.sessionKey);
       if (live.length === 0) {
         return false;
@@ -1095,19 +1140,45 @@ export function registerAdminDelegation(
       if (incoming && live.every((run) => run.sender === incoming)) {
         return false;
       }
-      const eventId = message.messageId?.trim();
-      if (eventId) {
-        queuedBySteerGate.add(`${session.sessionKey}\0${eventId}`);
-        trimSet(queuedBySteerGate, MAX_TRACKED);
-        for (const run of live) {
-          if (run.notice?.messageId === eventId) {
-            delete run.notice;
-          }
+      queuedBySteerGate.add(`${session.sessionKey}\0${eventId}`);
+      trimSet(queuedBySteerGate, MAX_TRACKED);
+      for (const run of live) {
+        if (run.notice?.messageId === eventId) {
+          delete run.notice;
         }
       }
+      // Queued, not injected: the active run keeps the proof its own sender gave it.
+      for (const [run, sender] of strippedByArrival.get(`${session.sessionKey}\0${eventId}`) ??
+        []) {
+        if (run.sender === undefined && [...runs.values()].includes(run)) {
+          run.sender = sender;
+        }
+      }
+      strippedByArrival.delete(`${session.sessionKey}\0${eventId}`);
       return true;
     } catch {
       return true;
+    }
+  };
+  /**
+   * The host could not queue a message `steerGate` claimed (queue cap, drop policy "new"): it
+   * runs nowhere, so the person is told to send it again, as for an injected-and-unproven one.
+   */
+  const steerRefused = (message: Inbound): void => {
+    try {
+      const session = adminSession(message);
+      const eventId = message.messageId?.trim();
+      if (!session || !eventId || !queuedBySteerGate.delete(`${session.sessionKey}\0${eventId}`)) {
+        return;
+      }
+      if (
+        configFromRuntime(api).crossChannelCustody === true &&
+        inboundRequester(session.sessionKey, message)
+      ) {
+        noticeUnprovenRun(session.sessionKey, message);
+      }
+    } catch {
+      // A notice is best effort.
     }
   };
   const scheduleNotice = (sessionKey: string, route: NoticeRoute): void => {
@@ -1131,8 +1202,11 @@ export function registerAdminDelegation(
       throw new Error("no outbound adapter");
     }
     await adapter.sendText({
-      // The adapter contract still accepts the mutable OpenClawConfig type.
-      cfg: (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig,
+      // The adapter contract takes the mutable OpenClawConfig type; it gets a private copy, so
+      // nothing it does can change the runtime's own snapshot. Config is plain JSON.
+      cfg: JSON.parse(
+        JSON.stringify(api.runtime.config?.current?.() ?? api.config),
+      ) as OpenClawConfig,
       to,
       text: INJECTED_NOTICE,
       ...(threadId !== undefined ? { threadId } : {}),
@@ -1597,5 +1671,14 @@ export function registerAdminDelegation(
       : undefined;
   };
 
-  return { dispatched, received, steerGate, held, decidesAfterMint, mint, provenToolRequester };
+  return {
+    dispatched,
+    received,
+    steerGate,
+    steerRefused,
+    held,
+    decidesAfterMint,
+    mint,
+    provenToolRequester,
+  };
 }
