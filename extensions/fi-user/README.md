@@ -183,6 +183,18 @@ a token that was not handed to a command.
 
 The hold is in memory. A plugin reload or Gateway restart forgets it.
 
+`crossChannelCustody: true` (default off; turned on per tenant with an owner
+sign-off) lets the same person continue on another channel. A proven run in a
+session the holder's own commands ran in may ask Fi for a token for an
+`exec`/`sandbox_exec` call. The call runs only if that token's subject (email
+and org) equals the holder's; a token minted for anyone else is dropped and
+the call is held, so Fi logs one minted token that was never used. A holder
+created without a readable subject matches nobody. The run's other sandbox
+tools, other sessions and unproven runs stay held. With the flag on, a person's
+input written into a run in the session that cannot act for them gets one
+notice per run, in the place the host would reply, asking them to send it
+again; it is never re-run, and the re-sent message needs its own proof.
+
 ### Output is not scrubbed
 
 The plugin does not redact tool output. The immutable installed CLI owns the

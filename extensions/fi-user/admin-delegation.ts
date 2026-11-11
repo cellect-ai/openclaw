@@ -148,8 +148,38 @@ type Custody = {
   sender: string;
   expiresAt: number;
   calls: Map<string, { sessionKey: string; agentId: string; expiresAt: number }>;
+  /**
+   * The Fi-minted subject of the holder's tokens (crossChannelCustody only).
+   * Absent, or once two of its mints disagree: no other channel identity matches it.
+   */
+  subject?: string;
 };
 type Held = { block: true; blockReason: string };
+/** Told, at most once per run, to whoever wrote into a run that cannot act for them. */
+export const INJECTED_NOTICE =
+  "I couldn't act on that while another task was running. Please send it again.";
+
+/**
+ * Who Fi minted a token for: its subject and org, read from the token Fi just
+ * returned, which is the same token the command then presents to Fi. Anything
+ * unreadable is no subject.
+ */
+function tokenSubject(token: string): string | undefined {
+  try {
+    const payload: unknown = JSON.parse(
+      Buffer.from(token.split(".")[1] ?? "", "base64url").toString("utf8"),
+    );
+    if (!isRecord(payload)) {
+      return undefined;
+    }
+    const { sub, org_slug: org } = payload;
+    return typeof sub === "string" && sub.trim() && typeof org === "string" && org
+      ? JSON.stringify([sub.trim().toLowerCase(), org])
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Set `key` as the newest entry, dropping the oldest ones past the cap. */
 function remember<V>(tracked: Map<string, V>, key: string, value: V): void {
@@ -169,6 +199,8 @@ type Run = {
   continuation?: PluginHookToolContext["requesterContinuation"];
   voice?: ReturnType<MatrixEntitlements["admittedVoiceTurn"]>;
   matrixOrigin?: MatrixOrigin;
+  /** INJECTED_NOTICE was sent for input written into this run. */
+  noticed?: true;
 };
 /**
  * The Matrix requester of a run admitted from a verified source-session reply,
@@ -224,6 +256,9 @@ type Inbound = {
   messageId?: string;
   /** The channel account that received it, as the host routed it. */
   accountId?: string;
+  /** Where the host would reply to it, and in which thread. */
+  conversationId?: string;
+  threadId?: string | number;
   sessionKey?: string;
   /**
    * Host-owned channel identity. A Matrix Talk consult the Gateway dispatches
@@ -931,15 +966,59 @@ export function registerAdminDelegation(
     }
     // Only channel input can be the allowed Matrix person here; a sender id
     // another caller supplies (a hook, a client) still counts as someone else.
-    const requester =
-      message.channel === "matrix" || message.channel === "slack"
-        ? inboundRequester(session.sessionKey, message)
-        : onBehalfOfRequester(message);
-    observe(
-      session.sessionKey,
-      talkConsultSender(session.adminAgentId, session.sessionKey, message) ??
-        (requester ? JSON.stringify(requester) : UNPROVEN),
-    );
+    const channelInput = message.channel === "matrix" || message.channel === "slack";
+    const requester = channelInput
+      ? inboundRequester(session.sessionKey, message)
+      : onBehalfOfRequester(message);
+    const talk = talkConsultSender(session.adminAgentId, session.sessionKey, message);
+    observe(session.sessionKey, talk ?? (requester ? JSON.stringify(requester) : UNPROVEN));
+    if (
+      configFromRuntime(api).crossChannelCustody === true &&
+      channelInput &&
+      requester &&
+      !talk &&
+      message.channelContext?.sender?.isBot !== true
+    ) {
+      noticeUnprovenRun(session.sessionKey, message);
+    }
+  };
+
+  /**
+   * A person's input written into a run in this session that cannot act for
+   * them (nobody proved it, or this input just took its proof away) is not
+   * re-run: they are told once per run, in the place the host would reply, to
+   * send it again. A re-sent message is a new arrival and needs its own proof.
+   */
+  const noticeUnprovenRun = (sessionKey: string, message: Inbound): void => {
+    let target: Run | undefined;
+    for (const run of runs.values()) {
+      if (run.sessionKey === sessionKey && !run.sender) {
+        target = run;
+      }
+    }
+    const channel = message.channel;
+    const to = message.conversationId?.trim();
+    if (!target || target.noticed || !channel || !to) {
+      return;
+    }
+    target.noticed = true;
+    const threadId = message.threadId;
+    const accountId = message.accountId?.trim();
+    void (async () => {
+      const adapter = await api.runtime.channel.outbound.loadAdapter(channel);
+      if (!adapter?.sendText) {
+        throw new Error("no outbound adapter");
+      }
+      await adapter.sendText({
+        cfg: api.runtime.config?.current?.() ?? api.config,
+        to,
+        text: INJECTED_NOTICE,
+        ...(threadId !== undefined && threadId !== "" ? { threadId } : {}),
+        ...(accountId ? { accountId } : {}),
+      });
+    })().catch(() => {
+      api.logger.warn("fi-user: injected-input notice not delivered");
+    });
   };
 
   /**
@@ -952,6 +1031,8 @@ export function registerAdminDelegation(
     config: ResolvedPluginConfig,
     toolName: string,
     ctx: PluginHookToolContext,
+    /** The subject of a token Fi has just minted for this call (crossChannelCustody only). */
+    mintedSubject?: string,
   ): Held | undefined => {
     if (custody.size === 0) {
       return undefined;
@@ -976,12 +1057,69 @@ export function registerAdminDelegation(
       return undefined;
     }
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    return run?.agentId === agentId &&
+    if (
+      run?.agentId === agentId &&
       run.sessionKey === sessionKey &&
       run.sender === holder.sender &&
       continuationCurrent(run, ctx)
-      ? undefined
-      : { block: true, blockReason: run?.sender ? heldCopy(holder.expiresAt) : UNPROVEN_HOLD };
+    ) {
+      return undefined;
+    }
+    // The same person on another channel: only a token Fi minted for the
+    // holder's own subject, in a session the holder's commands ran in.
+    if (
+      mintedSubject !== undefined &&
+      holder.subject === mintedSubject &&
+      sameSessionCandidate(config, toolName, ctx, holder)
+    ) {
+      return undefined;
+    }
+    return { block: true, blockReason: run?.sender ? heldCopy(holder.expiresAt) : UNPROVEN_HOLD };
+  };
+
+  /**
+   * With crossChannelCustody, a minting tool of a proven run in a session the
+   * holder's own commands ran in, whatever channel identity proved it. It may
+   * ask Fi; the post-mint check on the token's subject decides. Tools that do
+   * not mint, unproven runs and other sessions stay held.
+   */
+  const sameSessionCandidate = (
+    config: ResolvedPluginConfig,
+    toolName: string,
+    ctx: PluginHookToolContext,
+    holder: Custody,
+  ): boolean => {
+    const agentId = ctx.agentId?.toLowerCase();
+    const sessionKey = ctx.sessionKey?.toLowerCase();
+    const run = ctx.runId ? runs.get(ctx.runId) : undefined;
+    return (
+      config.crossChannelCustody === true &&
+      ON_BEHALF_OF_TOOLS.has(toolName) &&
+      run !== undefined &&
+      run.sender !== undefined &&
+      run.agentId === agentId &&
+      run.sessionKey === sessionKey &&
+      continuationCurrent(run, ctx) &&
+      [...holder.calls.values()].some((call) => call.sessionKey.toLowerCase() === sessionKey)
+    );
+  };
+
+  /** Whether a call `held` refused may still ask Fi, to be decided on the minted subject. */
+  const decidesAfterMint = (
+    config: ResolvedPluginConfig,
+    toolName: string,
+    ctx: PluginHookToolContext,
+  ): boolean => {
+    const agentId = ctx.agentId?.toLowerCase();
+    const holder =
+      agentId && ctx.sessionKey
+        ? custody.get(sandboxKey(agentId, ctx.sessionKey.toLowerCase()))
+        : undefined;
+    return (
+      holder !== undefined &&
+      holder.expiresAt > Date.now() &&
+      sameSessionCandidate(config, toolName, ctx, holder)
+    );
   };
 
   /**
@@ -1224,7 +1362,10 @@ export function registerAdminDelegation(
         }
         // Someone else's token may have reached this sandbox while Fi answered:
         // the call must then wait like any other, not run without a token.
-        const blocked = held(config, event.toolName, ctx);
+        // With crossChannelCustody the token's own subject may match the
+        // holder's; a token for anyone else is dropped here, never injected.
+        const subject = config.crossChannelCustody === true ? tokenSubject(token) : undefined;
+        const blocked = held(config, event.toolName, ctx, subject);
         if (blocked) {
           diagnose(ctx, "mint-held");
           return blocked;
@@ -1234,11 +1375,15 @@ export function registerAdminDelegation(
         }
         // Expiry is a fallback, not a minimum hold: native descendant cleanup
         // releases only this exact call, never another still-running command.
-        const holder = custody.get(sandbox) ?? {
+        const holder: Custody = custody.get(sandbox) ?? {
           sender,
           expiresAt: 0,
           calls: new Map(),
+          ...(subject !== undefined ? { subject } : {}),
         };
+        if (holder.subject !== subject) {
+          delete holder.subject;
+        }
         const expiry = Math.min(expiresAt * 1000, now + MAX_HOLD_MS);
         holder.calls.set(key, { agentId, sessionKey: ctx.sessionKey!, expiresAt: expiry });
         holder.expiresAt = Math.max(holder.expiresAt, expiry);
@@ -1333,5 +1478,5 @@ export function registerAdminDelegation(
       : undefined;
   };
 
-  return { dispatched, received, held, mint, provenToolRequester };
+  return { dispatched, received, held, decidesAfterMint, mint, provenToolRequester };
 }

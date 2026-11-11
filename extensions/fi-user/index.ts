@@ -580,6 +580,8 @@ export default definePluginEntry({
         channelContext: context.channelContext,
         messageId: event.messageId ?? context.messageId,
         accountId: context.accountId,
+        conversationId: context.conversationId,
+        threadId: event.threadId,
       });
       if (context.channelId === "webchat") {
         rememberWebchatContext(event.sessionKey ?? context.sessionKey, event.content);
@@ -636,7 +638,9 @@ export default definePluginEntry({
             return blocked;
           }
           const held = adminDelegation.held(config, event.toolName, ctx);
-          if (held) {
+          // crossChannelCustody: such a call may still ask Fi, but runs only
+          // with a token minted for the holder's own subject; else it is held.
+          if (held && !adminDelegation.decidesAfterMint(config, event.toolName, ctx)) {
             return held;
           }
           // The assertion is for the agents Fi's on-behalf-of knows by name; the
@@ -661,6 +665,15 @@ export default definePluginEntry({
           // Same-environment operator calls retain the assertion-only fallback.
           // A selected different environment must either get its token or block.
           const delegated = adminDelegation.mint(config, event, ctx, enteredAt);
+          if (held) {
+            return delegated
+              ? delegated.then((minted) =>
+                  minted && !("block" in minted)
+                    ? { params: withOnBehalfOfEnv(event.params, assertion, minted) }
+                    : held,
+                )
+              : held;
+          }
           return delegated
             ? delegated.then((minted) =>
                 minted && "block" in minted

@@ -112,13 +112,19 @@ function messageContext(overrides: Record<string, unknown>) {
     channelId: overrides.channel ?? "slack",
     sessionKey: overrides.sessionKey ?? SESSION,
     ...(overrides.accountId ? { accountId: overrides.accountId } : {}),
+    ...(overrides.conversationId ? { conversationId: overrides.conversationId } : {}),
     ...(overrides.channelContext ? { channelContext: overrides.channelContext } : {}),
   };
 }
 
+/** Channel sends the plugin makes itself, for runtimes given an outbound adapter. */
+export const sendText = vi.fn(async () => ({ ok: true, messageId: "notice" }));
+
 export function plugin(
   configOverrides: Record<string, unknown> = {},
   host: Record<string, unknown> = SANDBOXED,
+  /** Give the runtime an outbound adapter that records into `sendText`. */
+  outbound = false,
 ) {
   const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
   const middleware = vi.fn();
@@ -167,7 +173,10 @@ export function plugin(
         },
       },
       runtime: {
-        channel: { runtimeContexts: { register: runtimeContexts } },
+        channel: {
+          runtimeContexts: { register: runtimeContexts },
+          ...(outbound ? { outbound: { loadAdapter: async () => ({ sendText }) } } : {}),
+        },
       } as unknown as OpenClawPluginApi["runtime"],
       on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
       registerAgentEventSubscription: (subscription) => subscriptions.push(subscription),
@@ -319,6 +328,7 @@ export const mintBody = () =>
 export function installDelegationFixtures() {
   beforeEach(() => {
     fetchMock.mockReset();
+    sendText.mockClear();
     // The Matrix admission gate asks Fi about the turn; everything else here is a mint.
     fetchMock.mockImplementation(async (url: string) =>
       url === AUTHORIZE_URL

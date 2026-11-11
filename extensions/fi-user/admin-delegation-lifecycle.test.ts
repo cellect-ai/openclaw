@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { sanitizeToolArgs } from "openclaw/plugin-sdk/agent-harness-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { adminActionSessions } from "./admin-action.js";
+import { INJECTED_NOTICE } from "./admin-delegation.js";
 import {
   installDelegationFixtures,
   TOKEN,
@@ -13,11 +14,15 @@ import {
   HELD,
   UNPROVEN_HOLD,
   SANDBOXED,
+  SLACK_CHANNEL,
+  SLACK_THREAD,
+  slackThread,
   plugin,
   fetchMock,
   minted,
   mints,
   mintBody,
+  sendText,
 } from "./admin-delegation.test-helpers.js";
 
 installDelegationFixtures();
@@ -715,5 +720,298 @@ describe("the admin agent's delegated user token", () => {
     } finally {
       adminActionSessions.delete(sessionKey);
     }
+  });
+});
+
+/** A Fi token whose payload names `sub` in org `a`, as Fi signs them. */
+const fiToken = (sub: string, tag = "sig") =>
+  `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(JSON.stringify({ sub, org_slug: "a", agent_id: "cellect-fi-admin" })).toString("base64url")}.${tag}`;
+const ADMIN_SLACK = fiToken("admin@example.com", "slack");
+const ADMIN_MATRIX = fiToken("Admin@Example.com", "matrix");
+const OTHER_MATRIX = fiToken("other@example.com", "other");
+const PROJECTION = "!projection:matrix.example";
+const CROSS = { crossChannelCustody: true };
+
+describe("one person's sandbox hold across two channels (G-B3)", () => {
+  beforeEach(() => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+    // Fi mints for whoever the request names; the Matrix admission gate answers ok.
+    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) => {
+      if (url === AUTHORIZE_URL) {
+        return new Response(
+          JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+        );
+      }
+      const body = JSON.parse(init?.body ?? "{}") as Record<string, string>;
+      return body.requesterMatrixUserId === "@other:matrix.example"
+        ? minted({ token: OTHER_MATRIX }, { email: "other@example.com" })
+        : body.requesterMatrixUserId
+          ? minted({ token: ADMIN_MATRIX })
+          : minted({ token: ADMIN_SLACK });
+    });
+  });
+
+  /** A reply typed in the Slack thread's Matrix projection, admitted by Fi's source guard. */
+  const projected = (senderId = "@admin:matrix.example", eventId = "$reply") => {
+    const channelContext = {
+      sender: { id: senderId },
+      chat: {
+        id: PROJECTION,
+        eventId,
+        sourceReplyAdmission: {
+          version: 1,
+          sessionKey: SLACK_THREAD,
+          roomId: PROJECTION,
+          senderId,
+          accountId: "adminprod",
+          eventId,
+          authorizedAt: Date.now(),
+        },
+      },
+    };
+    return {
+      arrive: {
+        channel: "matrix",
+        accountId: "adminprod",
+        senderId,
+        sessionKey: SLACK_THREAD,
+        isGroup: true,
+        messageId: eventId,
+        channelContext,
+      },
+      start: {
+        runId: "run-m",
+        channel: "matrix",
+        senderId,
+        sessionKey: SLACK_THREAD,
+        accountId: "adminprod",
+        channelContext: { sender: { id: senderId }, chat: { id: PROJECTION, eventId } },
+      },
+      exec: {
+        runId: "run-m",
+        sessionKey: SLACK_THREAD,
+        requester: { channel: "matrix", senderId, accountId: "adminprod" },
+      },
+    };
+  };
+
+  /** The admin's Slack command holds the agent's sandbox; its run has ended. */
+  const afterSlackCommand = async (config: Record<string, unknown> = CROSS) => {
+    const turn = plugin(config);
+    const slack = slackThread();
+    await turn.arrive(slack.arrive);
+    await turn.start(slack.start);
+    const first = await turn.exec(slack.exec);
+    expect(first?.params.env?.FI_DELEGATED_USER_TOKEN).toBeDefined();
+    await turn.settle();
+    return turn;
+  };
+
+  it("lets the same person's Matrix reply in the same session run with its own token", async () => {
+    const turn = await afterSlackCommand();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const result = await turn.exec(reply.exec);
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(ADMIN_MATRIX);
+    expect(JSON.parse(String(mints().at(-1)?.[1]?.body))).toMatchObject({
+      requesterMatrixUserId: "@admin:matrix.example",
+    });
+    // Only a minted token proves the subject: the same run's other sandbox tools stay held.
+    expect(
+      await turn.exec({ ...reply.exec, toolName: "read" }, { toolName: "read", params: {} }),
+    ).toEqual({ block: true, blockReason: HELD });
+  });
+
+  it("holds a different person on Matrix and never injects the token Fi minted for them", async () => {
+    const turn = await afterSlackCommand();
+    const reply = projected("@other:matrix.example");
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const before = mints().length;
+    const result = await turn.exec(reply.exec);
+    expect(result).toEqual({ block: true, blockReason: HELD });
+    expect(JSON.stringify(result)).not.toContain(OTHER_MATRIX);
+    // The one extra mint the plan accepts; its token is dropped.
+    expect(mints()).toHaveLength(before + 1);
+  });
+
+  it("holds the same person in a different session without asking Fi", async () => {
+    const turn = await afterSlackCommand();
+    await turn.arrive(matrix.arrive);
+    await turn.start({ ...matrix.start, runId: "run-dm" });
+    const before = mints().length;
+    expect(await turn.exec({ ...matrix.exec, runId: "run-dm" })).toEqual({
+      block: true,
+      blockReason: HELD,
+    });
+    expect(mints()).toHaveLength(before);
+  });
+
+  it("holds a tool that does not mint without asking Fi", async () => {
+    const turn = await afterSlackCommand();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const before = mints().length;
+    expect(
+      await turn.exec({ ...reply.exec, toolName: "write" }, { toolName: "write", params: {} }),
+    ).toEqual({ block: true, blockReason: HELD });
+    expect(mints()).toHaveLength(before);
+  });
+
+  it("holds an unproven run without asking Fi", async () => {
+    const turn = await afterSlackCommand();
+    await turn.start({
+      runId: "cron-1",
+      sessionKey: SLACK_THREAD,
+      trigger: "cron",
+      senderId: undefined,
+    });
+    const before = mints().length;
+    expect(
+      await turn.exec({ runId: "cron-1", sessionKey: SLACK_THREAD, requester: undefined }),
+    ).toEqual({ block: true, blockReason: UNPROVEN_HOLD });
+    expect(mints()).toHaveLength(before);
+  });
+
+  it("treats a holder whose token named no subject as a mismatch", async () => {
+    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) =>
+      url === AUTHORIZE_URL
+        ? new Response(JSON.stringify({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }))
+        : JSON.parse(init?.body ?? "{}").requesterMatrixUserId
+          ? minted({ token: ADMIN_MATRIX })
+          : minted(),
+    );
+    const turn = await afterSlackCommand();
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const result = await turn.exec(reply.exec);
+    expect(result).toEqual({ block: true, blockReason: HELD });
+    expect(JSON.stringify(result)).not.toContain(ADMIN_MATRIX);
+  });
+
+  it.each([
+    ["off by default", {}],
+    ["off unless exactly true", { crossChannelCustody: "true" }],
+  ])("is today's behaviour when %s: held, and Fi is never asked", async (_name, config) => {
+    const turn = await afterSlackCommand(config);
+    const reply = projected();
+    await turn.arrive(reply.arrive);
+    await turn.start(reply.start);
+    const before = mints().length;
+    expect(await turn.exec(reply.exec)).toEqual({ block: true, blockReason: HELD });
+    expect(mints()).toHaveLength(before);
+    expect(sendText).not.toHaveBeenCalled();
+  });
+});
+
+describe("input written into a run that cannot act for its sender (G-B4)", () => {
+  const inject = (senderId = "U0ADMIN001") => ({
+    channel: "slack",
+    senderId,
+    conversationId: "user:U0ADMIN001",
+    threadId: "1792189039.487369",
+  });
+  /** A run in the admin's DM that nobody proved, such as a completion wake. */
+  const wake = async (config: Record<string, unknown> = CROSS) => {
+    const turn = plugin(config, SANDBOXED, true);
+    await turn.start({ runId: "wake-1", trigger: "cron", senderId: undefined });
+    return turn;
+  };
+
+  it("tells the sender once per run to send it again, where the host would reply", async () => {
+    const turn = await wake();
+    await turn.inject(inject());
+    await turn.inject(inject());
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        to: "user:U0ADMIN001",
+        threadId: "1792189039.487369",
+        text: INJECTED_NOTICE,
+      }),
+    );
+    // The next run that cannot act gets its own notice.
+    await turn.settle("wake-1");
+    await turn.start({ runId: "wake-2", trigger: "cron", senderId: undefined });
+    await turn.inject(inject());
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(2));
+  });
+
+  it.each([
+    ["the flag is off", {}, inject(), undefined],
+    ["the input is a bot's", CROSS, inject(), { sender: { id: "U0ADMIN001", isBot: true } }],
+    ["the input has no channel person", CROSS, { ...inject(), channel: "webchat" }, undefined],
+  ])("says nothing when %s", async (_name, config, input, channelContext) => {
+    const turn = await wake(config);
+    await turn.inject({ ...input, ...(channelContext ? { channelContext } : {}) });
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(sendText).not.toHaveBeenCalled();
+  });
+
+  it("says nothing between runs or into a run that still acts for its sender", async () => {
+    const turn = plugin(CROSS, SANDBOXED, true);
+    await turn.inject(inject());
+    await turn.arrive();
+    await turn.start();
+    await turn.inject(inject());
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 0);
+    });
+    expect(sendText).not.toHaveBeenCalled();
+    expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+  });
+
+  it("gives a re-sent message its own proof, never the original run's requester or custody", async () => {
+    const other = "U0OTHER002";
+    const otherToken = fiToken("other@example.com", "theirs");
+    fetchMock.mockImplementation(async (url: string, init?: { body?: string }) =>
+      JSON.parse(init?.body ?? "{}").requesterSenderId === other
+        ? minted({ token: otherToken }, { email: "other@example.com" })
+        : minted({ token: ADMIN_SLACK }),
+    );
+    const turn = plugin(CROSS, SANDBOXED, true);
+    const slack = slackThread();
+    await turn.arrive(slack.arrive);
+    await turn.start(slack.start);
+    expect((await turn.exec(slack.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(ADMIN_SLACK);
+    // Someone else writes into the admin's run: it no longer acts for anyone.
+    await turn.inject({
+      ...inject(other),
+      sessionKey: SLACK_THREAD,
+      conversationId: SLACK_CHANNEL,
+    });
+    await vi.waitFor(() => expect(sendText).toHaveBeenCalledTimes(1));
+    expect(await turn.exec(slack.exec)).toEqual({ block: true, blockReason: UNPROVEN_HOLD });
+    await turn.settle();
+    // They send it again: a new arrival, a new run, proven by its own event.
+    const eventId = "1792190999.000001";
+    await turn.arrive({ ...slack.arrive, senderId: other, messageId: eventId });
+    await turn.start({
+      ...slack.start,
+      runId: "run-2",
+      senderId: other,
+      channelContext: { sender: { id: other }, chat: { id: SLACK_CHANNEL, eventId } },
+    });
+    const resent = {
+      ...slack.exec,
+      runId: "run-2",
+      requester: { channel: "slack", senderId: other },
+    };
+    const held = await turn.exec(resent);
+    // Fi was asked about them alone, and the admin's custody is not theirs to use.
+    expect(JSON.parse(String(mints().at(-1)?.[1]?.body))).toMatchObject({
+      requesterSenderId: other,
+    });
+    expect(held).toEqual({ block: true, blockReason: HELD });
+    expect(JSON.stringify(held)).not.toContain(ADMIN_SLACK);
+    expect(JSON.stringify(held)).not.toContain(otherToken);
+    // Once the admin's command is cleaned up, their own token runs.
+    await turn.cleanup({ sessionKey: SLACK_THREAD });
+    expect((await turn.exec(resent))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(otherToken);
   });
 });

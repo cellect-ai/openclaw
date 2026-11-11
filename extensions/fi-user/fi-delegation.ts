@@ -41,6 +41,12 @@ export type PluginConfig = {
    * Unset or malformed: the turn keeps the agent's own model.
    */
   letMeKnowModel?: string;
+  /**
+   * One person's two channels share a sandbox hold: a proven run in the
+   * holder's own session passes only when Fi mints it a token for the
+   * holder's own subject. Off unless exactly `true`.
+   */
+  crossChannelCustody?: boolean;
 };
 
 export type ResolvedPluginConfig = Required<
@@ -58,6 +64,7 @@ export type ResolvedPluginConfig = Required<
   letMeKnowModel?: { provider: string; model: string };
   /** `letMeKnowModel` is set but not "provider/model"; it is ignored. */
   letMeKnowModelInvalid?: true;
+  crossChannelCustody?: true;
 };
 
 export type Delegation = {
@@ -149,6 +156,7 @@ function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
       : letMeKnowModel
         ? { letMeKnowModelInvalid: true as const }
         : {}),
+    ...(raw?.crossChannelCustody === true ? { crossChannelCustody: true as const } : {}),
   };
 }
 
