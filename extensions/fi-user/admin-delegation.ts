@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import type { OpenClawConfig, OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { isDiagnosticFlagEnabled } from "openclaw/plugin-sdk/diagnostic-flags";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
@@ -1131,7 +1131,8 @@ export function registerAdminDelegation(
       throw new Error("no outbound adapter");
     }
     await adapter.sendText({
-      cfg: api.runtime.config?.current?.() ?? api.config,
+      // The adapter contract still accepts the mutable OpenClawConfig type.
+      cfg: (api.runtime.config?.current?.() ?? api.config) as OpenClawConfig,
       to,
       text: INJECTED_NOTICE,
       ...(threadId !== undefined ? { threadId } : {}),
