@@ -103,6 +103,17 @@ describe("installed skill catalog", () => {
     expect(reader).toHaveBeenCalledTimes(1);
   });
 
+  it("names the readable catalog when a skill is missing", async () => {
+    const a = skill("alpha", "A");
+    const b = skill("beta", "B");
+    await expect(readInstalledSkill([b, a], "fi-ops")).rejects.toThrow(
+      /Unknown installed skill "fi-ops"\. Skills readable in this session: alpha, beta\..*do not retry/,
+    );
+    await expect(readInstalledSkill([], "fi-ops")).rejects.toThrow("catalog is empty");
+    const many = Array.from({ length: 25 }, (_, i) => skill(`s${String(i).padStart(2, "0")}`, "x"));
+    await expect(readInstalledSkill(many, "zz")).rejects.toThrow("and 5 more");
+  });
+
   it("rejects oversized instructions and cancellation, including inline content", async () => {
     await expect(
       readInstalledSkill([skill("large", "Large", "x".repeat(256 * 1024 + 1))], "large"),

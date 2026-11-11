@@ -345,7 +345,8 @@ it("searches and reads eligible skills through the worker bridge and normal tool
         coverage: { bodyIndexed: 0, metadataOnly: 1, truncatedBodies: 0 },
       },
       body,
-      unknown: 'Unknown installed skill "missing".',
+      unknown:
+        'Unknown installed skill "missing". Skills readable in this session: demo. A skill outside this list is not enabled in this agent\'s catalog; do not retry skills_read for it.',
     },
   });
   expect(reader).toHaveBeenCalledExactlyOnceWith({
