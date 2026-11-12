@@ -17,7 +17,6 @@ import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-sta
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
 import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contract.js";
 import {
   assertSandboxRegistryReservationCurrent,
@@ -364,8 +363,7 @@ export async function removeSandboxRegistryGeneration(
 
 /** Removes one browser sandbox registry entry by container name. */
 export async function removeBrowserRegistryEntry(containerName: string) {
-  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
-    type: "sandboxRegistry.remove",
-    input: { kind: "browser", containerName },
-  });
+  // Share publication's admission path so removal cannot overtake a queued
+  // update while it is acquiring the worker, then resurrect the entry.
+  await writeRegistry({ operation: "removeBrowser", containerName });
 }
