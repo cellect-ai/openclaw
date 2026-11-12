@@ -6,6 +6,8 @@ import {
   BROKER,
   fetchMock,
   installDelegationFixtures,
+  matrix,
+  MATRIX_SESSION,
   plugin,
   slackThread,
   SLACK_THREAD,
@@ -71,11 +73,49 @@ describe("registered requester-bound conversation reader", () => {
       requester: { channel: "slack", slackUserId: "U0ADMIN001" },
       destination: { channel: "slack", channelId: "C0CHANNEL1", accountId: "fi-admin" },
     });
+    const claims = JSON.parse(Buffer.from(payload, "base64url").toString());
+    expect(claims.exp - claims.iat).toBe(60);
+    expect(claims.jti).toMatch(/^[0-9a-f-]{36}$/);
     expect(body.conversationId).toBe(id);
     expect(JSON.stringify(result)).toContain("untrusted data");
     expect(JSON.stringify(result)).toContain("‹‹‹END›››");
     expect(JSON.stringify(result)).not.toContain(BROKER);
     expect(JSON.stringify(result)).not.toContain(body.assertion);
+  });
+  it("uses the native Matrix requester's environment and destination", async () => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ admindev: "dev" }));
+    vi.stubEnv("FIXTURE_DEV_BROKER", "fixture-dev-credential");
+    fetchMock.mockResolvedValue(
+      response({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" }),
+    );
+    const turn = plugin({
+      matrixEnvironments: {
+        dev: { baseUrl: "https://dev.example.test/fi", brokerTokenEnv: "FIXTURE_DEV_BROKER" },
+      },
+    });
+    await turn.arrive(matrix.arrive);
+    await turn.start({ ...matrix.start, accountId: "admindev" });
+    const tool = turn
+      .tools(
+        context({
+          sessionKey: MATRIX_SESSION,
+          messageChannel: "matrix",
+          requesterSenderId: "@admin:matrix.example",
+          agentAccountId: "admindev",
+          nativeChannelId: "!dm:matrix.example",
+        }),
+      )
+      .find((t) => t.name === "read_conversation")!;
+    fetchMock.mockResolvedValue(response({ conversationId: id, messages: [] }));
+    await tool.execute("matrix-read", { conversationId: id });
+    const [url, init] = fetchMock.mock.calls.at(-1)! as [string, RequestInit];
+    expect(url).toBe("https://dev.example.test/fi/api/threads/conversations/read");
+    expect(init.headers).toMatchObject({ authorization: "Bearer fixture-dev-credential" });
+    const claims = JSON.parse(
+      Buffer.from(JSON.parse(init.body as string).assertion.split(".")[1], "base64url").toString(),
+    );
+    expect(claims.requester).toEqual({ channel: "matrix", matrixUserId: "@admin:matrix.example" });
+    expect(claims.destination).toEqual({ channel: "matrix", roomId: "!dm:matrix.example" });
   });
   it("refuses an unproven automatic turn without any read or credential issuance", async () => {
     const { tool } = await ready(false);
