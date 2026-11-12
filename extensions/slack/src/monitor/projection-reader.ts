@@ -130,7 +130,7 @@ export function createSlackProjectionReader(params: {
               }
             });
           })
-          .sort((a, b) => a.ts!.localeCompare(b.ts!));
+          .toSorted((a, b) => a.ts!.localeCompare(b.ts!));
         const pointer = notices.find((message) => message.user === params.botUserId);
         // Source ownership can change. A previous bot's exact link already
         // serves this thread; never append a duplicate or mutate its message.

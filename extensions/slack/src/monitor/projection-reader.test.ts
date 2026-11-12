@@ -14,7 +14,7 @@ const input = {
   isCurrent: async () => true,
 };
 function setup() {
-  let messages: Record<string, unknown>[] = [
+  const messages: Record<string, unknown>[] = [
     { ts: input.rootMessageId, user: "U111", text: "Question" },
   ];
   const replies = vi.fn(async () => ({ ok: true, messages }));

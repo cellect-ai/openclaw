@@ -378,11 +378,11 @@ describe("v2 source reconciliation", () => {
     expect(mocks.send).not.toHaveBeenCalled();
     expect(mocks.edit).toHaveBeenCalledTimes(1);
     expect(mocks.edit.mock.calls[0]?.[1]).toBe("$legacy");
-    expect(mocks.redact.mock.calls.map((call) => call[1]).toSorted()).toEqual([
-      "$event1",
-      "$event2",
-      "$event3",
-    ]);
+    expect(
+      mocks.redact.mock.calls
+        .map((call) => call[1])
+        .toSorted((left, right) => String(left).localeCompare(String(right))),
+    ).toEqual(["$event1", "$event2", "$event3"]);
 
     vi.clearAllMocks();
     await reconcileMatrixProjectionSnapshot({ ...options, snapshot });
@@ -453,10 +453,11 @@ describe("v2 source reconciliation", () => {
       ...options,
       snapshot: { complete: true, messages: [message] },
     });
-    expect(mocks.redact.mock.calls.map((call) => call[1]).toSorted()).toEqual([
-      "$active",
-      "$intro",
-    ]);
+    expect(
+      mocks.redact.mock.calls
+        .map((call) => call[1])
+        .toSorted((left, right) => String(left).localeCompare(String(right))),
+    ).toEqual(["$active", "$intro"]);
   });
   it("plans a room read-only: one redact for a seeded duplicate, verdicts and mapping", async () => {
     await reconcileMatrixProjectionSnapshot({

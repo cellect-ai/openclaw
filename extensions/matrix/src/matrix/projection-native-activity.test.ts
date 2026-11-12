@@ -136,7 +136,7 @@ describe("content-free native projection activity", () => {
     { unsigned: { redacted_because: {} } },
     { type: "m.room.member" },
     { room_id: "!other" },
-    { origin_server_ts: NaN },
+    { origin_server_ts: Number.NaN },
     { origin_server_ts: -1 },
   ])("excludes noncurrent chat events %#", (patch) => {
     expect(resolve([event(patch)])).toBeUndefined();
