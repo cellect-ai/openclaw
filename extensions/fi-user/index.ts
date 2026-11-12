@@ -71,6 +71,7 @@ import {
   withOnBehalfOfEnv,
 } from "./on-behalf-of.js";
 import { projectionFailureKind } from "./projection-failure.js";
+import { createReadConversationTool, registerReadConversationCap } from "./read-conversation.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 import { createWorkbookTool } from "./workbook-tool.js";
 import { delegatedWorkbookTransport, matrixWorkbookTransport } from "./workbook-transport.js";
@@ -645,11 +646,14 @@ export default definePluginEntry({
       },
       { priority: 10_000 },
     );
+    const conversationReadCap = registerReadConversationCap(api);
     api.on(
       "before_tool_call",
       (event, ctx) => {
         // The host's deadline for this hook runs from here, across the grant check below.
         const enteredAt = Date.now();
+        const readCap = conversationReadCap(event.toolName, ctx);
+        if (readCap) return readCap;
         const authorizeAndAttribute = () => {
           const config = configFromRuntime(api);
           const blocked = adminHandoffBlock(config, event, ctx);
@@ -717,6 +721,12 @@ export default definePluginEntry({
         if (isFiUserShadowTurn(context)) {
           return [createFiUserApiTool(api, context)];
         }
+        const conversationReader = createReadConversationTool(
+          api,
+          context,
+          adminDelegation.provenToolRequester,
+        );
+        const conversationTools = conversationReader ? [conversationReader] : [];
         const workbookTurn = matrixEntitlements.workbookTurn(context);
         const workbookTransport = workbookTurn
           ? matrixWorkbookTransport(api, workbookTurn)
@@ -729,12 +739,15 @@ export default definePluginEntry({
           context.agentId.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase()
         ) {
           return [
+            ...conversationTools,
             ...workbookTools,
             createAdminOperationTool(context, () => adminDelegation.provenToolRequester(context)),
           ];
         }
         if (!isFiUserTurn(context)) {
-          return workbookTools.length ? workbookTools : null;
+          return [...conversationTools, ...workbookTools].length
+            ? [...conversationTools, ...workbookTools]
+            : null;
         }
         const tools = [
           ...workbookTools,

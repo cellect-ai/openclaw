@@ -178,7 +178,7 @@ describe("Fi user requester-bound Google Drive", () => {
     expect(registeredTools(slackContext({ messageChannel: "telegram" }))).toEqual([]);
     expect(
       registeredTools(slackContext({ agentId: "cellect-fi-admin" })).map((tool) => tool.name),
-    ).toEqual(["fi_admin_operation"]);
+    ).toEqual(["read_conversation", "fi_admin_operation"]);
   });
 
   it.each(["cellect-fi-user", "cellect-fi-admin", "cellect-main"])(

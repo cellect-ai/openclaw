@@ -9,6 +9,7 @@
       "fi_user_api",
       "fi_admin_operation",
       "fi_workbook",
+      "read_conversation",
       "fi_user_gmail",
       "fi_user_gdrive",
       "fi_user_dataroom",
