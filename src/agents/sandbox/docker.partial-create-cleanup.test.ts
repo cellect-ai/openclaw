@@ -17,6 +17,12 @@ vi.mock("./container-engine.js", async (importOriginal) => ({
   execContainer: containerMocks.execContainer,
 }));
 vi.mock("./registry.js", () => registryMocks);
+vi.mock("./docker-mount-source.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./docker-mount-source.js")>()),
+  // Provider calls are simulated by this fixture, so its source namespace is
+  // the fixture filesystem, independently of the machine running Vitest.
+  resolveDockerSourceNamespace: vi.fn().mockResolvedValue(undefined),
+}));
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 

@@ -596,7 +596,14 @@ async function ensureSandboxContainerLifecycle(
           (await sandboxMountPlanMatchesContainer({ engine, containerName: name, plan: mountPlan }))
         ) {
           const entry = await readRegistryEntry(name);
-          if (!entry) throw new Error("Sandbox current generation lacks native registry custody");
+          if (
+            !entry ||
+            entry.sessionKey !== params.scopeKey ||
+            (entry.backendId ?? "docker") !== "docker" ||
+            entry.configHash !== label
+          ) {
+            throw new Error("Sandbox current generation lacks native registry custody");
+          }
           params.assertCurrent?.();
           await updateRegistry({ ...entry, rolloverRetained: true });
           selected ??= name;
@@ -642,7 +649,14 @@ async function ensureSandboxContainerLifecycle(
           )
             continue;
           const entry = await readRegistryEntry(name);
-          if (!entry) throw new Error("Sandbox rollover predecessor lacks native registry custody");
+          if (
+            !entry ||
+            entry.sessionKey !== params.scopeKey ||
+            (entry.backendId ?? "docker") !== "docker" ||
+            entry.configHash !== label
+          ) {
+            throw new Error("Sandbox rollover predecessor lacks native registry custody");
+          }
           params.assertCurrent?.();
           await updateRegistry({ ...entry, rolloverRetained: true });
           permittedPredecessor = true;

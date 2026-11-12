@@ -137,13 +137,22 @@ describe("ensureSandboxContainer managed mounts", () => {
       const create = spawnState.calls.find((call) => call.args[0] === "create");
       expect(create).toBeDefined();
       const successorBinds = collectDockerFlagValues(create!.args, "-v");
-      expect(successorBinds).toContain(`${newRoot}:/repos/fi-runtime:ro,z`);
-      expect(successorBinds).toContain(`${newRoot}/cellect:/usr/local/bin/cellect:ro,z`);
+      expect(successorBinds).toContain(`${newRoot}:/repos/fi-runtime:ro`);
+      expect(successorBinds).toContain(`${newRoot}/cellect:/usr/local/bin/cellect:ro`);
       expect(successorBinds.some((bind) => bind.startsWith(`${oldRoot}:`))).toBe(false);
       spawnState.calls.length = 0;
       const reused = await harness.ensureSandboxContainer(params);
       expect(reused.containerId).toBe(successor.containerId);
       expect(spawnState.calls.some((call) => ["rm", "create"].includes(call.args[0]!))).toBe(false);
+      const successorEntry = entries.get(successor.containerName)!;
+      entries.set(successor.containerName, {
+        ...successorEntry,
+        sessionKey: "agent:another:scope",
+      });
+      await expect(harness.ensureSandboxContainer(params)).rejects.toThrow(
+        "native registry custody",
+      );
+      entries.set(successor.containerName, successorEntry);
       // Removing the new policy cannot restore timestamp-based deletion of a
       // persisted predecessor, including after configuration rollback.
       cfg.docker.readOnlyBindRollovers = undefined;
