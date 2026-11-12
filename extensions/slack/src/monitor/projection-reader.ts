@@ -112,15 +112,31 @@ export function createSlackProjectionReader(params: {
           cursor = next || undefined;
         } while (cursor);
         const conversationId = new URL(input.chatUrl).searchParams.get("fiConversation");
-        const pointer = messages
-          .filter(
-            (message) =>
-              message.user === params.botUserId &&
-              isSlackFiChatPointer(message) &&
-              message.ts &&
-              (message.text ?? "").includes(input.chatUrl),
-          )
-          .sort((a, b) => a.ts!.localeCompare(b.ts!))[0];
+        const canonicalUrl = new URL(input.chatUrl).href;
+        const notices = messages
+          .filter((message) => {
+            if (
+              !(message.bot_id || message.user === params.botUserId) ||
+              !isSlackFiChatPointer(message) ||
+              !message.ts
+            ) {
+              return false;
+            }
+            return (message.text?.match(/https:\/\/[^\s>|]+/gi) ?? []).some((candidate) => {
+              try {
+                return new URL(candidate).href === canonicalUrl;
+              } catch {
+                return false;
+              }
+            });
+          })
+          .sort((a, b) => a.ts!.localeCompare(b.ts!));
+        const pointer = notices.find((message) => message.user === params.botUserId);
+        // Source ownership can change. A previous bot's exact link already
+        // serves this thread; never append a duplicate or mutate its message.
+        if (!pointer && notices.length > 0) {
+          return "existing";
+        }
         const receipt = pointer?.metadata?.event_payload;
         if (
           receipt?.conversationId === conversationId &&

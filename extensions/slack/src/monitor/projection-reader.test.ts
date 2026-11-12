@@ -91,6 +91,50 @@ describe("Slack Fi-only activity pointer", () => {
     expect(s.postMessage).not.toHaveBeenCalled();
     expect(s.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "1700000000.000002" }));
   });
+  it("preserves a previous bot's canonical notice after source ownership changes", async () => {
+    const s = setup();
+    s.messages.push({
+      ts: "1700000000.000002",
+      user: "UOLD",
+      bot_id: "BOLD",
+      text: `This conversation continues in Fi: <${URL}|Open in Fi>`,
+    });
+    expect(await s.create().postChatPointer(input)).toBe("existing");
+    expect(s.postMessage).not.toHaveBeenCalled();
+    expect(s.update).not.toHaveBeenCalled();
+  });
+  it("prefers updating its own notice when legacy duplicates include another bot", async () => {
+    const s = setup();
+    await s.create().postChatPointer(input);
+    s.messages.unshift({
+      ts: "1700000000.000000",
+      user: "UOLD",
+      bot_id: "BOLD",
+      text: fiChatPointerText(URL)!,
+    });
+    expect(
+      await s.create().postChatPointer({ ...input, nativeEventId: "$newer", nativeEventTs: 300 }),
+    ).toBe("updated");
+    expect(s.postMessage).toHaveBeenCalledTimes(1);
+    expect(s.update).toHaveBeenCalledWith(expect.objectContaining({ ts: "1700000000.000002" }));
+  });
+  it("does not let human metadata or a URL substring suppress the canonical notice", async () => {
+    const s = setup();
+    s.messages.push({
+      ts: "1700000000.000002",
+      user: "UHUMAN",
+      text: fiChatPointerText(URL)!,
+      metadata: { event_type: FI_CHAT_POINTER_EVENT },
+    });
+    s.messages.push({
+      ts: "1700000000.000003",
+      user: "UOTHER",
+      bot_id: "BOTHER",
+      text: `This conversation continues in Fi: <https://elsewhere.test/${URL}|Open in Fi>`,
+    });
+    expect(await s.create().postChatPointer(input)).toBe("posted");
+    expect(s.update).not.toHaveBeenCalled();
+  });
   it("does not suppress or edit a substantive bot reply containing the link", async () => {
     const s = setup();
     s.messages.push({
