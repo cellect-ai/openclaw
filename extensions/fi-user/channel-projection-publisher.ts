@@ -1,14 +1,13 @@
 import { KeyedAsyncQueue, type OpenClawPluginApi } from "openclaw/plugin-sdk/core";
 import { CHANNEL_SESSION } from "./channel-projection-session.js";
 import { verifyDetachedProjectionOrigin } from "./detached-projection.js";
+import { publishNativeChatPointer, type NativeChatPointerWriter } from "./native-chat-pointer.js";
 
 type SlackSnapshot = {
   workspaceId: string;
   channelId: string;
   rootMessageId: string;
   memberSenderIds: string[];
-  sourcePointerPresent?: boolean;
-  sourcePointerCurrent?: boolean;
   messages: Array<{
     messageId: string;
     senderId: string;
@@ -20,17 +19,11 @@ type SlackSnapshot = {
 
 const snapshotQueue = new KeyedAsyncQueue();
 
-export type SlackThreadReader = {
+export type SlackThreadReader = NativeChatPointerWriter & {
   workspaceId: string;
   botUserId: string;
   readThread: (channelId: string, rootMessageId: string) => Promise<SlackSnapshot>;
   readChannel: (channelId: string) => Promise<SlackChannelScope>;
-  postChatPointer?: (input: {
-    channelId: string;
-    chatUrl: string;
-    rootMessageId?: string;
-    coversLatest?: boolean;
-  }) => Promise<"posted" | "existing" | "skipped">;
 };
 export type SlackChannelScope = Omit<SlackSnapshot, "rootMessageId" | "messages"> & {
   readThread: (rootMessageId: string) => Promise<SlackSnapshot>;
@@ -291,13 +284,19 @@ async function publishSlackThreadSnapshot(
     typeof result.chatUrl === "string"
   ) {
     try {
-      await reader?.postChatPointer?.({
+      await publishNativeChatPointer({
+        api: params.api,
+        sessionKey: params.sessionKey,
+        accountId: params.accountId,
+        signal: params.signal,
         channelId,
         rootMessageId,
         chatUrl: result.chatUrl,
-        coversLatest: snapshot.sourcePointerCurrent,
       });
     } catch (error) {
+      if (params.refresh) {
+        throw error;
+      }
       params.api.logger.warn(
         `fi-user: slack chat pointer failed channel=${channelId} error=${
           error instanceof Error ? error.message : "unavailable"

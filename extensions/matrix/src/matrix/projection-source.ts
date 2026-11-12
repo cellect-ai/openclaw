@@ -86,6 +86,7 @@ export function getMatrixProjectionStatus(roomId: string, accountId?: string) {
     threadRootEventId: binding.conversationId,
     targetSessionKey: binding.targetSessionKey,
     sourceReplyAuthorization: binding.sourceReplyAuthorization,
+    sourceAccountId: binding.sourceAccountId,
     externalSource: binding.externalSource,
     environment: binding.environment,
     conversationId: binding.projectedConversationId,

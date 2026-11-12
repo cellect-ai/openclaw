@@ -4,7 +4,8 @@ import { readSlackDirectIdentity, readSlackDirectSnapshot } from "./direct-snaps
 import {
   FI_CHAT_POINTER_EVENT,
   fiChatPointerText,
-  sourcePointerCoversLatest,
+  isSlackFiChatPointer,
+  type SlackPointerCandidate,
 } from "./fi-chat-pointer.js";
 import { readSlackProjectionChannel, readSlackThreadSnapshot } from "./thread-snapshot.js";
 
@@ -13,7 +14,7 @@ const pointerPosts = new KeyedAsyncQueue();
 /**
  * Slack source snapshots for the Fi projection reconciler, plus an idempotent
  * notice that points at the Fi conversation. Snapshots never include that notice.
- * A later Slack message (file, reply) after the last notice gets a fresh one.
+ * Only accepted native activity can create a notice; later activity edits it in place.
  */
 export function createSlackProjectionReader(params: {
   client: WebClient;
@@ -42,9 +43,19 @@ export function createSlackProjectionReader(params: {
       channelId: string;
       chatUrl: string;
       rootMessageId?: string;
-      coversLatest?: boolean;
-    }): Promise<"posted" | "existing" | "skipped"> => {
+      nativeEventId: string;
+      nativeEventTs: number;
+      isCurrent: () => Promise<boolean>;
+    }): Promise<"posted" | "updated" | "existing" | "skipped"> => {
       const text = fiChatPointerText(input.chatUrl);
+      if (
+        !input.nativeEventId?.startsWith("$") ||
+        !Number.isSafeInteger(input.nativeEventTs) ||
+        input.nativeEventTs < 0 ||
+        typeof input.isCurrent !== "function"
+      ) {
+        return "skipped";
+      }
       if (!text || !/^[CDG][A-Z0-9]+$/.test(input.channelId)) {
         return "skipped";
       }
@@ -53,27 +64,94 @@ export function createSlackProjectionReader(params: {
       }
       const key = `${workspaceId}:${input.channelId}:${input.rootMessageId ?? "direct"}`;
       return pointerPosts.enqueue(key, async () => {
-        if (input.coversLatest) {
-          return "existing";
+        // Re-read complete source history, including metadata. A restart uses
+        // Slack's own receipt, not a process-local remembered post timestamp.
+        const identity = await writeClient.auth.test();
+        if (
+          !identity.ok ||
+          identity.team_id !== workspaceId ||
+          identity.user_id !== params.botUserId
+        ) {
+          return "skipped";
         }
         if (input.rootMessageId) {
-          const snapshot = await readSlackThreadSnapshot(
-            client,
-            workspaceId,
-            input.channelId,
-            input.rootMessageId,
-          );
-          if (snapshot.sourcePointerCurrent) {
-            return "existing";
+          await readSlackThreadSnapshot(client, workspaceId, input.channelId, input.rootMessageId);
+        }
+        const messages: SlackPointerCandidate[] = [];
+        const cursors = new Set<string>();
+        let cursor: string | undefined;
+        do {
+          const page = input.rootMessageId
+            ? await client.conversations.replies({
+                channel: input.channelId,
+                ts: input.rootMessageId,
+                limit: 100,
+                include_all_metadata: true,
+                cursor,
+              })
+            : await client.conversations.history({
+                channel: input.channelId,
+                limit: 100,
+                include_all_metadata: true,
+                cursor,
+              });
+          if (!page.ok || !Array.isArray(page.messages)) {
+            throw new Error("Slack pointer history unavailable");
           }
-        } else {
-          const history = await client.conversations.history({
+          messages.push(...(page.messages ?? []));
+          const next = page.response_metadata?.next_cursor?.trim();
+          if ((page.has_more && !next) || (next && cursors.has(next))) {
+            throw new Error("Slack pointer history incomplete");
+          }
+          if (next && cursors.size >= 100) {
+            throw new Error("Slack pointer history exceeds read budget");
+          }
+          if (next) {
+            cursors.add(next);
+          }
+          cursor = next || undefined;
+        } while (cursor);
+        const conversationId = new URL(input.chatUrl).searchParams.get("fiConversation");
+        const pointer = messages
+          .filter(
+            (message) =>
+              message.user === params.botUserId &&
+              isSlackFiChatPointer(message) &&
+              message.ts &&
+              (message.text ?? "").includes(input.chatUrl),
+          )
+          .sort((a, b) => a.ts!.localeCompare(b.ts!))[0];
+        const receipt = pointer?.metadata?.event_payload;
+        if (
+          receipt?.conversationId === conversationId &&
+          typeof receipt.nativeEventTs === "number" &&
+          (receipt.nativeEventTs > input.nativeEventTs ||
+            (receipt.nativeEventTs === input.nativeEventTs &&
+              typeof receipt.nativeEventId === "string" &&
+              receipt.nativeEventId >= input.nativeEventId))
+        ) {
+          return "existing";
+        }
+        if (!(await input.isCurrent())) {
+          return "skipped";
+        }
+        const metadata = {
+          event_type: FI_CHAT_POINTER_EVENT,
+          event_payload: {
+            v: 2,
+            conversationId: conversationId!,
+            nativeEventId: input.nativeEventId,
+            nativeEventTs: input.nativeEventTs,
+          },
+        };
+        if (pointer?.ts) {
+          const updated = await writeClient.chat.update({
             channel: input.channelId,
-            limit: 200,
+            ts: pointer.ts,
+            text,
+            metadata,
           });
-          if (sourcePointerCoversLatest(history.messages ?? [])) {
-            return "existing";
-          }
+          return updated.ok ? "updated" : "skipped";
         }
         const result = await postChatMessage({
           channel: input.channelId,
@@ -81,10 +159,8 @@ export function createSlackProjectionReader(params: {
           unfurl_links: false,
           unfurl_media: false,
           ...(input.rootMessageId ? { thread_ts: input.rootMessageId } : {}),
-          metadata: {
-            event_type: FI_CHAT_POINTER_EVENT,
-            event_payload: { v: 1 },
-          },
+          metadata,
+          reply_broadcast: false,
         });
         return result.ok ? "posted" : "skipped";
       });

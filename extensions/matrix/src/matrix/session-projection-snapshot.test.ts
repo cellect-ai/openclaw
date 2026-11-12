@@ -500,6 +500,112 @@ describe("v2 source reconciliation", () => {
     ).toEqual(["oneLiveCopyPerPart", "noStaleDuplicateWhenConverged"]);
     expect(result.hasHumanMember).toBe(true);
   });
+  it.each([false, true])(
+    "returns native activity only while its source binding remains current (replaced=%s)",
+    async (replaced) => {
+      const externalSource = {
+        provider: "slack",
+        workspaceId: "T123",
+        channelId: "C123",
+        rootMessageId: "1.000001",
+      };
+      const current = {
+        bindingId: "binding",
+        targetSessionKey: "agent:agent:slack:channel:c123:thread:1.000001",
+        targetKind: "session",
+        status: "active",
+        boundAt: 1,
+        conversation: {
+          channel: "matrix",
+          accountId: "account",
+          conversationId: "$root",
+          parentConversationId: "!room",
+        },
+        metadata: {
+          environment: "test",
+          projectedConversationId: "conversation",
+          sourceAccountId: "source",
+          externalSource,
+        },
+      };
+      mocks.binding.mockReturnValue(current);
+      mocks.status.mockReturnValue({
+        status: "existing",
+        bindingId: current.bindingId,
+        targetSessionKey: current.targetSessionKey,
+        roomId: "!room",
+        accountId: "account",
+        threadRootEventId: "$root",
+        environment: "test",
+        conversationId: "conversation",
+        sourceAccountId: "source",
+        externalSource,
+      });
+      mocks.events.push({
+        event_id: "$human",
+        sender: "@person:example.org",
+        type: "m.room.message",
+        origin_server_ts: 100,
+        content: {
+          msgtype: "m.text",
+          body: "Native human conversation",
+          "m.relates_to": { rel_type: "m.thread", event_id: "$root" },
+        },
+      });
+      if (replaced) {
+        mocks.hydrate.mockImplementationOnce(async (_room: string, events: unknown[]) => {
+          mocks.binding.mockReturnValue({ ...current, bindingId: "replacement" });
+          return events;
+        });
+      }
+      const result = await planMatrixProjectionRoom({ cfg: {} as never, roomId: "!room" });
+      expect(result.nativeActivity).toEqual(
+        replaced
+          ? undefined
+          : {
+              eventId: "$human",
+              originServerTs: 100,
+              bindingId: "binding",
+              sessionKey: current.targetSessionKey,
+              roomId: "!room",
+              accountId: "account",
+              threadRootEventId: "$root",
+              environment: "test",
+              conversationId: "conversation",
+              sourceAccountId: "source",
+              externalSource,
+            },
+      );
+      expect(mocks.send).not.toHaveBeenCalled();
+      expect(mocks.edit).not.toHaveBeenCalled();
+    },
+  );
+  it.each(["pagination", "decryption"])(
+    "does not infer native activity from incomplete %s",
+    async (failure) => {
+      mocks.status.mockReturnValue({
+        status: "existing",
+        roomId: "!room",
+        accountId: "account",
+        threadRootEventId: "$root",
+      });
+      mocks.getRelations.mockResolvedValue({
+        events: [
+          {
+            event_id: "$native",
+            sender: "@person:example.org",
+            type: failure === "decryption" ? "m.room.encrypted" : "m.room.message",
+            content: {},
+          },
+        ],
+        nextBatch: failure === "pagination" ? "loop" : null,
+      });
+      await expect(planMatrixProjectionRoom({ cfg: {} as never, roomId: "!room" })).rejects.toThrow(
+        /Incomplete/,
+      );
+      expect(mocks.send).not.toHaveBeenCalled();
+    },
+  );
   it.each([
     [
       "only bots and service identities",

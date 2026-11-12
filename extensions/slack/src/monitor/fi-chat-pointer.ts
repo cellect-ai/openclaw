@@ -1,5 +1,5 @@
 /** Slack metadata so a later snapshot can drop this notice without matching prose. */
-export const FI_CHAT_POINTER_EVENT = "cellect.fi_chat_pointer";
+export const FI_CHAT_POINTER_EVENT = "cellect_fi_chat_pointer";
 
 const FI_CHAT_PATH = /\/chat\/?$/i;
 
@@ -7,16 +7,26 @@ export type SlackPointerCandidate = {
   ts?: string;
   bot_id?: string;
   bot?: boolean;
+  user?: string;
   text?: string;
-  metadata?: { event_type?: string };
+  metadata?: { event_type?: string; event_payload?: Record<string, unknown> };
 };
 
 /** A bot notice pointing at the Fi conversation, never a human paste of the same URL. */
 export function isSlackFiChatPointer(message: SlackPointerCandidate): boolean {
-  if (message.metadata?.event_type === FI_CHAT_POINTER_EVENT) {
+  if (
+    message.metadata?.event_type === FI_CHAT_POINTER_EVENT ||
+    message.metadata?.event_type === "cellect.fi_chat_pointer"
+  ) {
     return true;
   }
-  return Boolean(message.bot_id || message.bot) && isFiConversationChatUrl(message.text);
+  return (
+    Boolean(message.bot_id || message.bot) &&
+    /^(?:This conversation continues in Fi: <https:\/\/[^\s>|]+\|Open in Fi>|New messages in Cellect · <https:\/\/[^\s>|]+\|Open in Cellect>)$/.test(
+      message.text ?? "",
+    ) &&
+    isFiConversationChatUrl(message.text)
+  );
 }
 
 export function isFiConversationChatUrl(value: string | undefined): boolean {
@@ -42,48 +52,6 @@ export function isFiConversationChatUrl(value: string | undefined): boolean {
   return false;
 }
 
-/**
- * True when a pointer is already the latest Slack activity: later source
- * messages (a file upload, a reply) need a fresh notice at the bottom.
- */
-export function sourcePointerCoversLatest(messages: SlackPointerCandidate[]): boolean {
-  let latestPointer: string | undefined;
-  let latestOther: string | undefined;
-  for (const message of messages) {
-    if (!message.ts) {
-      continue;
-    }
-    if (isSlackFiChatPointer(message)) {
-      if (!latestPointer || message.ts.localeCompare(latestPointer) > 0) {
-        latestPointer = message.ts;
-      }
-      continue;
-    }
-    if (!latestOther || message.ts.localeCompare(latestOther) > 0) {
-      latestOther = message.ts;
-    }
-  }
-  if (!latestPointer) {
-    return false;
-  }
-  return !latestOther || latestOther.localeCompare(latestPointer) <= 0;
-}
-
-export function sourcePointerCoversProjected(
-  latestPointerMessageId: string | undefined,
-  messageIds: Iterable<string>,
-): boolean {
-  if (!latestPointerMessageId) {
-    return false;
-  }
-  for (const id of messageIds) {
-    if (id.localeCompare(latestPointerMessageId) > 0) {
-      return false;
-    }
-  }
-  return true;
-}
-
 export function fiChatPointerText(chatUrl: string): string | null {
   try {
     const url = new URL(chatUrl);
@@ -96,7 +64,7 @@ export function fiChatPointerText(chatUrl: string): string | null {
     ) {
       return null;
     }
-    return `This conversation continues in Fi: <${url.toString()}|Open in Fi>`;
+    return `New messages in Cellect · <${url.toString()}|Open in Cellect>`;
   } catch {
     return null;
   }

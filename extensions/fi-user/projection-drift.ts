@@ -8,6 +8,7 @@ import {
   type ProjectionInventory,
   type ProjectionInventoryBinding,
 } from "./detached-projection.js";
+import type { NativeChatActivity } from "./native-chat-pointer.js";
 
 // Self-healing for bound Slack projection rooms.
 //
@@ -52,9 +53,12 @@ export type DriftPlanVerdict = {
   invariantsOk: boolean;
   /** False when no human can read the room; a refresh then matters to nobody. */
   hasHumanMember?: boolean;
+  nativeActivity?: NativeChatActivity;
 };
 type RoomState = {
   plannedAt: number;
+  nativeActivityId?: string;
+  publishedActivityId?: string;
   /** When a room that is not clean is planned again ahead of the rotation. */
   replanAt: number;
   verdict: "converged" | "drifted" | "unread" | "invariant" | "failed";
@@ -138,7 +142,16 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
         refreshAfter: previous?.refreshAfter ?? 0,
         refreshedAt: previous?.refreshedAt ?? 0,
         declinedAt: previous?.declinedAt,
+        nativeActivityId: verdict?.nativeActivity?.eventId,
+        publishedActivityId: previous?.publishedActivityId,
       };
+      if (
+        source.refreshAttempts === 0 &&
+        source.nativeActivityId &&
+        source.nativeActivityId !== source.publishedActivityId
+      ) {
+        source.refreshAfter = at;
+      }
       // Structural convergence is not evidence that Slack history was read.
       if (verdict?.converged && verdict.invariantsOk) {
         rooms.set(roomId, {
@@ -234,6 +247,7 @@ export function createProjectionDriftScheduler(now: () => number = Date.now) {
       const state = rooms.get(roomId);
       if (state) {
         state.refreshAttempts = 0;
+        state.publishedActivityId = state.nativeActivityId;
         state.declinedAt = undefined;
         state.refreshAfter = now() + DRIFT_SOURCE_CHECK_MS;
       }

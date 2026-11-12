@@ -30,6 +30,24 @@ function clock() {
 }
 
 describe("projection drift scheduler", () => {
+  it("checks new native activity before the next routine source interval", () => {
+    const time = clock();
+    const drift = createProjectionDriftScheduler(time.now);
+    const bound = rooms(1);
+    const room = bound[0]!.roomId;
+    drift.recordPlan(room, clean);
+    drift.recordRefresh(room);
+    drift.recordPublished(room);
+    expect(drift.selectRefreshes(bound, 1)).toEqual([]);
+    time.advance(TICK);
+    drift.recordPlan(room, { ...clean, nativeActivity: { eventId: "$native" } as never });
+    expect(drift.selectRefreshes(bound, 1)).toEqual([room]);
+    drift.recordRefresh(room);
+    drift.recordPublished(room);
+    drift.recordPlan(room, { ...clean, nativeActivity: { eventId: "$native" } as never });
+    expect(drift.selectRefreshes(bound, 1)).toEqual([]);
+  });
+
   it("checks source history even when the partial Matrix mirror is structurally clean", async () => {
     const time = clock();
     const drift = createProjectionDriftScheduler(time.now);

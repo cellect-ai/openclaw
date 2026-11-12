@@ -47,8 +47,6 @@ describe("Slack projection source snapshot", () => {
     );
     expect(result.memberSenderIds).toEqual(["U111", "U222"]);
     expect(result.messages).toHaveLength(2);
-    expect(result.sourcePointerPresent).toBe(true);
-    expect(result.sourcePointerCurrent).toBe(true);
     expect(result.messages[1]).toEqual({
       messageId: "1700000000.000002",
       senderId: "U333",
@@ -91,8 +89,6 @@ describe("Slack projection source snapshot", () => {
       "1700000000.000001",
     );
     expect(result.messages).toHaveLength(2);
-    expect(result.sourcePointerPresent).toBe(true);
-    expect(result.sourcePointerCurrent).toBe(false);
   });
   it("shares one verified roster across thread reads in a bounded channel scope", async () => {
     const slack = client();

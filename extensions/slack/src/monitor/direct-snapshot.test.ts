@@ -48,8 +48,6 @@ describe("Slack direct source history", () => {
       "1700000000.000002",
     ]);
     expect(result.messages[1]?.bot).toBe(true);
-    expect(result.sourcePointerPresent).toBe(true);
-    expect(result.sourcePointerCurrent).toBe(true);
   });
   it("rejects a different peer before reading private history", async () => {
     const slack = client();

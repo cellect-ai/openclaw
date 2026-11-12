@@ -4,6 +4,7 @@ import {
   listSessionKeys,
   sessionDeliveryOrigin,
 } from "openclaw/plugin-sdk/session-store-runtime";
+import { publishNativeChatPointer, type NativeChatPointerWriter } from "./native-chat-pointer.js";
 import {
   directRetryDelay,
   RECONCILE_HISTORY_BATCH_SIZE,
@@ -16,15 +17,13 @@ const DIRECT_SESSION =
 export function isSlackDirectSessionKey(sessionKey: string): boolean {
   return DIRECT_SESSION.test(sessionKey);
 }
-type DirectReader = {
+type DirectReader = NativeChatPointerWriter & {
   botUserId: string;
   readDirect: (
     channelId: string,
     peerSenderId: string,
   ) => Promise<{
     directSource: { workspaceId: string; channelId: string; peerSenderId: string };
-    sourcePointerPresent?: boolean;
-    sourcePointerCurrent?: boolean;
     messages: Array<{
       messageId: string;
       senderId: string;
@@ -33,12 +32,6 @@ type DirectReader = {
       bot: boolean;
     }>;
   }>;
-  postChatPointer?: (input: {
-    channelId: string;
-    chatUrl: string;
-    rootMessageId?: string;
-    coversLatest?: boolean;
-  }) => Promise<"posted" | "existing" | "skipped">;
 };
 
 /** Operator recovery uses a canonical app source hint, never an inferred DM channel. */
@@ -130,10 +123,12 @@ export async function recoverSlackDirectProjection(
     typeof result.chatUrl === "string"
   ) {
     try {
-      await reader.postChatPointer?.({
+      await publishNativeChatPointer({
+        api,
+        sessionKey,
+        accountId: verified.sourceAccountId,
         channelId: directSource.channelId,
         chatUrl: result.chatUrl,
-        coversLatest: source.sourcePointerCurrent,
       });
     } catch {
       // Recovery still succeeded; the next DM snapshot retries the pointer.
@@ -383,10 +378,13 @@ export async function reconcileSlackDirectProjections(
       const status = result.status;
       if ((status === "created" || status === "existing") && typeof result.chatUrl === "string") {
         try {
-          await reader.postChatPointer?.({
+          await publishNativeChatPointer({
+            api,
+            sessionKey,
+            accountId,
+            signal,
             channelId,
             chatUrl: result.chatUrl,
-            coversLatest: source.sourcePointerCurrent,
           });
         } catch (error) {
           api.logger.warn(

@@ -5,6 +5,7 @@ import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-bindi
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import type { CoreConfig } from "../types.js";
 import { ProjectionError } from "./projection-error.js";
+import { resolveProjectionNativeActivity } from "./projection-native-activity.js";
 import {
   createMatrixSourcePublication,
   MATRIX_PROJECTION_CONTENT_KEY,
@@ -623,6 +624,7 @@ export async function planMatrixProjectionRoom(params: {
     throw new ProjectionError("session_missing", "No session projection is bound to this room");
   }
   const { accountId, threadRootEventId } = status;
+  const admittedStatus = status;
   const provider =
     parseProjectionExternalSource(status.externalSource)?.provider ?? DEFAULT_SOURCE_PROVIDER;
   const checkDeadline = reconcileDeadline();
@@ -653,13 +655,25 @@ export async function planMatrixProjectionRoom(params: {
           history,
         });
       }
+      const membership = await humanMemberVerdict(actions, {
+        cfg: params.cfg,
+        accountId,
+        client,
+        roomId,
+      });
+      const nativeActivity = resolveProjectionNativeActivity(
+        history,
+        admittedStatus,
+        resolveProjectionBinding(accountId, roomId, threadRootEventId),
+      );
       return {
         roomId,
         accountId,
         threadRootEventId,
         source: snapshot ? ("snapshot" as const) : ("history" as const),
         converged: actions.every((action) => action.kind === "unchanged"),
-        ...(await humanMemberVerdict(actions, { cfg: params.cfg, accountId, client, roomId })),
+        ...membership,
+        ...(nativeActivity ? { nativeActivity } : {}),
         actions,
         invariants: checkProjectionInvariants(history),
         mapping,

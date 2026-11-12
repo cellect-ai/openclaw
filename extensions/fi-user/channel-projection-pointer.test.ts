@@ -7,7 +7,7 @@ describe("Slack-origin Fi chat pointer", () => {
     vi.unstubAllGlobals();
   });
 
-  it("posts one Fi chat pointer into a Slack-origin thread and does not post again when it still covers the latest source", async () => {
+  it("never posts a pointer from Slack-only mirror creation or later source activity", async () => {
     const chatUrl =
       "https://app.cellect.ai/fi/shape/chat?fiConversation=8934026f-8d33-43a9-8bde-32bb4cfcbd3c";
     const postChatPointer = vi.fn().mockResolvedValue("posted");
@@ -16,8 +16,6 @@ describe("Slack-origin Fi chat pointer", () => {
       channelId: "C123",
       rootMessageId: "1700000000.000001",
       memberSenderIds: ["U111"],
-      sourcePointerPresent: false,
-      sourcePointerCurrent: false,
       messages: [{ messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false }],
     });
     const fetchMock = vi.fn().mockResolvedValue({
@@ -29,7 +27,12 @@ describe("Slack-origin Fi chat pointer", () => {
       logger: { warn: vi.fn(), info: vi.fn() },
       runtime: {
         channel: {
-          runtimeContexts: { get: () => ({ readThread, postChatPointer, botUserId: "U222" }) },
+          runtimeContexts: {
+            get: ({ channelId }: { channelId: string }) =>
+              channelId === "slack"
+                ? { readThread, postChatPointer, botUserId: "U222" }
+                : undefined,
+          },
         },
       },
     } as unknown as OpenClawPluginApi;
@@ -41,20 +44,13 @@ describe("Slack-origin Fi chat pointer", () => {
       baseUrl: "https://fi.example",
       token: "test-token",
     });
-    expect(postChatPointer).toHaveBeenCalledWith({
-      channelId: "C123",
-      rootMessageId: "1700000000.000001",
-      chatUrl,
-      coversLatest: false,
-    });
+    expect(postChatPointer).not.toHaveBeenCalled();
     postChatPointer.mockClear();
     readThread.mockResolvedValue({
       workspaceId: "T123",
       channelId: "C123",
       rootMessageId: "1700000000.000001",
       memberSenderIds: ["U111"],
-      sourcePointerPresent: true,
-      sourcePointerCurrent: true,
       messages: [{ messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false }],
     });
     await projectSlackChannelThread({
@@ -65,15 +61,13 @@ describe("Slack-origin Fi chat pointer", () => {
       baseUrl: "https://fi.example",
       token: "test-token",
     });
-    expect(postChatPointer).toHaveBeenCalledWith(expect.objectContaining({ coversLatest: true }));
+    expect(postChatPointer).not.toHaveBeenCalled();
     postChatPointer.mockClear();
     readThread.mockResolvedValue({
       workspaceId: "T123",
       channelId: "C123",
       rootMessageId: "1700000000.000001",
       memberSenderIds: ["U111"],
-      sourcePointerPresent: true,
-      sourcePointerCurrent: false,
       messages: [
         { messageId: "1700000000.000001", senderId: "U111", content: "hi", bot: false },
         { messageId: "1700000000.000003", senderId: "U111", content: "📎 lease.pdf", bot: false },
@@ -87,7 +81,7 @@ describe("Slack-origin Fi chat pointer", () => {
       baseUrl: "https://fi.example",
       token: "test-token",
     });
-    expect(postChatPointer).toHaveBeenCalledWith(expect.objectContaining({ coversLatest: false }));
+    expect(postChatPointer).not.toHaveBeenCalled();
   });
 
   it.each(["skipped", "invalid", undefined])(
@@ -115,7 +109,12 @@ describe("Slack-origin Fi chat pointer", () => {
         logger: { warn: vi.fn(), info: vi.fn() },
         runtime: {
           channel: {
-            runtimeContexts: { get: () => ({ readThread, postChatPointer, botUserId: "U222" }) },
+            runtimeContexts: {
+              get: ({ channelId }: { channelId: string }) =>
+                channelId === "slack"
+                  ? { readThread, postChatPointer, botUserId: "U222" }
+                  : undefined,
+            },
           },
         },
       } as unknown as OpenClawPluginApi;
