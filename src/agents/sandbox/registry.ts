@@ -350,11 +350,7 @@ export async function updateBrowserRegistry(
   entry: SandboxBrowserRegistryEntry,
   assertCurrent?: () => void,
 ) {
-  assertCurrent?.();
-  await executeOpenClawStateWorker(captureOpenClawStateWorkerContext(), {
-    type: "sandboxRegistry.updateBrowser",
-    input: entry,
-  });
+  await writeRegistry({ operation: "updateBrowser", entry }, undefined, assertCurrent);
 }
 
 /** Forget only the inspected allocation, under the caller's still-live settlement lease. */
