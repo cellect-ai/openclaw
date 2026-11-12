@@ -44,7 +44,6 @@ import { isProviderAuthError } from "../../agents/model-auth-runtime-shared.js";
 import { buildProviderAuthRecoveryHint } from "../../agents/provider-auth-recovery-hint.js";
 import type { ReplyCompletion, ReplyExpectation } from "../../agents/reply-completion.js";
 import { isSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
-import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import {
   collectErrorGraphCandidates,
   extractErrorCode,
@@ -52,6 +51,7 @@ import {
   readErrorCauses,
   readErrorName,
 } from "../../infra/errors.js";
+import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import { buildProviderLoginRecovery } from "../provider-login-recovery.js";
 import {
   copyReplyPayloadMetadata,
@@ -267,7 +267,9 @@ export function buildExternalRunFailureReply(
   // not be presented as a provider failure or disclose private container data.
   if (isSandboxProvisioningError(error)) {
     return {
-      text: "⚠️ The agent’s workspace could not be prepared, so this attempt stopped before it could run. Please try again; if it repeats, ask an administrator to check the agent runtime.",
+      text: options?.isHeartbeat
+        ? "⚠️ A background follow-up could not start because the agent’s workspace could not be prepared. Its result has not been checked. An administrator needs to check the agent runtime."
+        : "⚠️ The agent’s workspace could not be prepared, so this attempt stopped before it could run. Please try again; if it repeats, ask an administrator to check the agent runtime.",
       isGenericRunnerFailure: false,
     };
   }

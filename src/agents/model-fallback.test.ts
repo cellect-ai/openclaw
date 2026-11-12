@@ -998,7 +998,7 @@ describe("runWithModelFallback", () => {
   it("uses configured fallbacks after a format failure when a user pin emptied the ladder", async () => {
     const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
     const preparedModels: string[][] = [];
-    const prepared = vi.fn((chain: Array<{ model: string }>) => {
+    const prepared = vi.fn((chain: ReadonlyArray<{ model: string }>) => {
       preparedModels.push(chain.map((candidate) => candidate.model));
     });
     const run = vi
@@ -1035,7 +1035,7 @@ describe("runWithModelFallback", () => {
 
   it("keeps a user pin on rate limit when format fallbacks are held back", async () => {
     const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
-    const prepared = vi.fn();
+    const prepared = vi.fn<(chain: ReadonlyArray<{ model: string }>) => void>();
     const run = vi.fn().mockRejectedValue(
       new FailoverError("rate limited", {
         reason: "rate_limit",

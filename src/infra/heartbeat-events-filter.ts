@@ -140,10 +140,10 @@ export function buildExecEventPrompt(
       ? HEARTBEAT_RESPONSE_TOOL_INSTRUCTIONS
       : `reply ${SILENT_REPLY_TOKEN} only`;
     return (
-      "An async command you ran earlier has completed after you already gave the user your final answer for that request. The completion details are:\n\n" +
+      "An async command you ran earlier has completed after a reply was already delivered for that request. The completion details are:\n\n" +
       eventText +
       "\n\n" +
-      `Post only if this result changes the answer you gave (for example, a step you reported as done actually failed); then say briefly what changed. Otherwise ${silentInstruction}. Do not re-summarize the earlier answer or report routine or superseded steps.`
+      `Continue any unfinished work that depends on this result, including a job you previously reported as running. Post only if this result changes the answer you gave (for example, a step you reported as done actually failed); then say briefly what changed. Otherwise ${silentInstruction}. Do not re-summarize the earlier answer or report routine or superseded steps.`
     );
   }
   // Delivery eligibility permits an update; it does not make every completion news.

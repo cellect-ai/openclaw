@@ -46,11 +46,11 @@ export async function startDeferredNotifyRun(params: {
   markBackgrounded(run.session);
   return {
     run,
-    finish: async () => {
+    finish: async (exitCode = 0) => {
       activity.resultSettled = true;
       exit.resolve({
         reason: "exit",
-        exitCode: 0,
+        exitCode,
         exitSignal: null,
         durationMs: 1,
         stdout: "",

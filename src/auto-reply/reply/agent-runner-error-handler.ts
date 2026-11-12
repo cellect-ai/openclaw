@@ -171,7 +171,10 @@ export async function handleAgentExecutionError(params: {
   // like HTTP/overload. Settle delivery and normal diagnostic policy without replay.
   if (isSandboxProvisioningError(err)) {
     defaultRuntime.error(`Agent workspace preparation failed before reply: ${message}`);
-    const reply = buildExternalRunFailureReply({ message, error: err });
+    const reply = buildExternalRunFailureReply(
+      { message, error: err },
+      { isHeartbeat: turn.isHeartbeat },
+    );
     return await settleFailure({ text: reply.text });
   }
   if (isAgentHarnessPreflightError(err)) {

@@ -11,6 +11,7 @@ import type { MsgContext } from "../auto-reply/templating.js";
 import { formatErrorMessage } from "./errors.js";
 import { resolveHeartbeatTimeoutOverrideSeconds } from "./heartbeat-config.js";
 import { createHeartbeatDispatch, deliverHeartbeatDispatch } from "./heartbeat-dispatch.js";
+import { isExecCompletionEvent } from "./heartbeat-events-filter.js";
 import { emitHeartbeatEvent, resolveIndicatorType } from "./heartbeat-events.js";
 import { heartbeatLog } from "./heartbeat-log.js";
 import {
@@ -24,8 +25,14 @@ import {
   type HeartbeatRunOptions,
 } from "./heartbeat-runner-execution.js";
 import { createHeartbeatTypingCallbacks } from "./heartbeat-typing.js";
-import { getHeartbeatWakeAbortSignal, type HeartbeatRunResult } from "./heartbeat-wake.js";
+import {
+  getHeartbeatWakeAbortSignal,
+  HEARTBEAT_SKIP_NO_PENDING_EVENT,
+  type HeartbeatRunResult,
+} from "./heartbeat-wake.js";
 import { markSessionEventWakeWorkStarted } from "./session-event-wake.js";
+import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
+import { peekSystemEventEntries } from "./system-events.js";
 
 export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<HeartbeatRunResult> {
   const wake = await resolveHeartbeatWakeStage(opts);
@@ -74,6 +81,32 @@ export async function runHeartbeatOnce(opts: HeartbeatRunOptions): Promise<Heart
     const { dispatchInboundMessageWithRoutedChannelDispatcher } =
       await import("../auto-reply/dispatch.js");
     await typing?.onReplyStart();
+    // Selected events can leave the queue while preparation yields. Check the
+    // exact frozen IDs before admission, preserving later events and other work.
+    const pendingEventIds = new Set(
+      peekSystemEventEntries(resolveSystemEventQueueKey(prepared.sessionKey, agentId)).map(
+        (event) => event.id,
+      ),
+    );
+    if (
+      wake.scheduledTasks.length === 0 &&
+      prepared.hasExecCompletion &&
+      prepared.genericEvents.length === 0 &&
+      prepared.inspectedSystemEventsToConsume.length > 0 &&
+      prepared.inspectedSystemEventsToConsume.every(
+        (event) =>
+          event.id !== undefined &&
+          isExecCompletionEvent(event.text) &&
+          !pendingEventIds.has(event.id),
+      )
+    ) {
+      emitHeartbeatEvent({
+        status: "skipped",
+        reason: HEARTBEAT_SKIP_NO_PENDING_EVENT,
+        durationMs: Date.now() - startedAt,
+      });
+      return { status: "skipped", reason: HEARTBEAT_SKIP_NO_PENDING_EVENT };
+    }
     const heartbeatContext = {
       Body: appendCronStyleCurrentTimeLine(prepared.prompt, cfg, startedAt),
       From: sender,

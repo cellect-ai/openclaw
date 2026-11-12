@@ -493,9 +493,14 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
   }
   counts.final += routedFinalCount;
   const agentRunId = state.getAgentRunId();
-  if (agentRunId && sessionKey && (queuedFinal || getObservedReplyDelivery())) {
-    // Async completions this run started compare against this to avoid post-final chatter.
-    recordRunFinalDelivered({ sessionKey, runId: agentRunId });
+  if (agentRunId && sessionKey && !pendingContinuation) {
+    // Only a settled terminal reply establishes context for later completions.
+    const recordDeliveredFinal = () => recordRunFinalDelivered({ sessionKey, runId: agentRunId });
+    if (getObservedReplyDelivery()) {
+      recordDeliveredFinal();
+    } else {
+      turnLedger.onTerminalDelivered(recordDeliveredFinal);
+    }
   }
   const agentRunTerminalOutcome = state.getAgentRunTerminalOutcome();
   state.commitInboundDedupeIfClaimed();

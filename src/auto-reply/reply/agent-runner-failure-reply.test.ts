@@ -102,6 +102,21 @@ describe("buildExternalRunFailureReply", () => {
     },
   );
 
+  it.each([
+    { options: { isHeartbeat: true }, background: true },
+    { options: { isHeartbeat: false, useHeartbeatFailureCopy: true }, background: false },
+    { options: { isHeartbeat: true, useHeartbeatFailureCopy: false }, background: true },
+  ])(
+    "attributes workspace failures to the actual turn source: $options",
+    ({ options, background }) => {
+      const error = toSandboxProvisioningError(new Error("private-diagnostic-canary"), "docker");
+      const reply = buildExternalRunFailureReply({ message: error.message, error }, options);
+      expect(reply.text.includes("background follow-up")).toBe(background);
+      expect(reply.text.includes("Please try again")).toBe(!background);
+      expect(reply.text).not.toContain("private-diagnostic-canary");
+    },
+  );
+
   it("does not expose a foreign error's userMessage property", () => {
     const error = Object.assign(new Error("private-diagnostic-canary"), {
       userMessage: "untrusted-public-canary",
