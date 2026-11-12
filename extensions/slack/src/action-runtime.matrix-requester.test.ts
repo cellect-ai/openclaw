@@ -168,11 +168,19 @@ describe("Matrix requester Slack reads", () => {
   it("bounds an allowlisted channel by the Matrix requester's own Slack membership", async () => {
     // Owner decision 2026-11-02: a Fi chat reads only what its requester can read in Slack.
     await expect(
-      handleSlackAction({ action: "readMessages", channelId: "C_CURRENT" }, allowlisted(), matrixRequester),
+      handleSlackAction(
+        { action: "readMessages", channelId: "C_CURRENT" },
+        allowlisted(),
+        matrixRequester,
+      ),
     ).rejects.toThrow("the requester is not a member");
     expect(readSlackMessages).not.toHaveBeenCalled();
     isSlackConversationMember.mockResolvedValueOnce(true);
-    await handleSlackAction({ action: "readMessages", channelId: "C_CURRENT" }, allowlisted(), matrixRequester);
+    await handleSlackAction(
+      { action: "readMessages", channelId: "C_CURRENT" },
+      allowlisted(),
+      matrixRequester,
+    );
     expect(requesterSlackIdentity).toHaveBeenCalled();
     expect(readSlackMessages).toHaveBeenCalled();
   });
@@ -355,8 +363,14 @@ describe("Slack permalinks read from a Fi chat turn", () => {
   const tenantConfig = (): OpenClawConfig => ({
     agents: { entries: { "cellect-fi-admin": {}, "cellect-fi-user": {} } },
     bindings: [
-      { agentId: "cellect-fi-user", match: { channel: "slack", accountId: "fi-user", teamId: "T12345678" } },
-      { agentId: "cellect-fi-admin", match: { channel: "slack", accountId: "fi-admin", teamId: "T12345678" } },
+      {
+        agentId: "cellect-fi-user",
+        match: { channel: "slack", accountId: "fi-user", teamId: "T12345678" },
+      },
+      {
+        agentId: "cellect-fi-admin",
+        match: { channel: "slack", accountId: "fi-admin", teamId: "T12345678" },
+      },
       { agentId: "cellect-fi-user", match: { channel: "slack", accountId: "*" } },
     ],
     channels: {
@@ -370,35 +384,52 @@ describe("Slack permalinks read from a Fi chat turn", () => {
     },
   });
 
+  const fiAdminAccount = (config: OpenClawConfig) => {
+    const account = config.channels?.slack?.accounts?.["fi-admin"];
+    if (!account) throw new Error("Expected the fixture's Fi-admin Slack account");
+    return account;
+  };
+
   it.each([
     ["cellect-fi-admin", "fi-admin"],
     ["cellect-fi-user", "fi-user"],
-  ])("lets %s read a channel the requester can see through its own account", async (agentId, account) => {
-    isSlackConversationMember.mockResolvedValueOnce(true);
-    await handleSlackAction(
-      { action: "readMessages", channelId: "C0BJLAWS49H", threadId: "1793070634.018549" },
-      tenantConfig(),
-      { ...fiAdmin, agentId, sessionKey: fiAdmin.sessionKey.replace("cellect-fi-admin", agentId) },
-    );
-    expect(getClient).toHaveBeenCalledWith(expect.objectContaining({ accountId: account }));
-    expect(isSlackConversationMember).toHaveBeenCalledWith(
-      "C0BJLAWS49H",
-      "U123",
-      expect.objectContaining({ accountId: account }),
-    );
-    expect(requesterSlackIdentity).toHaveBeenCalledWith(
-      expect.objectContaining({ senderId: "@alex:example.test", workspaceId: "T12345678" }),
-    );
-    expect(readSlackMessages).toHaveBeenCalledWith(
-      "C0BJLAWS49H",
-      expect.objectContaining({ threadId: "1793070634.018549" }),
-    );
-  });
+  ])(
+    "lets %s read a channel the requester can see through its own account",
+    async (agentId, account) => {
+      isSlackConversationMember.mockResolvedValueOnce(true);
+      await handleSlackAction(
+        { action: "readMessages", channelId: "C0BJLAWS49H", threadId: "1793070634.018549" },
+        tenantConfig(),
+        {
+          ...fiAdmin,
+          agentId,
+          sessionKey: fiAdmin.sessionKey.replace("cellect-fi-admin", agentId),
+        },
+      );
+      expect(getClient).toHaveBeenCalledWith(expect.objectContaining({ accountId: account }));
+      expect(isSlackConversationMember).toHaveBeenCalledWith(
+        "C0BJLAWS49H",
+        "U123",
+        expect.objectContaining({ accountId: account }),
+      );
+      expect(requesterSlackIdentity).toHaveBeenCalledWith(
+        expect.objectContaining({ senderId: "@alex:example.test", workspaceId: "T12345678" }),
+      );
+      expect(readSlackMessages).toHaveBeenCalledWith(
+        "C0BJLAWS49H",
+        expect.objectContaining({ threadId: "1793070634.018549" }),
+      );
+    },
+  );
 
   it("denies a channel the requester cannot see", async () => {
     isSlackConversationMember.mockResolvedValueOnce(false);
     await expect(
-      handleSlackAction({ action: "readMessages", channelId: "C0PRIVATE01" }, tenantConfig(), fiAdmin),
+      handleSlackAction(
+        { action: "readMessages", channelId: "C0PRIVATE01" },
+        tenantConfig(),
+        fiAdmin,
+      ),
     ).rejects.toThrow("the requester is not a member");
     expect(readSlackMessages).not.toHaveBeenCalled();
   });
@@ -406,7 +437,11 @@ describe("Slack permalinks read from a Fi chat turn", () => {
   it("denies a requester with no linked Slack identity", async () => {
     requesterSlackIdentity.mockResolvedValueOnce(undefined);
     await expect(
-      handleSlackAction({ action: "readMessages", channelId: "C0BJLAWS49H" }, tenantConfig(), fiAdmin),
+      handleSlackAction(
+        { action: "readMessages", channelId: "C0BJLAWS49H" },
+        tenantConfig(),
+        fiAdmin,
+      ),
     ).rejects.toThrow("Slack read target channel is not allowed");
     expect(readSlackMessages).not.toHaveBeenCalled();
   });
@@ -414,7 +449,11 @@ describe("Slack permalinks read from a Fi chat turn", () => {
   it("denies another workspace, by its token or by the link's team", async () => {
     authTest.mockResolvedValueOnce({ ok: true, team_id: "T99999999" });
     await expect(
-      handleSlackAction({ action: "readMessages", channelId: "C0BJLAWS49H" }, tenantConfig(), fiAdmin),
+      handleSlackAction(
+        { action: "readMessages", channelId: "C0BJLAWS49H" },
+        tenantConfig(),
+        fiAdmin,
+      ),
     ).rejects.toThrow("Slack read target channel is not allowed");
     await expect(
       handleSlackAction(
@@ -455,7 +494,7 @@ describe("Slack permalinks read from a Fi chat turn", () => {
 
   it("requires the requester's membership even where the account's policy admits every channel", async () => {
     const open = tenantConfig();
-    (open.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"].channels = {
+    fiAdminAccount(open).channels = {
       "*": { enabled: true },
     };
     isSlackConversationMember.mockResolvedValue(false);
@@ -469,7 +508,7 @@ describe("Slack permalinks read from a Fi chat turn", () => {
 
   it("denies another person's DM with the bot even when that DM peer is configured", async () => {
     const dms = tenantConfig();
-    Object.assign((dms.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"], {
+    Object.assign(fiAdminAccount(dms), {
       dm: { enabled: true },
       allowFrom: ["U999", "U123"],
     });
@@ -484,7 +523,7 @@ describe("Slack permalinks read from a Fi chat turn", () => {
 
   it("keeps an operator's direct read and a native Slack turn under their own rules", async () => {
     const open = tenantConfig();
-    (open.channels!.slack!.accounts as Record<string, Record<string, unknown>>)["fi-admin"].channels = {
+    fiAdminAccount(open).channels = {
       "*": { enabled: true },
     };
     await handleSlackAction(
