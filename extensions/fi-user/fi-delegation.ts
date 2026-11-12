@@ -334,7 +334,7 @@ export async function exchange(
     }
     // The model identity stays { channel: "shadow" }. The resolved member email
     // is recorded so a later announce can check the caller against this session.
-    const attestedEmail = mintedRequesterEmail(delegation) ?? delegation.user.email;
+    const attestedEmail = delegation.user.email;
     if (context.sessionKey && attestedEmail) {
       registerShadowRequesterIdentity(context.sessionKey, attestedEmail);
     }
