@@ -167,12 +167,40 @@ function shadowAnnounceEvent(params: FiShadowAnnounceParams): AgentInternalEvent
   };
 }
 
-function announceResult(delivery: { path: string; deliveredAt?: number }): FiShadowAnnounceResult {
-  const path = delivery.path === "steered" || delivery.path === "direct" ? delivery.path : "none";
-  return {
-    path,
-    ...(typeof delivery.deliveredAt === "number" ? { deliveredAt: delivery.deliveredAt } : {}),
-  };
+const DELIVERY_FAILURE_DETAIL_LIMIT = 180;
+
+function announceResult(delivery: {
+  path: string;
+  delivered?: boolean;
+  deliveredAt?: number;
+}): FiShadowAnnounceResult | undefined {
+  if (delivery.path === "steered" || delivery.path === "direct") {
+    // A direct or steered path is a successful delivery. A failed attempt keeps
+    // that internal path for the gateway warning, and must not be reported as one.
+    if (delivery.delivered !== true) {
+      return undefined;
+    }
+    return {
+      path: delivery.path,
+      ...(typeof delivery.deliveredAt === "number" ? { deliveredAt: delivery.deliveredAt } : {}),
+    };
+  }
+  return { path: "none" };
+}
+
+function deliveryFailureMessage(
+  delivery: { error?: string; reason?: string },
+  resultText: string,
+): string {
+  const raw = delivery.error?.trim() || delivery.reason?.trim() || "";
+  if (!raw) {
+    return "fi.shadow.announce delivery failed";
+  }
+  const redacted = resultText ? raw.split(resultText).join("") : raw;
+  const detail = redacted.replace(/\s+/g, " ").trim().slice(0, DELIVERY_FAILURE_DETAIL_LIMIT);
+  return detail
+    ? `fi.shadow.announce delivery failed: ${detail}`
+    : "fi.shadow.announce delivery failed";
 }
 
 export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
@@ -309,6 +337,10 @@ export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
         return;
       }
       const result = announceResult(delivery);
+      if (!result) {
+        respond(false, undefined, unavailable(deliveryFailureMessage(delivery, params.resultText)));
+        return;
+      }
       rememberAnnounce(params.idempotencyKey, fingerprint, result);
       respond(true, result);
     },

@@ -454,6 +454,34 @@ it("refuses a reused key whose payload changed", async () => {
   );
 });
 
+it("does not report a failed direct delivery as delivered", async () => {
+  sendSubagentAnnounceDirectly.mockResolvedValueOnce({
+    delivered: false,
+    path: "direct",
+    error:
+      "Multiple agents are configured, but session agent resolution has no explicit owner. Pass an agentId.",
+  });
+  const payload = params({ idempotencyKey: "retry-direct-failure" });
+  const failed = dispatch({ params: payload });
+  await failed.request;
+  const retried = dispatch({ params: payload });
+  await retried.request;
+
+  expect(failed.respond).toHaveBeenCalledWith(
+    false,
+    undefined,
+    expect.objectContaining({
+      message: expect.stringContaining("delivery failed"),
+    }),
+  );
+  const failure = failed.respond.mock.calls[0]?.[2] as { message?: string } | undefined;
+  expect(failure?.message).toContain("no explicit owner");
+  expect(failure?.message).not.toContain("direct");
+  expect(failure?.message).not.toContain(CANARY);
+  expect(sendSubagentAnnounceDirectly).toHaveBeenCalledTimes(2);
+  expect(retried.respond).toHaveBeenCalledWith(true, expect.objectContaining({ path: "direct" }));
+});
+
 it("retries a key after delivery throws", async () => {
   sendSubagentAnnounceDirectly.mockRejectedValueOnce(new Error("transport down"));
   const payload = params({ idempotencyKey: "retry-throw" });

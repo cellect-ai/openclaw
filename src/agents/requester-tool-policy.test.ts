@@ -9,7 +9,10 @@ import {
   registerSubagentCompletionToolHandoff,
 } from "../gateway/subagent-completion-tool-handoff.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
-import { resolveRequesterToolPolicies } from "./requester-tool-policy.js";
+import {
+  hasVerifiedRequesterCompletionHandoff,
+  resolveRequesterToolPolicies,
+} from "./requester-tool-policy.js";
 import { attachToolAllowlistIntersection } from "./tool-policy.js";
 import { resolveWebSearchToolPolicy } from "./web-search-tool-policy.js";
 
@@ -747,5 +750,50 @@ describe("resolveRequesterToolPolicies", () => {
     expect(result.delegated).toBe(false);
     expect(result.requesterPolicySource).toBe("current-request");
     expect(result.senderPolicy).toEqual({ deny: ["group:runtime", "group:fs"] });
+  });
+
+  it("gives an unscoped shadow source the requester agent when several agents are configured", () => {
+    const sourceSessionKey = "hook:fi-shadow:bf888001";
+    const targetSessionKey = "agent:cellect-fi-user:matrix:channel:!room:example.org";
+    const provenance = {
+      kind: "inter_session" as const,
+      sourceSessionKey,
+      sourceTool: "subagent_announce" as const,
+    };
+    const cfg = config({
+      agents: {
+        list: [{ id: "cellect-fi-user" }, { id: "cellect-fi-admin" }, { id: "cellect-main" }],
+      },
+    });
+    const unscopedHandoff = {
+      ...completionHandoffFacts(sourceSessionKey, sourceSessionKey),
+      inputProvenance: provenance,
+    };
+
+    expect(() =>
+      hasVerifiedRequesterCompletionHandoff({
+        config: cfg,
+        sessionKey: sourceSessionKey,
+        ...unscopedHandoff,
+      }),
+    ).toThrow(/session agent resolution has no explicit owner/);
+
+    expect(
+      hasVerifiedRequesterCompletionHandoff({
+        config: cfg,
+        sessionKey: targetSessionKey,
+        ...completionHandoffFacts(sourceSessionKey, targetSessionKey),
+        inputProvenance: provenance,
+      }),
+    ).toBe(false);
+
+    expect(
+      resolveRequesterToolPolicies({
+        config: cfg,
+        agentId: "cellect-fi-user",
+        sessionKey: sourceSessionKey,
+        ...unscopedHandoff,
+      }).requesterPolicySource,
+    ).toBe("current-request");
   });
 });
