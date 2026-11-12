@@ -762,7 +762,7 @@ describe("resolveRequesterToolPolicies", () => {
     };
     const cfg = config({
       agents: {
-        list: [{ id: "cellect-fi-user" }, { id: "cellect-fi-admin" }, { id: "cellect-main" }],
+        entries: { "cellect-fi-user": {}, "cellect-fi-admin": {}, "cellect-main": {} },
       },
     });
     const unscopedHandoff = {

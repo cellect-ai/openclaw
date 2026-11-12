@@ -98,6 +98,26 @@ describe("executeAgentTurn: provider failures", () => {
     },
   );
 
+  it("attributes a sandbox failure to the background follow-up", async () => {
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      toSandboxProvisioningError(
+        new Error("Sandbox mounts changed; private-container-canary"),
+        "docker",
+      ),
+    );
+    const result = await executeTestTurn(
+      { sessionCtx: createDirectFailureSessionCtx() },
+      { isHeartbeat: true, opts: { useHeartbeatFailureCopy: false } },
+    );
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.isError).toBe(true);
+      expect(result.payload.text).toContain("background follow-up");
+      expect(result.payload.text).not.toContain("Please try again");
+      expect(result.payload.text).not.toContain("private-container-canary");
+    }
+  });
+
   it.each(
     [
       "Handoff refused after 529 OVERLOADED; reconnect before continuing.",

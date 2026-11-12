@@ -9,11 +9,18 @@ import {
 } from "./heartbeat-runner.test-utils.js";
 import { clearRunFinalDeliveriesForTest, recordRunFinalDelivered } from "./run-final-deliveries.js";
 import {
+  consumeSelectedSystemEventEntries,
   enqueueSystemEvent,
+  peekSystemEventEntries,
   peekSystemEvents,
   resetSystemEventsForTest,
   type SystemEventOrigin,
 } from "./system-events.js";
+
+const beforeDispatch = vi.hoisted(() => vi.fn());
+vi.mock("./heartbeat-typing.js", () => ({
+  createHeartbeatTypingCallbacks: () => ({ onReplyStart: beforeDispatch, onCleanup: vi.fn() }),
+}));
 
 const SESSION_KEY = "agent:main:telegram:group:-1003774691294:topic:47";
 
@@ -21,6 +28,7 @@ beforeEach(() => {
   setupTelegramHeartbeatPluginRuntimeForTests();
   resetSystemEventsForTest();
   clearRunFinalDeliveriesForTest();
+  beforeDispatch.mockReset();
 });
 
 afterEach(() => {
@@ -79,10 +87,10 @@ async function runExecWake(params: {
 }
 
 describe("async completions after a delivered final reply", () => {
-  it("drops a successful completion of a run that already answered, without a model turn", async () => {
+  it("reviews an uncollected successful completion after a delivered reply", async () => {
     recordRunFinalDelivered({ sessionKey: SESSION_KEY, runId: "run-1" });
 
-    const { result, sendTelegram, getReplySpy, remaining } = await runExecWake({
+    const { getReplySpy, remaining } = await runExecWake({
       events: [
         {
           text: "Exec completed (abc12345, code 0) :: optional .env.local ignored",
@@ -92,17 +100,65 @@ describe("async completions after a delivered final reply", () => {
       replyText: "The follow-up command completed successfully.",
     });
 
-    expect(result.status).toBe("skipped");
-    expect(getReplySpy).not.toHaveBeenCalled();
-    expect(sendTelegram).not.toHaveBeenCalled();
+    expect(getReplySpy).toHaveBeenCalledOnce();
+    expect(String(getReplySpy.mock.calls[0]?.[0]?.Body)).toContain(
+      "Do not re-summarize the earlier answer",
+    );
     expect(remaining).toEqual([]);
   });
 
-  it("drops even a failed completion once a later run has answered in the session", async () => {
+  it("rechecks collection after awaited preparation before starting a follow-up", async () => {
+    beforeDispatch.mockImplementationOnce(async () => {
+      consumeSelectedSystemEventEntries(SESSION_KEY, peekSystemEventEntries(SESSION_KEY));
+      enqueueSystemEvent("A later independent event", {
+        sessionKey: SESSION_KEY,
+        contextKey: "task:later",
+      });
+    });
+    const { result, getReplySpy, sendTelegram, remaining } = await runExecWake({
+      events: [
+        {
+          text: "Exec completed (abc12345, code 0) :: source links ready",
+          origin: { runId: "run-race", sessionKey: SESSION_KEY, outcome: "success" },
+        },
+      ],
+      replyText: "A redundant follow-up",
+    });
+    expect(beforeDispatch).toHaveBeenCalled();
+    expect(result.status).toBe("skipped");
+    expect(getReplySpy).not.toHaveBeenCalled();
+    expect(sendTelegram).not.toHaveBeenCalled();
+    expect(remaining).toEqual(["A later independent event"]);
+  });
+
+  it("does not suppress a mixed wake while one completion remains pending", async () => {
+    beforeDispatch.mockImplementationOnce(async () => {
+      consumeSelectedSystemEventEntries(
+        SESSION_KEY,
+        peekSystemEventEntries(SESSION_KEY).slice(0, 1),
+      );
+    });
+    const { getReplySpy } = await runExecWake({
+      events: [
+        {
+          text: "Exec completed (success1, code 0) :: source links ready",
+          origin: { runId: "mixed-run", sessionKey: SESSION_KEY, outcome: "success" },
+        },
+        {
+          text: "Exec failed (failure1, code 1) :: import aborted",
+          origin: { runId: "mixed-run", sessionKey: SESSION_KEY, outcome: "failure" },
+        },
+      ],
+      replyText: "NO_REPLY",
+    });
+    expect(getReplySpy).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a failed uncollected completion despite later replies", async () => {
     recordRunFinalDelivered({ sessionKey: SESSION_KEY, runId: "run-1", at: 1_000 });
     recordRunFinalDelivered({ sessionKey: SESSION_KEY, runId: "run-2", at: 2_000 });
 
-    const { getReplySpy, sendTelegram, remaining } = await runExecWake({
+    const { getReplySpy, remaining } = await runExecWake({
       events: [
         {
           text: "Exec failed (abc12345, code 1) :: statement timeout",
@@ -112,8 +168,7 @@ describe("async completions after a delivered final reply", () => {
       replyText: "An earlier background database command failed.",
     });
 
-    expect(getReplySpy).not.toHaveBeenCalled();
-    expect(sendTelegram).not.toHaveBeenCalled();
+    expect(getReplySpy).toHaveBeenCalledOnce();
     expect(remaining).toEqual([]);
   });
 
@@ -131,7 +186,8 @@ describe("async completions after a delivered final reply", () => {
     });
 
     const body = String(getReplySpy.mock.calls[0]?.[0]?.Body);
-    expect(body).toContain("after you already gave the user your final answer");
+    expect(body).toContain("after a reply was already delivered");
+    expect(body).toContain("Continue any unfinished work that depends on this result");
     expect(body).toContain("Post only if this result changes the answer you gave");
     expect(body).toContain("Do not re-summarize the earlier answer");
   });

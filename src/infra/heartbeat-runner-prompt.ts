@@ -36,7 +36,6 @@ import {
 import { classifyAsyncCompletion } from "./run-final-deliveries.js";
 import { resolveSystemEventQueueKey } from "./system-event-ownership.js";
 import {
-  consumeSelectedSystemEventEntries,
   peekSystemEventEntries,
   resolveSystemEventDeliveryContext,
   type SystemEvent,
@@ -81,16 +80,6 @@ export function shouldPreflightWakeBeforeBusy(
   );
 }
 
-function isStaleAsyncCompletion(event: SystemEvent): boolean {
-  if (!event.origin || !isExecCompletionEvent(event.text)) {
-    return false;
-  }
-  const freshness = classifyAsyncCompletion(event.origin);
-  return (
-    freshness === "superseded" || (freshness === "answered" && event.origin.outcome === "success")
-  );
-}
-
 export async function resolveHeartbeatPreflight(params: {
   cfg: OpenClawConfig;
   agentId: string;
@@ -121,22 +110,12 @@ export async function resolveHeartbeatPreflight(params: {
     params.sessionKey,
   );
   const systemEventQueueKey = resolveSystemEventQueueKey(session.sessionKey, params.agentId);
-  const queuedEventEntries = peekSystemEventEntries(
-    systemEventQueueKey,
-  ).filter((event) => !isHeartbeatDeliveryAwarenessEvent(event));
-  // Retire completions the user no longer needs before they can pick a
-  // delivery target or reach the model: a later turn already answered, or the
-  // originating run answered and the command simply succeeded.
-  const staleCompletions = queuedEventEntries.filter(isStaleAsyncCompletion);
-  if (staleCompletions.length > 0) {
-    consumeSelectedSystemEventEntries(systemEventQueueKey, staleCompletions);
-    log.info(
-      `heartbeat: dropped ${staleCompletions.length} async completion(s) after a delivered final reply`,
-    );
-  }
-  const pendingEventEntries = queuedEventEntries.filter(
-    (event) => !staleCompletions.includes(event),
+  const queuedEventEntries = peekSystemEventEntries(systemEventQueueKey).filter(
+    (event) => !isHeartbeatDeliveryAwarenessEvent(event),
   );
+  // A delivered reply can be a job-running status. Unacknowledged command
+  // results still need review; process polling removes the exact collected event.
+  const pendingEventEntries = queuedEventEntries;
   const turnSourceDeliveryContext = resolveSystemEventDeliveryContext(pendingEventEntries);
   const hasTaggedCronEvents = pendingEventEntries.some((event) =>
     event.contextKey?.startsWith("cron:"),

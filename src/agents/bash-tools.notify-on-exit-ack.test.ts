@@ -7,6 +7,10 @@ import {
   withTempTelegramHeartbeatSandbox,
 } from "../infra/heartbeat-runner.test-utils.js";
 import {
+  clearRunFinalDeliveriesForTest,
+  recordRunFinalDelivered,
+} from "../infra/run-final-deliveries.js";
+import {
   enqueueSystemEventEntry,
   peekSystemEventEntries,
   resetSystemEventsForTest,
@@ -51,6 +55,7 @@ beforeEach(() => {
   vi.spyOn(Date, "now").mockReturnValue(now);
 });
 afterEach(() => {
+  clearRunFinalDeliveriesForTest();
   resetProcessRegistryForTests();
   resetSystemEventsForTest();
   vi.clearAllMocks();
@@ -86,6 +91,24 @@ it("binds a completion to the agent run that started the command", async () => {
     outcome: "success",
   });
 });
+
+it.each([0, 1])(
+  "preserves unreviewed completion after a delivered status (exit=%s)",
+  async (exitCode) => {
+    const process = await startDeferredNotifyRun({
+      spawn: supervisorSpawnMock,
+      sessionKey: QUEUE_KEY,
+      originRunId: "answered-run",
+    });
+    recordRunFinalDelivered({ sessionKey: QUEUE_KEY, runId: "answered-run" });
+    await process.finish(exitCode);
+
+    expect(peekSystemEventEntries(QUEUE_KEY)).toHaveLength(1);
+    expect(requestHeartbeatMock).toHaveBeenCalledTimes(1);
+    const result = await poll(process.run.session.id);
+    expect(result.details).toMatchObject({ exitCode });
+  },
+);
 
 it("isolates identical completions across exact full-slug reuse", async () => {
   const first = await startNotifyRun();

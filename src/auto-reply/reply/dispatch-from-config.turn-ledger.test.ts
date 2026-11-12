@@ -30,6 +30,27 @@ describe("reply delivery errors", () => {
 });
 
 describe("createReplyTurnLedger", () => {
+  it("observes terminal visibility once, including settlement after registration", async () => {
+    const dispatcher = createReplyDispatcher({ deliver: async () => {} });
+    const ledger = createReplyTurnLedger(dispatcher);
+    const settled = vi.fn();
+    ledger.onTerminalDelivered(settled);
+    ledger.sendQueued("tool", { text: "Progress only." });
+    await ledger.settleQueued();
+    expect(settled).not.toHaveBeenCalled();
+    ledger.sendQueued("final", { text: "The answer." });
+    await ledger.settleQueued();
+    expect(settled).toHaveBeenCalledOnce();
+    ledger.sendQueued("final", { text: "Another part." });
+    await ledger.settleQueued();
+    expect(settled).toHaveBeenCalledOnce();
+    const alreadySettled = vi.fn();
+    ledger.onTerminalDelivered(alreadySettled);
+    expect(alreadySettled).toHaveBeenCalledOnce();
+    dispatcher.markComplete();
+    await dispatcher.waitForIdle();
+  });
+
   it("distinguishes visible progress from a settled terminal reply", async () => {
     const dispatcher = createReplyDispatcher({ deliver: async () => {} });
     const ledger = createReplyTurnLedger(dispatcher);

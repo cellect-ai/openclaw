@@ -64,6 +64,7 @@ export function createReplyTurnLedger(dispatcher: ReplyDispatcher) {
   const outcomes = new Set<ReplyDispatchDeliveryOutcome>();
   let pendingDelivery = false;
   let terminalDelivery: ReplyDeliveryState = "missing";
+  const terminalDeliveryObservers = new Set<() => void>();
   const mayHaveDelivered = () => outcomes.has("delivered") || outcomes.has("failed-deliver");
   const recordDelivery = (
     kind: ReplyDispatchKind,
@@ -81,6 +82,11 @@ export function createReplyTurnLedger(dispatcher: ReplyDispatcher) {
     }
     if (outcome === "delivered" && !pending) {
       terminalDelivery = "delivered";
+      const observers = [...terminalDeliveryObservers];
+      terminalDeliveryObservers.clear();
+      for (const observer of observers) {
+        observer();
+      }
     } else if (
       terminalDelivery !== "delivered" &&
       (pending || outcome === "failed-deliver" || outcome === "recovery-owned")
@@ -184,5 +190,13 @@ export function createReplyTurnLedger(dispatcher: ReplyDispatcher) {
       !mayHaveDelivered() && !pendingDelivery && !outcomes.has("recovery-owned"),
     hasPendingDelivery: () => pendingDelivery,
     resolveTerminalDelivery: () => terminalDelivery,
+    // Queue admission and uncertain custody never publish this settled fact.
+    onTerminalDelivered(observer: () => void) {
+      if (terminalDelivery === "delivered") {
+        observer();
+      } else {
+        terminalDeliveryObservers.add(observer);
+      }
+    },
   };
 }

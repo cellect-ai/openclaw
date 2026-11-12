@@ -3,6 +3,10 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { clearAgentHarnesses } from "../../agents/harness/registry.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
+import {
+  classifyAsyncCompletion,
+  clearRunFinalDeliveriesForTest,
+} from "../../infra/run-final-deliveries.js";
 import type { PluginHookReplyDispatchResult } from "../../plugins/hooks.test-fixtures.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { withReplyDispatcher } from "../dispatch-dispatcher.js";
@@ -97,6 +101,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
   });
 
   beforeEach(() => {
+    clearRunFinalDeliveriesForTest();
     clearAgentHarnesses();
     resetReplyRunRegistry();
     setDiscordTestRegistry();
@@ -176,6 +181,7 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
   });
 
   afterEach(() => {
+    clearRunFinalDeliveriesForTest();
     resetReplyRunRegistry();
     resetInboundDedupe();
     vi.useRealTimers();
@@ -414,6 +420,65 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       ...pending,
       deliveries: [{ id: "delivery-1", state: preserve ? "prepared" : "unknown" }],
     });
+  });
+
+  it.each([
+    "delivered",
+    "cancelled",
+    "failed-before-deliver",
+    "failed-deliver",
+    "pending",
+    "continuing",
+  ] as const)("records a final answer only from settled terminal delivery: %s", async (outcome) => {
+    hookMocks.runner.hasHooks.mockReturnValue(false);
+    const dispatcher = createReplyDispatcher({
+      beforeDeliver: (payload) => {
+        if (outcome === "cancelled") {
+          return null;
+        }
+        if (outcome === "failed-before-deliver") {
+          throw new Error("hook refused");
+        }
+        return payload;
+      },
+      deliver: async () => {
+        if (outcome === "failed-deliver") {
+          throw new Error("transport outcome unknown");
+        }
+        if (outcome === "pending") {
+          return {
+            visibleReplySent: false,
+            suppression: { reason: "adapter_returned_no_identity" },
+          };
+        }
+        return undefined;
+      },
+    });
+    await withReplyDispatcher({
+      dispatcher,
+      run: () =>
+        dispatchReplyFromConfig({
+          ctx: createHookCtx(),
+          cfg: emptyConfig,
+          dispatcher,
+          replyOptions: { runId: "settlement-proof-run" },
+          replyResolver: async (_ctx, options) => {
+            if (outcome === "continuing") {
+              options?.onPendingContinuation?.();
+            }
+            return {
+              text:
+                outcome === "continuing" ? "The job is still running." : "The requested answer.",
+            };
+          },
+        }),
+    });
+    expect(
+      classifyAsyncCompletion({
+        sessionKey: "agent:test:session",
+        runId: "settlement-proof-run",
+      }),
+    ).toBe(outcome === "delivered" ? "answered" : "fresh");
   });
 
   it("clears pending final delivery after intentional pre-delivery cancellation", async () => {
