@@ -144,6 +144,14 @@ export type ChannelGroupAdapter = {
     userId: string;
     assertCurrent: () => void;
   }) => Promise<boolean>;
+  /** Joined member ids from the account's own client. Throws when the read is not proof. */
+  listJoinedMembers?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    expectedAccountUserId: string;
+    groupId: string;
+    assertCurrent: () => void;
+  }) => Promise<readonly string[]>;
 };
 export type ChannelStatusAdapter<ResolvedAccount, Probe = unknown, Audit = unknown> = {
   defaultRuntime?: ChannelAccountSnapshot;

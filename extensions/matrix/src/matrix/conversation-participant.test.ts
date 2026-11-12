@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   client: vi.fn(),
 }));
 vi.mock("./send/client.js", () => ({ withResolvedMatrixSendClient: mocks.client }));
-import { isJoinedMatrixMember } from "./conversation-participant.js";
+import { isJoinedMatrixMember, listJoinedMatrixMembers } from "./conversation-participant.js";
 
 function request() {
   return {
@@ -46,6 +46,13 @@ describe("native Matrix control participant proof", () => {
       expect.any(Function),
     );
     expect(mocks.members).toHaveBeenCalledWith(input.groupId);
+  });
+
+  it("returns the joined roster from the same account proof", async () => {
+    await expect(listJoinedMatrixMembers(request())).resolves.toEqual([
+      "@bot:matrix.test",
+      "@person:matrix.test",
+    ]);
   });
 
   it("returns false for an absent person without inventing membership", async () => {

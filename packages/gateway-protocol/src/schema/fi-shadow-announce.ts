@@ -4,9 +4,15 @@ import { closedObject } from "./closed-object.js";
 
 const SessionKeySchema = Type.String({ minLength: 1, maxLength: 1_024 });
 
-/** Operator request to report one shadow turn into an existing Matrix session. */
+/**
+ * Operator request to report one shadow turn into a cellect-fi-user Matrix room.
+ * `roomId` is the room. `threadId` is the optional thread root inside that room.
+ * `ownerEmail` must equal the member Fi already resolved for `childSessionKey`.
+ */
 export const FiShadowAnnounceParamsSchema = closedObject({
-  targetSessionKey: SessionKeySchema,
+  roomId: Type.String({ minLength: 1, maxLength: 255 }),
+  threadId: Type.Optional(Type.String({ minLength: 1, maxLength: 255 })),
+  ownerEmail: Type.String({ minLength: 3, maxLength: 254 }),
   childSessionKey: SessionKeySchema,
   idempotencyKey: Type.String({ minLength: 1, maxLength: 200 }),
   label: Type.String({ minLength: 1, maxLength: 80 }),

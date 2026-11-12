@@ -4,6 +4,7 @@ import type {
   OpenClawPluginToolContext,
 } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
+import { lookupShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key-runtime";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentContent: vi.fn() }));
@@ -118,6 +119,7 @@ describe("fi-user on a Fi shadow hook turn", () => {
       sessionKey: SHADOW_SESSION,
       agentId: "cellect-fi-user",
     });
+    expect(lookupShadowRequesterIdentity(SHADOW_SESSION)).toBe("a@example.com");
   });
 
   it.each(["82-sussex/docs/doc-1/file", "82-sussex/esign", "82-sussex/esign/submissions/221"])(
