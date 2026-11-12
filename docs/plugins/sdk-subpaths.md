@@ -194,8 +194,9 @@ longer package exports: `agent-runtime-test-contracts`,
 trusted local-service plugins; it is not a public plugin authoring API.
 
 The private-local `session-key-runtime` provides pure cron/dreaming session-key
-classification and usage-counted transcript filename parsing. Bundled memory
-readers use it without loading the session store runtime. Existing memory session
+classification, usage-counted transcript filename parsing, and the in-memory
+record of the member Fi resolved for a shadow session. Bundled memory readers
+use it without loading the session store runtime. Existing memory session
 facades retain these exports for installed plugin compatibility.
 
 ### Bundled plugin helper subpaths

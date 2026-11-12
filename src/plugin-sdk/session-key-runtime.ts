@@ -11,4 +11,8 @@ export {
   isDreamingNarrativeSessionStoreKey,
 } from "../sessions/session-key-utils.js";
 export { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
+export {
+  lookupShadowRequesterIdentity,
+  registerShadowRequesterIdentity,
+} from "../infra/shadow-requester-identity.js";
 export { parseUsageCountedSessionIdFromFileName } from "../config/sessions/artifacts.js";

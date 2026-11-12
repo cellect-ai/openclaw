@@ -4,7 +4,7 @@
  * attestation Fi minted for that job. The gateway hands the attestation to
  * this run's plugin contexts as `hookRequesterAttestation`; only Fi can say
  * whom it names, so it is sent back to Fi as the delegation requester and is
- * never logged, shown to the model or stored.
+ * never logged or shown to the model. The token itself is not stored.
  */
 
 const SHADOW_WAKE_SESSION = /(?:^|:)hook:fi-shadow:/i;

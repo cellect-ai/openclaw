@@ -1,15 +1,18 @@
 import type { CoreConfig } from "../types.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
 
-/** Read through the selected native account; malformed or unavailable proof throws. */
-export async function isJoinedMatrixMember(params: {
+type JoinedMatrixMemberRead = {
   cfg: CoreConfig;
   accountId: string;
   expectedAccountUserId: string;
   groupId: string;
-  userId: string;
   assertCurrent: () => void;
-}): Promise<boolean> {
+};
+
+/** Read through the selected native account; malformed or unavailable proof throws. */
+export async function listJoinedMatrixMembers(
+  params: JoinedMatrixMemberRead,
+): Promise<readonly string[]> {
   params.assertCurrent();
   return withResolvedMatrixSendClient(
     {
@@ -37,7 +40,15 @@ export async function isJoinedMatrixMember(params: {
       if (!members.includes(params.expectedAccountUserId)) {
         throw new Error("Native Matrix account is not joined");
       }
-      return members.includes(params.userId);
+      return members;
     },
   );
+}
+
+/** Read through the selected native account; malformed or unavailable proof throws. */
+export async function isJoinedMatrixMember(
+  params: JoinedMatrixMemberRead & { userId: string },
+): Promise<boolean> {
+  const members = await listJoinedMatrixMembers(params);
+  return members.includes(params.userId);
 }

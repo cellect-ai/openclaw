@@ -1,4 +1,5 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { registerShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key-runtime";
 import { projectedMatrixRun } from "./projected-matrix-runs.js";
 import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
 import { shadowToolAttestation } from "./shadow-requester.js";
@@ -330,6 +331,12 @@ export async function exchange(
     });
     if (!delegation) {
       throw new Error("The shadow turn's requester is not linked to an active Fi member");
+    }
+    // The model identity stays { channel: "shadow" }. The resolved member email
+    // is recorded so a later announce can check the caller against this session.
+    const attestedEmail = mintedRequesterEmail(delegation) ?? delegation.user.email;
+    if (context.sessionKey && attestedEmail) {
+      registerShadowRequesterIdentity(context.sessionKey, attestedEmail);
     }
     return { delegation, config, identity: { channel: "shadow" } };
   }

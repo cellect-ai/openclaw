@@ -410,6 +410,8 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
         resolveToolPolicy: resolveMatrixGroupToolPolicy,
         isJoinedMember: async (params) =>
           (await loadMatrixChannelRuntime()).isJoinedMatrixMember(params),
+        listJoinedMembers: async (params) =>
+          (await loadMatrixChannelRuntime()).listJoinedMatrixMembers(params),
       },
       conversationBindings: {
         supportsCurrentConversationBinding: true,
