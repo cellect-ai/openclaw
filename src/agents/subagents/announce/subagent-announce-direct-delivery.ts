@@ -392,6 +392,7 @@ export async function sendSubagentAnnounceDirectly(
         : undefined;
     // A private completion gets its own serialized turn. Steering into a public
     // turn would inherit that turn's delivery policy and expose child output.
+    const explicitDirectAgentId = params.requesterAgentId?.trim() || requesterAgentId;
     let directAgentParams: Record<string, unknown> = {
       ...(requesterSessionBound
         ? {
@@ -401,6 +402,7 @@ export async function sendSubagentAnnounceDirectly(
           }
         : {}),
       sessionKey: canonicalRequesterSessionKey,
+      ...(explicitDirectAgentId ? { agentId: explicitDirectAgentId } : {}),
       message: turnMessage,
       deliver: shouldDeliverAgentFinal,
       bestEffortDeliver: params.bestEffortDeliver,

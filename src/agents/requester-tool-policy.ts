@@ -4,6 +4,7 @@
  * consume the persisted effective parent projection instead of guessing identity.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { parseAgentSessionKey } from "../routing/session-key.js";
 import type { InputProvenance } from "../sessions/input-provenance.js";
 import { normalizeInputProvenance } from "../sessions/input-provenance.js";
 import {
@@ -118,11 +119,17 @@ function resolveDelegatedPolicy(
       throw new Error("Trusted internal handoff policy resolution requires configuration.");
     }
     const config = params.config;
-    const targetSessionKey = resolveRequesterStoreKey(config, params.sessionKey);
+    // The child key can be an unscoped hook:fi-shadow: session. The requester
+    // agent, or the agent already on the target session key, is its owner.
+    const explicitAgentId =
+      params.agentId?.trim() || parseAgentSessionKey(params.sessionKey)?.agentId;
+    const requesterStoreKey = (sessionKey: string) =>
+      resolveRequesterStoreKey(config, sessionKey, explicitAgentId);
+    const targetSessionKey = requesterStoreKey(params.sessionKey);
     const settleBatch = params.trustedInternalHandoff?.settleBatch;
     const sourceSessionKeys = settleBatch?.sourceSessionKeys ?? [provenance.sourceSessionKey];
     const envelopes = sourceSessionKeys.map((sourceSessionKey) => {
-      let currentSessionKey = resolveRequesterStoreKey(config, sourceSessionKey);
+      let currentSessionKey = requesterStoreKey(sourceSessionKey);
       const visited = new Set<string>();
       for (let depth = 0; depth < MAX_DELEGATION_LINEAGE_DEPTH; depth += 1) {
         if (visited.has(currentSessionKey)) {
@@ -142,9 +149,9 @@ function resolveDelegatedPolicy(
         if (!envelope) {
           return undefined;
         }
-        const parentSessionKey = resolveRequesterStoreKey(config, envelope.spawnedBy);
+        const parentSessionKey = requesterStoreKey(envelope.spawnedBy);
         const completionOwnerSessionKey = envelope.completionOwnerSessionKey
-          ? resolveRequesterStoreKey(config, envelope.completionOwnerSessionKey)
+          ? requesterStoreKey(envelope.completionOwnerSessionKey)
           : undefined;
         if ((completionOwnerSessionKey ?? parentSessionKey) === targetSessionKey) {
           return envelope;
@@ -193,6 +200,7 @@ export function hasVerifiedRequesterCompletionHandoff(
   params: Pick<
     RequesterToolPolicyParams,
     | "config"
+    | "agentId"
     | "sessionKey"
     | "inputProvenance"
     | "trustedInternalHandoff"

@@ -188,6 +188,7 @@ export function runAgentAttempt(
     exactSubagentCompletionHandoff &&
     hasVerifiedRequesterCompletionHandoff({
       config: params.cfg,
+      agentId: params.sessionAgentId,
       sessionKey: params.sessionKey,
       inputProvenance: params.opts.inputProvenance,
       trustedInternalHandoff: params.opts.trustedInternalHandoff,
