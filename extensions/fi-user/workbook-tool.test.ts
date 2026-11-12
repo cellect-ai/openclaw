@@ -127,11 +127,11 @@ function fixture(agentId = "cellect-main", channel: "matrix" | "slack" = "matrix
       }
       return undefined;
     },
-    tools(context = nativeToolContext()) {
+    tools(context: OpenClawPluginToolContext<2> = nativeToolContext()) {
       const result = factory.create(context);
       return Array.isArray(result) ? result : result ? [result] : [];
     },
-    tool(context = nativeToolContext()) {
+    tool(context: OpenClawPluginToolContext<2> = nativeToolContext()) {
       const result = factory.create(context);
       return (Array.isArray(result) ? result : result ? [result] : []).find(
         (t) => t.name === "fi_workbook",

@@ -1,6 +1,7 @@
 // Talk announcements ask for a response without tools. Grok through LiteLLM
 // accepts tool_choice "none" on response.create and still calls tools (checked
 // live 2026-10-31), so the bridge both sends it and refuses such a call itself.
+import type { RealtimeVoiceBridgeCallbacks } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const { FakeWebSocket } = await vi.hoisted(() => import("./realtime-voice-socket.test-support.js"));
@@ -21,11 +22,7 @@ import {
 const bridges: Array<{ close(): Promise<void> | void }> = [];
 
 async function connect(
-  options: {
-    model?: string;
-    onToolCall?: ReturnType<typeof vi.fn>;
-    onEvent?: ReturnType<typeof vi.fn>;
-  } = {},
+  options: { model?: string } & Pick<RealtimeVoiceBridgeCallbacks, "onToolCall" | "onEvent"> = {},
 ) {
   const bridge = buildLiteLlmRealtimeVoiceProvider().createBridge({
     providerConfig: { apiKey: "litellm-test", model: options.model ?? "grok-voice-think-fast-2.0" }, // pragma: allowlist secret
