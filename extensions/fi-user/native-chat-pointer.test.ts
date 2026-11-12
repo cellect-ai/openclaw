@@ -99,6 +99,24 @@ describe("native chat pointer authorization", () => {
     });
     expect(await s.postChatPointer.mock.calls[0]![0].isCurrent()).toBe(false);
   });
+  it("allows newer native activity in the same scope without a false source failure", async () => {
+    const s = setup();
+    await publishNativeChatPointer(s.input);
+    s.plan.mockResolvedValue({
+      nativeActivity: { ...activity, eventId: "$newer", originServerTs: 200 },
+    });
+    expect(await s.postChatPointer.mock.calls[0]![0].isCurrent()).toBe(true);
+  });
+  it.each([
+    undefined,
+    { ...activity, originServerTs: 50 },
+    { ...activity, bindingId: "replacement", originServerTs: 200 },
+  ])("refuses missing, older or differently bound native evidence", async (latest) => {
+    const s = setup();
+    await publishNativeChatPointer(s.input);
+    s.plan.mockResolvedValue({ nativeActivity: latest });
+    expect(await s.postChatPointer.mock.calls[0]![0].isCurrent()).toBe(false);
+  });
   it("refuses aborted reconciliation", async () => {
     const s = setup();
     await publishNativeChatPointer({ ...s.input, signal: AbortSignal.abort() });

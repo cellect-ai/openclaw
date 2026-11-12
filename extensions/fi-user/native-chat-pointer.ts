@@ -116,7 +116,13 @@ export async function publishNativeChatPointer(params: {
       return (
         !params.signal?.aborted &&
         (api.runtime.config?.current?.() ?? api.config) === configuration &&
-        JSON.stringify(latest) === JSON.stringify(activity) &&
+        latest !== undefined &&
+        latest.originServerTs >= activity.originServerTs &&
+        JSON.stringify({
+          ...latest,
+          eventId: activity.eventId,
+          originServerTs: activity.originServerTs,
+        }) === JSON.stringify(activity) &&
         api.runtime.channel.runtimeContexts.get({
           channelId: "matrix",
           capability: "session-read-projections",
