@@ -3,6 +3,7 @@ import { withContainerEnvFile } from "../../infra/container-env-file.js";
 import { markOpenClawExecEnv } from "../../infra/openclaw-exec-env.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { AdmittedRunOperatorAuthority } from "../admitted-run-context.js";
+import { predecessorDockerConfigs } from "./bind-rollover.js";
 import { computeSandboxConfigHash } from "./config-hash.js";
 import { DEFAULT_SANDBOX_IMAGE, SANDBOX_DOCKER_CREATE_ARGS_EPOCH } from "./constants.js";
 import {
@@ -28,6 +29,7 @@ import {
 } from "./container-lifecycle.js";
 import { handleHotSandboxConfigMismatch } from "./current-config.js";
 import { throwAfterPartialSandboxCleanup } from "./docker-partial-cleanup.js";
+import { planSandboxGeneration } from "./generation-plan.js";
 import {
   prepareSandboxMountPlan,
   sandboxMountPlanMatchesContainer,
@@ -45,6 +47,8 @@ import {
 import {
   completeSandboxRegistryReservation,
   readRegistryEntry,
+  readRegistry,
+  withSandboxRegistryEntryLock,
   removeRegistryEntry,
   updateRegistry,
 } from "./registry.js";
@@ -407,6 +411,9 @@ type EnsureSandboxContainerParams = {
 };
 
 export async function ensureSandboxContainer(params: EnsureSandboxContainerParams) {
+  // A caller may retain its configuration object across an awaited publication.
+  // Provider planning always uses this admission's immutable snapshot.
+  params = { ...params, cfg: structuredClone(params.cfg) };
   const engine = params.engine ?? DOCKER_SANDBOX_ENGINE;
   const slug = params.cfg.scope === "shared" ? "shared" : slugifySessionKey(params.scopeKey);
   const prefix =
@@ -421,12 +428,28 @@ export async function ensureSandboxContainer(params: EnsureSandboxContainerParam
     params.operatorAuthority?.assertCurrent();
     params.assertCurrent?.();
   };
-  return await withSandboxContainerLifecycle(
-    containerName,
-    params.cfg.scope === "shared" ? undefined : params.operatorAuthority,
-    (source) =>
-      ensureSandboxContainerLifecycle({ ...params, assertCurrent }, containerName, source),
-  );
+  const provision = () =>
+    withSandboxContainerLifecycle(
+      containerName,
+      params.cfg.scope === "shared" ? undefined : params.operatorAuthority,
+      (source) =>
+        ensureSandboxContainerLifecycle({ ...params, assertCurrent }, containerName, source),
+    );
+  if (params.cfg.docker.readOnlyBindRollovers?.length && engine.id === "docker") {
+    // Serialize generation selection across CLI and Gateway processes, not only
+    // one process's provider queue. The stable logical name is the lock key.
+    return withSandboxRegistryEntryLock(
+      {
+        containerName,
+        sessionKey: params.scopeKey,
+        createdAtMs: 0,
+        lastUsedAtMs: 0,
+        image: params.cfg.docker.image,
+      },
+      provision,
+    );
+  }
+  return provision();
 }
 
 async function ensureSandboxContainerLifecycle(
@@ -434,6 +457,7 @@ async function ensureSandboxContainerLifecycle(
   containerName: string,
   source: ContainerSourceLease | undefined,
 ) {
+  const logicalContainerName = containerName;
   const configuredEngine = params.engine ?? DOCKER_SANDBOX_ENGINE;
   const podmanRuntimeInfo =
     configuredEngine.id === "podman" ? await resolvePodmanSandboxRuntimeInfo() : undefined;
@@ -510,171 +534,339 @@ async function ensureSandboxContainerLifecycle(
           dockerTmpfsSource: params.cfg.dockerTmpfsSource,
         })
       : genericConfigHash;
-  const now = Date.now();
-  const needsSetupReservation =
-    Boolean(params.cfg.docker.setupCommand?.trim()) ||
-    existingRegistryEntry?.runtimeState === "pending";
-  const state = await containerState(engine, containerName, { strict: needsSetupReservation });
-  let containerId = "";
-  if (state.exists) {
-    const identity = await execContainer(
-      engine,
-      ["inspect", "--format", "{{.Id}}", containerName],
-      {
-        signal: AbortSignal.timeout(5_000),
-      },
+  const managedRollover =
+    engine.id === "docker" && Boolean(params.cfg.docker.readOnlyBindRollovers?.length);
+  if (managedRollover) {
+    const logicalName = containerName;
+    const generation = planSandboxGeneration({
+      logicalName,
+      containerPrefix: params.cfg.docker.containerPrefix,
+      configHash: expectedHash,
+    });
+    const entries = (await readRegistry()).entries.filter(
+      (entry) => entry.sessionKey === params.scopeKey && (entry.backendId ?? "docker") === "docker",
     );
-    containerId = identity.stdout.trim();
-    if (!/^[a-f0-9]{64}$/u.test(containerId)) {
-      throw new Error("Container inspect did not return an immutable container ID.");
+    if (existingRegistryEntry && !entries.some((entry) => entry.containerName === logicalName)) {
+      entries.push(existingRegistryEntry);
     }
-  }
-  let hasContainer = state.exists;
-  let running = state.running;
-  let currentHash: string | null = null;
-  let hashMismatch = false;
-  const registryEntry = existingRegistryEntry ?? undefined;
-  if (hasContainer) {
-    if (registryEntry?.runtimeState === "pending") {
-      throw new Error(
-        `Sandbox ${containerName} setup did not complete. Inspect the retained container and preserve needed data before explicitly recreating it.`,
-      );
+    // A legacy container can predate its registry row. Inspect the logical name
+    // as well; absence is not inferred from a missing directory entry.
+    const names = [
+      ...new Set([
+        generation.containerName,
+        logicalName,
+        ...entries.map((entry) => entry.containerName),
+      ]),
+    ];
+    const predecessorConfigs = predecessorDockerConfigs(params.cfg.docker);
+    if (
+      params.cfg.docker.readOnlyBindRollovers!.some((rollover) =>
+        rollover.to.some((bind) => !mountPlan.binds.includes(bind)),
+      )
+    ) {
+      throw new Error("Sandbox rollover resource is hidden by a protected mount");
     }
-    currentHash = await readContainerLabel(engine, containerName, "openclaw.configHash");
-    if (!currentHash) {
-      currentHash = registryEntry?.configHash ?? null;
-    }
-    hashMismatch = !currentHash || currentHash !== expectedHash;
-    if (hashMismatch) {
-      const lastUsedAtMs = registryEntry?.lastUsedAtMs;
-      const isHot =
-        running &&
-        (typeof lastUsedAtMs !== "number" || now - lastUsedAtMs < HOT_CONTAINER_WINDOW_MS);
-      if (isHot) {
-        const mountsMatch =
-          params.requireCurrentConfig ||
-          (await sandboxMountPlanMatchesContainer({ engine, containerName, plan: mountPlan }));
-        handleHotSandboxConfigMismatch({
-          containerName,
-          scope: params.cfg.scope,
-          sessionKey: params.scopeKey,
-          mountsChanged: !mountsMatch,
-          ...(params.requireCurrentConfig !== undefined
-            ? { requireCurrentConfig: params.requireCurrentConfig }
-            : {}),
-        });
-      } else {
+    let selected: string | undefined;
+    let permittedPredecessor = false;
+    let physicalPredecessor = false;
+    let refusedPredecessor = false;
+    const withGenerationLock = <T>(name: string, operation: () => Promise<T>) =>
+      name === logicalContainerName
+        ? operation()
+        : withSandboxRegistryEntryLock(
+            {
+              containerName: name,
+              sessionKey: params.scopeKey,
+              createdAtMs: 0,
+              lastUsedAtMs: 0,
+              image: params.cfg.docker.image,
+            },
+            operation,
+          );
+    for (const name of names) {
+      await withGenerationLock(name, async () => {
         params.assertCurrent?.();
-        const removed = await execContainer(engine, ["rm", "-f", containerId], {
-          allowFailure: true,
-        });
+        const physical = await containerState(engine, name, { strict: true });
+        params.assertCurrent?.();
+        if (!physical.exists) return;
+        physicalPredecessor = true;
+        const label = await readContainerLabel(engine, name, "openclaw.configHash");
         if (
-          removed.code !== 0 &&
-          !/no such (?:container|object)|does not exist/iu.test(removed.stderr)
+          label === expectedHash &&
+          (await sandboxMountPlanMatchesContainer({ engine, containerName: name, plan: mountPlan }))
         ) {
-          throw new Error(`Sandbox replacement failed; custody retained: ${removed.stderr.trim()}`);
+          const entry = await readRegistryEntry(name);
+          if (!entry) throw new Error("Sandbox current generation lacks native registry custody");
+          params.assertCurrent?.();
+          await updateRegistry({ ...entry, rolloverRetained: true });
+          selected ??= name;
+          return;
         }
-        releaseSandboxContainerSource(engine, containerName, containerId);
-        hasContainer = false;
-        running = false;
-      }
+        if (name === generation.containerName) {
+          throw new Error("Sandbox generation identity does not match its complete configuration");
+        }
+        let permitted = false;
+        // Never turn an unrelated change (permissions, workspace, environment,
+        // image, tmpfs, or other mounts) into a new generation.
+        for (const priorDocker of predecessorConfigs) {
+          const priorPlan = await prepareSandboxMountPlan({
+            engine,
+            workspaceDir: params.workspaceDir,
+            workspaceSource: params.workspaceSource,
+            assertCurrent: params.assertCurrent,
+            agentWorkspaceDir: params.agentWorkspaceDir,
+            skillsWorkspaceDir: params.skillsWorkspaceDir,
+            workdir: priorDocker.workdir,
+            workspaceAccess: params.cfg.workspaceAccess,
+            binds: priorDocker.binds,
+            tmpfs: priorDocker.tmpfs,
+            readOnlyResourceMounts: params.readOnlyResourceMounts,
+          });
+          const priorHash = computeSandboxConfigHash({
+            docker: priorDocker,
+            dockerEnvPolicyEpoch: resolveDockerEnvPolicyEpoch(priorDocker.env),
+            workspaceAccess: params.cfg.workspaceAccess,
+            workspaceDir: params.workspaceDir,
+            agentWorkspaceDir: params.agentWorkspaceDir,
+            mountFormatVersion: SANDBOX_MOUNT_FORMAT_VERSION,
+            createArgsEpoch: SANDBOX_DOCKER_CREATE_ARGS_EPOCH,
+            managedMounts: priorPlan.binds,
+          });
+          if (
+            label !== priorHash ||
+            !(await sandboxMountPlanMatchesContainer({
+              engine,
+              containerName: name,
+              plan: priorPlan,
+            }))
+          )
+            continue;
+          const entry = await readRegistryEntry(name);
+          if (!entry) throw new Error("Sandbox rollover predecessor lacks native registry custody");
+          params.assertCurrent?.();
+          await updateRegistry({ ...entry, rolloverRetained: true });
+          permittedPredecessor = true;
+          permitted = true;
+          break;
+        }
+        if (!permitted) refusedPredecessor = true;
+      });
     }
-  }
-  const readyEntry = {
-    containerName,
-    backendId: engine.id,
-    ...(podmanRuntimeInfo ? { backendTarget: podmanRuntimeInfo.target } : {}),
-    runtimeLabel: containerName,
-    sessionKey: params.scopeKey,
-    workspaceDir: params.workspaceDir,
-    createdAtMs: now,
-    lastUsedAtMs: now,
-    image: params.cfg.docker.image,
-    configLabelKind: "Image" as const,
-    configHash: expectedHash,
-  };
-  if (!hasContainer) {
-    // Preserve managed mount custody and unfinished one-time setup before any
-    // provider allocation, including a crash or revocation before publication.
-    if (params.workspaceSource === "managed-worktree" || needsSetupReservation) {
-      params.assertCurrent?.();
-      await updateRegistry(
-        needsSetupReservation ? { ...readyEntry, runtimeState: "pending" } : readyEntry,
+    params.assertCurrent?.();
+    if (!selected && physicalPredecessor && (!permittedPredecessor || refusedPredecessor)) {
+      throw new Error(
+        "Sandbox mounts changed outside the host-approved read-only resource rollover",
       );
     }
-    let allocated = false;
-    try {
-      containerId = await createSandboxContainer({
-        engine,
-        name: containerName,
-        cfg: params.cfg.docker,
-        dockerTmpfsSource: params.cfg.dockerTmpfsSource,
-        workspaceDir: params.workspaceDir,
-        workspaceAccess: params.cfg.workspaceAccess,
-        agentWorkspaceDir: params.agentWorkspaceDir,
-        scopeKey: params.scopeKey,
-        configHash: expectedHash,
-        mountPlan,
-        podmanRuntimeInfo,
-        onAllocated: (id) => {
-          allocated = true;
-          containerId = id;
-          if (source) {
-            bindSandboxContainerSource({ engine, name: containerName, id, owner: source });
-          }
-        },
-        assertCurrent: params.assertCurrent,
-        operatorAuthority: params.operatorAuthority,
-      });
-      if (needsSetupReservation) {
-        await completeSandboxRegistryReservation(readyEntry);
-      } else if (params.workspaceSource !== "managed-worktree") {
-        await updateRegistry(readyEntry);
-      }
+    if (!selected && entries.length >= 32) {
+      throw new Error(
+        "Sandbox retained generation capacity reached; reconcile settled work before retrying",
+      );
+    }
+    containerName = selected ?? generation.containerName;
+    existingRegistryEntry = await readRegistryEntry(containerName);
+    if (
+      existingRegistryEntry?.runtimeState === "removing" ||
+      existingRegistryEntry?.runtimeState === "removing-pending"
+    ) {
+      throw new Error("Sandbox generation removal is in progress");
+    }
+  }
+  const provisionGeneration = async () => {
+    if (managedRollover) {
+      existingRegistryEntry = await readRegistryEntry(containerName);
       params.assertCurrent?.();
-      return { containerName, containerId };
-    } catch (creationError) {
-      if (!allocated) {
-        throw creationError;
+      if (existingRegistryEntry?.runtimeState?.startsWith("removing")) {
+        throw new Error("Sandbox generation removal is in progress");
       }
-      if (params.operatorAuthority?.signal?.aborted) {
-        // Revocation stops a proven-private generation without deleting its
-        // writable layer. Shared/unknown environments remain running.
-        if (params.workspaceSource !== "managed-worktree" && !needsSetupReservation) {
+    }
+    const now = Date.now();
+    const needsSetupReservation =
+      Boolean(params.cfg.docker.setupCommand?.trim()) ||
+      existingRegistryEntry?.runtimeState === "pending";
+    const state = await containerState(engine, containerName, { strict: needsSetupReservation });
+    let containerId = "";
+    if (state.exists) {
+      const identity = await execContainer(
+        engine,
+        ["inspect", "--format", "{{.Id}}", containerName],
+        {
+          signal: AbortSignal.timeout(5_000),
+        },
+      );
+      containerId = identity.stdout.trim();
+      if (!/^[a-f0-9]{64}$/u.test(containerId)) {
+        throw new Error("Container inspect did not return an immutable container ID.");
+      }
+    }
+    let hasContainer = state.exists;
+    let running = state.running;
+    let currentHash: string | null = null;
+    let hashMismatch = false;
+    const registryEntry = existingRegistryEntry ?? undefined;
+    if (hasContainer) {
+      if (registryEntry?.runtimeState === "pending") {
+        throw new Error(
+          `Sandbox ${containerName} setup did not complete. Inspect the retained container and preserve needed data before explicitly recreating it.`,
+        );
+      }
+      currentHash = await readContainerLabel(engine, containerName, "openclaw.configHash");
+      if (!currentHash) {
+        currentHash = registryEntry?.configHash ?? null;
+      }
+      hashMismatch = !currentHash || currentHash !== expectedHash;
+      if (hashMismatch) {
+        if (managedRollover || registryEntry?.rolloverRetained) {
+          throw new Error(
+            "Sandbox generation configuration changed after selection; custody retained",
+          );
+        }
+        const lastUsedAtMs = registryEntry?.lastUsedAtMs;
+        const isHot =
+          running &&
+          (typeof lastUsedAtMs !== "number" || now - lastUsedAtMs < HOT_CONTAINER_WINDOW_MS);
+        if (isHot) {
+          const mountsMatch =
+            params.requireCurrentConfig ||
+            (await sandboxMountPlanMatchesContainer({ engine, containerName, plan: mountPlan }));
+          handleHotSandboxConfigMismatch({
+            containerName,
+            scope: params.cfg.scope,
+            sessionKey: params.scopeKey,
+            mountsChanged: !mountsMatch,
+            ...(params.requireCurrentConfig !== undefined
+              ? { requireCurrentConfig: params.requireCurrentConfig }
+              : {}),
+          });
+        } else {
+          params.assertCurrent?.();
+          const removed = await execContainer(engine, ["rm", "-f", containerId], {
+            allowFailure: true,
+          });
+          if (
+            removed.code !== 0 &&
+            !/no such (?:container|object)|does not exist/iu.test(removed.stderr)
+          ) {
+            throw new Error(
+              `Sandbox replacement failed; custody retained: ${removed.stderr.trim()}`,
+            );
+          }
+          releaseSandboxContainerSource(engine, containerName, containerId);
+          hasContainer = false;
+          running = false;
+        }
+      }
+    }
+    const readyEntry = {
+      containerName,
+      backendId: engine.id,
+      ...(podmanRuntimeInfo ? { backendTarget: podmanRuntimeInfo.target } : {}),
+      runtimeLabel: containerName,
+      sessionKey: params.scopeKey,
+      workspaceDir: params.workspaceDir,
+      createdAtMs: now,
+      lastUsedAtMs: now,
+      image: params.cfg.docker.image,
+      configLabelKind: "Image" as const,
+      configHash: expectedHash,
+      ...(managedRollover ? { rolloverRetained: true } : {}),
+    };
+    if (!hasContainer) {
+      // Preserve managed mount custody and unfinished one-time setup before any
+      // provider allocation, including a crash or revocation before publication.
+      if (params.workspaceSource === "managed-worktree" || needsSetupReservation) {
+        params.assertCurrent?.();
+        await updateRegistry(
+          needsSetupReservation ? { ...readyEntry, runtimeState: "pending" } : readyEntry,
+        );
+      }
+      let allocated = false;
+      try {
+        containerId = await createSandboxContainer({
+          engine,
+          name: containerName,
+          cfg: params.cfg.docker,
+          dockerTmpfsSource: params.cfg.dockerTmpfsSource,
+          workspaceDir: params.workspaceDir,
+          workspaceAccess: params.cfg.workspaceAccess,
+          agentWorkspaceDir: params.agentWorkspaceDir,
+          scopeKey: params.scopeKey,
+          configHash: expectedHash,
+          mountPlan,
+          podmanRuntimeInfo,
+          onAllocated: (id) => {
+            allocated = true;
+            containerId = id;
+            if (source) {
+              bindSandboxContainerSource({ engine, name: containerName, id, owner: source });
+            }
+          },
+          assertCurrent: params.assertCurrent,
+          operatorAuthority: params.operatorAuthority,
+        });
+        if (needsSetupReservation) {
+          await completeSandboxRegistryReservation(readyEntry);
+        } else if (params.workspaceSource !== "managed-worktree") {
           await updateRegistry(readyEntry);
         }
-        throw creationError;
+        params.assertCurrent?.();
+        return { containerName, containerId };
+      } catch (creationError) {
+        if (!allocated) {
+          throw creationError;
+        }
+        if (params.operatorAuthority?.signal?.aborted) {
+          // Revocation stops a proven-private generation without deleting its
+          // writable layer. Shared/unknown environments remain running.
+          if (params.workspaceSource !== "managed-worktree" && !needsSetupReservation) {
+            await updateRegistry(readyEntry);
+          }
+          throw creationError;
+        }
+        await throwAfterPartialSandboxCleanup({
+          engine,
+          containerName,
+          containerId,
+          creationError,
+          onRemoved: () => releaseSandboxContainerSource(engine, containerName, containerId),
+        });
       }
-      await throwAfterPartialSandboxCleanup({
-        engine,
+    } else {
+      params.assertCurrent?.();
+      if (
+        await admitSandboxContainerSource({
+          engine,
+          name: containerName,
+          id: containerId,
+          running,
+          source,
+        })
+      ) {
+        running = false;
+      }
+      params.assertCurrent?.();
+      if (!running) {
+        await execContainer(engine, ["start", containerId]);
+      }
+    }
+    await updateRegistry({
+      ...readyEntry,
+      configHash: hashMismatch ? (currentHash ?? undefined) : expectedHash,
+    });
+    params.assertCurrent?.();
+    return { containerName, containerId };
+  };
+  if (managedRollover && containerName !== logicalContainerName) {
+    return withSandboxRegistryEntryLock(
+      {
         containerName,
-        containerId,
-        creationError,
-        onRemoved: () => releaseSandboxContainerSource(engine, containerName, containerId),
-      });
-    }
-  } else {
-    params.assertCurrent?.();
-    if (
-      await admitSandboxContainerSource({
-        engine,
-        name: containerName,
-        id: containerId,
-        running,
-        source,
-      })
-    ) {
-      running = false;
-    }
-    params.assertCurrent?.();
-    if (!running) {
-      await execContainer(engine, ["start", containerId]);
-    }
+        sessionKey: params.scopeKey,
+        createdAtMs: 0,
+        lastUsedAtMs: 0,
+        image: params.cfg.docker.image,
+      },
+      () => withSandboxContainerLifecycle(containerName, undefined, provisionGeneration),
+    );
   }
-  await updateRegistry({
-    ...readyEntry,
-    configHash: hashMismatch ? (currentHash ?? undefined) : expectedHash,
-  });
-  params.assertCurrent?.();
-  return { containerName, containerId };
+  return provisionGeneration();
 }

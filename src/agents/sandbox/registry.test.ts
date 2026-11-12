@@ -2,6 +2,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
+import * as fileLocks from "../../infra/file-lock.js";
 import { acquireGatewayStateOwner } from "../../infra/gateway-state-owner.js";
 import * as sqliteQueries from "../../infra/kysely-sync.js";
 
@@ -36,6 +37,7 @@ import {
   removeBrowserRegistryEntry,
   removeRegistryEntry,
   removeSandboxRegistryGeneration,
+  removeSandboxRegistryRuntime,
   updateBrowserRegistry,
   updateRegistry,
 } from "./registry.js";
@@ -98,6 +100,52 @@ async function expectPathMissing(targetPath: string): Promise<void> {
 }
 
 describe("registry race safety", () => {
+  it.each([undefined, "ready"] as const)(
+    "rechecks rollover retention under the entry lock before removing a %s runtime",
+    async (runtimeState) => {
+      const entry = containerEntry({ backendId: "docker", runtimeState });
+      await updateRegistry(entry);
+      let continueRemoval!: () => void;
+      const paused = new Promise<void>((resolve) => {
+        continueRemoval = resolve;
+      });
+      const lock = vi
+        .spyOn(fileLocks, "withFileLock")
+        .mockImplementation(async (_path, _options, operation) => {
+          await paused;
+          return operation();
+        });
+      const removeRuntime = vi.fn(async () => {});
+      try {
+        const removal = removeSandboxRegistryRuntime(entry, removeRuntime, {
+          shouldRemove: (current) => !current.rolloverRetained,
+        });
+        expect(lock).toHaveBeenCalledOnce();
+        expect((await readRegistryEntry(entry.containerName))?.runtimeState).toBe(runtimeState);
+        await updateRegistry({ ...entry, rolloverRetained: true });
+        continueRemoval();
+        await removal;
+        expect(removeRuntime).not.toHaveBeenCalled();
+        expect(await readRegistryEntry(entry.containerName)).toMatchObject({
+          rolloverRetained: true,
+        });
+        expect((await readRegistryEntry(entry.containerName))?.runtimeState).toBe(runtimeState);
+      } finally {
+        continueRemoval();
+        lock.mockRestore();
+      }
+    },
+  );
+
+  it("preserves rollover retention across later stale usage publications", async () => {
+    await updateRegistry(containerEntry({ rolloverRetained: true }));
+    await updateRegistry(containerEntry({ lastUsedAtMs: 2 }));
+    expect(await readRegistryEntry("container-a")).toMatchObject({
+      rolloverRetained: true,
+      lastUsedAtMs: 2,
+    });
+  });
+
   it("refuses queued browser publication after hosted custody is released", async () => {
     const owner = acquireGatewayStateOwner({
       databasePath: resolveOpenClawStateSqlitePath(),

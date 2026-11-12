@@ -1,5 +1,7 @@
 import fsSync from "node:fs";
 import fs from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
+import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -307,6 +309,14 @@ async function resolveProvisionedSandboxContext(
   const selected = await prepareSandboxWorkspaceSelection(params, resolved);
   params.assertCurrent?.();
   const { rawSessionKey, runtime, cfg, localWorkspace } = selected;
+  if (
+    cfg.docker.readOnlyBindRollovers?.length &&
+    (cfg.backend !== "docker" || cfg.browser.enabled)
+  ) {
+    throw new Error(
+      "Read-only resource rollover requires the Docker execution backend with browser sandboxing disabled",
+    );
+  }
   const config = params.config;
   const allowGitHub =
     config && resolveAgentConfig(config, runtime.agentId)?.tools?.github?.allowInSandbox === true;
@@ -399,6 +409,24 @@ async function resolveProvisionedSandboxContext(
     backendId: resolvedCfg.backend,
     scopeKey,
   });
+  const admittedSandboxConfig = structuredClone(
+    resolveSandboxConfigForAgent(params.config, runtime.agentId),
+  );
+  const assertProvisionCurrent = () => {
+    if (!executionCfg.docker.readOnlyBindRollovers?.length) return;
+    const current = getRuntimeConfigSnapshot();
+    if (
+      current &&
+      !isDeepStrictEqual(
+        admittedSandboxConfig,
+        resolveSandboxConfigForAgent(current, runtime.agentId),
+      )
+    ) {
+      throw new Error(
+        "Sandbox configuration changed during generation admission; retry using the current configuration",
+      );
+    }
+  };
   const provisionBackend = () => {
     params.assertCurrent?.();
     return createSandboxBackend(
@@ -413,6 +441,7 @@ async function resolveProvisionedSandboxContext(
             }
           : {}),
         assertRuntimeCurrent: localWorkspace?.assertCurrent ?? params.assertCurrent,
+        assertProvisionCurrent,
         agentWorkspaceDir,
         skillsWorkspaceDir,
         readOnlyResourceMounts,

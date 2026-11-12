@@ -17,8 +17,8 @@ import type { DB as OpenClawStateKyselyDatabase } from "../../state/openclaw-sta
 import { runOpenClawStateWriteTransaction } from "../../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contract.js";
 import { executeOpenClawStateWorker } from "../../state/openclaw-state-worker-store.js";
+import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contract.js";
 import {
   assertSandboxRegistryReservationCurrent,
   browserEntryToRow,
@@ -243,7 +243,7 @@ export async function withSandboxRegistryEntryLock<T>(
   );
 }
 
-/** Persist removal intent before waiting for provisioning, and retain failed cleanup for retry. */
+/** Serialize eligibility and removal with provisioning; retain failed cleanup for retry. */
 export async function removeSandboxRegistryRuntime(
   entry: SandboxRegistryEntry,
   removeRuntime: (entry: SandboxRegistryEntry) => Promise<void>,
@@ -258,49 +258,45 @@ export async function removeSandboxRegistryRuntime(
     options.guard?.beforeLegacyApply?.();
   };
   assertCurrent();
-  const selected = runOpenClawStateWriteTransaction(({ db }) => {
-    const row = readSandboxRegistryRowInDatabase(db, "container", entry.containerName);
-    const current = row ? rowToContainerEntry(row) : null;
-    if (
-      !current ||
-      current.backendId !== entry.backendId ||
-      current.sessionKey !== entry.sessionKey ||
-      (options.shouldRemove && !options.shouldRemove(current))
-    ) {
-      return null;
-    }
-    if (!current.runtimeState && !options.reserveRuntime) {
-      return current;
-    }
-    const next: SandboxRegistryEntry = {
-      ...current,
-      runtimeState:
-        current.runtimeState === "pending" || current.runtimeState === "removing-pending"
-          ? "removing-pending"
-          : "removing",
-    };
-    insertSandboxRegistryRowInDatabase(db, containerEntryToRow(next, current));
-    return next;
-  });
-  if (!selected) {
-    return;
-  }
-  if (!selected.runtimeState) {
+  await withSandboxRegistryEntryLock(entry, async () => {
     assertCurrent();
-    await removeRuntime(selected);
-    await removeRegistryEntry(selected.containerName, { guard: options.guard });
-    return;
-  }
-  const removing = selected;
-  await withSandboxRegistryEntryLock(removing, async () => {
+    const selected = runOpenClawStateWriteTransaction(({ db }) => {
+      const row = readSandboxRegistryRowInDatabase(db, "container", entry.containerName);
+      const current = row ? rowToContainerEntry(row) : null;
+      if (
+        !current ||
+        current.backendId !== entry.backendId ||
+        current.sessionKey !== entry.sessionKey ||
+        (options.shouldRemove && !options.shouldRemove(current))
+      ) {
+        return null;
+      }
+      if (!current.runtimeState && !options.reserveRuntime) {
+        return current;
+      }
+      const next: SandboxRegistryEntry = {
+        ...current,
+        runtimeState:
+          current.runtimeState === "pending" || current.runtimeState === "removing-pending"
+            ? "removing-pending"
+            : "removing",
+      };
+      insertSandboxRegistryRowInDatabase(db, containerEntryToRow(next, current));
+      return next;
+    });
+    if (!selected) {
+      return;
+    }
     assertCurrent();
-    const current = await readRegistryEntry(removing.containerName);
+    const current = await readRegistryEntry(selected.containerName);
     assertCurrent();
     if (
       !current ||
-      (current.runtimeState !== "removing" && current.runtimeState !== "removing-pending") ||
-      current.backendId !== removing.backendId ||
-      current.sessionKey !== removing.sessionKey ||
+      (selected.runtimeState &&
+        current.runtimeState !== "removing" &&
+        current.runtimeState !== "removing-pending") ||
+      current.backendId !== selected.backendId ||
+      current.sessionKey !== selected.sessionKey ||
       (options.shouldRemove && !options.shouldRemove(current))
     ) {
       return;

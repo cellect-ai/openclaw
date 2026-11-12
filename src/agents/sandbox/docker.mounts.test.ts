@@ -83,6 +83,140 @@ describe("ensureSandboxContainer managed mounts", () => {
     ).toContain("/host/second:/workspace:z");
   });
 
+  it.each(["recent", "unknown", "old timestamp", "strict current"])(
+    "admits an immutable CLI generation without removing its %s-work predecessor",
+    async (activity) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-runtime-rollover-"));
+      const oldRoot = path.join(workspaceDir, "runtimes", `${"a".repeat(40)}-${"1".repeat(12)}`);
+      const newRoot = path.join(workspaceDir, "runtimes", `${"b".repeat(40)}-${"1".repeat(12)}`);
+      for (const root of [oldRoot, newRoot]) {
+        fs.mkdirSync(root, { recursive: true });
+        fs.writeFileSync(path.join(root, "cellect"), "fixture executable\n");
+      }
+      const binds = (root: string) => [
+        `${root}:/repos/fi-runtime:ro`,
+        `${root}/cellect:/usr/local/bin/cellect:ro`,
+      ];
+      const cfg = createSandboxConfig([], binds(oldRoot));
+      const params = {
+        scopeKey: "agent:fixture:session",
+        workspaceDir,
+        agentWorkspaceDir: workspaceDir,
+        cfg,
+        requireCurrentConfig: activity === "strict current",
+      };
+      spawnState.multiContainers = new Map();
+      const entries = new Map<string, import("./registry.types.js").SandboxRegistryEntry>();
+      registryMocks.readRegistry.mockImplementation(async () => ({
+        entries: [...entries.values()],
+      }));
+      registryMocks.readRegistryEntry.mockImplementation(
+        async (name: string) => entries.get(name) ?? null,
+      );
+      registryMocks.updateRegistry.mockImplementation(async (entry) => {
+        entries.set(entry.containerName, entry);
+      });
+      const predecessor = await harness.ensureSandboxContainer(params);
+      const oldContainer = spawnState.multiContainers.get(predecessor.containerName);
+      expect(oldContainer?.running).toBe(true);
+      const priorEntry = entries.get(predecessor.containerName)!;
+      if (activity === "old timestamp") priorEntry.lastUsedAtMs = Date.now() - 24 * 60 * 60 * 1000;
+      if (activity === "unknown") Reflect.deleteProperty(priorEntry, "lastUsedAtMs");
+      cfg.docker.binds = binds(newRoot);
+      cfg.docker.readOnlyBindRollovers = [{ from: binds(oldRoot), to: binds(newRoot) }];
+      spawnState.calls.length = 0;
+
+      const successor = await harness.ensureSandboxContainer(params);
+
+      expect(spawnState.calls.some((call) => call.args[0] === "rm")).toBe(false);
+      expect(successor.containerId).not.toBe(predecessor.containerId);
+      expect(spawnState.multiContainers.get(predecessor.containerName)).toBe(oldContainer);
+      expect(oldContainer?.running).toBe(true);
+      expect(entries.get(predecessor.containerName)?.rolloverRetained).toBe(true);
+      expect(spawnState.multiContainers.get(successor.containerName)?.running).toBe(true);
+      const create = spawnState.calls.find((call) => call.args[0] === "create");
+      expect(create).toBeDefined();
+      const successorBinds = collectDockerFlagValues(create!.args, "-v");
+      expect(successorBinds).toContain(`${newRoot}:/repos/fi-runtime:ro,z`);
+      expect(successorBinds).toContain(`${newRoot}/cellect:/usr/local/bin/cellect:ro,z`);
+      expect(successorBinds.some((bind) => bind.startsWith(`${oldRoot}:`))).toBe(false);
+      spawnState.calls.length = 0;
+      const reused = await harness.ensureSandboxContainer(params);
+      expect(reused.containerId).toBe(successor.containerId);
+      expect(spawnState.calls.some((call) => ["rm", "create"].includes(call.args[0]!))).toBe(false);
+      // Removing the new policy cannot restore timestamp-based deletion of a
+      // persisted predecessor, including after configuration rollback.
+      cfg.docker.readOnlyBindRollovers = undefined;
+      priorEntry.lastUsedAtMs = Date.now() - 24 * 60 * 60 * 1000;
+      spawnState.calls.length = 0;
+      await expect(harness.ensureSandboxContainer(params)).rejects.toThrow("custody retained");
+      expect(spawnState.calls.some((call) => call.args[0] === "rm")).toBe(false);
+    },
+  );
+
+  it.each(["revoked bind", "access mode"])(
+    "does not roll over a hot sandbox when an unrelated %s changes",
+    async (change) => {
+      const workspaceDir = fs.realpathSync(tempDirs.make("openclaw-runtime-access-"));
+      const extra = path.join(workspaceDir, "protected");
+      fs.mkdirSync(extra);
+      const oldRoot = path.join(workspaceDir, "runtimes", `${"a".repeat(40)}-${"1".repeat(12)}`);
+      const newRoot = path.join(workspaceDir, "runtimes", `${"b".repeat(40)}-${"1".repeat(12)}`);
+      for (const root of [oldRoot, newRoot]) {
+        fs.mkdirSync(root, { recursive: true });
+        fs.writeFileSync(path.join(root, "cellect"), "fixture executable\n");
+      }
+      const runtimeBinds = (root: string) => [
+        `${root}:/repos/fi-runtime:ro`,
+        `${root}/cellect:/usr/local/bin/cellect:ro`,
+      ];
+      const cfg = createSandboxConfig([], [...runtimeBinds(oldRoot), `${extra}:/protected:ro`]);
+      const params = {
+        scopeKey: "agent:fixture:session",
+        workspaceDir,
+        agentWorkspaceDir: workspaceDir,
+        cfg,
+      };
+      spawnState.multiContainers = new Map();
+      const entries = new Map<string, import("./registry.types.js").SandboxRegistryEntry>();
+      registryMocks.readRegistry.mockImplementation(async () => ({
+        entries: [...entries.values()],
+      }));
+      registryMocks.readRegistryEntry.mockImplementation(
+        async (name: string) => entries.get(name) ?? null,
+      );
+      registryMocks.updateRegistry.mockImplementation(async (entry) => {
+        entries.set(entry.containerName, entry);
+      });
+      const predecessor = await harness.ensureSandboxContainer(params);
+      spawnState.mounts = JSON.stringify([
+        { Type: "bind", Source: workspaceDir, Destination: "/workspace", RW: true },
+        { Type: "bind", Source: oldRoot, Destination: "/repos/fi-runtime", RW: false },
+        {
+          Type: "bind",
+          Source: `${oldRoot}/cellect`,
+          Destination: "/usr/local/bin/cellect",
+          RW: false,
+        },
+        { Type: "bind", Source: extra, Destination: "/protected", RW: false },
+      ]);
+      cfg.docker.binds = [
+        ...runtimeBinds(newRoot),
+        ...(change === "revoked bind" ? [] : [`${extra}:/protected:rw`]),
+      ];
+      cfg.docker.readOnlyBindRollovers = [
+        { from: runtimeBinds(oldRoot), to: runtimeBinds(newRoot) },
+      ];
+      spawnState.calls.length = 0;
+      await expect(harness.ensureSandboxContainer(params)).rejects.toThrow(
+        "Sandbox mounts changed",
+      );
+      expect(
+        spawnState.calls.some((call) => ["rm", "create", "start"].includes(call.args[0]!)),
+      ).toBe(false);
+    },
+  );
+
   it("preserves hot Podman tmpfs removal and replaces it only after stopping", async () => {
     const workspaceDir = tempDirs.make("openclaw-tmpfs-lifecycle-");
     const cfg = createSandboxConfig([], [], "rw");

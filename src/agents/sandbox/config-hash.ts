@@ -55,7 +55,10 @@ function normalizeForHash(value: unknown): unknown {
 
 /** Computes the sandbox container config hash. */
 export function computeSandboxConfigHash(input: SandboxHashInput): string {
-  return hashTextSha256(JSON.stringify(normalizeForHash(input)));
+  // Publication permission does not change provider configuration. Keeping it
+  // outside the hash also permits verified adoption of pre-contract containers.
+  const { readOnlyBindRollovers: _rollovers, ...docker } = input.docker;
+  return hashTextSha256(JSON.stringify(normalizeForHash({ ...input, docker })));
 }
 
 /** Computes the browser-enabled sandbox container config hash. */

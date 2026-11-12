@@ -33,6 +33,20 @@ Doctor completes recognized schema-1 databases that predate the audit ledger bef
 | 18      | Original requesting authority retained with shared GitHub publication receipts                                                                                                                                                                                                                                                  | Unreleased          |
 | 19      | Durable original channel-owner authorization and revocation continuity                                                                                                                                                                                                                                                          | Unreleased          |
 | 20      | Cron receipt delivery-attempt fence prevents replay of ambiguous one-shot completions                                                                                                                                                                                                                                           | Unreleased          |
+| 21      | Retained immutable sandbox generations fence older pruning owners                                                                                                                                                                                                                                                               | Unreleased          |
+
+### State schema 21
+
+Schema 21 records retained immutable sandbox generations in the existing sandbox
+registry. It adds no tables or SQL columns. A retained generation may still own
+detached work, so timestamp pruning must not remove it. Retention is monotonic
+until an explicit, reconciled native retirement removes the entry.
+
+The content-version fence is required: a schema-20 pruning owner does not know
+this retention rule. Binary rollback must not run an older owner on migrated
+state, even when restoring an older config. Take a WAL-aware backup before
+activation; restoring that backup requires reconciling containers created or
+retained since it was taken. Configuration rollback alone is insufficient.
 
 ### State schema 20
 

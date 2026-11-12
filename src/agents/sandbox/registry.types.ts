@@ -11,6 +11,8 @@ export type SandboxRegistryEntry = {
   image: string;
   configLabelKind?: string;
   configHash?: string;
+  /** Retained immutable resource generation: timestamps cannot prove its work settled. */
+  rolloverRetained?: boolean;
   /** Original provider workspace, retained so pending cleanup can replay the same request. */
   workspaceDir?: string;
   /** Provisioning and removal state for backends that retain unfinished allocations. */

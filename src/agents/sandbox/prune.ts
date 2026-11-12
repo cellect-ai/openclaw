@@ -71,12 +71,20 @@ async function pruneSandboxRegistryEntries<TEntry extends SandboxRegistryEntry>(
   const registry = await params.read();
   params.assertCurrent?.();
   for (const entry of registry.entries) {
+    // A prior generation may own detached work or have unknown custody after a
+    // restart. Only explicit reconciled retirement can release these resources.
+    if (entry.rolloverRetained) {
+      continue;
+    }
     if (!shouldPruneSandboxEntry(resolveEntryPruneConfig(params.config, entry), now, entry)) {
       continue;
     }
     try {
-      await params.remove(entry, (current) =>
-        shouldPruneSandboxEntry(resolveEntryPruneConfig(params.config, current), now, current),
+      await params.remove(
+        entry,
+        (current) =>
+          !current.rolloverRetained &&
+          shouldPruneSandboxEntry(resolveEntryPruneConfig(params.config, current), now, current),
       );
       params.assertCurrent?.();
     } catch (error) {

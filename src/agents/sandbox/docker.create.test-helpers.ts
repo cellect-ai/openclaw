@@ -20,6 +20,16 @@ const namespaceMocks = vi.hoisted(() => ({
 
 const spawnState = vi.hoisted(() => ({
   calls: [] as SpawnCall[],
+  nextContainerId: 1,
+  multiContainers: null as null | Map<
+    string,
+    {
+      id: string;
+      running: boolean;
+      labels: Record<string, string>;
+      mounts: Array<{ Type: string; Source: string; Destination: string; RW: boolean }>;
+    }
+  >,
   containerExists: true,
   inspectRunning: true,
   inspectError: "",
@@ -33,6 +43,8 @@ const spawnState = vi.hoisted(() => ({
 }));
 
 const registryMocks = vi.hoisted(() => ({
+  readRegistry: vi.fn().mockResolvedValue({ entries: [] }),
+  withSandboxRegistryEntryLock: vi.fn(async (_entry, operation) => operation()),
   readRegistryEntry: vi.fn(),
   removeRegistryEntry: vi.fn(),
   updateRegistry: vi.fn(),
@@ -66,6 +78,8 @@ function usePodmanMachine() {
 
 function createRegistryMock() {
   return {
+    readRegistry: registryMocks.readRegistry,
+    withSandboxRegistryEntryLock: registryMocks.withSandboxRegistryEntryLock,
     readRegistryEntry: registryMocks.readRegistryEntry,
     removeRegistryEntry: registryMocks.removeRegistryEntry,
     updateRegistry: registryMocks.updateRegistry,
@@ -115,6 +129,70 @@ async function spawnDockerProcess(commandAndArgs: string[]) {
     call.envFileContents = fs.readFileSync(envFile, "utf8");
   }
   spawnState.calls.push(call);
+
+  // Opt-in daemon model: retain independent names, IDs and mount snapshots.
+  // Existing tests continue to use the simpler single-container fixture.
+  if (spawnState.multiContainers && command === "docker") {
+    const containers = spawnState.multiContainers;
+    const result = (code: number, stdout = "", stderr = "") => ({
+      failed: code !== 0,
+      isCanceled: false,
+      exitCode: code,
+      stdout: Buffer.from(stdout),
+      stderr: Buffer.from(stderr),
+    });
+    if (args[0] === "image" && args[1] === "inspect") return result(0);
+    if (args[0] === "create") {
+      const name = args[args.indexOf("--name") + 1];
+      if (!name || containers.has(name)) return result(1, "", "container name is already in use");
+      const labels: Record<string, string> = {};
+      const mounts: Array<{ Type: string; Source: string; Destination: string; RW: boolean }> = [];
+      for (let i = 0; i < args.length; i++) {
+        if (args[i] === "--label") {
+          const [key, ...value] = (args[++i] ?? "").split("=");
+          if (key) labels[key] = value.join("=");
+        } else if (args[i] === "-v") {
+          const [source, destination, mode = ""] = (args[++i] ?? "").split(":");
+          if (source && destination)
+            mounts.push({
+              Type: "bind",
+              Source: source,
+              Destination: destination,
+              RW: !mode.split(",").includes("ro"),
+            });
+        }
+      }
+      const id = (spawnState.nextContainerId++).toString(16).padStart(64, "0");
+      containers.set(name, { id, running: false, labels, mounts });
+      return result(0, id);
+    }
+    const name = args.at(-1) ?? "";
+    const entry =
+      containers.get(name) ?? [...containers.values()].find((container) => container.id === name);
+    if (args[0] === "inspect") {
+      if (!entry) return result(1, "", "No such object");
+      const format = args[2] ?? "";
+      if (format === "{{.State.Running}}") return result(0, `${entry.running}\n`);
+      if (format === "{{.Id}}") return result(0, `${entry.id}\n`);
+      if (format === '{"Mounts":{{json .Mounts}},"Tmpfs":{{json .HostConfig.Tmpfs}}}') {
+        return result(0, JSON.stringify({ Mounts: entry.mounts, Tmpfs: null }));
+      }
+      const label = format.match(/index \.Config\.Labels "([^"]+)"/);
+      if (label) return result(0, `${entry.labels[label[1]!] ?? ""}\n`);
+      return result(1, "", `unexpected inspect format: ${format}`);
+    }
+    if (args[0] === "start" && entry) {
+      entry.running = true;
+      return result(0);
+    }
+    if (args[0] === "rm" && entry) {
+      const registeredName = [...containers.entries()].find(([, value]) => value === entry)?.[0];
+      if (registeredName) containers.delete(registeredName);
+      return result(0);
+    }
+    if (args[0] === "exec" && entry) return result(0);
+    return result(1, "", `unexpected docker args: ${args.join(" ")}`);
+  }
 
   let code = 0;
   let stdout = "";
@@ -314,6 +392,8 @@ export function createSandboxContainerTestHarness() {
 
   beforeEach(() => {
     spawnState.calls.length = 0;
+    spawnState.nextContainerId = 1;
+    spawnState.multiContainers = null;
     spawnState.containerExists = true;
     spawnState.inspectRunning = true;
     spawnState.inspectError = "";
@@ -326,10 +406,10 @@ export function createSandboxContainerTestHarness() {
     spawnState.podmanConnections = "[]\n";
     spawnState.podmanMachines = "[]\n";
     registryMocks.readRegistryEntry.mockClear();
+    registryMocks.readRegistry.mockReset().mockResolvedValue({ entries: [] });
     registryMocks.removeRegistryEntry.mockClear();
     registryMocks.removeRegistryEntry.mockResolvedValue(undefined);
-    registryMocks.updateRegistry.mockClear();
-    registryMocks.updateRegistry.mockResolvedValue(undefined);
+    registryMocks.updateRegistry.mockReset().mockResolvedValue(undefined);
     registryMocks.completeSandboxRegistryReservation.mockClear();
     registryMocks.completeSandboxRegistryReservation.mockResolvedValue(undefined);
     runtimeMocks.log.mockClear();

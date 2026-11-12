@@ -12,6 +12,24 @@ The Docker backend runs tools locally through the `docker` CLI. Its selection an
 
 Defaults: `network: "none"` (no egress), `readOnlyRoot: true`, `capDrop: ["ALL"]`, image `openclaw-sandbox:bookworm-slim`.
 
+### Immutable read-only resource updates
+
+An operator can publish `docker.readOnlyBindRollovers`, up to 32 exact
+`{ from: [...], to: [...] }` read-only bind pairs, together with updated binds.
+This contract supports Docker execution with browser sandboxing disabled.
+Sources must be independently verified immutable artifacts. Similar path names
+do not authorize rollover. Destinations, access modes, and every other security
+setting must remain identical to the verified predecessor configuration.
+
+New work receives the current generation; existing tool handles keep their
+original immutable container ID. Both generations remain registered. Automatic
+pruning never treats timestamps as proof that retained work has settled.
+There is a 32-generation bound per scope. Reconcile settled work through native
+operator retirement before exhausting capacity; no automatic force removal
+occurs. Unrelated permission/configuration changes retain their existing refusal
+behavior. This retention contract requires shared-state schema 21; older binary
+rollback is refused until state/container recovery has been reconciled.
+
 This explicit configuration keeps the agent workspace read-only and preserves
 the default restricted runtime posture:
 

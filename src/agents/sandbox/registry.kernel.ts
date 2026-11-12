@@ -37,6 +37,7 @@ export function containerEntryToRow(
     configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
     configHash: entry.configHash ?? existing?.configHash,
     runtimeState: entry.runtimeState ?? existing?.runtimeState,
+    rolloverRetained: existing?.rolloverRetained || entry.rolloverRetained || undefined,
     workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
   };
   return {
@@ -254,7 +255,6 @@ function sameSandboxRegistryGeneration(
   const { lastUsedAtMs: _expectedUse, ...expectedGeneration } = expected;
   return isDeepStrictEqual(currentGeneration, expectedGeneration);
 }
-
 
 export function insertSandboxRegistryRowIfMissingInDatabase(
   db: DatabaseSync,
