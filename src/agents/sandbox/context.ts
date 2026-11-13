@@ -41,7 +41,11 @@ import { resolveSandboxRuntimeStatus } from "./runtime-status.js";
 import { assertSshSandboxSecretOwnerAvailable } from "./secret-owner.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
 import { captureSandboxStateOwner, SandboxStateOwnerRequiredError } from "./state-owner.js";
-import type { SandboxContext, SandboxWorkspaceInfo } from "./types.js";
+import {
+  SANDBOX_DEFAULT_TOOL_ALLOW,
+  type SandboxContext,
+  type SandboxWorkspaceInfo,
+} from "./types.js";
 
 const sandboxLog = createSubsystemLogger("agent/sandbox");
 
@@ -409,9 +413,18 @@ async function resolveProvisionedSandboxContext(
     backendId: resolvedCfg.backend,
     scopeKey,
   });
-  const admittedSandboxConfig = structuredClone(
-    resolveSandboxConfigForAgent(params.config, runtime.agentId),
-  );
+  const admittedConfig = resolveSandboxConfigForAgent(params.config, runtime.agentId);
+  // structuredClone omits symbol keys. Capture the default-allow provenance in
+  // the same graph so its alias to the allowlist survives, then restore the
+  // in-process marker before comparing complete resolved policies.
+  const admittedSnapshot = structuredClone({
+    config: admittedConfig,
+    defaultToolAllow: admittedConfig.tools[SANDBOX_DEFAULT_TOOL_ALLOW],
+  });
+  const admittedSandboxConfig = admittedSnapshot.config;
+  if (Object.hasOwn(admittedConfig.tools, SANDBOX_DEFAULT_TOOL_ALLOW)) {
+    admittedSandboxConfig.tools[SANDBOX_DEFAULT_TOOL_ALLOW] = admittedSnapshot.defaultToolAllow;
+  }
   const assertProvisionCurrent = () => {
     if (!executionCfg.docker.readOnlyBindRollovers?.length) return;
     const current = getRuntimeConfigSnapshot();
