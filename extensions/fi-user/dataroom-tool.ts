@@ -1,6 +1,5 @@
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
 import type {
@@ -30,10 +29,9 @@ import {
 } from "./file-upload-custody.js";
 import {
   downloadDriveFile,
-  downloadedFiles,
   driveFilingExportArgs,
   requireMailbox,
-  runGam,
+  withGmailAttachment,
 } from "./gam.js";
 import { readGeneratedArtifact } from "./generated-artifacts.js";
 import {
@@ -409,58 +407,6 @@ async function requesterSlackUpload(
   };
 }
 
-/** Download only from the verified requester's mailbox and keep bytes private
- * until the owning upload completes. Room and Library filing share selection
- * and cleanup; neither needs a model-supplied mailbox or local path. */
-async function withGmailAttachment<T>(
-  ctx: Ctx,
-  input: DataRoomInput,
-  consume: (upload: {
-    file: { bytes: Uint8Array; name: string };
-    provenance: UploadProvenance;
-  }) => Promise<T>,
-): Promise<T> {
-  const mailbox = requireMailbox(ctx.delegation);
-  if (!input.messageId || !/^[A-Za-z0-9_-]+$/.test(input.messageId)) {
-    throw new Error("A valid messageId is required for Gmail attachment upload");
-  }
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-fi-user-mail-"));
-  try {
-    await runGam(ctx.config, mailbox, [
-      "show",
-      "messages",
-      "ids",
-      input.messageId,
-      "saveattachments",
-      "targetfolder",
-      tempDir,
-    ]);
-    const files = await downloadedFiles(tempDir);
-    const matches = input.attachmentName
-      ? files.filter(
-          (file) => path.basename(file).toLowerCase() === input.attachmentName?.toLowerCase(),
-        )
-      : files;
-    const selected = matches.length === 1 ? matches[0] : undefined;
-    if (!selected) {
-      throw new Error(
-        input.attachmentName
-          ? `Expected one attachment named ${input.attachmentName}; found ${matches.length}`
-          : `Expected one attachment but found ${files.length}; provide attachmentName`,
-      );
-    }
-    if ((await fs.stat(selected)).size > 200 * 1024 * 1024) {
-      throw new Error("Gmail attachment exceeds the 200 MiB upload limit");
-    }
-    return await consume({
-      file: { bytes: new Uint8Array(await fs.readFile(selected)), name: path.basename(selected) },
-      provenance: { source: "gmail", fileId: path.basename(selected), messageId: input.messageId },
-    });
-  } finally {
-    await fs.rm(tempDir, { recursive: true, force: true });
-  }
-}
-
 async function generatedUpload(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
@@ -626,7 +572,7 @@ export function createDataRoomTool(
             throw new Error("Provide only messageId and attachmentName for a Gmail source");
           }
           return jsonResult(
-            await withGmailAttachment(ctx, input, (upload) =>
+            await withGmailAttachment(config, requireMailbox(delegation), input, (upload) =>
               uploadToProjectLibrary(ctx, input, upload),
             ),
           );
@@ -764,7 +710,7 @@ export function createDataRoomTool(
       }
 
       // upload_gmail_attachment retains its existing room destination.
-      return await withGmailAttachment(ctx, input, async (upload) =>
+      return await withGmailAttachment(config, requireMailbox(delegation), input, async (upload) =>
         jsonResult({
           mailbox,
           attachment: upload.file.name,

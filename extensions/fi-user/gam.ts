@@ -242,3 +242,55 @@ export function messageHeaderAddresses(output: string): Set<string> {
   }
   return addresses;
 }
+
+/** Download only from the verified requester's mailbox and keep bytes private
+ * until the owning upload completes. Room and Library filing share selection
+ * and cleanup; neither needs a model-supplied mailbox or local path. */
+export async function withGmailAttachment<T>(
+  config: GamConfig,
+  mailbox: string,
+  input: { messageId?: string; attachmentName?: string },
+  consume: (upload: {
+    file: { bytes: Uint8Array; name: string };
+    provenance: { source: "gmail"; fileId: string; messageId: string };
+  }) => Promise<T>,
+): Promise<T> {
+  if (!input.messageId || !/^[A-Za-z0-9_-]+$/.test(input.messageId)) {
+    throw new Error("A valid messageId is required for Gmail attachment upload");
+  }
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-fi-user-mail-"));
+  try {
+    await runGam(config, mailbox, [
+      "show",
+      "messages",
+      "ids",
+      input.messageId,
+      "saveattachments",
+      "targetfolder",
+      tempDir,
+    ]);
+    const files = await downloadedFiles(tempDir);
+    const matches = input.attachmentName
+      ? files.filter(
+          (file) => path.basename(file).toLowerCase() === input.attachmentName?.toLowerCase(),
+        )
+      : files;
+    const selected = matches.length === 1 ? matches[0] : undefined;
+    if (!selected) {
+      throw new Error(
+        input.attachmentName
+          ? `Expected one attachment named ${input.attachmentName}; found ${matches.length}`
+          : `Expected one attachment but found ${files.length}; provide attachmentName`,
+      );
+    }
+    if ((await fs.stat(selected)).size > 200 * 1024 * 1024) {
+      throw new Error("Gmail attachment exceeds the 200 MiB upload limit");
+    }
+    return await consume({
+      file: { bytes: new Uint8Array(await fs.readFile(selected)), name: path.basename(selected) },
+      provenance: { source: "gmail", fileId: path.basename(selected), messageId: input.messageId },
+    });
+  } finally {
+    await fs.rm(tempDir, { recursive: true, force: true });
+  }
+}

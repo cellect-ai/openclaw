@@ -1,11 +1,23 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import type { FiUserMatrixEnvironmentHarness } from "./tools.matrix-environment.test-support.js";
 
-type Harness = Pick<FiUserMatrixEnvironmentHarness, "calls" | "context" | "json" | "routes"> & {
-  mocks: { execFile: ReturnType<typeof vi.fn> };
+export type GmailUploadHarness = Pick<
+  FiUserMatrixEnvironmentHarness,
+  "calls" | "context" | "json" | "routes"
+> & {
+  mocks: {
+    execFile: {
+      mockImplementationOnce: (
+        implementation: (
+          binary: string,
+          args: string[],
+        ) => Promise<{ stdout: string; stderr: string }>,
+      ) => unknown;
+    };
+  };
   plugin: () => { tool: (name: string, context: OpenClawPluginToolContext) => AnyAgentTool };
 };
 
@@ -17,7 +29,14 @@ function downloadDirectory(args: string[]): string {
   return directory;
 }
 
-export function registerGmailUploadTests({ calls, context, json, mocks, plugin, routes }: Harness) {
+export function registerGmailUploadTests({
+  calls,
+  context,
+  json,
+  mocks,
+  plugin,
+  routes,
+}: GmailUploadHarness) {
   it("files the selected own Gmail attachment into Library without a room or another mailbox", async () => {
     let tempDir = "";
     mocks.execFile.mockImplementationOnce(async (_binary, args: string[]) => {
