@@ -1,7 +1,11 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeAll, afterAll, beforeEach, expect, it, vi } from "vitest";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { registerShadowRequesterIdentity } from "../../infra/shadow-requester-identity.js";
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
+import {
+  createOpenClawTestState,
+  type OpenClawTestState,
+} from "../../test-utils/openclaw-test-state.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import type { FiUserMatrixRoom } from "./fi-shadow-matrix-room.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
@@ -141,11 +145,11 @@ function directCall() {
   };
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   resetGatewayWorkAdmission();
   sessions.clear();
   vi.clearAllMocks();
-  registerShadowRequesterIdentity(CHILD, OWNER);
+  await registerShadowRequesterIdentity(CHILD, OWNER);
   readFiUserMatrixRoom.mockResolvedValue(soleHumanRoom());
   maybeSteerSubagentAnnounce.mockResolvedValue({ status: "none" });
   sendSubagentAnnounceDirectly.mockResolvedValue({
@@ -498,4 +502,12 @@ it("retries a key after delivery throws", async () => {
   expect(failed.respond.mock.calls[0]?.[2]?.message).not.toContain(CANARY);
   expect(sendSubagentAnnounceDirectly).toHaveBeenCalledTimes(2);
   expect(retried.respond).toHaveBeenCalledWith(true, expect.objectContaining({ path: "direct" }));
+});
+
+let shadowState: OpenClawTestState;
+beforeAll(async () => {
+  shadowState = await createOpenClawTestState({ label: "shadow-announce" });
+});
+afterAll(async () => {
+  await shadowState.cleanup();
 });

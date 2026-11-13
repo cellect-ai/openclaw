@@ -372,7 +372,7 @@ export async function exchange(
     // is recorded so a later announce can check the caller against this session.
     const attestedEmail = mintedRequesterEmail(delegation) ?? delegation.user.email;
     if (context.sessionKey && attestedEmail) {
-      registerShadowRequesterIdentity(context.sessionKey, attestedEmail);
+      await registerShadowRequesterIdentity(context.sessionKey, attestedEmail);
     }
     return { delegation, config, identity: { channel: "shadow" } };
   }

@@ -234,7 +234,7 @@ export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
         respond(true, { ...cached.result });
         return;
       }
-      const attested = lookupShadowRequesterIdentity(params.childSessionKey);
+      const attested = await lookupShadowRequesterIdentity(params.childSessionKey);
       if (!attested || attested !== params.ownerEmail.trim().toLowerCase()) {
         respond(
           false,
