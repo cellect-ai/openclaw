@@ -6,6 +6,7 @@ import {
   lookupRequesterEmail,
   resetResolveRouteAvailability,
 } from "./fi-delegation.js";
+import { mailWakeCredential } from "./mail-wake-fixture.test-support.js";
 
 const connection = { baseUrl: "https://fi.example.test", brokerTokenEnv: "TEST_BROKER_TOKEN" };
 const requester = { requesterSenderId: "U12345678" };
@@ -205,5 +206,172 @@ describe("the resolve-route fallback is remembered per Fi origin", () => {
     // The old Fi is not asked for the route again while its verdict stands.
     await lookupRequesterEmail(cfg("https://old.example.test"), requester);
     expect(urls.at(-1)).toBe("https://old.example.test/api/openclaw-user-delegation");
+  });
+});
+
+it("exchanges the exact host-bound mail context and never a model-selected source", async () => {
+  const { registerMailWakeSourceLock } = await import("../../src/infra/mail-wake-source-lock.js");
+  const { resolveOpenClawPluginToolInputs } =
+    await import("../../src/agents/openclaw-tools.plugin-context.js");
+  const config = {
+    plugins: { entries: { "fi-user": { config: { ...connection, tenantOrgId: "org-a" } } } },
+  };
+  const api = {
+    config,
+    runtime: { config: { current: () => config } },
+  } as unknown as OpenClawPluginApi;
+  const sessionKey = "agent:cellect-fi-user:hook:fi-mail:thread";
+  const receipt = `slw:job-mail:${"a".repeat(43)}`;
+  const release = registerMailWakeSourceLock({
+    runId: "run-mail",
+    sessionKey,
+    capability: receipt,
+    environment: "prod",
+  });
+  try {
+    const response = await member({ orgId: "org-a" }).json();
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...response,
+          fi: mailWakeCredential(
+            { sub: "member@example.com", org_slug: "tenant-a" },
+            "cellect-fi-user",
+          ),
+        }),
+      ),
+    );
+    const context = resolveOpenClawPluginToolInputs({
+      options: {
+        config,
+        runId: "run-mail",
+        agentSessionKey: sessionKey,
+        agentChannel: "slack",
+        requesterSenderId: "U12345678",
+      },
+    }).context;
+    await exchange(api, context);
+    expect(JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body))).toMatchObject({
+      requesterSenderId: "U12345678",
+      sessionKey,
+      sourceLockCapability: receipt,
+    });
+    release();
+    fetchMock.mockClear();
+    const revoked = resolveOpenClawPluginToolInputs({
+      options: {
+        config,
+        runId: "run-mail",
+        agentSessionKey: sessionKey,
+        agentChannel: "slack",
+        requesterSenderId: "U12345678",
+      },
+    }).context;
+    await expect(exchange(api, revoked)).rejects.toThrow("no current host source receipt");
+    expect(fetchMock).not.toHaveBeenCalled();
+  } finally {
+    release();
+  }
+});
+
+describe("mail response compatibility at credential mint", () => {
+  const sessionKey = "agent:cellect-fi-user:hook:fi-mail:persistent";
+  const source = { ...requester, sessionKey, sourceLockCapability: `slw:source:${"a".repeat(43)}` };
+  const options = { mailWakeEnvironment: "prod" as const };
+  const serve = async (claims: Record<string, unknown>, expiry?: number) => {
+    const response = await member({ orgId: "org-a" }).json();
+    const credential = mailWakeCredential(
+      { sub: "member@example.com", org_slug: "tenant-a", ...claims },
+      "cellect-fi-user",
+    );
+    fetchMock.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          ...response,
+          fi: { ...credential, ...(expiry === undefined ? {} : { expiresAt: expiry }) },
+        }),
+      ),
+    );
+  };
+  it.each([
+    { wake_session: undefined, wake_message_id: undefined },
+    { wake_session: false },
+    { wake_message_id: "" },
+    { wake_message_id: "has whitespace" },
+    { agent_id: "cellect-fi-admin" },
+    { org_slug: "another-tenant" },
+    { sub: "another@example.com" },
+    { env: "dev" },
+    { env: undefined },
+    { exp: 1 },
+    { iat: 1 },
+  ])("refuses an old or inconsistent trusted-server JWT: %j", async (claims) => {
+    await serve(claims);
+    await expect(
+      lookupDelegation({ ...connection, tenantOrgId: "org-a" }, source, options),
+    ).rejects.toThrow("compatible source-bound mail credential");
+  });
+  it("refuses response expiry disagreement and missing actual host environment", async () => {
+    await serve({}, 1);
+    await expect(
+      lookupDelegation({ ...connection, tenantOrgId: "org-a" }, source, options),
+    ).rejects.toThrow("compatible source-bound mail credential");
+    fetchMock.mockClear();
+    await expect(lookupDelegation({ ...connection, tenantOrgId: "org-a" }, source)).rejects.toThrow(
+      "host source environment",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("freshly mints two different source tokens for two messages in one persistent native session", async () => {
+    const { registerMailWakeSourceLock } = await import("../../src/infra/mail-wake-source-lock.js");
+    const { resolveOpenClawPluginToolInputs } =
+      await import("../../src/agents/openclaw-tools.plugin-context.js");
+    const config = {
+      plugins: { entries: { "fi-user": { config: { ...connection, tenantOrgId: "org-a" } } } },
+    };
+    const api = {
+      config,
+      runtime: { config: { current: () => config } },
+    } as unknown as OpenClawPluginApi;
+    const releases: Array<() => void> = [];
+    const tokens: string[] = [];
+    try {
+      for (const [index, messageId] of ["source-message-1", "source-message-2"].entries()) {
+        const runId = `mail-response-${index}`;
+        const receipt = `slw:job-${index}:${String(index).repeat(43)}`;
+        releases.push(
+          registerMailWakeSourceLock({
+            runId,
+            sessionKey,
+            capability: receipt,
+            environment: "prod",
+          }),
+        );
+        await serve({ wake_message_id: messageId });
+        const context = resolveOpenClawPluginToolInputs({
+          options: {
+            config,
+            runId,
+            agentSessionKey: sessionKey,
+            agentChannel: "slack",
+            requesterSenderId: "U12345678",
+          },
+        }).context;
+        const result = await exchange(api, context);
+        tokens.push(result.delegation.fi.token);
+        expect(JSON.parse(String(fetchMock.mock.calls[index][1].body))).toMatchObject({
+          sessionKey,
+          sourceLockCapability: receipt,
+        });
+        expect(
+          JSON.parse(Buffer.from(result.delegation.fi.token.split(".")[1], "base64url").toString())
+            .wake_message_id,
+        ).toBe(messageId);
+      }
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(tokens[0]).not.toBe(tokens[1]);
+    } finally {
+      for (const release of releases) release();
+    }
   });
 });

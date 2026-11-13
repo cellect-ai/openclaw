@@ -24,7 +24,9 @@ import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import {
   isShadowHookSessionKey,
   parseHookRequesterAttestation,
+  normalizeHookRequesterAttestation,
 } from "../../infra/hook-requester-attestation.js";
+import { normalizeMailWakeSourceLock } from "../../infra/mail-wake-source-lock.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
 import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
 import { validateExplicitMessageAccountSelection } from "../../infra/outbound/message-account-selection.js";
@@ -308,6 +310,18 @@ export function createGatewayHookDispatcher(params: {
     const completion = createDeferredCore<HookAgentCompletion>();
     // A Fi shadow session and its attestation come together or not at all,
     // whichever ingress (request, mapping, plugin) produced the dispatch.
+    const normalizedRequester = normalizeHookRequesterAttestation(
+      value as unknown as Record<string, unknown>,
+      sessionKey,
+    );
+    if (!normalizedRequester.ok)
+      return { ok: false, statusCode: 400, error: normalizedRequester.error, runId };
+    const normalizedSourceLock = normalizeMailWakeSourceLock(
+      value as unknown as Record<string, unknown>,
+      sessionKey,
+    );
+    if (!normalizedSourceLock.ok)
+      return { ok: false, statusCode: 400, error: normalizedSourceLock.error, runId };
     const hookRequesterAttestation = parseHookRequesterAttestation(value.requesterAttestation);
     if (
       value.requesterAttestation !== undefined
@@ -325,7 +339,7 @@ export function createGatewayHookDispatcher(params: {
     // delivered, routed or run with unsafe external content.
     if (
       isShadowHookSessionKey(sessionKey) &&
-      (value.deliver !== false ||
+      (value.deliver ||
         value.delivery.mode !== "none" ||
         value.to !== undefined ||
         value.allowUnsafeExternalContent === true ||
@@ -606,8 +620,19 @@ export function createGatewayHookDispatcher(params: {
                 message: acceptedValue.message,
                 sessionKey,
                 ...(mailRequesterSenderId ? { mailRequesterSenderId } : {}),
+                ...(acceptedValue.sourceLockCapability
+                  ? { sourceLockCapability: acceptedValue.sourceLockCapability }
+                  : {}),
+                ...(!hookRequesterAttestation && normalizedRequester.value.requesterEnvironment
+                  ? { hookRequesterEnvironment: normalizedRequester.value.requesterEnvironment }
+                  : {}),
                 // Run context only: never the message, the job payload or a sender.
-                ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
+                ...(hookRequesterAttestation
+                  ? {
+                      hookRequesterAttestation,
+                      hookRequesterEnvironment: normalizedRequester.value.requesterEnvironment,
+                    }
+                  : {}),
                 // Isolated runs derive their lifecycle key from random jobId (or an
                 // already-stable cron: key), so accepted agentId closes reload drift.
                 agentId,

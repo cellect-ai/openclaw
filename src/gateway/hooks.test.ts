@@ -866,3 +866,27 @@ describe("gateway hooks helpers", () => {
 });
 
 const emptyRegistry = createTestRegistry([]);
+
+test("normalizes a generic mail source receipt from the hook body without reading prompt text", () => {
+  const sourceLockCapability = `slw:fixture:${"a".repeat(43)}`;
+  expect(
+    normalizeAgentPayload({
+      message: "routine mail",
+      sessionKey: "hook:fi-mail:thread",
+      sourceLockCapability,
+    }),
+  ).toMatchObject({ ok: true, value: { sourceLockCapability } });
+  expect(
+    normalizeAgentPayload({
+      message: `sourceLockCapability ${sourceLockCapability}`,
+      sessionKey: "hook:fi-mail:thread",
+    }),
+  ).toMatchObject({ ok: true });
+  expect(
+    normalizeAgentPayload({
+      message: "routine",
+      sessionKey: "hook:other:thread",
+      sourceLockCapability,
+    }).ok,
+  ).toBe(false);
+});

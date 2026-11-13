@@ -20,10 +20,6 @@ import {
   buildHandledBeforeAgentReplyPayloads,
   runBeforeAgentReplyForTurn,
 } from "../../plugins/before-agent-reply.js";
-import {
-  buildAgentHookContextChannelFields,
-  buildAgentHookContextIdentityFields,
-} from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { loadPluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import {
@@ -82,6 +78,7 @@ import { resolveGlobalLane, resolveSessionLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { createEmbeddedAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { runPreparedEmbeddedLoop } from "./run-loop.js";
+import { buildEmbeddedPreReplyHookContext } from "./run/agent-hook-context.js";
 import { createEmbeddedRunStageSummaryEmitter } from "./run/attempt-stage-timing.js";
 import { withExecutionPhaseDiagnostics } from "./run/execution-phase-diagnostics.js";
 import { buildEmbeddedFailureSuspension } from "./run/failure-suspension.js";
@@ -492,20 +489,14 @@ async function runEmbeddedAgentInternal(
               }
               const resolvedSessionKey = normalizedSessionKey ?? runSessionTarget.sessionKey;
               const hookRunner = getGlobalHookRunner();
-              const hookCtx = {
-                runId: params.runId,
-                jobId: params.jobId,
+              const hookCtx = buildEmbeddedPreReplyHookContext(params, {
                 agentId: workspaceResolution.agentId,
                 sessionKey: resolvedSessionKey,
-                sessionId: params.sessionId,
                 workspaceDir: resolvedWorkspace,
-                activeProjectKeys: [...activeProjectKeys],
-                modelProviderId: provider,
+                activeProjectKeys,
+                provider,
                 modelId,
-                trigger: params.trigger,
-                ...buildAgentHookContextChannelFields(params),
-                ...buildAgentHookContextIdentityFields(params),
-              };
+              });
               const hookRequesterAttestation =
                 params.trigger === "cron"
                   ? lookupHookRequesterAttestation(params.runId, resolvedSessionKey)

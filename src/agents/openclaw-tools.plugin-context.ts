@@ -8,7 +8,15 @@ import {
  * Normalizes workspace, delivery, browser, sandbox, and active-model inputs before plugin tool invocation.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { lookupHookRequesterAttestation } from "../infra/hook-requester-attestation.js";
+import {
+  lookupHookRequesterAttestation,
+  lookupHookRequesterEnvironment,
+} from "../infra/hook-requester-attestation.js";
+import {
+  lookupMailWakeSourceLock,
+  lookupMailWakeSessionKey,
+  lookupMailWakeEnvironment,
+} from "../infra/mail-wake-source-lock.js";
 import {
   assertMemoryAudienceCurrent,
   assertMemoryAudienceSession,
@@ -140,7 +148,15 @@ export function resolveOpenClawPluginToolInputs(params: {
       currentMessageId: options?.currentMessageId,
       requesterSenderId: options?.requesterSenderId ?? undefined,
       senderIsOwner: options?.senderIsOwner,
-      ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
+      hookSourceLockCapability: lookupMailWakeSourceLock(options?.runId, sessionKey),
+      hookMailWakeSessionKey: lookupMailWakeSessionKey(options?.runId, sessionKey),
+      hostMailWakeEnvironment: lookupMailWakeEnvironment(options?.runId, sessionKey),
+      ...(hookRequesterAttestation
+        ? {
+            hookRequesterAttestation,
+            fiEnvironment: lookupHookRequesterEnvironment(options?.runId, sessionKey),
+          }
+        : {}),
       memoryAudience: options?.memoryAudience,
       memoryFlush: options?.memoryFlush,
       assertMemoryAudienceCurrent: options?.memoryAudience

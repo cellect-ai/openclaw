@@ -9,6 +9,23 @@ import {
 const ATTESTATION = `fsa:job-1:${"A".repeat(43)}`;
 const SHADOW = "agent:cellect-fi-user:hook:fi-shadow:abc";
 
+it("carries optional authenticated mail environment while preserving the missing-field compatibility floor", () => {
+  expect(
+    normalizeHookRequesterAttestation({ requesterEnvironment: "dev" }, "hook:fi-mail:source"),
+  ).toEqual({ ok: true, value: { requesterEnvironment: "dev" } });
+  expect(normalizeHookRequesterAttestation({}, "hook:fi-mail:source")).toEqual({
+    ok: true,
+    value: {},
+  });
+  expect(
+    normalizeHookRequesterAttestation({ requesterEnvironment: "invented" }, "hook:fi-mail:source")
+      .ok,
+  ).toBe(false);
+  expect(
+    normalizeHookRequesterAttestation({ requesterEnvironment: "prod" }, "hook:unrelated:source").ok,
+  ).toBe(false);
+});
+
 describe("hook requester attestation run context", () => {
   it("is readable for exactly the registered run and session until released", () => {
     const release = registerHookRequesterAttestation({

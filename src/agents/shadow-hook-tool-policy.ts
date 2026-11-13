@@ -20,12 +20,20 @@ export function isShadowHookRun(...sessionKeys: Array<string | undefined | null>
 }
 
 /** The allowlist a shadow run may carry: the requested one cut to the shadow tools. */
-export function capShadowHookToolsAllow(requested?: readonly string[]): string[] {
+export function capShadowHookToolsAllow(
+  requested?: readonly string[],
+  sessionKey?: string | null,
+): string[] {
+  const allowed = /(?:^|:)hook:fi-co:/i.test(sessionKey ?? "")
+    ? ["co_prepare_draft"]
+    : /(?:^|:)hook:fi-rfi:/i.test(sessionKey ?? "")
+      ? ["rfi_prepare_draft"]
+      : SHADOW_HOOK_TOOL_ALLOWLIST;
   if (requested === undefined) {
-    return [...SHADOW_HOOK_TOOL_ALLOWLIST];
+    return [...allowed];
   }
   const names = new Set(requested.map(normalizeToolPolicyName));
-  return SHADOW_HOOK_TOOL_ALLOWLIST.filter((tool) => names.has("*") || names.has(tool));
+  return allowed.filter((tool) => names.has("*") || names.has(tool));
 }
 
 /** Run-parameter overrides for a shadow run; empty for every other run. */
@@ -46,11 +54,11 @@ export function shadowHookRunParams(
   if (!isShadowHookRun(sessionKey)) {
     return {};
   }
-  const toolsAllow = capShadowHookToolsAllow(requested.toolsAllow);
+  const toolsAllow = capShadowHookToolsAllow(requested.toolsAllow, sessionKey);
   return {
     toolsAllow,
-    toolExecutionAllow: capShadowHookToolsAllow(requested.toolExecutionAllow).filter((tool) =>
-      toolsAllow.includes(tool),
+    toolExecutionAllow: capShadowHookToolsAllow(requested.toolExecutionAllow, sessionKey).filter(
+      (tool) => toolsAllow.includes(tool),
     ),
     disableMessageTool: true,
     // Tool Search controls are exempt from the execution gate; with two tools

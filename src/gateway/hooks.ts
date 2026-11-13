@@ -20,6 +20,7 @@ import {
   normalizeHookRequesterAttestation,
 } from "../infra/hook-requester-attestation.js";
 import { readJsonBodyWithLimit, requestBodyErrorToText } from "../infra/http-body.js";
+import { normalizeMailWakeSourceLock } from "../infra/mail-wake-source-lock.js";
 import {
   normalizeAgentId,
   normalizeAgentIdStrict,
@@ -351,12 +352,15 @@ type HookAgentPayload = {
    */
   mailRequesterEmail?: string;
   mailRequesterSlackUserId?: string;
+  /** Opaque source receipt from authenticated hook body; never a prompt or cron job field. */
+  sourceLockCapability?: string;
   /**
    * Fi-minted shadow-turn attestation, forwarded opaquely to the run's plugin
    * contexts. Accepted only when sessionKey starts with `hook:fi-shadow:`,
    * and required there. Never part of the message, job or transcript.
    */
   requesterAttestation?: string;
+  requesterEnvironment?: "dev" | "staging" | "prod";
 };
 
 /** Normalized agent dispatch payload after hook policy/session resolution. */
@@ -733,6 +737,8 @@ export function normalizeAgentPayload(
   if (!mailRequester.ok) {
     return mailRequester;
   }
+  const sourceLock = normalizeMailWakeSourceLock(payload, sessionKey);
+  if (!sourceLock.ok) return sourceLock;
   const shadowRequester = normalizeHookRequesterAttestation(payload, sessionKey);
   if (!shadowRequester.ok) {
     return shadowRequester;
@@ -759,6 +765,7 @@ export function normalizeAgentPayload(
       thinking,
       timeoutSeconds,
       ...mailRequester.value,
+      ...sourceLock.value,
       ...shadowRequester.value,
     },
   };

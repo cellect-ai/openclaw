@@ -75,6 +75,13 @@ type OpenClawPluginToolContextBase = {
    * The gateway does not verify it; Fi does.
    */
   hookRequesterAttestation?: string;
+  /** Host-bound opaque receipt for the exact active generic mail-wake run. */
+  hookSourceLockCapability?: string;
+  /** Original authenticated mail source target when execution is projected to cron. */
+  hookMailWakeSessionKey?: string;
+  hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** Authenticated construction hook environment, never model content. */
+  fiEnvironment?: "dev" | "staging" | "prod";
   /** Host-resolved memory partition for this turn. Providers must not reconstruct it. */
   memoryAudience?: MemoryAudience;
   /** Stable identity for one provider-owned pre-compaction flush cycle. */

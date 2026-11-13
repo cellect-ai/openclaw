@@ -470,8 +470,17 @@ export function createHooksRequestHandler(
             ? { mailRequesterSlackUserId: normalized.value.mailRequesterSlackUserId }
             : {}),
           // The scope is hashed; a different attestation is a different dispatch.
+          ...(normalized.value.sourceLockCapability
+            ? { sourceLockCapability: normalized.value.sourceLockCapability }
+            : {}),
+          ...(!normalized.value.requesterAttestation && normalized.value.requesterEnvironment
+            ? { requesterEnvironment: normalized.value.requesterEnvironment }
+            : {}),
           ...(normalized.value.requesterAttestation
-            ? { requesterAttestation: normalized.value.requesterAttestation }
+            ? {
+                requesterAttestation: normalized.value.requesterAttestation,
+                requesterEnvironment: normalized.value.requesterEnvironment,
+              }
             : {}),
         },
       });

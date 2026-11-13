@@ -15,8 +15,10 @@ import {
   requesterContextLine,
   REQUESTER_UNCONFIRMED_LINE,
   matrixConnection,
+  mailWakeConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
+import { mailWakeDelegationContext } from "./mail-wake-context.js";
 import type { MatrixEntitlements } from "./matrix-entitlements.js";
 import {
   mailWakeRequester,
@@ -703,6 +705,9 @@ export function registerAdminDelegation(
       messageChannel: context.channel,
       requesterSenderId: context.senderId,
       agentAccountId: context.accountId,
+      hookSourceLockCapability: context.hookSourceLockCapability,
+      hookMailWakeSessionKey: context.hookMailWakeSessionKey,
+      hostMailWakeEnvironment: context.hostMailWakeEnvironment,
     });
     if (!proof || !run || !sender) {
       return unconfirmed;
@@ -710,6 +715,7 @@ export function registerAdminDelegation(
     try {
       const email = await lookupRequesterEmail(proof.connection, proof.body, {
         agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+        mailWakeEnvironment: context.hostMailWakeEnvironment,
         signal: AbortSignal.timeout(REQUESTER_LINE_MINT_MS),
       });
       if (!email || runs.get(runId) !== run || run.sender !== sender) {
@@ -792,7 +798,10 @@ export function registerAdminDelegation(
       // A shared-mail hook is a cron turn whose sender the hooks caller
       // attested. It does not consume a channel arrival.
       if (context.trigger === "cron") {
-        const mail = mailWakeRequester(sessionKey, context.senderId);
+        const mail = mailWakeRequester(
+          context.hookMailWakeSessionKey ?? sessionKey,
+          context.senderId,
+        );
         if (mail) {
           run.sender = JSON.stringify(mail);
         }
@@ -1392,7 +1401,10 @@ export function registerAdminDelegation(
     }
     const sessionKey = ctx.sessionKey.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
-    const mail = mailWakeRequester(sessionKey, ctx.requester?.senderId);
+    const mail = mailWakeRequester(
+      ctx.hookMailWakeSessionKey ?? sessionKey,
+      ctx.requester?.senderId,
+    );
     const requester =
       mail ??
       onBehalfOfRequester(run?.continuation ?? ctx.requester) ??
@@ -1447,6 +1459,18 @@ export function registerAdminDelegation(
     } else {
       diagnose(ctx, "mint-unsupported-requester");
       return undefined;
+    }
+    if (mail) {
+      try {
+        mailWakeDelegationContext(ctx);
+      } catch {
+        return Promise.resolve({
+          block: true,
+          blockReason:
+            "This mail wake has no current host source receipt; rebind it before running a Fi command",
+        });
+      }
+      connection = mailWakeConnection(config, ctx.hostMailWakeEnvironment);
     }
     connection = connection && { ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
     const crossEnvironmentFailure: Held | undefined =
@@ -1509,6 +1533,17 @@ export function registerAdminDelegation(
           ? Promise.resolve(crossEnvironmentFailure)
           : undefined;
     }
+    let wakeContext: ReturnType<typeof mailWakeDelegationContext>;
+    try {
+      wakeContext = mailWakeDelegationContext(ctx);
+    } catch {
+      return Promise.resolve({
+        block: true,
+        blockReason:
+          "This mail wake has no current host source receipt; rebind it before running a Fi command",
+      });
+    }
+    Object.assign(body, wakeContext);
     const baseUrl = connection.baseUrl;
     const sandbox = sandboxKey(agentId, sessionKey);
     const issued = operatorProof
@@ -1535,6 +1570,7 @@ export function registerAdminDelegation(
         })
       : lookupDelegation({ ...config, ...connection }, body, {
           agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+          mailWakeEnvironment: ctx.hostMailWakeEnvironment,
           signal: AbortSignal.timeout(budget),
         }).then((delegation) =>
           delegation
@@ -1645,7 +1681,9 @@ export function registerAdminDelegation(
       senderId: ctx.requesterSenderId,
     };
     const requester =
-      onBehalfOfRequester(channel) ?? matrixOriginRequester(run, ctx.requesterSenderId);
+      mailWakeRequester(ctx.hookMailWakeSessionKey ?? sessionKey, ctx.requesterSenderId) ??
+      onBehalfOfRequester(channel) ??
+      matrixOriginRequester(run, ctx.requesterSenderId);
     if (
       !config.tenantOrgId ||
       !agentId ||
@@ -1675,9 +1713,27 @@ export function registerAdminDelegation(
     ) {
       return undefined;
     }
+    const isMailSource = Boolean(
+      ctx.hookMailWakeSessionKey || /(?:^|:)hook:fi-mail:/i.test(sessionKey ?? ""),
+    );
+    const sourceConnection = isMailSource
+      ? mailWakeConnection(config, ctx.hostMailWakeEnvironment)
+      : undefined;
+    if (isMailSource && !sourceConnection) return undefined;
     if ("requester_slack_user_id" in requester) {
-      return { connection: config, body: { requesterSenderId: requester.requester_slack_user_id } };
+      return {
+        connection: sourceConnection ? { ...config, ...sourceConnection } : config,
+        body: {
+          requesterSenderId: requester.requester_slack_user_id,
+          ...mailWakeDelegationContext(ctx),
+        },
+      };
     }
+    if ("requester_email" in requester)
+      return {
+        connection: { ...config, ...sourceConnection },
+        body: { requesterEmail: requester.requester_email, ...mailWakeDelegationContext(ctx) },
+      };
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }
@@ -1691,7 +1747,10 @@ export function registerAdminDelegation(
     return matrix
       ? {
           connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },
-          body: { requesterMatrixUserId: requester.requester_matrix_user_id },
+          body: {
+            requesterMatrixUserId: requester.requester_matrix_user_id,
+            ...mailWakeDelegationContext(ctx),
+          },
         }
       : undefined;
   };

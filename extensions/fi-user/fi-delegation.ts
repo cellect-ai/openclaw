@@ -1,5 +1,6 @@
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { registerShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key-runtime";
+import { mailWakeDelegationContext } from "./mail-wake-context.js";
 import { projectedMatrixRun } from "./projected-matrix-runs.js";
 import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
 import { shadowToolAttestation } from "./shadow-requester.js";
@@ -204,6 +205,16 @@ export function matrixConnection(
     : undefined;
 }
 
+/** Same explicit environment-owner map as native Matrix admission. */
+export function mailWakeConnection(
+  config: ResolvedPluginConfig,
+  environment: "dev" | "staging" | "prod" | undefined,
+): Pick<ResolvedPluginConfig, "baseUrl" | "brokerTokenEnv"> | undefined {
+  return environment
+    ? (config.matrixEnvironments[environment] ?? (environment === "prod" ? config : undefined))
+    : undefined;
+}
+
 export function pluginConfig(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
@@ -355,7 +366,13 @@ export async function exchange(
   context: OpenClawPluginToolContext,
   options: { privateConversation?: { roomId: string } } = {},
 ): Promise<{ delegation: Delegation; config: ResolvedPluginConfig; identity: RequesterIdentity }> {
-  const config = pluginConfig(api, context);
+  let config = pluginConfig(api, context);
+  const wakeContext = mailWakeDelegationContext(context);
+  if (wakeContext.sessionKey) {
+    const connection = mailWakeConnection(config, context.hostMailWakeEnvironment);
+    if (!connection) throw new Error("The host mail source environment is not configured");
+    config = { ...config, ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
+  }
   // Fi decides whom the attestation names; it is never kept in the identity.
   const shadowAttestation = isFiUserShadowTurn(context)
     ? shadowToolAttestation(context)
@@ -385,7 +402,11 @@ export async function exchange(
     );
   }
   const { channel: _channel, ...requester } = identity;
-  const delegation = await lookupDelegation(config, requester, options);
+  const delegation = await lookupDelegation(
+    config,
+    { ...requester, ...wakeContext },
+    { ...options, mailWakeEnvironment: context.hostMailWakeEnvironment },
+  );
   if (!delegation) {
     throw new Error("The current requester is not linked to an active Fi member");
   }
@@ -433,13 +454,16 @@ export async function lookupDelegation(
   config: Pick<
     ResolvedPluginConfig,
     "baseUrl" | "brokerTokenEnv" | "tenantOrgId" | "tenantOrgConflict"
-  >,
+  > &
+    Partial<Pick<ResolvedPluginConfig, "matrixEnvironments">>,
   requester: Record<string, string>,
   options: {
     agentId?: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID;
     signal?: AbortSignal;
     /** Fi verifies the room is the requester's private one before it stamps audience "private". */
     privateConversation?: { roomId: string };
+    /** Actual active mail host custody, never a request/model field. */
+    mailWakeEnvironment?: "dev" | "staging" | "prod";
   } = {},
 ): Promise<Delegation | null> {
   if (config.tenantOrgConflict) {
@@ -447,6 +471,12 @@ export async function lookupDelegation(
   }
   if (!config.tenantOrgId) {
     throw new Error("This runtime has no Fi organization configured");
+  }
+  const mailWake =
+    /(?:^|:)hook:fi-mail:/i.test(requester.sessionKey ?? "") ||
+    requester.sourceLockCapability !== undefined;
+  if (mailWake && !["dev", "staging", "prod"].includes(options.mailWakeEnvironment ?? "")) {
+    throw new Error("This mail wake has no current host source environment");
   }
   const token = brokerToken(config);
   if (!token) {
@@ -477,7 +507,72 @@ export async function lookupDelegation(
     reportTenantMismatch(delegation?.user?.orgId, config.tenantOrgId);
     throw new Error("The current requester does not belong to this runtime's Fi organization");
   }
+  if (mailWake) {
+    assertMailWakeResponseClaims(
+      delegation,
+      options.mailWakeEnvironment,
+      options.agentId ?? FI_USER_AGENT_ID,
+    );
+  }
   return delegation as Delegation;
+}
+
+/** Compatibility check on a token returned by the trusted Fi server, not a
+ * signature verifier. Fi still authenticates the signature on every use. A
+ * server rollback must not turn a source-bound wake into an ordinary token. */
+function assertMailWakeResponseClaims(
+  delegation: Partial<Delegation>,
+  environment: "dev" | "staging" | "prod" | undefined,
+  agentId: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID,
+): void {
+  const refuse = () => {
+    throw new Error("Fi returned no compatible source-bound mail credential");
+  };
+  const token = delegation.fi?.token;
+  if (typeof token !== "string" || token.length > 16384) return refuse();
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts.some((part) => !/^[A-Za-z0-9_-]+$/.test(part))) return refuse();
+  let header: Record<string, unknown>, claims: Record<string, unknown>;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], "base64url").toString("utf8"));
+    claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+  } catch {
+    return refuse();
+  }
+  const now = Math.floor(Date.now() / 1000);
+  const ttl = agentId === FI_ADMIN_DELEGATION_AGENT_ID ? 600 : 300;
+  if (
+    !header ||
+    Array.isArray(header) ||
+    !claims ||
+    Array.isArray(claims) ||
+    header.alg !== "HS256" ||
+    claims.iss !== "fi-openclaw-user-delegation" ||
+    claims.aud !== "fi-openclaw-user-api" ||
+    claims.wake_session !== true ||
+    typeof claims.wake_message_id !== "string" ||
+    !/^[^\s]{1,512}$/.test(claims.wake_message_id) ||
+    claims.agent_id !== agentId ||
+    claims.org_slug !== delegation.user?.orgSlug ||
+    typeof claims.sub !== "string" ||
+    claims.sub.toLowerCase() !== delegation.user?.email?.trim().toLowerCase() ||
+    !environment ||
+    claims.env !== environment ||
+    typeof claims.cred !== "string" ||
+    !claims.cred.trim() ||
+    !Number.isSafeInteger(claims.exp) ||
+    !Number.isSafeInteger(claims.iat) ||
+    typeof claims.exp !== "number" ||
+    typeof claims.iat !== "number" ||
+    claims.exp <= now ||
+    claims.exp > now + ttl + 30 ||
+    claims.iat > now + 30 ||
+    claims.exp <= claims.iat ||
+    claims.exp - claims.iat > ttl ||
+    typeof delegation.fi?.expiresAt !== "number" ||
+    Math.abs(delegation.fi.expiresAt - claims.exp) > 1
+  )
+    return refuse();
 }
 
 /** How long a Fi without the resolve-only route is remembered, so each turn does not pay a failed call. */
@@ -509,6 +604,7 @@ export async function lookupRequesterEmail(
     agentId?: typeof FI_USER_AGENT_ID | typeof FI_ADMIN_DELEGATION_AGENT_ID;
     signal?: AbortSignal;
     privateConversation?: { roomId: string };
+    mailWakeEnvironment?: "dev" | "staging" | "prod";
   } = {},
 ): Promise<string | undefined> {
   if (config.tenantOrgConflict) {

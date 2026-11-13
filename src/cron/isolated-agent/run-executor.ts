@@ -40,6 +40,7 @@ import type { CliSessionBinding } from "../../config/sessions.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
 import { registerHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
+import { registerMailWakeSourceLock } from "../../infra/mail-wake-source-lock.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
@@ -260,9 +261,23 @@ function createCronPromptExecutor(
       // Non-canonicalizable job config: no grant registration for this run.
     }
     // A shadow hook's attestation is plugin run context for this run only.
+    let releaseMailWakeSourceLock: () => void;
+    try {
+      releaseMailWakeSourceLock = registerMailWakeSourceLock({
+        runId,
+        sessionKey: params.runSessionKey,
+        capability: params.sourceLockCapability,
+        mailSessionKey: params.mailWakeSessionKey,
+        environment: params.hookRequesterEnvironment,
+      });
+    } catch (error) {
+      unregisterCronRunExecSource();
+      throw error;
+    }
     const releaseHookRequesterAttestation = registerHookRequesterAttestation({
       runId,
       sessionKey: params.runSessionKey,
+      environment: params.hookRequesterEnvironment,
       attestation: isShadowHookRun(params.agentSessionKey, params.runSessionKey)
         ? params.hookRequesterAttestation
         : undefined,
@@ -441,7 +456,8 @@ function createCronPromptExecutor(
             jobId: params.job.id,
             // Only a shared-mail hook carries a host-attested requester. The
             // delivery channel stays the announce route; this id is the person.
-            ...(params.agentSessionKey.toLowerCase().includes(":hook:fi-mail:") &&
+            ...((params.mailWakeSessionKey ||
+              params.agentSessionKey.toLowerCase().includes(":hook:fi-mail:")) &&
             params.mailRequesterSenderId
               ? { senderId: params.mailRequesterSenderId }
               : {}),
@@ -678,6 +694,7 @@ function createCronPromptExecutor(
       .finally(() => {
         unregisterCronRunExecSource();
         releaseHookRequesterAttestation();
+        releaseMailWakeSourceLock();
         closePromptAdmission();
       });
     const executionError =

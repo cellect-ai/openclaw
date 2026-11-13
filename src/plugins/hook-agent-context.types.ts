@@ -78,6 +78,10 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
    * to before_agent_reply only; Fi, not the gateway, verifies it.
    */
   hookRequesterAttestation?: string;
+  /** Host-owned source binding for a generic mail hook, including isolated cron projection. */
+  hookSourceLockCapability?: string;
+  hookMailWakeSessionKey?: string;
+  hostMailWakeEnvironment?: "dev" | "staging" | "prod";
   /** @deprecated Use `channelContext.sender` for channel-specific identities. */
   senderExternalId?: string;
   /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */

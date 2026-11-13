@@ -10,9 +10,9 @@
 import type { Result } from "@openclaw/normalization-core/result";
 
 export const SHADOW_HOOK_SESSION_PREFIX = "hook:fi-shadow:";
-const SHADOW_HOOK_SESSION = /(?:^|:)hook:fi-shadow:/i;
+const SHADOW_HOOK_SESSION = /(?:^|:)hook:fi-(?:shadow|rfi|co):/i;
 const MAX_ATTESTATION_LENGTH = 256;
-const ATTESTATION = /^fsa:[^:\s]{1,200}:[A-Za-z0-9_-]{43}$/;
+const ATTESTATION = /^(?:fsa|fcw):[^:\s]{1,200}:[A-Za-z0-9_-]{43}$/;
 
 /** True for a request or run session key that names a Fi shadow hook. */
 export function isShadowHookSessionKey(sessionKey: string | undefined | null): boolean {
@@ -49,8 +49,26 @@ function shadowHookDeliveryKnob(payload: Record<string, unknown>): string | unde
 export function normalizeHookRequesterAttestation(
   payload: Record<string, unknown>,
   sessionKey: string | undefined,
-): Result<{ requesterAttestation?: string }, string> {
+): Result<
+  { requesterAttestation?: string; requesterEnvironment?: "dev" | "staging" | "prod" },
+  string
+> {
   const raw = payload.requesterAttestation;
+  const construction = /(?:^|:)hook:fi-(?:rfi|co):/i.test(sessionKey ?? "");
+  const environment = payload.requesterEnvironment;
+  const mail = /^hook:fi-mail:/i.test(sessionKey ?? "");
+  if (
+    construction
+      ? typeof environment !== "string" || !["dev", "staging", "prod"].includes(environment)
+      : environment !== undefined &&
+        (!mail ||
+          typeof environment !== "string" ||
+          !["dev", "staging", "prod"].includes(environment))
+  )
+    return {
+      ok: false,
+      error: "requesterEnvironment requires a Fi source hook and a supported environment",
+    };
   if (isShadowHookSessionKey(sessionKey)) {
     // A shadow turn is silent background work: nothing it produces is routed,
     // delivered or trusted as external content by the caller's say-so.
@@ -63,7 +81,13 @@ export function normalizeHookRequesterAttestation(
   if (raw === undefined) {
     return isShadowHookSessionKey(sessionKey)
       ? { ok: false, error: "requesterAttestation is required on a hook:fi-shadow: session" }
-      : { ok: true, value: {} };
+      : {
+          ok: true,
+          value:
+            mail && environment
+              ? { requesterEnvironment: environment as "dev" | "staging" | "prod" }
+              : {},
+        };
   }
   if (!shadow) {
     return {
@@ -72,13 +96,28 @@ export function normalizeHookRequesterAttestation(
     };
   }
   const attestation = parseHookRequesterAttestation(raw);
-  if (!attestation) {
+  if (
+    !attestation ||
+    (/hook:fi-co:/i.test(sessionKey ?? "")
+      ? !attestation.startsWith("fcw:")
+      : !attestation.startsWith("fsa:"))
+  ) {
     return { ok: false, error: "requesterAttestation is malformed" };
   }
-  return { ok: true, value: { requesterAttestation: attestation } };
+  return {
+    ok: true,
+    value: {
+      requesterAttestation: attestation,
+      ...(construction ? { requesterEnvironment: environment as "dev" | "staging" | "prod" } : {}),
+    },
+  };
 }
 
-type Recorded = { sessionKey: string; attestation: string };
+type Recorded = {
+  sessionKey: string;
+  attestation: string;
+  environment?: "dev" | "staging" | "prod";
+};
 
 // Bounded by live hook-run concurrency; the cap only guards a leaked release.
 const MAX_TRACKED_ATTESTATIONS = 512;
@@ -89,10 +128,23 @@ export function registerHookRequesterAttestation(params: {
   runId: string;
   sessionKey: string;
   attestation: string | undefined;
+  environment?: "dev" | "staging" | "prod";
 }): () => void {
   const key = params.runId.trim();
   const attestation = parseHookRequesterAttestation(params.attestation);
-  if (!key || !attestation || !isShadowHookSessionKey(params.sessionKey)) {
+  if (
+    /(?:^|:)hook:fi-(?:rfi|co):/i.test(params.sessionKey) &&
+    !["dev", "staging", "prod"].includes(params.environment ?? "")
+  )
+    return () => {};
+  if (
+    !key ||
+    !attestation ||
+    !isShadowHookSessionKey(params.sessionKey) ||
+    (/hook:fi-co:/i.test(params.sessionKey)
+      ? !attestation.startsWith("fcw:")
+      : !attestation.startsWith("fsa:"))
+  ) {
     return () => {};
   }
   if (activeAttestations.size >= MAX_TRACKED_ATTESTATIONS && !activeAttestations.has(key)) {
@@ -101,7 +153,11 @@ export function registerHookRequesterAttestation(params: {
       activeAttestations.delete(oldest);
     }
   }
-  const recorded = { sessionKey: params.sessionKey.trim().toLowerCase(), attestation };
+  const recorded: Recorded = {
+    sessionKey: params.sessionKey.trim().toLowerCase(),
+    attestation,
+    environment: params.environment,
+  };
   activeAttestations.set(key, recorded);
   return () => {
     if (activeAttestations.get(key) === recorded) {
@@ -122,4 +178,13 @@ export function lookupHookRequesterAttestation(
   return recorded && recorded.sessionKey === sessionKey.trim().toLowerCase()
     ? recorded.attestation
     : undefined;
+}
+
+/** Host metadata follows the same exact run/session custody as its attestation. */
+export function lookupHookRequesterEnvironment(
+  runId: string | undefined,
+  sessionKey: string | undefined,
+): "dev" | "staging" | "prod" | undefined {
+  if (!lookupHookRequesterAttestation(runId, sessionKey)) return undefined;
+  return activeAttestations.get(runId!.trim())?.environment;
 }

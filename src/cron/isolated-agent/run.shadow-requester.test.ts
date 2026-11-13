@@ -183,3 +183,49 @@ it("keeps ordinary isolated hook runs on a random cron run session", async () =>
   expect(call.sessionKey).toMatch(/^agent:cellect-fi-user:cron:test-job:run:[^:]+$/);
   expect(isShadowHookRun(call.sessionKey)).toBe(false);
 });
+
+it.each([
+  ["rfi", "fsa", "rfi_prepare_draft"],
+  ["co", "fcw", "co_prepare_draft"],
+])(
+  "carries native %s environment and grant only into its exact tool context",
+  async (workflow, codec, tool) => {
+    mockRunCronFallbackPassthrough();
+    const token = `${codec}:construction-job:${"C".repeat(43)}`;
+    const sessionKey = `hook:fi-${workflow}:source-operation`;
+    let context: Record<string, unknown> | undefined;
+    const defaultRun = runEmbeddedAgentMock.getMockImplementation();
+    runEmbeddedAgentMock.mockImplementation(async (args: Record<string, unknown>) => {
+      context = resolveOpenClawPluginToolInputs({
+        options: {
+          runId: args.runId as string,
+          agentSessionKey: args.sessionKey as string,
+        },
+      }).context as Record<string, unknown>;
+      return defaultRun?.(args);
+    });
+    const result = await runCronIsolatedAgentTurn(
+      makeIsolatedAgentParamsFixture({
+        agentId: "cellect-fi-user",
+        sessionKey,
+        hookRequesterAttestation: token,
+        hookRequesterEnvironment: "dev",
+        job: makeIsolatedAgentJobFixture({ sessionTarget: "isolated" }),
+      }),
+    );
+    expect(result).toMatchObject({ status: "ok" });
+    const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
+    expect(context).toMatchObject({
+      sessionKey: `agent:cellect-fi-user:${sessionKey}`,
+      hookRequesterAttestation: token,
+      fiEnvironment: "dev",
+    });
+    expect(JSON.stringify(call)).not.toContain(token);
+    expect(shadowHookRunParams(call.sessionKey, { toolsAllow: ["*"] })).toMatchObject({
+      toolsAllow: [tool],
+      disableMessageTool: true,
+      disableToolSearch: true,
+    });
+    expect(lookupHookRequesterAttestation(call.runId, call.sessionKey)).toBeUndefined();
+  },
+);

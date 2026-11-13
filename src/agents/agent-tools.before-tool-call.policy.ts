@@ -8,6 +8,11 @@
 import type { ToolLoopWarning } from "@openclaw/agent-core";
 import { getRuntimeConfig } from "../config/config.js";
 import { freezeDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
+import {
+  lookupMailWakeSourceLock,
+  lookupMailWakeSessionKey,
+  lookupMailWakeEnvironment,
+} from "../infra/mail-wake-source-lock.js";
 import { getGlobalHookRunnerRegistry } from "../plugins/hook-runner-global-state.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import { deriveToolParams } from "../plugins/host-tool-param-parsers.js";
@@ -138,6 +143,22 @@ export async function runBeforeToolCallHook(args: {
 }): Promise<HookOutcome> {
   const toolName = normalizeToolPolicyName(args.toolName || "tool");
   const params = args.params;
+  // A requester continuation does not yet carry the Fi mail source receipt.
+  // Refuse its creation before any child/session authority is minted. The
+  // exact active host run owns this check; tool parameters cannot clear it.
+  if (
+    ["sessions_spawn", "sessions_send", "subagents", "automations"].includes(toolName) &&
+    lookupMailWakeSessionKey(args.ctx?.runId, args.ctx?.sessionKey)
+  ) {
+    return {
+      blocked: true,
+      kind: "veto",
+      deniedReason: "plugin-before-tool-call",
+      reason:
+        "This mail wake must keep its source custody in the current turn; requester continuations are unavailable for this source.",
+      params,
+    };
+  }
   let loopWarning: ToolLoopWarning | undefined;
   const withLoopWarning = (outcome: HookOutcome): HookOutcome => {
     if (!outcome.blocked && loopWarning) {
@@ -258,6 +279,9 @@ export async function runBeforeToolCallHook(args: {
     const buildToolContext = (identity: typeof toolIdentity) => ({
       toolName,
       ...identity,
+      hookSourceLockCapability: lookupMailWakeSourceLock(args.ctx?.runId, args.ctx?.sessionKey),
+      hookMailWakeSessionKey: lookupMailWakeSessionKey(args.ctx?.runId, args.ctx?.sessionKey),
+      hostMailWakeEnvironment: lookupMailWakeEnvironment(args.ctx?.runId, args.ctx?.sessionKey),
       ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
       ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
       ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),

@@ -604,6 +604,11 @@ export type PluginHookToolRequesterContext = {
 };
 
 export type PluginHookToolContext = {
+  /** Host-bound source receipt; never copied from model/tool arguments. */
+  hookSourceLockCapability?: string;
+  /** Original authenticated mail source target when execution is projected to cron. */
+  hookMailWakeSessionKey?: string;
+  hostMailWakeEnvironment?: "dev" | "staging" | "prod";
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;

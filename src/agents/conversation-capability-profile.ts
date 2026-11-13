@@ -161,7 +161,10 @@ export function resolveConversationCapabilityProfile(params: ConversationCapabil
   ];
   // A Fi shadow hook session is capped here too, for every consumer of the profile.
   const runtimeToolAllowlist = isShadowHookRun(params.sessionKey, params.runSessionKey)
-    ? capShadowHookToolsAllow(params.runtimeToolAllowlist)
+    ? capShadowHookToolsAllow(
+        params.runtimeToolAllowlist,
+        isShadowHookRun(params.runSessionKey) ? params.runSessionKey : params.sessionKey,
+      )
     : params.runtimeToolAllowlist;
   const runtimeToolPolicy = runtimeToolAllowlist ? { allow: runtimeToolAllowlist } : undefined;
   const runtimeToolPolicyForInheritance =

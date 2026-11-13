@@ -23,6 +23,7 @@ import {
 } from "./admin-delegation.test-helpers.js";
 import type { Rewrite } from "./admin-delegation.test-helpers.js";
 import { configFromRuntime } from "./fi-delegation.js";
+import { mailWakeCredential } from "./mail-wake-fixture.test-support.js";
 
 installDelegationFixtures();
 
@@ -468,18 +469,29 @@ describe("the admin agent's delegated user token", () => {
   });
 
   it("mints a shared-mail wake as the Slack member the hook named", async () => {
+    const credential = mailWakeCredential();
+    fetchMock.mockResolvedValue(minted(credential));
     const turn = plugin();
     const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
     await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
     const result = await turn.exec({
       sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
       requester: { channel: "last", senderId: "U0ADMIN001" },
     });
-    expect(result?.params.env).toMatchObject({ FI_DELEGATED_USER_TOKEN: TOKEN });
-    expect(mintBody()).toEqual({ requesterSenderId: "U0ADMIN001", agentId: "cellect-fi-admin" });
+    expect(result?.params.env).toMatchObject({ FI_DELEGATED_USER_TOKEN: credential.token });
+    expect(mintBody()).toEqual({
+      requesterSenderId: "U0ADMIN001",
+      agentId: "cellect-fi-admin",
+      sessionKey,
+      sourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+    });
   });
 
   it("mints a shared-mail wake as the member mailbox when no Slack id is bound", async () => {
+    const credential = mailWakeCredential();
+    fetchMock.mockResolvedValue(minted(credential));
     const turn = plugin();
     const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
     await turn.start({
@@ -490,10 +502,120 @@ describe("the admin agent's delegated user token", () => {
     });
     const result = await turn.exec({
       sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
       requester: { channel: "last", senderId: "alex@cellect.ai" },
     });
-    expect(mintBody()).toEqual({ requesterEmail: "alex@cellect.ai", agentId: "cellect-fi-admin" });
-    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(mintBody()).toEqual({
+      requesterEmail: "alex@cellect.ai",
+      agentId: "cellect-fi-admin",
+      sessionKey,
+      sourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+    });
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(credential.token);
+  });
+
+  it("refuses a mail wake credential when host source custody is absent, including forged tool parameters", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const context = { sessionKey, requester: { channel: "last", senderId: "U0ADMIN001" } };
+    expect((await turn.exec(context))?.block).toBe(true);
+    const forged = await turn.exec(context, {
+      params: {
+        command: "cellect commands list",
+        sourceLockCapability: `slw:forged:${"x".repeat(43)}`,
+      },
+    });
+    expect(forged?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(0);
+  });
+
+  it.each([
+    { wake_session: undefined, wake_message_id: undefined },
+    { env: "dev" },
+    { agent_id: "cellect-fi-user" },
+    { org_slug: "other-org" },
+  ])("does not inject an old or inconsistent Fi mail credential: %j", async (claims) => {
+    fetchMock.mockResolvedValue(minted(mailWakeCredential(claims)));
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const result = await turn.exec({
+      sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
+      requester: { channel: "last", senderId: "U0ADMIN001" },
+    });
+    expect(result?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(1);
+  });
+
+  it("requires the actual host environment and uses its configured owner connection", async () => {
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    const turn = plugin({
+      matrixEnvironments: {
+        dev: { baseUrl: "https://dev.fi.example.test/fi", brokerTokenEnv: "FIXTURE_DEV_BROKER" },
+      },
+    });
+    vi.stubEnv("FIXTURE_DEV_BROKER", "synthetic-dev-broker");
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const context = {
+      sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      requester: { channel: "last", senderId: "U0ADMIN001" },
+    };
+    expect((await turn.exec(context))?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    const credential = mailWakeCredential({ env: "dev" });
+    fetchMock.mockResolvedValue(minted(credential));
+    const result = await turn.exec({ ...context, hostMailWakeEnvironment: "dev" });
+    expect(result?.params?.env).toMatchObject({
+      FI_DELEGATED_USER_TOKEN: credential.token,
+      FI_APP_URL: "https://dev.fi.example.test/fi",
+    });
+    expect(fetchMock.mock.calls[0][0]).toBe(
+      "https://dev.fi.example.test/fi/api/openclaw-user-delegation",
+    );
+    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+      authorization: "Bearer synthetic-dev-broker",
+    });
+  });
+
+  it("freshly mints distinct source credentials for two messages in the same persistent thread", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    const tokens: string[] = [];
+    for (const [index, messageId] of ["first-message", "second-message"].entries()) {
+      const runId = `mail-message-${index}`;
+      const credential = mailWakeCredential({ wake_message_id: messageId });
+      fetchMock.mockResolvedValue(minted(credential));
+      await turn.start({
+        runId,
+        sessionKey,
+        channel: "last",
+        trigger: "cron",
+        senderId: "U0ADMIN001",
+      });
+      const result = await turn.exec({
+        runId,
+        toolCallId: `mail-command-${index}`,
+        sessionKey,
+        hookSourceLockCapability: `slw:job-${index}:${String(index).repeat(43)}`,
+        hostMailWakeEnvironment: "prod",
+        requester: { channel: "last", senderId: "U0ADMIN001" },
+      });
+      expect(result?.params?.env?.FI_DELEGATED_USER_TOKEN).toBe(credential.token);
+      tokens.push(credential.token);
+      await turn.cleanup({ runId, sessionKey, toolCallId: `mail-command-${index}` });
+      await turn.settle(runId);
+    }
+    expect(mints()).toHaveLength(2);
+    expect(tokens[0]).not.toBe(tokens[1]);
+    expect(mints().map(([, init]) => JSON.parse(String(init.body)).sourceLockCapability)).toEqual([
+      `slw:job-0:${"0".repeat(43)}`,
+      `slw:job-1:${"1".repeat(43)}`,
+    ]);
   });
 
   describe("Fi shadow hook turns", () => {

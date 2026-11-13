@@ -49,7 +49,10 @@ export type CronRunExecutionParams = Pick<
     | "admissionSource"
     | "deliveryAttemptFence"
     | "mailRequesterSenderId"
+    | "sourceLockCapability"
+    | "mailWakeSessionKey"
     | "hookRequesterAttestation"
+    | "hookRequesterEnvironment"
   > & {
     runId: string;
     agentVerboseDefault: AgentDefaultsConfig["verboseDefault"];
