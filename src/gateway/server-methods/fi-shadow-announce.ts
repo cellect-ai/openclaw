@@ -338,7 +338,7 @@ export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const attested = lookupShadowRequesterIdentity(params.childSessionKey);
+      const attested = await lookupShadowRequesterIdentity(params.childSessionKey);
       if (!attested || attested !== params.ownerEmail.trim().toLowerCase()) {
         respond(
           false,
