@@ -253,7 +253,7 @@ function createGmailTool(api: OpenClawPluginApi, context: OpenClawPluginToolCont
     name: "fi_user_gmail",
     label: "My Gmail",
     description:
-      "Search, read, draft, or send Gmail only as the current verified Cellect Fi requester. The mailbox is fixed by Fi membership and cannot be selected by the model. search_shared_inbox and read_shared_inbox reach the shared tenant inbox, limited to messages from, to or copied to the requester.",
+      "Search, read, draft, or send Gmail only as the current verified Cellect Fi requester. The mailbox is fixed by Fi membership and cannot be selected by the model. To file a read attachment into a project Library, use fi_user_dataroom action=upload_to_project_library, source=gmail, project, messageId and exact attachmentName; no data room or admin mailbox is required, and Fi checks your project grant. search_shared_inbox and read_shared_inbox reach the shared tenant inbox, limited to messages from, to or copied to the requester.",
     parameters: GmailSchema,
     async execute(_toolCallId, raw) {
       const input = raw as {

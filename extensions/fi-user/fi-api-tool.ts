@@ -310,7 +310,7 @@ function fiErrorCode(body: unknown): string | undefined {
  * Copy for a Fi refusal. The proxy answers 401 `bearer_rejected` when a valid
  * delegated member token is not admitted to the route at all, and
  * `delegation_expired` (or a revocation) when the token itself no longer
- * counts: the first is "not for member agents", the second "mint again".
+ * counts: route rejection does not establish the requester's business permissions, while credential expiry needs a fresh exchange.
  */
 export function fiUserApiRefusal(status: number, pathname: string, body: unknown): string {
   const code = fiErrorCode(body);
@@ -318,7 +318,7 @@ export function fiUserApiRefusal(status: number, pathname: string, body: unknown
     return `The requester's Fi credential expired or was revoked (${code}). Call fi_user_api again to re-authenticate: each call mints a fresh credential.`;
   }
   if (status === 401 && code === "bearer_rejected") {
-    return `${pathname} is not available to member agents. Tell the requester an admin can do it in Fi; do not retry this path.`;
+    return `${pathname} is not admitted for this delegated token (bearer_rejected). This is a route-capability rejection, not proof that an admin is required. Do not retry this path. For project documents use `<project>/docs/text` or `documents/search`; file attachments with fi_user_dataroom.`;
   }
   return `Fi returned ${status} for ${pathname}: ${
     typeof body === "string" ? body.slice(0, 1_000) : JSON.stringify(body).slice(0, 1_000)

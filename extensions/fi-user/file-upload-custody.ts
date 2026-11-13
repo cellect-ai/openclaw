@@ -54,7 +54,7 @@ export function idempotencyKey(actor: string, operation: unknown): string {
 }
 
 export type UploadProvenance = {
-  source?: "slack" | "generated_artifact" | "downloaded_file";
+  source?: "slack" | "gmail" | "generated_artifact" | "downloaded_file";
   messageId?: string;
   fileId?: string;
   url?: string;
