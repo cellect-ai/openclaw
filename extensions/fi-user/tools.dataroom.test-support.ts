@@ -7,6 +7,7 @@ import {
 
 export function registerDataRoomTests(
   harness: GmailUploadHarness & {
+    mocks: GmailUploadHarness["mocks"] & { subagentRun: unknown };
     bodyJson: (init: RequestInit | undefined) => Record<string, unknown>;
   },
 ) {
