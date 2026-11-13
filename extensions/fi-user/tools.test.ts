@@ -1067,9 +1067,12 @@ describe("fi_user_dataroom", () => {
       }
       return undefined;
     });
-    const result = await plugin()
-      .tool("fi_user_dataroom", context())
-      .execute("d4", { action: "upload_slack_file", roomId: "room-1", slackFileId: "F0FILE0001" });
+    const result = await plugin().tool("fi_user_dataroom", context()).execute("d4", {
+      action: "upload_slack_file",
+      source: "gmail",
+      roomId: "room-1",
+      slackFileId: "F0FILE0001",
+    });
     const upload = calls.find((entry) => entry.url.endsWith("/documents/upload"));
     const form = upload!.init.body as FormData;
     expect(form.get("provenanceSource")).toBe("slack");

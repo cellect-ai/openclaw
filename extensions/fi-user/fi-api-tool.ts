@@ -318,7 +318,7 @@ export function fiUserApiRefusal(status: number, pathname: string, body: unknown
     return `The requester's Fi credential expired or was revoked (${code}). Call fi_user_api again to re-authenticate: each call mints a fresh credential.`;
   }
   if (status === 401 && code === "bearer_rejected") {
-    return `${pathname} is not admitted for this delegated token (bearer_rejected). This is a route-capability rejection, not proof that an admin is required. Do not retry this path. For project documents use `<project>/docs/text` or `documents/search`; file attachments with fi_user_dataroom.`;
+    return `${pathname} is not admitted for this delegated token (bearer_rejected). This is a route-capability rejection, not proof that an admin is required. Do not retry this path. For project documents use <project>/docs/text or documents/search; file attachments with fi_user_dataroom.`;
   }
   return `Fi returned ${status} for ${pathname}: ${
     typeof body === "string" ? body.slice(0, 1_000) : JSON.stringify(body).slice(0, 1_000)
