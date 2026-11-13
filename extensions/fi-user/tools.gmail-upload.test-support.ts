@@ -9,13 +9,21 @@ type Harness = Pick<FiUserMatrixEnvironmentHarness, "calls" | "context" | "json"
   plugin: () => { tool: (name: string, context: OpenClawPluginToolContext) => AnyAgentTool };
 };
 
+function downloadDirectory(args: string[]): string {
+  const directory = args[args.indexOf("targetfolder") + 1];
+  if (!directory || !args.includes("targetfolder")) {
+    throw new Error("GAM attachment fixture expected a targetfolder");
+  }
+  return directory;
+}
+
 export function registerGmailUploadTests({ calls, context, json, mocks, plugin, routes }: Harness) {
   it("files the selected own Gmail attachment into Library without a room or another mailbox", async () => {
     let tempDir = "";
     mocks.execFile.mockImplementationOnce(async (_binary, args: string[]) => {
       expect(args.slice(0, 2)).toEqual(["user", "member@example.com"]);
       expect(args).toContain("message123");
-      tempDir = args[args.indexOf("targetfolder") + 1];
+      tempDir = downloadDirectory(args);
       await fs.writeFile(path.join(tempDir, "Permit.pdf"), "%PDF-original");
       await fs.writeFile(path.join(tempDir, "image.jpg"), "signature logo");
       return { stdout: "saved", stderr: "" };
@@ -53,7 +61,7 @@ export function registerGmailUploadTests({ calls, context, json, mocks, plugin, 
   it("keeps real project permission denials and cleans Gmail bytes without an admin fallback", async () => {
     let tempDir = "";
     mocks.execFile.mockImplementationOnce(async (_binary, args: string[]) => {
-      tempDir = args[args.indexOf("targetfolder") + 1];
+      tempDir = downloadDirectory(args);
       await fs.writeFile(path.join(tempDir, "Permit.pdf"), "%PDF-original");
       return { stdout: "saved", stderr: "" };
     });
@@ -79,7 +87,7 @@ export function registerGmailUploadTests({ calls, context, json, mocks, plugin, 
     async (destination) => {
       let tempDir = "";
       mocks.execFile.mockImplementationOnce(async (_binary, args: string[]) => {
-        tempDir = args[args.indexOf("targetfolder") + 1];
+        tempDir = downloadDirectory(args);
         await fs.writeFile(path.join(tempDir, "One.pdf"), "%PDF-one");
         await fs.writeFile(path.join(tempDir, "Two.pdf"), "%PDF-two");
         return { stdout: "saved", stderr: "" };
