@@ -879,7 +879,7 @@ describe("fi_user_api", () => {
   });
 });
 
-registerDataRoomTests({ calls, context, json, mocks, plugin, routes });
+registerDataRoomTests({ bodyJson, calls, context, json, mocks, plugin, routes });
 
 registerFiUserWorkflowTests({
   BROKER,

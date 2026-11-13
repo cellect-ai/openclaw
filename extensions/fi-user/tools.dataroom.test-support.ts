@@ -5,8 +5,12 @@ import {
   type GmailUploadHarness,
 } from "./tools.gmail-upload.test-support.js";
 
-export function registerDataRoomTests(harness: GmailUploadHarness) {
-  const { calls, context, json, mocks, plugin, routes } = harness;
+export function registerDataRoomTests(
+  harness: GmailUploadHarness & {
+    bodyJson: (init: RequestInit | undefined) => Record<string, unknown>;
+  },
+) {
+  const { bodyJson, calls, context, json, mocks, plugin, routes } = harness;
   const authorization = (init: RequestInit) => new Headers(init.headers).get("authorization");
   describe("fi_user_dataroom", () => {
     const room = {
