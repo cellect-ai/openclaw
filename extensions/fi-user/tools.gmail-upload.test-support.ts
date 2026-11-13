@@ -22,7 +22,7 @@ export function registerGmailUploadTests({ calls, context, json, mocks, plugin, 
     });
     routes.push((url, init) => {
       if (url.pathname === "/api/shape/24-bright/docs/upload") {
-        expect(authorization(init)).toBe("Bearer delegated-token");
+        expect(new Headers(init.headers).get("authorization")).toBe("Bearer delegated-token");
         const form = init.body as FormData;
         expect(form.get("provenanceSource")).toBe("gmail");
         expect(form.get("provenanceMessageId")).toBe("message123");
