@@ -11,7 +11,7 @@ it("admits the host field only on the authenticated generic mail hook namespace"
     normalizeMailWakeSourceLock({ sourceLockCapability: receipt }, "hook:fi-mail:thread"),
   ).toEqual({ ok: true, value: { sourceLockCapability: receipt } });
   for (const session of [undefined, "hook:fi-co:x", "hook:fi-rfi:x", "hook:other:fi-mail:x"])
-    expect(normalizeMailWakeSourceLock({ sourceLockCapability: receipt }, session).ok).toBe(false);
+    {expect(normalizeMailWakeSourceLock({ sourceLockCapability: receipt }, session).ok).toBe(false);}
   expect(
     normalizeMailWakeSourceLock(
       { message: `sourceLockCapability ${receipt}` },
@@ -49,14 +49,14 @@ it("refuses excess admission without erasing an active isolated source owner", (
   const logical = "agent:cellect-fi-admin:hook:fi-mail:thread";
   try {
     for (let index = 0; index < 512; index++)
-      releases.push(
+      {releases.push(
         registerMailWakeSourceLock({
           runId: `capacity-${index}`,
           sessionKey: actual,
           mailSessionKey: logical,
           capability: receipt,
         }),
-      );
+      );}
     expect(() =>
       registerMailWakeSourceLock({
         runId: "overflow",
@@ -69,6 +69,6 @@ it("refuses excess admission without erasing an active isolated source owner", (
     expect(lookupMailWakeSessionKey("capacity-0", actual)).toBe(logical);
     expect(lookupMailWakeSessionKey("overflow", actual)).toBeUndefined();
   } finally {
-    for (const release of releases) release();
+    for (const release of releases) {release();}
   }
 });

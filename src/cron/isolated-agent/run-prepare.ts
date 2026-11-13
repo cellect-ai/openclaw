@@ -11,7 +11,7 @@ import {
 } from "../../agents/prepared-model-runtime.js";
 import { resolveAgentModelPrimaryValue } from "../../config/model-input.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
-import { isShadowHookSessionKey } from "../../infra/hook-requester-attestation.js";
+import { isAttestedBackgroundHookSessionKey } from "../../infra/hook-requester-attestation.js";
 import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
 import {
   AGENT_HARNESS_SESSION_ID_LOCKED_MESSAGE,
@@ -141,7 +141,7 @@ export async function prepareCronRunContext(params: {
   // attestation to `agent:<agent>:<key>` exactly) all read it. A detached
   // shadow run therefore stays on that key, fresh each run (forceNew below),
   // instead of a `cron:<job>:run:<id>` key that silently drops the identity.
-  const shadowHookRun = isShadowHookSessionKey(baseSessionKey);
+  const shadowHookRun = isAttestedBackgroundHookSessionKey(baseSessionKey);
   const cronExecutionSessionKey =
     usesDetachedRunSession && !baseSessionKeyIsCron && !shadowHookRun
       ? `cron:${input.job.id}`

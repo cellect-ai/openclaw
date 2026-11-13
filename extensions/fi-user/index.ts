@@ -69,8 +69,11 @@ import {
   signOnBehalfOf,
   withOnBehalfOfEnv,
 } from "./on-behalf-of.js";
+import { registerPersonalAgentContext } from "./personal-agent-context.js";
+import { createPersonalAgentTools } from "./personal-agent-tools.js";
 import { projectionFailureKind } from "./projection-failure.js";
 import { createReadConversationTool, registerReadConversationCap } from "./read-conversation.js";
+import { reviewRunClaimed, reviewToolAttestation } from "./review-requester.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 import { createWorkbookTool } from "./workbook-tool.js";
 import { delegatedWorkbookTransport, matrixWorkbookTransport } from "./workbook-transport.js";
@@ -444,6 +447,7 @@ export default definePluginEntry({
       },
       { priority: 10_000 },
     );
+    registerPersonalAgentContext(api);
     const conversationReadCap = registerReadConversationCap(api);
     api.on(
       "before_tool_call",
@@ -515,6 +519,9 @@ export default definePluginEntry({
     api.registerTool({
       contextVersion: 2,
       create: (context: OpenClawPluginToolContext<2>) => {
+        if (reviewRunClaimed(context)) {
+          return reviewToolAttestation(context) ? createPersonalAgentTools(api, context) : null;
+        }
         // Inbound email is untrusted and the turn reads private data, so a
         // shadow turn only reads Fi as its member: nothing that sends, shares,
         // signs or writes. Its mailbox tools belong to the requester plugin.
@@ -560,6 +567,7 @@ export default definePluginEntry({
           createBudgetImportTool(api, context),
           createRequestAdminActionTool(api, context),
           ...(offersMailItemsTool(context) ? [createMailItemsTool(api, context)] : []),
+          ...createPersonalAgentTools(api, context),
         ];
         return tools;
       },

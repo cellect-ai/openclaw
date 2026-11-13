@@ -27,7 +27,7 @@ import {
   resolveSessionRuntimeOverrideForProvider,
 } from "../../agents/session-runtime-compat.js";
 import type { CompactionRequestBudget } from "../../agents/sessions/compaction/request-budget.js";
-import { isShadowHookRun } from "../../agents/shadow-hook-tool-policy.js";
+import { isRestrictedBackgroundHookRun } from "../../agents/shadow-hook-tool-policy.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import {
   resolveAgentIdFromSessionKey,
@@ -931,7 +931,7 @@ export async function runMemoryFlushIfNeeded(params: {
   }
   // A shadow hook run reads untrusted inbound mail with a member's private data in reach; its
   // content must never be written into the agent's shared memory.
-  if (isShadowHookRun(params.sessionKey, params.runtimePolicySessionKey)) {
+  if (isRestrictedBackgroundHookRun(params.sessionKey, params.runtimePolicySessionKey)) {
     return { sessionEntry: entry, outcome: "skipped" };
   }
   const runtimeParams = { ...params, sessionEntry: entry };

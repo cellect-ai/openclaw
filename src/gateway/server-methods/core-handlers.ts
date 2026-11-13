@@ -152,6 +152,8 @@ const CORE_GATEWAY_HANDLER_MODULES = {
   "hooks-status": () => import("./hooks-status.js").then((module) => module.hooksStatusHandlers),
   "fi-shadow": () =>
     import("./fi-shadow-announce.js").then((module) => module.fiShadowAnnounceHandlers),
+  "fi-review": () =>
+    import("./fi-review-announce.js").then((module) => module.fiReviewAnnounceHandlers),
   skills: () => import("./skills.js").then((module) => module.skillsHandlers),
   system: () => import("./system.js").then((module) => module.systemHandlers),
   presence: () => import("./presence.js").then((module) => module.presenceHandlers),

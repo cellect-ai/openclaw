@@ -1,5 +1,8 @@
 import { resolveCliRuntimeExecutionProvider } from "../../agents/model-runtime-aliases.js";
-import { isShadowHookRun, SHADOW_CLI_REFUSAL } from "../../agents/shadow-hook-tool-policy.js";
+import {
+  isRestrictedBackgroundHookRun,
+  SHADOW_CLI_REFUSAL,
+} from "../../agents/shadow-hook-tool-policy.js";
 import { isCliProvider } from "./run-execution.runtime.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
 import { resolveEffectiveAgentRuntime } from "./run.runtime.js";
@@ -11,7 +14,7 @@ export function assertShadowRunNotCli(
   sessionKeys: Array<string | undefined | null>,
   cliExecution: boolean,
 ): void {
-  if (cliExecution && isShadowHookRun(...sessionKeys)) {
+  if (cliExecution && isRestrictedBackgroundHookRun(...sessionKeys)) {
     throw new Error(SHADOW_CLI_REFUSAL);
   }
 }

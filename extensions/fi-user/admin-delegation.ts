@@ -1719,7 +1719,7 @@ export function registerAdminDelegation(
     const sourceConnection = isMailSource
       ? mailWakeConnection(config, ctx.hostMailWakeEnvironment)
       : undefined;
-    if (isMailSource && !sourceConnection) return undefined;
+    if (isMailSource && !sourceConnection) {return undefined;}
     if ("requester_slack_user_id" in requester) {
       return {
         connection: sourceConnection ? { ...config, ...sourceConnection } : config,
@@ -1730,10 +1730,10 @@ export function registerAdminDelegation(
       };
     }
     if ("requester_email" in requester)
-      return {
+      {return {
         connection: { ...config, ...sourceConnection },
         body: { requesterEmail: requester.requester_email, ...mailWakeDelegationContext(ctx) },
-      };
+      };}
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }

@@ -11,6 +11,50 @@ import { mailWakeCredential } from "./mail-wake-fixture.test-support.js";
 const connection = { baseUrl: "https://fi.example.test", brokerTokenEnv: "TEST_BROKER_TOKEN" };
 const requester = { requesterSenderId: "U12345678" };
 
+it("retains the incoming private review grant exchange without requesting a generic mail credential", async () => {
+  const config = {
+    plugins: { entries: { "fi-user": { config: { ...connection, tenantOrgId: "org-a" } } } },
+  };
+  const api = {
+    config,
+    runtime: { config: { current: () => config } },
+  } as unknown as OpenClawPluginApi;
+  const attestation = `pra:review-job:${"a".repeat(43)}`;
+  const sessionKey = `agent:cellect-fi-user:hook:fi-review:${"b".repeat(40)}`;
+  fetchMock.mockResolvedValue(
+    new Response(
+      JSON.stringify({
+        user: { orgId: "org-a", orgSlug: "tenant-a", email: "owner@example.test" },
+        requester: { channel: "personal-agent-review", email: "owner@example.test" },
+        fi: { token: "private-review-only-token", expiresAt: Math.floor(Date.now() / 1000) + 60 },
+        review: {
+          roomId: "!main:example.test",
+          jobId: "review-job",
+          expiresAt: new Date(Date.now() + 60_000).toISOString(),
+          profile: {},
+        },
+      }),
+    ),
+  );
+  const current = vi.fn();
+  const result = await exchange(api, {
+    agentId: "cellect-fi-user",
+    runId: "review-run",
+    sessionKey,
+    hookRequesterAttestation: attestation,
+    assertInvocationCurrent: current,
+  } as OpenClawPluginToolContext);
+  expect(result.identity).toEqual({ channel: "personal-agent-review" });
+  expect(fetchMock.mock.calls[0][0]).toBe(
+    "https://fi.example.test/api/personal-agent/background-grant",
+  );
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+    reviewAttestation: attestation,
+    sessionKey,
+  });
+  expect(current).toHaveBeenCalledTimes(2);
+});
+
 function member(user: Record<string, unknown> = {}) {
   return new Response(
     JSON.stringify({
@@ -371,7 +415,9 @@ describe("mail response compatibility at credential mint", () => {
       expect(fetchMock).toHaveBeenCalledTimes(2);
       expect(tokens[0]).not.toBe(tokens[1]);
     } finally {
-      for (const release of releases) release();
+      for (const release of releases) {
+        release();
+      }
     }
   });
 });

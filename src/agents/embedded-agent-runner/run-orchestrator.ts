@@ -481,7 +481,6 @@ async function runEmbeddedAgentInternal(
                   hasSessionModelOverride: false,
                   modelFallbacksOverride: params.modelFallbacksOverride,
                 });
-              const fallbackConfigured = modelFallbackAvailability.kind === "active";
               if (modelFallbackAvailability.kind === "disabled_by_model_override") {
                 log.warn(
                   `[model-fallback] configured fallbacks disabled by user model override run=${params.runId} session=${redactedSessionId}`,
@@ -583,7 +582,7 @@ async function runEmbeddedAgentInternal(
                 globalLane,
                 hookRunner,
                 hookContext: hookCtx,
-                fallbackConfigured,
+                fallbackConfigured: modelFallbackAvailability.kind === "active",
                 isProbeSession,
                 resolvedSessionKey,
                 resolvedToolResultFormat,

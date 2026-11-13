@@ -6,10 +6,21 @@
 // entry (embedded runner, capability profile) applies the same cap; a narrower
 // request is honoured, a wider one (including `*` or a group) is cut down.
 
-import { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
+import {
+  isShadowHookSessionKey,
+  isAttestedBackgroundHookSessionKey,
+  isPersonalReviewHookSessionKey,
+} from "../infra/hook-requester-attestation.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
 
 export const SHADOW_HOOK_TOOL_ALLOWLIST: readonly string[] = ["fi_user_api", "m365_shadow_mail"];
+export const REVIEW_HOOK_TOOL_ALLOWLIST: readonly string[] = [
+  "fi_user_work_items",
+  "fi_user_agent_profile",
+  "fi_user_review_sources",
+  "fi_user_review_report",
+  "m365_review_read",
+];
 
 export const SHADOW_CLI_REFUSAL =
   "hook:fi-shadow: sessions cannot run on a CLI backend (its native tools sit outside the shadow tool cap)";
@@ -17,6 +28,30 @@ export const SHADOW_CLI_REFUSAL =
 /** True when any of the run's session keys names a Fi shadow hook. */
 export function isShadowHookRun(...sessionKeys: Array<string | undefined | null>): boolean {
   return sessionKeys.some((key) => isShadowHookSessionKey(key));
+}
+
+export function isRestrictedBackgroundHookRun(...keys: Array<string | undefined | null>): boolean {
+  return keys.some(isAttestedBackgroundHookSessionKey);
+}
+export function capBackgroundHookToolsAllow(
+  keys: Array<string | undefined | null>,
+  requested?: readonly string[],
+): string[] {
+  const purposes = keys
+    .filter(isAttestedBackgroundHookSessionKey)
+    .map((key) =>
+      isPersonalReviewHookSessionKey(key)
+        ? REVIEW_HOOK_TOOL_ALLOWLIST
+        : capShadowHookToolsAllow(undefined, key),
+    );
+  const allow = (purposes[0] ?? SHADOW_HOOK_TOOL_ALLOWLIST).filter((tool) =>
+    purposes.every((scope) => scope.includes(tool)),
+  );
+  if (requested === undefined) {
+    return [...allow];
+  }
+  const names = new Set(requested.map(normalizeToolPolicyName));
+  return allow.filter((tool) => names.has("*") || names.has(tool));
 }
 
 /** The allowlist a shadow run may carry: the requested one cut to the shadow tools. */
@@ -51,15 +86,16 @@ export function shadowHookRunParams(
       codeModeOverride: false;
     }
   | Record<string, never> {
-  if (!isShadowHookRun(sessionKey)) {
+  if (!isRestrictedBackgroundHookRun(sessionKey)) {
     return {};
   }
-  const toolsAllow = capShadowHookToolsAllow(requested.toolsAllow, sessionKey);
+  const toolsAllow = capBackgroundHookToolsAllow([sessionKey], requested.toolsAllow);
   return {
     toolsAllow,
-    toolExecutionAllow: capShadowHookToolsAllow(requested.toolExecutionAllow, sessionKey).filter(
-      (tool) => toolsAllow.includes(tool),
-    ),
+    toolExecutionAllow: capBackgroundHookToolsAllow(
+      [sessionKey],
+      requested.toolExecutionAllow,
+    ).filter((tool) => toolsAllow.includes(tool)),
     disableMessageTool: true,
     // Tool Search controls are exempt from the execution gate; with two tools
     // there is nothing to discover, and a catalog must not widen the cap.

@@ -7,7 +7,7 @@ export function mailWakeDelegationContext(context: {
   hostMailWakeEnvironment?: "dev" | "staging" | "prod";
 }): { sessionKey?: string; sourceLockCapability?: string } {
   const sessionKey = context.hookMailWakeSessionKey ?? context.sessionKey;
-  if (!/(?:^|:)hook:fi-mail:/i.test(sessionKey ?? "")) return {};
+  if (!/(?:^|:)hook:fi-mail:/i.test(sessionKey ?? "")) {return {};}
   if (
     !/^agent:[^:\s]+:hook:fi-mail:[^:\s]+(?::run:\S+)?$/i.test(sessionKey ?? "") ||
     !/^slw:[^:\s]{1,200}:[A-Za-z0-9_-]{43}$/.test(context.hookSourceLockCapability ?? "") ||

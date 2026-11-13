@@ -32,7 +32,7 @@ import {
 } from "../../agents/scheduled-tool-policy.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
-import { isShadowHookRun } from "../../agents/shadow-hook-tool-policy.js";
+import { isRestrictedBackgroundHookRun } from "../../agents/shadow-hook-tool-policy.js";
 import { needsThinkHydration } from "../../agents/thinking-runtime.js";
 import { resolveAgentLifecycleTerminalMetadata } from "../../auto-reply/reply/agent-lifecycle-terminal.js";
 import type { VerboseLevel } from "../../auto-reply/thinking.js";
@@ -278,7 +278,7 @@ function createCronPromptExecutor(
       runId,
       sessionKey: params.runSessionKey,
       environment: params.hookRequesterEnvironment,
-      attestation: isShadowHookRun(params.agentSessionKey, params.runSessionKey)
+      attestation: isRestrictedBackgroundHookRun(params.agentSessionKey, params.runSessionKey)
         ? params.hookRequesterAttestation
         : undefined,
     });

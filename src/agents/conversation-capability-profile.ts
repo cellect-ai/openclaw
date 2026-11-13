@@ -20,7 +20,10 @@ import {
   type ScheduledToolPolicyContext,
 } from "./scheduled-tool-policy.js";
 import { resolveSessionPlacementSandboxToolPolicy } from "./session-placement-computer.js";
-import { capShadowHookToolsAllow, isShadowHookRun } from "./shadow-hook-tool-policy.js";
+import {
+  capBackgroundHookToolsAllow,
+  isRestrictedBackgroundHookRun,
+} from "./shadow-hook-tool-policy.js";
 import type { TrustedSubagentCompletionHandoff } from "./subagents/announce/subagent-announce-handoff.js";
 import type {
   PreparedSessionCapabilityEntry,
@@ -160,10 +163,13 @@ export function resolveConversationCapabilityProfile(params: ConversationCapabil
     subagentPolicy,
   ];
   // A Fi shadow hook session is capped here too, for every consumer of the profile.
-  const runtimeToolAllowlist = isShadowHookRun(params.sessionKey, params.runSessionKey)
-    ? capShadowHookToolsAllow(
+  const runtimeToolAllowlist = isRestrictedBackgroundHookRun(
+    params.sessionKey,
+    params.runSessionKey,
+  )
+    ? capBackgroundHookToolsAllow(
+        [params.sessionKey, params.runSessionKey],
         params.runtimeToolAllowlist,
-        isShadowHookRun(params.runSessionKey) ? params.runSessionKey : params.sessionKey,
       )
     : params.runtimeToolAllowlist;
   const runtimeToolPolicy = runtimeToolAllowlist ? { allow: runtimeToolAllowlist } : undefined;
