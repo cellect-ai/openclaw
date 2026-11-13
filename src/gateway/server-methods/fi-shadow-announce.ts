@@ -25,7 +25,7 @@ import {
 import { normalizeSessionDeliveryState } from "../../utils/delivery-context.shared.js";
 import { readFiUserMatrixRoom } from "./fi-shadow-matrix-room.js";
 import { roomAudienceAllowsOwner } from "./fi-shadow-room-audience.js";
-import type { GatewayRequestHandlers } from "./types.js";
+import type { GatewayRequestHandlers, RespondFn } from "./types.js";
 import { defineValidatedGatewayMethod } from "./validation.js";
 
 const FI_USER_AGENT_ID = "cellect-fi-user";
@@ -203,6 +203,128 @@ function deliveryFailureMessage(
     : "fi.shadow.announce delivery failed";
 }
 
+/** Native sole-human Matrix delivery shared by independently authorized Fi purposes. */
+export async function deliverFiPrivateMain(
+  params: FiShadowAnnounceParams,
+  attested: string,
+  respond: RespondFn,
+  signal?: AbortSignal,
+  beforeDelivery?: () => Promise<void>,
+) {
+  if (hasInvisible(params.roomId) || !ROOM_ID.test(params.roomId)) {
+    respond(false, undefined, invalid("fi.shadow.announce roomId must be a Matrix room id"));
+    return;
+  }
+  if (params.threadId !== undefined && hasInvisible(params.threadId)) {
+    respond(false, undefined, invalid("fi.shadow.announce threadId must be a Matrix event id"));
+    return;
+  }
+  const fingerprint = announceFingerprint(params);
+  const cached = announceReplays.get(params.idempotencyKey);
+  if (cached) {
+    if (cached.fingerprint !== fingerprint) {
+      respond(false, undefined, invalid("fi.shadow.announce idempotencyKey was already used"));
+      return;
+    }
+    respond(true, { ...cached.result });
+    return;
+  }
+  const assertCurrent = () => {
+    signal?.throwIfAborted();
+  };
+  let room: Awaited<ReturnType<typeof readFiUserMatrixRoom>>;
+  try {
+    room = await readFiUserMatrixRoom({
+      cfg: getRuntimeConfig(),
+      roomId: params.roomId,
+      assertCurrent,
+    });
+  } catch {
+    respond(false, undefined, unavailable("fi.shadow.announce Matrix membership is unavailable"));
+    return;
+  }
+  if (!room.ok) {
+    respond(
+      false,
+      undefined,
+      unavailable(
+        room.reason === "unjoined"
+          ? "fi.shadow.announce Matrix membership is unavailable"
+          : "fi.shadow.announce Matrix account is unavailable",
+      ),
+    );
+    return;
+  }
+  if (
+    !roomAudienceAllowsOwner({
+      members: room.members,
+      ownerEmail: attested,
+      accountUserId: room.accountUserId,
+    })
+  ) {
+    respond(false, undefined, invalid("fi.shadow.announce room audience is not the owner"));
+    return;
+  }
+  // The room id and account are the ones the Matrix client just read.
+  // A caller-supplied destination is not accepted, and a stale stored origin is replaced.
+  const targetKey = matrixSessionKey(params.roomId, params.threadId);
+  const targetDelivery = matrixDelivery(room.accountId, params.roomId, params.threadId);
+  const origin = targetDelivery.kind === "external" ? targetDelivery.context : undefined;
+  if (!origin) {
+    respond(false, undefined, unavailable("fi.shadow.announce Matrix membership is unavailable"));
+    return;
+  }
+  try {
+    await ensureMatrixSession(
+      matrixSessionKey(params.roomId),
+      matrixDelivery(room.accountId, params.roomId),
+    );
+    if (params.threadId) {
+      await ensureMatrixSession(targetKey, targetDelivery);
+    }
+  } catch {
+    respond(
+      false,
+      undefined,
+      unavailable("fi.shadow.announce target session could not be recorded"),
+    );
+    return;
+  }
+  const internalEvents = [shadowAnnounceEvent(params)];
+  let delivery: Awaited<ReturnType<typeof deliverSubagentAnnouncement>>;
+  try {
+    await beforeDelivery?.();
+    signal?.throwIfAborted();
+    delivery = await deliverSubagentAnnouncement({
+      requesterSessionKey: targetKey,
+      requesterAgentId: FI_USER_AGENT_ID,
+      targetRequesterSessionKey: targetKey,
+      triggerMessage: formatAgentInternalEventsForPrompt(internalEvents),
+      internalEvents,
+      // Steer while the Matrix session is active; direct delivery when it is idle.
+      expectsCompletionMessage: false,
+      directIdempotencyKey: params.idempotencyKey,
+      requesterSessionOrigin: origin,
+      directOrigin: origin,
+      completionDirectOrigin: origin,
+      sourceSessionKey: params.childSessionKey,
+      sourceTool: "subagent_announce",
+      requesterIsSubagent: false,
+      signal,
+    });
+  } catch {
+    respond(false, undefined, unavailable("fi.shadow.announce delivery failed"));
+    return;
+  }
+  const result = announceResult(delivery);
+  if (!result) {
+    respond(false, undefined, unavailable(deliveryFailureMessage(delivery, params.resultText)));
+    return;
+  }
+  rememberAnnounce(params.idempotencyKey, fingerprint, result);
+  respond(true, result);
+}
+
 export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
   "fi.shadow.announce": defineValidatedGatewayMethod(
     "fi.shadow.announce",
@@ -216,24 +338,6 @@ export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      if (hasInvisible(params.roomId) || !ROOM_ID.test(params.roomId)) {
-        respond(false, undefined, invalid("fi.shadow.announce roomId must be a Matrix room id"));
-        return;
-      }
-      if (params.threadId !== undefined && hasInvisible(params.threadId)) {
-        respond(false, undefined, invalid("fi.shadow.announce threadId must be a Matrix event id"));
-        return;
-      }
-      const fingerprint = announceFingerprint(params);
-      const cached = announceReplays.get(params.idempotencyKey);
-      if (cached) {
-        if (cached.fingerprint !== fingerprint) {
-          respond(false, undefined, invalid("fi.shadow.announce idempotencyKey was already used"));
-          return;
-        }
-        respond(true, { ...cached.result });
-        return;
-      }
       const attested = lookupShadowRequesterIdentity(params.childSessionKey);
       if (!attested || attested !== params.ownerEmail.trim().toLowerCase()) {
         respond(
@@ -243,106 +347,7 @@ export const fiShadowAnnounceHandlers: GatewayRequestHandlers = {
         );
         return;
       }
-      const assertCurrent = () => {
-        signal?.throwIfAborted();
-      };
-      let room: Awaited<ReturnType<typeof readFiUserMatrixRoom>>;
-      try {
-        room = await readFiUserMatrixRoom({
-          cfg: getRuntimeConfig(),
-          roomId: params.roomId,
-          assertCurrent,
-        });
-      } catch {
-        respond(
-          false,
-          undefined,
-          unavailable("fi.shadow.announce Matrix membership is unavailable"),
-        );
-        return;
-      }
-      if (!room.ok) {
-        respond(
-          false,
-          undefined,
-          unavailable(
-            room.reason === "unjoined"
-              ? "fi.shadow.announce Matrix membership is unavailable"
-              : "fi.shadow.announce Matrix account is unavailable",
-          ),
-        );
-        return;
-      }
-      if (
-        !roomAudienceAllowsOwner({
-          members: room.members,
-          ownerEmail: attested,
-          accountUserId: room.accountUserId,
-        })
-      ) {
-        respond(false, undefined, invalid("fi.shadow.announce room audience is not the owner"));
-        return;
-      }
-      // The room id and account are the ones the Matrix client just read.
-      // A caller-supplied destination is not accepted, and a stale stored origin is replaced.
-      const targetKey = matrixSessionKey(params.roomId, params.threadId);
-      const targetDelivery = matrixDelivery(room.accountId, params.roomId, params.threadId);
-      const origin = targetDelivery.kind === "external" ? targetDelivery.context : undefined;
-      if (!origin) {
-        respond(
-          false,
-          undefined,
-          unavailable("fi.shadow.announce Matrix membership is unavailable"),
-        );
-        return;
-      }
-      try {
-        await ensureMatrixSession(
-          matrixSessionKey(params.roomId),
-          matrixDelivery(room.accountId, params.roomId),
-        );
-        if (params.threadId) {
-          await ensureMatrixSession(targetKey, targetDelivery);
-        }
-      } catch {
-        respond(
-          false,
-          undefined,
-          unavailable("fi.shadow.announce target session could not be recorded"),
-        );
-        return;
-      }
-      const internalEvents = [shadowAnnounceEvent(params)];
-      let delivery: Awaited<ReturnType<typeof deliverSubagentAnnouncement>>;
-      try {
-        delivery = await deliverSubagentAnnouncement({
-          requesterSessionKey: targetKey,
-          requesterAgentId: FI_USER_AGENT_ID,
-          targetRequesterSessionKey: targetKey,
-          triggerMessage: formatAgentInternalEventsForPrompt(internalEvents),
-          internalEvents,
-          // Steer while the Matrix session is active; direct delivery when it is idle.
-          expectsCompletionMessage: false,
-          directIdempotencyKey: params.idempotencyKey,
-          requesterSessionOrigin: origin,
-          directOrigin: origin,
-          completionDirectOrigin: origin,
-          sourceSessionKey: params.childSessionKey,
-          sourceTool: "subagent_announce",
-          requesterIsSubagent: false,
-          signal,
-        });
-      } catch {
-        respond(false, undefined, unavailable("fi.shadow.announce delivery failed"));
-        return;
-      }
-      const result = announceResult(delivery);
-      if (!result) {
-        respond(false, undefined, unavailable(deliveryFailureMessage(delivery, params.resultText)));
-        return;
-      }
-      rememberAnnounce(params.idempotencyKey, fingerprint, result);
-      respond(true, result);
+      await deliverFiPrivateMain(params, attested, respond, signal);
     },
   ),
 };

@@ -3,6 +3,8 @@ import { resolveConversationCapabilityProfile } from "./conversation-capability-
 import { applyEmbeddedAttemptToolsAllow } from "./embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import {
   SHADOW_HOOK_TOOL_ALLOWLIST,
+  REVIEW_HOOK_TOOL_ALLOWLIST,
+  capBackgroundHookToolsAllow,
   capShadowHookToolsAllow,
   shadowHookRunParams,
 } from "./shadow-hook-tool-policy.js";
@@ -31,6 +33,28 @@ const EVERYTHING = [
 ].map((name) => ({ name }));
 
 describe("Fi shadow hook tool cap", () => {
+  it("caps review hooks to their separate read/review/report surface", () => {
+    const session = `agent:cellect-fi-user:hook:fi-review:${"a".repeat(40)}`;
+    expect(capBackgroundHookToolsAllow([session], ["*"])).toEqual([...REVIEW_HOOK_TOOL_ALLOWLIST]);
+    expect(
+      shadowHookRunParams(session, {
+        toolsAllow: ["*"],
+        toolExecutionAllow: ["exec", "message", "m365_shadow_mail"],
+      }),
+    ).toMatchObject({
+      toolsAllow: [...REVIEW_HOOK_TOOL_ALLOWLIST],
+      toolExecutionAllow: [],
+      disableMessageTool: true,
+    });
+    expect(
+      resolveConversationCapabilityProfile({
+        sessionKey: session,
+        agentId: "cellect-fi-user",
+        runtimeToolAllowlist: ["*"],
+        inheritRuntimeToolAllowlist: true,
+      }).policy.runtimeToolPolicyForInheritance,
+    ).toEqual({ allow: [...REVIEW_HOOK_TOOL_ALLOWLIST] });
+  });
   it("cuts any request to the two shadow tools", () => {
     expect(capShadowHookToolsAllow(undefined)).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);
     expect(capShadowHookToolsAllow(["*"])).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);

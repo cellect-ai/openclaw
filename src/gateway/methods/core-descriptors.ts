@@ -662,4 +662,5 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["talk.session.announce", "talk", "operator.talk", "2026.10"],
   // Fi shadow reports deliver into an existing cellect-fi-user Matrix session.
   ["fi.shadow.announce", "fi-shadow", "operator.admin", "2026.11"],
+  ["fi.review.announce", "fi-review", "operator.admin", "2026.11"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

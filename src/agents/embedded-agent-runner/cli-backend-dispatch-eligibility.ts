@@ -9,7 +9,7 @@ import {
   resolveModelAuthMode,
 } from "../model-auth.js";
 import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
-import { isShadowHookRun } from "../shadow-hook-tool-policy.js";
+import { isRestrictedBackgroundHookRun } from "../shadow-hook-tool-policy.js";
 
 type EmbeddedCliBackendDispatchEligibilityParams = {
   provider?: string;
@@ -30,7 +30,7 @@ export function resolveEmbeddedCliBackendDispatchEligibility(
   params: EmbeddedCliBackendDispatchEligibilityParams,
 ): { provider: string } | undefined {
   // Shadow sessions stay on the capped embedded path, whatever auth profile is pinned.
-  if (isShadowHookRun(params.sessionKey, params.runtimePolicySessionKey)) {
+  if (isRestrictedBackgroundHookRun(params.sessionKey, params.runtimePolicySessionKey)) {
     return undefined;
   }
   // Canonical refs must dispatch like explicit CLI-provider refs.

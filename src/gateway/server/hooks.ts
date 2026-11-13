@@ -22,7 +22,8 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import {
-  isShadowHookSessionKey,
+  hookRequesterScopeAllowed,
+  isAttestedBackgroundHookSessionKey,
   parseHookRequesterAttestation,
 } from "../../infra/hook-requester-attestation.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
@@ -309,11 +310,7 @@ export function createGatewayHookDispatcher(params: {
     // A Fi shadow session and its attestation come together or not at all,
     // whichever ingress (request, mapping, plugin) produced the dispatch.
     const hookRequesterAttestation = parseHookRequesterAttestation(value.requesterAttestation);
-    if (
-      value.requesterAttestation !== undefined
-        ? !hookRequesterAttestation || !isShadowHookSessionKey(sessionKey)
-        : isShadowHookSessionKey(sessionKey)
-    ) {
+    if (!hookRequesterScopeAllowed(value, sessionKey)) {
       return {
         ok: false,
         statusCode: 400,
@@ -324,7 +321,7 @@ export function createGatewayHookDispatcher(params: {
     // Whatever the ingress (request, mapping, plugin), a shadow turn is never
     // delivered, routed or run with unsafe external content.
     if (
-      isShadowHookSessionKey(sessionKey) &&
+      isAttestedBackgroundHookSessionKey(sessionKey) &&
       (value.deliver !== false ||
         value.delivery.mode !== "none" ||
         value.to !== undefined ||
@@ -361,7 +358,7 @@ export function createGatewayHookDispatcher(params: {
           model: result.model ?? value.model,
           // A shadow summary can be the run text. Log the status, not that text.
           summary:
-            result.status !== "ok" && !isShadowHookSessionKey(sessionKey)
+            result.status !== "ok" && !isAttestedBackgroundHookSessionKey(sessionKey)
               ? resolveHookRunSummary(result)
               : undefined,
         }),
@@ -433,7 +430,7 @@ export function createGatewayHookDispatcher(params: {
     ) => {
       // Shadow runs are traces. Failure and terminal summaries stay out of the
       // owning agent's main session, whatever the hook mode.
-      if (isShadowHookSessionKey(sessionKey)) {
+      if (isAttestedBackgroundHookSessionKey(sessionKey)) {
         return;
       }
       if (status !== "ok" && !claimFailureNotice(value.replayKey)) {

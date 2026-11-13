@@ -17,6 +17,55 @@ setupRunCronIsolatedAgentTurnSuite();
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
 const ATTESTATION = `fsa:job-1:${"A".repeat(43)}`;
 
+it("keeps a review hook isolated with an exact active pra context and its separate tool cap", async () => {
+  mockRunCronFallbackPassthrough();
+  const sessionKey = `hook:fi-review:${"a".repeat(40)}`;
+  const receipt = `pra:review-job:${"B".repeat(43)}`;
+  let pluginContext: Record<string, unknown> | undefined;
+  const defaultRun = runEmbeddedAgentMock.getMockImplementation();
+  runEmbeddedAgentMock.mockImplementation(async (args: Record<string, unknown>) => {
+    pluginContext = resolveOpenClawPluginToolInputs({
+      options: {
+        runId: args.runId as string,
+        agentSessionKey: args.sessionKey as string,
+      },
+    }).context as Record<string, unknown>;
+    return defaultRun?.(args);
+  });
+  expect(
+    await runCronIsolatedAgentTurn(
+      makeIsolatedAgentParamsFixture({
+        agentId: "cellect-fi-user",
+        sessionKey,
+        hookRequesterAttestation: receipt,
+        job: makeIsolatedAgentJobFixture({ sessionTarget: "isolated" }),
+      }),
+    ),
+  ).toMatchObject({ status: "ok" });
+  const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
+  expect(call.sessionKey).toBe(`agent:cellect-fi-user:${sessionKey}`);
+  expect(pluginContext).toMatchObject({
+    sessionKey: call.sessionKey,
+    hookRequesterAttestation: receipt,
+  });
+  expect(JSON.stringify(call)).not.toContain(receipt);
+  expect(resolveCronSessionMock).toHaveBeenCalledWith(
+    expect.objectContaining({ sessionKey: call.sessionKey, forceNew: true }),
+  );
+  expect(shadowHookRunParams(call.sessionKey, { toolsAllow: ["*"] })).toMatchObject({
+    toolsAllow: [
+      "fi_user_work_items",
+      "fi_user_agent_profile",
+      "fi_user_review_sources",
+      "fi_user_review_report",
+      "m365_review_read",
+    ],
+    disableMessageTool: true,
+    disableToolSearch: true,
+  });
+  expect(lookupHookRequesterAttestation(call.runId, call.sessionKey)).toBeUndefined();
+});
+
 it.each([
   ["hook:fi-shadow:thread", true],
   ["hook:fi-mail:thread", false],

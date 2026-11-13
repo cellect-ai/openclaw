@@ -13,6 +13,17 @@ export const SHADOW_HOOK_SESSION_PREFIX = "hook:fi-shadow:";
 const SHADOW_HOOK_SESSION = /(?:^|:)hook:fi-shadow:/i;
 const MAX_ATTESTATION_LENGTH = 256;
 const ATTESTATION = /^fsa:[^:\s]{1,200}:[A-Za-z0-9_-]{43}$/;
+const REVIEW_SESSION = /^(?:agent:cellect-fi-user:)?hook:fi-review:[a-f0-9]{40}$/i;
+const REVIEW_ATTESTATION = /^pra:[A-Za-z0-9_-]{1,100}:[A-Za-z0-9_-]{43}$/;
+
+/** A separate standing-review purpose; never a mail-shadow or human sender. */
+export function isPersonalReviewHookSessionKey(sessionKey: string | undefined | null): boolean {
+  return typeof sessionKey === "string" && REVIEW_SESSION.test(sessionKey);
+}
+
+export function isAttestedBackgroundHookSessionKey(sessionKey: string | undefined | null): boolean {
+  return isShadowHookSessionKey(sessionKey) || isPersonalReviewHookSessionKey(sessionKey);
+}
 
 /** True for a request or run session key that names a Fi shadow hook. */
 export function isShadowHookSessionKey(sessionKey: string | undefined | null): boolean {
@@ -23,9 +34,26 @@ export function isShadowHookSessionKey(sessionKey: string | undefined | null): b
 export function parseHookRequesterAttestation(value: unknown): string | undefined {
   return typeof value === "string" &&
     value.length <= MAX_ATTESTATION_LENGTH &&
-    ATTESTATION.test(value)
+    (ATTESTATION.test(value) || REVIEW_ATTESTATION.test(value))
     ? value
     : undefined;
+}
+
+/** Every ingress keeps the opaque receipt in its own purpose and native agent. */
+export function hookRequesterScopeAllowed(
+  value: { requesterAttestation?: unknown; effectiveAgentId: string },
+  sessionKey: string,
+): boolean {
+  if (value.requesterAttestation === undefined) {
+    return !isAttestedBackgroundHookSessionKey(sessionKey);
+  }
+  const receipt = parseHookRequesterAttestation(value.requesterAttestation);
+  if (!receipt) {
+    return false;
+  }
+  return isPersonalReviewHookSessionKey(sessionKey)
+    ? value.effectiveAgentId === "cellect-fi-user" && REVIEW_ATTESTATION.test(receipt)
+    : isShadowHookSessionKey(sessionKey) && ATTESTATION.test(receipt);
 }
 
 /** The first delivery or content-trust field a shadow request may not carry. */
@@ -51,6 +79,23 @@ export function normalizeHookRequesterAttestation(
   sessionKey: string | undefined,
 ): Result<{ requesterAttestation?: string }, string> {
   const raw = payload.requesterAttestation;
+  if (isPersonalReviewHookSessionKey(sessionKey)) {
+    const knob = shadowHookDeliveryKnob(payload);
+    if (knob) {
+      return { ok: false, error: `${knob} is not accepted on a hook:fi-review: session` };
+    }
+    if (raw === undefined) {
+      return { ok: false, error: "requesterAttestation is required on a hook:fi-review: session" };
+    }
+    if (
+      typeof raw !== "string" ||
+      raw.length > MAX_ATTESTATION_LENGTH ||
+      !REVIEW_ATTESTATION.test(raw)
+    ) {
+      return { ok: false, error: "requesterAttestation is malformed" };
+    }
+    return { ok: true, value: { requesterAttestation: raw } };
+  }
   if (isShadowHookSessionKey(sessionKey)) {
     // A shadow turn is silent background work: nothing it produces is routed,
     // delivered or trusted as external content by the caller's say-so.
@@ -72,7 +117,7 @@ export function normalizeHookRequesterAttestation(
     };
   }
   const attestation = parseHookRequesterAttestation(raw);
-  if (!attestation) {
+  if (!attestation || !ATTESTATION.test(attestation)) {
     return { ok: false, error: "requesterAttestation is malformed" };
   }
   return { ok: true, value: { requesterAttestation: attestation } };
@@ -92,7 +137,12 @@ export function registerHookRequesterAttestation(params: {
 }): () => void {
   const key = params.runId.trim();
   const attestation = parseHookRequesterAttestation(params.attestation);
-  if (!key || !attestation || !isShadowHookSessionKey(params.sessionKey)) {
+  const purposeMatches =
+    attestation &&
+    (ATTESTATION.test(attestation)
+      ? isShadowHookSessionKey(params.sessionKey)
+      : REVIEW_ATTESTATION.test(attestation) && isPersonalReviewHookSessionKey(params.sessionKey));
+  if (!key || !attestation || !purposeMatches) {
     return () => {};
   }
   if (activeAttestations.size >= MAX_TRACKED_ATTESTATIONS && !activeAttestations.has(key)) {
@@ -115,7 +165,11 @@ export function lookupHookRequesterAttestation(
   runId: string | undefined,
   sessionKey: string | undefined,
 ): string | undefined {
-  if (!runId || !sessionKey || !isShadowHookSessionKey(sessionKey)) {
+  if (
+    !runId ||
+    !sessionKey ||
+    !(isShadowHookSessionKey(sessionKey) || isPersonalReviewHookSessionKey(sessionKey))
+  ) {
     return undefined;
   }
   const recorded = activeAttestations.get(runId.trim());

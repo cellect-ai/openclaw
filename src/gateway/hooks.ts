@@ -16,7 +16,7 @@ import {
 import type { HookSessionMode } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
-  isShadowHookSessionKey,
+  isAttestedBackgroundHookSessionKey,
   normalizeHookRequesterAttestation,
 } from "../infra/hook-requester-attestation.js";
 import { readJsonBodyWithLimit, requestBodyErrorToText } from "../infra/http-body.js";
@@ -754,7 +754,7 @@ export function normalizeAgentPayload(
       sessionMode,
       ...delivery.value,
       // A shadow turn is never delivered; an omitted `deliver` must not mean true.
-      ...(isShadowHookSessionKey(sessionKey) ? { deliver: false } : {}),
+      ...(isAttestedBackgroundHookSessionKey(sessionKey) ? { deliver: false } : {}),
       model,
       thinking,
       timeoutSeconds,

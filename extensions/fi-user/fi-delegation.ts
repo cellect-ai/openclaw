@@ -2,6 +2,7 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import { registerShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key-runtime";
 import { projectedMatrixRun } from "./projected-matrix-runs.js";
 import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
+import { reviewToolAttestation } from "./review-requester.js";
 import { shadowToolAttestation } from "./shadow-requester.js";
 
 export type PluginConfig = {
@@ -72,6 +73,7 @@ export type Delegation = {
   user: { email: string; orgSlug: string; orgId?: string; role: string };
   gmail: { enabled: boolean; mailbox: string | null };
   fi: { token: string; expiresAt: number };
+  review?: { profile: Record<string, unknown>; roomId: string; jobId: string; expiresAt: string };
   /** Fi's resolved requester; `email` is the active member's own address. Older Fi omits it. */
   requester?: { channel?: string; email?: string };
 };
@@ -295,7 +297,8 @@ export type RequesterIdentity =
   | { channel: "matrix"; requesterMatrixUserId: string }
   | { channel: "webchat"; appContextToken: string }
   /** A Fi shadow turn: Fi names the member from the attestation it minted. */
-  | { channel: "shadow" };
+  | { channel: "shadow" }
+  | { channel: "personal-agent-review" };
 
 /**
  * The trusted requester of this Fi-user turn, as the channel proved it.
@@ -356,6 +359,36 @@ export async function exchange(
   options: { privateConversation?: { roomId: string } } = {},
 ): Promise<{ delegation: Delegation; config: ResolvedPluginConfig; identity: RequesterIdentity }> {
   const config = pluginConfig(api, context);
+  const reviewAttestation = reviewToolAttestation(context);
+  if (reviewAttestation) {
+    const broker = brokerToken(config);
+    if (!config.tenantOrgId || config.tenantOrgConflict || !broker) {
+      throw new Error("Personal review broker is unavailable");
+    }
+    context.assertInvocationCurrent?.();
+    const response = await fetch(`${config.baseUrl}/api/personal-agent/background-grant`, {
+      method: "POST",
+      headers: { authorization: `Bearer ${broker}`, "content-type": "application/json" },
+      body: JSON.stringify({ reviewAttestation, sessionKey: context.sessionKey }),
+      signal: AbortSignal.timeout(15_000),
+      redirect: "error",
+    });
+    if (!response.ok) {
+      throw new Error(`Personal review authority is unavailable (${response.status})`);
+    }
+    const delegation = (await response.json()) as Delegation;
+    context.assertInvocationCurrent?.();
+    if (
+      delegation.user?.orgId !== config.tenantOrgId ||
+      delegation.requester?.channel !== "personal-agent-review" ||
+      !delegation.fi?.token ||
+      !delegation.review?.roomId ||
+      !mintedRequesterEmail(delegation)
+    ) {
+      throw new Error("Personal review identity does not match this tenant");
+    }
+    return { delegation, config, identity: { channel: "personal-agent-review" } };
+  }
   // Fi decides whom the attestation names; it is never kept in the identity.
   const shadowAttestation = isFiUserShadowTurn(context)
     ? shadowToolAttestation(context)

@@ -8,7 +8,7 @@ import type { ChatType } from "../channels/chat-type.js";
 import type { OptionalBootstrapFileName } from "../config/types.agent-defaults.js";
 import { isRootFileMissingFailure } from "../infra/boundary-file-read.js";
 import { pathExists } from "../infra/fs-safe.js";
-import { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
+import { isAttestedBackgroundHookSessionKey } from "../infra/hook-requester-attestation.js";
 import { retainMutationAuthority } from "../infra/mutation-authority.js";
 import { isPathInside } from "../infra/path-guards.js";
 import { retryAsync } from "../infra/retry.js";
@@ -1025,7 +1025,7 @@ export function filterBootstrapFilesForSession(
 ): WorkspaceBootstrapFile[] {
   const { sessionKey, chatType, workspaceDir }: BootstrapSessionContext =
     typeof session === "string" ? { sessionKey: session } : (session ?? {});
-  if (isShadowHookSessionKey(sessionKey)) {
+  if (isAttestedBackgroundHookSessionKey(sessionKey)) {
     return files.filter((file) => SHADOW_BOOTSTRAP_ALLOWLIST.has(file.name) && !file.personalUser);
   }
   const isSubagent = isSubagentSessionKey(sessionKey);

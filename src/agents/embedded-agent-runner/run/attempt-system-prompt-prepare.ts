@@ -1,5 +1,5 @@
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
-import { isShadowHookSessionKey } from "../../../infra/hook-requester-attestation.js";
+import { isAttestedBackgroundHookSessionKey } from "../../../infra/hook-requester-attestation.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import {
   resolveProviderSystemPromptContribution,
@@ -207,7 +207,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
         enabled:
           effectivePromptMode === "full" &&
           includeMemorySection &&
-          !isShadowHookSessionKey(attempt.sessionKey),
+          !isAttestedBackgroundHookSessionKey(attempt.sessionKey),
         citationsMode: attempt.config?.memory?.citations,
         agentId: runtimeInfo.agentId,
         agentSessionKey: runtimeInfo.sessionKey,
@@ -233,7 +233,7 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   const projectMemoryBootstrap =
     effectivePromptMode === "full" &&
     activeProjectKeys.length > 0 &&
-    !isShadowHookSessionKey(attempt.sessionKey)
+    !isAttestedBackgroundHookSessionKey(attempt.sessionKey)
       ? await prepareProjectMemoryBootstrap({
           cfg: attempt.config ?? {},
           agentId: params.setup.sessionAgentId,

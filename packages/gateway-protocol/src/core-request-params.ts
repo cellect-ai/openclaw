@@ -11,6 +11,7 @@ import type {
   EnvironmentsSessionDestroyParams,
   EnvironmentsSessionExecParams,
 } from "./schema/environments.js";
+import type { FiReviewAnnounceParams } from "./schema/fi-review-announce.js";
 import type { FiShadowAnnounceParams } from "./schema/fi-shadow-announce.js";
 import type * as HumanMentionsSchema from "./schema/human-mentions.js";
 import type { LogsTailParams } from "./schema/logs-chat.js";
@@ -101,4 +102,5 @@ export type GatewayCoreRequestParams = {
   "themes.set": ThemesSetParams;
   "themes.import": ThemesImportParams;
   "fi.shadow.announce": FiShadowAnnounceParams;
+  "fi.review.announce": FiReviewAnnounceParams;
 };
