@@ -7,7 +7,10 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
-import { REVIEW_HOOK_TOOL_ALLOWLIST } from "../agents/shadow-hook-tool-policy.js";
+import {
+  capBackgroundHookToolsAllow,
+  REVIEW_HOOK_TOOL_ALLOWLIST,
+} from "../agents/shadow-hook-tool-policy.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
 import { createInvalidConfigError, throwInvalidConfig } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -1947,7 +1950,12 @@ describe("resolvePluginTools optional tools", () => {
         allow: [manifest.id],
         entries: { [manifest.id]: { enabled: true } },
       };
-      const factory = vi.fn(() => [...reviewNames, "fi_user_api"].map(makeTool));
+      const admitted = capBackgroundHookToolsAllow(
+        [context.sessionKey],
+        [...reviewNames, "fi_user_api"],
+      );
+      expect(admitted).toEqual(reviewNames);
+      const factory = vi.fn(() => admitted.map(makeTool));
       loadOpenClawPluginsMock.mockReturnValue(
         createToolRegistry([createNamedToolEntry(manifest.id, [], { declaredNames, factory })]),
       );
