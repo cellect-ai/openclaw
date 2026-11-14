@@ -66,10 +66,12 @@ it("does not let a caller choose another replay key for the accepted report", as
   await call({ ...params(), idempotencyKey: "different" });
   expect(deliver.mock.calls[0][0].idempotencyKey).toBe(deliver.mock.calls[1][0].idempotencyKey);
 });
-it("refuses a changed owner, enrollment or destination before native delivery", async () => {
-  resolve
-    .mockResolvedValueOnce(owner)
-    .mockResolvedValueOnce({ ...owner, roomId: "!changed:example.test" });
+it.each([
+  { roomId: "!changed:example.test" },
+  { ownerEmail: "other@example.test" },
+  { jobId: "another-job" },
+])("refuses a changed owner, job or destination before native delivery: %j", async (change) => {
+  resolve.mockResolvedValueOnce(owner).mockResolvedValueOnce({ ...owner, ...change });
   expect((await call()).mock.calls[0]?.[0]).toBe(false);
 });
 it("refuses caller destinations, wrong grant purposes and non-admin transport", async () => {

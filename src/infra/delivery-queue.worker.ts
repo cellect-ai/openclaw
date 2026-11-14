@@ -5,6 +5,8 @@ import type {
   WorkerOperationContext,
   WorkerOperationHandlers,
 } from "../state/worker-operation-registry.js";
+import type { LifecycleObligation } from "./conversation-lifecycle.js";
+import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
 import { loadDeliveryQueueEntryInDatabase } from "./delivery-queue-sqlite-bound.js";
 import {
   claimDeliveryQueueEntryPlatformSendInDatabase,
@@ -18,8 +20,6 @@ import {
   replacePendingDeliveryQueueEntryInDatabase,
   upsertDeliveryQueueEntryOnceAcrossNamespacesInDatabase,
 } from "./delivery-queue-sqlite-namespace.kernel.js";
-import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
-import type { LifecycleObligation } from "./conversation-lifecycle.js";
 import {
   countFailedDeliveryQueueEntriesInDatabase,
   deleteDeliveryQueueEntryInDatabase,
@@ -43,6 +43,7 @@ import {
   OUTBOUND_DELIVERY_MIGRATION_QUEUE_NAME,
   OUTBOUND_LEGACY_PREPARATION_QUEUE_NAME,
   LEGACY_OUTBOUND_DELIVERY_QUEUE_NAME,
+  OUTBOUND_DELIVERY_QUEUE_NAME,
   OUTBOUND_EXECUTABLE_QUEUE_NAMES,
   outboundDeliveryQueueName,
 } from "./outbound/delivery-queue-namespaces.js";
@@ -449,6 +450,9 @@ export const deliveryQueueOperations = {
     input: Parameters<typeof executePendingDeliveryFailure>[0],
     { open, stateOptions },
   ) => executePendingDeliveryFailure(input, { database: open(), ...stateOptions() }),
+  "deliveryQueue.completedReceipt": (input: { id: string }, { open }) =>
+    loadDeliveryQueueEntryInDatabase(open(), OUTBOUND_DELIVERY_QUEUE_NAME, input.id, "all")
+      ?.completionReceipt ?? null,
   "deliveryQueue.findIntentOwners": (
     input: Parameters<typeof findDeliveryIntentOwnersInDatabase>[1],
     { open },

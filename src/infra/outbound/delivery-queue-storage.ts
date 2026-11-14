@@ -10,7 +10,6 @@ import {
   captureDeliveryQueueStateContext,
   type DeliveryQueueStateContext,
   loadDeliveryQueueEntries,
-  loadDeliveryQueueEntry,
 } from "../delivery-queue-sqlite.js";
 import { executeDeliveryQueueOperation } from "../delivery-queue-worker-store.js";
 import type { DeliveryQueueWorkerOperations } from "../delivery-queue.worker-contract.js";
@@ -413,8 +412,10 @@ export const loadCompletedDeliveryReceipt = async (
   stateDir?: string,
   context?: DeliveryQueueStateContext,
 ): Promise<Readonly<{ platformMessageId: string }> | null> => {
-  const entry = loadDeliveryQueueEntry(OUTBOUND_DELIVERY_QUEUE_NAME, id, stateDir, "all", context);
-  return entry?.completionReceipt ?? null;
+  return await executeDeliveryQueueOperation(context, stateDir, {
+    type: "deliveryQueue.completedReceipt",
+    input: { id },
+  });
 };
 
 /** Failed settlement retains owner metadata, but is never eligible for sending. */

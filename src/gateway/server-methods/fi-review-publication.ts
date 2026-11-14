@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { loadCompletedDeliveryReceipt } from "../../infra/outbound/delivery-queue-storage.js";
 import { sendMessage } from "../../infra/outbound/message.js";
 import { readFiUserMatrixRoom } from "./fi-shadow-matrix-room.js";
 import { roomAudienceAllowsOwner } from "./fi-shadow-room-audience.js";
@@ -45,6 +46,11 @@ export async function publishPersonalReviewReport(params: {
     assertActive();
   };
   await assertCurrent();
+  const recorded = await loadCompletedDeliveryReceipt(params.idempotencyKey);
+  if (recorded?.platformMessageId) {
+    await assertCurrent();
+    return { path: "direct" as const, messageId: recorded.platformMessageId };
+  }
   const sessionKey = `agent:cellect-fi-user:matrix:channel:${params.owner.roomId}`;
   const sent = await sendMessage({
     cfg: params.getConfig(),
