@@ -10,8 +10,12 @@ import {
   decodeOutboundDeliverySnapshot,
   encodeOutboundDeliverySnapshot,
 } from "./delivery-queue-projection.js";
-import { recoverPendingDeliveries } from "./delivery-queue-recovery.js";
-import { enqueueDeliveryOnce, loadPendingDelivery } from "./delivery-queue-storage.js";
+import { recoverPendingDeliveries, type DeliverFn } from "./delivery-queue-recovery.js";
+import {
+  enqueueDeliveryOnce,
+  loadPendingDelivery,
+  markDeliveryPlatformSendAttemptStarted,
+} from "./delivery-queue-storage.js";
 import {
   createRecoveryLog,
   installDeliveryQueueTmpDirHooks,
@@ -82,9 +86,19 @@ it.each(["pending", "send_attempt_started", "unknown_after_send", "partial_unkno
 );
 it("keeps the normal default recovery behavior for other producers", async () => {
   await enqueue("review:legacy-default");
-  const deliver = vi.fn(async () => [
-    { channel: "directchat", messageId: "existing-default-behavior" },
-  ]);
+  const deliver = vi.fn<DeliverFn>(async (params) => {
+    await params.onPlatformSendDispatch?.();
+    await markDeliveryPlatformSendAttemptStarted(
+      params.deliveryQueueId!,
+      tmpDir(),
+      undefined,
+      params.deliveryProducerClaimId,
+    );
+    await params.onPlatformSendStart?.({});
+    const result = { channel: "directchat", messageId: "existing-default-behavior" };
+    await params.onDeliveryResult?.(result);
+    return [result];
+  });
   const result = await recoverPendingDeliveries({
     cfg: {},
     log: createRecoveryLog(),
