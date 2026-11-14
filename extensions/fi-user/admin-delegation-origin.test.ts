@@ -8,7 +8,10 @@ import {
   plugin,
   fetchMock,
   minted,
+  mintBody,
+  mints,
 } from "./admin-delegation.test-helpers.js";
+import { mailWakeCredential } from "./mail-wake-fixture.test-support.js";
 
 installDelegationFixtures();
 
@@ -261,5 +264,90 @@ describe("the delegated credential's selected Fi origin", () => {
       blockReason: HELD,
     });
     expect(selectedMints()).toHaveLength(1);
+  });
+});
+
+describe("host-bound shared-mail requesters", () => {
+  it("mints a shared-mail wake as the Slack member the hook named", async () => {
+    const credential = mailWakeCredential();
+    fetchMock.mockResolvedValue(minted(credential));
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const result = await turn.exec({
+      sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
+      requester: { channel: "last", senderId: "U0ADMIN001" },
+    });
+    expect(result?.params.env).toMatchObject({ FI_DELEGATED_USER_TOKEN: credential.token });
+    expect(mintBody()).toEqual({
+      requesterSenderId: "U0ADMIN001",
+      agentId: "cellect-fi-admin",
+      sessionKey,
+      sourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+    });
+  });
+
+  it("mints a shared-mail wake as the member mailbox when no Slack id is bound", async () => {
+    const credential = mailWakeCredential();
+    fetchMock.mockResolvedValue(minted(credential));
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({
+      sessionKey,
+      channel: "last",
+      trigger: "cron",
+      senderId: "alex@cellect.ai",
+    });
+    const result = await turn.exec({
+      sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
+      requester: { channel: "last", senderId: "alex@cellect.ai" },
+    });
+    expect(mintBody()).toEqual({
+      requesterEmail: "alex@cellect.ai",
+      agentId: "cellect-fi-admin",
+      sessionKey,
+      sourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+    });
+    expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(credential.token);
+  });
+
+  it("refuses a mail wake credential when host source custody is absent, including forged tool parameters", async () => {
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const context = { sessionKey, requester: { channel: "last", senderId: "U0ADMIN001" } };
+    expect((await turn.exec(context))?.block).toBe(true);
+    const forged = await turn.exec(context, {
+      params: {
+        command: "cellect commands list",
+        sourceLockCapability: `slw:forged:${"x".repeat(43)}`,
+      },
+    });
+    expect(forged?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(0);
+  });
+
+  it.each([
+    { wake_session: undefined, wake_message_id: undefined },
+    { env: "dev" },
+    { agent_id: "cellect-fi-user" },
+    { org_slug: "other-org" },
+  ])("does not inject an old or inconsistent Fi mail credential: %j", async (claims) => {
+    fetchMock.mockResolvedValue(minted(mailWakeCredential(claims)));
+    const turn = plugin();
+    const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:abc";
+    await turn.start({ sessionKey, channel: "last", trigger: "cron", senderId: "U0ADMIN001" });
+    const result = await turn.exec({
+      sessionKey,
+      hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+      hostMailWakeEnvironment: "prod",
+      requester: { channel: "last", senderId: "U0ADMIN001" },
+    });
+    expect(result?.params?.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
+    expect(mints()).toHaveLength(1);
   });
 });

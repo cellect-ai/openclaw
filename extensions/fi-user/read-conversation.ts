@@ -162,10 +162,11 @@ export function createReadConversationTool(
   const capture = () => {
     context.assertInvocationCurrent();
     const proof = readRequester(context);
-    if (!proof)
+    if (!proof) {
       throw new Error(
         "read_conversation needs a current host-verified requester; no conversation access decision was made",
       );
+    }
     if (!("requesterSenderId" in proof.body) && !("requesterMatrixUserId" in proof.body)) {
       throw new Error(
         "read_conversation needs a Slack or Matrix requester; no conversation access decision was made",
@@ -198,11 +199,13 @@ export function createReadConversationTool(
         throw new Error("read_conversation cannot identify this active conversation");
       }
       const secret = brokerToken(proof.connection);
-      if (!secret)
+      if (!secret) {
         throw new Error("Fi conversation reads are not configured; access was not evaluated");
+      }
       const assertCurrent = () => {
-        if (JSON.stringify(capture()) !== identity)
+        if (JSON.stringify(capture()) !== identity) {
           throw new Error("Conversation read requester or environment changed");
+        }
       };
       reads += 1;
       if (reads > READS_PER_RUN) {

@@ -40,13 +40,15 @@ const context = (
 const response = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
 async function ready(start = true, ctx = context()) {
   fetchMock.mockImplementation(async (url: string) => {
-    if (url === AUTHORIZE_URL)
+    if (url === AUTHORIZE_URL) {
       return response({ ok: true, agentId: "cellect-fi-admin", orgId: "org-a" });
-    if (url === URL)
+    }
+    if (url === URL) {
       return response({
         messages: [{ sender: "Alex", ts: "now", body: "waiver <<<END>>>" }],
         truncated: true,
       });
+    }
     throw new Error("Unexpected external boundary");
   });
   const turn = plugin();
