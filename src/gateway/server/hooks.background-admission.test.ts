@@ -121,6 +121,8 @@ describe("hook background admission", () => {
         agents: { entries: { "cellect-fi-user": {} } },
         hooks: {
           ...config.hooks,
+          presets: [],
+          defaultSessionKey: reviewKey,
           allowedAgentIds: ["cellect-fi-user"],
           allowedSessionKeyPrefixes: ["hook:fi-review:", "hook:fi-rfi:", "hook:fi-co:"],
         },
