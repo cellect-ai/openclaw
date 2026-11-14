@@ -113,6 +113,7 @@ function createQueuedDelivery(
     accountId: params.accountId,
     queuePolicy: params.queuePolicy,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
+    recoveryPolicy: params.recoveryPolicy,
     ...(params.initialProducerClaim ??
       (params.requiresProducerClaim === true ? { requiresProducerClaim: true } : {})),
     preparedBatch: projectPreparedOutboundBatchForStorage(preparedBatchFromLowLevelInput(params)),

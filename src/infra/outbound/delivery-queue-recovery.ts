@@ -637,6 +637,20 @@ async function drainQueuedEntry(
   if (ownerState !== "continue") {
     return ownerState;
   }
+  // Ephemeral producer authority is not serialized with durable custody. Only
+  // an already recorded owner receipt above may settle it. Adapter reconciliation
+  // can resend original transactions, so it also requires a fresh live authority.
+  // Unknown future policy values also fail closed rather than inheriting replay.
+  if (entry.recoveryPolicy !== undefined) {
+    return settleQueuedFailure(
+      {
+        ...opts,
+        error:
+          "needs_live_authority: durable intent permits receipt reconciliation only; new delivery requires a fresh producer",
+      },
+      stateContext,
+    );
+  }
   if (needsUnknownSendReconciliation(entry)) {
     // A crash after platform send start cannot be blindly replayed; adapters
     // must reconcile whether the platform already committed the message.

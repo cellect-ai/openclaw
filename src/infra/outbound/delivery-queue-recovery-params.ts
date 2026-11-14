@@ -65,6 +65,7 @@ export async function buildRecoveryDeliverParams(
     channel: entry.channel,
     to: entry.to,
     accountId: entry.accountId,
+    recoveryPolicy: entry.recoveryPolicy,
     ...(entry.queuePolicy !== undefined ? { queuePolicy: entry.queuePolicy } : {}),
     ...(entry.requireUnknownSendReconciliation === true
       ? { requireUnknownSendReconciliation: true }

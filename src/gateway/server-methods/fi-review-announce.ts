@@ -7,7 +7,7 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { isPersonalReviewHookSessionKey } from "../../infra/hook-requester-attestation.js";
-import { deliverFiPrivateMain } from "./fi-shadow-announce.js";
+import { publishPersonalReviewReport } from "./fi-review-publication.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { defineValidatedGatewayMethod } from "./validation.js";
 
@@ -42,21 +42,15 @@ export const fiReviewAnnounceHandlers: GatewayRequestHandlers = {
         };
         // The native delivery owner supplies restart-safe direct idempotency; separate replay namespace from mail.
         const key = `review:${createHash("sha256").update(owner.jobId).digest("hex")}`;
-        await deliverFiPrivateMain(
-          {
-            roomId: owner.roomId,
-            ownerEmail: owner.ownerEmail,
-            childSessionKey: params.childSessionKey,
-            idempotencyKey: key,
-            label: params.label,
-            resultText: params.resultText,
-            replyInstruction: "ask_owner",
-          },
-          owner.ownerEmail,
-          respond,
+        const result = await publishPersonalReviewReport({
+          getConfig: getRuntimeConfig,
+          owner,
+          resultText: params.resultText,
+          idempotencyKey: key,
           signal,
-          beforeDelivery,
-        );
+          assertOwnerCurrent: beforeDelivery,
+        });
+        respond(true, result);
       } catch {
         respond(
           false,

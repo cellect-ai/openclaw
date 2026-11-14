@@ -117,6 +117,8 @@ type MessageSendParams = {
   gatewayOwnedDelivery?: boolean;
   /** @internal Stable producer id for idempotent durable queue creation. */
   deliveryIntentId?: string;
+  /** Persist custody for reconciliation only; a fresh live owner must authorize every new send. */
+  recoveryPolicy?: "reconcile_only";
   /** @internal Serializable owner state finalized by live send or recovery. */
   deliveryCompletion?: DurableDeliveryCompletion;
   conversationDeliveryTarget?: ConversationDeliveryTarget;
@@ -426,6 +428,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
         formatting: params.parseMode ? { parseMode: params.parseMode } : undefined,
         preparedMessageId: params.preparedMessageId,
         deliveryIntentId: params.deliveryIntentId,
+        recoveryPolicy: params.recoveryPolicy,
         deliveryCompletion: params.deliveryCompletion,
         reusePendingDeliveryIntent: params.reusePendingDeliveryIntent,
         deliveryRetryOwner: params.deliveryRetryOwner,

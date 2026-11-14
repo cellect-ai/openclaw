@@ -926,3 +926,29 @@ describe("registered Matrix agent entitlement hooks", () => {
     info.mockRestore();
   });
 });
+
+// A background report is a bot publication, not a new human Matrix event.
+it("does not admit a report handoff as a fabricated human Main turn", async () => {
+  const hook = plugin();
+  const result = await hook(
+    "before_agent_reply",
+    {},
+    {
+      runId: "review-publication-run",
+      agentId: "cellect-fi-user",
+      accountId: "fi-user",
+      channel: "matrix",
+      chatId: "!main:matrix.example",
+      sessionKey: "agent:cellect-fi-user:matrix:channel:!main:matrix.example",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceTool: "subagent_announce",
+        sourceSessionKey: "hook:fi-review:fixture",
+      },
+    },
+  );
+  expect(result).toMatchObject({
+    handled: true,
+    reply: { text: "Access verification is temporarily unavailable. Please retry shortly." },
+  });
+});

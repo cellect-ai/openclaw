@@ -5,7 +5,7 @@ import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 const { resolve, deliver } = vi.hoisted(() => ({ resolve: vi.fn(), deliver: vi.fn() }));
 vi.mock("../../../extensions/fi-user/api.js", () => ({ resolvePersonalReviewDelivery: resolve }));
-vi.mock("./fi-shadow-announce.js", () => ({ deliverFiPrivateMain: deliver }));
+vi.mock("./fi-review-publication.js", () => ({ publishPersonalReviewReport: deliver }));
 const owner = {
   ownerEmail: "owner@example.test",
   roomId: "!main:example.test",
@@ -22,9 +22,9 @@ beforeEach(() => {
   resetGatewayWorkAdmission();
   vi.clearAllMocks();
   resolve.mockResolvedValue(owner);
-  deliver.mockImplementation(async (_params, _owner, respond, _signal, revalidate) => {
-    await revalidate();
-    respond(true, { path: "direct" });
+  deliver.mockImplementation(async ({ assertOwnerCurrent }) => {
+    await assertOwnerCurrent();
+    return { path: "direct" };
   });
 });
 async function call(input: Record<string, unknown> = params(), scopes = ["operator.admin"]) {
@@ -54,14 +54,10 @@ it("uses fresh enrollment authority twice and the native private-Main delivery o
   expect(resolve).toHaveBeenCalledTimes(2);
   expect(deliver).toHaveBeenCalledWith(
     expect.objectContaining({
-      roomId: owner.roomId,
-      ownerEmail: owner.ownerEmail,
-      replyInstruction: "ask_owner",
+      owner,
+      resultText: params().resultText,
+      assertOwnerCurrent: expect.any(Function),
     }),
-    owner.ownerEmail,
-    expect.any(Function),
-    undefined,
-    expect.any(Function),
   );
   expect(respond).toHaveBeenCalledWith(true, { path: "direct" });
 });

@@ -90,6 +90,7 @@ function buildLegacyPreparationParams(entry: LegacyQueuedDelivery, cfg: OpenClaw
     accountId: entry.accountId,
     queuePolicy: entry.queuePolicy,
     requireUnknownSendReconciliation: entry.requireUnknownSendReconciliation,
+    recoveryPolicy: entry.recoveryPolicy,
     payloads: entry.payloads,
     renderedBatchPlan: entry.renderedBatchPlan,
     threadId: entry.threadId,

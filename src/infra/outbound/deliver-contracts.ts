@@ -209,6 +209,8 @@ export type DeliverOutboundPayloadsCoreParams = {
   deliveryQueueId?: string;
   /** @internal Stable producer id used to make queue creation idempotent across crashes. */
   deliveryIntentId?: string;
+  /** Persist custody for reconciliation only; a fresh live owner must authorize every new send. */
+  recoveryPolicy?: "reconcile_only";
   /** @internal Retain the completed receipt for a producer-owned replayable intent. */
   completionRetention?: DeliveryQueueCompletionRetention;
   /** @internal Producer-specific durable recovery attempt budget. */

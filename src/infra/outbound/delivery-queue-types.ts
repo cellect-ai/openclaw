@@ -75,6 +75,8 @@ export type QueuedDeliveryPayload = {
   accountId?: string;
   queuePolicy?: "required" | "best_effort";
   requireUnknownSendReconciliation?: boolean;
+  /** Persist custody for reconciliation only; a fresh live owner must authorize every new send. */
+  recoveryPolicy?: "reconcile_only";
   requiresProducerClaim?: boolean;
   preparedBatch?: PreparedOutboundBatch;
   payloads?: ReplyPayload[];

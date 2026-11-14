@@ -156,6 +156,7 @@ export async function stageAndEnqueueOutboundDelivery(
       accountId: params.accountId,
       queuePolicy,
       requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
+      recoveryPolicy: params.recoveryPolicy,
       ...(params.reusePendingDeliveryIntent ? { requiresProducerClaim: true } : {}),
       ...(initialProducerClaim ? { initialProducerClaim } : {}),
       preparedBatch: queuedPreparedBatch,
