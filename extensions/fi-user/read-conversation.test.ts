@@ -1,5 +1,6 @@
 import { createHmac } from "node:crypto";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { describe, expect, it, vi } from "vitest";
 import {
   AUTHORIZE_URL,
@@ -12,7 +13,12 @@ import {
   slackThread,
   SLACK_THREAD,
 } from "./admin-delegation.test-helpers.js";
-import { neutralizeDelimiters, registerReadConversationCap } from "./read-conversation.js";
+import { configFromRuntime } from "./fi-delegation.js";
+import {
+  createReadConversationTool,
+  neutralizeDelimiters,
+  registerReadConversationCap,
+} from "./read-conversation.js";
 
 installDelegationFixtures();
 const URL = "https://fi.example.test/fi/api/threads/conversations/read";
@@ -121,6 +127,33 @@ describe("registered requester-bound conversation reader", () => {
     const { tool } = await ready(false);
     await expect(tool.execute("read", { conversationId: id })).rejects.toThrow(
       "host-verified requester",
+    );
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+  it("refuses an email-only requester before signing or dispatching a conversation read", async () => {
+    const api = createTestPluginApi({
+      id: "fi-user",
+      config: {
+        plugins: {
+          entries: {
+            "fi-user": {
+              config: {
+                baseUrl: "https://fi.example.test/fi/",
+                brokerTokenEnv: "FIXTURE_BROKER",
+                tenantOrgId: "org-a",
+              },
+            },
+          },
+        },
+      },
+    });
+    const tool = createReadConversationTool(api, context(), () => ({
+      connection: configFromRuntime(api),
+      body: { requesterEmail: "mail-wake@example.test" },
+    }));
+    expect(tool).not.toBeNull();
+    await expect(tool!.execute("read", { conversationId: id })).rejects.toThrow(
+      "needs a Slack or Matrix requester",
     );
     expect(fetchMock).not.toHaveBeenCalled();
   });

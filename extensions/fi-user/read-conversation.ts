@@ -166,7 +166,12 @@ export function createReadConversationTool(
       throw new Error(
         "read_conversation needs a current host-verified requester; no conversation access decision was made",
       );
-    return proof;
+    if (!("requesterSenderId" in proof.body) && !("requesterMatrixUserId" in proof.body)) {
+      throw new Error(
+        "read_conversation needs a Slack or Matrix requester; no conversation access decision was made",
+      );
+    }
+    return { ...proof, body: proof.body };
   };
   return {
     name: READ_CONVERSATION_TOOL,

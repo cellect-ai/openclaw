@@ -6,12 +6,23 @@ import type { ResolvedPluginConfig } from "./fi-delegation.js";
  * authorization; retaining this value does not extend the originating run. */
 export type ProvenRequester = {
   connection: ResolvedPluginConfig;
-  body: { requesterSenderId: string } | { requesterMatrixUserId: string };
+  body:
+    | { requesterSenderId: string }
+    | { requesterMatrixUserId: string }
+    | { requesterEmail: string };
 };
 
 type RequesterProofContext = Pick<
   OpenClawPluginToolContext,
-  "runId" | "agentId" | "sessionKey" | "messageChannel" | "requesterSenderId" | "agentAccountId"
+  | "runId"
+  | "agentId"
+  | "sessionKey"
+  | "messageChannel"
+  | "requesterSenderId"
+  | "agentAccountId"
+  | "hookSourceLockCapability"
+  | "hookMailWakeSessionKey"
+  | "hostMailWakeEnvironment"
 >;
 
 export type RequesterProofReader = (context: RequesterProofContext) => ProvenRequester | undefined;
