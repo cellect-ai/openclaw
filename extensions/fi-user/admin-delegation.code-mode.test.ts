@@ -4,16 +4,24 @@ import { createAgentHarnessToolSurfaceRuntime } from "openclaw/plugin-sdk/agent-
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { expect, it, vi } from "vitest";
 import {
+  fetchMock,
   installDelegationFixtures,
   matrix,
   mintBody,
+  minted,
   mints,
   plugin,
   SANDBOXED,
   TOKEN,
 } from "./admin-delegation.test-helpers.js";
+import { mailWakeCredential } from "./mail-wake-fixture.test-support.js";
 
 installDelegationFixtures();
+
+const mailCustody = {
+  hookSourceLockCapability: `slw:job-mail:${"a".repeat(43)}`,
+  hostMailWakeEnvironment: "prod",
+};
 
 it("binds an admin requester to the signing package query containing a literal ampersand", async () => {
   vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
@@ -50,14 +58,17 @@ it.each([
   const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:message-thread";
   await turn.start({ sessionKey, trigger: "cron", channel: "last", senderId: "U0ADMIN001" });
   const result = await turn.exec(
-    { sessionKey, requester: { channel: "last", senderId: "U0ADMIN001" } },
+    { ...mailCustody, sessionKey, requester: { channel: "last", senderId: "U0ADMIN001" } },
     { params: { command } },
   );
+  expect(result?.params.command).toBe(command);
   expect(result?.params.env?.FI_DELEGATED_USER_TOKEN).toBeUndefined();
   expect(mints()).toEqual([]);
 });
 
 it("preserves a mail requester's literal RFI comment through the native Code Mode credential boundary", async () => {
+  const credential = mailWakeCredential();
+  fetchMock.mockResolvedValue(minted(credential));
   const turn = plugin();
   const sessionKey = "agent:cellect-fi-admin:hook:fi-mail:message-thread";
   const context = buildAgentHookContextChannelFields({
@@ -81,6 +92,7 @@ it("preserves a mail requester's literal RFI comment through the native Code Mod
       }
       const rewrite = await turn.exec(
         {
+          ...mailCustody,
           sessionKey,
           toolCallId,
           toolName: "sandbox_exec",
@@ -101,7 +113,7 @@ it("preserves a mail requester's literal RFI comment through the native Code Mod
       return acceptResultBeforeProjection({
         content: [],
         details: {
-          credentialPresent: rewrite?.params.env?.FI_DELEGATED_USER_TOKEN === TOKEN,
+          credentialPresent: rewrite?.params.env?.FI_DELEGATED_USER_TOKEN === credential.token,
           argv,
         },
       });
@@ -153,7 +165,12 @@ it("preserves a mail requester's literal RFI comment through the native Code Mod
         ],
       },
     });
-    expect(mintBody()).toEqual({ requesterSenderId: "U0ADMIN001", agentId: "cellect-fi-admin" });
+    expect(mintBody()).toEqual({
+      requesterSenderId: "U0ADMIN001",
+      agentId: "cellect-fi-admin",
+      sessionKey,
+      sourceLockCapability: mailCustody.hookSourceLockCapability,
+    });
     expect(mints()).toHaveLength(1);
   } finally {
     surface.cleanup();
