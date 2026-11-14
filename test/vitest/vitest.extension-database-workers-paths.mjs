@@ -17,6 +17,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/discord/src/monitor/native-command.guild-guards.test.ts",
   "extensions/feishu/src/monitor.message-handler.ingress.test.ts",
   "extensions/feishu/src/doctor.test.ts",
+  "extensions/fi-user/shadow-requester.test.ts",
   "extensions/googlechat/src/monitor-ingress.test.ts",
   "extensions/googlechat/src/monitor.test.ts",
   "extensions/imessage/src/monitor/ingress.test.ts",

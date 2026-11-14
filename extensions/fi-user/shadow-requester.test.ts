@@ -5,7 +5,8 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { lookupShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key-runtime";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin-sdk/test-state";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("openclaw/plugin-sdk/document-extractor", () => ({ extractDocumentContent: vi.fn() }));
 
@@ -75,6 +76,14 @@ function delegationRequest() {
 }
 
 describe("fi-user on a Fi shadow hook turn", () => {
+  let state: OpenClawTestState;
+  beforeAll(async () => {
+    state = await createOpenClawTestState({ label: "fi-shadow-requester" });
+  });
+  afterAll(async () => {
+    await state.cleanup();
+  });
+
   beforeEach(() => {
     vi.stubEnv("TEST_BROKER_TOKEN", "broker-token");
     calls.length = 0;
@@ -119,7 +128,7 @@ describe("fi-user on a Fi shadow hook turn", () => {
       sessionKey: SHADOW_SESSION,
       agentId: "cellect-fi-user",
     });
-    expect(lookupShadowRequesterIdentity(SHADOW_SESSION)).toBe("a@example.com");
+    expect(await lookupShadowRequesterIdentity(SHADOW_SESSION)).toBe("a@example.com");
   });
 
   it.each(["82-sussex/docs/doc-1/file", "82-sussex/esign", "82-sussex/esign/submissions/221"])(

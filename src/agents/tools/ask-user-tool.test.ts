@@ -432,6 +432,9 @@ describe("ask_user execution", () => {
 
     expect(result.details).toEqual({ status: "no_answer" });
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining(text) });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("Consequential unresolved facts and consent remain unanswered"),
+    });
     if (status === "pending") {
       expect(gateway.mock).toHaveBeenCalledWith(
         "question.resolve",

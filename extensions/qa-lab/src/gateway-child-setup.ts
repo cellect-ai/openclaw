@@ -87,6 +87,8 @@ export type QaGatewayChildParams = {
   mockAuthAgentIds?: readonly string[];
   onListening?: (context: QaGatewayChildListeningContext) => Promise<void> | void;
   mutateConfig?: (cfg: OpenClawConfig) => OpenClawConfig;
+  /** Explicit child environment; omission retains the caller environment. */
+  baseEnv?: NodeJS.ProcessEnv;
   runtimeEnvPatch?: NodeJS.ProcessEnv;
   runtimePreloads?: readonly string[];
 };
@@ -398,6 +400,7 @@ export async function prepareQaGatewayChild(
                 }),
               };
           env = buildQaRuntimeEnv({
+            baseEnv: params.baseEnv,
             configPath,
             gatewayToken,
             homeDir,

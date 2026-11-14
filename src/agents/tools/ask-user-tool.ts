@@ -347,11 +347,11 @@ function answeredResult(questions: readonly QuestionRequestQuestion[], answers: 
 
 function noAnswerResult(status: Exclude<QuestionWaitAnswerResult["status"], "answered">) {
   const payload = { status: "no_answer" as const };
-  const note =
-    status === "cancelled"
-      ? "The question was cancelled; proceed with best judgment."
-      : "No answer arrived; proceed with best judgment.";
-  return textResult(`${note}\n\n${JSON.stringify(payload, null, 2)}`, payload);
+  const note = status === "cancelled" ? "The question was cancelled." : "No answer arrived.";
+  return textResult(
+    `${note} Continue only independent work or choices with a safe default. Consequential unresolved facts and consent remain unanswered; wait before dependent work.\n\n${JSON.stringify(payload, null, 2)}`,
+    payload,
+  );
 }
 
 async function waitForPromptDelivery(

@@ -116,7 +116,7 @@ describe("the admin turn's Fi requester line", () => {
     await turn.start();
     const { turnContext, systemContext } = await promptResults(turn, run());
     expect(turnContext).toContain(
-      "Fi requester: admin@example.com. This turn acts as that member. Pass --actor admin@example.com on every Fi command.",
+      "Fi requester: admin@example.com. This turn acts as that member. Use --actor admin@example.com only when the installed command schema accepts or requires it.",
     );
     expect(systemContext).not.toContain("Fi requester");
     expect(turnContext).not.toContain(TOKEN);

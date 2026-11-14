@@ -84,6 +84,7 @@ afterEach(async () => {
 async function createPackagedFixture(
   runtimeEnvPatch: NodeJS.ProcessEnv,
   mutateConfig?: (cfg: OpenClawConfig) => OpenClawConfig,
+  baseEnv?: NodeJS.ProcessEnv,
 ) {
   const fixtureRoot = await tempDirs.makeTempDir("qa-packaged-");
   const tempParentDir = path.join(fixtureRoot, "gateway-temp");
@@ -106,6 +107,7 @@ async function createPackagedFixture(
         },
         providerMode: "mock-openai",
         transportBaseUrl: "http://127.0.0.1:43123",
+        baseEnv,
         runtimeEnvPatch: { QA_RECORD_PATH: recordPath, ...runtimeEnvPatch },
         mutateConfig,
       }),
@@ -1064,6 +1066,31 @@ describe("buildQaRuntimeEnv", () => {
         readCodexCredentials: () => null,
       }),
     ).not.toThrow();
+  });
+
+  it.each([false, true])("uses the public launcher environment override: %s", async (explicit) => {
+    vi.stubEnv("QA_OUTER_CREDENTIAL_SENTINEL", "synthetic");
+    try {
+      const { start, recordPath } = await createPackagedFixture(
+        {},
+        undefined,
+        explicit
+          ? {
+              PATH: process.env.PATH,
+              QA_ALLOWED_SENTINEL: "synthetic",
+            }
+          : undefined,
+      );
+      await expect(start()).rejects.toThrow("fixture gateway exit");
+      const records = await readJsonLines(recordPath);
+      expect(records.at(-1)).toMatchObject({
+        kind: "gateway",
+        outerCredentialPresent: !explicit,
+        allowedSentinelPresent: explicit,
+      });
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it("lets a legacy packaged candidate create its auth DB before gateway spawn", async () => {

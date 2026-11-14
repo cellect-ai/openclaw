@@ -119,6 +119,8 @@ if (args[0] === "update") {
 const config = JSON.parse(fs.readFileSync(configPath, "utf8"));
 record({
   kind: "gateway",
+  outerCredentialPresent: Object.hasOwn(process.env, "QA_OUTER_CREDENTIAL_SENTINEL"),
+  allowedSentinelPresent: Object.hasOwn(process.env, "QA_ALLOWED_SENTINEL"),
   args,
   authDbPath,
   dbExists: fs.existsSync(authDbPath),
