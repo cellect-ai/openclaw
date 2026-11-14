@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/core";
-import { brokerToken, type PluginConfig } from "./fi-delegation.js";
+import { brokerToken, resolveFiUserPluginConfig, type PluginConfig } from "./fi-delegation.js";
 
 /** No requester is selected here: Fi verifies the opaque grant and accepted report digest. */
 export async function resolvePersonalReviewDelivery(
@@ -12,14 +12,14 @@ export async function resolvePersonalReviewDelivery(
   },
   signal?: AbortSignal,
 ): Promise<{ ownerEmail: string; roomId: string; jobId: string }> {
-  const config = cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined;
-  if (
-    !config?.baseUrl ||
-    !config.brokerTokenEnv ||
-    !config.tenantOrgId ||
-    config.operatorAgentId ||
-    (config.matrixTenantOrgId && config.matrixTenantOrgId !== config.tenantOrgId)
-  ) {
+  const raw = cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined;
+  // Delivery requires explicit private routing; resolver defaults do not enroll it.
+  // Reject raw operator configuration before normalization can discard unknown values.
+  if (!raw?.baseUrl?.trim() || !raw.brokerTokenEnv?.trim() || raw.operatorAgentId !== undefined) {
+    throw new Error("review_delivery_unavailable");
+  }
+  const config = resolveFiUserPluginConfig(raw);
+  if (!config.tenantOrgId || config.tenantOrgConflict) {
     throw new Error("review_delivery_unavailable");
   }
   const token = brokerToken({ brokerTokenEnv: config.brokerTokenEnv });

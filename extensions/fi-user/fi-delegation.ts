@@ -116,7 +116,7 @@ const ENVIRONMENT_VARIABLE_NAME = /^[A-Z_][A-Z0-9_]*$/;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
 const MATRIX_USER_ID = /^@[^\s:]+:[^\s]+$/;
 
-function resolve(raw: PluginConfig | undefined): ResolvedPluginConfig {
+export function resolveFiUserPluginConfig(raw: PluginConfig | undefined): ResolvedPluginConfig {
   const list = (value: unknown) =>
     Array.isArray(value)
       ? value.filter((item): item is string => typeof item === "string" && item.trim() !== "")
@@ -179,7 +179,9 @@ export function isAdminAgent(
 
 export function configFromRuntime(api: OpenClawPluginApi): ResolvedPluginConfig {
   const cfg = api.runtime.config?.current?.() ?? api.config;
-  return resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined);
+  return resolveFiUserPluginConfig(
+    cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined,
+  );
 }
 
 /** Resolve an environment only from the host-proven inbound Matrix account. */
@@ -223,7 +225,9 @@ export function pluginConfig(
 ): ResolvedPluginConfig {
   const cfg = context.getRuntimeConfig?.() ?? context.runtimeConfig ?? context.config;
   const resolved = cfg
-    ? resolve(cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined)
+    ? resolveFiUserPluginConfig(
+        cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined,
+      )
     : configFromRuntime(api);
   if (context.messageChannel !== "matrix") {
     // A verified projected Matrix reply in a Slack session is that person's
