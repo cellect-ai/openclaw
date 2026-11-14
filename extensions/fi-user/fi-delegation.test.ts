@@ -45,10 +45,11 @@ it("retains the incoming private review grant exchange without requesting a gene
     assertInvocationCurrent: current,
   } as OpenClawPluginToolContext);
   expect(result.identity).toEqual({ channel: "personal-agent-review" });
-  expect(fetchMock.mock.calls[0][0]).toBe(
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls[0]![0]).toBe(
     "https://fi.example.test/api/personal-agent/background-grant",
   );
-  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({
+  expect(JSON.parse(fetchMock.mock.calls[0]![1].body)).toEqual({
     reviewAttestation: attestation,
     sessionKey,
   });
@@ -403,12 +404,13 @@ describe("mail response compatibility at credential mint", () => {
         }).context;
         const result = await exchange(api, context);
         tokens.push(result.delegation.fi.token);
-        expect(JSON.parse(String(fetchMock.mock.calls[index][1].body))).toMatchObject({
+        expect(fetchMock).toHaveBeenCalledTimes(index + 1);
+        expect(JSON.parse(String(fetchMock.mock.calls[index]![1].body))).toMatchObject({
           sessionKey,
           sourceLockCapability: receipt,
         });
         expect(
-          JSON.parse(Buffer.from(result.delegation.fi.token.split(".")[1], "base64url").toString())
+          JSON.parse(Buffer.from(result.delegation.fi.token.split(".")[1]!, "base64url").toString())
             .wake_message_id,
         ).toBe(messageId);
       }

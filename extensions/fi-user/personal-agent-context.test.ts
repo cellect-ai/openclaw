@@ -42,7 +42,8 @@ it("refreshes enrollment at the actual prompt hook and instructs fresh sources b
   expect(result).toMatchObject({
     prependContext: expect.stringContaining("Refresh the relevant enrolled sources now"),
   });
-  expect(delegatedFetch.mock.calls[0][2]).toBe("/api/shape/personal-agent/context");
+  expect(delegatedFetch).toHaveBeenCalledTimes(1);
+  expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/personal-agent/context");
   await hook({}, context());
   expect(exchange).toHaveBeenCalledTimes(2);
 });

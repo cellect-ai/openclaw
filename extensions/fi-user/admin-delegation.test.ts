@@ -574,10 +574,11 @@ describe("the admin agent's delegated user token", () => {
       FI_DELEGATED_USER_TOKEN: credential.token,
       FI_APP_URL: "https://dev.fi.example.test/fi",
     });
-    expect(fetchMock.mock.calls[0][0]).toBe(
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0]![0]).toBe(
       "https://dev.fi.example.test/fi/api/openclaw-user-delegation",
     );
-    expect((fetchMock.mock.calls[0][1] as RequestInit).headers).toMatchObject({
+    expect((fetchMock.mock.calls[0]![1] as RequestInit).headers).toMatchObject({
       authorization: "Bearer synthetic-dev-broker",
     });
   });

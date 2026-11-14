@@ -77,8 +77,9 @@ describe("personal review tools", () => {
   it("does not wrap direct report/source contracts as operation envelopes", async () => {
     const report = { disposition: "silent", text: "", sourceStatus: [] };
     await tool("fi_user_review_report").execute("call-1", report);
-    expect(delegatedFetch.mock.calls[0][2]).toBe("/api/shape/personal-agent/report");
-    expect(JSON.parse(delegatedFetch.mock.calls[0][3].body)).toEqual(report);
+    expect(delegatedFetch).toHaveBeenCalledTimes(1);
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/personal-agent/report");
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual(report);
   });
   it("fills a stable per-turn source request id instead of a model-selected one", async () => {
     const context = { ...review, runId: "e4e3c1ef-5853-41f5-b9ce-0e302545b7db" };
@@ -87,10 +88,11 @@ describe("personal review tools", () => {
     )!;
     await source.execute("call-1", { sourceId: "agents", requestId: "caller-selected" });
     await source.execute("call-2", { sourceId: "agents" });
-    expect(JSON.parse(delegatedFetch.mock.calls[0][3].body)).toEqual({
+    expect(delegatedFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual({
       sourceId: "agents",
       requestId: `${context.runId}:agents`,
     });
-    expect(delegatedFetch.mock.calls[0][3].body).toBe(delegatedFetch.mock.calls[1][3].body);
+    expect(delegatedFetch.mock.calls[0]![3].body).toBe(delegatedFetch.mock.calls[1]![3].body);
   });
 });
