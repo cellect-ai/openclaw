@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const { exchange, delegatedFetch } = vi.hoisted(() => ({
@@ -31,6 +32,16 @@ beforeEach(() => {
 });
 const tool = (name: string) => createPersonalAgentTools(api, review).find((t) => t.name === name)!;
 describe("personal review tools", () => {
+  it("declares every review factory tool for cold discovery and runtime ownership", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as {
+      contracts: { tools: string[] };
+    };
+    const names = createPersonalAgentTools(api, review).map((t) => t.name);
+    expect(names).toHaveLength(4);
+    expect(manifest.contracts.tools).toEqual(expect.arrayContaining(names));
+  });
   it("fills the current owner and dispatches the actual operation envelope", async () => {
     await tool("fi_user_work_items").execute("call-1", {
       action: "list",

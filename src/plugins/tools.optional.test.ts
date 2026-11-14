@@ -1,11 +1,13 @@
 // Verifies optional plugin tool registration and absence handling.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getEventListeners } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { normalizeToolParameters } from "../agents/agent-tools.schema.js";
+import { REVIEW_HOOK_TOOL_ALLOWLIST } from "../agents/shadow-hook-tool-policy.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
 import { createInvalidConfigError, throwInvalidConfig } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -1915,6 +1917,62 @@ describe("resolvePluginTools optional tools", () => {
 
     expectResolvedToolNames(tools, ["other_tool", "optional_tool"]);
   });
+
+  it.each(["current manifest", "original omission"] as const)(
+    "cold-selects Fi review tools only through manifest ownership (%s)",
+    (scenario) => {
+      // Exercise native metadata selection and returned-tool admission without
+      // importing the heavy bundled extension or booting a Gateway.
+      const manifest = JSON.parse(
+        readFileSync(
+          new URL("../../extensions/fi-user/openclaw.plugin.json", import.meta.url),
+          "utf8",
+        ),
+      ) as { id: string; contracts: { tools: string[] } };
+      const reviewNames = REVIEW_HOOK_TOOL_ALLOWLIST.filter((name) => name.startsWith("fi_user_"));
+      expect(reviewNames).toHaveLength(4);
+      const declaredNames =
+        scenario === "original omission"
+          ? manifest.contracts.tools.filter((name) => !reviewNames.includes(name))
+          : manifest.contracts.tools;
+      const context = {
+        ...createContext(),
+        agentId: "cellect-fi-user",
+        runId: "fixture-review-run",
+        sessionKey: `hook:fi-review:${"a".repeat(40)}`,
+        hookRequesterAttestation: `pra:fixture-review-job:${"A".repeat(43)}`,
+      };
+      context.config.plugins = {
+        ...context.config.plugins,
+        allow: [manifest.id],
+        entries: { [manifest.id]: { enabled: true } },
+      };
+      const factory = vi.fn(() => [...reviewNames, "fi_user_api"].map(makeTool));
+      loadOpenClawPluginsMock.mockReturnValue(
+        createToolRegistry([createNamedToolEntry(manifest.id, [], { declaredNames, factory })]),
+      );
+      installToolManifestSnapshot({
+        config: context.config,
+        plugin: createToolManifest(manifest.id, declaredNames),
+      });
+
+      const tools = resolvePluginTools(
+        createResolveToolsParams({
+          context,
+          toolAllowlist: REVIEW_HOOK_TOOL_ALLOWLIST,
+        }),
+      );
+
+      expectResolvedToolNames(tools, scenario === "original omission" ? [] : reviewNames);
+      if (scenario === "original omission") {
+        expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();
+        expect(factory).not.toHaveBeenCalled();
+      } else {
+        expectLoaderSelectedOnlyPluginIds([manifest.id]);
+        expect(factory).toHaveBeenCalledOnce();
+      }
+    },
+  );
 
   it("cold-loads default plugin tools when alsoAllow opts into optional tools", () => {
     const context = createContext();
