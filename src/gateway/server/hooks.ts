@@ -312,7 +312,9 @@ export function createGatewayHookDispatcher(params: {
     // A Fi shadow session and its attestation come together or not at all,
     // whichever ingress (request, mapping, plugin) produced the dispatch.
     const normalizedRequester = normalizeHookRequesterAttestation(
-      value as unknown as Record<string, unknown>,
+      // Raw hooks must omit channel entirely. Normalized silent dispatches
+      // carry the internal `last` sentinel; it is not a delivery request.
+      { ...value, channel: value.channel === "last" ? undefined : value.channel },
       sessionKey,
     );
     if (!normalizedRequester.ok) {

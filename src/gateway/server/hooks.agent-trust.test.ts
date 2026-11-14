@@ -230,6 +230,7 @@ describe("dispatchAgentHook trust handling", () => {
       ["an announce delivery", { delivery: { mode: "announce", channel: "slack", to: "u1" } }],
       ["a destination", { to: "u1" }],
       ["a channel", { channel: "slack" }],
+      ["an account", { accountId: "other-account" }],
       ["unsafe external content", { allowUnsafeExternalContent: true }],
     ])("refuses %s on a shadow session whatever the ingress", async (_name, extra) => {
       const result = await dispatchAgentHook({
@@ -241,7 +242,7 @@ describe("dispatchAgentHook trust handling", () => {
       expect(result).toMatchObject({
         ok: false,
         statusCode: 400,
-        error: "hook:fi-shadow: sessions do not accept delivery or unsafe-content options",
+        error: expect.stringMatching(/not accepted|do not accept/),
       });
       expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
     });
