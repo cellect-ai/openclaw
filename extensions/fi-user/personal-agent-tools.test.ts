@@ -53,17 +53,56 @@ describe("personal review tools", () => {
     const report = tools.find((t) => t.name === "fi_user_review_report")!;
     const [reportExample] = examples("fi_user_review_report");
     expect(Value.Check(report.parameters as TSchema, reportExample)).toBe(true);
-    expect(report.description).toContain("at most 200 characters");
-    const [reviewExample, transitionExample] = examples("fi_user_work_items");
-    expect(reviewExample).toMatchObject({
-      action: "review",
+    expect(report.description).toContain("at most 300 characters");
+    const status = { id: "own-main", status: "partial" as const };
+    expect(
+      Value.Check(report.parameters as TSchema, {
+        ...reportExample,
+        sourceStatus: [{ ...status, reason: "x".repeat(300) }],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(report.parameters as TSchema, {
+        ...reportExample,
+        sourceStatus: [{ ...status, reason: "x".repeat(301) }],
+      }),
+    ).toBe(false);
+    const byAction = (name: string, action: string) =>
+      examples(name).find((e) => e.action === action);
+    const items = tools.find((t) => t.name === "fi_user_work_items")!;
+    for (const action of ["list", "review", "transition"]) {
+      expect(Value.Check(items.parameters as TSchema, byAction("fi_user_work_items", action))).toBe(
+        true,
+      );
+    }
+    expect(byAction("fi_user_work_items", "review")).toMatchObject({
       input: { review: { state: "deferred" } },
     });
-    expect(transitionExample).toMatchObject({ action: "transition", input: { status: "parked" } });
-    const items = tools.find((t) => t.name === "fi_user_work_items")!;
-    expect(Value.Check(items.parameters as TSchema, reviewExample)).toBe(true);
-    expect(Value.Check(items.parameters as TSchema, transitionExample)).toBe(true);
+    expect(byAction("fi_user_work_items", "transition")).toMatchObject({
+      input: { status: "parked" },
+    });
+    expect(byAction("fi_user_work_items", "list")!.input.limit).toBeLessThanOrEqual(100);
+    expect(items.description).toContain("up to 5 of open, working, parked, resolved, dismissed");
+    expect(items.description).toContain("limit? (1-100");
     expect(items.description).toContain("status is one of open, resolved, dismissed, parked");
+    const profile = tools.find((t) => t.name === "fi_user_agent_profile")!;
+    const checkpoint = byAction("fi_user_agent_profile", "checkpoint")!;
+    expect(Value.Check(profile.parameters as TSchema, checkpoint)).toBe(true);
+    // Every checkpoint field is nested inside `checkpoint`; nothing else sits beside it.
+    expect(Object.keys(checkpoint.input)).toEqual(["checkpoint"]);
+    expect(Object.keys(checkpoint.input.checkpoint)).toEqual(
+      expect.arrayContaining([
+        "sourceId",
+        "profileRevision",
+        "expectedCheckpointRevision",
+        "checkedAt",
+        "status",
+      ]),
+    );
+    expect(profile.description).toContain("status is one of ok, partial, unavailable");
+    expect(profile.description).toContain(
+      "Omit nextCheckAt when no revisit is needed; never send it as null",
+    );
     expect(items.description).toContain("never send null");
   });
   it("fills the current owner and dispatches the actual operation envelope", async () => {

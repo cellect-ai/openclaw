@@ -61,6 +61,8 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       label: "Work items and review history",
       description:
         "Read authorized shared work and your private backlog. Capture missing obligations, link evidence, record reviews and update your private items. Existing business workflows own shared RFI/payment/signing state. Read current rowRevision before updates. Never treat a review note as authorization to send or pay.\n" +
+        "list input: {domain?, statuses? (up to 5 of open, working, parked, resolved, dismissed; default open, working, parked), limit? (1-100, default 50), cursor?}; paginate with cursor instead of a larger limit.\n" +
+        'Example: {"action":"list","input":{"domain":"personal_agent","statuses":["open","parked"],"limit":50}}\n' +
         "review input: {id, expectedRevision, operationId (8-160 of [a-zA-Z0-9._:-]), review: {state, reason? (max 1500), reviewAt? (ISO 8601 datetime), trigger?, evidence?}}; state is one of " +
         "proposed, delivered, seen, approved, edited, skipped, unseen, deferred, handled_elsewhere, obsolete, execution_failed, completed, keep, clarify.\n" +
         "transition input: {id, expectedRevision, status, reason (1-1500), reviewAt? (ISO 8601 datetime, only with parked)}; status is one of open, resolved, dismissed, parked. " +
@@ -91,7 +93,11 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       name: "fi_user_agent_profile",
       label: "Your agent sources and preferences",
       description:
-        "Show your personal-agent profile, monitored sources and workflow rules. Configure only after your instruction, using the current profile revision; source enrollment never grants access. A scheduled review can only show or checkpoint, never change its standing permissions.",
+        "Show your personal-agent profile, monitored sources and workflow rules. Configure only after your instruction, using the current profile revision; source enrollment never grants access. A scheduled review can only show or checkpoint, never change its standing permissions.\n" +
+        "checkpoint input: {checkpoint: {sourceId, profileRevision, expectedCheckpointRevision (from show, or null when none exists), checkedAt (ISO 8601 datetime), " +
+        "status, cursor? (max 2000), sourceRevision? (max 200), note? (max 500), nextCheckAt? (ISO 8601 datetime, 1 minute to 30 days ahead)}}; every field goes inside checkpoint, " +
+        "and status is one of ok, partial, unavailable. Omit nextCheckAt when no revisit is needed; never send it as null.\n" +
+        'Example: {"action":"checkpoint","input":{"checkpoint":{"sourceId":"own-main","profileRevision":"<profile revision>","expectedCheckpointRevision":null,"checkedAt":"2026-11-16T14:00:00Z","status":"partial","note":"Second page throttled","nextCheckAt":"2026-11-16T15:00:00Z"}}}',
       parameters: Type.Object(
         {
           action: Type.Union(["show", "configure", "checkpoint"].map((x) => Type.Literal(x))),
@@ -154,7 +160,7 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       description:
         "Finish this scheduled review exactly once and last. Journal your item decisions first. Report a short briefing (changes, at most 3 decisions) or silent when no meaningful update. Include every enabled source with read/partial/unavailable state. This does not send email or change business records. After acceptance call no more tools; the worker verifies and delivers the result to the owner's Main.\n" +
         "disposition is briefing or silent; silent has empty text, briefing has text (max 4000). sourceStatus: one entry per enabled source id, status read, partial or unavailable, " +
-        "and an optional reason of at most 200 characters (a short phrase, not the findings).\n" +
+        "and an optional reason of at most 300 characters (a short phrase, not the findings).\n" +
         'Example: {"disposition":"silent","text":"","sourceStatus":[{"id":"own-main","status":"read"},{"id":"own-mail","status":"partial","reason":"Second page throttled"}]}',
       parameters: Type.Object(
         {
@@ -171,8 +177,8 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
                 ]),
                 reason: Type.Optional(
                   Type.String({
-                    maxLength: 200,
-                    description: "At most 200 characters: a short phrase.",
+                    maxLength: 300,
+                    description: "At most 300 characters: a short phrase.",
                   }),
                 ),
               },
