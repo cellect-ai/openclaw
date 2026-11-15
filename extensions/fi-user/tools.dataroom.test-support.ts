@@ -19,7 +19,6 @@ export function registerDataRoomTests(
       documents: [
         { documentId: "doc-1", roomCategory: "Draw 3", orderKey: "010", visibility: "shared" },
       ],
-      tasks: [{ id: "task-1", documentIds: ["doc-0"] }],
     };
 
     it("continues a large authorized placement read and retrieves exact details without an admin action", async () => {
@@ -32,7 +31,6 @@ export function registerDataRoomTests(
           orderKey: `01.${i}`,
           visibility: "internal",
         })),
-        tasks: [{ id: "pfs", title: "PFS", documentIds: ["doc-89"], status: "open" }],
       };
       routes.push((url, init) =>
         url.pathname === "/api/shape/datarooms/room-1" && (init.method ?? "GET") === "GET"
@@ -45,7 +43,7 @@ export function registerDataRoomTests(
         roomId: "room-1",
         view: "placement",
       });
-      let page = result.details as { nextCursor?: string; complete: boolean; tasks: unknown[] };
+      let page = result.details as { nextCursor?: string; complete: boolean; documents: unknown[] };
       expect(page.complete).toBe(false);
       while (page.nextCursor) {
         result = await tool.execute("placement", {
@@ -57,7 +55,7 @@ export function registerDataRoomTests(
         page = result.details as typeof page;
       }
       expect(page.complete).toBe(true);
-      expect(page.tasks).toContainEqual(large.tasks[0]);
+      expect(page.documents).toContainEqual(expect.objectContaining({ documentId: "doc-89" }));
       const exact = await tool.execute("detail", {
         action: "get",
         roomId: "room-1",
@@ -82,12 +80,9 @@ export function registerDataRoomTests(
         "create",
         "list",
         "get",
-        "tasks",
         "available_docs",
         "add_document",
         "update_document",
-        "link_task",
-        "complete_task",
         "upload_gmail_attachment",
         "upload_slack_file",
         "upload_drive_file",
@@ -97,6 +92,18 @@ export function registerDataRoomTests(
       ]);
       expect(JSON.stringify(schema)).not.toMatch(/"method"|"path"|jsonBody/);
     });
+
+    it.each(["tasks", "link_task", "complete_task"])(
+      "rejects retired action %s before any request",
+      async (action) => {
+        await expect(
+          plugin()
+            .tool("fi_user_dataroom", context())
+            .execute("retired", { action, roomId: "room-1" }),
+        ).rejects.toThrow("Unsupported data-room action");
+        expect(calls).toHaveLength(0);
+      },
+    );
 
     it("adds a document with room-version preconditions, then reads it back", async () => {
       routes.push((url, init) => {
@@ -137,29 +144,6 @@ export function registerDataRoomTests(
         added: "doc-1",
         document: { documentId: "doc-1", roomCategory: "Draw 3" },
       });
-    });
-
-    it("links a checklist task by merging, never replacing, its documents", async () => {
-      routes.push((url, init) => {
-        if (url.pathname === "/api/shape/datarooms/room-1" && (init.method ?? "GET") === "GET") {
-          return json(room);
-        }
-        if (
-          url.pathname === "/api/shape/datarooms/room-1/tasks/task-1" &&
-          init.method === "PATCH"
-        ) {
-          return json({ ok: true });
-        }
-        return undefined;
-      });
-      await plugin().tool("fi_user_dataroom", context()).execute("d2", {
-        action: "link_task",
-        roomId: "room-1",
-        taskId: "task-1",
-        documentId: "doc-1",
-      });
-      const patch = calls.find((entry) => entry.init.method === "PATCH");
-      expect(bodyJson(patch!.init)).toEqual({ documentIds: ["doc-0", "doc-1"] });
     });
 
     it("rejects a room id that tries to reach another route", async () => {

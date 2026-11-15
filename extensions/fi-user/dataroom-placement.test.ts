@@ -13,20 +13,17 @@ describe("bounded requester placement inventory", () => {
       visibility: "internal",
       previewPdfPath: "/private/internal.pdf",
     })),
-    tasks: [{ id: "pfs-task", title: "Lorenzo PFS", documentIds: ["doc-79"], status: "open" }],
   };
 
   it("reaches late sections and checklist links without dropping items or exposing file paths", () => {
     let page = roomPlacementPage("room-1", snapshot);
     const documents = [...page.documents];
-    const tasks = [...page.tasks];
     let pages = 1;
     while (page.nextCursor) {
       expect(page.complete).toBe(false);
       expect(JSON.stringify(page)).not.toContain("/private/");
       page = roomPlacementPage("room-1", snapshot, page.nextCursor);
       documents.push(...page.documents);
-      tasks.push(...page.tasks);
       pages++;
     }
     expect(pages).toBeGreaterThan(1);
@@ -34,7 +31,6 @@ describe("bounded requester placement inventory", () => {
     expect(documents).toHaveLength(80);
     expect(new Set(documents.map((doc) => doc.documentId)).size).toBe(80);
     expect(documents.at(-1)).toMatchObject({ roomCategory: "Lorenzo KYC" });
-    expect(tasks).toEqual(snapshot.tasks);
   });
 
   it("cannot stitch a cursor into another room, a changed version or altered inventory", () => {
@@ -52,11 +48,10 @@ describe("bounded requester placement inventory", () => {
   it("marks abbreviated detail explicitly and refuses a falsely complete inventory", () => {
     const page = roomPlacementPage("room-1", {
       documents: [{ documentId: "doc", displayName: "x".repeat(500), tags: Array(50).fill("tag") }],
-      tasks: [],
     });
     expect(page.documents[0]).toMatchObject({ detailsTruncated: true });
     expect(page.documents[0]?.displayName).toHaveLength(300);
-    expect(() => roomPlacementPage("room-1", { documents: [] })).toThrow(/incomplete/);
+    expect(() => roomPlacementPage("room-1", {})).toThrow(/incomplete/);
   });
 
   it("preserves full reads and exact detail while limiting cursors to placement", () => {
