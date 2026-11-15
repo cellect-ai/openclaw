@@ -1,5 +1,7 @@
 import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 const { exchange, delegatedFetch } = vi.hoisted(() => ({
   exchange: vi.fn(),
@@ -41,6 +43,28 @@ describe("personal review tools", () => {
     const names = createPersonalAgentTools(api, review).map((t) => t.name);
     expect(names).toHaveLength(4);
     expect(manifest.contracts.tools).toEqual(expect.arrayContaining(names));
+  });
+  it("documents allowed values and a valid example call for report, review and transition", () => {
+    const tools = createPersonalAgentTools(api, review);
+    const examples = (name: string) =>
+      [...tools.find((t) => t.name === name)!.description.matchAll(/Example: (\{.*\})/g)].map((m) =>
+        JSON.parse(m[1]!),
+      );
+    const report = tools.find((t) => t.name === "fi_user_review_report")!;
+    const [reportExample] = examples("fi_user_review_report");
+    expect(Value.Check(report.parameters as TSchema, reportExample)).toBe(true);
+    expect(report.description).toContain("at most 200 characters");
+    const [reviewExample, transitionExample] = examples("fi_user_work_items");
+    expect(reviewExample).toMatchObject({
+      action: "review",
+      input: { review: { state: "deferred" } },
+    });
+    expect(transitionExample).toMatchObject({ action: "transition", input: { status: "parked" } });
+    const items = tools.find((t) => t.name === "fi_user_work_items")!;
+    expect(Value.Check(items.parameters as TSchema, reviewExample)).toBe(true);
+    expect(Value.Check(items.parameters as TSchema, transitionExample)).toBe(true);
+    expect(items.description).toContain("status is one of open, resolved, dismissed, parked");
+    expect(items.description).toContain("never send null");
   });
   it("fills the current owner and dispatches the actual operation envelope", async () => {
     await tool("fi_user_work_items").execute("call-1", {

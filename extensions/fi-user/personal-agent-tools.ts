@@ -60,7 +60,13 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       name: "fi_user_work_items",
       label: "Work items and review history",
       description:
-        "Read authorized shared work and your private backlog. Capture missing obligations, link evidence, record reviews and update your private items. Existing business workflows own shared RFI/payment/signing state. Read current rowRevision before updates. Never treat a review note as authorization to send or pay.",
+        "Read authorized shared work and your private backlog. Capture missing obligations, link evidence, record reviews and update your private items. Existing business workflows own shared RFI/payment/signing state. Read current rowRevision before updates. Never treat a review note as authorization to send or pay.\n" +
+        "review input: {id, expectedRevision, operationId (8-160 of [a-zA-Z0-9._:-]), review: {state, reason? (max 1500), reviewAt? (ISO 8601 datetime), trigger?, evidence?}}; state is one of " +
+        "proposed, delivered, seen, approved, edited, skipped, unseen, deferred, handled_elsewhere, obsolete, execution_failed, completed, keep, clarify.\n" +
+        "transition input: {id, expectedRevision, status, reason (1-1500), reviewAt? (ISO 8601 datetime, only with parked)}; status is one of open, resolved, dismissed, parked. " +
+        "Omit an absent date; never send null.\n" +
+        'Example: {"action":"review","input":{"id":"<item id>","expectedRevision":"<rowRevision>","operationId":"review-<run>-1","review":{"state":"deferred","reason":"Waiting on the architect","reviewAt":"2026-11-17T14:00:00Z"}}}\n' +
+        'Example: {"action":"transition","input":{"id":"<item id>","expectedRevision":"<rowRevision>","status":"parked","reason":"Waiting on the architect","reviewAt":"2026-11-17T14:00:00Z"}}',
       parameters: Type.Object(
         {
           action: Type.Union(
@@ -146,7 +152,10 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       name: "fi_user_review_report",
       label: "Finish the personal review",
       description:
-        "Finish this scheduled review exactly once and last. Journal your item decisions first. Report a short briefing (changes, at most 3 decisions) or silent when no meaningful update. Include every enabled source with read/partial/unavailable state. This does not send email or change business records. After acceptance call no more tools; the worker verifies and delivers the result to the owner's Main.",
+        "Finish this scheduled review exactly once and last. Journal your item decisions first. Report a short briefing (changes, at most 3 decisions) or silent when no meaningful update. Include every enabled source with read/partial/unavailable state. This does not send email or change business records. After acceptance call no more tools; the worker verifies and delivers the result to the owner's Main.\n" +
+        "disposition is briefing or silent; silent has empty text, briefing has text (max 4000). sourceStatus: one entry per enabled source id, status read, partial or unavailable, " +
+        "and an optional reason of at most 200 characters (a short phrase, not the findings).\n" +
+        'Example: {"disposition":"silent","text":"","sourceStatus":[{"id":"own-main","status":"read"},{"id":"own-mail","status":"partial","reason":"Second page throttled"}]}',
       parameters: Type.Object(
         {
           disposition: Type.Union([Type.Literal("briefing"), Type.Literal("silent")]),
@@ -160,7 +169,12 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
                   Type.Literal("partial"),
                   Type.Literal("unavailable"),
                 ]),
-                reason: Type.Optional(Type.String({ maxLength: 200 })),
+                reason: Type.Optional(
+                  Type.String({
+                    maxLength: 200,
+                    description: "At most 200 characters: a short phrase.",
+                  }),
+                ),
               },
               { additionalProperties: false },
             ),
