@@ -119,4 +119,11 @@ describe("Fi shadow hook tool cap", () => {
     });
     expect(other.policy.runtimeToolPolicyForInheritance).toEqual({ allow: ["*"] });
   });
+
+  it("caps a guest session to the guest tool, whatever was asked", () => {
+    const guest = `agent:cellect-fi-guest:hook:fi-guest:${"a".repeat(40)}`;
+    expect(capBackgroundHookToolsAllow([guest], ["*"])).toEqual(["guest_api"]);
+    expect(capBackgroundHookToolsAllow([guest], ["fi_user_api", "exec"])).toEqual([]);
+    expect(capBackgroundHookToolsAllow([guest, SHADOW])).toEqual([]);
+  });
 });

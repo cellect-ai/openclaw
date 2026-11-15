@@ -54,6 +54,7 @@ vi.mock("./hooks-request-handler.js", () => ({
 }));
 
 const { createGatewayHooksRequestHandler } = await import("./hooks.js");
+const { registerGuestTurnCompletionHandler } = await import("../../infra/guest-turn-completion.js");
 
 const ATTESTATION = `fsa:job-1:${"A".repeat(43)}`;
 const SHADOW_TEXT = "SHADOW_RUN_TEXT_7f3a";
@@ -208,5 +209,66 @@ describe("shadow hook terminals", () => {
     });
     expect(requestHeartbeatMock).toHaveBeenCalled();
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+  });
+
+  describe("guest conversation turns", () => {
+    const GUEST_SESSION = `hook:fi-guest:${"a".repeat(40)}`;
+    const GUEST_ATTESTATION = `fga:gt_1:${"C".repeat(43)}`;
+    const guestPayload = () =>
+      shadowPayload({ sessionKey: GUEST_SESSION, sessionMode: "persistent" }) as Record<
+        string,
+        unknown
+      >;
+
+    it("reports a finished guest run's text and never announces it", async () => {
+      const handler = vi.fn().mockResolvedValue(undefined);
+      const release = registerGuestTurnCompletionHandler(handler);
+      runCronIsolatedAgentTurnMock.mockResolvedValue({ status: "ok", outputText: "the reply" });
+
+      const result = await dispatchAgentHook({
+        ...guestPayload(),
+        agentId: "cellect-fi-guest",
+        effectiveAgentId: "cellect-fi-guest",
+        requesterAttestation: GUEST_ATTESTATION,
+      });
+
+      expect(result).toMatchObject({ ok: true });
+      await vi.waitFor(() => expect(handler).toHaveBeenCalledTimes(1));
+      expect(handler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sessionKey: GUEST_SESSION,
+          attestation: GUEST_ATTESTATION,
+          status: "ok",
+          outputText: "the reply",
+        }),
+      );
+      expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledWith(
+        expect.objectContaining({ hookRequesterAttestation: GUEST_ATTESTATION }),
+      );
+      expect(enqueueSystemEventMock).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    });
+
+    it("contains a failing report and refuses a shadow receipt on a guest session", async () => {
+      const release = registerGuestTurnCompletionHandler(vi.fn().mockRejectedValue(new Error("x")));
+      runCronIsolatedAgentTurnMock.mockResolvedValue({ status: "ok", outputText: "the reply" });
+      await dispatchAgentHook({ ...guestPayload(), requesterAttestation: GUEST_ATTESTATION });
+      await vi.waitFor(() =>
+        expect(logHooksWarnMock).toHaveBeenCalledWith(
+          "guest turn report failed",
+          expect.anything(),
+        ),
+      );
+      runCronIsolatedAgentTurnMock.mockClear();
+      const refused = await dispatchAgentHook({
+        ...guestPayload(),
+        requesterAttestation: ATTESTATION,
+      });
+      expect(refused).toMatchObject({ ok: false });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+      release();
+      await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
+    });
   });
 });
