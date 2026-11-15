@@ -9,6 +9,7 @@
 import {
   isShadowHookSessionKey,
   isAttestedBackgroundHookSessionKey,
+  isGuestHookSessionKey,
   isPersonalReviewHookSessionKey,
 } from "../infra/hook-requester-attestation.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
@@ -21,6 +22,9 @@ export const REVIEW_HOOK_TOOL_ALLOWLIST: readonly string[] = [
   "fi_user_review_report",
   "m365_review_read",
 ];
+
+/** A guest turn reaches the outside person's own data through one requester-bound API tool. */
+export const GUEST_HOOK_TOOL_ALLOWLIST: readonly string[] = ["guest_api"];
 
 export const SHADOW_CLI_REFUSAL =
   "hook:fi-shadow: sessions cannot run on a CLI backend (its native tools sit outside the shadow tool cap)";
@@ -42,7 +46,9 @@ export function capBackgroundHookToolsAllow(
     .map((key) =>
       isPersonalReviewHookSessionKey(key)
         ? REVIEW_HOOK_TOOL_ALLOWLIST
-        : capShadowHookToolsAllow(undefined, key),
+        : isGuestHookSessionKey(key)
+          ? GUEST_HOOK_TOOL_ALLOWLIST
+          : capShadowHookToolsAllow(undefined, key),
     );
   const allow = (purposes[0] ?? SHADOW_HOOK_TOOL_ALLOWLIST).filter((tool) =>
     purposes.every((scope) => scope.includes(tool)),

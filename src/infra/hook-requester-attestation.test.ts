@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   hookRequesterScopeAllowed,
+  isGuestHookSessionKey,
   isShadowHookSessionKey,
   isPersonalReviewHookSessionKey,
   lookupHookRequesterAttestation,
@@ -177,5 +178,81 @@ describe("shadow session predicate", () => {
         "hook:fi-shadow:abc",
       ),
     ).toEqual({ ok: false, error: "channel is not accepted on a hook:fi-shadow: session" });
+  });
+});
+
+describe("guest conversation purpose isolation", () => {
+  const GUEST = `hook:fi-guest:${"a".repeat(40)}`;
+  const GUEST_ATTESTATION = `fga:gt_1:${"C".repeat(43)}`;
+
+  it("transports a guest receipt only on a guest session", () => {
+    expect(isGuestHookSessionKey(GUEST)).toBe(true);
+    expect(isGuestHookSessionKey(`agent:cellect-fi-guest:${GUEST}`)).toBe(true);
+    expect(
+      normalizeHookRequesterAttestation({ requesterAttestation: GUEST_ATTESTATION }, GUEST),
+    ).toEqual({ ok: true, value: { requesterAttestation: GUEST_ATTESTATION } });
+    const release = registerHookRequesterAttestation({
+      runId: "guest-1",
+      sessionKey: GUEST,
+      attestation: GUEST_ATTESTATION,
+    });
+    expect(lookupHookRequesterAttestation("guest-1", GUEST)).toBe(GUEST_ATTESTATION);
+    expect(lookupHookRequesterAttestation("guest-1", SHADOW)).toBeUndefined();
+    release();
+    expect(lookupHookRequesterAttestation("guest-1", GUEST)).toBeUndefined();
+  });
+
+  it("refuses a guest receipt on any other namespace and other receipts on a guest session", () => {
+    for (const [sessionKey, requesterAttestation] of [
+      [SHADOW, GUEST_ATTESTATION],
+      [REVIEW, GUEST_ATTESTATION],
+      ["hook:fi-mail:abc", GUEST_ATTESTATION],
+      ["hook:other:abc", GUEST_ATTESTATION],
+      [GUEST, ATTESTATION],
+      [GUEST, REVIEW_ATTESTATION],
+      [GUEST.replace("fi-guest", "fi-shadow"), GUEST_ATTESTATION],
+    ]) {
+      expect(normalizeHookRequesterAttestation({ requesterAttestation }, sessionKey).ok).toBe(
+        false,
+      );
+    }
+    expect(normalizeHookRequesterAttestation({}, GUEST).ok).toBe(false);
+    expect(normalizeHookRequesterAttestation({}, undefined)).toEqual({ ok: true, value: {} });
+    registerHookRequesterAttestation({
+      runId: "wrong",
+      sessionKey: SHADOW,
+      attestation: GUEST_ATTESTATION,
+    });
+    expect(lookupHookRequesterAttestation("wrong", SHADOW)).toBeUndefined();
+  });
+
+  it("refuses delivery knobs and environment on a guest session", () => {
+    for (const extra of [
+      { deliver: true },
+      { channel: "slack" },
+      { to: "x" },
+      { allowUnsafeExternalContent: true },
+      { requesterEnvironment: "prod" },
+    ]) {
+      expect(
+        normalizeHookRequesterAttestation(
+          { requesterAttestation: GUEST_ATTESTATION, ...extra },
+          GUEST,
+        ).ok,
+      ).toBe(false);
+    }
+    expect(
+      hookRequesterScopeAllowed(
+        { requesterAttestation: GUEST_ATTESTATION, effectiveAgentId: "cellect-fi-guest" },
+        GUEST,
+      ),
+    ).toBe(true);
+    expect(hookRequesterScopeAllowed({ effectiveAgentId: "cellect-fi-guest" }, GUEST)).toBe(false);
+    expect(
+      hookRequesterScopeAllowed(
+        { requesterAttestation: GUEST_ATTESTATION, effectiveAgentId: "cellect-fi-guest" },
+        SHADOW,
+      ),
+    ).toBe(false);
   });
 });

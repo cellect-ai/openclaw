@@ -19,7 +19,24 @@ export function isPersonalReviewHookSessionKey(sessionKey: string | undefined | 
   return typeof sessionKey === "string" && REVIEW_SESSION.test(sessionKey);
 }
 export function isAttestedBackgroundHookSessionKey(sessionKey: string | undefined | null): boolean {
-  return isShadowHookSessionKey(sessionKey) || isPersonalReviewHookSessionKey(sessionKey);
+  return (
+    isShadowHookSessionKey(sessionKey) ||
+    isPersonalReviewHookSessionKey(sessionKey) ||
+    isGuestHookSessionKey(sessionKey)
+  );
+}
+
+// Guest conversation turns: an outside person's turn on the guest-tier agent.
+// The session is the conversation's durable hook session (a hash, never an
+// address) and the attestation is a Fi-minted `fga:` receipt naming the guest
+// principal. It is a purpose of its own: never interchangeable with the shadow
+// or review receipts, and never accepted on any other session namespace.
+const GUEST_SESSION = /^(?:agent:[a-z0-9][a-z0-9_-]{0,63}:)?hook:fi-guest:[a-f0-9]{40}$/i;
+const GUEST_ATTESTATION = /^fga:[A-Za-z0-9_-]{1,100}:[A-Za-z0-9_-]{43}$/;
+
+/** True for a request or run session key in the guest conversation namespace. */
+export function isGuestHookSessionKey(sessionKey: string | undefined | null): boolean {
+  return typeof sessionKey === "string" && GUEST_SESSION.test(sessionKey);
 }
 
 /** True for a request or run session key that names a Fi shadow hook. */
@@ -31,7 +48,7 @@ export function isShadowHookSessionKey(sessionKey: string | undefined | null): b
 export function parseHookRequesterAttestation(value: unknown): string | undefined {
   return typeof value === "string" &&
     value.length <= MAX_ATTESTATION_LENGTH &&
-    (ATTESTATION.test(value) || REVIEW_ATTESTATION.test(value))
+    (ATTESTATION.test(value) || REVIEW_ATTESTATION.test(value) || GUEST_ATTESTATION.test(value))
     ? value
     : undefined;
 }
@@ -43,6 +60,9 @@ function attestationPurposeMatches(
 ): boolean {
   if (isPersonalReviewHookSessionKey(sessionKey)) {
     return REVIEW_ATTESTATION.test(receipt);
+  }
+  if (isGuestHookSessionKey(sessionKey)) {
+    return GUEST_ATTESTATION.test(receipt);
   }
   return (
     isShadowHookSessionKey(sessionKey) &&
@@ -92,6 +112,30 @@ export function normalizeHookRequesterAttestation(
   string
 > {
   const raw = payload.requesterAttestation;
+  if (isGuestHookSessionKey(sessionKey)) {
+    // The reply goes back through the report step, never through delivery.
+    const knob = shadowHookDeliveryKnob(payload);
+    if (knob) {
+      return { ok: false, error: `${knob} is not accepted on a hook:fi-guest: session` };
+    }
+    if (payload.requesterEnvironment !== undefined) {
+      return {
+        ok: false,
+        error: "requesterEnvironment is not accepted on a hook:fi-guest: session",
+      };
+    }
+    if (raw === undefined) {
+      return { ok: false, error: "requesterAttestation is required on a hook:fi-guest: session" };
+    }
+    if (
+      typeof raw !== "string" ||
+      !GUEST_ATTESTATION.test(raw) ||
+      raw.length > MAX_ATTESTATION_LENGTH
+    ) {
+      return { ok: false, error: "requesterAttestation is malformed" };
+    }
+    return { ok: true, value: { requesterAttestation: raw } };
+  }
   if (isPersonalReviewHookSessionKey(sessionKey)) {
     const knob = shadowHookDeliveryKnob(payload);
     if (knob) {
@@ -148,7 +192,8 @@ export function normalizeHookRequesterAttestation(
   if (!shadow) {
     return {
       ok: false,
-      error: "requesterAttestation is only accepted on a hook:fi-shadow: session",
+      error:
+        "requesterAttestation is only accepted on a hook:fi-shadow:, hook:fi-review: or hook:fi-guest: session",
     };
   }
   const attestation = parseHookRequesterAttestation(raw);

@@ -10,7 +10,14 @@ export {
   isCronRunSessionKey,
   isDreamingNarrativeSessionStoreKey,
 } from "../sessions/session-key-utils.js";
-export { isShadowHookSessionKey } from "../infra/hook-requester-attestation.js";
+export {
+  isGuestHookSessionKey,
+  isShadowHookSessionKey,
+} from "../infra/hook-requester-attestation.js";
+export {
+  registerGuestTurnCompletionHandler,
+  type GuestTurnCompletion,
+} from "../infra/guest-turn-completion.js";
 export {
   lookupShadowRequesterIdentity,
   registerShadowRequesterIdentity,

@@ -9,6 +9,7 @@ import type {
 } from "openclaw/plugin-sdk/core";
 import { extractDocumentContent } from "openclaw/plugin-sdk/document-extractor";
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { isGuestHookSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { jsonResult, type AgentToolResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { registerAdminActionRpc } from "./admin-action-rpc.js";
@@ -57,6 +58,11 @@ import {
   withoutInternalDownloadLinks,
 } from "./generated-artifacts.js";
 import { createGmailTool } from "./gmail-tool.js";
+import {
+  createGuestApiTool,
+  guestToolAttestation,
+  registerGuestTurnReporting,
+} from "./guest-turn.js";
 import { registerLetMeKnow } from "./let-me-know.js";
 import { createMailItemsTool, offersMailItemsTool } from "./mail-items-tool.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
@@ -327,6 +333,7 @@ export default definePluginEntry({
   description: "Requester-bound Gmail, Google Drive, and Fi operations",
   register(api) {
     registerAdminActionRpc(api);
+    registerGuestTurnReporting(api);
     registerGeneratedArtifactCompletion(api);
     api.on("reply_payload_sending", (event, context) => {
       if (
@@ -519,6 +526,11 @@ export default definePluginEntry({
     api.registerTool({
       contextVersion: 2,
       create: (context: OpenClawPluginToolContext<2>) => {
+        // A guest conversation turn gets its one guest-bound tool and nothing else.
+        if (isGuestHookSessionKey(context.sessionKey)) {
+          const attestation = guestToolAttestation(context);
+          return attestation ? [createGuestApiTool(api, context, attestation)] : null;
+        }
         if (reviewRunClaimed(context)) {
           return reviewToolAttestation(context) ? createPersonalAgentTools(api, context) : null;
         }

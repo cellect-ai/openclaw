@@ -20,10 +20,12 @@ import type { CronExecutionIdentityAdmission } from "../../cron/service/state.js
 import type { CronJob } from "../../cron/types.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
+import { notifyGuestTurnCompletion } from "../../infra/guest-turn-completion.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
 import {
   hookRequesterScopeAllowed,
   isAttestedBackgroundHookSessionKey,
+  isGuestHookSessionKey,
   parseHookRequesterAttestation,
   normalizeHookRequesterAttestation,
 } from "../../infra/hook-requester-attestation.js";
@@ -686,6 +688,22 @@ export function createGatewayHookDispatcher(params: {
               result.status !== "ok" ||
               (value.deliver && result.delivered !== true && result.deliveryAttempted !== true);
             completion.resolve(logHookRunTerminal(result));
+            if (hookRequesterAttestation && isGuestHookSessionKey(sessionKey)) {
+              await notifyGuestTurnCompletion(
+                {
+                  runId,
+                  sessionKey,
+                  attestation: hookRequesterAttestation,
+                  status: result.status,
+                  outputText: result.outputText,
+                },
+                (error) =>
+                  logHooks.warn("guest turn report failed", {
+                    ...logContext,
+                    ...sanitizeHookLogMetadata({ error: formatErrorMessage(error) }),
+                  }),
+              );
+            }
             if (shouldAnnounce) {
               announceHookEvent(
                 eventTarget,
