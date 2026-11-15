@@ -10,6 +10,7 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { closeOpenClawStateDatabaseByPathAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
+import { MatrixAdmissionRefusedError } from "../projection-execution.js";
 import { registerMatrixClientBridge } from "../sdk/client-event-bridge.js";
 import { MatrixDecryptBridge } from "../sdk/decrypt-bridge.js";
 import { matrixEventToRaw } from "../sdk/event-helpers.js";
@@ -130,6 +131,54 @@ it("retains a malformed supported message and rejects its dispatch rather than i
         id: JSON.stringify(["!room:example.org", ""]),
         attempts: 1,
         lastError: "Invalid Matrix durable ingress event",
+      }),
+    ]);
+  } finally {
+    await monitor.stop();
+  }
+});
+
+it("fails a non-canonical thread event on its first attempt and dispatches the next in its lane", async () => {
+  const queue = createQueue();
+  const delivered = createDeferred<void>();
+  const dispatch = vi.fn(async (_roomId: string, event: MatrixRawEvent) => {
+    if (event.event_id === "$off-thread") {
+      throw new MatrixAdmissionRefusedError("thread_not_canonical");
+    }
+    delivered.resolve();
+  });
+  const monitor = createMatrixIngressMonitor({
+    accountId: "sut",
+    queue,
+    dispatch,
+    onError: vi.fn(),
+  });
+  const event = (eventId: string, ts: number) =>
+    matrixEventToRaw(
+      new MatrixEvent({
+        room_id: "!room:example.org",
+        event_id: eventId,
+        sender: "@person:example.org",
+        type: "m.room.message",
+        origin_server_ts: ts,
+        content: { body: "text", msgtype: "m.text" },
+      }),
+    );
+  monitor.start();
+  try {
+    await monitor.receive({ roomId: "!room:example.org", event: event("$off-thread", 1) });
+    await monitor.receive({ roomId: "!room:example.org", event: event("$next", 2) });
+    await delivered.promise;
+    await monitor.waitForIdle();
+    expect(dispatch.mock.calls.map(([, raw]) => raw.event_id)).toEqual(["$off-thread", "$next"]);
+    expect(await queue.listPending()).toEqual([]);
+    expect(await queue.listFailed?.({ limit: "all" })).toEqual([
+      expect.objectContaining({
+        id: JSON.stringify(["!room:example.org", "$off-thread"]),
+        // Failed on its first claim: no retry released it back to the lane.
+        attempts: 0,
+        reason: "matrix-thread-not-canonical",
+        message: "Matrix execution admission refused: thread_not_canonical",
       }),
     ]);
   } finally {

@@ -5,6 +5,7 @@ import type {
 } from "openclaw/plugin-sdk/channel-outbound";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getMatrixRuntime } from "../../runtime.js";
+import { isMatrixThreadNotCanonicalError } from "../projection-execution.js";
 import type { MatrixRawEvent } from "../sdk.js";
 import { isMatrixApplicationEventType } from "./event-types.js";
 
@@ -63,6 +64,14 @@ export function createMatrixIngressMonitor(options: {
       createClaimError: () => new Error("Invalid Matrix durable ingress claim"),
     },
     deliver: (raw, lifecycle) => options.dispatch(raw.roomId, raw.event, lifecycle),
+    drain: {
+      // Only a deterministic refusal skips retries; everything else keeps the
+      // standard policy, so a transient identity mismatch still retries.
+      resolveNonRetryableFailure: (error) =>
+        isMatrixThreadNotCanonicalError(error)
+          ? { reason: "matrix-thread-not-canonical", message: (error as Error).message }
+          : null,
+    },
     onError: options.onError,
     classifyAdmissionError: () => undefined,
   });

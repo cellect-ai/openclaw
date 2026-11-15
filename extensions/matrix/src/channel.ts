@@ -412,6 +412,8 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
           (await loadMatrixChannelRuntime()).isJoinedMatrixMember(params),
         listJoinedMembers: async (params) =>
           (await loadMatrixChannelRuntime()).listJoinedMatrixMembers(params),
+        resolveCanonicalThreadId: async ({ groupId }) =>
+          (await loadMatrixChannelRuntime()).resolveMatrixCanonicalThreadRoot(groupId),
       },
       conversationBindings: {
         supportsCurrentConversationBinding: true,

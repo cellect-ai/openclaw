@@ -28,6 +28,29 @@ export type MatrixProjectionExecution = {
   producerMxid: string;
 };
 
+/**
+ * A deterministic admission refusal: retrying the same event cannot succeed
+ * while the room's canonical binding is unchanged. Every transient refusal
+ * stays a plain (retryable) Error.
+ */
+export class MatrixAdmissionRefusedError extends Error {
+  readonly code: "thread_not_canonical";
+  constructor(code: "thread_not_canonical") {
+    super(`Matrix execution admission refused: ${code}`);
+    this.name = "MatrixAdmissionRefusedError";
+    this.code = code;
+  }
+}
+
+export function isMatrixThreadNotCanonicalError(error: unknown): boolean {
+  return (
+    error instanceof MatrixAdmissionRefusedError ||
+    (error instanceof Error &&
+      error.name === "MatrixAdmissionRefusedError" &&
+      (error as { code?: unknown }).code === "thread_not_canonical")
+  );
+}
+
 const admissionQueue = new KeyedAsyncQueue();
 const admitted = new Map<
   string,
@@ -258,6 +281,11 @@ function canonical(roomId: string): CanonicalRoom | undefined {
   };
 }
 
+/** The thread root of a room's canonical projection binding, if it has one. */
+export function resolveMatrixCanonicalThreadRoot(roomId: string): string | undefined {
+  return canonical(roomId)?.threadRootEventId;
+}
+
 function matchesCurrent(execution: MatrixProjectionExecution, cfg: CoreConfig) {
   const row = canonical(execution.roomId);
   const account = resolveMatrixAccountConfig({ cfg, accountId: execution.accountId });
@@ -339,6 +367,11 @@ async function admitCanonicalExecution(params: AdmissionParams): Promise<void> {
       throw new Error("Matrix execution admission refused: canonical_binding_conflict");
     }
     return;
+  }
+  // The room answers only in its canonical thread. A message in another thread,
+  // or at the top level, fails the same way on every retry of that event.
+  if ((params.threadRootEventId ?? "") !== row.threadRootEventId) {
+    throw new MatrixAdmissionRefusedError("thread_not_canonical");
   }
   const manager = getMatrixThreadBindingManager(params.accountId);
   const environment = row.environment;

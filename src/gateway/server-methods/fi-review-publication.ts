@@ -1,3 +1,4 @@
+import { getLoadedChannelPlugin } from "../../channels/plugins/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadCompletedDeliveryReceipt } from "../../infra/outbound/delivery-queue-storage.js";
 import { sendMessage } from "../../infra/outbound/message.js";
@@ -5,6 +6,23 @@ import { readFiUserMatrixRoom } from "./fi-shadow-matrix-room.js";
 import { roomAudienceAllowsOwner } from "./fi-shadow-room-audience.js";
 
 type ReviewOwner = { ownerEmail: string; roomId: string; jobId: string };
+
+/**
+ * The room's canonical conversation thread, so a reply to the briefing lands
+ * where the agent answers. Unresolvable means the room-level post as before.
+ */
+async function resolveCanonicalThreadId(cfg: OpenClawConfig, accountId: string, roomId: string) {
+  try {
+    const threadId = await getLoadedChannelPlugin("matrix")?.groups?.resolveCanonicalThreadId?.({
+      cfg,
+      accountId,
+      groupId: roomId,
+    });
+    return typeof threadId === "string" && /^\$\S+$/.test(threadId) ? threadId : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Publish Fi's already frozen report as the bot, without inventing a human Matrix turn. */
 export async function publishPersonalReviewReport(params: {
@@ -51,12 +69,18 @@ export async function publishPersonalReviewReport(params: {
     await assertCurrent();
     return { path: "direct" as const, messageId: recorded.platformMessageId };
   }
-  const sessionKey = `agent:cellect-fi-user:matrix:channel:${params.owner.roomId}`;
+  const threadId = accountId
+    ? await resolveCanonicalThreadId(params.getConfig(), accountId, params.owner.roomId)
+    : undefined;
+  assertActive();
+  const roomSessionKey = `agent:cellect-fi-user:matrix:channel:${params.owner.roomId}`;
+  const sessionKey = threadId ? `${roomSessionKey}:thread:${threadId}` : roomSessionKey;
   const sent = await sendMessage({
     cfg: params.getConfig(),
     channel: "matrix",
     to: params.owner.roomId,
     accountId,
+    ...(threadId ? { threadId } : {}),
     agentId: "cellect-fi-user",
     requesterSessionKey: sessionKey,
     conversationType: "channel",

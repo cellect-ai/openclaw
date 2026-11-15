@@ -8,10 +8,11 @@ import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { publishPersonalReviewReport } from "./fi-review-publication.js";
 
-const { roomRead, platformSend, beforeEffect } = vi.hoisted(() => ({
+const { roomRead, platformSend, beforeEffect, canonicalThread } = vi.hoisted(() => ({
   roomRead: vi.fn(),
   platformSend: vi.fn(),
   beforeEffect: vi.fn(),
+  canonicalThread: vi.fn(),
 }));
 vi.mock("./fi-shadow-matrix-room.js", () => ({ readFiUserMatrixRoom: roomRead }));
 const fixture = installDeliveryQueueTmpDirHooks();
@@ -46,6 +47,7 @@ beforeEach(() => {
   current.mockResolvedValue(undefined);
   platformSend.mockResolvedValue({ channel: "matrix", messageId: "$native-report:example.test" });
   beforeEffect.mockResolvedValue(undefined);
+  canonicalThread.mockResolvedValue(undefined);
   setActivePluginRegistry(
     createTestRegistry([
       {
@@ -59,6 +61,7 @@ beforeEach(() => {
               deliveryCapabilities: {
                 durableFinal: {
                   text: true,
+                  thread: true,
                   messageSendingHooks: true,
                   afterCommit: true,
                   reconcileUnknownSend: true,
@@ -67,14 +70,21 @@ beforeEach(() => {
               sendText: async (input) => {
                 await beforeEffect();
                 await input.onPlatformSendDispatch?.();
-                return platformSend({ text: input.text, to: input.to, accountId: input.accountId });
+                return platformSend({
+                  text: input.text,
+                  to: input.to,
+                  accountId: input.accountId,
+                  ...(input.threadId != null ? { threadId: input.threadId } : {}),
+                });
               },
             },
           }),
+          groups: { resolveCanonicalThreadId: canonicalThread },
           message: {
             durableFinal: {
               capabilities: {
                 text: true,
+                thread: true,
                 messageSendingHooks: true,
                 afterCommit: true,
                 reconcileUnknownSend: true,
@@ -167,4 +177,35 @@ it("never resends a prior unknown native publication", async () => {
   current.mockRejectedValue(new Error("review_delivery_forbidden"));
   await expect(publish()).rejects.toThrow();
   expect(platformSend).toHaveBeenCalledTimes(1);
+});
+it("posts the briefing into the room's canonical conversation thread", async () => {
+  canonicalThread.mockResolvedValue("$canonical-root:example.test");
+  await expect(publish()).resolves.toMatchObject({ messageId: "$native-report:example.test" });
+  expect(canonicalThread).toHaveBeenCalledWith(
+    expect.objectContaining({ accountId: "fi-user", groupId: owner.roomId }),
+  );
+  expect(platformSend).toHaveBeenCalledExactlyOnceWith({
+    text: report,
+    to: owner.roomId,
+    accountId: "fi-user",
+    threadId: "$canonical-root:example.test",
+  });
+});
+it("posts at room level when no canonical thread resolves", async () => {
+  canonicalThread.mockRejectedValue(new Error("matrix runtime unavailable"));
+  await expect(publish()).resolves.toMatchObject({ messageId: "$native-report:example.test" });
+  expect(platformSend).toHaveBeenCalledExactlyOnceWith({
+    text: report,
+    to: owner.roomId,
+    accountId: "fi-user",
+  });
+});
+it("replays a recorded receipt without resolving a thread or republishing", async () => {
+  await publish();
+  canonicalThread.mockClear();
+  closeOpenClawStateDatabaseForTest();
+  canonicalThread.mockResolvedValue("$canonical-root:example.test");
+  await expect(publish()).resolves.toMatchObject({ messageId: "$native-report:example.test" });
+  expect(platformSend).toHaveBeenCalledTimes(1);
+  expect(canonicalThread).not.toHaveBeenCalled();
 });

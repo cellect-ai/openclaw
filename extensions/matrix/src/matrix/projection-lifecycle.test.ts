@@ -15,6 +15,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   admitMatrixProjectionExecution,
+  MatrixAdmissionRefusedError,
   relateMatrixProjectionCanonical,
   resetMatrixRelatedCanonicalForTests,
   restoreMatrixProjectionExecutions,
@@ -257,7 +258,10 @@ describe("native Matrix participant lifecycle adapter", () => {
     await expect(admit()).rejects.toThrow("relation_conflict");
   });
   it("fails closed before dispatch for an incorrect thread root or non-joined producer", async () => {
-    await expect(admit("main", "main", "$wrong")).rejects.toThrow("identity_mismatch");
+    await expect(admit("main", "main", "$wrong")).rejects.toThrow(MatrixAdmissionRefusedError);
+    await expect(admit("main", "main", "$wrong")).rejects.toThrow("thread_not_canonical");
+    // A top-level message in the canonical room is equally outside the thread.
+    await expect(admit("main", "main", "")).rejects.toThrow("thread_not_canonical");
     await expect(
       admitMatrixProjectionExecution({
         core: runtime,
@@ -270,6 +274,27 @@ describe("native Matrix participant lifecycle adapter", () => {
         client: { getUserId: async () => "@main:example.org", getJoinedRooms: async () => [] },
       }),
     ).rejects.toThrow("producer_not_joined");
+    expect(saved.size).toBe(0);
+  });
+  it("keeps transient identity refusals in the canonical thread retryable", async () => {
+    const admitAs = (userId: string) =>
+      admitMatrixProjectionExecution({
+        core: runtime,
+        cfg,
+        accountId: "main",
+        agentId: "main",
+        roomId,
+        threadRootEventId: root,
+        sessionKey: sessionKey("main"),
+        client: { getUserId: async () => userId, getJoinedRooms: async () => [roomId] },
+      });
+    const noMxid = admitAs("");
+    await expect(noMxid).rejects.toThrow("identity_mismatch");
+    await expect(noMxid).rejects.not.toBeInstanceOf(MatrixAdmissionRefusedError);
+    mocks.managers.delete("main");
+    const noManager = admitAs("@main:example.org");
+    await expect(noManager).rejects.toThrow("identity_mismatch");
+    await expect(noManager).rejects.not.toBeInstanceOf(MatrixAdmissionRefusedError);
     expect(saved.size).toBe(0);
   });
   it("does not publish an acknowledged relationship after its live manager is replaced", async () => {

@@ -18,7 +18,10 @@ import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/secur
 import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
 import { prepareMatrixReplyPayload } from "../../outbound.js";
 import { isPollEventType } from "../poll-types.js";
-import { admitMatrixProjectionExecution } from "../projection-execution.js";
+import {
+  admitMatrixProjectionExecution,
+  isMatrixThreadNotCanonicalError,
+} from "../projection-execution.js";
 import { normalizeMatrixUserId } from "./allowlist.js";
 import { resolveMatrixMonitorLiveUserAllowlist } from "./config.js";
 import { createMatrixEventContextResolver } from "./event-context.js";
@@ -49,6 +52,8 @@ import { EventType } from "./types.js";
 const SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE = "SESSION_RESTART_RECOVERY_TOMBSTONE";
 const RESTART_RECOVERY_TOMBSTONE_NOTICE =
   "This session ended during gateway restart recovery and cannot accept more messages. Send /new or /reset to start a replacement session.";
+const THREAD_NOT_CANONICAL_NOTICE =
+  "I can only answer in the main conversation thread. Please ask there.";
 
 export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParams) {
   const {
@@ -112,6 +117,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
   const roomHistoryTracker = createRoomHistoryTracker();
   const roomIngressQueue = new KeyedAsyncQueue();
   const sharedDmContextNoticeRooms = new Set<string>();
+  const threadNotCanonicalNotices = new Set<string>();
 
   return async (
     roomId: string,
@@ -430,16 +436,49 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
           }
         : replayLifecycle;
 
-      await admitMatrixProjectionExecution({
-        core,
-        cfg,
-        client,
-        roomId,
-        threadRootEventId: threadTarget,
-        accountId,
-        agentId: _route.agentId,
-        sessionKey: _route.sessionKey,
-      });
+      try {
+        await admitMatrixProjectionExecution({
+          core,
+          cfg,
+          client,
+          roomId,
+          threadRootEventId: threadTarget,
+          accountId,
+          agentId: _route.agentId,
+          sessionKey: _route.sessionKey,
+        });
+      } catch (err) {
+        if (!isMatrixThreadNotCanonicalError(err)) {
+          throw err;
+        }
+        // Deterministic refusal: tell the sender once, in their own thread, then
+        // fail the event without retry. The durable delivery id keeps a replay
+        // after restart from posting a second notice.
+        const noticeKey = `${_route.accountId}:${roomId}:${eventId}`;
+        if (eventId && markTrackedRoomIfFirst(threadNotCanonicalNotices, noticeKey)) {
+          try {
+            const { sendMessageMatrix } = await loadMatrixSendModule();
+            await sendMessageMatrix(roomId, THREAD_NOT_CANONICAL_NOTICE, {
+              cfg,
+              client,
+              accountId: _route.accountId,
+              replyToId: threadTarget || replyToMode === "off" ? undefined : messageId,
+              fallbackReplyToId: threadTarget,
+              threadId: threadTarget,
+              deliveryQueueId: `matrix:thread-not-canonical:${noticeKey}`,
+              deliveryPartIndex: 0,
+              deliveryPartCount: 1,
+              extraContent: { msgtype: "m.notice" },
+            });
+          } catch (noticeError) {
+            runtime.error?.(
+              `matrix: failed sending non-canonical thread notice room=${roomId} id=${eventId}: ${String(noticeError)}`,
+            );
+          }
+        }
+        await commitInboundEventIfClaimed().catch(() => undefined);
+        throw err;
+      }
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",
         accountId: _route.accountId,

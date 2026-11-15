@@ -152,6 +152,12 @@ export type ChannelGroupAdapter = {
     groupId: string;
     assertCurrent: () => void;
   }) => Promise<readonly string[]>;
+  /** The thread a group's bound conversation lives in, when it has one. */
+  resolveCanonicalThreadId?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    groupId: string;
+  }) => Promise<string | undefined>;
 };
 export type ChannelStatusAdapter<ResolvedAccount, Probe = unknown, Audit = unknown> = {
   defaultRuntime?: ChannelAccountSnapshot;

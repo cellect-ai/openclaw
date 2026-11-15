@@ -6,6 +6,7 @@ import {
 } from "./matrix/conversation-participant.js";
 import { cleanupMatrixDeliveryPlans, reconcileMatrixUnknownSend } from "./matrix/delivery-plan.js";
 import { probeMatrix } from "./matrix/probe.js";
+import { resolveMatrixCanonicalThreadRoot } from "./matrix/projection-execution.js";
 import { sendMessageMatrix, sendTypingMatrix } from "./matrix/send.js";
 import { matrixOutbound } from "./outbound.js";
 import { resolveMatrixTargets } from "./resolve-targets.js";
@@ -19,6 +20,7 @@ export const matrixChannelRuntime = {
   matrixOutbound,
   probeMatrix,
   resolveMatrixAuth,
+  resolveMatrixCanonicalThreadRoot,
   resolveMatrixTargets,
   reconcileMatrixUnknownSend,
   sendMessageMatrix,
