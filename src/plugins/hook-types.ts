@@ -609,6 +609,8 @@ export type PluginHookToolContext = {
   /** Original authenticated mail source target when execution is projected to cron. */
   hookMailWakeSessionKey?: string;
   hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment the authenticated hook of this run named; host context only. */
+  hostHookFiEnvironment?: "dev" | "staging" | "prod";
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;

@@ -15,10 +15,8 @@ import {
 } from "../config/sessions/session-store-owner.js";
 import type { HookSessionMode } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import {
-  isAttestedBackgroundHookSessionKey,
-  normalizeHookRequesterAttestation,
-} from "../infra/hook-requester-attestation.js";
+import { normalizeHookRequesterAndFiEnvironment } from "../infra/hook-fi-environment.js";
+import { isAttestedBackgroundHookSessionKey } from "../infra/hook-requester-attestation.js";
 import { readJsonBodyWithLimit, requestBodyErrorToText } from "../infra/http-body.js";
 import { normalizeMailWakeSourceLock } from "../infra/mail-wake-source-lock.js";
 import {
@@ -361,6 +359,8 @@ type HookAgentPayload = {
    */
   requesterAttestation?: string;
   requesterEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment that sent this hook; every Fi call of its run uses that environment only. */
+  fiEnvironment?: "dev" | "staging" | "prod";
 };
 
 /** Normalized agent dispatch payload after hook policy/session resolution. */
@@ -738,8 +738,11 @@ export function normalizeAgentPayload(
     return mailRequester;
   }
   const sourceLock = normalizeMailWakeSourceLock(payload, sessionKey);
-  if (!sourceLock.ok) {return sourceLock;}
-  const shadowRequester = normalizeHookRequesterAttestation(payload, sessionKey);
+  if (!sourceLock.ok) {
+    return sourceLock;
+  }
+  // The requester attestation and the Fi environment the hook names.
+  const shadowRequester = normalizeHookRequesterAndFiEnvironment(payload, sessionKey);
   if (!shadowRequester.ok) {
     return shadowRequester;
   }

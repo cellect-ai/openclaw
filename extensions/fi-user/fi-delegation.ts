@@ -219,6 +219,26 @@ export function mailWakeConnection(
     : undefined;
 }
 
+/**
+ * The Fi a hook run named, from its explicit `matrixEnvironments` route only:
+ * never the plugin's default origin, not even for prod, so a hook from one Fi
+ * can never be answered by another.
+ */
+export function withHookFiRoute(
+  config: ResolvedPluginConfig,
+  environment: "dev" | "staging" | "prod" | undefined,
+): ResolvedPluginConfig | undefined {
+  if (!environment) {
+    return config;
+  }
+  const route = Object.hasOwn(config.matrixEnvironments, environment)
+    ? config.matrixEnvironments[environment]
+    : undefined;
+  return route?.baseUrl && route.brokerTokenEnv
+    ? { ...config, ...route, baseUrl: route.baseUrl.replace(/\/+$/, "") }
+    : undefined;
+}
+
 export function pluginConfig(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
@@ -229,6 +249,16 @@ export function pluginConfig(
         cfg.plugins?.entries?.["fi-user"]?.config as PluginConfig | undefined,
       )
     : configFromRuntime(api);
+  if (context.hostHookFiEnvironment) {
+    // A hook run answers to the Fi that sent it, whatever channel it reports.
+    const routed = withHookFiRoute(resolved, context.hostHookFiEnvironment);
+    if (!routed) {
+      throw new Error(
+        `This hook's ${context.hostHookFiEnvironment} Fi environment is not configured on this gateway`,
+      );
+    }
+    return routed;
+  }
   if (context.messageChannel !== "matrix") {
     // A verified projected Matrix reply in a Slack session is that person's
     // turn through the Matrix account its dispatch was received on, or none.

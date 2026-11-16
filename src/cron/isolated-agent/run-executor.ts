@@ -39,6 +39,7 @@ import type { VerboseLevel } from "../../auto-reply/thinking.js";
 import type { CliSessionBinding } from "../../config/sessions.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
 import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
+import { registerHookFiEnvironment } from "../../infra/hook-fi-environment.js";
 import { registerHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
 import { registerMailWakeSourceLock } from "../../infra/mail-wake-source-lock.js";
 import {
@@ -262,6 +263,7 @@ function createCronPromptExecutor(
     }
     // A shadow hook's attestation is plugin run context for this run only.
     let releaseMailWakeSourceLock: () => void;
+    let releaseHookFiEnvironment: () => void;
     try {
       releaseMailWakeSourceLock = registerMailWakeSourceLock({
         runId,
@@ -271,6 +273,18 @@ function createCronPromptExecutor(
         environment: params.hookRequesterEnvironment,
       });
     } catch (error) {
+      unregisterCronRunExecSource();
+      throw error;
+    }
+    try {
+      // Every Fi call of a hook run that named its Fi uses that environment only.
+      releaseHookFiEnvironment = registerHookFiEnvironment({
+        runId,
+        sessionKey: params.runSessionKey,
+        environment: params.hookRequesterEnvironment,
+      });
+    } catch (error) {
+      releaseMailWakeSourceLock();
       unregisterCronRunExecSource();
       throw error;
     }
@@ -695,6 +709,7 @@ function createCronPromptExecutor(
         unregisterCronRunExecSource();
         releaseHookRequesterAttestation();
         releaseMailWakeSourceLock();
+        releaseHookFiEnvironment();
         closePromptAdmission();
       });
     const executionError =

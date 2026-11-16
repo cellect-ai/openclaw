@@ -8,6 +8,7 @@
 import type { ToolLoopWarning } from "@openclaw/agent-core";
 import { getRuntimeConfig } from "../config/config.js";
 import { freezeDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
+import { lookupHookFiEnvironment } from "../infra/hook-fi-environment.js";
 import {
   lookupMailWakeSourceLock,
   lookupMailWakeSessionKey,
@@ -282,6 +283,7 @@ export async function runBeforeToolCallHook(args: {
       hookSourceLockCapability: lookupMailWakeSourceLock(args.ctx?.runId, args.ctx?.sessionKey),
       hookMailWakeSessionKey: lookupMailWakeSessionKey(args.ctx?.runId, args.ctx?.sessionKey),
       hostMailWakeEnvironment: lookupMailWakeEnvironment(args.ctx?.runId, args.ctx?.sessionKey),
+      hostHookFiEnvironment: lookupHookFiEnvironment(args.ctx?.runId, args.ctx?.sessionKey),
       ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
       ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
       ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),

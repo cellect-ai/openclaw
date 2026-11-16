@@ -16,6 +16,7 @@ import {
   REQUESTER_UNCONFIRMED_LINE,
   matrixConnection,
   mailWakeConnection,
+  withHookFiRoute,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
 import { mailWakeDelegationContext } from "./mail-wake-context.js";
@@ -1361,6 +1362,36 @@ export function registerAdminDelegation(
     /** When the host entered this tool call's hook; its deadline runs from then. */
     enteredAt: number,
   ): Promise<CommandDelegation | Held | undefined> | undefined => {
+    const environment = ctx.hostHookFiEnvironment;
+    if (!environment) {
+      return mintFrom(config, event, ctx, enteredAt);
+    }
+    // A hook run answers to the Fi that sent it: every credential is minted by
+    // that environment's own broker and carries its origin.
+    const routed = withHookFiRoute(config, environment);
+    const result = routed ? mintFrom(routed, event, ctx, enteredAt) : undefined;
+    // Where the sandbox's own default Fi is another environment, a command
+    // that gets no token for the hook's Fi must not fall through to it.
+    if (
+      (routed && routed.baseUrl === config.baseUrl.replace(/\/+$/, "")) ||
+      !ON_BEHALF_OF_TOOLS.has(event.toolName) ||
+      !runsInSandbox(event.params)
+    ) {
+      return result;
+    }
+    const refused: Held = {
+      block: true,
+      blockReason: `This turn answers to the ${environment} Fi. A command that cannot carry that Fi's own credential cannot run here, because this sandbox's default Fi is another environment.`,
+    };
+    return result ? result.then((value) => value ?? refused) : Promise.resolve(refused);
+  };
+
+  const mintFrom = (
+    config: ResolvedPluginConfig,
+    event: { toolName: string; toolKind?: string; params: Record<string, unknown> },
+    ctx: PluginHookToolContext,
+    enteredAt: number,
+  ): Promise<CommandDelegation | Held | undefined> | undefined => {
     const agentId = ctx.agentId?.toLowerCase();
     const operatorProof = admittedOperatorCommand(ctx);
     const operatorRequested =
@@ -1672,7 +1703,28 @@ export function registerAdminDelegation(
    * token, for a Fi call the plugin makes itself. Nothing when unproven.
    */
   const provenToolRequester: RequesterProofReader = (ctx) => {
-    const config = configFromRuntime(api);
+    const environment = ctx.hostHookFiEnvironment;
+    const proven = provenRequester(ctx, environment);
+    if (!proven || !environment) {
+      return proven;
+    }
+    // A hook run is answered only by the Fi it named, whichever branch proved it.
+    const route = withHookFiRoute(proven.connection, environment);
+    return route &&
+      route.baseUrl === proven.connection.baseUrl.replace(/\/+$/, "") &&
+      route.brokerTokenEnv === proven.connection.brokerTokenEnv
+      ? proven
+      : undefined;
+  };
+
+  const provenRequester = (
+    ctx: Parameters<RequesterProofReader>[0],
+    environment: "dev" | "staging" | "prod" | undefined,
+  ): ReturnType<RequesterProofReader> => {
+    const config = withHookFiRoute(configFromRuntime(api), environment);
+    if (!config) {
+      return undefined;
+    }
     const agentId = ctx.agentId?.toLowerCase();
     const sessionKey = ctx.sessionKey?.toLowerCase();
     const run = ctx.runId ? runs.get(ctx.runId) : undefined;
@@ -1719,7 +1771,9 @@ export function registerAdminDelegation(
     const sourceConnection = isMailSource
       ? mailWakeConnection(config, ctx.hostMailWakeEnvironment)
       : undefined;
-    if (isMailSource && !sourceConnection) {return undefined;}
+    if (isMailSource && !sourceConnection) {
+      return undefined;
+    }
     if ("requester_slack_user_id" in requester) {
       return {
         connection: sourceConnection ? { ...config, ...sourceConnection } : config,
@@ -1729,11 +1783,12 @@ export function registerAdminDelegation(
         },
       };
     }
-    if ("requester_email" in requester)
-      {return {
+    if ("requester_email" in requester) {
+      return {
         connection: { ...config, ...sourceConnection },
         body: { requesterEmail: requester.requester_email, ...mailWakeDelegationContext(ctx) },
-      };}
+      };
+    }
     if (!("requester_matrix_user_id" in requester)) {
       return undefined;
     }

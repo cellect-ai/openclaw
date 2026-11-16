@@ -482,6 +482,10 @@ export function createHooksRequestHandler(
                 requesterEnvironment: normalized.value.requesterEnvironment,
               }
             : {}),
+          // A different Fi environment is a different dispatch.
+          ...(normalized.value.fiEnvironment
+            ? { fiEnvironment: normalized.value.fiEnvironment }
+            : {}),
         },
       });
       const replay = resolveHookReplay(replayKey);

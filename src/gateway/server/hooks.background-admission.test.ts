@@ -126,7 +126,19 @@ describe("hook background admission", () => {
           allowedAgentIds: ["cellect-fi-user"],
           allowedSessionKeyPrefixes: ["hook:fi-review:", "hook:fi-rfi:", "hook:fi-co:"],
         },
-      });
+        plugins: {
+          entries: {
+            "fi-user": {
+              config: {
+                matrixEnvironments: {
+                  prod: { baseUrl: "https://prod.fi.example", brokerTokenEnv: "BROKER_PROD" },
+                  dev: { baseUrl: "https://dev.fi.example", brokerTokenEnv: "BROKER_DEV" },
+                },
+              },
+            },
+          },
+        },
+      } as OpenClawConfig);
       mocks.runCronIsolatedAgentTurn.mockImplementation(
         async (params: { onExecutionStarted?: () => void }) => {
           params.onExecutionStarted?.();
@@ -203,6 +215,49 @@ describe("hook background admission", () => {
         expect(mocks.runCronIsolatedAgentTurn).not.toHaveBeenCalled();
       },
     );
+    it("carries the Fi environment any hook names into its run, and keeps today's default without one", async () => {
+      const staff = {
+        message: "Review the signed change order",
+        agentId: "cellect-fi-user",
+        sessionMode: "isolated",
+        deliver: false,
+        waitForCompletion: true,
+        sessionKey: `hook:fi-review:${"b".repeat(40)}`,
+        requesterAttestation: `pra:review-job:${"D".repeat(43)}`,
+      };
+      expect(
+        (await post(attestedHandler(), "/hooks/agent", { ...staff, fiEnvironment: "dev" })).res
+          .statusCode,
+      ).toBe(200);
+      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0].hookRequesterEnvironment).toBe("dev");
+      mocks.runCronIsolatedAgentTurn.mockClear();
+      expect((await post(attestedHandler(), "/hooks/agent", staff)).res.statusCode).toBe(200);
+      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0]).not.toHaveProperty(
+        "hookRequesterEnvironment",
+      );
+      // A construction hook names the same Fi in both fields.
+      mocks.runCronIsolatedAgentTurn.mockClear();
+      expect(
+        (
+          await post(attestedHandler(), "/hooks/agent", {
+            ...body(cases[1]),
+            requesterEnvironment: "dev",
+            fiEnvironment: "dev",
+          })
+        ).res.statusCode,
+      ).toBe(200);
+      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0].hookRequesterEnvironment).toBe("dev");
+    });
+    it.each([
+      { fiEnvironment: "staging", why: "an environment with no Fi route here" },
+      { fiEnvironment: "qa", why: "an unknown environment" },
+      { fiEnvironment: "dev", requesterEnvironment: "prod", why: "two environments that disagree" },
+    ])("refuses a hook naming $why before running", async ({ why: _why, ...fields }) => {
+      const input = fields.requesterEnvironment ? cases[1] : cases[0];
+      const response = await post(attestedHandler(), "/hooks/agent", { ...body(input), ...fields });
+      expect(response.res.statusCode).toBe(400);
+      expect(mocks.runCronIsolatedAgentTurn).not.toHaveBeenCalled();
+    });
   });
 
   it("admits slow fan-out items past the bounded deadline instead of canceling them", async () => {

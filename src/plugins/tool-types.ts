@@ -80,6 +80,8 @@ type OpenClawPluginToolContextBase = {
   /** Original authenticated mail source target when execution is projected to cron. */
   hookMailWakeSessionKey?: string;
   hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment the authenticated hook of this run named; host context only. */
+  hostHookFiEnvironment?: "dev" | "staging" | "prod";
   /** Authenticated construction or guest hook environment, never model content. */
   fiEnvironment?: "dev" | "staging" | "prod";
   /** Host-resolved memory partition for this turn. Providers must not reconstruct it. */

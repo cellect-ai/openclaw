@@ -23,6 +23,7 @@ type RequesterProofContext = Pick<
   | "hookSourceLockCapability"
   | "hookMailWakeSessionKey"
   | "hostMailWakeEnvironment"
+  | "hostHookFiEnvironment"
 >;
 
 export type RequesterProofReader = (context: RequesterProofContext) => ProvenRequester | undefined;

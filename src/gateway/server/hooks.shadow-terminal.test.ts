@@ -9,7 +9,24 @@ import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-c
 const enqueueSystemEventMock = vi.fn();
 const requestHeartbeatMock = vi.fn();
 const runCronIsolatedAgentTurnMock = vi.fn();
-const loadConfigMock = vi.fn((): OpenClawConfig => ({ agents: { entries: { main: {} } } }));
+const loadConfigMock = vi.fn(
+  (): OpenClawConfig =>
+    ({
+      agents: { entries: { main: {} } },
+      // A hook naming a Fi environment is admitted only with that environment's route.
+      plugins: {
+        entries: {
+          "fi-user": {
+            config: {
+              matrixEnvironments: {
+                dev: { baseUrl: "https://dev.fi.example", brokerTokenEnv: "BROKER_DEV" },
+              },
+            },
+          },
+        },
+      },
+    }) as OpenClawConfig,
+);
 const logHooksInfoMock = vi.fn();
 const logHooksWarnMock = vi.fn();
 

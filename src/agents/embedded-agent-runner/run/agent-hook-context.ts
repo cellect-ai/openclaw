@@ -1,3 +1,4 @@
+import { lookupHookFiEnvironment } from "../../../infra/hook-fi-environment.js";
 import {
   lookupMailWakeSourceLock,
   lookupMailWakeSessionKey,
@@ -43,6 +44,7 @@ export function buildEmbeddedPreReplyHookContext(
     hookSourceLockCapability: lookupMailWakeSourceLock(run.runId, input.sessionKey),
     hookMailWakeSessionKey: lookupMailWakeSessionKey(run.runId, input.sessionKey),
     hostMailWakeEnvironment: lookupMailWakeEnvironment(run.runId, input.sessionKey),
+    hostHookFiEnvironment: lookupHookFiEnvironment(run.runId, input.sessionKey),
     ...buildAgentHookContextChannelFields(run),
     ...buildAgentHookContextIdentityFields(run),
   };

@@ -8,6 +8,7 @@ import {
  * Normalizes workspace, delivery, browser, sandbox, and active-model inputs before plugin tool invocation.
  */
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { lookupHookFiEnvironment } from "../infra/hook-fi-environment.js";
 import {
   lookupHookRequesterAttestation,
   lookupHookRequesterEnvironment,
@@ -151,6 +152,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       hookSourceLockCapability: lookupMailWakeSourceLock(options?.runId, sessionKey),
       hookMailWakeSessionKey: lookupMailWakeSessionKey(options?.runId, sessionKey),
       hostMailWakeEnvironment: lookupMailWakeEnvironment(options?.runId, sessionKey),
+      hostHookFiEnvironment: lookupHookFiEnvironment(options?.runId, sessionKey),
       ...(hookRequesterAttestation
         ? {
             hookRequesterAttestation,

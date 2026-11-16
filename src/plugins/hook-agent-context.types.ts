@@ -82,6 +82,8 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   hookSourceLockCapability?: string;
   hookMailWakeSessionKey?: string;
   hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment the authenticated hook of this run named; host context only. */
+  hostHookFiEnvironment?: "dev" | "staging" | "prod";
   /** @deprecated Use `channelContext.sender` for channel-specific identities. */
   senderExternalId?: string;
   /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */

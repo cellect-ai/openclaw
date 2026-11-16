@@ -22,6 +22,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
 import { notifyGuestTurnCompletion } from "../../infra/guest-turn-completion.js";
 import { requestHeartbeat } from "../../infra/heartbeat-wake.js";
+import { hasHookFiRoute, normalizeHookFiEnvironment } from "../../infra/hook-fi-environment.js";
 import {
   hookRequesterScopeAllowed,
   isAttestedBackgroundHookSessionKey,
@@ -329,6 +330,25 @@ export function createGatewayHookDispatcher(params: {
     if (!normalizedSourceLock.ok) {
       return { ok: false, statusCode: 400, error: normalizedSourceLock.error, runId };
     }
+    const normalizedFiEnvironment = normalizeHookFiEnvironment(
+      value as unknown as Record<string, unknown>,
+    );
+    if (!normalizedFiEnvironment.ok) {
+      return { ok: false, statusCode: 400, error: normalizedFiEnvironment.error, runId };
+    }
+    // The Fi this hook came from. Every Fi call of the run uses that
+    // environment's own route; a named environment without one is refused here
+    // rather than answered by the default (production) Fi.
+    const hookFiEnvironment =
+      normalizedRequester.value.requesterEnvironment ?? normalizedFiEnvironment.value.fiEnvironment;
+    if (hookFiEnvironment && !hasHookFiRoute(getRuntimeConfig(), hookFiEnvironment)) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: `No Fi route is configured for the ${hookFiEnvironment} environment this hook names`,
+        runId,
+      };
+    }
     const hookRequesterAttestation = parseHookRequesterAttestation(value.requesterAttestation);
     if (!hookRequesterScopeAllowed(value, sessionKey)) {
       return {
@@ -626,16 +646,9 @@ export function createGatewayHookDispatcher(params: {
                 ...(acceptedValue.sourceLockCapability
                   ? { sourceLockCapability: acceptedValue.sourceLockCapability }
                   : {}),
-                ...(!hookRequesterAttestation && normalizedRequester.value.requesterEnvironment
-                  ? { hookRequesterEnvironment: normalizedRequester.value.requesterEnvironment }
-                  : {}),
+                ...(hookFiEnvironment ? { hookRequesterEnvironment: hookFiEnvironment } : {}),
                 // Run context only: never the message, the job payload or a sender.
-                ...(hookRequesterAttestation
-                  ? {
-                      hookRequesterAttestation,
-                      hookRequesterEnvironment: normalizedRequester.value.requesterEnvironment,
-                    }
-                  : {}),
+                ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
                 // Isolated runs derive their lifecycle key from random jobId (or an
                 // already-stable cron: key), so accepted agentId closes reload drift.
                 agentId,

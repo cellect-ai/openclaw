@@ -423,3 +423,59 @@ describe("mail response compatibility at credential mint", () => {
     }
   });
 });
+
+describe("a hook run answers to the Fi it named", () => {
+  function hookContext(environment: string | undefined) {
+    const config = {
+      plugins: {
+        entries: {
+          "fi-user": {
+            config: {
+              ...connection,
+              tenantOrgId: "org-a",
+              matrixEnvironments: {
+                dev: { baseUrl: "https://dev.fi.example.test/", brokerTokenEnv: "DEV_BROKER" },
+              },
+            },
+          },
+        },
+      },
+    };
+    const api = { config, runtime: { config: { current: () => config } } } as never;
+    const context = {
+      agentId: "cellect-fi-user",
+      messageChannel: "slack",
+      requesterSenderId: "U12345678",
+      hostHookFiEnvironment: environment,
+      getRuntimeConfig: () => config,
+    } as unknown as OpenClawPluginToolContext;
+    return { api: api as OpenClawPluginApi, context };
+  }
+
+  it("uses that environment's own origin and broker", async () => {
+    vi.stubEnv("DEV_BROKER", "dev-broker");
+    fetchMock.mockResolvedValue(member({ orgId: "org-a" }));
+    const { api, context } = hookContext("dev");
+    const { config } = await exchange(api, context);
+    expect(config.baseUrl).toBe("https://dev.fi.example.test");
+    expect(fetchMock.mock.calls[0]![0]).toMatch(/^https:\/\/dev\.fi\.example\.test\//);
+    expect(fetchMock.mock.calls[0]![1].headers).toMatchObject({
+      authorization: "Bearer dev-broker",
+    });
+  });
+
+  it("refuses an environment with no route instead of using the default Fi, prod included", async () => {
+    for (const environment of ["staging", "prod"]) {
+      const { api, context } = hookContext(environment);
+      await expect(exchange(api, context)).rejects.toThrow(/not configured/);
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps the default Fi for a run that named none", async () => {
+    fetchMock.mockResolvedValue(member({ orgId: "org-a" }));
+    const { api, context } = hookContext(undefined);
+    const { config } = await exchange(api, context);
+    expect(config.baseUrl).toBe("https://fi.example.test");
+  });
+});
