@@ -694,6 +694,7 @@ export function createGatewayHookDispatcher(params: {
                   runId,
                   sessionKey,
                   attestation: hookRequesterAttestation,
+                  environment: normalizedRequester.value.requesterEnvironment,
                   status: result.status,
                   outputText: result.outputText,
                 },

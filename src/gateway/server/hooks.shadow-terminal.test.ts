@@ -215,10 +215,10 @@ describe("shadow hook terminals", () => {
     const GUEST_SESSION = `hook:fi-guest:${"a".repeat(40)}`;
     const GUEST_ATTESTATION = `fga:gt_1:${"C".repeat(43)}`;
     const guestPayload = () =>
-      shadowPayload({ sessionKey: GUEST_SESSION, sessionMode: "persistent" }) as Record<
-        string,
-        unknown
-      >;
+      ({
+        ...shadowPayload({ sessionKey: GUEST_SESSION, sessionMode: "persistent" }),
+        requesterEnvironment: "dev",
+      }) as Record<string, unknown>;
 
     it("reports a finished guest run's text and never announces it", async () => {
       const handler = vi.fn().mockResolvedValue(undefined);
@@ -238,12 +238,16 @@ describe("shadow hook terminals", () => {
         expect.objectContaining({
           sessionKey: GUEST_SESSION,
           attestation: GUEST_ATTESTATION,
+          environment: "dev",
           status: "ok",
           outputText: "the reply",
         }),
       );
       expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledWith(
-        expect.objectContaining({ hookRequesterAttestation: GUEST_ATTESTATION }),
+        expect.objectContaining({
+          hookRequesterAttestation: GUEST_ATTESTATION,
+          hookRequesterEnvironment: "dev",
+        }),
       );
       expect(enqueueSystemEventMock).not.toHaveBeenCalled();
       release();
@@ -266,6 +270,12 @@ describe("shadow hook terminals", () => {
         requesterAttestation: ATTESTATION,
       });
       expect(refused).toMatchObject({ ok: false });
+      const unnamed = await dispatchAgentHook({
+        ...guestPayload(),
+        requesterAttestation: GUEST_ATTESTATION,
+        requesterEnvironment: undefined,
+      });
+      expect(unnamed).toMatchObject({ ok: false });
       expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
       release();
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));

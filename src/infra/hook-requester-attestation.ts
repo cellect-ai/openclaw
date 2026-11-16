@@ -118,10 +118,13 @@ export function normalizeHookRequesterAttestation(
     if (knob) {
       return { ok: false, error: `${knob} is not accepted on a hook:fi-guest: session` };
     }
-    if (payload.requesterEnvironment !== undefined) {
+    // Fi names the environment it answers for, like a construction hook: the
+    // guest broker and origin are that environment's own, never a default.
+    const environment = payload.requesterEnvironment;
+    if (typeof environment !== "string" || !["dev", "staging", "prod"].includes(environment)) {
       return {
         ok: false,
-        error: "requesterEnvironment is not accepted on a hook:fi-guest: session",
+        error: "requesterEnvironment is required on a hook:fi-guest: session",
       };
     }
     if (raw === undefined) {
@@ -134,7 +137,13 @@ export function normalizeHookRequesterAttestation(
     ) {
       return { ok: false, error: "requesterAttestation is malformed" };
     }
-    return { ok: true, value: { requesterAttestation: raw } };
+    return {
+      ok: true,
+      value: {
+        requesterAttestation: raw,
+        requesterEnvironment: environment as "dev" | "staging" | "prod",
+      },
+    };
   }
   if (isPersonalReviewHookSessionKey(sessionKey)) {
     const knob = shadowHookDeliveryKnob(payload);
@@ -229,7 +238,8 @@ export function registerHookRequesterAttestation(params: {
   const key = params.runId.trim();
   const attestation = parseHookRequesterAttestation(params.attestation);
   if (
-    /(?:^|:)hook:fi-(?:rfi|co):/i.test(params.sessionKey) &&
+    (/(?:^|:)hook:fi-(?:rfi|co):/i.test(params.sessionKey) ||
+      isGuestHookSessionKey(params.sessionKey)) &&
     !["dev", "staging", "prod"].includes(params.environment ?? "")
   ) {
     return () => {};

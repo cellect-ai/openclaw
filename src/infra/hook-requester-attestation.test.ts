@@ -5,6 +5,7 @@ import {
   isShadowHookSessionKey,
   isPersonalReviewHookSessionKey,
   lookupHookRequesterAttestation,
+  lookupHookRequesterEnvironment,
   normalizeHookRequesterAttestation,
   registerHookRequesterAttestation,
 } from "./hook-requester-attestation.js";
@@ -189,14 +190,22 @@ describe("guest conversation purpose isolation", () => {
     expect(isGuestHookSessionKey(GUEST)).toBe(true);
     expect(isGuestHookSessionKey(`agent:cellect-fi-guest:${GUEST}`)).toBe(true);
     expect(
-      normalizeHookRequesterAttestation({ requesterAttestation: GUEST_ATTESTATION }, GUEST),
-    ).toEqual({ ok: true, value: { requesterAttestation: GUEST_ATTESTATION } });
+      normalizeHookRequesterAttestation(
+        { requesterAttestation: GUEST_ATTESTATION, requesterEnvironment: "dev" },
+        GUEST,
+      ),
+    ).toEqual({
+      ok: true,
+      value: { requesterAttestation: GUEST_ATTESTATION, requesterEnvironment: "dev" },
+    });
     const release = registerHookRequesterAttestation({
       runId: "guest-1",
       sessionKey: GUEST,
       attestation: GUEST_ATTESTATION,
+      environment: "dev",
     });
     expect(lookupHookRequesterAttestation("guest-1", GUEST)).toBe(GUEST_ATTESTATION);
+    expect(lookupHookRequesterEnvironment("guest-1", GUEST)).toBe("dev");
     expect(lookupHookRequesterAttestation("guest-1", SHADOW)).toBeUndefined();
     release();
     expect(lookupHookRequesterAttestation("guest-1", GUEST)).toBeUndefined();
@@ -226,13 +235,15 @@ describe("guest conversation purpose isolation", () => {
     expect(lookupHookRequesterAttestation("wrong", SHADOW)).toBeUndefined();
   });
 
-  it("refuses delivery knobs and environment on a guest session", () => {
+  it("refuses delivery knobs and requires a named environment on a guest session", () => {
     for (const extra of [
-      { deliver: true },
-      { channel: "slack" },
-      { to: "x" },
-      { allowUnsafeExternalContent: true },
-      { requesterEnvironment: "prod" },
+      { requesterEnvironment: "dev", deliver: true },
+      { requesterEnvironment: "dev", channel: "slack" },
+      { requesterEnvironment: "dev", to: "x" },
+      { requesterEnvironment: "dev", allowUnsafeExternalContent: true },
+      {},
+      { requesterEnvironment: "qa" },
+      { requesterEnvironment: 1 },
     ]) {
       expect(
         normalizeHookRequesterAttestation(
@@ -241,6 +252,13 @@ describe("guest conversation purpose isolation", () => {
         ).ok,
       ).toBe(false);
     }
+    // A guest run without a named environment carries no attestation at all.
+    registerHookRequesterAttestation({
+      runId: "guest-no-env",
+      sessionKey: GUEST,
+      attestation: GUEST_ATTESTATION,
+    });
+    expect(lookupHookRequesterAttestation("guest-no-env", GUEST)).toBeUndefined();
     expect(
       hookRequesterScopeAllowed(
         { requesterAttestation: GUEST_ATTESTATION, effectiveAgentId: "cellect-fi-guest" },

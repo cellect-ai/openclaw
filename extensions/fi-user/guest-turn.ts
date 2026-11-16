@@ -3,7 +3,9 @@
  * started by Fi on a `hook:fi-guest:` session with an `fga:` attestation. The
  * gateway only forwards that receipt (host: src/infra/hook-requester-attestation.ts);
  * Fi alone says whom it names. Two things happen here, both against Fi with the
- * gateway's tenant broker credential, and neither with a staff delegation token:
+ * gateway's tenant broker credential, and neither with a staff delegation token.
+ * The Fi origin and broker are those of the environment the hook named
+ * (`requesterEnvironment`), taken only from `matrixEnvironments` (guestTurnConfig):
  *
  * 1. Token exchange, for the `guest_api` tool.
  *    POST {baseUrl}/api/access/v1/guest-turns/token
@@ -64,6 +66,34 @@ type ClaimedConfig = Pick<
   ResolvedPluginConfig,
   "baseUrl" | "brokerTokenEnv" | "tenantOrgId" | "tenantOrgConflict"
 >;
+
+/**
+ * The Fi origin and broker of the environment the guest hook named. A guest
+ * turn has no Matrix account to prove one, so it takes the hook's own
+ * `requesterEnvironment` and that environment's explicit `matrixEnvironments`
+ * entry; it never falls back to the runtime's top-level Fi configuration.
+ */
+export function guestTurnConfig(
+  config: ClaimedConfig & Pick<ResolvedPluginConfig, "matrixEnvironments">,
+  environment: "dev" | "staging" | "prod" | undefined,
+): ClaimedConfig {
+  const connection =
+    environment && Object.hasOwn(config.matrixEnvironments, environment)
+      ? config.matrixEnvironments[environment]
+      : undefined;
+  const baseUrl = typeof connection?.baseUrl === "string" ? connection.baseUrl.trim() : "";
+  const brokerTokenEnv =
+    typeof connection?.brokerTokenEnv === "string" ? connection.brokerTokenEnv.trim() : "";
+  if (!baseUrl || !brokerTokenEnv) {
+    throw new Error("The guest turn's Fi environment is not configured for this runtime");
+  }
+  return {
+    baseUrl: baseUrl.replace(/\/+$/, ""),
+    brokerTokenEnv,
+    tenantOrgId: config.tenantOrgId,
+    ...(config.tenantOrgConflict ? { tenantOrgConflict: config.tenantOrgConflict } : {}),
+  };
+}
 
 function requireBroker(config: ClaimedConfig): string {
   const broker = brokerToken(config);
@@ -164,7 +194,7 @@ export function createGuestApiTool(
       if (entries.length > MAX_QUERY_PARAMS) {
         throw new Error(`At most ${MAX_QUERY_PARAMS} query parameters`);
       }
-      const config = pluginConfig(api, context);
+      const config = guestTurnConfig(pluginConfig(api, context), context.fiEnvironment);
       const token = await guestToken(config, {
         attestation,
         sessionKey: context.sessionKey ?? "",
@@ -245,6 +275,9 @@ export async function reportGuestTurn(
 
 export function registerGuestTurnReporting(api: OpenClawPluginApi): void {
   registerGuestTurnCompletionHandler(async (completion) => {
-    await reportGuestTurn(configFromRuntime(api), completion);
+    await reportGuestTurn(
+      guestTurnConfig(configFromRuntime(api), completion.environment),
+      completion,
+    );
   });
 }

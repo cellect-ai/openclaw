@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { guestToolAttestation, reportGuestTurn } from "./guest-turn.js";
+import { guestToolAttestation, guestTurnConfig, reportGuestTurn } from "./guest-turn.js";
 
 const SESSION = `hook:fi-guest:${"a".repeat(40)}`;
 const ATTESTATION = `fga:gt_1:${"C".repeat(43)}`;
@@ -100,5 +100,46 @@ describe("reportGuestTurn", () => {
         [0],
       ),
     ).rejects.toThrow("broker");
+  });
+});
+
+describe("guestTurnConfig", () => {
+  const runtime = {
+    baseUrl: "https://app.example.test/fi",
+    brokerTokenEnv: "PROD_BROKER",
+    tenantOrgId: "org_1",
+    matrixEnvironments: {
+      dev: { baseUrl: "https://dev.example.test/fi/", brokerTokenEnv: "DEV_BROKER" },
+    },
+  };
+
+  it("uses only the named environment's own origin and broker", () => {
+    expect(guestTurnConfig(runtime, "dev")).toEqual({
+      baseUrl: "https://dev.example.test/fi",
+      brokerTokenEnv: "DEV_BROKER",
+      tenantOrgId: "org_1",
+    });
+  });
+
+  it("never falls back to the top-level configuration", () => {
+    for (const environment of [undefined, "prod" as const, "staging" as const]) {
+      expect(() => guestTurnConfig(runtime, environment)).toThrow("not configured");
+    }
+    expect(() =>
+      guestTurnConfig(
+        { ...runtime, matrixEnvironments: { dev: { baseUrl: " ", brokerTokenEnv: "X" } } },
+        "dev",
+      ),
+    ).toThrow("not configured");
+  });
+
+  it("keeps a tenant conflict so the broker refuses", () => {
+    process.env.DEV_BROKER = "x";
+    try {
+      const config = guestTurnConfig({ ...runtime, tenantOrgConflict: true }, "dev");
+      expect(config.tenantOrgConflict).toBe(true);
+    } finally {
+      delete process.env.DEV_BROKER;
+    }
   });
 });

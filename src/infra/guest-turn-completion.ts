@@ -14,6 +14,8 @@ export type GuestTurnCompletion = {
   sessionKey: string;
   /** Opaque receipt the application minted for this turn; never logged. */
   attestation: string;
+  /** The Fi environment the hook named; the report goes to that environment only. */
+  environment?: "dev" | "staging" | "prod";
   status: "ok" | "error" | "skipped";
   /** The run's final non-empty text, when it produced one. */
   outputText?: string;
