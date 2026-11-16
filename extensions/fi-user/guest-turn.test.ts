@@ -1,5 +1,6 @@
 import { readFileSync } from "node:fs";
 import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import { Value } from "typebox/value";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createGuestApiTool,
@@ -163,4 +164,35 @@ describe("guest_api tool contract", () => {
     );
     expect(manifest.contracts.tools).toContain(tool.name);
   });
+});
+
+describe("guest_api paths", () => {
+  const tool = () =>
+    createGuestApiTool(
+      {} as OpenClawPluginApi,
+      { sessionKey: SESSION, agentId: "cellect-fi-guest" } as OpenClawPluginToolContext,
+      ATTESTATION,
+    );
+
+  it("offers exactly the two guest reads Fi serves", () => {
+    const { parameters } = tool();
+    for (const path of ["resources", "outstanding"]) {
+      expect(Value.Check(parameters, { path })).toBe(true);
+    }
+    for (const path of ["conversation", "documents", "resources/1", "", "../resources"]) {
+      expect(Value.Check(parameters, { path })).toBe(false);
+    }
+  });
+
+  it.each(["conversation", "documents", "resources/x", "/resources", "../outstanding", ""])(
+    "refuses %j before any request",
+    async (path) => {
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      await expect(tool().execute("call-1", { path })).rejects.toThrow(
+        "path must be 'resources' or 'outstanding'",
+      );
+      expect(fetchMock).not.toHaveBeenCalled();
+    },
+  );
 });
