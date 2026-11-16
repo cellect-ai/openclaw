@@ -622,13 +622,17 @@ describe("the admin agent's delegated user token", () => {
         // download-link stripping (message_sending + reply_payload_sending),
         // Fi's proven conversation audience (before_prompt_build), the
         // "Let me know" turn (before_model_resolve + before_prompt_build) and
-        // the admin turn's `Fi requester:` line (before_prompt_build).
+        // the admin turn's `Fi requester:` line (before_prompt_build), the
+        // personal-review context (before_prompt_build) and the conversation
+        // reader's run retirement (agent_end).
         hooks: [
           "after_tool_call",
+          "agent_end",
           "before_agent_reply",
           "before_agent_reply",
           "before_dispatch",
           "before_model_resolve",
+          "before_prompt_build",
           "before_prompt_build",
           "before_prompt_build",
           "before_prompt_build",

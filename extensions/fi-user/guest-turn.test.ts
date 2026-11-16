@@ -1,5 +1,12 @@
+import { readFileSync } from "node:fs";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { guestToolAttestation, guestTurnConfig, reportGuestTurn } from "./guest-turn.js";
+import {
+  createGuestApiTool,
+  guestToolAttestation,
+  guestTurnConfig,
+  reportGuestTurn,
+} from "./guest-turn.js";
 
 const SESSION = `hook:fi-guest:${"a".repeat(40)}`;
 const ATTESTATION = `fga:gt_1:${"C".repeat(43)}`;
@@ -141,5 +148,19 @@ describe("guestTurnConfig", () => {
     } finally {
       delete process.env.DEV_BROKER;
     }
+  });
+});
+
+describe("guest_api tool contract", () => {
+  it("is declared in the plugin manifest, or the host drops it and a guest turn has no tool", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as { contracts: { tools: string[] } };
+    const tool = createGuestApiTool(
+      {} as OpenClawPluginApi,
+      { sessionKey: SESSION } as OpenClawPluginToolContext,
+      ATTESTATION,
+    );
+    expect(manifest.contracts.tools).toContain(tool.name);
   });
 });
