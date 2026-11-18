@@ -91,7 +91,8 @@ describe("executeAgentTurn: provider failures", () => {
       expect(result.kind).toBe("final");
       if (result.kind === "final") {
         expect(result.payload.isError).toBe(true);
-        expect(result.payload.text).toContain("workspace could not be prepared");
+        expect(result.payload.text).toContain("a problem on our side");
+        expect(result.payload.text).not.toMatch(/workspace|runtime|administrator/u);
         expect(result.payload.text).not.toContain("LLM request failed");
         expect(result.payload.text).not.toContain("private-container-canary");
       }

@@ -268,8 +268,8 @@ export function buildExternalRunFailureReply(
   if (isSandboxProvisioningError(error)) {
     return {
       text: options?.isHeartbeat
-        ? "⚠️ A background follow-up could not start because the agent’s workspace could not be prepared. Its result has not been checked. An administrator needs to check the agent runtime."
-        : "⚠️ The agent’s workspace could not be prepared, so this attempt stopped before it could run. Please try again; if it repeats, ask an administrator to check the agent runtime.",
+        ? "⚠️ A background follow-up couldn’t start because of a problem on our side, so its result hasn’t been checked yet."
+        : "⚠️ I couldn’t start on this because of a problem on our side, not with your request. Please try again in a few minutes; if it keeps happening, let us know.",
       isGenericRunnerFailure: false,
     };
   }
