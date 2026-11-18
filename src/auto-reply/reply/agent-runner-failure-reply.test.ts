@@ -95,7 +95,8 @@ describe("buildExternalRunFailureReply", () => {
       );
       const reply = buildExternalRunFailureReply({ message: error.message, error });
       expect(reply.isGenericRunnerFailure).toBe(false);
-      expect(reply.text).toContain("workspace could not be prepared");
+      expect(reply.text).toContain("a problem on our side");
+      expect(reply.text).not.toMatch(/workspace|runtime|administrator/u);
       expect(reply.text).not.toContain("LLM request failed");
       expect(reply.text).not.toContain("private-container-canary");
       expect(reply.text).not.toContain("/new");
