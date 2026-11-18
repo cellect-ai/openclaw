@@ -14,6 +14,7 @@ import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import { normalizeOptionalString } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveMatrixExtraContent } from "../../outbound.js";
 import type { CoreConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
+import { deliverBoundSourceReply } from "../bound-source-reply.js";
 import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY } from "../send/types.js";
@@ -53,6 +54,8 @@ export function createMatrixReplyDispatcher(config: {
   replyToEventId?: string;
   /** The turn's own triggering "Let me know" event; only its final replies are marked. */
   letMeKnowTriggerEventId?: string;
+  /** This turn was admitted into the bound source session. */
+  sourceReply?: { sessionKey: string; eventId: string };
   accountId: string;
   mediaLocalRoots: readonly string[];
   logVerboseMessage: (message: string) => void;
@@ -72,11 +75,13 @@ export function createMatrixReplyDispatcher(config: {
     threadTarget,
     replyToEventId,
     letMeKnowTriggerEventId,
+    sourceReply,
     accountId,
     mediaLocalRoots,
     logVerboseMessage,
   } = config;
   const quietDraftStreaming = streaming === "quiet" || streaming === "progress";
+  let sourceReplyPart = 0;
   // Tool, block, and final payloads are delivered separately but share one first-reply slot.
   const hasRepliedRef = { value: false };
   const letMeKnowAnswerContent = letMeKnowTriggerEventId
@@ -294,6 +299,32 @@ export function createMatrixReplyDispatcher(config: {
       if (info.kind === "block") {
         beginNextBlockDraft();
         await typingCallbacks.onReplyStart();
+      }
+      if (
+        sourceReply &&
+        (info.kind === "final" || info.kind === "block") &&
+        mergedDelivery?.visibleReplySent &&
+        payload.text?.trim() &&
+        payload.isCompactionNotice !== true &&
+        payload.isReasoning !== true &&
+        payload.isCommentary !== true &&
+        payload.isStatusNotice !== true
+      ) {
+        const partIndex = sourceReplyPart;
+        sourceReplyPart += 1;
+        try {
+          await deliverBoundSourceReply({
+            matrixAccountId: accountId,
+            roomId,
+            sessionKey: sourceReply.sessionKey,
+            triggerEventId: sourceReply.eventId,
+            partIndex,
+            text: payload.text,
+          });
+        } catch {
+          // The room already has the answer. A Slack miss must not fail that delivery.
+          logVerboseMessage(`matrix: bound source reply was not delivered room=${roomId}`);
+        }
       }
       return mergedDelivery;
     },

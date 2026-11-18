@@ -298,6 +298,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         replyTarget,
         sharedDmContextNotice,
         letMeKnowTriggerEventId,
+        sourceReplyAdmission,
       } = inboundContext;
       const mediaLocalRoots = getAgentScopedMediaLocalRoots(cfg, _route.agentId);
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
@@ -371,6 +372,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         threadTarget,
         replyToEventId: replyToEventId ?? undefined,
         letMeKnowTriggerEventId,
+        sourceReply: sourceReplyAdmission
+          ? { sessionKey: sourceReplyAdmission.sessionKey, eventId: messageId }
+          : undefined,
         accountId: _route.accountId,
         mediaLocalRoots,
         logVerboseMessage,

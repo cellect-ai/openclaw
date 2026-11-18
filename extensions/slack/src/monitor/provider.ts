@@ -18,6 +18,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { resolveSlackAccount } from "../accounts.js";
 import { isSlackAnyNativeApprovalClientEnabled } from "../approval-native-gates.js";
+import { registerBoundSourceReplyDelivery } from "../bound-source-reply.js";
 import {
   resolveSlackLookupClientOptions,
   resolveSlackMonitorDispatchers,
@@ -637,6 +638,12 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
           botUserId: ctx.botUserId,
           socketConnectedAt: () => socketConnectedAt,
         }),
+        abortSignal: opts.abortSignal,
+      });
+      registerBoundSourceReplyDelivery({
+        channelRuntime: opts.channelRuntime,
+        accountId: account.accountId,
+        cfg,
         abortSignal: opts.abortSignal,
       });
     }

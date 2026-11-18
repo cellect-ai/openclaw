@@ -1,4 +1,5 @@
 import type { WebClient } from "@slack/web-api";
+import { isBoundSourceReply } from "../bound-source-reply-mark.js";
 import { isSlackFiChatPointer } from "./fi-chat-pointer.js";
 import { hydrateSlackProjectionNames } from "./projection-actor.js";
 import { slackProjectionContent } from "./projection-content.js";
@@ -121,13 +122,14 @@ export async function readSlackProjectionChannel(
             ts: rootMessageId,
             limit: 100,
             cursor: messageCursor,
+            include_all_metadata: true,
           }),
         );
         if (!page.ok || !Array.isArray(page.messages)) {
           throw new Error("Slack thread unavailable");
         }
         for (const message of page.messages) {
-          if (isSlackFiChatPointer(message)) {
+          if (isSlackFiChatPointer(message) || isBoundSourceReply(message)) {
             continue;
           }
           if (message.ts && message.user && typeof message.text === "string") {

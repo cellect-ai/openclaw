@@ -26,6 +26,13 @@ describe("Slack projection source snapshot", () => {
             { ts: "1700000000.000001", user: "U111", text: "Question" },
             { ts: "1700000000.000002", user: "U333", text: "Answer", bot_id: "B333" },
             {
+              ts: "1700000000.000004",
+              user: "UBOT",
+              bot_id: "BBOT",
+              text: "Already delivered in the room",
+              metadata: { event_type: "cellect_bound_source_reply" },
+            },
+            {
               ts: "1700000000.000003",
               user: "UBOT",
               bot_id: "BBOT",
@@ -47,6 +54,9 @@ describe("Slack projection source snapshot", () => {
     );
     expect(result.memberSenderIds).toEqual(["U111", "U222"]);
     expect(result.messages).toHaveLength(2);
+    expect(result.messages.map((message) => message.content)).not.toContain(
+      "Already delivered in the room",
+    );
     expect(result.messages[1]).toEqual({
       messageId: "1700000000.000002",
       senderId: "U333",
