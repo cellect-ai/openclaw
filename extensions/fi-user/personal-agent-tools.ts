@@ -153,6 +153,36 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
       },
     },
   ];
+  tools.push({
+    name: "fi_user_desk_handoff",
+    label: "Hand work to its own conversation",
+    description:
+      "Start a new private conversation for long work, the same one the person's + button opens, and post the task there for their agent; or list the tasks already handed off. Never use agent-deck or any other launcher.\n" +
+      "start input: {task (stable key, 6-63 of a-z 0-9 -, e.g. wilson-secondary-booking), title (max 120, used only when the conversation is created), message (max 8000, self-contained: who, what, entities, amounts, dates, sources, what done looks like, what needs approval)}. " +
+      "The same task key always reaches the same conversation: send a later instruction for that task with the same key and only the new instruction. It started only when the result has an eventId.\n" +
+      "list input: {}; returns each task's key, conversation title, last activity and link.\n" +
+      'Example: {"action":"start","input":{"task":"wilson-secondary-booking","title":"Wilson secondary booking","message":"Book the secondary ..."}}',
+    parameters: Type.Object(
+      {
+        action: Type.Union([Type.Literal("start"), Type.Literal("list")]),
+        input: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+      },
+      { additionalProperties: false },
+    ),
+    async execute(_id, raw) {
+      const value = raw as { action: string; input?: Record<string, unknown> };
+      if (value.action === "list") {
+        return call(api, context, "desk/tasks", {});
+      }
+      // A scheduled review reports handed-off work; only the person's own instruction starts one.
+      if (value.action !== "start" || reviewToolAttestation(context)) {
+        throw new Error(
+          "Starting a conversation requires the person's instruction in their own Desk",
+        );
+      }
+      return call(api, context, "desk/handoff", value.input ?? {});
+    },
+  });
   if (reviewToolAttestation(context)) {
     tools.push({
       name: "fi_user_review_report",

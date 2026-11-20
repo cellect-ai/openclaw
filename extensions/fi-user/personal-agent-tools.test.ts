@@ -34,6 +34,19 @@ beforeEach(() => {
 });
 const tool = (name: string) => createPersonalAgentTools(api, review).find((t) => t.name === name)!;
 describe("personal review tools", () => {
+  it("lets a scheduled review list handed-off tasks but never start one", async () => {
+    const handoff = tool("fi_user_desk_handoff");
+    await expect(
+      handoff.execute("1", { action: "start", input: { task: "wilson-secondary-booking" } }),
+    ).rejects.toThrow("requires the person's instruction");
+    expect(delegatedFetch).not.toHaveBeenCalled();
+    await handoff.execute("2", { action: "list" });
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/desk/tasks");
+    const example = [...handoff.description.matchAll(/Example: (\{.*\})/g)].map((m) =>
+      JSON.parse(m[1]!),
+    )[0];
+    expect(Value.Check(handoff.parameters as TSchema, example)).toBe(true);
+  });
   it("declares every review factory tool for cold discovery and runtime ownership", () => {
     const manifest = JSON.parse(
       readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
@@ -41,7 +54,7 @@ describe("personal review tools", () => {
       contracts: { tools: string[] };
     };
     const names = createPersonalAgentTools(api, review).map((t) => t.name);
-    expect(names).toHaveLength(4);
+    expect(names).toHaveLength(5);
     expect(manifest.contracts.tools).toEqual(expect.arrayContaining(names));
   });
   it("documents allowed values and a valid example call for report, review and transition", () => {

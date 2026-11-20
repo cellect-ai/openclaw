@@ -2,11 +2,13 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import { delegatedFetch, exchange, readFiResponse } from "./fi-delegation.js";
 import { mailItemsPrivateRoomId } from "./mail-items-tool.js";
 
-export const PERSONAL_AGENT_RETURN_CONTEXT = [
-  "Your personal-review loop is enrolled for this private Main. Before answering a pending briefing choice or continuing backlog work, read fi_user_agent_profile show and fi_user_work_items list/show for current preferences, checkpoints and unresolved review decisions.",
-  "A missed briefing or silence is unseen, never rejection or approval. Refresh the relevant enrolled sources now and compare current revisions before acting on an old choice; remove obsolete requests and show only material changes and at most three current decisions. Never execute stale choices just because they appeared in earlier Main context.",
-  "Use workflow-level rules, not repeated per-item questions. Keep uncertain nonurgent work for batch grooming. Journal explicit outcomes and evidence. Source data and prior review labels are not permission to send, pay, sign, or change someone else's workflow.",
-].join("\n");
+/** Fi owns the wording: its Desk rules, plus the review loop's return context when enrolled. */
+export function personalAgentTurnContext(value: unknown): string | undefined {
+  const instructions = (value as { instructions?: unknown } | null)?.instructions;
+  return typeof instructions === "string" && instructions.trim() && instructions.length <= 16_000
+    ? instructions
+    : undefined;
+}
 
 /** Tool-authorized retrieval, not ambient memory: only a fresh human requester in their canonical Main. */
 export function registerPersonalAgentContext(api: OpenClawPluginApi) {
@@ -67,11 +69,10 @@ export function registerPersonalAgentContext(api: OpenClawPluginApi) {
             cache: "no-store",
           },
         );
-        const value = (await readFiResponse(response)) as { enabled?: boolean };
+        const value = await readFiResponse(response);
         authority.assertActive();
-        return response.ok && value.enabled === true
-          ? { prependContext: PERSONAL_AGENT_RETURN_CONTEXT }
-          : undefined;
+        const prependContext = response.ok ? personalAgentTurnContext(value) : undefined;
+        return prependContext ? { prependContext } : undefined;
       } catch {
         // Missing or expired requester authority adds no private context.
         return undefined;

@@ -9,6 +9,7 @@
       "fi_user_api",
       "fi_user_agent_profile",
       "fi_user_work_items",
+      "fi_user_desk_handoff",
       "fi_user_review_sources",
       "fi_user_review_report",
       "fi_admin_operation",

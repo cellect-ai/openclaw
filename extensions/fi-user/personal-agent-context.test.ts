@@ -34,7 +34,9 @@ beforeEach(() => {
     },
   } as unknown as OpenClawPluginApi);
   exchange.mockResolvedValue({ config: {}, delegation: { user: { orgSlug: "shape" } } });
-  delegatedFetch.mockImplementation(async () => Response.json({ enabled: true }));
+  delegatedFetch.mockImplementation(async () =>
+    Response.json({ enabled: true, instructions: "Refresh the relevant enrolled sources now." }),
+  );
 });
 it("refreshes enrollment at the actual prompt hook and instructs fresh sources before old choices", async () => {
   expect(options).toEqual({ requiresToolAuthority: true });
@@ -55,5 +57,18 @@ it("adds no private context in another room, missing sender, tool-denied or revo
   ).toBeUndefined();
   delegatedFetch.mockResolvedValueOnce(Response.json({ enabled: false }));
   expect(await hook({}, context())).toBeUndefined();
-  expect(exchange).toHaveBeenCalledTimes(1);
+  delegatedFetch.mockResolvedValueOnce(Response.json({ instructions: "x" }, { status: 503 }));
+  expect(await hook({}, context())).toBeUndefined();
+  expect(exchange).toHaveBeenCalledTimes(2);
+});
+it("prepends Fi's Desk rules in an unenrolled Main", async () => {
+  delegatedFetch.mockResolvedValueOnce(
+    Response.json({
+      enabled: false,
+      instructions: "Hand long work off with fi_user_desk_handoff.",
+    }),
+  );
+  expect(await hook({}, context())).toEqual({
+    prependContext: "Hand long work off with fi_user_desk_handoff.",
+  });
 });
