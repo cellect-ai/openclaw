@@ -34,6 +34,38 @@ beforeEach(() => {
 });
 const tool = (name: string) => createPersonalAgentTools(api, review).find((t) => t.name === name)!;
 describe("personal review tools", () => {
+  it("starts a handoff from the person's Desk with the turn's room, whatever room the model names", async () => {
+    const main = {
+      agentId: "cellect-fi-user",
+      runId: "run-2",
+      messageChannel: "matrix",
+    } as OpenClawPluginToolContext;
+    const handoff = createPersonalAgentTools(api, main).find(
+      (t) => t.name === "fi_user_desk_handoff",
+    )!;
+    await handoff.execute("1", {
+      action: "start",
+      input: {
+        task: "wilson-secondary-booking",
+        title: "Wilson",
+        message: "Book it",
+        fromRoom: "!other:example.test",
+      },
+    });
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/desk/handoff");
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual({
+      input: {
+        task: "wilson-secondary-booking",
+        title: "Wilson",
+        message: "Book it",
+        fromRoom: "!main:example.test",
+        actor: "owner@example.test",
+      },
+    });
+    await expect(
+      handoff.execute("2", { action: "start", input: { actor: "other@example.test" } }),
+    ).rejects.toThrow("bound by Fi");
+  });
   it("lets a scheduled review list handed-off tasks but never start one", async () => {
     const handoff = tool("fi_user_desk_handoff");
     await expect(

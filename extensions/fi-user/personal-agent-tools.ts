@@ -180,7 +180,14 @@ export function createPersonalAgentTools(api: OpenClawPluginApi, context: Contex
           "Starting a conversation requires the person's instruction in their own Desk",
         );
       }
-      return call(api, context, "desk/handoff", value.input ?? {});
+      // Fi admits only the person's own Desk; the room comes from this turn, never from the model.
+      const fromRoom = mailItemsPrivateRoomId(context);
+      if (!fromRoom) {
+        throw new Error(
+          "Starting a conversation requires the person's instruction in their own Desk",
+        );
+      }
+      return call(api, context, "desk/handoff", { ...value.input, fromRoom });
     },
   });
   if (reviewToolAttestation(context)) {
