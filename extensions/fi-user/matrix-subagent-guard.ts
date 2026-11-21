@@ -7,7 +7,8 @@
  * Slack-origin turns are unaffected: they are not gated per Matrix event.
  */
 const MATRIX_SESSION = /^agent:[^:]+:matrix:/;
-const SUBAGENT_SESSION = /^agent:[^:]+:(?:subagent|acp):/;
+// Spawned children only: a persistent ACP binding is a conversation session, not a child.
+const SUBAGENT_SESSION = /^agent:[^:]+:(?:subagent:|acp:(?!binding:))/;
 
 export const MATRIX_SUBAGENT_REFUSAL =
   "A sub-agent can't work for a person in a Fi conversation: Fi admits only turns that start from that person's own message, so a sub-agent would be refused. Do the work in this turn, or start a new conversation for it with fi_user_desk_handoff if that tool is available to you.";

@@ -59,6 +59,7 @@ describe("Matrix sub-agent guard", () => {
       isSubagentSession("agent:cellect-fi-user:subagent:7ecedfe5-40fe-4ab9-8af8-d96600e53cad"),
     ).toBe(true);
     expect(isSubagentSession("agent:cellect-fi-user:acp:5f0c")).toBe(true);
+    expect(isSubagentSession("agent:cellect-fi-user:acp:binding:matrix:room-1")).toBe(false);
     expect(isSubagentSession("agent:cellect-fi-user:matrix:channel:!r:m")).toBe(false);
     expect(isSubagentSession(undefined)).toBe(false);
   });
