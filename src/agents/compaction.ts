@@ -18,6 +18,7 @@ import {
 } from "./compaction-planning-worker.js";
 import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { isTimeoutError } from "./failover-error.js";
+import { isContextOverflowErrorFromTables } from "./failover/context-overflow-tables.js";
 import type {
   AgentMessage,
   CompactionSummaryPrompt,
@@ -111,41 +112,64 @@ async function summarizeChunks(params: CompactionSummaryParams): Promise<string>
     params.customInstructions,
     params.summarizationInstructions,
   );
+  const summarizeChunk = (chunk: AgentMessage[]) =>
+    retryAsync(
+      () =>
+        generateSummary(
+          chunk,
+          params.model,
+          params.reserveTokens,
+          params.apiKey,
+          params.headers,
+          params.signal,
+          effectiveInstructions,
+          summary,
+          params.thinkingLevel,
+          params.streamFn,
+          params.usageSink,
+          params.summaryPrompt,
+        ),
+      {
+        attempts: 3,
+        minDelayMs: 500,
+        maxDelayMs: 5000,
+        jitter: 0.2,
+        label: "compaction/generateSummary",
+        // Backoff must honor caller cancellation; otherwise an abort during
+        // the sleep would stall compaction until the full delay elapses.
+        sleep: (ms) => sleepWithAbort(ms, params.signal),
+        // Caller aborts and transport timeouts are terminal; provider-side
+        // AbortErrors without caller cancellation remain retryable.
+        shouldRetry: (err) =>
+          !params.signal.aborted &&
+          !(err instanceof SummaryOutputBudgetError) &&
+          !isContextOverflowErrorFromTables(formatErrorMessage(err)) &&
+          (isAbortError(err) || !isTimeoutError(err)),
+      },
+    );
+
   for (const [completedChunks, chunk] of chunks.entries()) {
     try {
-      summary = await retryAsync(
-        () =>
-          generateSummary(
-            chunk,
-            params.model,
-            params.reserveTokens,
-            params.apiKey,
-            params.headers,
-            params.signal,
-            effectiveInstructions,
-            summary,
-            params.thinkingLevel,
-            params.streamFn,
-            params.usageSink,
-            params.summaryPrompt,
-          ),
-        {
-          attempts: 3,
-          minDelayMs: 500,
-          maxDelayMs: 5000,
-          jitter: 0.2,
-          label: "compaction/generateSummary",
-          // Backoff must honor caller cancellation; otherwise an abort during
-          // the sleep would stall compaction until the full delay elapses.
-          sleep: (ms) => sleepWithAbort(ms, params.signal),
-          // Caller aborts and transport timeouts are terminal; provider-side
-          // AbortErrors without caller cancellation remain retryable.
-          shouldRetry: (err) =>
-            !params.signal.aborted &&
-            !(err instanceof SummaryOutputBudgetError) &&
-            (isAbortError(err) || !isTimeoutError(err)),
-        },
-      );
+      try {
+        summary = await summarizeChunk(chunk);
+      } catch (err) {
+        if (params.signal.aborted || !isContextOverflowErrorFromTables(formatErrorMessage(err))) {
+          throw err;
+        }
+        const smallerChunks = await buildSummaryChunksWithWorker({
+          messages: chunk,
+          maxChunkTokens: Math.floor(params.maxChunkTokens / 2),
+          signal: params.signal,
+        });
+        // The planner keeps tool calls and their results together. An indivisible
+        // chunk must go through the existing oversized-message fallback.
+        if (smallerChunks.length < 2) {
+          throw err;
+        }
+        for (const smallerChunk of smallerChunks) {
+          summary = await summarizeChunk(smallerChunk);
+        }
+      }
     } catch (err) {
       // Caller aborts, transport timeouts, and failures before any completed
       // chunk cannot produce a recoverable partial summary.

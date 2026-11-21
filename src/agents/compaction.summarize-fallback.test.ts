@@ -122,6 +122,34 @@ describe("compaction summarization fallback", () => {
     expect(agentSessionMocks.generateSummary).toHaveBeenCalledTimes(2);
   });
 
+  it("replans a rejected provider prompt into smaller chunks without retrying it unchanged", async () => {
+    const overflow = new Error("prompt is too long: 1404227 tokens > 1000000 maximum");
+    const messages = [makeUserMessage("a".repeat(800), 1), makeUserMessage("b".repeat(800), 2)];
+    agentSessionMocks.generateSummary
+      .mockRejectedValueOnce(overflow)
+      .mockResolvedValueOnce("first part")
+      .mockResolvedValueOnce("merged summary");
+
+    const result = await summarizeInStages({
+      parts: 1,
+      messages,
+      model: testModel,
+      apiKey: "test-key", // pragma: allowlist secret
+      signal: new AbortController().signal,
+      reserveTokens: 1000,
+      maxChunkTokens: 650,
+      contextWindow: 200_000,
+    });
+
+    expect(result).toBe("merged summary");
+    expect(agentSessionMocks.generateSummary.mock.calls.map(([chunk]) => chunk)).toEqual([
+      messages,
+      [messages[0]],
+      [messages[1]],
+    ]);
+    expect(agentSessionMocks.generateSummary.mock.calls[2]?.[7]).toBe("first part");
+  });
+
   it("retries a summarization_failed result and persists the recovered summary", async () => {
     agentSessionMocks.generateSummary
       .mockRejectedValueOnce(
