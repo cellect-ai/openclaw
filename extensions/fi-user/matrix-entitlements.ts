@@ -586,6 +586,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
               accountId: context.accountId ?? null,
               outcome: "unavailable",
               reason: "subagent_run",
+              roomId: typeof roomId === "string" ? roomId : null,
+              eventId: typeof eventId === "string" ? eventId : null,
+              chatMatches,
+              senderMatches,
             },
             "subagent_run",
           );

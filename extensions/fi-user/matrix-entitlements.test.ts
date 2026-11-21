@@ -211,10 +211,18 @@ describe("registered Matrix agent entitlement hooks", () => {
       blockReason: expect.stringContaining("fi_user_desk_handoff"),
     });
     expect(fetchMock).not.toHaveBeenCalled();
-    // A Slack-origin spawn is not gated per Matrix event.
-    const slack = {
+    // A source-linked Matrix turn on a Slack key is still a Matrix-origin spawn.
+    const sourceLinked = {
       ...tools(matrix),
       sessionKey: "agent:cellect-fi-user:slack:channel:c1:thread:1.2",
+    };
+    expect(
+      await hook("before_tool_call", { toolName: "sessions_spawn", params: {} }, sourceLinked),
+    ).toMatchObject({ block: true, blockReason: expect.stringContaining("sub-agent") });
+    // A Slack run is not gated per Matrix event.
+    const slack = {
+      ...sourceLinked,
+      requester: { channel: "slack", senderId: "U1", accountId: "slack" },
     };
     expect(
       await hook("before_tool_call", { toolName: "sessions_spawn", params: {} }, slack),
