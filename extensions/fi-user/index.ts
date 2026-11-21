@@ -66,6 +66,7 @@ import {
 import { registerLetMeKnow } from "./let-me-know.js";
 import { createMailItemsTool, offersMailItemsTool } from "./mail-items-tool.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
+import { matrixSubagentSpawnBlock } from "./matrix-subagent-guard.js";
 import { createBudgetImportTool, createDeliverFileTool } from "./member-tools.js";
 import {
   ON_BEHALF_OF_AGENTS,
@@ -461,6 +462,10 @@ export default definePluginEntry({
       (event, ctx) => {
         // The host's deadline for this hook runs from here, across the grant check below.
         const enteredAt = Date.now();
+        const spawnBlocked = matrixSubagentSpawnBlock(event.toolName, ctx.sessionKey);
+        if (spawnBlocked) {
+          return spawnBlocked;
+        }
         const readCap = conversationReadCap(event.toolName, ctx);
         if (readCap) {
           return readCap;

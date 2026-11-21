@@ -196,6 +196,55 @@ describe("registered Matrix agent entitlement hooks", () => {
     ).toMatchObject({ block: true });
     expect(fetchMock.mock.calls[1]?.[1].body).toEqual(fetchMock.mock.calls[0]?.[1].body);
   });
+  it("refuses a Matrix-origin sub-agent spawn before it starts, with a reason the model can act on", async () => {
+    const hook = plugin();
+    const matrix = context("cellect-fi-user", {
+      sessionKey: "agent:cellect-fi-user:matrix:channel:!room:matrix.example:thread:$root",
+    });
+    const blocked = await hook(
+      "before_tool_call",
+      { toolName: "sessions_spawn", params: { task: "book it" } },
+      tools(matrix),
+    );
+    expect(blocked).toMatchObject({
+      block: true,
+      blockReason: expect.stringContaining("fi_user_desk_handoff"),
+    });
+    expect(fetchMock).not.toHaveBeenCalled();
+    // A Slack-origin spawn is not gated per Matrix event.
+    const slack = {
+      ...tools(matrix),
+      sessionKey: "agent:cellect-fi-user:slack:channel:c1:thread:1.2",
+    };
+    expect(
+      await hook("before_tool_call", { toolName: "sessions_spawn", params: {} }, slack),
+    ).not.toMatchObject({
+      blockReason: expect.stringContaining("sub-agent"),
+    });
+  });
+  it("says a sub-agent run was refused, not that access verification is down", async () => {
+    const info = vi.spyOn(console, "info").mockImplementation(() => {});
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const hook = plugin();
+      const child = context("cellect-fi-user", {
+        sessionKey: "agent:cellect-fi-user:subagent:7ecedfe5-40fe-4ab9-8af8-d96600e53cad",
+        chatId: undefined,
+        senderId: undefined,
+        channelContext: undefined,
+      });
+      expect(await hook("before_agent_reply", {}, child)).toEqual({
+        handled: true,
+        reply: {
+          text: "This sub-agent can't act for a person in a Fi conversation, so its task did not run.",
+        },
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      info.mockRestore();
+      warn.mockRestore();
+    }
+  });
   it("admits a Talk consult whose hook chat id is the room plus the attested thread", async () => {
     const hook = plugin();
     fetchMock.mockResolvedValue(allow());

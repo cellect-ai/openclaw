@@ -11,6 +11,7 @@ import {
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
+import { isSubagentSession, SUBAGENT_RUN_REFUSAL } from "./matrix-subagent-guard.js";
 import {
   hostChatMatchesRoom,
   logEntitlements,
@@ -18,7 +19,6 @@ import {
   turnIds,
   type MatrixTurnOrigin,
 } from "./matrix-turn-origin.js";
-
 const UNAVAILABLE = "Access verification is temporarily unavailable. Please retry shortly.";
 const DENIED = "You don’t currently have access to this agent in this conversation.";
 // Fi intentionally declines unaddressed/non-selected text agents without a reply.
@@ -577,6 +577,20 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         !chatMatches ||
         !senderMatches
       ) {
+        if (isSubagentSession(context.sessionKey)) {
+          // Not an outage: no person's message stands behind a sub-agent run.
+          logEntitlements(
+            {
+              phase: "admission",
+              agentId: context.agentId ?? null,
+              accountId: context.accountId ?? null,
+              outcome: "unavailable",
+              reason: "subagent_run",
+            },
+            "subagent_run",
+          );
+          return { handled: true, reply: { text: SUBAGENT_RUN_REFUSAL } };
+        }
         logEntitlements(
           {
             phase: "admission",
