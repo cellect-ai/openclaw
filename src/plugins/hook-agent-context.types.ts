@@ -54,6 +54,8 @@ export type PluginHookSpawnedRequester = Readonly<{
   childAgentId: string;
   childSessionKey: string;
   childSessionId: string;
+  /** "parent" when the child's result returns only to its parent, never to a channel. */
+  completionTarget?: "parent";
   /** Epoch ms after which the lineage grants nothing. */
   expiresAt: number;
   /** Rejects revoked, expired or drifted lineage; identity fields alone grant nothing. */
@@ -95,6 +97,8 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   requesterContinuation?: PluginHookRequesterContinuation;
   /** Host-owned lineage of a spawned child run; absent for every other run. */
   spawnedFrom?: PluginHookSpawnedRequester;
+  /** Channel a spawned child's parent run arrived on, with or without lineage; grants nothing. */
+  spawnedFromChannel?: string;
   /**
    * Opaque Fi shadow-turn attestation of a `hook:fi-shadow:` cron run. Given
    * to before_agent_reply only; Fi, not the gateway, verifies it.

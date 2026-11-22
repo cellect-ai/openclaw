@@ -10,7 +10,13 @@ import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 const MAX_LINEAGE_MS = 30 * 60_000;
 
 type Binding = {
-  projection: PluginHookSpawnedRequester;
+  parentRunId?: string;
+  childSessionKey: string;
+  /** Channel the parent run arrived on; provenance only, recorded with or without authority. */
+  requesterChannel?: string;
+  /** Lineage, only while the parent held live delegated authority at launch. */
+  projection?: PluginHookSpawnedRequester;
+  keys: Set<string>;
   revoked: boolean;
   release: () => void;
 };
@@ -21,54 +27,67 @@ const bindings = resolveGlobalSingleton(
   () => new Map<string, Binding>(),
 );
 
-function revoke(childRunId: string, binding: Binding): void {
+function revoke(binding: Binding): void {
   binding.revoked = true;
   binding.release();
-  if (bindings.get(childRunId) === binding) {
-    bindings.delete(childRunId);
+  for (const key of binding.keys) {
+    if (bindings.get(key) === binding) {
+      bindings.delete(key);
+    }
   }
 }
 
+export type SubagentRequesterBindingHandle = {
+  revoke: () => void;
+  /** The gateway accepted another run id: drop the lineage, keep the provenance for that run. */
+  rekey: (acceptedRunId: string) => void;
+};
+
 /**
- * Host-proven lineage from an admitted parent run to the one child run it launches,
- * keyed by the child's pre-assigned runId. It proves lineage only: who the child may
- * act for stays the plugin's decision. Minted only while the parent still holds live
- * delegated authority; revoked when the child settles, at its bound, or on demand.
+ * Host-recorded provenance of the one child run a spawn launches, keyed by the
+ * child's pre-assigned runId: the parent's channel always, and lineage to the
+ * admitted parent run only while that run still holds live delegated authority.
+ * It proves lineage only: who the child may act for stays the plugin's decision.
+ * Revoked when the child settles, at its bound, or on demand. A child run already
+ * bound to another parent is never rebound.
  */
 export function mintSubagentRequesterBinding(params: {
   parentRunId?: string;
+  requesterChannel?: string;
+  completionTarget?: "parent";
   childRunId: string;
   childAgentId: string;
   childSessionKey: string;
   childSessionId?: string;
   runTimeoutSeconds: number;
-}): { revoke: () => void } | undefined {
+}): SubagentRequesterBindingHandle | undefined {
   const { childRunId, childAgentId, childSessionKey, childSessionId } = params;
   const previous = bindings.get(childRunId);
+  if (previous && previous.parentRunId !== params.parentRunId) {
+    return undefined;
+  }
   if (previous) {
-    revoke(childRunId, previous);
+    revoke(previous);
   }
   const parent = params.parentRunId ? getAgentRunContext(params.parentRunId) : undefined;
   const authority = parent?.delegatedAuthority;
-  if (
-    !params.parentRunId ||
-    !parent?.agentId ||
-    !parent.sessionKey ||
-    !authority ||
-    !validateAgentRunDelegatedAuthority(authority) ||
-    !childSessionId
-  ) {
-    return undefined;
-  }
+  const authorized = Boolean(
+    params.parentRunId &&
+    parent?.agentId &&
+    parent.sessionKey &&
+    authority &&
+    validateAgentRunDelegatedAuthority(authority) &&
+    childSessionId,
+  );
   const timeoutMs = params.runTimeoutSeconds > 0 ? params.runTimeoutSeconds * 1000 : MAX_LINEAGE_MS;
   const boundMs = Math.min(timeoutMs, MAX_LINEAGE_MS);
   const expiresAt = Date.now() + boundMs;
   const assertCurrent = () => {
-    if (binding.revoked || bindings.get(childRunId) !== binding) {
+    if (binding.revoked || bindings.get(childRunId) !== binding || !binding.projection) {
       throw new Error("Sub-agent lineage is no longer active");
     }
     if (Date.now() >= expiresAt) {
-      revoke(childRunId, binding);
+      revoke(binding);
       throw new Error("Sub-agent lineage is no longer active");
     }
     const child = getAgentRunContext(childRunId);
@@ -86,32 +105,50 @@ export function mintSubagentRequesterBinding(params: {
       event.data.executionSettled === true &&
       (event.data.phase === "end" || event.data.phase === "error")
     ) {
-      revoke(childRunId, binding);
+      revoke(binding);
     }
   });
-  const timer = setTimeout(() => revoke(childRunId, binding), boundMs);
+  const timer = setTimeout(() => revoke(binding), boundMs);
   timer.unref?.();
   const binding: Binding = {
+    ...(params.parentRunId ? { parentRunId: params.parentRunId } : {}),
+    childSessionKey,
+    ...(params.requesterChannel ? { requesterChannel: params.requesterChannel } : {}),
+    keys: new Set([childRunId]),
     revoked: false,
     release: () => {
       clearTimeout(timer);
       unsubscribe();
     },
-    projection: Object.freeze({
-      parentRunId: params.parentRunId,
-      parentAgentId: parent.agentId,
-      parentSessionKey: parent.sessionKey,
-      ...(parent.sessionId ? { parentSessionId: parent.sessionId } : {}),
-      childRunId,
-      childAgentId,
-      childSessionKey,
-      childSessionId,
-      expiresAt,
-      assertCurrent,
-    }),
+    ...(authorized && params.parentRunId && parent?.agentId && parent.sessionKey && childSessionId
+      ? {
+          projection: Object.freeze({
+            parentRunId: params.parentRunId,
+            parentAgentId: parent.agentId,
+            parentSessionKey: parent.sessionKey,
+            ...(parent.sessionId ? { parentSessionId: parent.sessionId } : {}),
+            childRunId,
+            childAgentId,
+            childSessionKey,
+            childSessionId,
+            ...(params.completionTarget ? { completionTarget: params.completionTarget } : {}),
+            expiresAt,
+            assertCurrent,
+          }),
+        }
+      : {}),
   };
   bindings.set(childRunId, binding);
-  return { revoke: () => revoke(childRunId, binding) };
+  return {
+    revoke: () => revoke(binding),
+    rekey: (acceptedRunId) => {
+      binding.projection = undefined;
+      if (!binding.revoked && !bindings.has(acceptedRunId)) {
+        binding.keys.add(acceptedRunId);
+        bindings.set(acceptedRunId, binding);
+      }
+    },
+  };
 }
 
 /** Projects lineage only to the exact child run and session it was minted for. */
@@ -138,9 +175,25 @@ export function resolveSubagentSpawnedFrom(params: {
   return projection;
 }
 
-/** Test-only view of the binding minted for a child run, without its liveness checks. */
+/** The channel a spawned child's parent run arrived on; provenance only, it grants nothing. */
+export function resolveSubagentRequesterChannel(params: {
+  runId?: string;
+  sessionKey?: string;
+}): string | undefined {
+  const binding = params.runId ? bindings.get(params.runId) : undefined;
+  return binding && !binding.revoked && binding.childSessionKey === params.sessionKey
+    ? binding.requesterChannel
+    : undefined;
+}
+
+/** Test-only view of the lineage minted for a child run, without its liveness checks. */
 export function peekSubagentRequesterBindingForTest(
   childRunId: string,
 ): PluginHookSpawnedRequester | undefined {
   return bindings.get(childRunId)?.projection;
+}
+
+/** Test-only view of the parent channel recorded for a child run. */
+export function peekSubagentRequesterChannelForTest(childRunId: string): string | undefined {
+  return bindings.get(childRunId)?.requesterChannel;
 }

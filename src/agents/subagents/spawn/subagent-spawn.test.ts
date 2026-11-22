@@ -15,7 +15,10 @@ import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { installAcceptedSubagentGatewayMock } from "../../test-helpers/subagent-gateway.js";
 import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 import { testing as swarmSchedulerTesting } from "../swarm/swarm-scheduler.test-support.js";
-import { peekSubagentRequesterBindingForTest } from "./subagent-spawn-requester-binding.js";
+import {
+  peekSubagentRequesterBindingForTest,
+  peekSubagentRequesterChannelForTest,
+} from "./subagent-spawn-requester-binding.js";
 import {
   createConfigOverride,
   createSubagentRegistrationScopeForTest,
@@ -1218,6 +1221,21 @@ describe("spawnSubagentDirect seam flow", () => {
         childSessionKey: result.childSessionKey,
       });
       expect(peekSubagentRequesterBindingForTest(childRunId)).toBe(minted);
+    });
+
+    it("records the parent's channel, and lineage carries the completion target", async () => {
+      admitParent();
+      hoisted.loadSessionStoreMock.mockReturnValue({
+        "agent:main:main": { sessionId: "controller-incarnation" },
+      });
+      const seen = launch((childRunId) => ({ runId: childRunId }));
+      await spawn(
+        { task: "work", completionTarget: "parent" },
+        { requesterRunId: "parent-run", agentChannel: "matrix" },
+      );
+      const { childRunId, minted } = seen[0] ?? { childRunId: "", minted: undefined };
+      expect(minted).toMatchObject({ completionTarget: "parent" });
+      expect(peekSubagentRequesterChannelForTest(childRunId)).toBe("matrix");
     });
 
     it("is never minted without a live parent authority", async () => {

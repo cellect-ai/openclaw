@@ -52,7 +52,10 @@ import {
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
 import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
-import { mintSubagentRequesterBinding } from "./subagent-spawn-requester-binding.js";
+import {
+  mintSubagentRequesterBinding,
+  type SubagentRequesterBindingHandle,
+} from "./subagent-spawn-requester-binding.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
@@ -397,12 +400,15 @@ export async function spawnSubagentDirect(
         storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
       });
     let acceptedChildRunId: string | undefined;
-    let requesterBinding: { revoke: () => void } | undefined;
+    let requesterBinding: SubagentRequesterBindingHandle | undefined;
     const launchChildRun = async (assertDispatchCurrent?: () => void) => {
       // Lineage exists before the child can start, so its first hook can prove its parent.
       requesterBinding?.revoke();
       requesterBinding = mintSubagentRequesterBinding({
-        parentRunId: ctx.requesterRunId,
+        // A swarm collector launches later, outside its parent's turn: provenance only.
+        parentRunId: params.collect ? undefined : ctx.requesterRunId,
+        requesterChannel: ctx.agentChannel,
+        completionTarget: params.completionTarget,
         childRunId: childIdem,
         childAgentId: targetAgentId,
         childSessionKey,
@@ -453,8 +459,8 @@ export async function spawnSubagentDirect(
       }
       acceptedChildRunId = readGatewayRunId(launch.response) ?? childIdem;
       if (acceptedChildRunId !== childIdem) {
-        // The lineage names the run it was minted for; another run gets none.
-        requesterBinding?.revoke();
+        // The lineage names the run it was minted for; another run keeps only provenance.
+        requesterBinding?.rekey(acceptedChildRunId);
       }
       cleanupOwner?.bindAcceptedRun(acceptedChildRunId);
       return launch;

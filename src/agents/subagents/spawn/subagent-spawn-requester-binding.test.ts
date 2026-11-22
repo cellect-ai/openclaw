@@ -9,6 +9,8 @@ import {
 import { buildAgentHookContextChannelFields } from "../../../plugins/hook-agent-context.js";
 import {
   mintSubagentRequesterBinding,
+  peekSubagentRequesterBindingForTest,
+  resolveSubagentRequesterChannel,
   resolveSubagentSpawnedFrom,
 } from "./subagent-spawn-requester-binding.js";
 
@@ -54,17 +56,54 @@ describe("sub-agent requester lineage", () => {
     vi.useRealTimers();
   });
 
-  it("is minted only while the parent run holds live delegated authority", () => {
-    expect(mint()).toBeUndefined();
-    registerAgentRunContext("parent-run", { agentId: "main", sessionKey: parentKey });
-    expect(mint()).toBeUndefined();
-    const authority = admitParent();
-    expect(mint({ parentRunId: undefined })).toBeUndefined();
-    expect(mint({ childSessionId: undefined })).toBeUndefined();
-    releaseAgentRunDelegatedAuthority(authority);
-    expect(mint()).toBeUndefined();
+  it("carries lineage only while the parent run holds live delegated authority", () => {
     startChild();
+    const lineage = () => peekSubagentRequesterBindingForTest("child-run");
+    mint();
+    expect(lineage()).toBeUndefined();
+    registerAgentRunContext("parent-run", { agentId: "main", sessionKey: parentKey });
+    mint();
+    expect(lineage()).toBeUndefined();
+    const authority = admitParent();
+    mint({ parentRunId: undefined });
+    expect(lineage()).toBeUndefined();
+    mint({ childSessionId: undefined });
+    expect(lineage()).toBeUndefined();
+    releaseAgentRunDelegatedAuthority(authority);
+    mint();
+    expect(lineage()).toBeUndefined();
+  });
+
+  it("records the parent's channel for the exact child even without lineage", () => {
+    mint({ requesterChannel: "matrix" });
     expect(resolveSubagentSpawnedFrom(child)).toBeUndefined();
+    expect(resolveSubagentRequesterChannel(child)).toBe("matrix");
+    expect(resolveSubagentRequesterChannel({ ...child, sessionKey: parentKey })).toBeUndefined();
+    expect(
+      buildAgentHookContextChannelFields({ ...child, messageChannel: undefined })
+        .spawnedFromChannel,
+    ).toBe("matrix");
+  });
+
+  it("never rebinds a child run to another parent", () => {
+    admitParent();
+    mint({ requesterChannel: "matrix" });
+    startChild();
+    const first = resolveSubagentSpawnedFrom(child);
+    expect(mint({ parentRunId: "other-parent", requesterChannel: "slack" })).toBeUndefined();
+    expect(resolveSubagentSpawnedFrom(child)).toBe(first);
+    expect(resolveSubagentRequesterChannel(child)).toBe("matrix");
+  });
+
+  it("keeps only provenance for a run the gateway accepted under another id", () => {
+    admitParent();
+    const binding = mint({ requesterChannel: "matrix" });
+    startChild();
+    binding?.rekey("gateway-run");
+    expect(resolveSubagentSpawnedFrom(child)).toBeUndefined();
+    expect(resolveSubagentRequesterChannel({ ...child, runId: "gateway-run" })).toBe("matrix");
+    binding?.revoke();
+    expect(resolveSubagentRequesterChannel({ ...child, runId: "gateway-run" })).toBeUndefined();
   });
 
   it("projects to the exact child run and session only", () => {

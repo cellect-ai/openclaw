@@ -57,7 +57,10 @@ import { createEmbeddedMessageInvocationPolicy } from "./scheduled-message-invoc
 import { resolveScheduledToolCallerContext } from "./scheduled-tool-policy.js";
 import { projectEffectiveExecPolicy } from "./session-permission-exec-mode.js";
 import { resolveSessionPlacementComputer } from "./session-placement-computer.js";
-import { resolveSubagentSpawnedFrom } from "./subagents/spawn/subagent-spawn-requester-binding.js";
+import {
+  resolveSubagentRequesterChannel,
+  resolveSubagentSpawnedFrom,
+} from "./subagents/spawn/subagent-spawn-requester-binding.js";
 import { subagentAttachmentRootForRun } from "./subagents/subagent-attachment-paths.js";
 import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { buildDeclaredToolAllowlistContext } from "./tool-policy-declared-context.js";
@@ -579,6 +582,10 @@ export function createOpenClawCodingToolsInternal(
     sessionKey: executionSessionKey,
     sessionId: options?.sessionId,
   });
+  const spawnedFromChannel = resolveSubagentRequesterChannel({
+    runId: options?.runId,
+    sessionKey: executionSessionKey,
+  });
   const hookContext = {
     agentId: executionAgentId,
     ...(options?.config ? { config: options.config } : {}),
@@ -598,6 +605,7 @@ export function createOpenClawCodingToolsInternal(
     ...(hasRequester ? { requester } : {}),
     ...(requesterContinuation ? { requesterContinuation } : {}),
     ...(spawnedFrom ? { spawnedFrom } : {}),
+    ...(spawnedFromChannel ? { spawnedFromChannel } : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(turnSourceTo ? { turnSourceTo } : {}),
     ...(options?.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),

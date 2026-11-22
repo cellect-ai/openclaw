@@ -297,6 +297,7 @@ export async function runBeforeToolCallHook(args: {
         ? { requesterContinuation: args.ctx.requesterContinuation }
         : {}),
       ...(args.ctx?.spawnedFrom ? { spawnedFrom: args.ctx.spawnedFrom } : {}),
+      ...(args.ctx?.spawnedFromChannel ? { spawnedFromChannel: args.ctx.spawnedFromChannel } : {}),
     });
     const toolContext = buildToolContext(toolIdentity);
     // Policies form a mutation chain. Reconcile each decision against the prior

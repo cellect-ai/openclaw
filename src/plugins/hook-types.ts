@@ -638,6 +638,8 @@ export type PluginHookToolContext = {
   requesterContinuation?: PluginHookRequesterContinuation;
   /** Host-owned lineage of a spawned child run; absent for every other run. */
   spawnedFrom?: PluginHookSpawnedRequester;
+  /** Channel a spawned child's parent run arrived on, with or without lineage; grants nothing. */
+  spawnedFromChannel?: string;
 };
 
 export type PluginHookBeforeToolCallEvent = {
