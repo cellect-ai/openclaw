@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   delegatedFetch,
   delegationTurnFor,
+  registerDelegationTurnSource,
   exchange,
   lookupDelegation,
   type Delegation,
@@ -20,6 +21,7 @@ import {
   DESK_BRIEF_TOOL_REFUSAL,
   registerMatrixEntitlements,
 } from "./matrix-entitlements.js";
+import { delegatedWorkbookTransport } from "./workbook-transport.js";
 
 vi.mock("openclaw/plugin-sdk/retry-runtime", async (importOriginal) => ({
   ...(await importOriginal<typeof import("openclaw/plugin-sdk/retry-runtime")>()),
@@ -682,7 +684,12 @@ describe("the turn a delegation is minted for", () => {
     await lookupDelegation(
       config,
       { requesterMatrixUserId: senderId },
-      { turn: { ...turn, roomId: "!v12roomwithoutserver" } },
+      { turn: { ...turn, roomId: "!room with space:matrix.example" } },
+    );
+    await lookupDelegation(
+      config,
+      { requesterMatrixUserId: senderId },
+      { turn: { ...turn, roomId: `!${"a".repeat(256)}` } },
     );
     await lookupDelegation(config, { requesterMatrixUserId: senderId }, {});
     for (const body of mintBodies()) {
@@ -692,6 +699,45 @@ describe("the turn a delegation is minted for", () => {
     await lookupDelegation(config, { requesterMatrixUserId: senderId }, { turn });
     expect(mintBodies()[0]?.turn).toEqual({ roomId, eventId: "$event" });
     expect(turn.markBrief).not.toHaveBeenCalled();
+  });
+
+  it("sends a room version 12 id, which has no server part", async () => {
+    const turn = {
+      roomId: "!31hneApxJ_1o-63DmFrpeqnkFfWppnzWso1JvH3ogLM",
+      eventId: "$e",
+      senderId,
+      markBrief: vi.fn(),
+    };
+    await lookupDelegation(config, { requesterMatrixUserId: senderId }, { turn });
+    expect(mintBodies()[0]?.turn).toEqual({ roomId: turn.roomId, eventId: "$e" });
+  });
+
+  it("the workbook transport's mint names the run's turn too", async () => {
+    const api = {};
+    const markBrief = vi.fn();
+    registerDelegationTurnSource(api, (ctx) =>
+      ctx.runId === "run-1" ? { roomId, eventId: "$event", senderId, markBrief } : undefined,
+    );
+    fetchMock.mockImplementation(async (url: string) =>
+      url === MINT ? mintResponse({ turn: { authorship: "desk_handoff" } }) : allow(),
+    );
+    const transport = delegatedWorkbookTransport(
+      api as never,
+      {
+        runId: "run-1",
+        agentId: "cellect-fi-admin",
+        sessionKey: "agent:cellect-fi-admin:slack:channel:c1:thread:1",
+        messageChannel: "slack",
+        assertInvocationCurrent: () => {},
+      } as never,
+      () => ({ connection: config as never, body: { requesterMatrixUserId: senderId } }),
+    );
+    await transport!.authorize(new AbortController().signal);
+    expect(mintBodies()[0]).toMatchObject({
+      requesterMatrixUserId: senderId,
+      turn: { roomId, eventId: "$event" },
+    });
+    expect(markBrief).toHaveBeenCalledOnce();
   });
 
   it("an exchange outside Matrix sends no turn", async () => {

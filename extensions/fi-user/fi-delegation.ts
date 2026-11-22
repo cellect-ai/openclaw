@@ -117,8 +117,9 @@ export function delegationTurnFor(
   return delegationTurnSources.get(api)?.(context);
 }
 
-// Fi's accepted shapes (delegation-turn.ts); anything else is not sent.
-const TURN_ROOM = /^![^\s:]+:\S+$/;
+// Fi's accepted shapes (delegation-turn.ts); anything else is not sent. A room
+// version 12 id (MSC4291) has no ":server" part.
+const TURN_ROOM = /^![^\s:]+(?::\S+)?$/;
 const TURN_EVENT = /^\$\S+$/;
 
 const REQUESTER_EMAIL = /^[^\s@<>"'`]{1,64}@[^\s@<>"'`]{1,190}$/;

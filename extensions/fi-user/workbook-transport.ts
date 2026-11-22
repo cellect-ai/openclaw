@@ -2,6 +2,7 @@ import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plug
 import {
   brokerToken,
   configFromRuntime,
+  delegationTurnFor,
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
   lookupDelegation,
@@ -116,6 +117,8 @@ export function delegatedWorkbookTransport(
       const delegation = await lookupDelegation(initial.connection, initial.body, {
         agentId: initial.agentId,
         signal,
+        // A Matrix requester's admitted event, when this run has one (a projected Matrix reply).
+        turn: delegationTurnFor(api, context),
       });
       assertCurrent();
       signal.throwIfAborted();
