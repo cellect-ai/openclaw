@@ -462,7 +462,12 @@ export default definePluginEntry({
       (event, ctx) => {
         // The host's deadline for this hook runs from here, across the grant check below.
         const enteredAt = Date.now();
-        const spawnBlocked = matrixSubagentSpawnBlock(event.toolName, ctx);
+        const spawnBlocked = matrixSubagentSpawnBlock(
+          event.toolName,
+          ctx,
+          event.params,
+          matrixEntitlements.spawnParent(ctx),
+        );
         if (spawnBlocked) {
           return spawnBlocked;
         }

@@ -11,7 +11,11 @@ import {
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
-import { isSubagentSession, SUBAGENT_RUN_REFUSAL } from "./matrix-subagent-guard.js";
+import {
+  isSubagentSession,
+  SUBAGENT_RUN_REFUSAL,
+  type SpawnParent,
+} from "./matrix-subagent-guard.js";
 import {
   hostChatMatchesRoom,
   logEntitlements,
@@ -57,6 +61,8 @@ const NOT_PRIVATE_SOLE_HUMAN_CONTEXT = [
   "```",
 ].join("\n");
 const MAX_CHECKED_SESSIONS = 5_000;
+// A child acts for its parent's person at most this long, whatever its run timeout.
+const MAX_CHILD_MS = 30 * 60_000;
 type Turn = {
   admitted: boolean;
   externalInput: boolean;
@@ -72,6 +78,19 @@ type Turn = {
   orgId?: string;
   /** Latest Fi admission proved a private conversation whose only human is the sender. */
   privateSoleHuman?: boolean;
+  /** A child's admitted parent turn: its person, room, event, agent and org are the child's. */
+  parentRunId?: string;
+  /** Host lineage of a child run, rechecked on every use. */
+  lineage?: NonNullable<PluginHookToolContext["spawnedFrom"]>;
+  /** Children admitted under this turn; they retire with it. */
+  children: Set<string>;
+  /** A child's bound. */
+  expiresAt?: number;
+  /** Spawns Fi allowed whose child has not been admitted yet. */
+  pendingSpawns?: number;
+  /** The parent's own run settled: kept, without tools, only as its children's custody. */
+  settled?: boolean;
+  custodyTimer?: ReturnType<typeof setTimeout>;
 } & MatrixTurnOrigin;
 
 function isPrivateSoleHuman(result: object): boolean {
@@ -142,8 +161,72 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const turns = new Map<string, Turn>();
   const retireTurn = (runId: string) => {
     const turn = turns.get(runId);
-    turn?.authorization.abort();
+    if (!turn) {
+      return;
+    }
+    turn.authorization.abort();
+    clearTimeout(turn.custodyTimer);
     turns.delete(runId);
+    for (const child of turn.children) {
+      retireTurn(child);
+    }
+    const parentRunId = turn.parentRunId;
+    const parent = parentRunId ? turns.get(parentRunId) : undefined;
+    if (
+      parentRunId &&
+      parent?.children.delete(runId) &&
+      parent.settled &&
+      !parent.children.size &&
+      !parent.pendingSpawns
+    ) {
+      retireTurn(parentRunId);
+    }
+  };
+  // A settled parent with live or not yet started children stays as their
+  // custody, until the last child ends or the latest bound passes; it runs no
+  // tools meanwhile. A child can start after its parent has already replied.
+  const settleTurn = (runId: string) => {
+    const turn = turns.get(runId);
+    const bounds = [...(turn?.children ?? [])].map((child) => turns.get(child)?.expiresAt ?? 0);
+    if (turn?.pendingSpawns) {
+      bounds.push(Date.now() + MAX_CHILD_MS);
+    }
+    if (!turn || turn.parentRunId || !bounds.length) {
+      retireTurn(runId);
+      return;
+    }
+    turn.settled = true;
+    clearTimeout(turn.custodyTimer);
+    turn.custodyTimer = setTimeout(
+      () => turns.get(runId) === turn && retireTurn(runId),
+      Math.max(0, Math.max(...bounds) - Date.now()),
+    );
+    turn.custodyTimer.unref?.();
+  };
+  /** A child is current only while its lineage, bound and admitted parent all are. */
+  const childCurrent = (turn: Turn): boolean => {
+    const lineage = turn.lineage;
+    const parent = turn.parentRunId ? turns.get(turn.parentRunId) : undefined;
+    if (
+      !lineage ||
+      !parent?.admitted ||
+      !parent.children.has(lineage.childRunId) ||
+      turns.get(lineage.childRunId) !== turn ||
+      Date.now() >= (turn.expiresAt ?? 0) ||
+      parent.agentId !== turn.agentId ||
+      parent.accountId !== turn.accountId ||
+      parent.roomId !== turn.roomId ||
+      parent.senderId !== turn.senderId ||
+      parent.orgId !== turn.orgId
+    ) {
+      return false;
+    }
+    try {
+      lineage.assertCurrent();
+      return true;
+    } catch {
+      return false;
+    }
   };
   const retireAll = () => {
     for (const runId of turns.keys()) {
@@ -161,7 +244,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         event.data.executionSettled === true &&
         (event.data.phase === "end" || event.data.phase === "error")
       ) {
-        retireTurn(event.runId);
+        settleTurn(event.runId);
       }
     },
   });
@@ -272,30 +355,50 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       },
     );
   };
+  // A child is never more private than its parent: the lower of the two holds.
+  const parentPrivate = (turn: Turn): boolean =>
+    !turn.parentRunId || turns.get(turn.parentRunId)?.privateSoleHuman === true;
   const capture = (context: OpenClawPluginToolContext) => {
     const runId = context.runId;
     const turn = runId ? turns.get(runId) : undefined;
+    // A child has no message of its own: what the host names must be absent or the parent's.
+    const absentOr = (value: unknown, expected: unknown) =>
+      value === undefined || value === expected;
     if (
       !runId ||
       !turn?.admitted ||
-      context.messageChannel !== "matrix" ||
+      turn.settled ||
       SOURCE_SESSION.test(context.sessionKey ?? "") ||
       turn.agentId !== context.agentId ||
-      turn.accountId !== context.agentAccountId ||
       turn.sessionKey !== context.sessionKey ||
-      turn.roomId !== context.nativeChannelId ||
-      turn.senderId !== context.requesterSenderId ||
-      (turn.mode === "text"
-        ? turn.eventId !== context.currentMessageId
-        : context.currentMessageId !== undefined ||
-          sessionThreadId(turn.sessionKey) !== turn.threadRootEventId)
+      (turn.parentRunId
+        ? !childCurrent(turn) ||
+          turn.mode !== "text" ||
+          !absentOr(context.messageChannel, "matrix") ||
+          !absentOr(context.agentAccountId, turn.accountId) ||
+          !absentOr(context.nativeChannelId, turn.roomId) ||
+          !absentOr(context.requesterSenderId, turn.senderId) ||
+          !absentOr(context.currentMessageId, turn.eventId)
+        : context.messageChannel !== "matrix" ||
+          turn.accountId !== context.agentAccountId ||
+          turn.roomId !== context.nativeChannelId ||
+          turn.senderId !== context.requesterSenderId ||
+          (turn.mode === "text"
+            ? turn.eventId !== context.currentMessageId
+            : context.currentMessageId !== undefined ||
+              sessionThreadId(turn.sessionKey) !== turn.threadRootEventId))
     ) {
       return undefined;
     }
     const assertCurrent = () => {
       turn.continuation?.assertCurrent();
       context.assertInvocationCurrent?.();
-      if (turns.get(runId) !== turn || !turn.admitted) {
+      if (
+        turns.get(runId) !== turn ||
+        !turn.admitted ||
+        turn.settled ||
+        (turn.parentRunId !== undefined && !childCurrent(turn))
+      ) {
         throw new Error(UNAVAILABLE);
       }
     };
@@ -364,7 +467,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         if (!isAuthorizedProof(api, turn, result)) {
           throw new Error(UNAVAILABLE);
         }
-        turn.privateSoleHuman = isPrivateSoleHuman(result);
+        turn.privateSoleHuman = isPrivateSoleHuman(result) && parentPrivate(turn);
         if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
           throw new Error(AUDIENCE_CHANGED);
         }
@@ -419,7 +522,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return UNAVAILABLE;
       }
       turn.orgId = result.orgId;
-      turn.privateSoleHuman = isPrivateSoleHuman(result);
+      turn.privateSoleHuman = isPrivateSoleHuman(result) && parentPrivate(turn);
       if (requester) {
         const identity = "googleRequester" in result ? result.googleRequester : undefined;
         if (
@@ -460,6 +563,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           const [, turn] = entry;
           if (
             turn.admitted &&
+            !turn.parentRunId &&
+            !turn.settled &&
             turn.sessionKey === requester.sessionKey &&
             turn.accountId === requester.accountId &&
             turn.senderId === requester.senderId
@@ -493,6 +598,116 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       },
     },
   });
+  /**
+   * A child of an admitted text turn acts for exactly the parent's person, room,
+   * event, agent and org, which it copies and never supplies; Fi re-admits it
+   * against that person's current grants. Nesting and voice parents are refused.
+   */
+  const admitChild = async (
+    context: { runId?: string; agentId?: string; accountId?: string; sessionKey?: string },
+    lineage: NonNullable<PluginHookToolContext["spawnedFrom"]>,
+  ) => {
+    const runId = context.runId;
+    const parent = turns.get(lineage.parentRunId);
+    const refuse = (reason: string) => {
+      logEntitlements(
+        {
+          phase: "admission",
+          agentId: context.agentId ?? null,
+          accountId: context.accountId ?? null,
+          outcome: "unavailable",
+          reason: "subagent_run",
+          roomId: parent?.roomId ?? null,
+        },
+        reason,
+      );
+      return { handled: true, reply: { text: SUBAGENT_RUN_REFUSAL } };
+    };
+    try {
+      lineage.assertCurrent();
+    } catch {
+      if (runId) {
+        retireTurn(runId);
+      }
+      return refuse("subagent_lineage");
+    }
+    if (
+      !runId ||
+      !context.sessionKey ||
+      lineage.childRunId !== runId ||
+      lineage.childSessionKey !== context.sessionKey ||
+      lineage.childAgentId !== context.agentId ||
+      !parent?.admitted ||
+      parent.parentRunId ||
+      parent.mode !== "text" ||
+      !parent.orgId ||
+      parent.agentId !== context.agentId ||
+      parent.agentId !== lineage.parentAgentId ||
+      parent.sessionKey !== lineage.parentSessionKey ||
+      parent.accountId !== context.accountId
+    ) {
+      if (runId) {
+        retireTurn(runId);
+      }
+      return refuse("subagent_parent");
+    }
+    const child: Turn = {
+      externalInput: false,
+      admitted: false,
+      authorization: new AbortController(),
+      agentId: parent.agentId,
+      accountId: parent.accountId,
+      roomId: parent.roomId,
+      mode: "text",
+      eventId: parent.eventId,
+      senderId: parent.senderId,
+      sessionKey: context.sessionKey,
+      orgId: parent.orgId,
+      parentRunId: lineage.parentRunId,
+      lineage,
+      children: new Set(),
+      expiresAt: Math.min(lineage.expiresAt, Date.now() + MAX_CHILD_MS),
+    };
+    retireTurn(runId);
+    turns.set(runId, child);
+    parent.children.add(runId);
+    if (parent.pendingSpawns) {
+      parent.pendingSpawns -= 1;
+    }
+    const failure = await authorize(child);
+    if (turns.get(runId) !== child || !childCurrent(child)) {
+      if (turns.get(runId) === child) {
+        retireTurn(runId);
+      }
+      return refuse("subagent_parent");
+    }
+    logEntitlements({
+      phase: "admission",
+      roomId: child.roomId,
+      agentId: child.agentId,
+      accountId: child.accountId,
+      mode: child.mode,
+      outcome:
+        failure === SILENT
+          ? "silent"
+          : failure
+            ? failure === DENIED
+              ? "denied"
+              : "unavailable"
+            : "admitted",
+      subagent: true,
+      ...turnIds(child),
+    });
+    if (failure) {
+      retireTurn(runId);
+      return {
+        handled: true,
+        reply: { text: failure === SILENT ? SUBAGENT_RUN_REFUSAL : failure },
+      };
+    }
+    child.admitted = true;
+    return undefined;
+  };
   api.on(
     "before_agent_reply",
     async (_event, context) => {
@@ -544,6 +759,9 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         } catch {
           return { handled: true, reply: { text: UNAVAILABLE } };
         }
+      }
+      if (!continuation && context.spawnedFrom && isSubagentSession(context.sessionKey)) {
+        return admitChild(context, context.spawnedFrom);
       }
       const roomId = continuation?.chatId ?? context.channelContext?.chat?.id;
       const eventId = continuation?.eventId ?? context.channelContext?.chat?.eventId;
@@ -655,6 +873,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         ...source,
         senderId,
         sessionKey: context.sessionKey,
+        children: new Set(),
       };
       const voiceMismatch =
         turn.mode === "voice" && threadId && threadId !== turn.threadRootEventId
@@ -757,15 +976,26 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
           context.requester.accountId !== continuation.accountId) ||
         (context.requester.channel !== undefined &&
           context.requester.channel !== continuation.channel));
+    const lineage = context.spawnedFrom;
     if (
       !runId ||
       !turn ||
+      turn.settled ||
       turn.agentId !== context.agentId ||
       turn.sessionKey !== context.sessionKey ||
-      turn.senderId !== requester?.senderId ||
-      turn.accountId !== requester?.accountId ||
-      (continuation && !continuationCurrent) ||
-      conflictingRequester
+      (turn.parentRunId
+        ? !childCurrent(turn) ||
+          context.requesterContinuation !== undefined ||
+          lineage?.childRunId !== runId ||
+          lineage.childSessionKey !== context.sessionKey ||
+          (context.requester?.senderId !== undefined &&
+            context.requester.senderId !== turn.senderId) ||
+          (context.requester?.accountId !== undefined &&
+            context.requester.accountId !== turn.accountId)
+        : turn.senderId !== requester?.senderId ||
+          turn.accountId !== requester?.accountId ||
+          (continuation && !continuationCurrent) ||
+          conflictingRequester)
     ) {
       logEntitlements(
         {
@@ -785,10 +1015,20 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     return authorize(turn, undefined, context.abortSignal).then((failure) => {
       // A terminal publication or replacement can arrive while Fi checks live
       // grants. A successful response cannot resurrect a retired admission.
-      if (turns.get(runId) !== turn || context.abortSignal?.aborted) {
+      if (
+        turns.get(runId) !== turn ||
+        context.abortSignal?.aborted ||
+        (turn.parentRunId !== undefined && !childCurrent(turn))
+      ) {
         return { block: true, blockReason: UNAVAILABLE };
       }
       turn.admitted = !failure;
+      if (failure === DENIED) {
+        // Fi withdrew this person's access: no child of this turn may go on.
+        for (const child of turn.children) {
+          retireTurn(child);
+        }
+      }
       logEntitlements({
         phase: "tool",
         roomId: turn.roomId,
@@ -810,9 +1050,14 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         return { block: true, blockReason: failure === SILENT ? DENIED : failure };
       }
       // The system prompt keeps its claim until the next build; stop and say so.
-      return wasPrivateSoleHuman && !turn.privateSoleHuman
-        ? { block: true, blockReason: AUDIENCE_CHANGED }
-        : undefined;
+      if (wasPrivateSoleHuman && !turn.privateSoleHuman) {
+        return { block: true, blockReason: AUDIENCE_CHANGED };
+      }
+      if (context.toolName === "sessions_spawn" && !turn.parentRunId) {
+        // Its child may start after this turn settles; keep custody for it until then.
+        turn.pendingSpawns = (turn.pendingSpawns ?? 0) + 1;
+      }
+      return undefined;
     });
   };
   // Share identity already proved by this owner, never a cached grant decision.
@@ -825,6 +1070,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   ) => {
     const turn = context.runId ? turns.get(context.runId) : undefined;
     return turn?.admitted &&
+      !turn.parentRunId &&
+      !turn.settled &&
       turn.mode === "voice" &&
       sessionThreadId(turn.sessionKey) === turn.threadRootEventId &&
       !context.abortSignal?.aborted &&
@@ -836,8 +1083,24 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ? turn
       : undefined;
   };
+  /** What a spawn's caller is, for the sub-agent guard: admitted text or voice turn, or child. */
+  const spawnParent = (
+    context: Pick<PluginHookToolContext, "runId" | "agentId" | "sessionKey">,
+  ): SpawnParent => {
+    const turn = context.runId ? turns.get(context.runId) : undefined;
+    if (
+      !turn?.admitted ||
+      turn.settled ||
+      turn.agentId !== context.agentId ||
+      turn.sessionKey !== context.sessionKey
+    ) {
+      return undefined;
+    }
+    return turn.parentRunId ? "child" : turn.mode;
+  };
   return {
     beforeToolCall,
+    spawnParent,
     admittedVoiceTurn,
     admittedOperatorCommand: (context: PluginHookToolContext) => {
       const turn = context.runId ? turns.get(context.runId) : undefined;
@@ -846,6 +1109,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         !config.tenantOrgId &&
         !config.tenantOrgConflict &&
         turn?.admitted &&
+        !turn.parentRunId &&
+        !turn.settled &&
         turn.externalInput &&
         turn.mode === "text" &&
         turn.orgId &&
