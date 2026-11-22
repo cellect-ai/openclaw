@@ -624,8 +624,10 @@ describe("the admin agent's delegated user token", () => {
         // "Let me know" turn (before_model_resolve + before_prompt_build) and
         // the admin turn's `Fi requester:` line (before_prompt_build), the
         // personal-review context (before_prompt_build) and the conversation
-        // reader's run retirement (agent_end).
+        // reader's run retirement (agent_end), and the Matrix entitlement
+        // gate's release of a sub-agent spawn it did not accept (after_tool_call).
         hooks: [
+          "after_tool_call",
           "after_tool_call",
           "agent_end",
           "before_agent_reply",
