@@ -141,6 +141,11 @@ const GATED: Array<[string, Record<string, unknown>, Record<string, unknown> | u
     { action: "execute", operation: "a.b.c", variant: "v", input: {} },
     { action: "execute", operation: "a.b.c", variant: "v", input: {}, dryRun: true },
   ],
+  ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "draft" }],
+  ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "reply_draft", messageId: "m" }],
+  ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "calendar_create" }],
+  // requester_gmail drafts only today; a send added later is held without a change here.
+  ["requester_gmail", { action: "send" }, { action: "draft" }],
   ["sessions_send", { sessionKey: "agent:x:main", message: "hi" }, undefined],
   ["conversations_send", { conversationRef: "c", message: "hi" }, undefined],
   ["conversations_turn", { conversationRef: "c", message: "hi" }, undefined],

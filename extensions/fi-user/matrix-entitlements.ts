@@ -238,6 +238,12 @@ function briefGated(toolName: string, params: Record<string, unknown>, turn: Tur
       return !["prepare", "register", "inspect"].includes(action as string);
     case "fi_admin_operation":
       return action === "execute" && params.dryRun !== true;
+    // The requester mail plugin's tools (infra cellect-requester-google): m365_mail's
+    // send is send_draft. Any action naming a send is held, so one added later is too.
+    case "m365_mail":
+    case "requester_gmail":
+    case "cellect_mail":
+      return typeof action === "string" && action.toLowerCase().includes("send");
     case "sessions_send":
     case "conversations_send":
     case "conversations_turn":
