@@ -1,6 +1,7 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 /** Builds plugin hook agent context snapshots from active session and model state. */
 import { resolveAdmittedRunRequesterContinuation } from "../agents/admitted-run-context.js";
+import { resolveSubagentSpawnedFrom } from "../agents/subagents/spawn/subagent-spawn-requester-binding.js";
 import { parseRawSessionConversationRef } from "../sessions/session-key-utils.js";
 import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { PluginHookAgentContext } from "./hook-types.js";
@@ -123,17 +124,24 @@ export function buildAgentHookContextChannelFields(params: {
   | "senderId"
   | "inputProvenance"
   | "requesterContinuation"
+  | "spawnedFrom"
 > {
   const channel = resolveAgentHookChannel(params);
   const requesterContinuation = resolveAdmittedRunRequesterContinuation({
     ...params,
     sessionKey: params.sessionKey ?? undefined,
   });
+  const spawnedFrom = resolveSubagentSpawnedFrom({
+    runId: params.runId,
+    sessionKey: params.sessionKey ?? undefined,
+    sessionId: params.sessionId,
+  });
   const channelId = resolveAgentHookChannelId(params);
   const accountId = normalizeOptionalString(params.agentAccountId);
   return {
     channel,
     ...(requesterContinuation ? { requesterContinuation } : {}),
+    ...(spawnedFrom ? { spawnedFrom } : {}),
     ...(params.inputProvenance ? { inputProvenance: params.inputProvenance } : {}),
     ...(accountId ? { accountId } : {}),
     messageProvider: normalizeOptionalString(params.messageProvider),

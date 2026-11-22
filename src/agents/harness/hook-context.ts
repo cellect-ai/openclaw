@@ -57,6 +57,7 @@ export function buildAgentHookContext(params: AgentHarnessHookContext): PluginHo
     ...(params.requesterContinuation
       ? { requesterContinuation: params.requesterContinuation }
       : {}),
+    ...(params.spawnedFrom ? { spawnedFrom: params.spawnedFrom } : {}),
     ...(params.channelId ? { channelId: params.channelId } : {}),
     ...(params.contextTokenBudget ? { contextTokenBudget: params.contextTokenBudget } : {}),
     ...(params.contextWindowSource ? { contextWindowSource: params.contextWindowSource } : {}),

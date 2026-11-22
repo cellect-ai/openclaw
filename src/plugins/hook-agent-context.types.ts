@@ -40,6 +40,26 @@ export type PluginHookRequesterContinuation = Readonly<{
   assertCurrent: () => void;
 }>;
 
+/**
+ * Host-proven lineage of a spawned child run back to the admitted parent run that
+ * launched it, projected only to that exact child run and session. It proves
+ * lineage, never a person: the plugin that admitted the parent decides that.
+ */
+export type PluginHookSpawnedRequester = Readonly<{
+  parentRunId: string;
+  parentAgentId: string;
+  parentSessionKey: string;
+  parentSessionId?: string;
+  childRunId: string;
+  childAgentId: string;
+  childSessionKey: string;
+  childSessionId: string;
+  /** Epoch ms after which the lineage grants nothing. */
+  expiresAt: number;
+  /** Rejects revoked, expired or drifted lineage; identity fields alone grant nothing. */
+  assertCurrent: () => void;
+}>;
+
 export type PluginHookAgentContext = PluginHookContextWindow & {
   runId?: string;
   jobId?: string;
@@ -73,6 +93,8 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   inputProvenance?: InputProvenance;
   /** Host-owned capability; absent for unbound operator or inter-session input. */
   requesterContinuation?: PluginHookRequesterContinuation;
+  /** Host-owned lineage of a spawned child run; absent for every other run. */
+  spawnedFrom?: PluginHookSpawnedRequester;
   /**
    * Opaque Fi shadow-turn attestation of a `hook:fi-shadow:` cron run. Given
    * to before_agent_reply only; Fi, not the gateway, verifies it.

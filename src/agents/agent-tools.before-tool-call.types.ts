@@ -52,6 +52,7 @@ export type HookContext = {
   /** Host-derived message requester for sender-aware tool hooks. */
   requester?: PluginHookToolRequesterContext;
   requesterContinuation?: import("../plugins/hook-agent-context.types.js").PluginHookRequesterContinuation;
+  spawnedFrom?: import("../plugins/hook-agent-context.types.js").PluginHookSpawnedRequester;
   /** Originating channel for approval delivery routing; mirrors exec approval turn-source fields. */
   turnSourceChannel?: string;
   turnSourceTo?: string;

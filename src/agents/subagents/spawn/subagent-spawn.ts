@@ -52,6 +52,7 @@ import {
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import { createSubagentSpawnLifecycleEmitter } from "./subagent-spawn-lifecycle.js";
 import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
+import { mintSubagentRequesterBinding } from "./subagent-spawn-requester-binding.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
@@ -396,44 +397,65 @@ export async function spawnSubagentDirect(
         storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
       });
     let acceptedChildRunId: string | undefined;
+    let requesterBinding: { revoke: () => void } | undefined;
     const launchChildRun = async (assertDispatchCurrent?: () => void) => {
-      const launch = await callNativeSubagentGateway(
-        withSubagentGatewayExecutionIdentity(
-          {
-            method: "agent",
-            assertDispatchCurrent,
-            params: childLaunch.request,
-            timeoutMs: childLaunch.timeoutMs,
-          },
-          {
-            sessionSpawnContext: buildSubagentExecutionSessionSpawnContext({
-              enabled: isExecutionIdentityCollectionEnabled(cfg),
-              backend: "subagent",
-              parentAgentId: requesterAgentId,
-              requesterRef: requesterInternalKey,
-              controllerRef: ownership.controllerSessionKey,
-              depth: childDepth,
-              maxDepth: maxSpawnDepth,
-              targetAgentId,
-              sandbox: sandboxMode,
-              inheritedToolAllowlist: ctx.inheritedToolAllowlist,
-              inheritedToolDenylist: ctx.inheritedToolDenylist,
-            }),
-            parentExecutionIdentityToken: readParentExecutionIdentity(ctx),
-          },
-        ),
-        childLaunch.authorization,
-        gatewayContextResolver,
-        childEntry?.sessionId && childEntry.lifecycleRevision
-          ? {
-              sessionKey: childSessionKey,
-              sessionId: childEntry.sessionId,
-              lifecycleRevision: childEntry.lifecycleRevision,
-              runId: childIdem,
-            }
-          : undefined,
-      );
+      // Lineage exists before the child can start, so its first hook can prove its parent.
+      requesterBinding?.revoke();
+      requesterBinding = mintSubagentRequesterBinding({
+        parentRunId: ctx.requesterRunId,
+        childRunId: childIdem,
+        childAgentId: targetAgentId,
+        childSessionKey,
+        childSessionId: childEntry?.sessionId,
+        runTimeoutSeconds,
+      });
+      let launch: Awaited<ReturnType<typeof callNativeSubagentGateway>>;
+      try {
+        launch = await callNativeSubagentGateway(
+          withSubagentGatewayExecutionIdentity(
+            {
+              method: "agent",
+              assertDispatchCurrent,
+              params: childLaunch.request,
+              timeoutMs: childLaunch.timeoutMs,
+            },
+            {
+              sessionSpawnContext: buildSubagentExecutionSessionSpawnContext({
+                enabled: isExecutionIdentityCollectionEnabled(cfg),
+                backend: "subagent",
+                parentAgentId: requesterAgentId,
+                requesterRef: requesterInternalKey,
+                controllerRef: ownership.controllerSessionKey,
+                depth: childDepth,
+                maxDepth: maxSpawnDepth,
+                targetAgentId,
+                sandbox: sandboxMode,
+                inheritedToolAllowlist: ctx.inheritedToolAllowlist,
+                inheritedToolDenylist: ctx.inheritedToolDenylist,
+              }),
+              parentExecutionIdentityToken: readParentExecutionIdentity(ctx),
+            },
+          ),
+          childLaunch.authorization,
+          gatewayContextResolver,
+          childEntry?.sessionId && childEntry.lifecycleRevision
+            ? {
+                sessionKey: childSessionKey,
+                sessionId: childEntry.sessionId,
+                lifecycleRevision: childEntry.lifecycleRevision,
+                runId: childIdem,
+              }
+            : undefined,
+        );
+      } catch (error) {
+        requesterBinding?.revoke();
+        throw error;
+      }
       acceptedChildRunId = readGatewayRunId(launch.response) ?? childIdem;
+      if (acceptedChildRunId !== childIdem) {
+        // The lineage names the run it was minted for; another run gets none.
+        requesterBinding?.revoke();
+      }
       cleanupOwner?.bindAcceptedRun(acceptedChildRunId);
       return launch;
     };
@@ -597,6 +619,7 @@ export async function spawnSubagentDirect(
       },
     });
     if (!pipelineResult.ok) {
+      requesterBinding?.revoke();
       const runId = pipelineResult.runId ?? childIdem;
       const spawnStatus =
         pipelineResult.error && typeof pipelineResult.error === "object"

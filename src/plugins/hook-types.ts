@@ -19,6 +19,7 @@ import type {
   PluginHookAgentContext,
   PluginHookContextWindow,
   PluginHookRequesterContinuation,
+  PluginHookSpawnedRequester,
 } from "./hook-agent-context.types.js";
 import type {
   PluginHookBeforeModelResolveEvent,
@@ -67,6 +68,7 @@ export type {
   PluginHookAgentContext,
   PluginHookToolAuthority,
   PluginHookRequesterContinuation,
+  PluginHookSpawnedRequester,
 } from "./hook-agent-context.types.js";
 
 export type {
@@ -634,6 +636,8 @@ export type PluginHookToolContext = {
   requester?: PluginHookToolRequesterContext;
   /** Live requester custody of a supported native task continuation. */
   requesterContinuation?: PluginHookRequesterContinuation;
+  /** Host-owned lineage of a spawned child run; absent for every other run. */
+  spawnedFrom?: PluginHookSpawnedRequester;
 };
 
 export type PluginHookBeforeToolCallEvent = {
