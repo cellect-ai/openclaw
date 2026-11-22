@@ -184,6 +184,7 @@ describe("Fi-admin mail attachment import", () => {
     expect(mintBody()).toEqual({
       requesterMatrixUserId: "@admin:matrix.example",
       agentId: "cellect-fi-admin",
+      turn: { roomId: "!dm:matrix.example", eventId: "$event" },
     });
   });
 

@@ -1,5 +1,5 @@
 import type { OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
-import type { ResolvedPluginConfig } from "./fi-delegation.js";
+import type { DelegationTurn, ResolvedPluginConfig } from "./fi-delegation.js";
 
 /** A current requester observation from the native run owner, not a credential
  * or a grant. Transports must re-observe it at dispatch and ask Fi for current
@@ -10,6 +10,8 @@ export type ProvenRequester = {
     | { requesterSenderId: string }
     | { requesterMatrixUserId: string }
     | { requesterEmail: string };
+  /** The admitted Matrix event a mint for this requester is for, when there is one. */
+  turn?: DelegationTurn;
 };
 
 type RequesterProofContext = Pick<

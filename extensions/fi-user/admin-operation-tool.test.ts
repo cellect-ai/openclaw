@@ -177,6 +177,7 @@ describe("registered Fi-admin structured operation transport", () => {
     expect(JSON.parse((fetchMock.mock.calls.at(-2)![1] as RequestInit).body as string)).toEqual({
       requesterMatrixUserId: "@admin:matrix.example",
       agentId: "cellect-fi-admin",
+      turn: { roomId: "!dm:matrix.example", eventId: "$event" },
     });
     expect(fetchMock.mock.calls.at(-1)![0]).toBe(
       "https://dev.example.test/fi/api/a/admin-operations?",

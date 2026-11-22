@@ -149,6 +149,7 @@ export function createAdminOperationTool(
       };
       const delegation = await lookupDelegation(requester.connection, requester.body, {
         agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+        turn: requester.turn,
         signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
       });
       assertCurrent();

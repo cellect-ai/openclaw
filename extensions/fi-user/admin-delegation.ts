@@ -7,6 +7,7 @@ import { adminActionSessions } from "./admin-action.js";
 import { adminCommandPosture, namesAnotherFi, runsInSandbox } from "./admin-command-sandbox.js";
 import {
   configFromRuntime,
+  delegationTurnFor,
   isAdminAgent,
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
@@ -1607,6 +1608,7 @@ export function registerAdminDelegation(
           agentId: FI_ADMIN_DELEGATION_AGENT_ID,
           mailWakeEnvironment: ctx.hostMailWakeEnvironment,
           signal: AbortSignal.timeout(budget),
+          ...("requesterMatrixUserId" in body ? { turn: delegationTurnFor(api, ctx) } : {}),
         }).then((delegation) =>
           delegation
             ? { token: delegation.fi?.token, expiresAt: delegation.fi?.expiresAt }
@@ -1810,6 +1812,7 @@ export function registerAdminDelegation(
             requesterMatrixUserId: requester.requester_matrix_user_id,
             ...mailWakeDelegationContext(ctx),
           },
+          turn: delegationTurnFor(api, ctx),
         }
       : undefined;
   };

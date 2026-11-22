@@ -89,6 +89,7 @@ describe("the delegated credential's selected Fi origin", () => {
       expect(JSON.parse(String(selectedMints()[0]?.[1]?.body))).toEqual({
         requesterMatrixUserId: "@admin:matrix.example",
         agentId: "cellect-fi-admin",
+        turn: { roomId: "!room:matrix.example", eventId: "$e1" },
       });
     },
   );

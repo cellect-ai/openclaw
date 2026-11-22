@@ -151,6 +151,7 @@ export async function importMailAttachment(
   }
   const delegation = await lookupDelegation(requester.connection, requester.body, {
     agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+    turn: requester.turn,
     signal: AbortSignal.timeout(15_000),
   });
   if (!delegation) {

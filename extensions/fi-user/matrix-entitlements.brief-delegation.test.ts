@@ -103,6 +103,63 @@ describe("a Desk brief and the admin agent's delegated token", () => {
   });
 });
 
+describe("the turn the admin agent's command token is minted for", () => {
+  beforeEach(() => {
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
+  });
+  const mintBodies = () =>
+    mints().map(
+      ([, init]) => JSON.parse((init as { body: string }).body) as Record<string, unknown>,
+    );
+
+  it("names the admitted Matrix event", async () => {
+    answer(() => admission({ authorship: { kind: "person" } }));
+    const turn = plugin();
+    await turn.arrive(matrix.arrive);
+    await turn.start(matrix.start);
+    expect((await turn.exec(matrix.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(mintBodies()).toEqual([
+      {
+        requesterMatrixUserId: "@admin:matrix.example",
+        agentId: "cellect-fi-admin",
+        turn: { roomId: "!dm:matrix.example", eventId: "$event" },
+      },
+    ]);
+  });
+
+  it("takes Fi's brief answer on the mint as the turn's authorship", async () => {
+    fetchMock.mockImplementation(async (url: string) =>
+      url === AUTHORIZE_URL
+        ? admission({ authorship: { kind: "person" } })
+        : new Response(
+            JSON.stringify({
+              ...(await minted().json()),
+              turn: { authorship: "desk_handoff" },
+            }),
+          ),
+    );
+    const turn = plugin();
+    await turn.arrive(matrix.arrive);
+    await turn.start(matrix.start);
+    // That token carries Fi's brief claims; Fi refuses it on send, sign and deliver routes.
+    expect((await turn.exec(matrix.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    // From now on the gateway holds the turn as a brief as well.
+    expect(await turn.exec(matrix.exec)).toEqual({
+      block: true,
+      blockReason: DESK_BRIEF_TOOL_REFUSAL,
+    });
+    expect(mints()).toHaveLength(1);
+  });
+
+  it("names no turn for a Slack requester", async () => {
+    const turn = plugin();
+    await turn.arrive();
+    await turn.start();
+    expect((await turn.exec())?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
+    expect(mintBodies()[0]).not.toHaveProperty("turn");
+  });
+});
+
 describe("Matrix steering around Fi-judged authorship", () => {
   beforeEach(() => {
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));

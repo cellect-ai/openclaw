@@ -42,6 +42,7 @@ it("binds an admin requester to the signing package query containing a literal a
   expect(mintBody()).toEqual({
     requesterMatrixUserId: "@admin:matrix.example",
     agentId: "cellect-fi-admin",
+    turn: { roomId: "!dm:matrix.example", eventId: "$event" },
   });
 });
 
@@ -241,6 +242,7 @@ it.each([
       expect(mintBody()).toEqual({
         requesterMatrixUserId: "@admin:matrix.example",
         agentId: "cellect-fi-admin",
+        turn: { roomId: "!dm:matrix.example", eventId: "$event" },
       });
     } finally {
       surface.cleanup();

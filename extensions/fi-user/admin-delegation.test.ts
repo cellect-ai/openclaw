@@ -696,6 +696,7 @@ describe("the admin agent's delegated user token", () => {
     expect(mintBody()).toEqual({
       requesterMatrixUserId: "@admin:matrix.example",
       agentId: "cellect-fi-admin",
+      turn: { roomId: "!dm:matrix.example", eventId: "$event" },
     });
   });
 
@@ -735,6 +736,7 @@ describe("the admin agent's delegated user token", () => {
         expect(mintBody()).toEqual({
           requesterMatrixUserId: "@admin:matrix.example",
           agentId: "cellect-fi-admin",
+          turn: { roomId: "!room:matrix.example", eventId: "$e1" },
         });
       },
     );

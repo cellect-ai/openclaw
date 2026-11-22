@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { Delegation, ResolvedPluginConfig } from "./fi-delegation.js";
+import { DESK_BRIEF_REFUSAL, type Delegation, type ResolvedPluginConfig } from "./fi-delegation.js";
 
 const execFileAsync = promisify(execFile);
 const MAX_OUTPUT_BYTES = 512 * 1024;
@@ -43,6 +43,10 @@ export function resultLimit(value: number | undefined): string {
 
 export function requireMailbox(delegation: Delegation, service = "Gmail"): string {
   if (!delegation.gmail.enabled || !delegation.gmail.mailbox) {
+    // Fi withholds the mailbox from a Desk brief's token.
+    if (delegation.turn?.authorship === "desk_handoff") {
+      throw new Error(DESK_BRIEF_REFUSAL);
+    }
     throw new Error(`${service} is not available for ${delegation.user.email}`);
   }
   return delegation.gmail.mailbox;

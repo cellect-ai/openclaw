@@ -8,6 +8,14 @@ import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  delegatedFetch,
+  delegationTurnFor,
+  exchange,
+  lookupDelegation,
+  type Delegation,
+} from "./fi-delegation.js";
+import { requireMailbox } from "./gam.js";
+import {
   assertNotDeskBrief,
   DESK_BRIEF_TOOL_REFUSAL,
   registerMatrixEntitlements,
@@ -508,5 +516,231 @@ describe("Desk brief authorship", () => {
     expect(
       (await h.prompt({ runId: "child-1", agentId, sessionKey: childKey }))?.appendSystemContext,
     ).toContain("brief written by Desk's agent");
+  });
+});
+
+describe("the turn a delegation is minted for", () => {
+  const fetchMock = vi.fn();
+  const MINT = "https://fi.example/api/openclaw-user-delegation";
+  const mintResponse = (extra: Record<string, unknown> = {}) =>
+    new Response(
+      JSON.stringify({
+        ok: true,
+        user: { email: "alex@example.com", orgSlug: "a", orgId: "tenant-a", role: "member" },
+        gmail: { enabled: true, mailbox: "alex@example.com" },
+        fi: { token: "h.p.s", expiresAt: Math.floor(Date.now() / 1000) + 600 },
+        ...extra,
+      }),
+    );
+  beforeEach(() => {
+    vi.stubEnv("FIXTURE_BROKER", "fixture-token");
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ mainprod: "prod" }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async (url: string) => (url === MINT ? mintResponse() : allow()));
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+  const mintBodies = () =>
+    fetchMock.mock.calls
+      .filter(([url]) => url === MINT)
+      .map(([, init]) => JSON.parse((init as { body: string }).body) as Record<string, unknown>);
+  const toolCtx = (runId = "run-1", key = sessionKey) =>
+    ({
+      runId,
+      agentId,
+      sessionKey: key,
+      messageChannel: "matrix",
+      agentAccountId: "mainprod",
+      requesterSenderId: senderId,
+    }) as unknown as OpenClawPluginToolContext;
+  const config = {
+    baseUrl: "https://fi.example",
+    brokerTokenEnv: "FIXTURE_BROKER",
+    tenantOrgId: "tenant-a",
+  };
+
+  it("names an admitted typed turn's own event, and nothing for a voice turn or no turn", async () => {
+    const h = fixture();
+    expect(delegationTurnFor(h.api, { runId: "run-1", agentId, sessionKey })).toBeUndefined();
+    await h.reply(replyContext());
+    expect(delegationTurnFor(h.api, { runId: "run-1", agentId, sessionKey })).toMatchObject({
+      roomId,
+      eventId: "$event",
+      senderId,
+    });
+    expect(
+      delegationTurnFor(h.api, { runId: "run-1", agentId: "cellect-fi-admin", sessionKey }),
+    ).toBeUndefined();
+    await h.settle("run-1");
+    await h.reply({
+      ...replyContext("voice-1"),
+      channelContext: {
+        sender: { id: senderId },
+        chat: { id: roomId, talkThreadRootEventId: "$root" },
+      },
+    });
+    expect(delegationTurnFor(h.api, { runId: "voice-1", agentId, sessionKey })).toBeUndefined();
+  });
+
+  it("names the source event for a child and for a continuation", async () => {
+    const h = fixture();
+    await h.reply(replyContext());
+    const lineage: Lineage = {
+      parentRunId: "run-1",
+      parentAgentId: agentId,
+      parentSessionKey: sessionKey,
+      parentSessionId: "session",
+      childRunId: "child-1",
+      childAgentId: agentId,
+      childSessionKey: childKey,
+      childSessionId: "child-session",
+      completionTarget: "parent",
+      expiresAt: Date.now() + 60_000,
+      assertCurrent: () => {},
+    };
+    await h.reply({
+      runId: "child-1",
+      agentId,
+      accountId: "mainprod",
+      sessionKey: childKey,
+      sessionId: "child-session",
+      spawnedFrom: lineage,
+    });
+    expect(
+      delegationTurnFor(h.api, { runId: "child-1", agentId, sessionKey: childKey }),
+    ).toMatchObject({ roomId, eventId: "$event" });
+    await h.reply({
+      runId: "run-2",
+      agentId,
+      accountId: "mainprod",
+      channel: "matrix",
+      sessionKey,
+      sessionId: "session",
+      requesterContinuation: {
+        runId: "run-2",
+        agentId,
+        sessionKey,
+        sessionId: "session",
+        sourceTurnId: "turn-1",
+        chatId: roomId,
+        eventId: "$event",
+        channel: "matrix",
+        senderId,
+        accountId: "mainprod",
+        assertCurrent: () => {},
+      },
+    });
+    expect(delegationTurnFor(h.api, { runId: "run-2", agentId, sessionKey })).toMatchObject({
+      roomId,
+      eventId: "$event",
+    });
+  });
+
+  it("sends the turn on a Fi-user tool's mint, and Fi's brief answer marks the turn", async () => {
+    const h = fixture();
+    await h.reply(replyContext());
+    fetchMock.mockImplementation(async (url: string) =>
+      url === MINT ? mintResponse({ turn: { authorship: "desk_handoff" } }) : allow(),
+    );
+    await exchange(h.api, toolCtx());
+    expect(mintBodies()).toEqual([
+      expect.objectContaining({
+        requesterMatrixUserId: senderId,
+        turn: { roomId, eventId: "$event" },
+      }),
+    ]);
+    // The gateway thought this was the person's turn; Fi is the authority.
+    expect(
+      h.owner.briefToolBlock(
+        { toolName: "fi_user_gmail", params: { action: "send" } },
+        toolContext(),
+      ),
+    ).toMatchObject({ block: true });
+    expect(h.owner.briefRun({ runId: "run-1" })).toBe(true);
+  });
+
+  it("a person answer from Fi changes nothing", async () => {
+    const h = fixture();
+    await h.reply(replyContext());
+    fetchMock.mockImplementation(async (url: string) =>
+      url === MINT ? mintResponse({ turn: { authorship: "person" } }) : allow(),
+    );
+    await exchange(h.api, toolCtx());
+    expect(h.owner.briefRun({ runId: "run-1" })).toBe(false);
+  });
+
+  it("sends a turn only for that event's own Matrix sender, in Fi's accepted shapes, never for a mail wake", async () => {
+    const turn = { roomId, eventId: "$event", senderId, markBrief: vi.fn() };
+    await lookupDelegation(config, { requesterMatrixUserId: "@other:matrix.example" }, { turn });
+    await lookupDelegation(config, { requesterSenderId: "U0ADMIN001" }, { turn });
+    await lookupDelegation(
+      config,
+      { requesterMatrixUserId: senderId },
+      { turn: { ...turn, roomId: "!v12roomwithoutserver" } },
+    );
+    await lookupDelegation(config, { requesterMatrixUserId: senderId }, {});
+    for (const body of mintBodies()) {
+      expect(body).not.toHaveProperty("turn");
+    }
+    fetchMock.mockClear();
+    await lookupDelegation(config, { requesterMatrixUserId: senderId }, { turn });
+    expect(mintBodies()[0]?.turn).toEqual({ roomId, eventId: "$event" });
+    expect(turn.markBrief).not.toHaveBeenCalled();
+  });
+
+  it("an exchange outside Matrix sends no turn", async () => {
+    const h = fixture();
+    await h.reply(replyContext());
+    await exchange(h.api, {
+      ...toolCtx(),
+      messageChannel: "slack",
+      requesterSenderId: "U0ALEX00001",
+    } as unknown as OpenClawPluginToolContext);
+    expect(mintBodies()[0]).not.toHaveProperty("turn");
+  });
+
+  it("says a brief has no mailbox when Fi withholds Gmail from its token", () => {
+    const base = {
+      user: { email: "alex@example.com", orgSlug: "a", role: "member" },
+      gmail: { enabled: false, mailbox: null },
+      fi: { token: "h.p.s", expiresAt: 0 },
+    } as Delegation;
+    expect(() => requireMailbox({ ...base, turn: { authorship: "desk_handoff" } })).toThrow(
+      DESK_BRIEF_TOOL_REFUSAL,
+    );
+    expect(() => requireMailbox(base)).toThrow("Gmail is not available for alex@example.com");
+  });
+
+  it("surfaces Fi's desk_brief_not_approval refusal as the brief refusal, and other 403s as they are", async () => {
+    const delegation = {
+      user: { email: "a@example.com", orgSlug: "a", role: "member" },
+      gmail: { enabled: false, mailbox: null },
+      fi: { token: "h.p.s", expiresAt: 0 },
+    } as Delegation;
+    fetchMock.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          ok: false,
+          code: "desk_brief_not_approval",
+          error: "A Desk brief is not the person's approval; ask them in the conversation",
+        }),
+        { status: 403, headers: { "content-type": "application/json" } },
+      ),
+    );
+    await expect(
+      delegatedFetch(config, delegation, "/api/a/signature/send", { method: "POST" }),
+    ).rejects.toThrow(DESK_BRIEF_TOOL_REFUSAL);
+    fetchMock.mockResolvedValueOnce(
+      new Response(JSON.stringify({ error: "forbidden" }), { status: 403 }),
+    );
+    const plain = await delegatedFetch(config, delegation, "/api/a/x");
+    expect(plain.status).toBe(403);
+    expect(await plain.json()).toEqual({ error: "forbidden" });
   });
 });
