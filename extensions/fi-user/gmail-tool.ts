@@ -8,6 +8,7 @@ import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { exchange, type Delegation, type ResolvedPluginConfig } from "./fi-delegation.js";
 import { messageHeaderAddresses, requireMailbox, resultLimit, runGam } from "./gam.js";
+import { assertNotDeskBrief } from "./matrix-entitlements.js";
 
 /**
  * The shared tenant inbox, narrowed to the requester's own correspondence:
@@ -189,6 +190,9 @@ export function createGmailTool(
         throw new Error(
           "confirmSend=true is required after the requester explicitly approves sending",
         );
+      }
+      if (input.action === "send") {
+        assertNotDeskBrief(api, context);
       }
       const args = mailArgs(
         input as Required<Pick<typeof input, "to" | "subject" | "body">> & typeof input,

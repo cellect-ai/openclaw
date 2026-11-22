@@ -8,6 +8,7 @@ import type {
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type } from "typebox";
 import { delegatedJson, exchange, pathSegment } from "./fi-delegation.js";
+import { assertNotDeskBrief } from "./matrix-entitlements.js";
 
 function orgRoot(orgSlug: string) {
   return `/api/${encodeURIComponent(orgSlug)}`;
@@ -222,6 +223,13 @@ export function createEsignTool(
     parameters: EsignSchema,
     async execute(_toolCallId, raw) {
       const input = raw as EsignInput;
+      if (
+        input.action === "send" ||
+        input.action === "resend" ||
+        (input.action === "send_envelope" && input.confirmRoute !== undefined)
+      ) {
+        assertNotDeskBrief(api, context);
+      }
       const { delegation, config } = await exchange(api, context);
       const root = orgRoot(delegation.user.orgSlug);
       if (

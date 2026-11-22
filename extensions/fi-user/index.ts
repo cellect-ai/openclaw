@@ -526,10 +526,13 @@ export default definePluginEntry({
               )
             : { params: withOnBehalfOfEnv(event.params, assertion) };
         };
+        // After Fi's recheck, which can only make the turn a Desk brief, never lift one.
+        const proceed = () =>
+          matrixEntitlements.briefToolBlock(event, ctx) ?? authorizeAndAttribute();
         const authorized = matrixEntitlements.beforeToolCall(ctx);
         return authorized instanceof Promise
-          ? authorized.then((denied) => denied ?? authorizeAndAttribute())
-          : (authorized ?? authorizeAndAttribute());
+          ? authorized.then((denied) => denied ?? proceed())
+          : (authorized ?? proceed());
       },
       { priority: 10_000 },
     );
