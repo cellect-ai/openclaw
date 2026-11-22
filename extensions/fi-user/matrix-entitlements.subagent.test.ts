@@ -7,6 +7,7 @@ import type {
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import fiUserPlugin from "./index.js";
 import { registerMatrixEntitlements } from "./matrix-entitlements.js";
 import {
   MATRIX_SUBAGENT_REFUSAL,
@@ -75,9 +76,9 @@ function fixture() {
       registerRuntimeLifecycle: (lifecycle) => lifecycles.push(lifecycle),
     }),
   );
-  const run = async (name: string, context: unknown) => {
+  const run = async (name: string, context: unknown, event: unknown = {}) => {
     for (const hook of hooks.get(name) ?? []) {
-      const result = await hook({} as never, context as never);
+      const result = await hook(event as never, context as never);
       if (result) {
         return result;
       }
@@ -87,6 +88,7 @@ function fixture() {
   return {
     owner,
     reply: (context: unknown) => run("before_agent_reply", context),
+    afterTool: (event: unknown, context: unknown) => run("after_tool_call", context, event),
     prompt: (context: unknown) => run("before_prompt_build", context),
     tool: (context: PluginHookToolContext) => owner.beforeToolCall(context),
     capture: (context: OpenClawPluginToolContext) =>
@@ -138,6 +140,7 @@ function lineage(overrides: Partial<Lineage> = {}): Lineage & { revoked: { value
     childAgentId: agentId,
     childSessionKey: childKey,
     childSessionId: "child-session",
+    completionTarget: "parent",
     expiresAt: Date.now() + 60_000,
     assertCurrent: () => {
       if (revoked.value) {
@@ -461,6 +464,87 @@ describe("Matrix sub-agent children", () => {
     ).toEqual(refused);
   });
 
+  it("gates a child of a Matrix turn whatever channel its own run carries", async () => {
+    const h = fixture();
+    await admitParent(h);
+    expect(await h.reply(childContext(lineage(), { channel: undefined }))).toBeUndefined();
+    expect(await h.tool(childTool(lineage(), { requester: undefined }))).toBeUndefined();
+
+    // No lineage, but the host recorded a Matrix parent: refused on any channel, tools too.
+    const unbound = fixture();
+    await admitParent(unbound);
+    const provenanceOnly = { spawnedFromChannel: "matrix" };
+    expect(
+      await unbound.reply(childContext(undefined, { channel: undefined, ...provenanceOnly })),
+    ).toEqual(refused);
+    expect(
+      await unbound.tool(childTool(undefined, { requester: undefined, ...provenanceOnly })),
+    ).toEqual({ block: true, blockReason: SUBAGENT_RUN_REFUSAL });
+    // Two admissions and one tool check for the first child, the second parent's admission.
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    // A child of a Slack turn is not this gate's to decide.
+    const slack = fixture();
+    expect(
+      await slack.reply(
+        childContext(lineage({ parentRunId: "slack-run" }), {
+          channel: "slack",
+          spawnedFromChannel: "slack",
+        }),
+      ),
+    ).toBeUndefined();
+  });
+
+  it("refuses a child whose result would not return to its parent", async () => {
+    const h = fixture();
+    await admitParent(h);
+    expect(await h.reply(childContext(lineage({ completionTarget: undefined })))).toEqual(refused);
+  });
+
+  it("drops a child's late result for a parent that settled without yielding, posting nothing", async () => {
+    const h = fixture();
+    await admitParent(h);
+    expect(await h.tool(parentTool({ toolName: "sessions_spawn" }))).toBeUndefined();
+    await h.settle("run-1");
+    expect(await h.reply(childContext(lineage()))).toBeUndefined();
+    await h.settle("child-1");
+    const calls = fetchMock.mock.calls.length;
+    // The host's private completion turn into the parent session: no message, no continuation.
+    const announce = {
+      runId: "announce-run",
+      agentId,
+      accountId: "mainprod",
+      channel: "matrix",
+      sessionKey: parentKey,
+      sessionId: "parent-session",
+      inputProvenance: {
+        kind: "inter_session",
+        sourceTool: "subagent_announce",
+        sourceSessionKey: childKey,
+      },
+    };
+    // Handled without a reply: the room sees nothing, not an access error.
+    expect(await h.reply(announce)).toEqual({ handled: true });
+    expect(fetchMock).toHaveBeenCalledTimes(calls);
+  });
+
+  it("stops waiting for a spawn the host did not accept", async () => {
+    const h = fixture();
+    await admitParent(h);
+    expect(await h.tool(parentTool({ toolName: "sessions_spawn" }))).toBeUndefined();
+    await h.afterTool(
+      {
+        toolName: "sessions_spawn",
+        params: {},
+        runId: "run-1",
+        result: { details: { status: "forbidden" } },
+      },
+      parentTool({ toolName: "sessions_spawn" }),
+    );
+    await h.settle("run-1");
+    expect(await h.reply(childContext(lineage()))).toEqual(refused);
+  });
+
   it("keeps children out of Slack identity, voice and operator admission", async () => {
     const h = fixture();
     await admitParent(h);
@@ -518,15 +602,14 @@ describe("Matrix sub-agent children", () => {
 
 describe("Matrix sub-agent spawn guard", () => {
   const matrix = { agentId, sessionKey: parentKey, requester: { channel: "matrix" } };
-  it("lets an admitted text turn spawn a one-off child of its own agent", () => {
-    expect(
-      matrixSubagentSpawnBlock("sessions_spawn", matrix, { task: "t" }, "text"),
-    ).toBeUndefined();
+  const oneOff = { task: "t", completionTarget: "parent" };
+  it("lets an admitted text turn spawn a one-off child of its own agent that reports back", () => {
+    expect(matrixSubagentSpawnBlock("sessions_spawn", matrix, oneOff, "text")).toBeUndefined();
     expect(
       matrixSubagentSpawnBlock(
         "sessions_spawn",
         matrix,
-        { task: "t", agentId, mode: "run" },
+        { ...oneOff, agentId, mode: "run" },
         "text",
       ),
     ).toBeUndefined();
@@ -540,22 +623,122 @@ describe("Matrix sub-agent spawn guard", () => {
     ["a thread-bound child", { thread: true }, "text"],
     ["an ACP child", { runtime: "acp" }, "text"],
     ["a visible child", { visible: true }, "text"],
+    ["a collector", { collect: true }, "text"],
+    // tools.swarm.defaultAgentId retargets an agentId-less collector to another agent.
+    [
+      "an agentId-less collector open to swarm retargeting",
+      { collect: true, agentId: undefined },
+      "text",
+    ],
+    ["a collector option without collect", { groupId: "g" }, "text"],
+    ["an output schema", { outputSchema: { type: "object" } }, "text"],
+    ["a fast-mode option", { fastMode: "auto" }, "text"],
+    ["a child whose result goes to the room", { completionTarget: undefined }, "text"],
+    ["a fire-and-forget child", { expectsCompletionMessage: false }, "text"],
   ] as const)("refuses %s", (_name, params, parent) => {
     expect(
-      matrixSubagentSpawnBlock("sessions_spawn", matrix, { task: "t", ...params }, parent),
+      matrixSubagentSpawnBlock("sessions_spawn", matrix, { ...oneOff, ...params }, parent),
     ).toEqual({
       block: true,
       blockReason: MATRIX_SUBAGENT_REFUSAL,
     });
+  });
+  it("refuses a code-mode collector launch, which carries host-only symbol keys", () => {
+    const params: Record<PropertyKey, unknown> = { ...oneOff };
+    Object.defineProperty(params, Symbol.for("openclaw.swarmCodeModeIdempotencyKey"), {
+      value: "k",
+    });
+    expect(
+      matrixSubagentSpawnBlock("sessions_spawn", matrix, params as Record<string, unknown>, "text"),
+    ).toMatchObject({ block: true });
   });
   it("refuses a spawn from a sub-agent session whatever it is told", () => {
     expect(
       matrixSubagentSpawnBlock(
         "sessions_spawn",
         { ...matrix, sessionKey: childKey },
-        { task: "t" },
+        oneOff,
         "text",
       ),
     ).toMatchObject({ block: true });
+  });
+});
+
+describe("the plugin's spawn guard", () => {
+  const fetchMock = vi.fn();
+  beforeEach(() => {
+    vi.stubEnv("FIXTURE_BROKER", "fixture-token");
+    vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ mainprod: "prod" }));
+    vi.stubGlobal("fetch", fetchMock);
+    vi.spyOn(console, "info").mockImplementation(() => {});
+    vi.spyOn(console, "warn").mockImplementation(() => {});
+    fetchMock.mockReset();
+    fetchMock.mockImplementation(async () => allow());
+  });
+  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+  it("lets an admitted text turn spawn only a one-off child that reports back", async () => {
+    const hooks = new Map<string, Array<(event: never, context: never) => unknown>>();
+    fiUserPlugin.register?.(
+      createTestPluginApi({
+        id: "fi-user",
+        name: "Fi User Delegation",
+        config: {
+          plugins: {
+            entries: {
+              "fi-user": {
+                config: {
+                  baseUrl: "https://fi.example",
+                  brokerTokenEnv: "FIXTURE_BROKER",
+                  tenantOrgId: "tenant-a",
+                },
+              },
+            },
+          },
+        },
+        runtime: {
+          channel: { runtimeContexts: { register: vi.fn() } },
+        } as unknown as OpenClawPluginApi["runtime"],
+        on: (name, handler) => hooks.set(name, [...(hooks.get(name) ?? []), handler as never]),
+        registerAgentEventSubscription: () => {},
+        registerRuntimeLifecycle: () => {},
+      }),
+    );
+    const hook = async (name: string, event: unknown, context: unknown) => {
+      for (const handler of hooks.get(name) ?? []) {
+        const result = await handler(event as never, context as never);
+        if (result) {
+          return result;
+        }
+      }
+      return undefined;
+    };
+    await hook("before_agent_reply", {}, parentContext());
+    const spawn = (extra: object) =>
+      hook(
+        "before_tool_call",
+        {
+          toolName: "sessions_spawn",
+          params: { task: "t", completionTarget: "parent", ...extra },
+        },
+        parentTool({ toolName: "sessions_spawn" }),
+      );
+    expect(await spawn({})).not.toMatchObject({ block: true });
+    for (const extra of [
+      { agentId: "cellect-fi-admin" },
+      { thread: true },
+      { collect: true },
+      { completionTarget: undefined },
+    ]) {
+      expect(await spawn(extra)).toMatchObject({
+        block: true,
+        blockReason: MATRIX_SUBAGENT_REFUSAL,
+      });
+    }
+    // Fi saw the admission and the allowed spawn's recheck, nothing for the refused ones.
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 });

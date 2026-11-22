@@ -230,31 +230,6 @@ describe("registered Matrix agent entitlement hooks", () => {
       blockReason: expect.stringContaining("sub-agent"),
     });
   });
-  it("lets an admitted text turn spawn a one-off child of its own agent, and nothing wider", async () => {
-    const hook = plugin();
-    fetchMock.mockImplementation(async () => allow("cellect-fi-user"));
-    const matrix = context("cellect-fi-user", {
-      chatId: "!room:matrix.example:thread:$root",
-      sessionKey: "agent:cellect-fi-user:matrix:channel:!room:matrix.example:thread:$root",
-    });
-    expect(await hook("before_agent_reply", {}, matrix)).toBeUndefined();
-    const spawn = (params: Record<string, unknown>) =>
-      hook("before_tool_call", { toolName: "sessions_spawn", params }, tools(matrix));
-    expect(await spawn({ task: "book it" })).not.toMatchObject({ block: true });
-    // The grant is rechecked with Fi, as for any other tool of the turn.
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    for (const params of [
-      { task: "t", agentId: "cellect-fi-admin" },
-      { task: "t", mode: "session" },
-      { task: "t", thread: true },
-    ]) {
-      expect(await spawn(params)).toMatchObject({
-        block: true,
-        blockReason: expect.stringContaining("fi_user_desk_handoff"),
-      });
-    }
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-  });
   it("says a sub-agent run was refused, not that access verification is down", async () => {
     const info = vi.spyOn(console, "info").mockImplementation(() => {});
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});

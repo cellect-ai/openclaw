@@ -637,6 +637,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       lineage.childRunId !== runId ||
       lineage.childSessionKey !== context.sessionKey ||
       lineage.childAgentId !== context.agentId ||
+      lineage.completionTarget !== "parent" ||
       !parent?.admitted ||
       parent.parentRunId ||
       parent.mode !== "text" ||
@@ -708,9 +709,42 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     child.admitted = true;
     return undefined;
   };
+  /**
+   * A child descends from a Matrix turn when the host recorded its parent's
+   * channel as Matrix, or its lineage names a turn this gate admitted. Such a
+   * child is gated whatever channel its own run carries: a collector, for one,
+   * runs with none.
+   */
+  const matrixChild = (context: {
+    sessionKey?: string;
+    spawnedFrom?: { parentRunId: string };
+    spawnedFromChannel?: string;
+  }): boolean =>
+    isSubagentSession(context.sessionKey) &&
+    (context.spawnedFromChannel === "matrix" ||
+      (context.spawnedFrom !== undefined && turns.has(context.spawnedFrom.parentRunId)));
   api.on(
     "before_agent_reply",
     async (_event, context) => {
+      if (matrixChild(context)) {
+        if (context.spawnedFrom && !context.requesterContinuation) {
+          return admitChild(context, context.spawnedFrom);
+        }
+        if (context.runId) {
+          retireTurn(context.runId);
+        }
+        logEntitlements(
+          {
+            phase: "admission",
+            agentId: context.agentId ?? null,
+            accountId: context.accountId ?? null,
+            outcome: "unavailable",
+            reason: "subagent_run",
+          },
+          "subagent_unbound",
+        );
+        return { handled: true, reply: { text: SUBAGENT_RUN_REFUSAL } };
+      }
       if (context.channel !== "matrix") {
         return undefined;
       }
@@ -740,6 +774,26 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         });
         return { handled: true };
       }
+      if (
+        !context.requesterContinuation &&
+        context.inputProvenance?.kind === "inter_session" &&
+        context.inputProvenance.sourceTool === "subagent_announce" &&
+        isSubagentSession(context.inputProvenance.sourceSessionKey)
+      ) {
+        // A child's private result for a parent that settled without yielding:
+        // no person's message stands behind it and it must not reach the room.
+        if (context.runId) {
+          retireTurn(context.runId);
+        }
+        logEntitlements({
+          phase: "admission",
+          agentId: context.agentId ?? null,
+          accountId: context.accountId ?? null,
+          outcome: "silent",
+          reason: "orphan_subagent_completion",
+        });
+        return { handled: true };
+      }
       const continuation = context.requesterContinuation;
       if (continuation) {
         try {
@@ -759,9 +813,6 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         } catch {
           return { handled: true, reply: { text: UNAVAILABLE } };
         }
-      }
-      if (!continuation && context.spawnedFrom && isSubagentSession(context.sessionKey)) {
-        return admitChild(context, context.spawnedFrom);
       }
       const roomId = continuation?.chatId ?? context.channelContext?.chat?.id;
       const eventId = continuation?.eventId ?? context.channelContext?.chat?.eventId;
@@ -934,6 +985,18 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         };
   });
   const beforeToolCall = (context: PluginHookToolContext) => {
+    if (matrixChild(context) && !(context.runId && turns.get(context.runId)?.parentRunId)) {
+      logEntitlements(
+        {
+          phase: "tool",
+          agentId: context.agentId ?? null,
+          outcome: "unavailable",
+          reason: "no_admission",
+        },
+        "subagent_unbound",
+      );
+      return { block: true, blockReason: SUBAGENT_RUN_REFUSAL };
+    }
     const matrixTurn =
       context.requester?.channel === "matrix" ||
       context.requesterContinuation?.channel === "matrix" ||
@@ -1060,6 +1123,29 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       return undefined;
     });
   };
+  // A spawn Fi allowed but the host did not accept leaves no child to wait for.
+  api.on("after_tool_call", (event, context) => {
+    const runId = event.runId ?? context.runId;
+    const turn = runId ? turns.get(runId) : undefined;
+    if (event.toolName !== "sessions_spawn" || !runId || !turn?.pendingSpawns) {
+      return;
+    }
+    const result = event.result;
+    const details =
+      result && typeof result === "object" && "details" in result ? result.details : undefined;
+    const accepted =
+      !event.error &&
+      details !== null &&
+      typeof details === "object" &&
+      "status" in details &&
+      details.status === "accepted";
+    if (!accepted) {
+      turn.pendingSpawns -= 1;
+      if (turn.settled && !turn.pendingSpawns && !turn.children.size) {
+        retireTurn(runId);
+      }
+    }
+  });
   // Share identity already proved by this owner, never a cached grant decision.
   // The normal tool hook still checks Fi's current grants before delegation.
   const admittedVoiceTurn = (
