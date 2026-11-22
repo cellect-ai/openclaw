@@ -203,7 +203,7 @@ function matrixRoomTarget(raw: unknown): string | undefined {
 }
 
 /** Core message actions that read and send nothing anywhere. */
-const MESSAGE_READ_ACTIONS = new Set([
+const MESSAGE_READ_ACTIONS = [
   "read",
   "reactions",
   "list-pins",
@@ -219,61 +219,143 @@ const MESSAGE_READ_ACTIONS = new Set([
   "voice-status",
   "event-list",
   "download-file",
-]);
+];
+/** Core message actions that only talk in the current conversation, when they name no other place. */
+const MESSAGE_CURRENT_ROOM_ACTIONS = ["send", "reply", "thread-reply", "react", "edit"];
 
-/** Whether a call under a Desk brief would send, sign or deliver beyond this conversation. */
-function briefGated(toolName: string, params: Record<string, unknown>, turn: Turn): boolean {
-  const action = params.action;
-  switch (toolName) {
-    case "fi_user_gmail":
-      return action === "send";
-    case "fi_user_esign":
-      return (
-        action === "send" ||
-        action === "resend" ||
-        (action === "send_envelope" && params.confirmRoute !== undefined)
-      );
-    case "fi_user_deliver_file":
-      // Without an action the tool delivers a Fi or Drive document.
-      return !["prepare", "register", "inspect"].includes(action as string);
-    case "fi_admin_operation":
-      return action === "execute" && params.dryRun !== true;
-    // The requester mail plugin's tools (infra cellect-requester-google): m365_mail's
-    // send is send_draft. Any action naming a send is held, so one added later is too.
-    case "m365_mail":
-    case "requester_gmail":
-    case "cellect_mail":
-      return typeof action === "string" && action.toLowerCase().includes("send");
-    case "sessions_send":
-    case "conversations_send":
-    case "conversations_turn":
-      return true;
-    case "message": {
-      if (typeof action === "string" && MESSAGE_READ_ACTIONS.has(action)) {
-        return false;
-      }
-      if (action === "broadcast") {
-        return true;
-      }
-      const targets = [
-        params.target,
-        params.to,
-        params.channelId,
-        ...(Array.isArray(params.targets)
-          ? params.targets
-          : params.targets === undefined
-            ? []
-            : [params.targets]),
-      ].filter((target) => target !== undefined && target !== null && target !== "");
-      return (
-        (params.channel !== undefined && params.channel !== "matrix") ||
-        (params.accountId !== undefined && params.accountId !== turn.accountId) ||
-        targets.some((target) => matrixRoomTarget(target) !== turn.roomId)
-      );
-    }
-    default:
-      return false;
+/** Whether a core message call names only the current room, account and channel. */
+function currentRoomOnly(params: Record<string, unknown>, turn: Turn): boolean {
+  const targets = [
+    params.target,
+    params.to,
+    params.channelId,
+    ...(Array.isArray(params.targets)
+      ? params.targets
+      : params.targets === undefined
+        ? []
+        : [params.targets]),
+  ].filter((target) => target !== undefined && target !== null && target !== "");
+  return (
+    (params.channel === undefined || params.channel === "matrix") &&
+    (params.accountId === undefined || params.accountId === turn.accountId) &&
+    targets.every((target) => matrixRoomTarget(target) === turn.roomId)
+  );
+}
+
+type BriefRule =
+  | true
+  | readonly string[]
+  | ((params: Record<string, unknown>, turn: Turn) => boolean);
+const actionIn =
+  (actions: readonly string[]) =>
+  (params: Record<string, unknown>): boolean =>
+    typeof params.action === "string" && actions.includes(params.action);
+
+/**
+ * What a turn answering a Desk brief may do: read, prepare, draft, preview,
+ * dry-run, work in its own workspace, and talk in this conversation. A tool or
+ * action not named here is refused, so a tool added later is held until it is
+ * listed. `true` allows every call of the tool; a list allows those actions.
+ */
+const BRIEF_ALLOWED: Readonly<Record<string, BriefRule>> = {
+  // Core reads.
+  read: true,
+  ls: true,
+  find: true,
+  grep: true,
+  web_search: true,
+  web_fetch: true,
+  x_search: true,
+  tavily_search: true,
+  tavily_extract: true,
+  memory_search: true,
+  memory_get: true,
+  sessions_history: true,
+  sessions_search: true,
+  sessions_list: true,
+  session_status: true,
+  agents_list: true,
+  agents_wait: true,
+  view_image: true,
+  pdf: true,
+  skills_search: true,
+  skills_read: true,
+  // Its own workspace and shell. A command gets no delegated Fi credential under
+  // a brief (index.ts), so it acts with the sandbox's own access only.
+  write: true,
+  edit: true,
+  apply_patch: true,
+  exec: true,
+  sandbox_exec: true,
+  process: true,
+  // A child of a brief turn is a brief too; yielding waits for it.
+  sessions_spawn: true,
+  sessions_yield: true,
+  // Asking the person is what a brief turn should do.
+  ask_user: true,
+  message: (params, turn) =>
+    actionIn(MESSAGE_READ_ACTIONS)(params) ||
+    (actionIn(MESSAGE_CURRENT_ROOM_ACTIONS)(params) && currentRoomOnly(params, turn)),
+  automations: ["list", "status"],
+  cron: ["list", "status"],
+  // Fi, as the requester.
+  fi_user_api: true,
+  read_conversation: true,
+  fi_user_review_sources: true,
+  fi_user_gdrive: ["search", "read"],
+  fi_user_gmail: ["search", "read", "draft", "search_shared_inbox", "read_shared_inbox"],
+  // The first send_envelope call only previews the route.
+  fi_user_esign: (params) =>
+    actionIn(["list", "status", "prepare"])(params) ||
+    (params.action === "send_envelope" && params.confirmRoute === undefined),
+  // Without an action the tool delivers a Fi or Drive document.
+  fi_user_deliver_file: ["prepare", "register", "inspect"],
+  fi_user_dataroom: ["list", "get", "available_docs"],
+  fi_user_mail_items: ["list"],
+  fi_user_work_items: ["list", "show"],
+  fi_user_agent_profile: ["show"],
+  fi_workbook: ["get"],
+  fi_user_budget_import: (params) => params.mode === undefined || params.mode === "dry-run",
+  // A brief must not start another Desk conversation: that could loop.
+  fi_user_desk_handoff: ["list"],
+  fi_admin_operation: (params) =>
+    params.action === "discover" || (params.action === "execute" && params.dryRun === true),
+  // The requester mail plugin (infra cellect-requester-google): reads and drafts only.
+  m365_mail: [
+    "account",
+    "search",
+    "read",
+    "folders",
+    "attachments",
+    "read_attachment",
+    "download_attachment",
+    "draft",
+    "reply_draft",
+    "update_draft",
+    "attach",
+    "calendar_list",
+    "calendar_events",
+    "calendar_read",
+  ],
+  requester_gmail: ["account", "search", "read", "attachments", "read_attachment", "draft"],
+  requester_gdrive: ["search", "read"],
+  cellect_mail: ["search", "read"],
+};
+
+/** Whether a call may run under a Desk brief. Unknown tools and actions are refused. */
+function briefAllowed(toolName: string, params: Record<string, unknown>, turn: Turn): boolean {
+  const rule = BRIEF_ALLOWED[toolName];
+  if (rule === undefined) {
+    return false;
   }
+  if (rule === true) {
+    return true;
+  }
+  if (typeof rule === "function") {
+    return rule(params, turn);
+  }
+  // A mail tool never sends under a brief, whatever its list says.
+  return actionIn(rule)(params) && !(params.action as string).toLowerCase().includes("send");
 }
 
 function isPrivateSoleHuman(result: object): boolean {
@@ -1253,7 +1335,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     if (
       !turn ||
       !isBrief(authorshipOf(turn)) ||
-      !briefGated(event.toolName, event.params ?? {}, turn)
+      briefAllowed(event.toolName, event.params ?? {}, turn)
     ) {
       return undefined;
     }
@@ -1269,6 +1351,31 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       ...turnIds(turn),
     });
     return { block: true as const, blockReason: DESK_BRIEF_TOOL_REFUSAL };
+  };
+  /** Whether this run answers a Desk brief: it then gets no delegated Fi credential either. */
+  const briefRun = (context: Pick<PluginHookToolContext, "runId">): boolean => {
+    const turn = context.runId ? turns.get(context.runId) : undefined;
+    return turn !== undefined && isBrief(authorshipOf(turn));
+  };
+  /**
+   * Whether a Matrix message arriving while a gated turn is live in its session
+   * must be queued as its own turn instead of steered into that run. Fi decides
+   * authorship per event, so a message injected into another event's run would
+   * take that run's authorship: a brief would act under a person's turn, and the
+   * person's own follow-up would be held under a brief's. Queued, each message is
+   * admitted and judged by Fi on its own.
+   */
+  const steerQueue = (message: { channel?: string; sessionKey?: string }): boolean => {
+    const sessionKey = message.sessionKey?.toLowerCase();
+    if (message.channel !== "matrix" || !sessionKey) {
+      return false;
+    }
+    for (const turn of turns.values()) {
+      if (!turn.parentRunId && !turn.settled && turn.sessionKey.toLowerCase() === sessionKey) {
+        return true;
+      }
+    }
+    return false;
   };
   const beforeToolCall = (context: PluginHookToolContext) => {
     if (matrixChild(context) && !(context.runId && turns.get(context.runId)?.parentRunId)) {
@@ -1473,6 +1580,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   return {
     beforeToolCall,
     briefToolBlock,
+    briefRun,
+    steerQueue,
     spawnParent,
     admittedVoiceTurn,
     admittedOperatorCommand: (context: PluginHookToolContext) => {

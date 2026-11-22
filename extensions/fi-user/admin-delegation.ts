@@ -1143,31 +1143,34 @@ export function registerAdminDelegation(
    * runs after that run settles, under its own `before_dispatch` proof, with the
    * host's message-id dedupe, so nothing is replayed and no "send it again"
    * notice is needed for it. Answers from memory; an internal fault queues.
+   * `queue` is another owner's decision that the message must be queued (the
+   * Matrix brief gate): it is then claimed whoever sent it, with the same
+   * bookkeeping, so the active run keeps its proof and a refused queue is told.
    */
-  const steerGate = (message: Inbound): boolean => {
+  const steerGate = (message: Inbound, queue = false): boolean => {
     try {
       if (configFromRuntime(api).crossChannelCustody !== true) {
-        return false;
+        return queue;
       }
       const session = adminSession(message);
       if (!session || (message.channel !== "matrix" && message.channel !== "slack")) {
-        return false;
+        return queue;
       }
       if (talkConsultSender(session.adminAgentId, session.sessionKey, message)) {
-        return false;
+        return queue;
       }
       // Without an event id the host cannot dedupe the queued copy: leave today's path.
       const eventId = message.messageId?.trim();
       if (!eventId) {
-        return false;
+        return queue;
       }
       const live = [...runs.values()].filter((run) => run.sessionKey === session.sessionKey);
       if (live.length === 0) {
-        return false;
+        return queue;
       }
       const requester = inboundRequester(session.sessionKey, message);
       const incoming = requester ? JSON.stringify(requester) : undefined;
-      if (incoming && live.every((run) => run.sender === incoming)) {
+      if (!queue && incoming && live.every((run) => run.sender === incoming)) {
         return false;
       }
       queuedBySteerGate.add(`${session.sessionKey}\0${eventId}`);

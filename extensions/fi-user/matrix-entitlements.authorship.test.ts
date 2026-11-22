@@ -143,7 +143,7 @@ const GATED: Array<[string, Record<string, unknown>, Record<string, unknown> | u
   ],
   ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "draft" }],
   ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "reply_draft", messageId: "m" }],
-  ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "calendar_create" }],
+  ["m365_mail", { action: "send_draft", draftId: "d" }, { action: "calendar_read" }],
   // requester_gmail drafts only today; a send added later is held without a change here.
   ["requester_gmail", { action: "send" }, { action: "draft" }],
   ["sessions_send", { sessionKey: "agent:x:main", message: "hi" }, undefined],
@@ -220,10 +220,93 @@ describe("Desk brief authorship", () => {
       }
     }
     expect(
-      h.owner.briefToolBlock({ toolName: "fi_user_desk_handoff", params: {} }, toolContext()),
+      h.owner.briefToolBlock(
+        { toolName: "fi_user_desk_handoff", params: { action: "list" } },
+        toolContext(),
+      ),
     ).toBeUndefined();
     expect(h.capture(captureContext())?.authorship).toMatchObject({ kind: "desk_handoff" });
     expect(() => assertNotDeskBrief(h.api, captureContext())).toThrow(DESK_BRIEF_TOOL_REFUSAL);
+  });
+
+  it("refuses every tool and action a brief does not allow, unknown ones included", async () => {
+    const h = fixture();
+    fetchMock.mockImplementation(async () => allow(brief));
+    await h.reply(replyContext());
+    const blocked: Array<[string, Record<string, unknown>]> = [
+      ["some_new_tool", {}],
+      ["fi_user_dataroom", { action: "add_document", documentId: "d" }],
+      ["fi_user_dataroom", { action: "update_document", documentId: "d" }],
+      ["fi_user_dataroom", { action: "create" }],
+      ["fi_user_mail_items", { action: "control", operation: "note" }],
+      ["fi_user_mail_items", { action: "control", operation: "resume" }],
+      ["requester_gdrive", { action: "share" }],
+      ["requester_gdrive", {}],
+      ["automations", { action: "add" }],
+      ["automations", { action: "update" }],
+      ["automations", { action: "run" }],
+      ["automations", { action: "remove" }],
+      ["cron", { action: "add" }],
+      ["fi_user_desk_handoff", { action: "start", input: { task: "t" } }],
+      ["m365_mail", { action: "mark_read" }],
+      ["m365_mail", { action: "move" }],
+      ["m365_mail", { action: "trash" }],
+      ["m365_mail", { action: "calendar_create" }],
+      ["request_admin_action", { task: "room_admin" }],
+      ["fi_workbook", { action: "edit" }],
+      ["fi_user_work_items", { action: "transition" }],
+      ["fi_user_budget_import", { mode: "apply" }],
+      ["fi_admin_operation", { action: "execute", dryRun: false }],
+      ["subagents", { action: "steer" }],
+      ["message", { action: "kick", target: roomId }],
+      ["message", { action: "sendAttachment" }],
+    ];
+    for (const [toolName, params] of blocked) {
+      expect(
+        h.owner.briefToolBlock({ toolName, params }, toolContext()),
+        `${toolName} ${JSON.stringify(params)}`,
+      ).toEqual({ block: true, blockReason: DESK_BRIEF_TOOL_REFUSAL });
+    }
+    const allowed: Array<[string, Record<string, unknown>]> = [
+      ["automations", { action: "list" }],
+      ["automations", { action: "status" }],
+      ["fi_user_desk_handoff", { action: "list" }],
+      ["fi_user_dataroom", { action: "list" }],
+      ["fi_user_mail_items", { action: "list" }],
+      ["requester_gdrive", { action: "read", fileId: "f" }],
+      ["exec", { command: "ls" }],
+      ["sessions_spawn", { task: "t", completionTarget: "parent" }],
+      ["sessions_yield", {}],
+      ["read", { path: "a" }],
+      ["web_search", { query: "q" }],
+      ["fi_user_api", { path: "projects" }],
+      ["fi_user_budget_import", {}],
+      ["fi_admin_operation", { action: "discover" }],
+      ["ask_user", { question: "send it?" }],
+    ];
+    for (const [toolName, params] of allowed) {
+      expect(
+        h.owner.briefToolBlock({ toolName, params }, toolContext()),
+        `${toolName} ${JSON.stringify(params)}`,
+      ).toBeUndefined();
+    }
+  });
+
+  it("knows a brief run, and queues Matrix messages behind any live gated turn", async () => {
+    const h = fixture();
+    const matrixMessage = { channel: "matrix", sessionKey };
+    expect(h.owner.steerQueue(matrixMessage)).toBe(false);
+    fetchMock.mockImplementationOnce(async () => allow(brief));
+    await h.reply(replyContext());
+    expect(h.owner.briefRun({ runId: "run-1" })).toBe(true);
+    expect(h.owner.steerQueue(matrixMessage)).toBe(true);
+    expect(h.owner.steerQueue({ channel: "slack", sessionKey })).toBe(false);
+    await h.settle("run-1");
+    expect(h.owner.steerQueue(matrixMessage)).toBe(false);
+    await h.reply(replyContext("run-2", "$own"));
+    expect(h.owner.briefRun({ runId: "run-2" })).toBe(false);
+    // A person's live run holds a possible brief out of it too.
+    expect(h.owner.steerQueue(matrixMessage)).toBe(true);
   });
 
   it("a malformed desk_handoff stays a brief", async () => {

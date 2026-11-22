@@ -414,9 +414,15 @@ export default definePluginEntry({
       // The host reports back when it could not queue what this hook claimed.
       if (event.queueRefused === true) {
         adminDelegation.steerRefused(message);
+        if (message.channel === "matrix") {
+          api.logger.warn("fi-user: the host could not queue a Matrix message held from steering");
+        }
         return undefined;
       }
-      return adminDelegation.steerGate(message) ? { handled: true } : undefined;
+      // A Matrix message never joins another event's run: Fi judges each event's authorship.
+      return adminDelegation.steerGate(message, matrixEntitlements.steerQueue(message))
+        ? { handled: true }
+        : undefined;
     });
     // An approver's reply to an admin-action card is decided here and claimed,
     // so the same text is not also run as an agent turn. message_received only
@@ -482,6 +488,12 @@ export default definePluginEntry({
             return blocked;
           }
           const held = adminDelegation.held(config, event.toolName, ctx);
+          // A Desk brief is not the person's approval: its commands get no
+          // delegated Fi token and no on-behalf-of assertion, and any the model
+          // supplied are stripped. They run with the sandbox's own access only.
+          if (ON_BEHALF_OF_TOOLS.has(event.toolName) && matrixEntitlements.briefRun(ctx)) {
+            return held ?? { params: withOnBehalfOfEnv(event.params, undefined) };
+          }
           // crossChannelCustody: such a call may still ask Fi, but runs only
           // with a token minted for the holder's own subject; else it is held.
           if (held && !adminDelegation.decidesAfterMint(config, event.toolName, ctx)) {
