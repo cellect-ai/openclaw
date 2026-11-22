@@ -1417,7 +1417,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
         !turn.settled &&
         turn.mode === "text" &&
         turn.sessionKey.toLowerCase() === sessionKey &&
-        (isBrief(authorshipOf(turn)) || deskTaskRooms.has(roomKey(turn)))
+        // Fail closed while Fi is still answering for the turn: its authorship is not known yet.
+        (!turn.admitted || isBrief(authorshipOf(turn)) || deskTaskRooms.has(roomKey(turn)))
       ) {
         return true;
       }

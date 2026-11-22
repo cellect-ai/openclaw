@@ -319,6 +319,19 @@ describe("Desk brief authorship", () => {
     expect(h.owner.steerQueue({ channel: "matrix", sessionKey: other })).toBe(false);
   });
 
+  it("queues behind a typed turn while Fi is still admitting it, then steers once it is a person's", async () => {
+    const h = fixture();
+    const matrixMessage = { channel: "matrix", sessionKey };
+    let answer: (response: Response) => void = () => {};
+    fetchMock.mockImplementationOnce(() => new Promise<Response>((resolve) => (answer = resolve)));
+    const admitting = h.reply(replyContext());
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(h.owner.steerQueue(matrixMessage)).toBe(true);
+    answer(allow({ authorship: { kind: "person" } }));
+    expect(await admitting).toBeUndefined();
+    expect(h.owner.steerQueue(matrixMessage)).toBe(false);
+  });
+
   it("knows a brief run, and queues Matrix messages behind it and in its room", async () => {
     const h = fixture();
     const matrixMessage = { channel: "matrix", sessionKey };
