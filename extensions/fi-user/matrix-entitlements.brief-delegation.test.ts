@@ -109,7 +109,10 @@ describe("Matrix steering around Fi-judged authorship", () => {
   });
 
   it.each([
-    ["a brief arriving during the person's run", { authorship: { kind: "person" } }],
+    [
+      "a possible brief arriving during the person's run in a Desk task room",
+      { authorship: { kind: "person" }, deskTaskRoom: true },
+    ],
     ["the person's follow-up arriving during a brief's run", brief],
   ])("queues %s as its own turn", async (_name, authorship) => {
     answer(() => admission(authorship));
@@ -119,6 +122,21 @@ describe("Matrix steering around Fi-judged authorship", () => {
     expect(await turn.steer(steer())).toEqual({ handled: true });
     // Another sender too: no message takes another event's authorship.
     expect(await turn.steer(steer("@other:matrix.example", "$other"))).toEqual({ handled: true });
+  });
+
+  it.each([
+    ["an ordinary room", { authorship: { kind: "person" } }],
+    ["an older Fi that says nothing of authorship or task rooms", {}],
+    ["a task-room flag that is not exactly true", { deskTaskRoom: "true" }],
+  ])("steers a follow-up into the person's run in %s", async (_name, extra) => {
+    answer(() => admission(extra));
+    for (const config of [{}, { crossChannelCustody: true }]) {
+      const turn = plugin(config);
+      await turn.arrive(matrix.arrive);
+      await turn.start(matrix.start);
+      expect(await turn.steer(steer()), JSON.stringify(config)).toBeUndefined();
+      await turn.settle();
+    }
   });
 
   it("also with cross-channel custody on", async () => {

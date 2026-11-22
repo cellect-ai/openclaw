@@ -442,6 +442,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   const briefEvents = new Map<string, TurnAuthorship>();
   /** Sessions that saw a brief, so a later person's turn withdraws its notice. */
   const briefSessions = new Set<string>();
+  /**
+   * Rooms known to be Desk task rooms, by account: Fi said `deskTaskRoom: true`
+   * on an admission there, or Fi answered a brief there. Briefs arrive in them.
+   */
+  const deskTaskRooms = new Set<string>();
+  const roomKey = (turn: Turn) => `${turn.accountId}\u0000${turn.roomId}`;
   const remember = <T>(store: Map<string, T> | Set<string>, key: string, value?: T) => {
     store.delete(key);
     if (store instanceof Map) {
@@ -473,6 +479,10 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
   // Only moves one way within a run: a later answer of person never lifts a brief.
   const noteAuthorship = (turn: Turn, result: object) => {
     const authorship = parseAuthorship(result, turn);
+    // Strict and additive: only a literal true marks the room; an older Fi sends nothing.
+    if (isBrief(authorship) || ("deskTaskRoom" in result && result.deskTaskRoom === true)) {
+      remember(deskTaskRooms, roomKey(turn));
+    }
     if (isBrief(authorship)) {
       const key = eventKey(turn);
       if (key) {
@@ -597,6 +607,7 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       retireAll();
       checkedSessions.clear();
       briefEvents.clear();
+      deskTaskRooms.clear();
       briefSessions.clear();
       turnRuntime?.dispose();
     },
@@ -1379,7 +1390,8 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
    * authorship per event, so a message injected into another event's run would
    * take that run's authorship: a brief would act under a person's turn, and the
    * person's own follow-up would be held under a brief's. Queued, each message is
-   * admitted and judged by Fi on its own.
+   * admitted and judged by Fi on its own. Only where a brief can be in play: the
+   * live turn is a brief, or its room is a Desk task room.
    */
   const steerQueue = (message: {
     channel?: string;
@@ -1397,12 +1409,15 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
       return false;
     }
     // Only a typed turn is judged per event; a live voice turn is never one to queue behind.
+    // Only where a brief is in play: the live turn is one, or briefs arrive in its room.
+    // An ordinary conversation keeps normal steering.
     for (const turn of turns.values()) {
       if (
         !turn.parentRunId &&
         !turn.settled &&
         turn.mode === "text" &&
-        turn.sessionKey.toLowerCase() === sessionKey
+        turn.sessionKey.toLowerCase() === sessionKey &&
+        (isBrief(authorshipOf(turn)) || deskTaskRooms.has(roomKey(turn)))
       ) {
         return true;
       }

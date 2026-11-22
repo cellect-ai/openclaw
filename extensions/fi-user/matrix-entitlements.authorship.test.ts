@@ -292,7 +292,34 @@ describe("Desk brief authorship", () => {
     }
   });
 
-  it("knows a brief run, and queues Matrix messages behind any live gated turn", async () => {
+  it("queues Matrix messages only behind a brief run or in a Desk task room", async () => {
+    const h = fixture();
+    const matrixMessage = { channel: "matrix", sessionKey };
+    // An ordinary room, and an older Fi: normal steering.
+    await h.reply(replyContext());
+    expect(h.owner.steerQueue(matrixMessage)).toBe(false);
+    await h.settle("run-1");
+    fetchMock.mockImplementationOnce(async () => allow({ deskTaskRoom: 1 }));
+    await h.reply(replyContext("run-2", "$two"));
+    expect(h.owner.steerQueue(matrixMessage)).toBe(false);
+    await h.settle("run-2");
+    // Fi marks the room a Desk task room: the person's own run queues what arrives.
+    fetchMock.mockImplementationOnce(async () =>
+      allow({ deskTaskRoom: true, authorship: { kind: "person" } }),
+    );
+    await h.reply(replyContext("run-3", "$three"));
+    expect(h.owner.briefRun({ runId: "run-3" })).toBe(false);
+    expect(h.owner.steerQueue(matrixMessage)).toBe(true);
+    await h.settle("run-3");
+    // It stays one for later turns, whatever Fi says then.
+    await h.reply(replyContext("run-4", "$four"));
+    expect(h.owner.steerQueue(matrixMessage)).toBe(true);
+    // Another room of the same account is not.
+    const other = `agent:${agentId}:matrix:channel:!other:matrix.example:thread:$root`;
+    expect(h.owner.steerQueue({ channel: "matrix", sessionKey: other })).toBe(false);
+  });
+
+  it("knows a brief run, and queues Matrix messages behind it and in its room", async () => {
     const h = fixture();
     const matrixMessage = { channel: "matrix", sessionKey };
     expect(h.owner.steerQueue(matrixMessage)).toBe(false);
@@ -305,7 +332,7 @@ describe("Desk brief authorship", () => {
     expect(h.owner.steerQueue(matrixMessage)).toBe(false);
     await h.reply(replyContext("run-2", "$own"));
     expect(h.owner.briefRun({ runId: "run-2" })).toBe(false);
-    // A person's live run holds a possible brief out of it too.
+    // A brief was seen in this room: a person's live run there queues too.
     expect(h.owner.steerQueue(matrixMessage)).toBe(true);
   });
 
