@@ -1156,8 +1156,9 @@ export function registerAdminDelegation(
       if (!session || (message.channel !== "matrix" && message.channel !== "slack")) {
         return queue;
       }
+      // A consult stands on its own voice proof: it is never queued.
       if (talkConsultSender(session.adminAgentId, session.sessionKey, message)) {
-        return queue;
+        return false;
       }
       // Without an event id the host cannot dedupe the queued copy: leave today's path.
       const eventId = message.messageId?.trim();

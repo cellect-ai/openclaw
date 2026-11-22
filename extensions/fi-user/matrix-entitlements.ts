@@ -8,6 +8,7 @@ import type { PluginHookToolContext } from "openclaw/plugin-sdk/types";
 import {
   brokerToken,
   configFromRuntime,
+  isAdminAgent,
   matrixConnection,
   type ResolvedPluginConfig,
 } from "./fi-delegation.js";
@@ -245,7 +246,11 @@ function currentRoomOnly(params: Record<string, unknown>, turn: Turn): boolean {
 type BriefRule =
   | true
   | readonly string[]
-  | ((params: Record<string, unknown>, turn: Turn) => boolean);
+  | ((params: Record<string, unknown>, turn: Turn, adminAgent: boolean) => boolean);
+// The admin agent's sandbox holds provider credentials of its own (DocuSeal,
+// Gmail send), so withholding Fi's token does not make its shell harmless.
+const notAdminAgent = (_params: Record<string, unknown>, _turn: Turn, adminAgent: boolean) =>
+  !adminAgent;
 const actionIn =
   (actions: readonly string[]) =>
   (params: Record<string, unknown>): boolean =>
@@ -281,13 +286,14 @@ const BRIEF_ALLOWED: Readonly<Record<string, BriefRule>> = {
   skills_search: true,
   skills_read: true,
   // Its own workspace and shell. A command gets no delegated Fi credential under
-  // a brief (index.ts), so it acts with the sandbox's own access only.
+  // a brief (index.ts), so it acts with the sandbox's own access only; the admin
+  // agent's shell is refused outright.
   write: true,
   edit: true,
   apply_patch: true,
-  exec: true,
-  sandbox_exec: true,
-  process: true,
+  exec: notAdminAgent,
+  sandbox_exec: notAdminAgent,
+  process: notAdminAgent,
   // A child of a brief turn is a brief too; yielding waits for it.
   sessions_spawn: true,
   sessions_yield: true,
@@ -343,7 +349,12 @@ const BRIEF_ALLOWED: Readonly<Record<string, BriefRule>> = {
 };
 
 /** Whether a call may run under a Desk brief. Unknown tools and actions are refused. */
-function briefAllowed(toolName: string, params: Record<string, unknown>, turn: Turn): boolean {
+function briefAllowed(
+  toolName: string,
+  params: Record<string, unknown>,
+  turn: Turn,
+  adminAgent: boolean,
+): boolean {
   const rule = BRIEF_ALLOWED[toolName];
   if (rule === undefined) {
     return false;
@@ -352,7 +363,7 @@ function briefAllowed(toolName: string, params: Record<string, unknown>, turn: T
     return true;
   }
   if (typeof rule === "function") {
-    return rule(params, turn);
+    return rule(params, turn, adminAgent);
   }
   // A mail tool never sends under a brief, whatever its list says.
   return actionIn(rule)(params) && !(params.action as string).toLowerCase().includes("send");
@@ -1335,7 +1346,12 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
     if (
       !turn ||
       !isBrief(authorshipOf(turn)) ||
-      briefAllowed(event.toolName, event.params ?? {}, turn)
+      briefAllowed(
+        event.toolName,
+        event.params ?? {},
+        turn,
+        isAdminAgent(configFromRuntime(api), turn.agentId),
+      )
     ) {
       return undefined;
     }
@@ -1365,13 +1381,29 @@ export function registerMatrixEntitlements(api: OpenClawPluginApi) {
    * person's own follow-up would be held under a brief's. Queued, each message is
    * admitted and judged by Fi on its own.
    */
-  const steerQueue = (message: { channel?: string; sessionKey?: string }): boolean => {
+  const steerQueue = (message: {
+    channel?: string;
+    sessionKey?: string;
+    channelContext?: { chat?: object };
+  }): boolean => {
+    const chat = message.channelContext?.chat;
     const sessionKey = message.sessionKey?.toLowerCase();
-    if (message.channel !== "matrix" || !sessionKey) {
+    // A Talk consult stands on its own voice proof and joins its voice turn.
+    if (
+      message.channel !== "matrix" ||
+      !sessionKey ||
+      (chat && "talkThreadRootEventId" in chat && chat.talkThreadRootEventId !== undefined)
+    ) {
       return false;
     }
+    // Only a typed turn is judged per event; a live voice turn is never one to queue behind.
     for (const turn of turns.values()) {
-      if (!turn.parentRunId && !turn.settled && turn.sessionKey.toLowerCase() === sessionKey) {
+      if (
+        !turn.parentRunId &&
+        !turn.settled &&
+        turn.mode === "text" &&
+        turn.sessionKey.toLowerCase() === sessionKey
+      ) {
         return true;
       }
     }

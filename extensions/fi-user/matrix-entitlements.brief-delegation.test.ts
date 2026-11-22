@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  THREAD,
   AUTHORIZE_URL,
   fetchMock,
   installDelegationFixtures,
@@ -9,6 +10,7 @@ import {
   plugin,
   TOKEN,
 } from "./admin-delegation.test-helpers.js";
+import { DESK_BRIEF_TOOL_REFUSAL } from "./matrix-entitlements.js";
 
 installDelegationFixtures();
 
@@ -34,17 +36,59 @@ describe("a Desk brief and the admin agent's delegated token", () => {
     vi.stubEnv("FI_THREADS_ENV_BY_ACCOUNT", JSON.stringify({ adminprod: "prod" }));
   });
 
-  it("mints nothing for a brief turn's command, and strips what the model supplied", async () => {
+  it("refuses the admin agent's shell under a brief, and mints nothing", async () => {
     answer(() => admission(brief));
     const turn = plugin();
     await turn.arrive(matrix.arrive);
     expect(await turn.start(matrix.start)).toBeUndefined();
-    const result = await turn.exec(matrix.exec, {
-      params: {
-        command: "cellect commands list",
-        env: { FI_DELEGATED_USER_TOKEN: "forged", FI_ON_BEHALF_OF: "forged", KEEP: "1" },
-      },
+    for (const toolName of ["exec", "sandbox_exec", "process"]) {
+      expect(await turn.exec({ ...matrix.exec, toolName }, { toolName })).toEqual({
+        block: true,
+        blockReason: DESK_BRIEF_TOOL_REFUSAL,
+      });
+    }
+    expect(mints()).toEqual([]);
+  });
+
+  it("refuses the shell of whatever agent the runtime configures as its admin", async () => {
+    const sessionKey = "agent:ops-admin:matrix:channel:!dm:matrix.example";
+    fetchMock.mockImplementation(async (url: string) =>
+      url === AUTHORIZE_URL
+        ? new Response(JSON.stringify({ ok: true, agentId: "ops-admin", orgId: "org-a", ...brief }))
+        : minted(),
+    );
+    const turn = plugin({ adminAgentId: "ops-admin" });
+    await turn.arrive({ ...matrix.arrive, sessionKey });
+    await turn.start({ ...matrix.start, sessionKey, agentId: "ops-admin" });
+    expect(await turn.exec({ ...matrix.exec, sessionKey, agentId: "ops-admin" })).toMatchObject({
+      block: true,
+      blockReason: DESK_BRIEF_TOOL_REFUSAL,
     });
+  });
+
+  it("lets a non-admin agent's command run under a brief without a token, stripping what the model supplied", async () => {
+    const sessionKey = "agent:cellect-fi-user:matrix:channel:!dm:matrix.example";
+    fetchMock.mockImplementation(async (url: string) =>
+      url === AUTHORIZE_URL
+        ? new Response(
+            JSON.stringify({ ok: true, agentId: "cellect-fi-user", orgId: "org-a", ...brief }),
+          )
+        : minted(),
+    );
+    const turn = plugin();
+    await turn.arrive({ ...matrix.arrive, sessionKey });
+    expect(
+      await turn.start({ ...matrix.start, sessionKey, agentId: "cellect-fi-user" }),
+    ).toBeUndefined();
+    const result = await turn.exec(
+      { ...matrix.exec, sessionKey, agentId: "cellect-fi-user" },
+      {
+        params: {
+          command: "ls",
+          env: { FI_DELEGATED_USER_TOKEN: "forged", FI_ON_BEHALF_OF: "forged", KEEP: "1" },
+        },
+      },
+    );
     expect(result?.block).toBeUndefined();
     expect(result?.params.env).toEqual({ KEEP: "1" });
     expect(mints()).toEqual([]);
@@ -83,6 +127,39 @@ describe("Matrix steering around Fi-judged authorship", () => {
     await turn.arrive(matrix.arrive);
     await turn.start(matrix.start);
     expect(await turn.steer(steer())).toEqual({ handled: true });
+  });
+
+  it("does not claim a Talk consult during a live voice turn, nor queue a message behind one", async () => {
+    const root = "$root";
+    const voice = {
+      channel: "matrix",
+      senderId: "@admin:matrix.example",
+      sessionKey: THREAD,
+      accountId: "adminprod",
+      chatId: `!room:matrix.example:thread:${root}`,
+      channelContext: {
+        sender: { id: "@admin:matrix.example" },
+        chat: { id: "!room:matrix.example", talkThreadRootEventId: root },
+      },
+    };
+    for (const config of [{}, { crossChannelCustody: true }]) {
+      answer(() => admission(brief));
+      const turn = plugin(config);
+      await turn.arrive({ ...voice, messageId: "$voice" });
+      expect(await turn.start(voice)).toBeUndefined();
+      expect(
+        await turn.steer({ ...voice, messageId: "$consult" }),
+        JSON.stringify(config),
+      ).toBeUndefined();
+      expect(
+        await turn.steer({
+          channel: "matrix",
+          senderId: voice.senderId,
+          sessionKey: THREAD,
+          messageId: "$typed",
+        }),
+      ).toBeUndefined();
+    }
   });
 
   it("leaves steering alone when no gated Matrix turn is live in the session", async () => {
