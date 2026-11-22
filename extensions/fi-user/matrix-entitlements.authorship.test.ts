@@ -322,11 +322,16 @@ describe("Desk brief authorship", () => {
     ).toMatchObject({ block: true });
   });
 
-  it("a child of a brief turn is blocked too", async () => {
+  it.each([
+    ["on a Matrix run", { channel: "matrix" }],
+    ["with no channel, by parent-channel provenance", { spawnedFromChannel: "matrix" }],
+    ["with no channel, by lineage alone", {}],
+  ] as const)("a child of a brief turn is blocked too, %s", async (_name, channel) => {
     const h = fixture();
     fetchMock.mockImplementationOnce(async () => allow(brief));
     await h.reply(replyContext());
-    fetchMock.mockImplementation(async () => allow());
+    // Fi answers person for the child's own admission and rechecks: the parent's brief still holds.
+    fetchMock.mockImplementation(async () => allow({ authorship: { kind: "person" } }));
     const lineage: Lineage = {
       parentRunId: "run-1",
       parentAgentId: agentId,
@@ -336,6 +341,7 @@ describe("Desk brief authorship", () => {
       childAgentId: agentId,
       childSessionKey: childKey,
       childSessionId: "child-session",
+      completionTarget: "parent",
       expiresAt: Date.now() + 60_000,
       assertCurrent: () => {},
     };
@@ -344,18 +350,38 @@ describe("Desk brief authorship", () => {
         runId: "child-1",
         agentId,
         accountId: "mainprod",
-        channel: "matrix",
         sessionKey: childKey,
         sessionId: "child-session",
         spawnedFrom: lineage,
+        ...channel,
       }),
     ).toBeUndefined();
+    const tool = {
+      runId: "child-1",
+      agentId,
+      sessionKey: childKey,
+      sessionId: "child-session",
+      toolName: "fi_user_deliver_file",
+      requester: { accountId: "mainprod" },
+      spawnedFrom: lineage,
+    } as PluginHookToolContext;
+    expect(await h.owner.beforeToolCall(tool)).toBeUndefined();
     expect(
       h.owner.briefToolBlock(
         { toolName: "fi_user_deliver_file", params: { action: "deliver" } },
-        { runId: "child-1", agentId },
+        tool,
       ),
     ).toMatchObject({ block: true });
+    expect(
+      h.owner.briefToolBlock({ toolName: "fi_user_gmail", params: { action: "draft" } }, tool),
+    ).toBeUndefined();
+    expect(
+      h.capture({
+        runId: "child-1",
+        agentId,
+        sessionKey: childKey,
+      } as OpenClawPluginToolContext)?.authorship,
+    ).toMatchObject({ kind: "desk_handoff" });
     expect(
       (await h.prompt({ runId: "child-1", agentId, sessionKey: childKey }))?.appendSystemContext,
     ).toContain("brief written by Desk's agent");
