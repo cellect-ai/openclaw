@@ -5258,7 +5258,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
 
   it("stages non-image attachments above the generic media-store limit", async () => {
     // Regression: Gateway used MEDIA_MAX_BYTES (5 MiB) as a pre-staging cap
-    // even though stageSandboxMedia accepts files up to 50 MiB.
+    // even though stageSandboxMedia accepts files up to 200 MiB.
     await createReadyChatTranscript("openclaw-chat-send-sandbox-oversize-");
     useChatTestModel("vision-model");
     setSavedMediaResults([
@@ -5269,7 +5269,7 @@ describe("chat directive tag stripping for non-streaming final payloads", () => 
     mockState.stagedRelativePaths = ["media/inbound/huge.bin"];
     const { send } = createChatRequestFixture();
     // 6 MiB buffer — above MEDIA_MAX_BYTES but below the default 20 MiB parser
-    // cap and the canonical 50 MiB sandbox staging cap.
+    // cap and the canonical 200 MiB sandbox staging cap.
     const oversized = Buffer.alloc(6 * 1024 * 1024);
     oversized.set(Buffer.from("OPENCLAW-BINARY\n"), 0);
     const oversizedPayload = oversized.toString("base64");

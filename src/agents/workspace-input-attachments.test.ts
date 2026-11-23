@@ -8,6 +8,7 @@ import { stageSandboxMedia } from "../auto-reply/reply/stage-sandbox-media.js";
 import { root as fsRoot } from "../infra/fs-safe.js";
 import type { MediaFact } from "../media/media-facts.js";
 import {
+  STAGED_INPUT_MAX_BYTES,
   createStagedInputPathMatcher,
   stagedInputDirectory,
   stagedInputFileName,
@@ -170,13 +171,17 @@ describeLinux("workspace attachment adapter with the real remote-shell bridge", 
   it("retains an explicitly configured allowance above the ordinary staging limit", async () => {
     const f = await fixture();
     const source = path.join(getMediaDir(), "remote-cache", "configured.bin");
+    const allowance = STAGED_INPUT_MAX_BYTES + 1024 * 1024;
     await fs.writeFile(source, "");
-    await fs.truncate(source, 51 * 1024 * 1024);
+    await fs.truncate(source, allowance);
     await f.prepare(
-      { ...turn([{ path: source }]), config: { agents: { defaults: { mediaMaxMb: 51 } } } },
+      {
+        ...turn([{ path: source }]),
+        config: { agents: { defaults: { mediaMaxMb: allowance / (1024 * 1024) } } },
+      },
       () => {},
     );
-    expect((await fs.stat(f.destination(source))).size).toBe(51 * 1024 * 1024);
+    expect((await fs.stat(f.destination(source))).size).toBe(allowance);
   });
 
   it("hydrates a managed video for a sandboxed remote turn without rewriting its recorded reference", async () => {
@@ -248,7 +253,7 @@ describeLinux("workspace attachment adapter with the real remote-shell bridge", 
       } else if (kind === "oversized") {
         source = path.join(getMediaDir(), "remote-cache", "large.bin");
         await fs.writeFile(source, "");
-        await fs.truncate(source, 50 * 1024 * 1024 + 1);
+        await fs.truncate(source, STAGED_INPUT_MAX_BYTES + 1);
       }
       await expect(
         f.prepare(turn([{ path: source, workspaceDir: f.gateway }]), () => {}),

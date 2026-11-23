@@ -123,7 +123,7 @@ references and transcript text stay on Gateway for image hydration and replay.
 `createWorkspaceAttachmentPreparer` implements this callback over an existing
 filesystem bridge with `createFileExclusive`. It reads only Gateway's media
 store, transfers input files without replacing existing Harness copies, and
-preserves the existing 50 MiB staging allowance and higher configured limits.
+preserves the existing 200 MiB staging allowance and higher configured limits.
 The host supplies `createBridge(assertCurrent, signal)` over its own backend;
 check that authority and signal before each transport command.
 

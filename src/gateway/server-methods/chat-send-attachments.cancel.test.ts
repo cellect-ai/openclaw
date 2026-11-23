@@ -201,7 +201,11 @@ it.each([
         entries: { main: { workspace: state.workspaceDir } },
         defaults: {
           skipBootstrap: true,
-          ...(preparation === "pass-through" ? { mediaMaxMb: 51 } : {}),
+          ...(preparation === "pass-through"
+            ? {
+                mediaMaxMb: Math.ceil((staging.SANDBOX_MEDIA_MAX_BYTES + 1) / (1024 * 1024)),
+              }
+            : {}),
           sandbox: {
             mode: preparation === "sandbox-null" ? "off" : "all",
             scope: "agent",
