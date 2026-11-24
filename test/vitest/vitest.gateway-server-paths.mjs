@@ -366,6 +366,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/talk/relay/continuous-output.test.ts",
   "src/gateway/talk/relay/announce.test.ts",
   "src/gateway/talk/relay/index.test.ts",
+  "src/gateway/talk/relay/index.forced-consult.test.ts",
   "src/gateway/talk/relay/transcript-readiness.test.ts",
   "src/gateway/test-helpers.acquisition.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
