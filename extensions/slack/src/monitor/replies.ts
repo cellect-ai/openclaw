@@ -332,7 +332,9 @@ export async function deliverReplies(params: {
         })),
         {
           channel: "slack",
-          to: params.messageSentHookTarget ?? params.target,
+          // Physical placement evidence names the address the send used; the hook
+          // target is the logical conversation and may be a user or workspace-qualified id.
+          to: params.target,
           accountId: params.accountId,
           threadId: threadTs,
         },
