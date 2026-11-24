@@ -46,7 +46,7 @@ it("hands an interrupted xAI response to its successor without losing Talk owner
   });
   const errors: string[] = [];
   const finished = Promise.withResolvers<void>();
-  let failed = Promise.withResolvers<void>();
+  const failed = Promise.withResolvers<void>();
   const closed = Promise.withResolvers<void>();
   const fail = (message: string) => {
     errors.push(message);
@@ -141,14 +141,14 @@ it("hands an interrupted xAI response to its successor without losing Talk owner
     send("error", { error: { message: "Provider authentication failed" } });
     await failed.promise;
     expect(errors).toEqual(["Provider authentication failed"]);
-    failed = Promise.withResolvers<void>();
     send("response.created", { response: { id: "C" } });
     send("response.created", { response: { id: "D" } });
-    await failed.promise;
-    expect(errors).toContain("Realtime provider output has no live response owner.");
+    // Cellect's relay ownership (89d54f24aba) lets an identified successor supersede
+    // the live response instead of failing the call; D now owns the output.
     send("response.output_audio.delta", { response_id: "D", delta: "not base64" });
     await closed.promise;
     expect(session.bridge.isConnected()).toBe(false);
+    expect(errors).not.toContain("Realtime provider output has no live response owner.");
     expect(errors).toContain("xAI realtime voice stream returned malformed base64 audio data");
   } finally {
     await session.close();
