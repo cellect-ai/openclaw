@@ -378,10 +378,10 @@ function projectActiveEmbeddedRunOwner(
           return "unchanged";
         }
       } else if (handle.cancel) {
-        handle.cancel("user_abort", actor);
-      } else {
-        handle.abort(undefined, actor);
-      }
+        if (actor) handle.cancel("user_abort", actor);
+        else handle.cancel("user_abort"); // no verified actor: keep the stock call shape
+      } else if (actor) handle.abort(undefined, actor);
+      else handle.abort();
       revokeCompletionClaim(
         registration.sessionId,
         runId,
