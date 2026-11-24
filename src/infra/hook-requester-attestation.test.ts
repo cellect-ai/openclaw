@@ -72,6 +72,20 @@ describe("personal review purpose isolation", () => {
     expect(
       isPersonalReviewHookSessionKey(REVIEW.replace("hook:", "agent:cellect-fi-admin:hook:")),
     ).toBe(true);
+    // A key that names an agent must name the one the hook runs on.
+    for (const [named, effective, allowed] of [
+      ["cellect-fi-admin", "cellect-fi-admin", true],
+      ["cellect-fi-user", "cellect-fi-user", true],
+      ["cellect-fi-user", "cellect-fi-admin", false],
+      ["cellect-fi-admin", "cellect-fi-user", false],
+    ] as const) {
+      expect(
+        hookRequesterScopeAllowed(
+          { requesterAttestation: REVIEW_ATTESTATION, effectiveAgentId: effective },
+          REVIEW.replace("hook:", `agent:${named}:hook:`),
+        ),
+      ).toBe(allowed);
+    }
     expect(isPersonalReviewHookSessionKey(REVIEW.replace("hook:", "agent:other:hook:"))).toBe(
       false,
     );

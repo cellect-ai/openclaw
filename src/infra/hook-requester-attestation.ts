@@ -87,8 +87,15 @@ export function hookRequesterScopeAllowed(
     receipt &&
     attestationPurposeMatches(sessionKey, receipt) &&
     (!isPersonalReviewHookSessionKey(sessionKey) ||
-      REVIEW_AGENT_IDS.includes(value.effectiveAgentId)),
+      (REVIEW_AGENT_IDS.includes(value.effectiveAgentId) &&
+        reviewKeyAgentMatches(sessionKey, value.effectiveAgentId))),
   );
+}
+
+/** A review key that names its agent must name the agent the hook runs on. */
+function reviewKeyAgentMatches(sessionKey: string, agentId: string): boolean {
+  const named = /^agent:([^:]+):/i.exec(sessionKey)?.[1];
+  return named === undefined || named.toLowerCase() === agentId.toLowerCase();
 }
 
 /** The first delivery or content-trust field a shadow request may not carry. */
