@@ -172,10 +172,7 @@ it("marks connected heartbeats but never advances the recovery watermark after s
   vi.mocked(Date.now).mockReturnValue(now + 60_000);
   heartbeat();
   expect(store.register).toHaveBeenCalledTimes(2);
-  const receiver = getSlackTestState().appConstructorArgs?.receiver as {
-    client: { emit: (event: string) => void };
-  };
-  receiver.client.emit("disconnected");
+  getSlackTestState().socketModeClient?.emit("disconnected");
   // A real interval runs after the disconnect promise microtask.
   await Promise.resolve();
   vi.mocked(Date.now).mockReturnValue(now + 120_000);
@@ -239,11 +236,8 @@ it.each([false, true])(
     monitors.push(monitor);
     try {
       await entered.promise;
-      const receiver = getSlackTestState().appConstructorArgs?.receiver as {
-        client: { emit: (event: string) => void };
-      };
       for (let attempt = 0; attempt < 2; attempt += 1) {
-        receiver.client.emit("disconnected");
+        getSlackTestState().socketModeClient?.emit("disconnected");
         await vi.advanceTimersByTimeAsync(2_500);
         expect(connections).toBe(attempt + 2);
       }
