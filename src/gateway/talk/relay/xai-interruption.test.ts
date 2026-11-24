@@ -134,7 +134,8 @@ it("hands an interrupted xAI response to its successor without losing Talk owner
     expect(sendAudio).toHaveBeenCalledOnce();
     expect(onToolCall).not.toHaveBeenCalled();
     expect(onTranscript.mock.calls.filter((call) => call[2])).toEqual([
-      ["user", "new question", true, { textMode: "snapshot" }],
+      // Cellect's xAI bridge names the provider item on user transcripts.
+      ["user", "new question", true, { itemId: "question", textMode: "snapshot" }],
     ]);
     // Cancellation recovery must not hide a genuine provider failure.
     send("error", { error: { message: "Provider authentication failed" } });
