@@ -326,6 +326,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         },
         sandbox: params.setup.sandbox,
         stagedMediaPaths: resolveStagedInputMediaPaths(attempt.media),
+        currentTurnMedia: attempt.media,
         sessionPermissionPolicy,
         channelContext: attempt.channelContext,
         allowGatewaySubagentBinding: attempt.allowGatewaySubagentBinding,

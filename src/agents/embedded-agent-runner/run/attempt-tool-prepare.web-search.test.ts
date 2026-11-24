@@ -162,6 +162,14 @@ it("prepares tools without enumerating unrelated attempt state", async () => {
   expect(enumerate).not.toHaveBeenCalled();
 });
 
+it("forwards the turn's media to the coding tools for spawned sub-agents", async () => {
+  const media = [{ path: "/tmp/inbound/photo.png", contentType: "image/png" }];
+  codingTools.mockReturnValue([createStubTool("read")]);
+  await using _fixture = await createFixture({ media });
+  const options = codingTools.mock.calls[0]?.[0];
+  expect(options?.currentTurnMedia).toBe(media);
+});
+
 it.each(
   (["built-in", "catalog"] as const).flatMap((surface) =>
     (["retired source", "capture invalidated"] as const).map((outcome) => ({ surface, outcome })),
