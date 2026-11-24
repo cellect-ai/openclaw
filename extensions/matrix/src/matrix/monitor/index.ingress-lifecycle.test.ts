@@ -11,10 +11,23 @@ import {
 } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { expect, it, vi } from "vitest";
+import type { MatrixRawEvent } from "../sdk.js";
 import { getMatrixMonitorIndexTestHarness } from "./index.test-helpers.js";
 
 const harness = getMatrixMonitorIndexTestHarness();
 import { monitorMatrixProvider } from "./index.js";
+
+// Room messages arrive through the sync ingress the monitor binds on its client.
+async function arriveThroughSync(roomId: string, event: MatrixRawEvent) {
+  const admitSync = harness.client.bindSyncIngress.mock.calls.at(-1)?.[0];
+  if (!admitSync) {
+    throw new Error("Matrix monitor did not bind its sync ingress");
+  }
+  await admitSync(
+    { next_batch: "s1", rooms: { join: { [roomId]: { timeline: { events: [event] } } } } } as never,
+    { hasSavedSync: true },
+  );
+}
 
 it("registered Matrix monitor retains suspended arrivals and replays them once after replacement", async () => {
   const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-suspend-ingress-"));
@@ -53,14 +66,14 @@ it("registered Matrix monitor retains suspended arrivals and replays them once a
     if (suspension.status !== "ready" && suspension.status !== "draining") {
       throw new Error(`Unexpected suspension status ${suspension.status}`);
     }
-    const event = {
+    const event: MatrixRawEvent = {
       event_id: "$during-suspend",
       sender: "@person:example.org",
       type: "m.room.message",
       origin_server_ts: 12345,
       content: { body: "keep exact sender and time", msgtype: "m.text" },
     };
-    await harness.registeredOnRoomMessage!("!room:example.org", event);
+    await arriveThroughSync("!room:example.org", event);
     expect(handler).not.toHaveBeenCalled();
     expect(await harness.ingressQueue.listPending()).toHaveLength(1);
 
@@ -74,8 +87,12 @@ it("registered Matrix monitor retains suspended arrivals and replays them once a
     expect(handler).not.toHaveBeenCalled();
     expect(resumeGatewaySuspendForTest(suspension.suspensionId).ok).toBe(true);
     await delivered.promise;
-    expect(handler).toHaveBeenCalledWith("!room:example.org", event, expect.any(Object));
-    await harness.registeredOnRoomMessage!("!room:example.org", event);
+    expect(handler).toHaveBeenCalledWith(
+      "!room:example.org",
+      { ...event, room_id: "!room:example.org" },
+      expect.any(Object),
+    );
+    await arriveThroughSync("!room:example.org", event);
     current.abort.abort();
     await current.running;
     expect(handler).toHaveBeenCalledTimes(1);
