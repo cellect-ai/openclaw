@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../../test/helpers/promise.js";
 import type { RunEmbeddedAgentParams } from "../../../agents/embedded-agent-runner/run/params.js";
 import {
@@ -713,8 +713,6 @@ it.each(["source", "claim"] as const)(
     }
   },
 );
-
-describe.each(["browser", "relay"] as const)("native %s Talk consultation", (transport) => {});
 
 it.for(["status", "cancelled", "successor"] as const)(
   "keeps a native relay consult bound while voice registration waits (%s)",
