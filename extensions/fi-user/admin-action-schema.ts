@@ -62,12 +62,6 @@ export function createAdminActionRequestSchema<T extends string>(tasks: readonly
           description: `At most ${ADMIN_ACTION_TEXT_LIMIT} characters; longer text is refused, not truncated.`,
         }),
       ),
-      roomChange: Type.Optional(
-        stringEnum(["members", "recipients", "public_links", "settings"] as const, {
-          description:
-            "room_admin: which kind of data-room change an administrator should make in Fi. Descriptive only; nothing is changed.",
-        }),
-      ),
       displayName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
       roomName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
       order: Type.Optional(Type.String({ minLength: 1, maxLength: 100 })),

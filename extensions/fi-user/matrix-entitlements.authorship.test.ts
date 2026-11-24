@@ -262,7 +262,7 @@ describe("Desk brief authorship", () => {
       ["m365_mail", { action: "move" }],
       ["m365_mail", { action: "trash" }],
       ["m365_mail", { action: "calendar_create" }],
-      ["request_admin_action", { task: "room_admin" }],
+      ["request_admin_action", { task: "restricted_filing" }],
       ["fi_workbook", { action: "edit" }],
       ["fi_user_work_items", { action: "transition" }],
       ["fi_user_budget_import", { mode: "apply" }],

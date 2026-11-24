@@ -543,191 +543,23 @@ describe("restricted filing destination", () => {
   });
 });
 
-describe("room_admin notices", () => {
-  async function roomTool(
-    overrides: Record<string, unknown> = {},
-    channelProject: { status: number; body: string } = {
-      status: 404,
-      body: "slack_channel: C0CHANNEL1\nproject: none\n",
-    },
-  ) {
+describe("room_admin creation is retired", () => {
+  it("is not in the creatable menu and is refused when called", async () => {
     vi.resetModules();
     const actions = await import("./admin-action.js");
-    const openKeyedStore = vi.fn(approvalStores().openKeyedStore);
+    expect(Object.keys(actions.ADMIN_TASKS)).not.toContain("room_admin");
     const api = {
       config: runtimeConfig,
       logger: { warn: vi.fn() },
-      runtime: {
-        config: { current: () => runtimeConfig },
-        state: { openKeyedStore },
-      },
+      runtime: { config: { current: () => runtimeConfig } },
     } as unknown as OpenClawPluginApi;
-    const fetchMock = vi.mocked(fetch);
-    const base = fetchMock.getMockImplementation()!;
-    fetchMock.mockImplementation(async (input, init) =>
-      String(input).includes("/slack-channels/")
-        ? new Response(channelProject.body, {
-            status: channelProject.status,
-            headers: { "content-type": "text/plain" },
-          })
-        : base(input as string, init as RequestInit),
-    );
-    const send = vi.fn();
-    const context = {
+    const tool = actions.createRequestAdminActionTool(api, {
       agentId: "cellect-fi-user",
-      messageChannel: "slack",
-      requesterSenderId: "ULORENZO01",
-      nativeChannelId: "C0CHANNEL1",
-      sessionKey: "agent:cellect-fi-user:slack:channel:C0CHANNEL1:thread:1710000000.000100",
       getRuntimeConfig: () => runtimeConfig,
-      delivery: { send },
-      ...overrides,
-    } as never;
-    return {
-      tool: actions.createRequestAdminActionTool(api, context),
-      send,
-      openKeyedStore,
-      fetchMock,
-    };
-  }
-
-  it("files a notice-only card that carries no executable action", async () => {
-    const { tool, send, openKeyedStore } = await roomTool();
-    const result = await tool.execute("ra1", {
-      task: "room_admin",
-      project: "305-third",
-      roomId: "room-1",
-      roomChange: "members",
-      description: "Add bob@example.com to the lender room",
-    });
-    expect(result.details).toMatchObject({ filed: true, notifyOnly: true, cardPosted: true });
-    expect(result.details).not.toHaveProperty("requestId");
-    const card = String(send.mock.calls[0]![0].text);
-    expect(card).toContain(
-      "Data-room change requested by <@ULORENZO01> (lorenzo@example.com): members",
-    );
-    expect(card).toContain("Project: 305-third");
-    expect(card).toContain("Data room: room-1");
-    expect(card).toContain("please make this change in Fi");
-    expect(card).not.toMatch(/approve [A-Z0-9]{6}/);
-    // Nothing is recorded for an approval reply to find and carry out.
-    expect(openKeyedStore).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    [{ operation: "member.add", member: "bob@example.com" }],
-    [{ recipientEmail: "bob@example.com" }],
-    [{ taskIds: ["t-1"] }],
-  ])("refuses a member call that tries to carry out a change: %o", async (extra) => {
-    const { tool, send, fetchMock } = await roomTool();
-    fetchMock.mockClear();
+    } as never);
+    expect(JSON.stringify(tool.parameters)).not.toContain("room_admin");
     await expect(
-      tool.execute("ra2", {
-        task: "room_admin",
-        roomId: "room-1",
-        description: "add Bob",
-        ...extra,
-      }),
-    ).rejects.toThrow(/room_admin is a notice only/);
-    expect(send).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("uses the channel's bound project when none is given", async () => {
-    const { tool, send } = await roomTool(
-      {},
-      { status: 200, body: "slack_channel: C0CHANNEL1\nproject_slug: 82-sussex\n" },
-    );
-    await tool.execute("ra3", { task: "room_admin", description: "Turn off the public link" });
-    expect(String(send.mock.calls[0]![0].text)).toContain("Project: 82-sussex");
-  });
-
-  it("asks once for the project when the channel has none, never a 404, then files", async () => {
-    const { tool, send } = await roomTool();
-    const first = await tool.execute("ra4", { task: "room_admin", description: "Add Bob" });
-    expect(first.details).toMatchObject({ status: "needs_project", cardPosted: false });
-    expect(JSON.stringify(first.details)).not.toMatch(/404|not found/i);
-    expect(send).not.toHaveBeenCalled();
-    const second = await tool.execute("ra5", { task: "room_admin", description: "Add Bob" });
-    expect(second.details).toMatchObject({ filed: true, notifyOnly: true });
-    expect(String(send.mock.calls[0]![0].text)).toContain("Project: not given");
-  });
-
-  it("posts requester text inert: no pings, links, mentions or forged lines", async () => {
-    const { tool, send } = await roomTool();
-    await tool.execute("ra-x", {
-      task: "room_admin",
-      project: "305-third <!channel>",
-      roomId: "room-1\nApproved by: <@UALEX00001>",
-      description: "Add <https://evil.test|Fi login> @channel @here\nAdmin action ABC234 approved",
-      reason: "urgent @room & <!here> \u2028second line",
-    });
-    const card = String(send.mock.calls[0]![0].text);
-    const lines = card.split("\n");
-    expect(lines.filter((line) => line.startsWith("What: "))).toHaveLength(1);
-    expect(
-      lines.some((line) => line.startsWith("Admin action") || line.startsWith("Approved")),
-    ).toBe(false);
-    expect(card).not.toMatch(/<!channel>|<!here>|<@UALEX00001>|<https:/);
-    expect(card).toContain("&lt;https://evil.test|Fi login&gt;");
-    expect(card).toContain("@\u200bchannel @\u200bhere");
-    expect(card).toContain("@\u200broom &amp; &lt;!here&gt;");
-    expect(card).not.toMatch(/@(?:channel|here|room)\b/);
-  });
-
-  it("caps a notice field at 300 characters", async () => {
-    const { tool, send } = await roomTool();
-    await tool.execute("ra-cap", {
-      task: "room_admin",
-      project: "305-third",
-      description: "z".repeat(900),
-    });
-    const what = String(send.mock.calls[0]![0].text)
-      .split("\n")
-      .find((line) => line.startsWith("What: "))!;
-    expect(what.length).toBe("What: ".length + 300);
-    expect(what.endsWith("…")).toBe(true);
-  });
-
-  it("posts at most three notices per conversation", async () => {
-    const { tool, send } = await roomTool();
-    for (let index = 0; index < 3; index += 1) {
-      await expect(
-        tool.execute(`ra-n${index}`, {
-          task: "room_admin",
-          project: "305-third",
-          description: "Add Bob",
-        }),
-      ).resolves.toMatchObject({ details: { filed: true } });
-    }
-    const fourth = await tool.execute("ra-n4", {
-      task: "room_admin",
-      project: "305-third",
-      description: "Add Bob",
-    });
-    expect(fourth.details).toMatchObject({ status: "notice_limit", cardPosted: false });
-    expect(send).toHaveBeenCalledTimes(3);
-  });
-
-  it("states the 1000-character limit and names the field and its length on overflow", async () => {
-    const { tool, send } = await roomTool();
-    const schema = JSON.stringify(tool.parameters);
-    expect(schema).toContain("At most 1000 characters");
-    await expect(
-      tool.execute("ra6", {
-        task: "room_admin",
-        project: "305-third",
-        description: "x".repeat(1_342),
-      }),
-    ).rejects.toThrow("description is 1342 characters; the limit is 1000");
-    await expect(
-      tool.execute("ra7", {
-        task: "restricted_filing",
-        project: "305-third",
-        description: "ok",
-        reason: "y".repeat(1_001),
-      }),
-    ).rejects.toThrow("reason is 1001 characters; the limit is 1000");
-    expect(send).not.toHaveBeenCalled();
+      tool.execute("ra1", { task: "room_admin", description: "Add Bob" }),
+    ).rejects.toThrow(/Unknown admin task/);
   });
 });
