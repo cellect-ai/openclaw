@@ -71,9 +71,7 @@ describe("raw Matrix browser session authorization", () => {
   });
 
   it("preserves non-Matrix browser sessions and internal callers", () => {
-    extractDeliveryInfo.mockReturnValueOnce({
-      deliveryContext: { channel: "webchat", to: "device:one" },
-    });
+    // The native row supplies the channel; no delivery lookup is consumed here.
     expect(
       isUnauthorizedRawMatrixBrowserSession({
         cfg,
