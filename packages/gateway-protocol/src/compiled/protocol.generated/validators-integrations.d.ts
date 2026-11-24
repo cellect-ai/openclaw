@@ -65,4 +65,6 @@ export {
   isPluginsSessionActionResult,
   isWebLoginStartParams,
   isWebLoginWaitParams,
+  isTalkVoicePreviewParams,
+  isTalkSessionAnnounceParams,
 } from "./predicates.js";

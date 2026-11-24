@@ -795,6 +795,21 @@ export function isTranscriptsStatusParams(
 ): value is import("typebox").Static<
   typeof import("../../schema-modules.js").TranscriptsStatusParamsSchema
 >;
+export function isChatHandoffArmParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").ChatHandoffArmParamsSchema
+>;
+export function isChatHandoffSeenParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").ChatHandoffSeenParamsSchema
+>;
+export function isConversationContinueParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").ConversationContinueParamsSchema
+>;
 export function isMessageActionParams(
   value: unknown,
 ): value is import("typebox").Static<
@@ -1111,6 +1126,16 @@ export function isWebLoginWaitParams(
   value: unknown,
 ): value is import("typebox").Static<
   typeof import("../../schema-modules.js").WebLoginWaitParamsSchema
+>;
+export function isTalkVoicePreviewParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").TalkVoicePreviewParamsSchema
+>;
+export function isTalkSessionAnnounceParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").TalkSessionAnnounceParamsSchema
 >;
 export function isCommandsListParams(
   value: unknown,
@@ -1752,6 +1777,16 @@ export function isCatalogSearchKeywordsParams(
   value: unknown,
 ): value is import("typebox").Static<
   typeof import("../../schema-modules.js").CatalogSearchKeywordsParamsSchema
+>;
+export function isFiShadowAnnounceParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").FiShadowAnnounceParamsSchema
+>;
+export function isFiReviewAnnounceParams(
+  value: unknown,
+): value is import("typebox").Static<
+  typeof import("../../schema-modules.js").FiReviewAnnounceParamsSchema
 >;
 export function isSessionPortalListParams(
   value: unknown,

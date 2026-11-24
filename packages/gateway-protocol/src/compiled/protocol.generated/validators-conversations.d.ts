@@ -67,4 +67,7 @@ export {
   isTranscriptsGetParams,
   isTranscriptsExportParams,
   isTranscriptsStatusParams,
+  isChatHandoffArmParams,
+  isChatHandoffSeenParams,
+  isConversationContinueParams,
 } from "./predicates.js";

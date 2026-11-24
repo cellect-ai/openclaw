@@ -133,4 +133,6 @@ export {
   isThemesImportParams,
   isCatalogBrowseParams,
   isCatalogSearchKeywordsParams,
+  isFiShadowAnnounceParams,
+  isFiReviewAnnounceParams,
 } from "./predicates.js";
