@@ -1,7 +1,6 @@
 import path from "node:path";
 import { splitSandboxBindSpec } from "./bind-spec.js";
 import { isSandboxHostPathAbsolute } from "./host-paths.js";
-import type { SandboxDockerConfig } from "./types.js";
 
 export type ReadOnlyBindRollover = { from: string[]; to: string[] };
 
@@ -38,8 +37,17 @@ export function validateReadOnlyBindRollover(rollover: ReadOnlyBindRollover): vo
   }
 }
 
-/** Reconstruct complete predecessor configurations, preserving all other security settings. */
-export function predecessorDockerConfigs(docker: SandboxDockerConfig): SandboxDockerConfig[] {
+type RolloverDockerConfig = {
+  binds?: string[];
+  readOnlyBindRollovers?: ReadOnlyBindRollover[];
+};
+
+/**
+ * Reconstruct complete predecessor configurations, preserving all other security settings.
+ * Structural on purpose: the config schema validates rollovers through this module, so a type
+ * import of the sandbox config would close a static cycle back into the schema.
+ */
+export function predecessorDockerConfigs<T extends RolloverDockerConfig>(docker: T): T[] {
   const rollovers = docker.readOnlyBindRollovers ?? [];
   if (rollovers.length > 32) throw new Error("Too many sandbox rollover declarations");
   return rollovers.map((rollover) => {
