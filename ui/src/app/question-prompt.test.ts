@@ -132,7 +132,9 @@ describe("question event parsing", () => {
     expect(state.prompts.size).toBe(0);
   });
 
-  it("accepts five questions and rejects a sixth", () => {
+  // 11.7 trusts the Gateway-validated record here; the five-question ceiling is
+  // enforced and tested at the protocol owner (questions-validators.test.ts).
+  it("accepts a validated five-question record", () => {
     const question = requestedPayload().questions[0];
     const batch = (count: number) =>
       Array.from({ length: count }, (_, index) => ({
@@ -142,8 +144,6 @@ describe("question event parsing", () => {
     const state = createState();
     expect(requestQuestion(state, { questions: batch(5) })).toBe(true);
     expect(state.prompts.get("question-1")?.questions).toHaveLength(5);
-    expect(requestQuestion(state, { id: "question-2", questions: batch(6) })).toBe(false);
-    expect(state.prompts.has("question-2")).toBe(false);
   });
 
   it.each([
