@@ -109,6 +109,13 @@ export async function runSessionCompactionIfNeeded(params: {
   const isCli = followupUsesCliRuntime(runtimeParams, runtimeId);
   const ownsNativeCompaction = followupOwnsNativeCompaction(runtimeParams, runtimeId);
   if (isCli || ownsNativeCompaction || normalizeLowercaseStringOrEmpty(runtimeId) === "codex") {
+    // Native compaction never reaches the pre-compaction hook below, so the checkpoint
+    // (which gates itself on token pressure and transcript size) would never run for Codex.
+    if (params.beforeCompaction) {
+      const refreshed = await params.beforeCompaction(entry);
+      assertActive();
+      return refreshed ?? entry;
+    }
     return entry;
   }
 
