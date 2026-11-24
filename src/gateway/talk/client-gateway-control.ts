@@ -2,7 +2,9 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { retireUnadoptedReplySource } from "../../auto-reply/reply/reply-source-binding.js";
 import { formatErrorMessage as formatError, readErrorName } from "../../infra/errors.js";
+import { beginLifecycleWriteCustody } from "../../infra/lifecycle-write-custody.js";
 import { bindGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
+import { retainGatewayRootWorkAdmissionContinuationScope } from "../../process/gateway-work-admission.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import {
   reserveSessionControllerSource,
@@ -57,6 +59,8 @@ export function createTalkClientGatewayControlOwner(
   let retainedExactSpeechTexts: string[] = [];
   let closeProvider: (() => Promise<void>) | undefined;
   let closing: Promise<void> | undefined;
+  // A disconnect has no RPC root; the creating root keeps provider teardown in drain custody.
+  let cleanupAdmission: ReturnType<typeof retainGatewayRootWorkAdmissionContinuationScope>;
   const lifetime = new AbortController();
   const { signal } = lifetime;
   let transcriptSequence = 0;
@@ -570,6 +574,11 @@ export function createTalkClientGatewayControlOwner(
       }
       ready = false;
       retainedExactSpeechTexts = [];
+      // Provider shutdown can emit final speech before transcript flush. Keep the
+      // complete closing prefix owned even when socket cleanup has no admitted root.
+      const releaseFinalPersistence = cleanupAdmission
+        ? beginLifecycleWriteCustody("talk-final-persistence")
+        : undefined;
       const preserveRuns =
         options?.preserveRuns ??
         isTalkVoiceSessionReplacing(
@@ -621,9 +630,20 @@ export function createTalkClientGatewayControlOwner(
               throw transcriptResult.reason;
             }
           })
-          .finally(() => {
-            pendingOwners.delete(owner);
-          });
+          .then(
+            () => {
+              releaseFinalPersistence?.();
+              cleanupAdmission?.release();
+              pendingOwners.delete(owner);
+            },
+            (error: unknown) => {
+              // An uncertain provider or transcript close keeps its drain custody.
+              if (!cleanupAdmission) {
+                pendingOwners.delete(owner);
+              }
+              throw error;
+            },
+          );
       });
       // preserveRuns keeps accepted work alive, not a retired transport's presentation authority.
       params.runAgentConsult.revokeRequesterFinal?.();
@@ -635,6 +655,7 @@ export function createTalkClientGatewayControlOwner(
   // Track creation before the provider resolves. Replacement activates only after
   // startup succeeds, so a failed new transport cannot evict the current one.
   owner.assertOpen();
+  cleanupAdmission = retainGatewayRootWorkAdmissionContinuationScope();
   pendingOwners.add(owner);
   registerTalkConnectionCleanup(params.connId, "browser-control", async () => {
     const pendingCloses: Promise<void>[] = [];
