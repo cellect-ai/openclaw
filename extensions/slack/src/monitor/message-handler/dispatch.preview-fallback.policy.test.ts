@@ -192,7 +192,7 @@ function createPreparedSlackMessage(params?: {
     teamId: string;
     client: Record<string, unknown>;
   };
-}) {
+}): PreparedSlackMessage {
   const routeSessionKey = params?.route?.sessionKey ?? "agent:agent-1:slack:C123";
   const mainSessionKey = params?.route?.mainSessionKey ?? "main";
   const lastRoutePolicy =
@@ -252,7 +252,7 @@ function createPreparedSlackMessage(params?: {
     ackReactionValue: "eyes",
     ackReactionMessageTs: params?.ackReactionMessageTs,
     ackReactionPromise: params?.ackReactionPromise ?? null,
-  } as PreparedSlackMessage;
+  } as unknown as PreparedSlackMessage;
 }
 
 async function dispatch(params?: Parameters<typeof createPreparedSlackMessage>[0]) {

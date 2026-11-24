@@ -416,58 +416,49 @@ describe("talk realtime gateway relay", () => {
     },
   );
 
-  it("logs transcript append failures and rejects an incomplete close", async () => {
+  it("logs a missing-session transcript failure and closes without confirming it", async () => {
     const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
     const tempDir = await fs.realpath(
       await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-relay-voice-failure-")),
     );
     setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    let bridgeRequest: RealtimeVoiceBridgeCreateRequest | undefined;
     const warn = vi.fn();
+    const failures = observeRelayTranscriptFailures();
     try {
       vi.useFakeTimers();
-      const provider = createIdleRelayProvider((request) => {
-        bridgeRequest = request;
-        return createIdleRelayProvider().createBridge?.(request) as RealtimeVoiceBridge;
-      });
+      const captured = captureProvider();
       const session = await createRelay({
-        context: {
-          broadcastToConnIds: vi.fn(),
-          getRuntimeConfig: () => ({}),
-          logGateway: { warn },
-        } as never,
+        context: createRelayContext({ logGateway: { warn } }),
         connId: "conn-voice-failure",
         cfg: {},
-        provider,
+        provider: captured.provider,
         sessionKey: "agent:main:missing",
       });
-      bridgeRequest?.onTranscript?.("user", "cannot persist", true);
-      await vi.advanceTimersByTimeAsync(0);
+      captured.request?.onTranscript?.("user", "cannot persist", true);
+      // Each retry sleep is armed only after the previous attempt fails. Advancing
+      // the clock before that arms the timer leaves flush waiting forever.
+      await failures.afterAttempt(0);
       expect(warn).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(500);
+      await failures.afterAttempt(1);
       expect(warn).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1_999);
       expect(warn).not.toHaveBeenCalled();
       await vi.advanceTimersByTimeAsync(1);
-      await flushTalkRealtimeRelayVoiceWrites({
-        relaySessionId: session.relaySessionId,
-        connId: "conn-voice-failure",
-      });
+      await flushTalkRealtimeRelayVoiceWrites(relayTarget(session, "conn-voice-failure"));
 
       expect(warn).toHaveBeenCalledExactlyOnceWith(
-        expect.stringContaining("realtime relay transcript append failed"),
+        expect.stringContaining("agent session not found (agent:main:missing)"),
       );
-      await expect(
-        stopRelay({
-          relaySessionId: session.relaySessionId,
-          connId: "conn-voice-failure",
-        }),
-      ).rejects.toThrow("agent session not found (agent:main:missing)");
-      // A rejected transcript prefix cannot be recorded as successfully closed.
-      expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)?.status).toBe(
-        "open",
-      );
+      await stopRelay(relayTarget(session, "conn-voice-failure"));
+      const record = voiceRecord(session);
+      expect(record?.status).toBe("closed");
+      // retain-and-close ends the relay call. The missing session never confirmed a transcript.
+      expect(record?.hasUserTranscript).not.toBe(true);
+      expect(record?.transcriptFailureKeys ?? []).toEqual([]);
     } finally {
+      failures.restore();
+      vi.useRealTimers();
       await cleanupIsolatedRelayState(tempDir);
       envSnapshot.restore();
       await fs.rm(tempDir, { recursive: true, force: true });
