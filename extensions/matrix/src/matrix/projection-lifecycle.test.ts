@@ -51,6 +51,22 @@ vi.mock("./send/client.js", () => ({
   ) => callback({ sendEvent: (...args: unknown[]) => mocks.send(options.accountId, ...args) }),
 }));
 
+// A fresh object per call is a replaced live manager. It reads the committed rows,
+// as the real manager's synchronous owner projection does.
+function liveManager(accountId: string) {
+  return {
+    getIdleTimeoutMs: () => 0,
+    getMaxAgeMs: () => 0,
+    getByConversation: (ref: { conversationId: string; parentConversationId?: string }) =>
+      mocks.rows.find(
+        (row) =>
+          row.accountId === accountId &&
+          row.conversationId === ref.conversationId &&
+          (!ref.parentConversationId || row.parentConversationId === ref.parentConversationId),
+      ),
+  };
+}
+
 const roomId = "!Native:example.org";
 const root = "$CaseSensitiveRoot";
 const sessionKey = (agent: string) => `agent:${agent}:matrix:channel:${roomId}:thread:${root}`;
@@ -116,7 +132,7 @@ describe("native Matrix participant lifecycle adapter", () => {
     mocks.stoppedAccounts.clear();
     mocks.managers.clear();
     for (const accountId of accounts) {
-      mocks.managers.set(accountId, {});
+      mocks.managers.set(accountId, liveManager(accountId));
     }
     mocks.rows = [{ ...canonical }];
     cfg = {
@@ -308,14 +324,14 @@ describe("native Matrix participant lifecycle adapter", () => {
   });
   it("does not publish an acknowledged relationship after its live manager is replaced", async () => {
     await admit();
-    mocks.managers.set("main", {});
+    mocks.managers.set("main", liveManager("main"));
     expect(resolve("main")).toEqual([]);
     await admit();
     expect(resolve("main")).toHaveLength(1);
   });
   it("restores a durable relationship on account startup without another user message", async () => {
     await admit();
-    mocks.managers.set("main", {});
+    mocks.managers.set("main", liveManager("main"));
     expect(resolve("main")).toEqual([]);
     // Account startup order must not matter: the canonical account can load last.
     mocks.rows = [];
@@ -332,7 +348,7 @@ describe("native Matrix participant lifecycle adapter", () => {
     runtime.state.openKeyedStore = (options) =>
       createPluginStateKeyedStoreForTests("matrix", options);
     await admit();
-    mocks.managers.set("main", {});
+    mocks.managers.set("main", liveManager("main"));
     expect(resolve("main")).toEqual([]);
     await restoreMatrixProjectionExecutions({
       core: runtime,
@@ -345,7 +361,7 @@ describe("native Matrix participant lifecycle adapter", () => {
     "refuses restored publication for %s",
     async (scenario) => {
       await admit();
-      mocks.managers.set("main", {});
+      mocks.managers.set("main", liveManager("main"));
       if (scenario === "wrong-key") {
         const entry = [...saved][0];
         if (!entry) {
@@ -474,7 +490,7 @@ describe("Matrix canonical binding held by another gateway", () => {
     mocks.send.mockReset().mockResolvedValue("$accepted");
     mocks.stoppedAccounts.clear();
     mocks.managers.clear();
-    mocks.managers.set("main", {});
+    mocks.managers.set("main", liveManager("main"));
     mocks.rows = [];
     cfg = {
       agents: { entries: { main: {} } },
@@ -556,7 +572,7 @@ describe("Matrix canonical binding held by another gateway", () => {
       "relation_conflict",
     );
     await expect(relate({ conversationId: "another" })).rejects.toThrow("relation_conflict");
-    mocks.managers.set("main", {});
+    mocks.managers.set("main", liveManager("main"));
     await restoreMatrixProjectionExecutions({
       core: runtime,
       accountId: "main",
