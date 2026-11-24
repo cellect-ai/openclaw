@@ -54,6 +54,7 @@ type StageParams = Parameters<typeof stageSandboxMedia>[0];
 type MediaContexts = Pick<StageParams, "ctx" | "sessionCtx">;
 type StageOverrides = Partial<Omit<StageParams, "ctx" | "sessionCtx">>;
 const DEFAULT_SESSION_KEY = "agent:main:main";
+const STAGED_INPUT_MAX_MB = STAGED_INPUT_MAX_BYTES / (1024 * 1024);
 
 async function setupSandboxWorkspace(home: string) {
   const cfg = createSandboxMediaStageConfig(home);
@@ -332,10 +333,22 @@ describe("stageSandboxMedia", () => {
   >([
     ["above generic store limit", MEDIA_MAX_BYTES + 1, true],
     ["above sandbox limit", STAGED_INPUT_MAX_BYTES + 1, false],
-    ["agent limit", 50 * 1024 * 1024 + 1, true, { agent: 51 }],
-    ["channel limit", 50 * 1024 * 1024 + 1, true, { channel: 51 }],
-    ["account overrides channel", 50 * 1024 * 1024 + 1, true, { channel: 50, account: 51 }],
-    ["account rejects above limit", 50 * 1024 * 1024 + 1, false, { channel: 51, account: 50 }],
+    // Limits are relative to the staging floor (Cellect raised it to the 200 MiB
+    // Slack download default), so each case still crosses the floor by one byte.
+    ["agent limit", STAGED_INPUT_MAX_BYTES + 1, true, { agent: STAGED_INPUT_MAX_MB + 1 }],
+    ["channel limit", STAGED_INPUT_MAX_BYTES + 1, true, { channel: STAGED_INPUT_MAX_MB + 1 }],
+    [
+      "account overrides channel",
+      STAGED_INPUT_MAX_BYTES + 1,
+      true,
+      { channel: STAGED_INPUT_MAX_MB, account: STAGED_INPUT_MAX_MB + 1 },
+    ],
+    [
+      "account rejects above limit",
+      STAGED_INPUT_MAX_BYTES + 1,
+      false,
+      { channel: STAGED_INPUT_MAX_MB + 1, account: STAGED_INPUT_MAX_MB },
+    ],
     ["minimum staging allowance", 10 * 1024 * 1024 + 1, true, { agent: 5 }],
   ])("staging size policy: %s", async ([_name, size, staged, limits], { media: m }) => {
     const { cfg, sandboxDir } = m;
