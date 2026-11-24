@@ -58,8 +58,9 @@ describe("Matrix account identity projection", () => {
     expect(resolveMatrixAccount({ cfg, accountId: "alerts" }).userId).toBe("@alerts:example.org");
   });
 
-  it("does not resurrect a revoked account identity", () => {
-    clearMatrixCredentials(process.env, "ops");
+  it("does not resurrect a revoked account identity", async () => {
+    // Revocation is an async durable marker in 11.7; resolve only after it commits.
+    await clearMatrixCredentials(process.env, "ops");
     expect(resolveMatrixAccount({ cfg, accountId: "ops" }).userId).toBeUndefined();
     expect(resolveMatrixAccount({ cfg, accountId: "alerts" }).userId).toBe("@alerts:example.org");
   });
