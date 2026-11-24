@@ -20,6 +20,7 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/talk/relay/index.transcript.test.ts",
   "src/gateway/talk/relay/confirmation.test.ts",
   "src/gateway/thread-status-observation.test.ts",
+  "src/gateway/thread-continuation.test.ts",
   "src/gateway/agent-runtime-identity-token.test.ts",
   "src/gateway/agent-turn/agent-run-execution-phase.owner.test.ts",
   "src/gateway/agent-turn/agent-run-media.test.ts",
