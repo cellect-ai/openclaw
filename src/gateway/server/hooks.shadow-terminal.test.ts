@@ -8,6 +8,17 @@ import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-c
 
 const enqueueSystemEventMock = vi.fn();
 const requestHeartbeatMock = vi.fn();
+// 11.7 delivers hook terminals as session events into the captured target.
+const captureSessionEventTargetMock = vi.fn(async (agentId: string, sessionKey: string) => ({
+  agentId,
+  sessionKey,
+  sessionId: "captured-session",
+  generation: "captured-generation",
+}));
+const enqueueSessionEventMock = vi.fn((_text: string, _options: Record<string, unknown>) => ({
+  accepted: Promise.resolve({ ok: true }),
+  settled: Promise.resolve({ status: "completed" }),
+}));
 const runCronIsolatedAgentTurnMock = vi.fn();
 const loadConfigMock = vi.fn(
   (): OpenClawConfig =>
@@ -35,6 +46,10 @@ vi.mock("../../infra/system-events.js", () => ({
 }));
 vi.mock("../../infra/heartbeat-wake.js", () => ({
   requestHeartbeat: requestHeartbeatMock,
+}));
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: captureSessionEventTargetMock,
+  enqueueSessionEventForHost: enqueueSessionEventMock,
 }));
 vi.mock("../../cron/isolated-agent.js", () => ({
   runCronIsolatedAgentTurn: runCronIsolatedAgentTurnMock,
@@ -162,6 +177,7 @@ describe("shadow hook terminals", () => {
         }),
       }),
     );
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
     expect(loggedText()).not.toContain(SHADOW_TEXT);
@@ -184,6 +200,7 @@ describe("shadow hook terminals", () => {
     const result = await dispatchAgentHook(shadowPayload({ sessionMode: "persistent" }));
 
     expect(result).toMatchObject({ ok: true });
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
     expect(loggedText()).not.toContain(SHADOW_TEXT);
@@ -196,6 +213,7 @@ describe("shadow hook terminals", () => {
     const result = await dispatchAgentHook(shadowPayload());
 
     expect(result).toMatchObject({ ok: false });
+    expect(enqueueSessionEventMock).not.toHaveBeenCalled();
     expect(enqueueSystemEventMock).not.toHaveBeenCalled();
     expect(requestHeartbeatMock).not.toHaveBeenCalled();
     expect(loggedText()).not.toContain(SHADOW_TEXT);
@@ -221,10 +239,17 @@ describe("shadow hook terminals", () => {
       requesterAttestation: undefined,
     });
 
-    expect(enqueueSystemEventMock).toHaveBeenCalledWith("Hook Mail (error): ordinary hook failed", {
-      sessionKey: "agent:main:main",
-    });
-    expect(requestHeartbeatMock).toHaveBeenCalled();
+    await vi.waitFor(() =>
+      expect(enqueueSessionEventMock).toHaveBeenCalledWith(
+        "Hook Mail (error): ordinary hook failed",
+        expect.objectContaining({
+          agentId: "main",
+          sessionKey: "agent:main:main",
+          source: "hook",
+          createIfMissing: true,
+        }),
+      ),
+    );
     await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
   });
 
@@ -266,6 +291,7 @@ describe("shadow hook terminals", () => {
           hookRequesterEnvironment: "dev",
         }),
       );
+      expect(enqueueSessionEventMock).not.toHaveBeenCalled();
       expect(enqueueSystemEventMock).not.toHaveBeenCalled();
       release();
       await vi.waitFor(() => expect(getActiveGatewayRootWorkCount()).toBe(0));
