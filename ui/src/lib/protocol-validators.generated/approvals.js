@@ -45,7 +45,7 @@ var External = [
     /(^kind$|^amount$|^currency$|^target$)/u,
     /(^kind$|^target$|^visibility$)/u,
     /(^kind$|^automation$|^command$|^expiresInDays$)/u,
-    /(^kind$|^title$|^description$|^detail$|^severity$|^pluginId$|^toolName$|^agentId$|^scope$|^allowedDecisions$|^externalResolution$)/u,
+    /(^kind$|^origin$|^title$|^description$|^detail$|^severity$|^pluginId$|^toolName$|^agentId$|^scope$|^allowedDecisions$|^externalResolution$)/u,
     /(^label$|^decisions$)/u,
     /(^kind$|^title$|^description$|^proposalHash$|^agentId$|^allowedDecisions$)/u,
     /^[a-f0-9]{64}$/u,
@@ -59,7 +59,7 @@ var External = [
     /(^sessionKey$|^updatedAtMs$|^approvals$|^truncated$)/u,
   ],
   check_0 = (value) => check_1(value),
-  check_1 = (value) => check_2(value) || check_64(value),
+  check_1 = (value) => check_2(value) || check_65(value),
   check_2 = (value) =>
     typeof value == "object" &&
     value !== null &&
@@ -115,7 +115,7 @@ var External = [
     typeof value == "string" &&
     (value.length >= 2 || (value.length >= 1 && CodePointCount(value) >= 1)) &&
     External[2].test(value),
-  check_10 = (value) => check_11(value) || check_48(value) || check_60(value),
+  check_10 = (value) => check_11(value) || check_48(value) || check_61(value),
   check_11 = (value) =>
     typeof value == "object" &&
     value !== null &&
@@ -282,10 +282,11 @@ var External = [
       (unique_19, unique_20) => External[9].test(unique_19) || check_3(value[unique_19]),
     ) &&
     check_49(value.kind) &&
-    check_50(value.title) &&
-    check_51(value.description) &&
-    (value.detail === void 0 || !("detail" in value) || check_52(value.detail)) &&
-    check_53(value.severity) &&
+    (value.origin === void 0 || !("origin" in value) || check_50(value.origin)) &&
+    check_51(value.title) &&
+    check_52(value.description) &&
+    (value.detail === void 0 || !("detail" in value) || check_53(value.detail)) &&
+    check_54(value.severity) &&
     (value.pluginId === void 0 || !("pluginId" in value) || check_20(value.pluginId)) &&
     (value.toolName === void 0 || !("toolName" in value) || check_20(value.toolName)) &&
     (value.agentId === void 0 || !("agentId" in value) || check_20(value.agentId)) &&
@@ -293,25 +294,26 @@ var External = [
     check_43(value.allowedDecisions) &&
     (value.externalResolution === void 0 ||
       !("externalResolution" in value) ||
-      check_57(value.externalResolution)),
+      check_58(value.externalResolution)),
   check_49 = (value) => typeof value == "string" && value === "plugin",
-  check_50 = (value) =>
-    typeof value == "string" &&
-    (value.length >= 2 || (value.length >= 1 && CodePointCount(value) >= 1)) &&
-    (value.length <= 80 || (value.length <= 160 && CodePointCount(value) <= 80)),
+  check_50 = (value) => typeof value == "string" && value === "plugin",
   check_51 = (value) =>
     typeof value == "string" &&
     (value.length >= 2 || (value.length >= 1 && CodePointCount(value) >= 1)) &&
-    (value.length <= 512 || (value.length <= 1024 && CodePointCount(value) <= 512)),
+    (value.length <= 80 || (value.length <= 160 && CodePointCount(value) <= 80)),
   check_52 = (value) =>
     typeof value == "string" &&
     (value.length >= 2 || (value.length >= 1 && CodePointCount(value) >= 1)) &&
+    (value.length <= 512 || (value.length <= 1024 && CodePointCount(value) <= 512)),
+  check_53 = (value) =>
+    typeof value == "string" &&
+    (value.length >= 2 || (value.length >= 1 && CodePointCount(value) >= 1)) &&
     (value.length <= 16384 || (value.length <= 32768 && CodePointCount(value) <= 16384)),
-  check_53 = (value) => check_54(value) || check_55(value) || check_56(value),
-  check_54 = (value) => typeof value == "string" && value === "info",
-  check_55 = (value) => typeof value == "string" && value === "warning",
-  check_56 = (value) => typeof value == "string" && value === "critical",
-  check_57 = (value) =>
+  check_54 = (value) => check_55(value) || check_56(value) || check_57(value),
+  check_55 = (value) => typeof value == "string" && value === "info",
+  check_56 = (value) => typeof value == "string" && value === "warning",
+  check_57 = (value) => typeof value == "string" && value === "critical",
+  check_58 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -320,16 +322,16 @@ var External = [
     Object.getOwnPropertyNames(value).every(
       (unique_21, unique_22) => External[10].test(unique_21) || check_3(value[unique_21]),
     ) &&
-    check_50(value.label) &&
-    check_58(value.decisions),
-  check_58 = (value) =>
+    check_51(value.label) &&
+    check_59(value.decisions),
+  check_59 = (value) =>
     Array.isArray(value) &&
-    value.every((unique_23, index) => check_59(unique_23)) &&
+    value.every((unique_23, index) => check_60(unique_23)) &&
     value.length >= 1 &&
     value.length <= 2 &&
     new Set(value).size === value.length,
-  check_59 = (value) => check_46(value) || check_47(value),
-  check_60 = (value) =>
+  check_60 = (value) => check_46(value) || check_47(value),
+  check_61 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -341,21 +343,21 @@ var External = [
     Object.getOwnPropertyNames(value).every(
       (unique_24, unique_25) => External[11].test(unique_24) || check_3(value[unique_24]),
     ) &&
-    check_61(value.kind) &&
-    check_50(value.title) &&
-    check_51(value.description) &&
-    check_62(value.proposalHash) &&
+    check_62(value.kind) &&
+    check_51(value.title) &&
+    check_52(value.description) &&
+    check_63(value.proposalHash) &&
     (value.agentId === void 0 || !("agentId" in value) || check_20(value.agentId)) &&
-    check_63(value.allowedDecisions),
-  check_61 = (value) => typeof value == "string" && value === "system-agent",
-  check_62 = (value) => typeof value == "string" && External[12].test(value),
-  check_63 = (value) =>
+    check_64(value.allowedDecisions),
+  check_62 = (value) => typeof value == "string" && value === "system-agent",
+  check_63 = (value) => typeof value == "string" && External[12].test(value),
+  check_64 = (value) =>
     Array.isArray(value) &&
     value.every((unique_26, unique_27) => unique_27 < 2 || check_3(unique_26)) &&
     (value.length <= 0 || check_46(value[0])) &&
     (value.length <= 1 || check_44(value[1])) &&
     value.length >= 2,
-  check_64 = (value) =>
+  check_65 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -371,11 +373,11 @@ var External = [
       !("sourceSessionKey" in value) ||
       check_5(value.sourceSessionKey)) &&
     check_6(value.updatedAtMs) &&
-    check_65(value.phase) &&
-    check_66(value.approval),
-  check_65 = (value) => typeof value == "string" && value === "terminal",
-  check_66 = (value) => check_67(value) || check_78(value) || check_84(value) || check_88(value),
-  check_67 = (value) =>
+    check_66(value.phase) &&
+    check_67(value.approval),
+  check_66 = (value) => typeof value == "string" && value === "terminal",
+  check_67 = (value) => check_68(value) || check_79(value) || check_85(value) || check_89(value),
+  check_68 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -397,12 +399,12 @@ var External = [
     check_6(value.expiresAtMs) &&
     check_10(value.presentation) &&
     check_6(value.resolvedAtMs) &&
-    (value.source === void 0 || !("source" in value) || check_68(value.source)) &&
-    (value.resolver === void 0 || !("resolver" in value) || check_69(value.resolver)) &&
-    check_75(value.status) &&
-    check_59(value.decision) &&
-    check_76(value.reason),
-  check_68 = (value) =>
+    (value.source === void 0 || !("source" in value) || check_69(value.source)) &&
+    (value.resolver === void 0 || !("resolver" in value) || check_70(value.resolver)) &&
+    check_76(value.status) &&
+    check_60(value.decision) &&
+    check_77(value.reason),
+  check_69 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -411,7 +413,7 @@ var External = [
     ) &&
     (value.agentId === void 0 || !("agentId" in value) || check_5(value.agentId)) &&
     (value.sessionKey === void 0 || !("sessionKey" in value) || check_5(value.sessionKey)),
-  check_69 = (value) =>
+  check_70 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -419,17 +421,17 @@ var External = [
     Object.getOwnPropertyNames(value).every(
       (unique_34, unique_35) => External[16].test(unique_34) || check_3(value[unique_34]),
     ) &&
-    check_70(value.kind) &&
+    check_71(value.kind) &&
     (value.id === void 0 || !("id" in value) || check_5(value.id)),
-  check_70 = (value) => check_71(value) || check_72(value) || check_73(value) || check_74(value),
-  check_71 = (value) => typeof value == "string" && value === "device",
-  check_72 = (value) => typeof value == "string" && value === "channel",
-  check_73 = (value) => typeof value == "string" && value === "runtime",
-  check_74 = (value) => typeof value == "string" && value === "system",
-  check_75 = (value) => typeof value == "string" && value === "allowed",
-  check_76 = (value) => check_77(value),
-  check_77 = (value) => typeof value == "string" && value === "user",
-  check_78 = (value) =>
+  check_71 = (value) => check_72(value) || check_73(value) || check_74(value) || check_75(value),
+  check_72 = (value) => typeof value == "string" && value === "device",
+  check_73 = (value) => typeof value == "string" && value === "channel",
+  check_74 = (value) => typeof value == "string" && value === "runtime",
+  check_75 = (value) => typeof value == "string" && value === "system",
+  check_76 = (value) => typeof value == "string" && value === "allowed",
+  check_77 = (value) => check_78(value),
+  check_78 = (value) => typeof value == "string" && value === "user",
+  check_79 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -451,17 +453,17 @@ var External = [
     check_6(value.expiresAtMs) &&
     check_10(value.presentation) &&
     check_6(value.resolvedAtMs) &&
-    (value.source === void 0 || !("source" in value) || check_68(value.source)) &&
-    (value.resolver === void 0 || !("resolver" in value) || check_69(value.resolver)) &&
-    check_79(value.status) &&
+    (value.source === void 0 || !("source" in value) || check_69(value.source)) &&
+    (value.resolver === void 0 || !("resolver" in value) || check_70(value.resolver)) &&
+    check_80(value.status) &&
     check_44(value.decision) &&
-    check_80(value.reason),
-  check_79 = (value) => typeof value == "string" && value === "denied",
-  check_80 = (value) => check_77(value) || check_81(value) || check_82(value) || check_83(value),
-  check_81 = (value) => typeof value == "string" && value === "malformed-verdict",
-  check_82 = (value) => typeof value == "string" && value === "no-route",
-  check_83 = (value) => typeof value == "string" && value === "storage-corrupt",
-  check_84 = (value) =>
+    check_81(value.reason),
+  check_80 = (value) => typeof value == "string" && value === "denied",
+  check_81 = (value) => check_78(value) || check_82(value) || check_83(value) || check_84(value),
+  check_82 = (value) => typeof value == "string" && value === "malformed-verdict",
+  check_83 = (value) => typeof value == "string" && value === "no-route",
+  check_84 = (value) => typeof value == "string" && value === "storage-corrupt",
+  check_85 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -482,14 +484,14 @@ var External = [
     check_6(value.expiresAtMs) &&
     check_10(value.presentation) &&
     check_6(value.resolvedAtMs) &&
-    (value.source === void 0 || !("source" in value) || check_68(value.source)) &&
-    (value.resolver === void 0 || !("resolver" in value) || check_69(value.resolver)) &&
-    check_85(value.status) &&
-    check_86(value.reason),
-  check_85 = (value) => typeof value == "string" && value === "expired",
-  check_86 = (value) => check_87(value),
-  check_87 = (value) => typeof value == "string" && value === "timeout",
-  check_88 = (value) =>
+    (value.source === void 0 || !("source" in value) || check_69(value.source)) &&
+    (value.resolver === void 0 || !("resolver" in value) || check_70(value.resolver)) &&
+    check_86(value.status) &&
+    check_87(value.reason),
+  check_86 = (value) => typeof value == "string" && value === "expired",
+  check_87 = (value) => check_88(value),
+  check_88 = (value) => typeof value == "string" && value === "timeout",
+  check_89 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -510,16 +512,16 @@ var External = [
     check_6(value.expiresAtMs) &&
     check_10(value.presentation) &&
     check_6(value.resolvedAtMs) &&
-    (value.source === void 0 || !("source" in value) || check_68(value.source)) &&
-    (value.resolver === void 0 || !("resolver" in value) || check_69(value.resolver)) &&
-    check_89(value.status) &&
-    check_90(value.reason),
-  check_89 = (value) => typeof value == "string" && value === "cancelled",
-  check_90 = (value) => check_91(value) || check_92(value),
-  check_91 = (value) => typeof value == "string" && value === "run-aborted",
-  check_92 = (value) => typeof value == "string" && value === "gateway-restart",
-  check_93 = (value) => check_94(value),
-  check_94 = (value) =>
+    (value.source === void 0 || !("source" in value) || check_69(value.source)) &&
+    (value.resolver === void 0 || !("resolver" in value) || check_70(value.resolver)) &&
+    check_90(value.status) &&
+    check_91(value.reason),
+  check_90 = (value) => typeof value == "string" && value === "cancelled",
+  check_91 = (value) => check_92(value) || check_93(value),
+  check_92 = (value) => typeof value == "string" && value === "run-aborted",
+  check_93 = (value) => typeof value == "string" && value === "gateway-restart",
+  check_94 = (value) => check_95(value),
+  check_95 = (value) =>
     typeof value == "object" &&
     value !== null &&
     !Array.isArray(value) &&
@@ -532,11 +534,11 @@ var External = [
     ) &&
     check_4(value.sessionKey) &&
     check_6(value.updatedAtMs) &&
-    check_95(value.approvals) &&
-    check_96(value.truncated),
-  check_95 = (value) =>
+    check_96(value.approvals) &&
+    check_97(value.truncated),
+  check_96 = (value) =>
     Array.isArray(value) && value.every((unique_44, index) => check_8(unique_44)),
-  check_96 = (value) => typeof value == "boolean",
+  check_97 = (value) => typeof value == "boolean",
   isSessionApprovalEvent = (value) => check_0(value),
-  isSessionApprovalReplay = (value) => check_93(value);
+  isSessionApprovalReplay = (value) => check_94(value);
 export { isSessionApprovalEvent, isSessionApprovalReplay };
