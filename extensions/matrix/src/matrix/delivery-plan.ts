@@ -8,6 +8,7 @@ import type {
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { getMatrixRuntime } from "../runtime.js";
 import { noteMatrixProjectionFinalResult } from "./projection-lifecycle.js";
+import { getMatrixProjectionStatus } from "./projection-source.js";
 import { resolveMatrixReplyToEventId, resolveMatrixThreadRootId } from "./relations.js";
 import type { MatrixClient } from "./sdk.js";
 import type { MatrixMessageWireDispatch } from "./sdk/message-wire-dispatch.js";
@@ -355,7 +356,6 @@ export async function replayMatrixProjectionPublication(
   cfg: import("../types.js").CoreConfig,
   request: Record<string, unknown>,
 ) {
-  const { getMatrixProjectionStatus } = await import("./projection-source.js");
   const roomId = typeof request.roomId === "string" ? request.roomId : "",
     accountId = typeof request.accountId === "string" ? request.accountId : "";
   const owner = getMatrixProjectionStatus(roomId, accountId);
