@@ -6,6 +6,7 @@ import type {
 import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
+import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import type { OutboundDeliveryResult } from "../../infra/outbound/deliver-types.js";
 import { captureDeliveryPublicationEvidence } from "../../infra/outbound/delivery-queue-publication-evidence.js";
 import type { DeliveryPublicationEvidence } from "../../infra/outbound/delivery-queue-publication.types.js";
@@ -277,8 +278,6 @@ export async function settleNativeFinalDeliveryPayload(
   const finalPhysicalReceipt = captureDeliveryPublicationEvidence(results, destination);
   const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
   if (!completion || !results.length) return finalPhysicalReceipt?.platformMessageId;
-  const { settlePendingFinalDelivery } =
-    await import("../../infra/outbound/delivery-completion.js");
   await settlePendingFinalDelivery(
     { kind: "pending-final", ...completion },
     "delivered",
