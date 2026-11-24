@@ -92,7 +92,12 @@ describe("pending-final durable delivery completion", () => {
         {
           id: completion.deliveryId,
           state: "delivered",
-          receipt: { platformMessageId: "ops-final-message", resultCount: 1 },
+          receipt: {
+            platformMessageId: "ops-final-message",
+            // The carried final physical receipt names its last publication event.
+            finalPlatformMessageId: "ops-final-message",
+            resultCount: 1,
+          },
         },
       ]);
       await expect(deliverOutboundPayloads(params)).resolves.toEqual([]);
@@ -141,7 +146,12 @@ describe("pending-final durable delivery completion", () => {
       {
         id: completion.deliveryId,
         state: "delivered",
-        receipt: { platformMessageId: "rendered-final-message", resultCount: 1 },
+        receipt: {
+          platformMessageId: "rendered-final-message",
+          // The carried final physical receipt names its last publication event.
+          finalPlatformMessageId: "rendered-final-message",
+          resultCount: 1,
+        },
       },
     ]);
     expect(await loadPendingDeliveries(tmpDir())).toEqual([]);
