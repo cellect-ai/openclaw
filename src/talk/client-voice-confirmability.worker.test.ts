@@ -1,6 +1,7 @@
 import { assert, describe, expect, it, vi } from "vitest";
 import { createEnteredGate } from "../agents/entered-gate.test-support.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
+import { seedSession } from "./client-voice-session.fixture.test-support.js";
 import {
   appendClientVoiceTranscript,
   closeClientVoiceSession,
@@ -48,6 +49,8 @@ describe("voice confirmation capability from the native run owner", () => {
   );
 
   it("observes a later committed user transcript without replacing the run binding", async () => {
+    // A user transcript is appended to an existing agent session, never one it creates.
+    await seedSession(target.sessionKey);
     const run = await open("client");
     try {
       expect(await isClientVoiceSessionConfirmable(run.binding, run.runId)).toBe(false);
