@@ -7,7 +7,10 @@ import {
   getSessionBindingService,
   testing,
 } from "../src/infra/outbound/session-binding-service.js";
-import { createPluginStateKeyedStore } from "../src/plugin-state/plugin-state-store.js";
+import {
+  createPluginStateKeyedStore,
+  createPluginStateKeyedStoreV2,
+} from "../src/plugin-state/plugin-state-store.js";
 import { PluginInstance } from "../src/plugins/plugin-instance.js";
 import type { PluginRuntime } from "../src/plugins/runtime/types.js";
 import { closeOpenClawStateDatabaseAsync } from "../src/state/openclaw-state-db.js";
@@ -30,11 +33,19 @@ it("flushes a pending Matrix binding touch during native retirement without alte
   const runtime = {
     state: {
       resolveStateDir: () => stateDir,
-      openKeyedStore: (options: Parameters<PluginRuntime["state"]["openKeyedStore"]>[0]) => {
+      openKeyedStore: (options: Parameters<PluginRuntime["state"]["openKeyedStore"]>[0]) =>
+        createPluginStateKeyedStore("matrix", options),
+      // Matrix thread bindings open the 11.7 data-only V2 store.
+      openKeyedStoreV2: <T>(
+        options: Parameters<PluginRuntime["state"]["openKeyedStoreV2"]>[0],
+        authority: Parameters<PluginRuntime["state"]["openKeyedStoreV2"]>[1] = {
+          assertCurrent() {},
+        },
+      ) => {
         if (options.namespace === "thread-bindings") {
           bindingEnv = options.env;
         }
-        return createPluginStateKeyedStore("matrix", options);
+        return createPluginStateKeyedStoreV2<T>("matrix", options, authority);
       },
     },
   } as PluginRuntime;
