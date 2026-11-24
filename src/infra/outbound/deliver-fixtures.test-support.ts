@@ -1,4 +1,4 @@
-import { vi } from "vitest";
+import { expect, vi } from "vitest";
 import type { ChannelOutboundAdapter, ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import {
@@ -6,6 +6,23 @@ import {
   createOutboundTestPlugin,
   createTestRegistry,
 } from "../../test-utils/channel-plugins.js";
+
+/** The carried ack pins its completion receipt and the captured publication message id. */
+export function expectAckReceipt(
+  ackDelivery: (...args: never[]) => unknown,
+  stateDir: string,
+  platformMessageId: string,
+  queueId = "mock-queue-id",
+): void {
+  expect(ackDelivery).toHaveBeenCalledWith(
+    queueId,
+    stateDir,
+    expect.objectContaining({
+      completionReceipt: { platformMessageId },
+      publicationEvidence: expect.objectContaining({ platformMessageId }),
+    }),
+  );
+}
 
 export function requireMockCallArg<TArgs extends unknown[]>(
   mockFn: { mock: { calls: TArgs[] } },

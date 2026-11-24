@@ -36,6 +36,7 @@ import {
   setTestPlugin,
   createTestOutbound,
   setTestOutbound,
+  expectAckReceipt,
 } from "./deliver-fixtures.test-support.js";
 import { createMatrixMessageSendResult } from "./deliver-message-receipt.test-support.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
@@ -1300,9 +1301,7 @@ describe("deliverOutboundPayloads", () => {
     );
     expect(commitParams?.kind).toBe("text");
     expect(commitParams?.result?.messageId).toBe("message-adapter-1");
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id", expectedQueueStateDir, {
-      completionReceipt: { platformMessageId: "message-adapter-1" },
-    });
+    expectAckReceipt(queueMocks.ackDelivery, expectedQueueStateDir, "message-adapter-1");
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
