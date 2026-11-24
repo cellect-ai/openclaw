@@ -316,7 +316,7 @@ describe("buildEmbeddedRunPayloads tool-error warnings", () => {
     expect(payloads).toHaveLength(2);
     expect(payloads[0]).toMatchObject({ text: "Private reasoning only.", isReasoning: true });
     expect(payloads[1]).toMatchObject({
-      text: "⚠️ Message failed. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+      text: "⚠️ Message failed. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
       isError: true,
     });
   });

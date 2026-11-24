@@ -124,8 +124,12 @@ describe("embedded run tool warnings", () => {
   );
 
   it.each([
-    { toolName: "browser", verboseLevel: "off", expected: "⚠️ Browser failed: invalid arguments" },
-    { toolName: "exec", verboseLevel: "on", expected: "⚠️ Exec failed: invalid arguments" },
+    {
+      toolName: "browser",
+      verboseLevel: "off",
+      expected: "⚠️ Browser failed: invalid arguments." + HINT,
+    },
+    { toolName: "exec", verboseLevel: "on", expected: "⚠️ Exec failed: invalid arguments." + HINT },
     {
       toolName: "exec",
       verboseLevel: "full",
