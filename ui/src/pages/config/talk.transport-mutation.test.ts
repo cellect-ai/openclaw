@@ -284,7 +284,7 @@ describe("TalkSettingsPage realtime transport mutation", () => {
     updateGateway({ phase: "connected" });
     await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(2));
     flush();
-    expect(page.querySelector('input[type="radio"]')).not.toBeNull();
+    await waitForSolid(() => expect(page.querySelector('input[type="radio"]')).not.toBeNull());
     expect(page.querySelector("select")?.disabled).toBe(true);
 
     window.dispatchEvent(new Event("focus"));
