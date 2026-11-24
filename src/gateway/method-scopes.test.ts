@@ -89,8 +89,9 @@ describe("method scope resolution", () => {
     ["users.personalFile.set", ["operator.read"]],
     ["agents.files.set", ["operator.admin"]],
     ["users.linkEmail", ["operator.admin"]],
-    ["users.setDisplayName", ["operator.write"]],
-    ["users.setAvatar", ["operator.write"]],
+    // df72d285c4e: members edit their own profile; the handler checks ownership.
+    ["users.setDisplayName", ["operator.read"]],
+    ["users.setAvatar", ["operator.read"]],
     ["taskSuggestions.list", ["operator.read"]],
     ["taskSuggestions.create", ["operator.write"]],
     ["taskSuggestions.accept", ["operator.admin"]],
@@ -108,16 +109,19 @@ describe("method scope resolution", () => {
     ["environments.list", ["operator.read"]],
     ["environments.create", ["operator.admin"]],
     ["environments.destroy", ["operator.admin"]],
-    ["worktrees.list", ["operator.read"]],
+    // cac4a7efdc6: restricted roles see only repositories they can write or reach publicly.
+    ["worktrees.list", ["operator.write"]],
     ["worktrees.branches", ["operator.write"]],
     ["worktrees.create", ["operator.write"]],
     ["projects.list", ["operator.read"]],
     ["users.prefs.get", ["operator.read"]],
-    ["users.prefs.set", ["operator.write"]],
+    // 0baead91066: guests save their own New Session choices.
+    ["users.prefs.set", ["operator.read"]],
     ["projects.register", ["operator.admin"]],
     ["projects.remove", ["operator.admin"]],
     ["projects.add", ["operator.write"]],
-    ["projects.searchRemote", ["operator.read"]],
+    // cac4a7efdc6: remote repository search is limited to write-capable roles.
+    ["projects.searchRemote", ["operator.write"]],
     ["sessions.groups.list", ["operator.read"]],
     ["sessions.groups.defaults", ["operator.write"]],
     ["sessions.groups.put", ["operator.write"]],
@@ -446,10 +450,11 @@ describe("method scope resolution", () => {
       "operator.write",
     ],
     [
+      // fd0403b40c9: the dispatch owner checks an explicit profile against the live role.
       "profile dispatch",
       "sessions.dispatch",
       { key: "agent:main:thread", profileId: "development" },
-      "operator.admin",
+      "operator.write",
     ],
     [
       "configured-default dispatch",
