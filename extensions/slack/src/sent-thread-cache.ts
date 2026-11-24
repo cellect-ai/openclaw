@@ -363,6 +363,7 @@ export function clearSlackThreadFailureNotice(params: {
 
 export function clearSlackThreadParticipationCache(): void {
   threadParticipation.clearForTest();
+  threadFailureNotices.clear();
   threadOwners.owners.clear();
   threadOwners.claims.clear();
   threadOwners.peers.clear();
