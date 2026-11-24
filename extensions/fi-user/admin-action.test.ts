@@ -562,4 +562,33 @@ describe("room_admin creation is retired", () => {
       tool.execute("ra1", { task: "room_admin", description: "Add Bob" }),
     ).rejects.toThrow(/Unknown admin task/);
   });
+
+  it("states the 1000-character limit and names the field and its length on overflow", async () => {
+    const actions = await import("./admin-action.js");
+    const api = {
+      config: runtimeConfig,
+      logger: { warn: vi.fn() },
+      runtime: { config: { current: () => runtimeConfig } },
+    } as unknown as OpenClawPluginApi;
+    const tool = actions.createRequestAdminActionTool(api, {
+      agentId: "cellect-fi-user",
+      getRuntimeConfig: () => runtimeConfig,
+    } as never);
+    expect(JSON.stringify(tool.parameters)).toContain("At most 1000 characters");
+    await expect(
+      tool.execute("tl1", {
+        task: "document_outside_grants",
+        project: "305-third",
+        description: "x".repeat(1_342),
+      }),
+    ).rejects.toThrow("description is 1342 characters; the limit is 1000");
+    await expect(
+      tool.execute("tl2", {
+        task: "restricted_filing",
+        project: "305-third",
+        description: "ok",
+        reason: "y".repeat(1_001),
+      }),
+    ).rejects.toThrow("reason is 1001 characters; the limit is 1000");
+  });
 });
