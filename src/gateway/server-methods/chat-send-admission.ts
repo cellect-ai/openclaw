@@ -54,7 +54,7 @@ import {
   respondChatSessionRoutingChanged,
 } from "./chat-send-admission-errors.js";
 import { prepareChatCompletionDelivery } from "./chat-send-completion-claim.js";
-import { finishDisplacedChatSendAdmission } from "./chat-send-displaced-admission.js";
+import { resolveCurrentChatSendAdmission } from "./chat-send-displaced-admission.js";
 import {
   isLocalChatInputAdmission,
   resolveCodexGoalAdmission,
@@ -557,18 +557,16 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     gatewayWorkAdmission.release();
     capturedOperator.release();
   };
-  if (
-    finishDisplacedChatSendAdmission({
-      params,
-      admittedRunAbort,
-      reservation,
-      releaseAdmissionOwners,
-      reservationSuperseded,
-      supersedingResult,
-      lifecycleGeneration,
-    })
-  )
-    return { ok: false as const };
+  const currentRunAbort = resolveCurrentChatSendAdmission({
+    params,
+    admittedRunAbort,
+    reservation,
+    releaseAdmissionOwners,
+    reservationSuperseded,
+    supersedingResult,
+    lifecycleGeneration,
+  });
+  if (!currentRunAbort) return { ok: false as const };
   assertSourceAuthority = () => {
     capturedOperator.authority?.assertCurrent();
     assertAcceptedInputAuthority?.();
@@ -580,7 +578,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   const dispatchCustody = await prepareAdmittedChatSendDispatch({
     params,
     assertSessionTargetCurrent,
-    runAbort: admittedRunAbort,
+    runAbort: currentRunAbort,
     admission: gatewayWorkAdmission,
     releaseCaller: () => {
       try {
@@ -596,7 +594,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   const { releaseCallerAuthority, releaseGatewayRootContinuation } = dispatchCustody;
 
   const acquiredGatewayWorkAdmission = gatewayWorkAdmission;
-  const sourceRef = admittedRunAbort.entry;
+  const sourceRef = currentRunAbort.entry;
   let sessionPreparationActive = true;
   const onSessionPrepared = bindChatSendPreparedSession({
     runId: clientRunId,
@@ -628,7 +626,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   const { cleanup: cleanupAdmittedRun, setDiscardPreparedMedia } = createAdmittedChatSendCleanup({
     cleanupAbort: () => {
       sessionPreparationActive = false;
-      admittedRunAbort.cleanup();
+      currentRunAbort.cleanup();
     },
     releaseRetainedWork: retainedWork.release,
   });
@@ -649,7 +647,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
   return {
     ok: true as const,
     value: {
-      activeRunAbort: admittedRunAbort,
+      activeRunAbort: currentRunAbort,
       operatorAuthority: channelRequester ? undefined : capturedOperator.authority,
       channelRequester,
       armOperatorRunCancellation: capturedOperator.armCancellation,
@@ -676,7 +674,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
           respond,
           runId: clientRunId,
           lifecycleGeneration,
-          stopReason: admittedRunAbort.entry?.adapter.abortStopReason,
+          stopReason: currentRunAbort.entry?.adapter.abortStopReason,
           sourceRef,
           cleanup: cleanupAdmittedRun,
         }),
@@ -699,7 +697,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
           retainedWork,
           admission: acquiredGatewayWorkAdmission,
           lifecycleGeneration,
-          controller: admittedRunAbort.controller,
+          controller: currentRunAbort.controller,
           sourceRef,
         }),
       localGoalAdmission,

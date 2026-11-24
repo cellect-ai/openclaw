@@ -193,6 +193,8 @@ export function readChannelPairingSnapshotFromDatabase(
         "created_at",
         "last_seen_at",
         "meta_json",
+        "status",
+        "resolved_at",
         eb.val(0).as("sort_order"),
         eb.val(0).as("updated_at"),
         eb.val<"request" | "allow">("request").as("kind"),
@@ -209,6 +211,8 @@ export function readChannelPairingSnapshotFromDatabase(
             eb.val("").as("created_at"),
             eb.val("").as("last_seen_at"),
             eb.val(null).as("meta_json"),
+            eb.val(null).as("status"),
+            eb.val(null).as("resolved_at"),
             "sort_order",
             "updated_at",
             eb.val<"request" | "allow">("allow").as("kind"),
@@ -233,6 +237,8 @@ export function readChannelPairingSnapshotFromDatabase(
         created_at: row.created_at,
         last_seen_at: row.last_seen_at,
         meta_json: row.meta_json,
+        status: row.status,
+        resolved_at: row.resolved_at,
       });
     } else {
       allowRows.push({

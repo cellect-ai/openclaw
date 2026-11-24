@@ -482,7 +482,7 @@ describe("talk realtime gateway relay", () => {
     expect(checkClientVoiceToolConfirmationPolicy(policy).allowed).toBe(false);
     request?.onTranscript?.("user", "yes", false);
     const owner = relaySessions.get(session.relaySessionId)!;
-    const pending = owner.confirmationReadiness.wait();
+    const pending = owner.transcriptReadiness.wait();
     await nextEventLoopTurn();
     request?.onTranscript?.("user", "[noise] ...", true);
     await expect(pending).resolves.toBeUndefined();
@@ -503,7 +503,7 @@ describe("talk realtime gateway relay", () => {
       return makeRelayTransport();
     };
     const broadcastToConnIds = vi.fn();
-    await createRelay({
+    const created = await createRelay({
       context: { broadcastToConnIds } as never,
       connId: "conn-1",
       provider,
@@ -531,7 +531,11 @@ describe("talk realtime gateway relay", () => {
       }),
     );
     expect(broadcastToConnIds.mock.calls.map(([, payload]) => payload)).toContainEqual(
-      expect.objectContaining({ type: "inputAudioStart", itemId: "input-1" }),
+      expect.objectContaining({
+        type: "inputAudioStart",
+        itemId: "input-1",
+        relaySessionId: created.relaySessionId,
+      }),
     );
   });
 });

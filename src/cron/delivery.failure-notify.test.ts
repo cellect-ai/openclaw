@@ -53,6 +53,7 @@ describe("sendCronAnnouncePayloadStrict", () => {
     vi.clearAllMocks();
     vi.spyOn(deliveryQueue, "inspectDeliveryQueueReceipt").mockResolvedValue({
       status: undefined,
+      completionReceipt: null,
       pendingEntry: null,
     });
     mocks.deliverOutboundPayloads

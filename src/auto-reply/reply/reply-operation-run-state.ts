@@ -11,7 +11,6 @@ export type {
   ReplyOperationRunState,
   ReplyPreRunRejectionCode,
 } from "../../sessions/session-controller.contracts.js";
-import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 
 // Carries this invocation's admission decision through reply option spreads so
 // cleanup never infers it from whichever operation is active later.

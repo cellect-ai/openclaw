@@ -153,7 +153,12 @@ export function createControlUiDefaultResponses(scenario: {
       accounts: [],
       requests: [],
       commandOwnerConfigured: true,
-      limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+      limits: {
+        pendingPerAccount: 3,
+        historyPerAccount: 25,
+        ttlMs: 3_600_000,
+        staleAfterMs: 86_400_000,
+      },
     } satisfies ChannelsPairingListResult,
     "plugins.catalog.categories": { categories: [] } satisfies PluginsCatalogCategoriesResult,
     "plugins.catalog.browse": { items: [] } satisfies PluginsCatalogBrowseResult,

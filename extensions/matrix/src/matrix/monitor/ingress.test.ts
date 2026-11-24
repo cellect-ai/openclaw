@@ -265,8 +265,8 @@ describe("Matrix sync admission", () => {
     const event = {
       ...encryptedEvent("$malformed", Date.now()),
       type: "m.room.message",
-      sender: undefined,
     };
+    Reflect.deleteProperty(event, "sender");
     try {
       await monitor.admitSync(matrixSyncResponse("cursor", roomId, event, "previous"), {
         hasSavedSync: true,

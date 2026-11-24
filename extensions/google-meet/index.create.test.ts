@@ -10,7 +10,6 @@ import {
   createMeetingRealtimeEngineBindings,
   startMeetingRealtimeEngine,
 } from "openclaw/plugin-sdk/meeting-runtime";
-import type { RealtimeVoiceProviderPlugin } from "openclaw/plugin-sdk/realtime-voice";
 import { fetchWithSsrFGuard } from "openclaw/plugin-sdk/ssrf-runtime";
 import { createRequireRecord, useMeetingTestState } from "openclaw/plugin-sdk/test-fixtures";
 import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
@@ -26,6 +25,7 @@ import {
   noopLogger,
   setupGoogleMeetPlugin,
 } from "./src/test-support/plugin-harness.js";
+import { createTestMeetVoiceProvider } from "./src/test-support/voice-provider.test-support.js";
 import { GOOGLE_MEET_PLATFORM_ADAPTER } from "./src/transports/google-meet-platform-adapter.js";
 
 function mockCallArg(mock: { mock: { calls: unknown[][] } }, argIndex: number, callIndex = 0) {
@@ -130,43 +130,6 @@ function createIsolatedTestDir(prefix: string): string {
   const dir = mkdtempSync(path.join(tmpdir(), prefix));
   testTempDirs.add(dir);
   return dir;
-}
-
-type TestMeetVoiceBridgeRequest = Parameters<RealtimeVoiceProviderPlugin["createBridge"]>[0];
-
-function createTestMeetVoiceProvider() {
-  let request: TestMeetVoiceBridgeRequest | undefined;
-  const bridge = {
-    connect: vi.fn(async () => {}),
-    sendAudio: vi.fn(),
-    sendUserMessage: vi.fn(),
-    setMediaTimestamp: vi.fn(),
-    submitToolResult: vi.fn(),
-    acknowledgeMark: vi.fn(),
-    close: vi.fn(),
-    triggerGreeting: vi.fn(),
-    isConnected: vi.fn(() => true),
-  };
-  const provider: RealtimeVoiceProviderPlugin = {
-    id: "openai",
-    label: "OpenAI",
-    autoSelectOrder: 1,
-    resolveConfig: ({ rawConfig }) => rawConfig,
-    isConfigured: () => true,
-    createBridge: (nextRequest) => {
-      request = nextRequest;
-      return bridge;
-    },
-  };
-  return {
-    provider,
-    requireRequest: () => {
-      if (!request) {
-        throw new Error("Expected realtime bridge callbacks");
-      }
-      return request;
-    },
-  };
 }
 
 const voiceCallMocks = vi.hoisted(() => ({

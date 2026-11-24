@@ -2,6 +2,7 @@ import { getLoadedChannelPlugin } from "../../channels/plugins/index.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { loadCompletedDeliveryReceipt } from "../../infra/outbound/delivery-queue-storage.js";
 import { sendMessage } from "../../infra/outbound/message.js";
+import { resolveOutboundSessionRoute } from "../../infra/outbound/outbound-session.js";
 import { readFiUserMatrixRoom } from "./fi-shadow-matrix-room.js";
 import { roomAudienceAllowsOwner } from "./fi-shadow-room-audience.js";
 
@@ -75,6 +76,18 @@ export async function publishPersonalReviewReport(params: {
   assertActive();
   const roomSessionKey = `agent:cellect-fi-user:matrix:channel:${params.owner.roomId}`;
   const sessionKey = threadId ? `${roomSessionKey}:thread:${threadId}` : roomSessionKey;
+  const transcriptRoute = await resolveOutboundSessionRoute({
+    cfg: params.getConfig(),
+    channel: "matrix",
+    agentId: "cellect-fi-user",
+    accountId,
+    target: params.owner.roomId,
+    threadId,
+    currentSessionKey: sessionKey,
+    assertDirectAdapterHandoff: assertActive,
+  });
+  await assertCurrent();
+  if (!transcriptRoute) throw new Error("review_publication_route_unavailable");
   const sent = await sendMessage({
     cfg: params.getConfig(),
     channel: "matrix",
@@ -101,7 +114,7 @@ export async function publishPersonalReviewReport(params: {
     onDeliveryAttempt: assertCurrent,
     onPlatformSendDispatch: assertCurrent,
     assertDirectAdapterHandoff: assertActive,
-    mirror: { sessionKey, agentId: "cellect-fi-user", idempotencyKey: params.idempotencyKey },
+    transcriptRoute,
   });
   if (sent.deliveryStatus !== "sent" || !sent.result?.messageId) {
     throw new Error("review_publication_unconfirmed");

@@ -108,10 +108,10 @@ it("forwards the run id and host-stamped input provenance to plugin tools", () =
 });
 
 it("forwards host execution identity without deriving it from the session", () => {
-  expect(resolve({ runId: "host-run", agentSessionKey: "agent:main:session" }).context.runId).toBe(
+  expect(resolve({ runId: "host-run", agentSessionKey: "agent:main:session" }).runId).toBe(
     "host-run",
   );
-  expect(resolve({ agentSessionKey: "agent:main:session" }).context.runId).toBeUndefined();
+  expect(resolve({ agentSessionKey: "agent:main:session" }).runId).toBeUndefined();
 });
 
 it("forwards trusted requester sender identity", () => {

@@ -558,7 +558,6 @@ it.each([
       await transport.stop();
       lifetime.abort();
       await subscriptions.agentUnsub();
-      subscriptions.heartbeatUnsub();
       subscriptions.transcriptUnsub();
       subscriptions.lifecycleUnsub();
       clearAgentRunContext(runId);

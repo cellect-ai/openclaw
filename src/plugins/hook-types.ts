@@ -12,8 +12,6 @@ import type { InstallPolicyRequestKind as PluginInstallRequestKind } from "../se
 import type {
   PluginHookAgentContext,
   PluginHookContextWindow,
-  PluginHookRequesterContinuation,
-  PluginHookSpawnedRequester,
 } from "./hook-agent-context.types.js";
 import type {
   PluginHookBeforeAgentRunEvent,

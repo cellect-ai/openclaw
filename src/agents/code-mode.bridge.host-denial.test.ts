@@ -446,7 +446,7 @@ describe("Code Mode subscribed host denial", () => {
     vi.spyOn(clientVoiceSession, "resolveClientVoiceRunBinding").mockImplementation((runId) =>
       runId === harness.runId ? binding : undefined,
     );
-    vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockReturnValue(true);
+    vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockResolvedValue(true);
     const args = { command: "printf voice-denied", host: "node", yieldMs: 1000 };
     expect(
       checkClientVoiceToolConfirmationPolicy({

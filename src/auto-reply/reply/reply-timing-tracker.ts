@@ -6,7 +6,7 @@ import {
   type StageTiming,
 } from "../../shared/stage-timing.js";
 
-type ReplyTimingLogParams = {
+export type ReplyTimingLogParams = {
   message: string;
   outcome?: string;
   reason?: string;

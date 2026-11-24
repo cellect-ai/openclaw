@@ -329,7 +329,6 @@ describe("Fi user requester-bound Google Drive", () => {
     mocks.extractPdfContent.mockResolvedValue({
       text: "Developer-favorable scope text",
       images: [{ type: "image", data: "cG5n", mimeType: "image/png" }],
-      extractor: "pdf",
     });
     const drive = registeredTools(slackContext()).find((tool) => tool.name === "fi_user_gdrive");
     if (!drive) {
@@ -364,7 +363,6 @@ describe("Fi user requester-bound Google Drive", () => {
     mocks.extractPdfContent.mockResolvedValue({
       text: "Exhibit A scope text",
       images: [],
-      extractor: "pdf",
     });
     const drive = registeredTools(slackContext()).find((tool) => tool.name === "fi_user_gdrive");
     if (!drive) {

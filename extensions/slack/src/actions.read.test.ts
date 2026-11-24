@@ -15,9 +15,13 @@ vi.mock("./client.js", () => ({
 }));
 function createClient() {
   return {
-    conversations: { replies: vi.fn(), history: vi.fn() },
+    conversations: { replies: vi.fn(), history: vi.fn(), info: vi.fn() },
   } as unknown as WebClient & {
-    conversations: { replies: ReturnType<typeof vi.fn>; history: ReturnType<typeof vi.fn> };
+    conversations: {
+      replies: ReturnType<typeof vi.fn>;
+      history: ReturnType<typeof vi.fn>;
+      info: ReturnType<typeof vi.fn>;
+    };
   };
 }
 type Bounds = { oldest?: string; latest?: string; inclusive?: boolean; limit?: number };

@@ -23,6 +23,7 @@ import { copyBeforeToolCallWrapperMetadata } from "./agent-tool-metadata.js";
 import {
   captureAgentToolExecutionBudget,
   copyAgentToolSourceExecutionGuard,
+  runAgentToolSourceExecutionGuard,
   runWithBoundAgentToolSourceExecutionScope,
 } from "./agent-tool-source-execution-guard.js";
 import {
@@ -44,6 +45,10 @@ import {
   summarizeToolParams,
   startToolExecutionLiveness,
 } from "./agent-tools.before-tool-call.diagnostics.js";
+import {
+  prepareBeforeToolCallExecutionParams,
+  finalizeBeforeToolCallExecutionParams,
+} from "./agent-tools.before-tool-call.params.js";
 import {
   runBeforeToolCallHook,
   consumeFinalClientVoiceToolConfirmation,
@@ -84,7 +89,6 @@ import {
   isCodeModeControlTool,
   getCodeModeExecBeforeHookMetadata,
   normalizeCodeModeExecBeforeHookParams,
-  reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
 import { createGatewayToolPolicyAssertion } from "./gateway-tool-policy.js";
 import { captureAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
@@ -107,54 +111,6 @@ const INTERNAL_DISPOSED_RESULT = {
   content: [],
   details: { status: "skipped", deniedReason: "internal-dispose" },
 };
-
-/** Run tool-owned preparation while retaining the exact prepared object. */
-export async function prepareBeforeToolCallExecutionParams(params: {
-  tool: AnyAgentTool;
-  params: unknown;
-  toolCallId?: string;
-  ctx?: HookContext;
-  signal?: AbortSignal;
-}): Promise<unknown> {
-  const prepare = params.tool.prepareBeforeToolCallParams;
-  if (prepare && params.ctx?.awaitSessionDiffBaseline) {
-    await params.ctx.awaitSessionDiffBaseline();
-    params.signal?.throwIfAborted();
-  }
-  return prepare
-    ? await prepare(params.params, {
-        ...(params.toolCallId ? { toolCallId: params.toolCallId } : {}),
-        ...(params.ctx ? { hookContext: params.ctx } : {}),
-        ...(params.signal ? { signal: params.signal } : {}),
-      })
-    : params.params;
-}
-
-/** Reconcile hook rewrites and restore tool-owned state before execution. */
-export function finalizeBeforeToolCallExecutionParams(params: {
-  tool: AnyAgentTool;
-  preparedParams: unknown;
-  hookParams: unknown;
-  adjustedParams: unknown;
-  finalizerMode: "adapter" | "wrapped";
-}): unknown {
-  const reconciledParams = reconcileCodeModeExecBeforeHookParams({
-    owner: { tool: params.tool },
-    originalParams: params.preparedParams,
-    hookParams: params.hookParams,
-    adjustedParams: params.adjustedParams,
-  });
-  // Tool preparation may key private state in a WeakMap by this exact object.
-  // Keep the original identity until finalization transfers valid state to rewrites.
-  const finalize = params.tool.finalizeBeforeToolCallParams;
-  if (!finalize) {
-    return reconciledParams;
-  }
-  if (params.finalizerMode === "adapter") {
-    return finalize(reconciledParams, params.preparedParams);
-  }
-  return finalize.call(params.tool, reconciledParams, params.preparedParams) ?? reconciledParams;
-}
 
 class BeforeToolCallFailureError extends Error {
   constructor(
@@ -465,19 +421,26 @@ export function wrapToolWithBeforeToolCallHook(
         try {
           const args = [toolCallId, executeParams, signal, onUpdate, ...executionArgs];
           const invoke = () =>
-            runWithBoundAgentToolSourceExecutionScope(tool, () => {
+            runWithBoundAgentToolSourceExecutionScope(tool, async () => {
               // Charge the invocation after the source read, at the effect boundary.
               signal?.throwIfAborted();
               assertAgentPluginRuntimeCurrent();
               assertGatewayToolPolicy(executeParams);
               // Spoken intent never replaces the current native authority above.
               // Consume only the exact final arguments after suppressed calls settle.
-              const confirmation = consumeFinalClientVoiceToolConfirmation({
+              const assertFinalCurrent = () => {
+                signal?.throwIfAborted();
+                runAgentToolSourceExecutionGuard(tool);
+                assertAgentPluginRuntimeCurrent();
+                assertGatewayToolPolicy(executeParams);
+              };
+              const confirmation = await consumeFinalClientVoiceToolConfirmation({
                 toolCallId,
                 toolName,
                 toolKind: hookMetadata?.toolKind,
                 params: executeParams,
                 ctx,
+                assertCurrent: assertFinalCurrent,
               });
               if (!confirmation.allowed) {
                 return blockToolCall({
@@ -486,6 +449,7 @@ export function wrapToolWithBeforeToolCallHook(
                   toolParams: executeParams,
                 });
               }
+              assertFinalCurrent();
               admitExecution?.();
               onImplementationStart?.();
               recordToolExecutionStarted(toolCallId, ctx?.runId);
@@ -719,3 +683,8 @@ function pruneTrackedToolCallIds(ids: Set<string>): void {
     ids.delete(oldest);
   }
 }
+
+export {
+  prepareBeforeToolCallExecutionParams,
+  finalizeBeforeToolCallExecutionParams,
+} from "./agent-tools.before-tool-call.params.js";

@@ -216,6 +216,8 @@ function formatForwardedExternalRunFailureText(message: string): string {
 export function buildExternalRunFailureReply(
   input: ExternalRunFailureInput,
   options?: {
+    /** Derived from the admitted migrated-heartbeat source, never an error-text hint. */
+    isHeartbeat?: boolean;
     includeAuthProfileId?: boolean;
     includeDetails?: boolean;
     replayPrevented?: boolean;

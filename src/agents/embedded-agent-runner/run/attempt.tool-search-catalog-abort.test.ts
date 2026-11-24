@@ -29,7 +29,10 @@ import { isToolResultError } from "../../tool-result-error.js";
 import type { ToolSearchCatalogRef } from "../../tool-search.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { createSessionsSpawnTool } from "../../tools/sessions-spawn-tool.js";
-import { createAgentBackedAttemptSession } from "./attempt-agent.test-support.js";
+import {
+  createAgentBackedAttemptSession,
+  streamAttemptAssistant,
+} from "./attempt-agent.test-support.js";
 import {
   cleanupTempPaths,
   createContextEngineAttemptRunner,
@@ -143,67 +146,31 @@ describe("runEmbeddedAttempt tool boundaries", () => {
           senderId: verifiedSender ? senderId : undefined,
           config: { tools: { codeMode: true, toolSearch: false } },
         },
-        createSession: () => {
-          const session = createDefaultEmbeddedSession();
-          const options = hoisted.createAgentSessionMock.mock.calls.at(-1)?.[0];
-          if (!options?.customTools) {
-            throw new Error("Expected prepared tools");
-          }
-          const tools = wrapToolDefinitions(options.customTools);
-          expect(tools.map((tool) => tool.name)).toContain("exec");
-          let turn = 0;
-          const agent = new Agent({
-            initialState: { model: options.model, tools },
-            streamFn: () => {
-              const first = turn++ === 0;
-              const message: AssistantMessage = {
-                role: "assistant",
-                content: first
-                  ? [
-                      {
-                        type: "toolCall",
-                        id: "question-call",
-                        name: "exec",
-                        arguments: {
-                          title: "Ask the requester a question",
-                          code: "return await ask_user({});",
+        createSession: () =>
+          createAgentBackedAttemptSession((model, tools) => {
+            expect(tools.map((tool) => tool.name)).toContain("exec");
+            let turn = 0;
+            return new Agent({
+              initialState: { model, tools },
+              streamFn: () =>
+                streamAttemptAssistant(
+                  model,
+                  turn++ === 0
+                    ? [
+                        {
+                          type: "toolCall",
+                          id: "question-call",
+                          name: "exec",
+                          arguments: {
+                            title: "Ask the requester a question",
+                            code: "return await ask_user({});",
+                          },
                         },
-                      },
-                    ]
-                  : [{ type: "text", text: "Done." }],
-                api: options.model.api,
-                provider: options.model.provider,
-                model: options.model.id,
-                usage: createZeroUsageFixture(),
-                stopReason: first ? "toolUse" : "stop",
-                timestamp: Date.now(),
-              };
-              const stream = createAssistantMessageEventStream();
-              queueMicrotask(() => {
-                stream.push({ type: "done", reason: first ? "toolUse" : "stop", message });
-                stream.end();
-              });
-              return stream;
-            },
-          });
-          // SAFETY: This fixture delegates execution to the real tool-calling loop.
-          session.agent = agent as typeof session.agent;
-          Object.defineProperty(session, "messages", {
-            get: () => agent.state.messages,
-            set: (messages) => {
-              agent.state.messages = messages;
-            },
-          });
-          session.setActiveToolsByName = (names) => {
-            agent.state.tools = tools.filter((tool) => names.includes(tool.name));
-          };
-          session.getActiveToolNames = () => agent.state.tools.map((tool) => tool.name);
-          session.prompt = async (prompt, promptOptions) => {
-            promptOptions?.preflightResult?.(true);
-            await agent.prompt(prompt);
-          };
-          return session;
-        },
+                      ]
+                    : [{ type: "text", text: "Done." }],
+                ),
+            });
+          }),
       });
       expect(result.codeModeEngaged).toBe(true);
       expect(contexts[0]).toMatchObject({

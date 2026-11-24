@@ -27,7 +27,7 @@ import { createOpenClawTestState } from "openclaw/plugin-sdk/test-state";
 import { afterEach, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../../channel.js";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
-import { MatrixClient, type MatrixRawEvent } from "../sdk.js";
+import { MatrixClient } from "../sdk.js";
 import {
   createMatrixHandlerTestHarness,
   createMatrixTextMessageEvent,
@@ -223,13 +223,13 @@ it.each([
       });
       const now = Date.now();
       const clock = vi.spyOn(Date, "now").mockReturnValue(now);
-      const queue = createChannelIngressQueueForTests<{
-        version: 1;
-        roomId: string;
-        event: MatrixRawEvent;
-      }>({ channelId: "matrix", accountId: "ops", stateDir: state.stateDir });
-      const payload = { version: 1 as const, roomId, event };
-      const eventId = "$matrix-route-configured-retry";
+      const queue = createChannelIngressQueueForTests<{ version: 1; rawEvent: string }>({
+        channelId: "matrix",
+        accountId: "ops",
+        stateDir: state.stateDir,
+      });
+      const payload = { version: 1 as const, rawEvent: JSON.stringify({ roomId, event }) };
+      const eventId = JSON.stringify([roomId, event.event_id]);
       const createIngress = () =>
         createMatrixIngressMonitor({
           accountId: "ops",
@@ -241,7 +241,7 @@ it.each([
       const firstIngress = createIngress();
       let retryIngress: ReturnType<typeof createIngress> | undefined;
       try {
-        await queue.enqueue(eventId, payload, { laneKey: `room:${roomId}` });
+        await queue.enqueue(eventId, payload, { laneKey: roomId });
         firstIngress.start();
         await firstIngress.waitForIdle();
         expect(terminal).not.toHaveBeenCalled();

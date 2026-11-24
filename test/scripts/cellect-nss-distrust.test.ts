@@ -5,7 +5,14 @@ import { createCommandTest, type CommandFixture } from "../helpers/command-fixtu
 
 const it = createCommandTest();
 const source = fs.readFileSync(path.resolve("scripts/docker/cellect-nss-distrust.sh"), "utf8");
-const fingerprints = source.match(/^expected='([^']+)'/m)![1].split("\n");
+const expected = source.match(/^expected='([^']+)'/m)?.[1];
+if (!expected) throw new Error("Native NSS distrust fingerprint declaration is missing");
+const fingerprints = expected.split("\n");
+function fingerprint(index: number): string {
+  const value = fingerprints[index];
+  if (!value) throw new Error(`Missing declared NSS fingerprint ${index}`);
+  return value;
+}
 
 // External-command fixtures only: the real entry script parses NSS's verified
 // per-certificate pretty-print shape. Packaged-image tests own real NSS proof.
@@ -79,7 +86,7 @@ function fixture(command: CommandFixture, options: { rows?: string[]; missing?: 
   for (const [name, body] of [
     ["certutil", certutil],
     ["openssl", openssl],
-  ]) {
+  ] as const) {
     fs.writeFileSync(path.join(bin, name), body, { mode: 0o755 });
   }
   for (const [index, fp] of fingerprints.entries()) {
@@ -170,16 +177,16 @@ describe.skipIf(process.platform === "win32")(
     it.for(["failed-import", "missing-pem"])(
       "fails closed but processes later certificates after %s",
       async (failure, { command }) => {
-        const f = fixture(command, failure === "missing-pem" ? { missing: fingerprints[0] } : {});
+        const f = fixture(command, failure === "missing-pem" ? { missing: fingerprint(0) } : {});
         const result = await f.run(
           [],
-          failure === "failed-import" ? { FAIL_FP: fingerprints[0] } : {},
+          failure === "failed-import" ? { FAIL_FP: fingerprint(0) } : {},
         );
         expect(result.status).not.toBe(0);
         expect(result.stdout).toBe("");
         expect(result.stderr).toContain("coverage 16/17");
         expect(f.rows()).toHaveLength(16);
-        expect(f.rows().some((row) => row.startsWith(fingerprints[16]))).toBe(true);
+        expect(f.rows().some((row) => row.startsWith(fingerprint(16)))).toBe(true);
         expect(f.writes()).toHaveLength(failure === "failed-import" ? 17 : 16);
         expect((await f.run(["--check"])).status).not.toBe(0);
       },

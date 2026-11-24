@@ -250,11 +250,8 @@ describe("gateway sessions patch", () => {
     "rejects invalid session timeout %s",
     async (timeoutSeconds) => {
       const store = mainStoreEntry({ timeoutSeconds: 1800 });
-      expectPatchError(
-        await runPatch({ store, patch: { key: MAIN_SESSION_KEY, timeoutSeconds } }),
-        "timeoutSeconds",
-      );
-      expect(store[MAIN_SESSION_KEY].timeoutSeconds).toBe(1800);
+      expectPatchError(await runPatch({ store, timeoutSeconds }), "timeoutSeconds");
+      expect(store[MAIN_SESSION_KEY]?.timeoutSeconds).toBe(1800);
     },
   );
 

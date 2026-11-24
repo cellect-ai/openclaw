@@ -1,18 +1,30 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { getDeliveryQueueEntryStatus } from "../../infra/delivery-queue-sqlite.js";
-import { OUTBOUND_DELIVERY_QUEUE_NAME } from "../../infra/outbound/delivery-queue-media-staging.js";
+import {
+  loadExactSessionEntry,
+  loadTranscriptEvents,
+} from "../../config/sessions/session-accessor.js";
+import { isCanonicalSessionTranscriptEntry } from "../../config/sessions/transcript-tree.js";
+import { loadCompletedDeliveryReceipt } from "../../infra/outbound/delivery-queue-storage.js";
 import { installDeliveryQueueTmpDirHooks } from "../../infra/outbound/delivery-queue.test-helpers.js";
+import type { ResolveOutboundSessionRouteParams } from "../../infra/outbound/outbound-session.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { closeOpenClawStateDatabaseForTest } from "../../state/openclaw-state-db.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { publishPersonalReviewReport } from "./fi-review-publication.js";
 
-const { roomRead, platformSend, beforeEffect, canonicalThread } = vi.hoisted(() => ({
+const { roomRead, platformSend, beforeEffect, canonicalThread, routeRead } = vi.hoisted(() => ({
   roomRead: vi.fn(),
   platformSend: vi.fn(),
   beforeEffect: vi.fn(),
   canonicalThread: vi.fn(),
+  routeRead:
+    vi.fn<
+      (
+        params: ResolveOutboundSessionRouteParams,
+      ) => Promise<import("../../infra/outbound/outbound-session.js").OutboundSessionRoute | null>
+    >(),
 }));
 vi.mock("./fi-shadow-matrix-room.js", () => ({ readFiUserMatrixRoom: roomRead }));
 const fixture = installDeliveryQueueTmpDirHooks();
@@ -31,6 +43,17 @@ const room = () => ({
 const report = "1. Review permit.\n\nA. Expedite\nB. Keep waiting";
 const key = `review:${"a".repeat(64)}`;
 const current = vi.fn();
+async function reportMessages(threadId?: string) {
+  const base = `agent:cellect-fi-user:matrix:channel:${owner.roomId}`;
+  const scope = {
+    agentId: "cellect-fi-user",
+    sessionKey: threadId ? `${base}:thread:${threadId}` : base,
+  };
+  const session = expectDefined(loadExactSessionEntry(scope));
+  return (await loadTranscriptEvents({ ...scope, sessionId: session.entry.sessionId })).filter(
+    (event) => isCanonicalSessionTranscriptEntry(event) && event.type === "message",
+  );
+}
 function publish() {
   return publishPersonalReviewReport({
     getConfig: () => ({}),
@@ -48,6 +71,18 @@ beforeEach(() => {
   platformSend.mockResolvedValue({ channel: "matrix", messageId: "$native-report:example.test" });
   beforeEffect.mockResolvedValue(undefined);
   canonicalThread.mockResolvedValue(undefined);
+  routeRead.mockImplementation(async ({ threadId }) => {
+    const baseSessionKey = `agent:cellect-fi-user:matrix:channel:${owner.roomId}`;
+    return {
+      baseSessionKey,
+      sessionKey: threadId ? `${baseSessionKey}:thread:${threadId}` : baseSessionKey,
+      peer: { kind: "channel", id: owner.roomId },
+      chatType: "channel",
+      from: `matrix:channel:${owner.roomId}`,
+      to: `room:${owner.roomId}`,
+      ...(threadId != null ? { threadId } : {}),
+    };
+  });
   setActivePluginRegistry(
     createTestRegistry([
       {
@@ -80,6 +115,7 @@ beforeEach(() => {
             },
           }),
           groups: { resolveCanonicalThreadId: canonicalThread },
+          messaging: { resolveOutboundSessionRoute: routeRead },
           message: {
             durableFinal: {
               capabilities: {
@@ -114,15 +150,23 @@ it("publishes the frozen body through the real durable native owner with identif
     accountId: "fi-user",
   });
   expect(current.mock.calls.length).toBeGreaterThanOrEqual(4);
-  expect(getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, key, fixture.tmpDir())).toBe(
-    "completed",
-  );
+  expect(await loadCompletedDeliveryReceipt(key, fixture.tmpDir())).toMatchObject({
+    platformMessageId: "$native-report:example.test",
+  });
 });
 it("reuses a completed native receipt without republishing the same job", async () => {
   await publish();
   closeOpenClawStateDatabaseForTest();
   await publish();
   expect(platformSend).toHaveBeenCalledTimes(1);
+  expect(await reportMessages()).toEqual([
+    expect.objectContaining({
+      message: expect.objectContaining({
+        role: "assistant",
+        content: [{ type: "text", text: report }],
+      }),
+    }),
+  ]);
 });
 it("rejects a revoked or expired Fi grant before native publication", async () => {
   current.mockRejectedValue(new Error("review_delivery_forbidden"));
@@ -190,6 +234,11 @@ it("posts the briefing into the room's canonical conversation thread", async () 
     accountId: "fi-user",
     threadId: "$canonical-root:example.test",
   });
+  expect(await reportMessages("$canonical-root:example.test")).toEqual([
+    expect.objectContaining({
+      message: expect.objectContaining({ content: [{ type: "text", text: report }] }),
+    }),
+  ]);
 });
 it("posts at room level when no canonical thread resolves", async () => {
   canonicalThread.mockRejectedValue(new Error("matrix runtime unavailable"));
@@ -208,4 +257,20 @@ it("replays a recorded receipt without resolving a thread or republishing", asyn
   await expect(publish()).resolves.toMatchObject({ messageId: "$native-report:example.test" });
   expect(platformSend).toHaveBeenCalledTimes(1);
   expect(canonicalThread).not.toHaveBeenCalled();
+});
+
+it("refuses publication when the native transcript route is unavailable", async () => {
+  routeRead.mockResolvedValue(null);
+  await expect(publish()).rejects.toThrow("review_publication_route_unavailable");
+  expect(platformSend).not.toHaveBeenCalled();
+});
+it("rechecks the Fi grant after awaiting native transcript routing", async () => {
+  const resolve = routeRead.getMockImplementation()!;
+  routeRead.mockImplementation(async (params) => {
+    const route = await resolve(params);
+    current.mockRejectedValue(new Error("review_delivery_forbidden"));
+    return route;
+  });
+  await expect(publish()).rejects.toThrow("review_delivery_forbidden");
+  expect(platformSend).not.toHaveBeenCalled();
 });

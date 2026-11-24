@@ -8,7 +8,7 @@ import { handleToolExecutionStart } from "../../agents/embedded-agent-subscribe.
 import { createTestContext } from "../../agents/embedded-agent-subscribe.handlers.tools.test-support.js";
 import { withQuestionGateway } from "../../agents/harness/gateway-question.test-support.js";
 import { createOpenClawTools } from "../../agents/openclaw-tools.js";
-import { createChannelQuestionPromptDelivery } from "../../agents/tools/question-prompt-send.js";
+import { createChannelQuestionPromptDelivery } from "../../agents/tools/channel-question-prompt-delivery.js";
 import type { ChannelOutboundPayloadContext } from "../../channels/plugins/outbound.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import {

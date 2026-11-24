@@ -21,7 +21,7 @@ import {
   beginSessionEffect,
   captureSessionTarget,
 } from "../../../sessions/session-controller.lifecycle.js";
-import { enqueueSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
+import { reserveSwarmRun, activateSwarmRun, releaseSwarmRun } from "../swarm/swarm-scheduler.js";
 import { killAllControlledSubagentRuns, killSubagentRunAdmin } from "./subagent-control.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { registerSubagentRun } from "./subagent-registry.js";
@@ -43,9 +43,18 @@ it.each(["admin", "bulk"] as const)(
       sessionKey,
       defaultSessionId: sessionId,
     });
+    expect(
+      reserveSwarmRun({
+        groupId: `pending-preservation-${boundary}`,
+        runId,
+        maxConcurrent: 1,
+        activeRunIds: ["capacity-blocker"],
+      }),
+    ).toBe(true);
     await registerSubagentRun({
       runId,
       childSessionKey: sessionKey,
+      childAgentId: "main",
       requesterSessionKey: owner,
       requesterAgentId: "main",
       requesterDisplayKey: owner,
@@ -56,12 +65,10 @@ it.each(["admin", "bulk"] as const)(
       expectsCompletionMessage: false,
     });
     const selectedStart = vi.fn(async () => {});
-    const removed = vi.fn();
-    enqueueSwarmRun({
+    const removed = vi.fn(async () => {});
+    activateSwarmRun({
       groupId: `pending-preservation-${boundary}`,
       runId,
-      maxConcurrent: 1,
-      activeRunIds: ["capacity-blocker"],
       start: selectedStart,
       onStartFailure: () => true,
       onRemoved: removed,

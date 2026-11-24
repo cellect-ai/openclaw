@@ -385,7 +385,7 @@ describe("execDockerRaw", () => {
         spawnState.commandResult = { code: 0, stdout: "", stderr: "" };
       }
       await expect(
-        execDockerRaw(["inspect", "synthetic-private-container"], { signal }),
+        docker.execDockerRaw(["inspect", "synthetic-private-container"], { signal }),
       ).rejects.toMatchObject({
         name: "SandboxCommandTimeoutError",
         code: "SANDBOX_COMMAND_TIMEOUT",
@@ -398,7 +398,7 @@ describe("execDockerRaw", () => {
   it("preserves ordinary cancellation as an abort", async () => {
     spawnState.executionError = new Error("execution cancelled");
     await expect(
-      execDockerRaw(["inspect", "fixture"], { signal: AbortSignal.abort() }),
+      docker.execDockerRaw(["inspect", "fixture"], { signal: AbortSignal.abort() }),
     ).rejects.toMatchObject({ name: "AbortError", message: "Aborted" });
   });
 

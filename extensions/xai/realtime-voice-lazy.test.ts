@@ -119,7 +119,7 @@ describe("xAI lazy realtime voice", () => {
     await bridge.connect();
     bridge.sendUserMessage?.("after connect", { toolChoice: "none" });
 
-    expect(runtimeMocks.voiceSendUserMessage.mock.calls).toEqual([
+    expect(mocks.voiceSendUserMessage.mock.calls).toEqual([
       ["I have an answer.", { toolChoice: "none" }],
       ["plain"],
       ["after connect", { toolChoice: "none" }],

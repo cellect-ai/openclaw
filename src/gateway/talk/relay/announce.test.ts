@@ -7,7 +7,9 @@ import { usePersistentRelayTestState } from "./session-state.test-support.js";
 
 const activeRelaySessions = new Map<string, string>();
 
-function startRelay(bridge = makeRelayTransport({ sendUserMessage: vi.fn() })) {
+async function startRelay(
+  bridge: ReturnType<typeof makeRelayTransport> = makeRelayTransport({ sendUserMessage: vi.fn() }),
+) {
   const cfg: OpenClawConfig = { agents: { entries: { main: {} } } };
   const session = createTalkRealtimeRelaySession({
     context: { broadcastToConnIds: vi.fn(), chatAbortControllers: new Map() } as never,
@@ -18,7 +20,7 @@ function startRelay(bridge = makeRelayTransport({ sendUserMessage: vi.fn() })) {
     tools: [],
     controlSource: "transcript",
     cfg,
-    sessionTarget: prepareTalkSessionTarget(cfg, "agent:main:main"),
+    sessionTarget: await prepareTalkSessionTarget(cfg, "agent:main:main"),
   });
   activeRelaySessions.set(session.relaySessionId, "conn-1");
   return { bridge, relaySessionId: session.relaySessionId };
@@ -28,7 +30,7 @@ describe("talk realtime relay answer announcement", () => {
   usePersistentRelayTestState(activeRelaySessions);
 
   it("has the owner's voice summarise the answer as framed data, without tools", async () => {
-    const { bridge, relaySessionId } = startRelay();
+    const { bridge, relaySessionId } = await startRelay();
     await Promise.resolve();
 
     const outcome = await announceTalkRealtimeRelayAnswer({
@@ -53,7 +55,7 @@ describe("talk realtime relay answer announcement", () => {
 
   it("sends nothing and reports unavailable while the provider is disconnected", async () => {
     const bridge = makeRelayTransport({ sendUserMessage: vi.fn() });
-    const { relaySessionId } = startRelay(bridge);
+    const { relaySessionId } = await startRelay(bridge);
     await Promise.resolve();
     bridge.isConnected.mockReturnValue(false);
 
@@ -64,7 +66,7 @@ describe("talk realtime relay answer announcement", () => {
   });
 
   it("refuses another connection and an unknown session without speaking", async () => {
-    const { bridge, relaySessionId } = startRelay();
+    const { bridge, relaySessionId } = await startRelay();
     await Promise.resolve();
 
     expect(() =>
@@ -81,7 +83,7 @@ describe("talk realtime relay answer announcement", () => {
   });
 
   it("reports a provider that cannot be told what to say", async () => {
-    const { relaySessionId } = startRelay(makeRelayTransport());
+    const { relaySessionId } = await startRelay(makeRelayTransport());
     await Promise.resolve();
 
     expect(

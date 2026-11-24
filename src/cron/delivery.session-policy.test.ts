@@ -46,6 +46,7 @@ describe("command announcement session policy", () => {
     vi.clearAllMocks();
     vi.spyOn(deliveryQueue, "inspectDeliveryQueueReceipt").mockResolvedValue({
       status: undefined,
+      completionReceipt: null,
       pendingEntry: null,
     });
   });

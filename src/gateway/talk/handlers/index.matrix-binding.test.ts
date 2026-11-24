@@ -401,7 +401,7 @@ describe("talk.client.create handler", () => {
       },
       providerConfig: { apiKey: "openai-key", model: "gpt-realtime" },
     });
-    mocks.resolveRealtimeVoiceProviderCapabilities.mockReturnValueOnce({
+    mocks.resolveRealtimeVoiceProviderCapabilitiesAsync.mockReturnValueOnce({
       transports: ["gateway-relay"],
       supportsGatewayControl: true,
       supportsToolCalls: true,
@@ -458,6 +458,7 @@ describe("talk.client.create handler", () => {
         accountId: "fi-user",
         roomId: "!RoomABC:matrix.example",
         speakerMxid: "@speaker:matrix.example",
+        threadRootEventId: "$RootABC:matrix.example",
       });
       const target = await prepareTalkSessionTarget({}, sessionKey);
       const authorizedTarget =

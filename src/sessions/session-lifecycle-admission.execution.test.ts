@@ -78,7 +78,6 @@ it("does not revoke an unbound pending admission while stopping an exact pending
   const entered = createDeferred();
   const release = createDeferred();
   const blocker = runSessionMutation({
-    kind: "patch",
     policy: "wait",
     scope,
     identities,

@@ -18,7 +18,7 @@ vi.mock("openclaw/plugin-sdk/provider-auth", () => ({
   isProviderAuthProfileConfiguredAsync: mocks.isProviderAuthProfileConfiguredMock,
   resolveProviderAuthProfileApiKey: mocks.resolveProviderAuthProfileApiKeyMock,
 }));
-import { createOpenAIRealtimeTestSupport } from "./realtime-voice-test-support.js";
+import { createOpenAIRealtimeTestSupport, playbackSink } from "./realtime-voice-test-support.js";
 
 const {
   parseSent,
@@ -80,16 +80,6 @@ async function connectBridge<T extends NonNullable<Parameters<typeof createNativ
   const bridge = createNativeBridge(overrides);
   return { ...overrides, bridge, socket: await connectReadyBridge(bridge) };
 }
-function playbackSink(...items: [string, number][]) {
-  let playback = items.map(([itemId, audioEndMs]) => ({ itemId, audioEndMs }));
-  return {
-    getPlaybackState: () => playback,
-    onClearAudio: vi.fn(() => {
-      playback = [];
-    }),
-  };
-}
-
 describe("OpenAI realtime voice bridge events", () => {
   it("acknowledges A playback after B starts without PCM", async () => {
     const { bridge, socket, onMark } = await connectBridge({ onMark: vi.fn() });
@@ -490,11 +480,13 @@ describe("OpenAI realtime voice bridge events", () => {
     });
   });
 
-  it.each([false, true])("handles zero-length playback with force=%s", async (force) => {
+  it("does not send duplicate response.cancel while cancellation is pending", async () => {
     const { bridge, socket, onClearAudio, onEvent } = await connectBridge({
       onClearAudio: vi.fn(),
       onEvent: vi.fn(),
     });
+    bridge.setMediaTimestamp(1000);
+    emitAssistantPlayback(socket, { audio: Buffer.alloc(2_400) });
     bridge.setMediaTimestamp(1300);
 
     bridge.handleBargeIn?.({ audioPlaybackActive: true });
@@ -529,7 +521,7 @@ describe("OpenAI realtime voice bridge events", () => {
     });
   });
 
-  it("ignores zero-length playback barge-in without clearing audio", async () => {
+  it.each([false, true])("handles zero-length playback barge-in (force=%s)", async (force) => {
     const onClearAudio = vi.fn();
     const onEvent = vi.fn();
     const bridge = createNativeBridge({

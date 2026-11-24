@@ -1,5 +1,6 @@
 import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { vi } from "vitest";
+import type { MatrixRawEvent } from "../sdk.js";
 import type { MatrixRoomInfo } from "./room-info.js";
 
 export type DirectRoomTrackerOptions = NonNullable<
@@ -31,10 +32,17 @@ const hoisted = await vi.hoisted(async () => {
     stop: vi.fn(async () => {}),
   };
   const createMatrixIngressMonitor = vi.fn(
-    (params: {
-      dispatch: (roomId: string, event: unknown, lifecycle: unknown) => Promise<void>;
-    }) => {
-      hoisted.registeredOnRoomMessage = (roomId, event) => params.dispatch(roomId, event, {});
+    (params: Parameters<typeof import("./ingress.js").createMatrixIngressMonitor>[0]) => {
+      hoisted.registeredOnRoomMessage = async (roomId, event) => {
+        await params.dispatch(roomId, event, {
+          admission: "exclusive",
+          abortSignal: new AbortController().signal,
+          onAdopted: vi.fn(),
+          onDeferred: vi.fn(),
+          onAdoptionFinalizing: vi.fn(),
+          onAbandoned: vi.fn(),
+        });
+      };
       return ingress;
     },
   );
@@ -171,7 +179,9 @@ const hoisted = await vi.hoisted(async () => {
     getRoomInfo,
     logger,
     registeredHealthySyncGetter: undefined as undefined | (() => number | undefined),
-    registeredOnRoomMessage: null as null | ((roomId: string, event: unknown) => Promise<void>),
+    registeredOnRoomMessage: null as
+      | null
+      | ((roomId: string, event: MatrixRawEvent) => Promise<void>),
     registerChannelRuntimeContext,
     registerMatrixAutoJoin,
     registerMatrixMonitorEvents,

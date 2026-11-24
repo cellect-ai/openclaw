@@ -1,4 +1,4 @@
-import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import { createPluginStateKeyedStoreV2ForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 import { resetInboundDedupe } from "openclaw/plugin-sdk/reply-runtime";
@@ -135,7 +135,7 @@ describe("Slack thread failure notices", () => {
 
   it("announces every failed run for participation restored after a restart", async () => {
     const threadTs = "101.100000";
-    const openKeyedStoreV2 = <T>(options: OpenKeyedStoreOptions) =>
+    const openKeyedStoreV2 = <T>(options: OpenAsyncKeyedStoreOptions) =>
       createPluginStateKeyedStoreV2ForTests<T>("slack", options, { assertCurrent() {} });
     const persistedStore = openKeyedStoreV2<{ repliedAt: number }>({
       namespace: "slack.thread-participation",

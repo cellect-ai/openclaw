@@ -36,6 +36,16 @@ function rejectOnAbort<T>(signal?: AbortSignal): Promise<T> {
   });
 }
 
+function roomMessage(eventId: string) {
+  return {
+    event_id: eventId,
+    sender: "@person:example.org",
+    type: "m.room.message",
+    origin_server_ts: Date.now(),
+    content: { msgtype: "m.text", body: "Synthetic lifecycle event" },
+  };
+}
+
 describe("monitorMatrixProvider", () => {
   async function flushUntil(predicate: () => boolean, message: string): Promise<void> {
     for (let i = 0; i < 20; i++) {
@@ -245,7 +255,7 @@ describe("monitorMatrixProvider", () => {
 
       const onRoomMessage = registeredRoomMessageHandler();
 
-      await expect(onRoomMessage("!room:example.org", { event_id: "$event" })).rejects.toThrow(
+      await expect(onRoomMessage("!room:example.org", roomMessage("$event"))).rejects.toThrow(
         "room handler exploded",
       );
       await Promise.resolve();
@@ -377,7 +387,7 @@ describe("monitorMatrixProvider", () => {
     );
     expect(hoisted.client.drainPendingDecryptions).not.toHaveBeenCalled();
     await expect(
-      registeredRoomMessageHandler()("!room:example.org", { event_id: "$late" }),
+      registeredRoomMessageHandler()("!room:example.org", roomMessage("$late")),
     ).rejects.toThrow("Matrix monitor is stopped");
     expect(handler).not.toHaveBeenCalled();
   });
@@ -535,13 +545,13 @@ describe("monitorMatrixProvider", () => {
     await waitForCallOrderEntry("start-client");
     const onRoomMessage = registeredRoomMessageHandler();
 
-    const roomMessagePromise = onRoomMessage("!room:example.org", { event_id: "$event" });
+    const roomMessagePromise = onRoomMessage("!room:example.org", roomMessage("$event"));
     abortController.abort();
     await waitForCallOrderEntry("dispose-monitor-events");
     expect(hoisted.callOrder).not.toContain("stop-manager");
     expect(hoisted.callOrder).not.toContain("release-client");
 
-    await expect(onRoomMessage("!room:example.org", { event_id: "$late" })).rejects.toThrow(
+    await expect(onRoomMessage("!room:example.org", roomMessage("$late"))).rejects.toThrow(
       "Matrix monitor is stopped",
     );
     expect(hoisted.callOrder).not.toContain("handler-start:$late");
@@ -596,7 +606,7 @@ describe("monitorMatrixProvider", () => {
     await waitForCallOrderEntry("start-client");
     const onRoomMessage = registeredRoomMessageHandler();
 
-    const roomMessagePromise = onRoomMessage("!room:example.org", { event_id: "$event" });
+    const roomMessagePromise = onRoomMessage("!room:example.org", roomMessage("$event"));
     await waitForCallOrderEntry("handler-start");
     abortController.abort();
     await waitForCallOrderEntry("dispose-monitor-events");

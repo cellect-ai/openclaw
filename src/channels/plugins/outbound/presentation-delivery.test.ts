@@ -14,7 +14,9 @@ import { renderPresentationForDelivery } from "./presentation-delivery.js";
 function createHandler(capabilities: ChannelPresentationCapabilities) {
   return {
     presentationCapabilities: { supported: true, ...capabilities },
-    renderPresentation: vi.fn(async (payload: ReplyPayload) => payload),
+    renderPresentation: vi.fn<
+      NonNullable<Parameters<typeof renderPresentationForDelivery>[0]["renderPresentation"]>
+    >(async (payload) => payload),
   };
 }
 

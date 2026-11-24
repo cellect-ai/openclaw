@@ -35,6 +35,7 @@ import {
 import { bindTalkRealtimeRelayAgentConsult } from "./agent-consult.js";
 import {
   createIdleRelayProvider,
+  createRelayContext,
   createRelayAgentConfig,
   ensureActiveRelayTurnId,
   makeRelayTransport,
@@ -139,7 +140,7 @@ async function claimRelayRunForTest(
   const claim = source.input.claim!;
   const sessionId = source.input.sourceSessionId ?? "";
   const attachment = backend
-    ? attachActiveEmbeddedRun(
+    ? await attachActiveEmbeddedRun(
         sessionId,
         backend,
         source.input.mailbox.key,
@@ -174,15 +175,6 @@ async function claimRelayRunForTest(
   };
   source.input.abortSignal.addEventListener("abort", onAbort, { once: true });
   relayRunSettlements.push(finish);
-}
-
-function createRelayContext(overrides: Record<string, unknown> = {}) {
-  return {
-    broadcastToConnIds: vi.fn(),
-    getRuntimeConfig: () => ({}),
-    logGateway: { warn: vi.fn() },
-    ...overrides,
-  } as never;
 }
 
 function voiceRecord(session: { relaySessionId: string }) {
@@ -801,11 +793,12 @@ describe("talk realtime gateway relay", () => {
       },
     });
     indexRpcSourceForTest(source);
+    const logGateway = { warn: vi.fn() };
     const context = {
       broadcastToConnIds,
       broadcast,
       nodeSendToSession,
-      logGateway: { warn: vi.fn() },
+      logGateway,
       chatRunState,
       removeChatRun,
       agentRunSeq: new Map(),
@@ -842,6 +835,7 @@ describe("talk realtime gateway relay", () => {
       removeChatRun,
       chatRunState,
       broadcastToConnIds,
+      logGateway,
       session,
     };
   }

@@ -240,7 +240,7 @@ export async function runSlackReactionTrigger(params: {
         explicitKind: true,
       }),
       threadId: threadTs,
-      route: ctx.resolveSlackSystemEventRoute({
+      route: await ctx.resolveSlackSystemEventRoute({
         channelId,
         channelType: auth.channelType,
         senderId: actorId,

@@ -21,6 +21,8 @@ const { dispatchMock } = getSlackSlashMocks();
 
 function createPolicyHarness(
   overrides: Parameters<typeof createArgMenusHarness>[1] & {
+    groupPolicy?: "open" | "allowlist" | "disabled";
+    channelsConfig?: import("./context.js").SlackMonitorContext["channelsConfig"];
     channelId?: string;
     channelName?: string;
     allowFrom?: string[];
@@ -41,6 +43,9 @@ function createPolicyHarness(
   const ctx = Object.assign(harness.ctx, {
     runtime: { error: runtimeError },
     allowFrom: overrides.allowFrom ?? ["*"],
+    groupPolicy: overrides.groupPolicy ?? "open",
+    channelsConfig: overrides.channelsConfig,
+    channelsConfigKeys: Object.keys(overrides.channelsConfig ?? {}),
     useAccessGroups: overrides.useAccessGroups ?? true,
     isChannelAllowed: vi.fn(() => overrides.channelAllowed ?? true),
     shouldDropMismatchedSlackEvent: (body: unknown) =>
@@ -158,9 +163,7 @@ describe("slack slash commands channel policy", () => {
         },
       },
     });
-    (harness.ctx as { channelsConfigKeys?: string[] }).channelsConfigKeys = ["C12345678"];
-    const { respond } = await registerAndRunPolicySlash({
-      harness,
+    const { respond } = await registerAndRunPolicySlash(harness, {
       command: { user_id: "U_CONTEXT", user_name: "Nicholas" },
     });
 

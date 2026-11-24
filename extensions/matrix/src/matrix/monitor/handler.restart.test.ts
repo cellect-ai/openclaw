@@ -5,7 +5,7 @@ import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runt
 import { describe, expect, it, vi } from "vitest";
 import { SqliteBackedMatrixSyncStore } from "../client/file-sync-store.js";
 import { matrixSyncResponse, useSyncStoreFixture } from "../client/sync-store.test-support.js";
-import { MatrixClient, type MatrixRawEvent } from "../sdk.js";
+import { MatrixClient } from "../sdk.js";
 import { createMatrixIngressMonitor } from "./ingress.js";
 
 type Dispatch = Parameters<typeof createMatrixIngressMonitor>[0]["dispatch"];
@@ -21,11 +21,11 @@ describe("Matrix inbound restart recovery", () => {
   };
   const response = matrixSyncResponse("cursor-after-message", roomId, event, "previous");
   const createQueue = () =>
-    createChannelIngressQueueForTests<{
-      version: 1;
-      roomId: string;
-      event: MatrixRawEvent;
-    }>({ channelId: "matrix", accountId: "default", stateDir: storage.root });
+    createChannelIngressQueueForTests<{ version: 1; rawEvent: string }>({
+      channelId: "matrix",
+      accountId: "default",
+      stateDir: storage.root,
+    });
   async function openMonitor(startupMs: number, dispatch: Dispatch) {
     const store = await SqliteBackedMatrixSyncStore.create(storage.root);
     const client = new MatrixClient("https://example.org", "synthetic-token", {

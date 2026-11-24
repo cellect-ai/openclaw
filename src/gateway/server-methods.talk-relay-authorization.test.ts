@@ -32,7 +32,7 @@ describe("bound Talk relay authorization at gateway dispatch", () => {
         relaySessions.set(RELAY_ID, {
           id: RELAY_ID,
           connId: scenario === "foreign" ? "other-connection" : requestClient.connId,
-          sessionTarget: prepareTalkSessionTarget(cfg, SESSION_KEY),
+          sessionTarget: await prepareTalkSessionTarget(cfg, SESSION_KEY),
           expiresAtMs: Date.now() + (scenario === "expired" ? -1_000 : 60_000),
         } as RelaySession);
       }

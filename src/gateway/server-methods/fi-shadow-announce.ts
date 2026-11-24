@@ -111,13 +111,19 @@ function sameOrigin(
 async function ensureMatrixSession(
   sessionKey: string,
   delivery: SessionDeliveryState,
+  assertCurrent: () => void,
 ): Promise<void> {
-  const loaded = loadRequesterSessionEntry(sessionKey, FI_USER_AGENT_ID);
+  const loaded = await loadRequesterSessionEntry(sessionKey, FI_USER_AGENT_ID);
+  assertCurrent();
   const desired = delivery.kind === "external" ? delivery.context : undefined;
   if (sameOrigin(matrixOrigin(loaded.entry), desired)) {
     return;
   }
-  await upsertSessionEntryCore({ agentId: FI_USER_AGENT_ID, sessionKey }, { delivery });
+  await upsertSessionEntryCore(
+    { agentId: FI_USER_AGENT_ID, sessionKey },
+    { delivery },
+    { assertCommitAllowed: assertCurrent },
+  );
 }
 
 function matrixOrigin(
@@ -278,9 +284,10 @@ export async function deliverFiPrivateMain(
     await ensureMatrixSession(
       matrixSessionKey(params.roomId),
       matrixDelivery(room.accountId, params.roomId),
+      assertCurrent,
     );
     if (params.threadId) {
-      await ensureMatrixSession(targetKey, targetDelivery);
+      await ensureMatrixSession(targetKey, targetDelivery, assertCurrent);
     }
   } catch {
     respond(

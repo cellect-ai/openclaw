@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { registerMailWakeSourceLock } from "../infra/mail-wake-source-lock.js";
 import { resetGlobalHookRunner } from "../plugins/hook-runner-global.js";
-import {
-  wrapToolWithBeforeToolCallHook,
-  isPreExecutionBlockedToolResult,
-} from "./agent-tools.before-tool-call.js";
+import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
+import { readToolExecutionRefusal } from "./tool-effect-receipt.js";
 
 describe("mail source requester continuation admission", () => {
   afterEach(() => resetGlobalHookRunner());
@@ -20,7 +18,7 @@ describe("mail source requester continuation admission", () => {
       const mintChildCredential = vi.fn();
       const createRequesterContinuation = vi.fn(async () => {
         mintChildCredential();
-        return { content: [{ type: "text" as const, text: "child started" }] };
+        return { content: [{ type: "text" as const, text: "child started" }], details: {} };
       });
       const tool = wrapToolWithBeforeToolCallHook(
         {
@@ -43,7 +41,7 @@ describe("mail source requester continuation admission", () => {
           sourceLockCapability: "",
           hookMailWakeSessionKey: "",
         });
-        expect(isPreExecutionBlockedToolResult(result)).toBe(true);
+        expect(readToolExecutionRefusal(result)).toBeDefined();
         expect(createRequesterContinuation).not.toHaveBeenCalled();
         expect(mintChildCredential).not.toHaveBeenCalled();
       } finally {
@@ -60,7 +58,10 @@ describe("mail source requester continuation admission", () => {
       capability: undefined,
       mailSessionKey: "agent:cellect-fi-admin:hook:fi-mail:thread",
     });
-    const execute = vi.fn(async () => ({ content: [{ type: "text" as const, text: "started" }] }));
+    const execute = vi.fn(async () => ({
+      content: [{ type: "text" as const, text: "started" }],
+      details: {},
+    }));
     const source = {
       name: "sessions_spawn",
       label: "spawn",
@@ -70,19 +71,19 @@ describe("mail source requester continuation admission", () => {
     };
     try {
       expect(
-        isPreExecutionBlockedToolResult(
+        readToolExecutionRefusal(
           await wrapToolWithBeforeToolCallHook(source, {
             sessionKey,
             runId: "isolated-mail",
           }).execute("mail", {}),
         ),
-      ).toBe(true);
+      ).toBeDefined();
       expect(execute).not.toHaveBeenCalled();
       const manual = wrapToolWithBeforeToolCallHook(source, {
         sessionKey: "agent:cellect-fi-admin:slack:direct:u12345678",
         runId: "manual",
       });
-      expect(isPreExecutionBlockedToolResult(await manual.execute("manual", {}))).toBe(false);
+      expect(readToolExecutionRefusal(await manual.execute("manual", {}))).toBeUndefined();
       expect(execute).toHaveBeenCalledTimes(1);
     } finally {
       release();

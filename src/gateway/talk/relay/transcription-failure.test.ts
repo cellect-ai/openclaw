@@ -53,7 +53,7 @@ describe("Talk relay input transcription failures", () => {
       controlSource: "transcript",
       instructions: "be brief",
       tools: [],
-      sessionTarget: prepareTalkSessionTarget(cfg, "agent:main:main"),
+      sessionTarget: await prepareTalkSessionTarget(cfg, "agent:main:main"),
     });
     opened.push(session.relaySessionId);
     await Promise.resolve();

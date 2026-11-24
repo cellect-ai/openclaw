@@ -39,7 +39,8 @@ export const talkVoicePreviewHandlers: GatewayRequestHandlers = {
       assertCurrent();
       const cfg = context.getRuntimeConfig();
       assertSecretOwnerAvailable("capability", "talk:realtime");
-      const config = buildTalkRealtimeConfig(cfg, params.provider, params.model);
+      const config = await buildTalkRealtimeConfig(cfg, params.provider, params.model);
+      assertCurrent();
       const resolution = resolveConfiguredRealtimeVoiceProvider({
         cfg,
         configuredProviderId: params.provider.trim(),

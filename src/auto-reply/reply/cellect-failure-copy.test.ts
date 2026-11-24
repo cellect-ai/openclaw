@@ -11,8 +11,6 @@ const RUN = "run-7f3c";
 
 async function delivered(channel: string, payload: ReplyPayload) {
   const { replyPayloads } = await buildReplyPayloads({
-    isHeartbeat: false,
-    didLogHeartbeatStrip: false,
     blockStreamingEnabled: false,
     blockReplyPipeline: null,
     replyToMode: "off",

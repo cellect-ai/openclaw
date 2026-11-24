@@ -8,7 +8,7 @@ import { prepareReplyWorkshopAuthoring } from "../auto-reply/reply/reply-worksho
 import type { MsgContext } from "../auto-reply/templating.js";
 import { buildChannelInboundEventContext } from "../channels/inbound-event/context.js";
 import { createHostChannelInboundEventContextBuilder } from "../channels/inbound-event/host-context-builder.js";
-import { createCommandOwnerTestGateway } from "../channels/message-access/operator-authority.test-support.js";
+import { createHostIngressFixture } from "../channels/message-access/host-ingress.test-support.js";
 import { createHostChannelIngressRuntime } from "../channels/message-access/runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
@@ -59,7 +59,7 @@ async function nativeFixture(stateDir: string, group: boolean) {
       },
     },
   };
-  const gateway = createCommandOwnerTestGateway(cfg);
+  const { gateway } = createHostIngressFixture(channelId, cfg);
   let live = true;
   const owner = { channelId, isLive: () => live, resolveGatewayContext: () => gateway };
   const ingress = await createHostChannelIngressRuntime(owner).resolveStable({

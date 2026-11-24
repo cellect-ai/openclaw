@@ -34,16 +34,21 @@ export function prepareConversationLifecycleWrite<Key extends LifecycleWrite, Ou
     let retained:
       | { operation: RetainedWorkerTransactionAdmission; admission: SqliteWorkerOperationAdmission }
       | undefined;
-    const result = await executeDeliveryQueueOperation(params.context, params.stateDir, command, {
-      createAdmission: (operation) => {
-        const admission = createSqliteWorkerOperationAdmission((_, grant) => {
-          params.assertCurrent();
-          grant();
-        });
-        retained = { operation, admission };
-        return { admission, nativeLocations: [] };
+    const result = await executeDeliveryQueueOperation<Key>(
+      params.context,
+      params.stateDir,
+      command,
+      {
+        createAdmission: (operation) => {
+          const admission = createSqliteWorkerOperationAdmission((_, grant) => {
+            params.assertCurrent();
+            grant();
+          });
+          retained = { operation, admission };
+          return { admission, nativeLocations: [] };
+        },
       },
-    }).then(
+    ).then(
       () => ({ ok: true as const }),
       (error: unknown) => ({ ok: false as const, error }),
     );

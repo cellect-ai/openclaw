@@ -606,7 +606,6 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
     ...actual,
     readAgentRunTerminalOutcome: () => mockedAgentRunTerminalOutcome,
     dispatchChannelInboundTurn: async (params: DispatchParams) => {
-      capturedTurn = params;
       if (useRealChannelInboundTurn) {
         return actual.dispatchChannelInboundTurn(params);
       }

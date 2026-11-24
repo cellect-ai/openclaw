@@ -10,6 +10,7 @@ import {
   type ConsultParams,
 } from "./client-gateway-control.agent-consult.test-support.js";
 import type { TalkAgentConsultAuthority } from "./client-tool-authority.js";
+import { registerTalkVoiceSession } from "./voice-selection.js";
 
 export function createConsultRunner(
   overrides: Partial<Parameters<typeof createTalkClientAgentConsultRunner>[0]> = {},
@@ -80,5 +81,22 @@ export function resetConsultFixture() {
       ...(params.abortSignal ? { abortSignal: params.abortSignal } : {}),
     });
     return { text: "done" };
+  });
+}
+
+export function registerConsultVoiceSession() {
+  return registerTalkVoiceSession({
+    voiceSessionId: "voice-session",
+    connId: "voice-fixture",
+    sessionTarget: {
+      agentId: "researcher",
+      sessionKey: "main",
+      canonicalKey: "agent:researcher:talk",
+      storePath: "/tmp/sessions",
+      assertCurrent: vi.fn(),
+    },
+    selection: { provider: "fixture", voices: [], canChange: false },
+    launch: { provider: "fixture" },
+    providerReady: true,
   });
 }

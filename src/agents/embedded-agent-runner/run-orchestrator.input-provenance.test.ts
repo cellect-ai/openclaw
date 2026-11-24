@@ -71,7 +71,7 @@ it.each(["internal_system", "external_user"] as const)(
         prompt: "[OpenClaw exec completion]",
         provider: "openai",
         model: "fixture-model",
-        trigger: kind === "internal_system" ? "heartbeat" : "user",
+        trigger: kind === "internal_system" ? "event" : "user",
         messageChannel: "matrix",
         agentAccountId: "fixture",
         timeoutMs: 1000,

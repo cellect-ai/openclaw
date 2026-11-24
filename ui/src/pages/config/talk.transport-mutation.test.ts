@@ -116,10 +116,12 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
     },
   } satisfies TalkCatalogResult;
   let catalogRequestIndex = 0;
-  const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => {
-    catalogRequestIndex += 1;
-    return await (options.catalogRequest?.(catalogRequestIndex, catalog) ?? catalog);
-  });
+  const request = vi.fn(
+    async (_method: string, _params: Record<string, unknown>, _requestOptions?: unknown) => {
+      catalogRequestIndex += 1;
+      return await (options.catalogRequest?.(catalogRequestIndex, catalog) ?? catalog);
+    },
+  );
   const { gateway, publish } = createApplicationGateway();
   gateway.connection.gatewayUrl = "wss://gateway.example.test";
   const hello: ApplicationContext["gateway"]["snapshot"]["hello"] = options.voiceWakeRequest

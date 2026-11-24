@@ -67,12 +67,12 @@ vi.mock("../../talk/agent-run-control.js", async (importOriginal) => ({
 import { sharingPolicyClient } from "../session-sharing.test-utils.js";
 import {
   createConsultRunner,
+  registerConsultVoiceSession,
   createRunner,
   resetConsultFixture,
 } from "./client-gateway-control.agent-consult-fixture.test-support.js";
 import type { ConsultParams } from "./client-gateway-control.agent-consult.test-support.js";
 import { resolveTalkAgentConsultAuthority } from "./client-tool-authority.js";
-import { registerTalkVoiceSession } from "./voice-selection.js";
 
 type ConsultOverrides = Parameters<typeof createConsultRunner>[0];
 const agentId = "researcher";
@@ -361,19 +361,7 @@ describe("Talk client agent consult admission", () => {
     let close!: () => void;
     await creating.run(async () => {
       runner = createRunner();
-      close = registerTalkVoiceSession({
-        voiceSessionId: "voice-session",
-        connId: "voice-fixture",
-        sessionTarget: {
-          agentId: "researcher",
-          sessionKey: "main",
-          canonicalKey: "agent:researcher:talk",
-          storePath: "/tmp/sessions",
-        },
-        selection: { provider: "fixture", voices: [], canChange: false },
-        launch: { provider: "fixture" },
-        providerReady: true,
-      });
+      close = registerConsultVoiceSession();
     });
     creating.release();
     const suspended = tryBeginGatewaySuspendAdmission(() => {})!;

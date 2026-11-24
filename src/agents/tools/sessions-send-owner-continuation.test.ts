@@ -8,6 +8,7 @@ import {
   getAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
 } from "../admitted-run-context.js";
+import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import {
   bindRequesterOwnerIdentity,
   bindRequesterYieldCronAuthority,

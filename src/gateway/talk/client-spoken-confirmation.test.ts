@@ -36,6 +36,7 @@ import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../test-utils/openclaw-test-state.js";
+import { sessionAction, MODEL_SUCCESS } from "./client-spoken-confirmation.actions.test-support.js";
 
 const mocks = vi.hoisted(() => ({
   runEmbeddedAgent: vi.fn(),
@@ -56,19 +57,7 @@ vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
 import { createTalkClientAgentConsultRunner } from "./client-agent-consult.js";
 import { createTalkClientGatewayControlOwner } from "./client-gateway-control.js";
 import { controlBridge, controlContext } from "./client-gateway-control.test-support.js";
-
-type Action = {
-  toolName: "sessions_spawn" | "read";
-  task: string;
-  label: string;
-  confirmationId?: string;
-};
-const sessionAction = (label = "helper"): Action => ({
-  toolName: "sessions_spawn",
-  task: `Create the requested ${label} session`,
-  label,
-});
-const MODEL_SUCCESS = "I have created the requested sessions.";
+import { prepareTalkSessionTarget } from "./session-target.js";
 
 // Only model inference and the final session-creation effect are synthetic.
 // Admission, transcript persistence, voice binding and the tool gate are real.
@@ -109,7 +98,7 @@ describe("native Talk spoken confirmation handoff", () => {
       { agentId: "main", sessionKey, storePath },
       { sessionId, updatedAt: Date.now() },
     );
-    const sessionTarget = { agentId: "main", sessionKey, canonicalKey: sessionKey, storePath };
+    const sessionTarget = await prepareTalkSessionTarget({}, sessionKey);
     const voiceSessionId = await createOrResumeClientVoiceSession({
       agentId: "main",
       sessionKey,
@@ -152,6 +141,8 @@ describe("native Talk spoken confirmation handoff", () => {
         throw new Error("expected admitted Talk run");
       }
       const admittedRunContext = await params.preparedRunAdmission!.admit("embedded");
+      const operation = getCurrentSessionControllerOwner();
+      if (!operation) throw new Error("Expected controller-owned Talk execution");
       const caller = {
         ...createAdmittedGatewayToolCallerIdentity({
           admittedRunContext,
@@ -173,9 +164,7 @@ describe("native Talk spoken confirmation handoff", () => {
           },
         }),
       };
-      const operation = getCurrentSessionControllerOwner();
-      if (!operation) throw new Error("Expected controller-owned Talk execution");
-      const attachment = withGatewayToolCallerIdentity(caller, () =>
+      const attachment = await withGatewayToolCallerIdentity(caller, () =>
         attachActiveEmbeddedRun(sessionId, handle, sessionKey, undefined, "main", operation),
       );
       try {

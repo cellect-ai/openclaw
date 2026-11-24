@@ -31,7 +31,7 @@ function bindVoiceRuns(runIds: string[]): void {
   vi.spyOn(clientVoiceSession, "resolveClientVoiceRunBinding").mockImplementation((runId) =>
     runId && runIds.includes(runId) ? binding : undefined,
   );
-  vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockReturnValue(true);
+  vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockResolvedValue(true);
 }
 
 function createMessageTool(runId: string) {
@@ -40,8 +40,8 @@ function createMessageTool(runId: string) {
     { name: "message", execute } as unknown as AnyAgentTool,
     { runId, agentId: "main", sessionKey: "agent:main:voice" },
   );
-  const run = (callId: string, params: unknown = SEND) =>
-    tool.execute(callId, params, undefined, {} as Parameters<typeof tool.execute>[3]);
+  const run = (callId: string, params: unknown = SEND, signal?: AbortSignal) =>
+    tool.execute(callId, params, signal, {} as Parameters<typeof tool.execute>[3]);
   return { execute, run };
 }
 
@@ -151,5 +151,50 @@ describe("spoken confirmation authority reaches the final tool effect", () => {
     const current = await retryTool.run("call-current-run");
     expect(current.details).toEqual({ ok: true });
     expect(retryTool.execute).toHaveBeenCalledOnce();
+  });
+
+  it("rechecks cancellation after the native confirmation read before consuming intent or executing", async () => {
+    const runId = "run-confirmation-read";
+    bindVoiceRuns([runId]);
+    const entered = Promise.withResolvers<void>();
+    const read = Promise.withResolvers<boolean>();
+    vi.mocked(clientVoiceSession.isClientVoiceSessionConfirmable).mockImplementation(async () => {
+      entered.resolve();
+      return read.promise;
+    });
+    const challenge = challengeFor(runId, SEND, Date.now());
+    const grant = sayYesAndAuthorize(challenge, Date.now() + 1);
+    expect(bindAuthorizedClientVoiceConfirmation({ grant, runId })).toBe(true);
+    const controller = new AbortController();
+    const tool = createMessageTool(runId);
+    const pending = tool.run("held-read", SEND, controller.signal);
+    const rejected = expect(pending).rejects.toThrow("cancelled during confirmation read");
+    await entered.promise;
+    controller.abort(new Error("cancelled during confirmation read"));
+    read.resolve(true);
+    await rejected;
+    expect(tool.execute).not.toHaveBeenCalled();
+    // Cancellation must not spend the approved fingerprint before effect admission.
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        agentId: "main",
+        voiceSessionId: VOICE_SESSION_ID,
+        runId,
+        toolName: "message",
+        toolParams: SEND,
+        isConfirmable: () => true,
+      }).allowed,
+    ).toBe(true);
+  });
+
+  it("refuses an unavailable native confirmation owner instead of treating it as a legacy client", async () => {
+    const runId = "run-missing-confirmation-owner";
+    bindVoiceRuns([runId]);
+    vi.mocked(clientVoiceSession.isClientVoiceSessionConfirmable).mockRejectedValue(
+      new Error("voice owner replaced"),
+    );
+    const tool = createMessageTool(runId);
+    await expect(tool.run("missing-owner")).rejects.toThrow("voice owner replaced");
+    expect(tool.execute).not.toHaveBeenCalled();
   });
 });

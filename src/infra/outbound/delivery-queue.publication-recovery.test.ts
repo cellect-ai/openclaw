@@ -25,7 +25,7 @@ describe("source final publication unknown-send recovery", () => {
     m.adapter.mockReset();
     m.sleep.mockClear();
   });
-  async function queued() {
+  async function queued(retryAmbiguousFinalText?: true) {
     const payload = { text: "actual final" };
     const publication = bindReplyPublication(
       {},
@@ -49,6 +49,7 @@ describe("source final publication unknown-send recovery", () => {
         preparedBatch,
         queuePolicy: "required",
         requireUnknownSendReconciliation: true,
+        retryAmbiguousFinalText,
       },
       tmpDir(),
     );
@@ -137,10 +138,10 @@ describe("source final publication unknown-send recovery", () => {
   });
 
   it("does not inherit ordinary final-text blind retry for required source publications", async () => {
-    const { id } = await queued();
+    const { id } = await queued(true);
     setQueuedEntryState(tmpDir(), id, {
+      retryCount: 0,
       recoveryState: "send_attempt_started",
-      retryAmbiguousFinalText: true,
     });
     m.adapter.mockReturnValue({ durableFinal: { capabilities: { reconcileUnknownSend: false } } });
     const deliver = vi.fn(async () => []);

@@ -7,6 +7,7 @@ import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { ProviderAuthError } from "../../agents/model-auth.js";
 import { toSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
+import { TEST_SCHEDULED_OCCURRENCE } from "../../cron/scheduled-occurrence.test-support.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -20,6 +21,7 @@ import {
   initialFallbackAttemptOptions,
   createMockReplyOperation,
   createMinimalRunAgentTurnParams,
+  createFollowupRun,
   NON_DIRECT_FAILURE_SURFACE_CASES,
   createNonDirectFailureSessionCtx,
   type EmbeddedAgentParams,
@@ -146,10 +148,29 @@ describe("executeAgentTurn: provider failures", () => {
         "docker",
       ),
     );
-    const result = await executeTestTurn(
-      { sessionCtx: createDirectFailureSessionCtx() },
-      { isHeartbeat: true, opts: { useHeartbeatFailureCopy: false } },
-    );
+    const result = await executeTestTurn({
+      sessionCtx: createDirectFailureSessionCtx(),
+      followupRun: createFollowupRun({
+        scheduledAutomation: {
+          occurrence: TEST_SCHEDULED_OCCURRENCE,
+          admissionSource: "operator-schedule",
+          assertCurrent: vi.fn(),
+          job: {
+            id: "legacy-heartbeat",
+            name: "Legacy heartbeat",
+            enabled: true,
+            createdAtMs: 1,
+            updatedAtMs: 1,
+            schedule: { kind: "every", everyMs: 60_000 },
+            sessionTarget: "session:main",
+            wakeMode: "now",
+            state: {},
+            payload: { kind: "agentTurn", message: "Check pending work" },
+            legacyHeartbeatReplyPolicy: true,
+          },
+        },
+      }),
+    });
     expect(result.kind).toBe("final");
     if (result.kind === "final") {
       expect(result.payload.isError).toBe(true);

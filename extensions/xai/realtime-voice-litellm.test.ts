@@ -1,8 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import {
-  resolveInternalRealtimeVoiceBrowserSessionCapabilities,
-  resolveInternalRealtimeVoiceGatewayRelayCapabilities,
-} from "../../src/talk/provider-internal.js";
+import { resolveRealtimeVoiceProviderCapabilitiesAsync } from "../../src/talk/provider-resolver.js";
 import {
   normalizeXaiRealtimeProviderConfig,
   XAI_REALTIME_VOICES,
@@ -139,13 +136,16 @@ describe("buildLiteLlmRealtimeVoiceProvider", () => {
 
   it.each([undefined, "grok-voice-think-fast-2.0", "gemini-3.8-live"])(
     "offers both model voice catalogs regardless of configured model %s",
-    (model) => {
+    async (model) => {
       const provider = buildLiteLlmRealtimeVoiceProvider();
-      for (const resolve of [
-        resolveInternalRealtimeVoiceGatewayRelayCapabilities,
-        resolveInternalRealtimeVoiceBrowserSessionCapabilities,
-      ]) {
-        const voices = resolve({ provider, providerConfig: { model } })?.voicesByModel;
+      for (const surface of ["gateway-relay", "browser-session"] as const) {
+        const voices = (
+          await resolveRealtimeVoiceProviderCapabilitiesAsync({
+            provider,
+            providerConfig: { model },
+            surface,
+          })
+        )?.voicesByModel;
         expect(voices?.["grok-voice-think-fast-2.0"]).toEqual(XAI_REALTIME_VOICES);
         const googleVoices = voices?.["gemini-3.8-live"];
         expect(googleVoices).toHaveLength(30);

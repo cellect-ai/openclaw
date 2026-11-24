@@ -30,7 +30,6 @@ import type {
   AgentRunContextOwnership,
   AgentRunModel,
   AgentRunRegistryState,
-  ProjectedAgentRunIndex,
 } from "./agent-run-registry.types.js";
 import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage.js";
 

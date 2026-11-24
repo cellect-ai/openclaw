@@ -62,8 +62,6 @@ export type ConversationLifecyclePublication = Readonly<{
   revision: number;
   state: ConversationLifecycleState;
   resultEventId?: string;
-  /** Last sequenced occurrence, so replay cannot restore a superseded approval. */
-  occurrence?: { seq: number; fingerprint: string };
 }> &
   /** Contract v2. Recorded always, sent only while the producer flag is on. */
   LifecycleSignals;
@@ -89,6 +87,8 @@ export type LifecycleObligation = DeliveryQueueEntryState & {
   revision: number;
   state: ConversationLifecycleState;
   resultEventId?: string;
+  /** Last sequenced occurrence, so replay cannot restore a superseded approval. */
+  occurrence?: { seq: number; fingerprint: string };
   pendingApprovals: string[];
   pending: ConversationLifecyclePublication[];
   /** Highest revision the destination acknowledged; 0 while it has heard nothing of the run. */

@@ -202,8 +202,7 @@ describe("realtime voice agent consult runtime", () => {
       sender: { id: "@speaker:example.test" },
       chat: { id: "!room:example.test", talkThreadRootEventId: "$thread" },
     };
-    await runConsult({
-      agentRuntime: runtime as never,
+    await runConsult(runtime, {
       sessionKey: "agent:main:matrix:channel:!room:example.test:thread:$thread",
       runIdPrefix: "bound-voice",
       args: { question: "Read my latest email", senderId: "@forged:example.test" },

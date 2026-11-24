@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildRealtimeVoiceAgentConsultChatMessage as buildChatMessage,
+  buildRealtimeVoiceAgentConsultPrompt,
   buildRealtimeVoiceSessionInstructions as buildSessionInstructions,
   collectRealtimeVoiceAgentConsultVisibleText as collectVisibleText,
   parseRealtimeVoiceAgentConsultArgs as parseArgs,
@@ -56,14 +57,12 @@ describe("realtime voice agent consult tool", () => {
   });
 
   it("accepts provider question aliases from realtime tool calls", () => {
-    expect(parseRealtimeVoiceAgentConsultArgs({ prompt: "  Check the repo. " })).toStrictEqual({
+    expect(parseArgs({ prompt: "  Check the repo. " })).toStrictEqual({
       context: undefined,
       question: "Check the repo.",
       responseStyle: undefined,
     });
-    expect(
-      parseRealtimeVoiceAgentConsultArgs({ query: "  Send a Discord message. " }),
-    ).toStrictEqual({
+    expect(parseArgs({ query: "  Send a Discord message. " })).toStrictEqual({
       context: undefined,
       question: "Send a Discord message.",
       responseStyle: undefined,

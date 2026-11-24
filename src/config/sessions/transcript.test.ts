@@ -541,7 +541,9 @@ describe("appendAssistantMessageToSessionTranscript", () => {
       },
     );
     expect(result).toEqual({ ok: false, reason: "internal delivery state" });
-    expect((await storedMessages()).some((message) => message.role === "assistant")).toBe(false);
+    expect(await storedMessages()).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ role: "assistant" })]),
+    );
   });
 
   it("does not dedupe delivery mirrors against an older assistant after a user turn", async () => {

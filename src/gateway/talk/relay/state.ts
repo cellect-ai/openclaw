@@ -49,17 +49,15 @@ type TalkRealtimeRelayEventData =
   | { type: "inputAudio"; byteLength: number }
   | { type: "inputAudioStart"; itemId: string }
   | {
-      relaySessionId: string;
       type: "audio";
       audioBase64: string;
       itemId?: string;
       responseId?: string;
     }
-  | { relaySessionId: string; type: "audioDone"; itemId?: string; responseId?: string }
-  | { relaySessionId: string; type: "clear"; reason?: RealtimeVoiceAudioClearReason }
-  | { relaySessionId: string; type: "mark"; markName: string }
+  | { type: "audioDone"; itemId?: string; responseId?: string }
+  | { type: "clear"; reason?: RealtimeVoiceAudioClearReason }
+  | { type: "mark"; markName: string }
   | {
-      relaySessionId: string;
       type: "transcript";
       role: "user" | "assistant";
       text: string;
@@ -69,7 +67,6 @@ type TalkRealtimeRelayEventData =
       transcriptId?: string;
     }
   | {
-      relaySessionId: string;
       type: "toolCall";
       itemId: string;
       callId: string;
@@ -77,11 +74,10 @@ type TalkRealtimeRelayEventData =
       args: unknown;
       forced?: boolean;
     }
-  | { relaySessionId: string; type: "toolCallCancelled"; callId: string }
-  | { relaySessionId: string; type: "toolResult"; callId: string }
-  | { relaySessionId: string; type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
+  | { type: "toolCallCancelled"; callId: string }
+  | { type: "toolResult"; callId: string }
+  | { type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
   | {
-      relaySessionId: string;
       type: "error";
       message: string;
       code?: "realtime_unavailable";

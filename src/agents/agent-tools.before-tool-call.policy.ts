@@ -52,7 +52,6 @@ import type {
 } from "./agent-tools.before-tool-call.types.js";
 import {
   getCodeModeExecBeforeHookMetadataForToolKind,
-  isCodeModeExecToolKind,
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
 import { admitSingleToolCallLoop } from "./tool-loop-admission.js";
@@ -87,18 +86,29 @@ export function hasBeforeToolCallPolicy(): boolean {
 }
 
 /** Consume voice approval only after tool-owned finalization produces execution params. */
-export function consumeFinalClientVoiceToolConfirmation(args: {
+export async function consumeFinalClientVoiceToolConfirmation(args: {
   toolName: string;
   toolKind?: PluginHookToolKind;
   toolCallId?: string;
   params: unknown;
   ctx?: HookContext;
+  assertCurrent: () => void;
 }) {
   // Nested catalog calls are gated individually; the script wrapper is not itself an action.
-  if (isCodeModeExecToolKind(args.toolKind)) {
+  if (
+    getCodeModeExecBeforeHookMetadataForToolKind({ toolKind: args.toolKind, params: args.params })
+  ) {
     return { allowed: true as const };
   }
-  const voiceRun = resolveClientVoiceRunBinding(args.ctx?.runId);
+  const runId = args.ctx?.runId;
+  const voiceRun = resolveClientVoiceRunBinding(runId);
+  let confirmable: boolean | undefined;
+  if (voiceRun) {
+    if (!runId) throw new Error("Voice confirmation requires its bound run");
+    confirmable = await isClientVoiceSessionConfirmable(voiceRun, runId);
+  }
+  args.assertCurrent();
+  const currentConfirmable = confirmable;
   return consumeClientVoiceToolConfirmationPolicy({
     agentId: voiceRun?.agentId,
     voiceSessionId: voiceRun?.voiceSessionId,
@@ -111,7 +121,7 @@ export function consumeFinalClientVoiceToolConfirmation(args: {
       args.params,
       args.ctx,
     ),
-    ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
+    ...(currentConfirmable !== undefined ? { isConfirmable: () => currentConfirmable } : {}),
   });
 }
 

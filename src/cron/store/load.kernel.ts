@@ -12,7 +12,6 @@ import {
   loadCronRuntimeAuthorities,
   repairCronRuntimeAuthorityRows,
 } from "./runtime-authority-store.js";
-import type { CronJobReadRow } from "./schema.js";
 import type { LoadedCronStore } from "./types.js";
 import {
   isLegacyWorkshopCollectionRow,

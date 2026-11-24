@@ -46,7 +46,7 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-it.each([
+it.for([
   "fresh",
   "answered",
   "superseded failure",

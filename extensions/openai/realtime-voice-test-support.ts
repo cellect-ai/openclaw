@@ -509,3 +509,13 @@ export function createOpenAIRealtimeTestSupport<T extends FakeWebSocketLike>(dep
     createTestJwt,
   };
 }
+
+export function playbackSink(...items: [string, number][]) {
+  let playback = items.map(([itemId, audioEndMs]) => ({ itemId, audioEndMs }));
+  return {
+    getPlaybackState: () => playback,
+    onClearAudio: vi.fn(() => {
+      playback = [];
+    }),
+  };
+}

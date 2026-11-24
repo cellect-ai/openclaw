@@ -3,8 +3,9 @@ import type { MessageToolOptions } from "./message-tool-execution.types.js";
 
 export function resolveMessageToolSandboxMediaAccess(options?: MessageToolOptions) {
   const sandboxRoot = options?.sandboxRoot?.trim();
-  return;
-  sandboxRoot && options?.sandboxFsBridge && options.sandboxWorkspaceMediaReadAllowed === true
+  return sandboxRoot &&
+    options?.sandboxFsBridge &&
+    options.sandboxWorkspaceMediaReadAllowed === true
     ? {
         localRoots: [
           sandboxRoot,

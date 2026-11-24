@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   createCodexDynamicToolBridge,
-  createSandboxExecProjection,
+  createSandboxShellProjection,
 } from "../extensions/codex/test-api.js";
 import {
   HELD,
@@ -123,7 +123,7 @@ describe("registered Codex sandbox execution requester custody", () => {
         },
       });
       return createCodexDynamicToolBridge({
-        tools: [createSandboxExecProjection(wrapToolWithBeforeToolCallHook(exec, owner))],
+        tools: [createSandboxShellProjection(wrapToolWithBeforeToolCallHook(exec, owner), "exec")],
         signal: new AbortController().signal,
         hookContext: owner,
       });

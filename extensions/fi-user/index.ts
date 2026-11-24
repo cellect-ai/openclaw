@@ -237,7 +237,6 @@ async function readDriveFile(params: {
         file: metadata,
         extractedTextChars: extracted.text.length,
         extractedImageCount: extracted.images.length,
-        extractor: extracted.extractor,
         requestedPages,
       };
       const content: AgentToolResult<typeof details>["content"] = [

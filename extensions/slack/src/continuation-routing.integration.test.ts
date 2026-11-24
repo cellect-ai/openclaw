@@ -79,9 +79,9 @@ describe("WebChat completion Slack continuation", () => {
       });
 
     try {
-      expect(route("1770408530.000000").sessionKey).toBe(targetSessionKey);
-      expect(route("1770408599.000000").sessionKey).not.toBe(targetSessionKey);
-      expect(route().sessionKey).not.toBe(targetSessionKey);
+      expect((await route("1770408530.000000")).sessionKey).toBe(targetSessionKey);
+      expect((await route("1770408599.000000")).sessionKey).not.toBe(targetSessionKey);
+      expect((await route()).sessionKey).not.toBe(targetSessionKey);
     } finally {
       unregisterSessionBindingAdapter({ channel: "slack", accountId: "default", adapter });
     }

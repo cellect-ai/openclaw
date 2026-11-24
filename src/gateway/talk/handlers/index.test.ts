@@ -42,6 +42,9 @@ import { createBrowserConsultOwnerFixture } from "./client-owner.test-support.js
 import { talkConfigAccentCases } from "./config-accent.test-support.js";
 import {
   createTalkConfig,
+  realtimeConfig,
+  voiceCallConfig,
+  voiceModelConfig,
   defineRealtimeConfigProjectionTests,
   type TalkConfigProjectionResponse,
 } from "./config-realtime.test-support.js";
@@ -143,7 +146,9 @@ const mocks = vi.hoisted(() => ({
   createOrResumeClientVoiceSession: vi.fn<
     typeof import("../../../talk/client-voice-session.js").createOrResumeClientVoiceSession
   >(async () => "voice-test"),
-  ensureClientVoiceAgentSessionEntry: vi.fn(async () => "session-main"),
+  ensureClientVoiceAgentSessionEntry: vi.fn<
+    typeof import("../../../talk/client-voice-session-write.js").ensureClientVoiceAgentSessionEntry
+  >(async () => "session-main"),
   resolveClientVoiceAgentSessionId: vi
     .fn<() => Promise<string | undefined>>()
     .mockResolvedValue("session-main"),
@@ -365,18 +370,6 @@ async function invokeTalkHandler(
   const respond = vi.fn();
   await callTalkHandler(method, { params: {}, ...options, respond });
   return respond;
-}
-
-function realtimeConfig(realtime: NonNullable<OpenClawConfig["talk"]>["realtime"]): OpenClawConfig {
-  return { talk: { realtime } };
-}
-
-function voiceCallConfig(config: Record<string, unknown>): OpenClawConfig {
-  return { plugins: { entries: { "voice-call": { config } } } };
-}
-
-function voiceModelConfig(primary: string): OpenClawConfig {
-  return { agents: { defaults: { voiceModel: { primary } } } };
 }
 
 function realtimeProvider() {
@@ -2551,7 +2544,9 @@ describe("talk.client.toolCall handler", () => {
       expiresAtMs: Date.now() + 60000,
     } as RelaySession);
     resetClientVoiceConfirmationStateForTest();
-    onTestFinished(() => relaySessions.delete("relay-1"));
+    onTestFinished(() => {
+      relaySessions.delete("relay-1");
+    });
   });
   beforeEach(() => {
     vi.clearAllMocks();

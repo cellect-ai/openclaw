@@ -117,7 +117,6 @@ export function buildLiteLlmRealtimeVoiceProvider(): RealtimeVoiceProviderPlugin
       }
       return new XaiRealtimeVoiceBridge({
         ...req,
-        apiKey: config.apiKey,
         baseUrl,
         model,
         // The shared Talk setting may still contain another provider's voice.

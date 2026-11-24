@@ -1,3 +1,4 @@
+import { expectDefined } from "@openclaw/normalization-core";
 import { describe, expect, it } from "vitest";
 import {
   assertFinalProjectionReplacementAllowed,
@@ -268,7 +269,7 @@ describe("completed projection replacement restriction", () => {
   };
   function completed() {
     const entry = close(settle(settle(fixture(), "first", "suppressed"), "last", "suppressed"));
-    entry.completedFinalDeliveries![0].projectionConsumers.push("other-binding");
+    expectDefined(entry.completedFinalDeliveries?.[0]).projectionConsumers.push("other-binding");
     return entry;
   }
   it("refuses same-session replacement that erases owed completed custody", () => {
@@ -293,7 +294,7 @@ describe("completed projection replacement restriction", () => {
   });
   it("releases exactly one consumer while preserving physical receipt and every other consumer", () => {
     const entry = completed();
-    const receipt = entry.completedFinalDeliveries![0];
+    const receipt = expectDefined(entry.completedFinalDeliveries?.[0]);
     const next = {
       ...entry,
       completedFinalDeliveries: [{ ...receipt, projectionConsumers: ["other-binding"] }],
@@ -309,7 +310,9 @@ describe("completed projection replacement restriction", () => {
         entry,
         {
           ...next,
-          completedFinalDeliveries: [{ ...next.completedFinalDeliveries[0], completedAt: 99 }],
+          completedFinalDeliveries: [
+            { ...expectDefined(next.completedFinalDeliveries[0]), completedAt: 99 },
+          ],
         },
         [release],
       ),

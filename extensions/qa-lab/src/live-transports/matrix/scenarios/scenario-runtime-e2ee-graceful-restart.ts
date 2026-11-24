@@ -127,7 +127,6 @@ export async function runMatrixQaE2eeGracefulRestartResumeScenario(
           accessToken: context.sutAccessToken,
           baseUrl: context.baseUrl,
           endpoint: `/_matrix/client/v3/rooms/${encodeURIComponent(roomId)}/event/${encodeURIComponent(eventId)}`,
-          fetchImpl: fetch,
           method: "GET",
         });
         if (record(response.body, "wire event").type !== "m.room.encrypted")

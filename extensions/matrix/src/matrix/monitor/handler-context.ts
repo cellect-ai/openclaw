@@ -110,10 +110,13 @@ export async function resolveMatrixInboundContext(config: {
     }
     return true;
   };
-  const shouldIncludeRoomContextSender = (contextSenderId?: string): boolean =>
+  const shouldIncludeRoomContextSender = (
+    kind: "thread" | "history",
+    contextSenderId?: string,
+  ): boolean =>
     evaluateSupplementalContextVisibility({
       mode: contextVisibilityMode,
-      kind: "thread",
+      kind,
       senderAllowed: isRoomContextSenderAllowed(contextSenderId),
     }).include;
   const sharedHistory =
@@ -137,7 +140,10 @@ export async function resolveMatrixInboundContext(config: {
   let threadContext =
     ingress.threadContext ??
     (threadRootId ? await resolveThreadContext({ roomId, eventId: threadRootId }) : undefined);
-  if (threadContext?.senderId && !shouldIncludeRoomContextSender(threadContext.senderId)) {
+  if (
+    threadContext?.senderId &&
+    !shouldIncludeRoomContextSender("thread", threadContext.senderId)
+  ) {
     logVerboseMessage(`matrix: drop thread root context (mode=${contextVisibilityMode})`);
     threadContext = undefined;
   }
@@ -389,5 +395,6 @@ export async function resolveMatrixInboundContext(config: {
     replyTarget,
     sharedDmContextNotice,
     letMeKnowTriggerEventId: letMeKnow ? messageId : undefined,
+    sourceReplyAdmission,
   };
 }

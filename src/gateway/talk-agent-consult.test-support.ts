@@ -4,7 +4,8 @@ import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../infra/device-identity-async.js";
 import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
-import type { GatewayClient, GatewayRequestHandlerOptions } from "./server-methods/types.js";
+import { isWebchatClient } from "../utils/message-channel.js";
+import type { GatewayClient } from "./server-methods/types.js";
 import { gatewayConnect, gatewayProfile } from "./server/client-fixtures.test-support.js";
 import { resolveSessionMutationAuthorizationAsync } from "./session-sharing-authorization-async.js";
 import { useRelayFixtures } from "./talk/relay/fixture.test-support.js";
@@ -82,9 +83,10 @@ export function useTalkConsultFixtures() {
           params: selected,
           context,
           client,
+          isWebchatConnect: (connect) => isWebchatClient(connect?.client),
           respond,
           sessionMutationAuthorization: authorized.authorization,
-        } as GatewayRequestHandlerOptions);
+        });
       } finally {
         authorized.authorization?.release?.();
       }

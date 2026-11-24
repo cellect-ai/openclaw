@@ -14,7 +14,8 @@ const mocks = vi.hoisted(() => ({
   enqueueSystemEvent: vi.fn(),
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(),
   requestHeartbeat: vi.fn(),
-  runCronIsolatedAgentTurn: vi.fn(),
+  runCronIsolatedAgentTurn:
+    vi.fn<typeof import("../../cron/isolated-agent.js").runCronIsolatedAgentTurn>(),
 }));
 
 vi.mock("../../config/io.js", () => ({
@@ -96,25 +97,32 @@ describe("hook background admission", () => {
 
   describe("attested silent HTTP hooks", () => {
     const reviewKey = `hook:fi-review:${"a".repeat(40)}`;
-    const cases = [
-      {
-        purpose: "review",
-        sessionKey: reviewKey,
-        requesterAttestation: `pra:review-job:${"A".repeat(43)}`,
-      },
-      {
-        purpose: "RFI",
-        sessionKey: "hook:fi-rfi:rfi-job",
-        requesterAttestation: `fsa:rfi-job:${"B".repeat(43)}`,
-        requesterEnvironment: "prod",
-      },
-      {
-        purpose: "CO",
-        sessionKey: "hook:fi-co:co-job",
-        requesterAttestation: `fcw:co-job:${"C".repeat(43)}`,
-        requesterEnvironment: "prod",
-      },
-    ];
+    const reviewCase = {
+      purpose: "review",
+      sessionKey: reviewKey,
+      requesterAttestation: `pra:review-job:${"A".repeat(43)}`,
+      requesterEnvironment: undefined,
+    };
+    const rfiCase = {
+      purpose: "RFI",
+      sessionKey: "hook:fi-rfi:rfi-job",
+      requesterAttestation: `fsa:rfi-job:${"B".repeat(43)}`,
+      requesterEnvironment: "prod",
+    };
+    const coCase = {
+      purpose: "CO",
+      sessionKey: "hook:fi-co:co-job",
+      requesterAttestation: `fcw:co-job:${"C".repeat(43)}`,
+      requesterEnvironment: "prod",
+    };
+    const cases = [reviewCase, rfiCase, coCase];
+    function firstRunParams() {
+      const [call] = mocks.runCronIsolatedAgentTurn.mock.calls;
+      if (!call) {
+        throw new Error("expected the HTTP hook to dispatch an isolated agent turn");
+      }
+      return call[0];
+    }
     beforeEach(() => {
       mocks.getRuntimeConfig.mockReturnValue({
         ...config,
@@ -182,7 +190,7 @@ describe("hook background admission", () => {
           completion: { status: "ok" },
         });
         expect(mocks.runCronIsolatedAgentTurn).toHaveBeenCalledTimes(1);
-        const params = mocks.runCronIsolatedAgentTurn.mock.calls[0][0];
+        const params = firstRunParams();
         expect(params).toMatchObject({ hookRequesterAttestation: input.requesterAttestation });
         expect(params.hookRequesterEnvironment).toBe(input.requesterEnvironment);
         expect(params.job.delivery).toEqual({ mode: "none" });
@@ -202,11 +210,11 @@ describe("hook background admission", () => {
       },
     );
     it.each([
-      { ...cases[0], requesterAttestation: cases[1].requesterAttestation },
-      { ...cases[1], requesterAttestation: cases[2].requesterAttestation },
-      { ...cases[2], requesterAttestation: cases[0].requesterAttestation },
-      { ...cases[1], requesterEnvironment: undefined },
-      { ...cases[2], requesterEnvironment: "invalid" },
+      { ...reviewCase, requesterAttestation: rfiCase.requesterAttestation },
+      { ...rfiCase, requesterAttestation: coCase.requesterAttestation },
+      { ...coCase, requesterAttestation: reviewCase.requesterAttestation },
+      { ...rfiCase, requesterEnvironment: undefined },
+      { ...coCase, requesterEnvironment: "invalid" },
     ])(
       "refuses wrong-purpose or missing/invalid source environment before running ($purpose)",
       async (input) => {
@@ -229,31 +237,29 @@ describe("hook background admission", () => {
         (await post(attestedHandler(), "/hooks/agent", { ...staff, fiEnvironment: "dev" })).res
           .statusCode,
       ).toBe(200);
-      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0].hookRequesterEnvironment).toBe("dev");
+      expect(firstRunParams().hookRequesterEnvironment).toBe("dev");
       mocks.runCronIsolatedAgentTurn.mockClear();
       expect((await post(attestedHandler(), "/hooks/agent", staff)).res.statusCode).toBe(200);
-      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0]).not.toHaveProperty(
-        "hookRequesterEnvironment",
-      );
+      expect(firstRunParams()).not.toHaveProperty("hookRequesterEnvironment");
       // A construction hook names the same Fi in both fields.
       mocks.runCronIsolatedAgentTurn.mockClear();
       expect(
         (
           await post(attestedHandler(), "/hooks/agent", {
-            ...body(cases[1]),
+            ...body(rfiCase),
             requesterEnvironment: "dev",
             fiEnvironment: "dev",
           })
         ).res.statusCode,
       ).toBe(200);
-      expect(mocks.runCronIsolatedAgentTurn.mock.calls[0][0].hookRequesterEnvironment).toBe("dev");
+      expect(firstRunParams().hookRequesterEnvironment).toBe("dev");
     });
     it.each([
       { fiEnvironment: "staging", why: "an environment with no Fi route here" },
       { fiEnvironment: "qa", why: "an unknown environment" },
       { fiEnvironment: "dev", requesterEnvironment: "prod", why: "two environments that disagree" },
     ])("refuses a hook naming $why before running", async ({ why: _why, ...fields }) => {
-      const input = fields.requesterEnvironment ? cases[1] : cases[0];
+      const input = fields.requesterEnvironment ? rfiCase : reviewCase;
       const response = await post(attestedHandler(), "/hooks/agent", { ...body(input), ...fields });
       expect(response.res.statusCode).toBe(400);
       expect(mocks.runCronIsolatedAgentTurn).not.toHaveBeenCalled();

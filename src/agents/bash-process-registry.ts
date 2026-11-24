@@ -163,8 +163,6 @@ export interface ProcessSession {
   notifyDeliveryContext?: DeliveryContext;
   notifySessionTarget?: SessionEventTarget;
   assertExitNotificationAcceptanceCurrent?: () => void;
-  /** Agent run that started the process; binds the exit notification to that run. */
-  originRunId?: string;
   notifyOnExit?: boolean;
   notifyOnExitEmptySuccess?: boolean;
   exitNotified?: boolean;

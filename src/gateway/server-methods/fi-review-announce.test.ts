@@ -64,7 +64,10 @@ it("uses fresh enrollment authority twice and the native private-Main delivery o
 it("does not let a caller choose another replay key for the accepted report", async () => {
   await call();
   await call({ ...params(), idempotencyKey: "different" });
-  expect(deliver.mock.calls[0][0].idempotencyKey).toBe(deliver.mock.calls[1][0].idempotencyKey);
+  expect(deliver).toHaveBeenCalledTimes(2);
+  const [first, second] = deliver.mock.calls;
+  expect(first?.[0].idempotencyKey).toBeTypeOf("string");
+  expect(second?.[0].idempotencyKey).toBe(first?.[0].idempotencyKey);
 });
 it.each([
   { roomId: "!changed:example.test" },

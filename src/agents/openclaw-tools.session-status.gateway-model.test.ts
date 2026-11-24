@@ -308,11 +308,26 @@ it("recovers a rejected nickname through this session's catalog without granting
     astra,
   ];
   const entries = [...catalog, ...choices, other];
-  cfg = modelConfig(entries, {
-    model: { primary: "fixture/default" },
-    models: Object.fromEntries(entries.map((entry) => [`fixture/${entry.id}`, {}])),
-    modelPolicy: { allow: ["fixture/default", ...choices.map((entry) => `fixture/${entry.id}`)] },
-  });
+  cfg = {
+    ...modelConfig(),
+    agents: {
+      entries: { main: {}, support: {} },
+      defaults: {
+        model: { primary: "fixture/default" },
+        models: Object.fromEntries(entries.map((entry) => [`fixture/${entry.id}`, {}])),
+        modelPolicy: {
+          allow: ["fixture/default", ...choices.map((entry) => `fixture/${entry.id}`)],
+        },
+        modelSelectionScope: "global",
+        sandbox: { mode: "off", sessionToolsVisibility: "all" },
+      },
+    },
+    ...configFor("fixture", "https://fixture.invalid/v1", {
+      api: "openai-completions",
+      agentRuntime: { id: "openclaw" },
+      models: entries.map(({ id }) => modelDefinition(id, { reasoning: false, maxTokens: 1024 })),
+    }),
+  };
   const agents = expectDefined(cfg.agents?.entries, "model selection agents");
   agents.support = {
     models: { "fixture/support-only": { alias: "astra" } },

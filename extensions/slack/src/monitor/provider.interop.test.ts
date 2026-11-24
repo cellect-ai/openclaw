@@ -555,8 +555,8 @@ it("does not treat missing or non-error values as permanent auth failures", () =
 
 it("reports disconnect while asynchronous startup is still settling", async () => {
   const client = new EventEmitter();
-  const entered = createDeferred();
-  const release = createDeferred();
+  const entered = createDeferred<void>();
+  const release = createDeferred<void>();
   let startupFinished = false;
   const disconnected = vi.fn(() => startupFinished);
   const app = { receiver: { client }, start: async () => {} };

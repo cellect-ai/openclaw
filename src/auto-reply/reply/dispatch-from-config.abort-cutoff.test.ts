@@ -37,7 +37,7 @@ it.each(
       agentId: "main",
       sessionKey: "agent:main:conversation-stop",
     });
-    const result = await dispatchReplyFromConfig({
+    const result = await dispatch.dispatchReplyFromConfig({
       ctx: buildTestCtx({
         Provider: provider,
         Surface: provider,
@@ -67,7 +67,7 @@ it.each(["genuine failure", "ConversationRunStopReason"])(
     const error = Object.assign(new Error("dispatch failure"), { name });
     const dispatcher = createDispatcher();
     await expect(
-      dispatchReplyFromConfig({
+      dispatch.dispatchReplyFromConfig({
         ctx: buildTestCtx({
           Provider: "matrix",
           Surface: "matrix",
@@ -118,7 +118,7 @@ it.each([
   "$name with no reply posts fallback=$fallback",
   async ({ owner, outcome, fallback }) => {
     const dispatcher = createDispatcher();
-    const result = await dispatchReplyFromConfig({
+    const result = await dispatch.dispatchReplyFromConfig({
       ctx: buildTestCtx({
         Provider: "matrix",
         Surface: "matrix",
@@ -148,7 +148,7 @@ it.each([
 
 it("still posts the fallback after a failed agent turn with no reply", async () => {
   const dispatcher = createDispatcher();
-  const result = await dispatchReplyFromConfig({
+  const result = await dispatch.dispatchReplyFromConfig({
     ctx: buildTestCtx({
       Provider: "matrix",
       Surface: "matrix",
@@ -165,7 +165,7 @@ it("still posts the fallback after a failed agent turn with no reply", async () 
     },
   });
   expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({
-    text: buildNoVisibleReplyFallbackText(),
+    text: MISSING_REPLY_NOTICE_TEXT,
   });
   expect(result.noVisibleReplyFallbackDelivered).toBe(true);
 });

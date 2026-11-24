@@ -5,7 +5,6 @@ import {
   type GatewayRootWorkAdmissionContinuationScope,
 } from "../../process/gateway-work-admission.js";
 import { GatewayRetainedWorkTimeoutError } from "../../shared/async-work-scope.js";
-import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import {
   prepareClientVoiceSessionClose,

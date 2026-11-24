@@ -1,6 +1,5 @@
-/* @vitest-environment jsdom */
-
 import type { TalkCatalogResult } from "@openclaw/gateway-protocol";
+/* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TalkSchema } from "../../../../src/config/zod-schema.root-support.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
@@ -22,32 +21,21 @@ import { choosePickerValue, updatePickers } from "../../test-helpers/select-pick
 import { createApplicationGateway } from "../../test-helpers/solid-application-context.tsx";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import {
+  editTrigger,
+  tick,
+  triggerInput,
+  triggerAlert,
+  retryTrigger,
+  expectTriggerWrite,
+  expectFocused,
+} from "./talk-voicewake.test-support.ts";
+import {
   mountTalkPage,
   mountTalkSettingsRoutes,
   nativeVoice,
   readVoiceOptions,
 } from "./talk.test-support.tsx";
 
-function editTrigger(input: HTMLTextAreaElement, value: string) {
-  input.value = value;
-  input.dispatchEvent(new Event("input", { bubbles: true }));
-}
-
-async function tick(ms = 0) {
-  await vi.advanceTimersByTimeAsync(ms);
-  flush();
-}
-
-const triggerInput = (page: HTMLElement) => page.querySelector("textarea")!;
-const triggerAlert = (page: HTMLElement) => page.querySelector("[role='alert']");
-const retryTrigger = (page: HTMLElement) =>
-  page.querySelector<HTMLButtonElement>("[role='alert'] button")?.click();
-const expectTriggerWrite = (request: unknown, text: string) =>
-  expect(request).toHaveBeenLastCalledWith("voicewake.set", { triggers: [text] });
-const expectFocused = (input: HTMLTextAreaElement, value: string) => {
-  expect(input.value).toBe(value);
-  expect(document.activeElement).toBe(input);
-};
 const modelPicker = (page: HTMLElement) =>
   page.querySelector<SelectPicker>("openclaw-select-picker");
 const waitCatalogCalls = (request: unknown, count: number) =>
@@ -166,10 +154,12 @@ function createTalkMutationHarness(options: TalkMutationHarnessOptions = {}) {
     },
   } satisfies TalkCatalogResult;
   let catalogRequestIndex = 0;
-  const request = vi.fn(async (_method: string, _params: Record<string, unknown>) => {
-    catalogRequestIndex += 1;
-    return await (options.catalogRequest?.(catalogRequestIndex, catalog) ?? catalog);
-  });
+  const request = vi.fn(
+    async (_method: string, _params: Record<string, unknown>, _requestOptions?: unknown) => {
+      catalogRequestIndex += 1;
+      return await (options.catalogRequest?.(catalogRequestIndex, catalog) ?? catalog);
+    },
+  );
   const { gateway, publish } = createApplicationGateway();
   gateway.connection.gatewayUrl = "wss://gateway.example.test";
   const hello: ApplicationContext["gateway"]["snapshot"]["hello"] = options.voiceWakeRequest

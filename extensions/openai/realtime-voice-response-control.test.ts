@@ -46,6 +46,7 @@ const {
   emitCompletedToolCalls,
   connectReadyBridge,
   expectedResponseCreateEvent,
+  expectRecordFields,
   requireNestedRecord,
   resetTestState,
   restoreTestEnvironment,

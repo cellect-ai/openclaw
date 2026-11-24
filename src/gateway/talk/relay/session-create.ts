@@ -314,8 +314,7 @@ export function createTalkRealtimeRelaySession(
           });
         }
         if (event.itemId) {
-          broadcastToOwner(params.context, params.connId, {
-            relaySessionId,
+          broadcastToOwner(relay, {
             type: "inputAudioStart",
             itemId: event.itemId,
           });

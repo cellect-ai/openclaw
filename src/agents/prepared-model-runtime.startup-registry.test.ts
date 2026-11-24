@@ -498,7 +498,6 @@ it("keeps dispatched native-event proof in the same hook instance when a prepare
           () => [],
           undefined,
           resources.load.bind(resources),
-          "agent",
         ),
       );
       const inbound = prepared.inboundPluginRegistry,

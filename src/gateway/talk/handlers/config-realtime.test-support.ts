@@ -80,3 +80,17 @@ export function defineRealtimeConfigProjectionTests(
     }
   });
 }
+
+export function realtimeConfig(
+  realtime: NonNullable<OpenClawConfig["talk"]>["realtime"],
+): OpenClawConfig {
+  return { talk: { realtime } };
+}
+
+export function voiceCallConfig(config: Record<string, unknown>): OpenClawConfig {
+  return { plugins: { entries: { "voice-call": { config } } } };
+}
+
+export function voiceModelConfig(primary: string): OpenClawConfig {
+  return { agents: { defaults: { voiceModel: { primary } } } };
+}

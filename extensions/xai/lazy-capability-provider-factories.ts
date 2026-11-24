@@ -226,8 +226,8 @@ export function createLazyXaiRealtimeVoiceProvider(
 
 export function createLazyLiteLlmRealtimeVoiceProvider(
   context: Pick<
-    PluginCapabilityCatalogContext,
-    "isProviderAuthProfileConfigured" | "resolveAgentDir"
+    PluginCapabilityCatalogHostContext,
+    "isProviderAuthProfileConfigured" | "isProviderAuthProfileConfiguredAsync" | "resolveAgentDir"
   >,
 ): RealtimeVoiceProviderPlugin {
   return attachLiteLlmRealtimeVoiceCapabilities({

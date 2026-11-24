@@ -30,6 +30,7 @@ import {
   type ClientVoiceSessionSource,
 } from "./client-voice-session-source.js";
 import {
+  assertVoiceSessionOwnership,
   operationKey,
   readVoiceSessionRecord as readRecord,
   VOICE_SESSION_STALE_AFTER_MS as STALE_AFTER_MS,
@@ -277,6 +278,54 @@ export async function registerClientVoiceConsultRun(
 /** Return the open voice-call binding for one executing run. */
 export function resolveClientVoiceRunBinding(runId?: string): ClientVoiceRunBinding | undefined {
   return runId ? voiceSessionByRunId.get(runId)?.binding : undefined;
+}
+
+/** Read spoken-confirmation capability through the executing run's retained physical owner. */
+export async function isClientVoiceSessionConfirmable(
+  binding: ClientVoiceRunBinding,
+  runId: string,
+): Promise<boolean> {
+  const owner = voiceSessionByRunId.get(runId);
+  if (!owner || owner.binding !== binding) {
+    throw new Error("Voice confirmation run binding is unavailable");
+  }
+  const assertCurrent = () => {
+    if (owner.retired || voiceSessionByRunId.get(runId) !== owner) {
+      throw new Error("Voice confirmation run binding changed");
+    }
+    owner.source.assertCurrent();
+  };
+  assertCurrent();
+  const confirmable = await runWithClientVoiceRunSettlement(owner, () =>
+    withClientVoiceSessionSettlement(
+      async () => {
+        const writer = captureClientVoiceSessionWriter({
+          agentId: binding.agentId,
+          physicalSource: owner.source,
+          assertCurrent,
+        });
+        return withClientVoiceSessionResources([writer], async () => {
+          const read = await writer.read(binding.voiceSessionId);
+          assertCurrent();
+          if (!read?.record) {
+            throw new Error("Voice confirmation session is unavailable");
+          }
+          assertVoiceSessionOwnership(read.record, binding);
+          // An admitted consult can outlive transport close. Capability remains
+          // part of that original call; absence of a record never grants a bypass.
+          return (
+            read.record.origin === "relay" ||
+            read.record.transcriptCapable === true ||
+            read.record.hasUserTranscript === true
+          );
+        });
+      },
+      undefined,
+      owner.source.settlementContext,
+    ),
+  );
+  assertCurrent();
+  return confirmable;
 }
 
 /** Append one finalized client-owned transcript item idempotently. */

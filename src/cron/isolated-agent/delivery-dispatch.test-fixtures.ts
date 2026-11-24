@@ -1,9 +1,34 @@
+import type { inspectDeliveryQueueReceipt } from "../../infra/delivery-queue-sqlite.js";
 import { resolveCronDeliveryPlan } from "../delivery-plan.js";
 import type { CronDelivery } from "../types.js";
 import type { DispatchCronDeliveryParams } from "./delivery-dispatch-types.js";
 import type { DeliveryTargetResolution } from "./delivery-target.js";
 
 type SuccessfulDeliveryResolution = Extract<DeliveryTargetResolution, { ok: true }>;
+
+type DeliveryReceipt = Awaited<ReturnType<typeof inspectDeliveryQueueReceipt>>;
+
+export function makePendingCronDeliveryReceipt(owner: "live" | "stale"): DeliveryReceipt {
+  return {
+    status: "pending",
+    completionReceipt: null,
+    pendingEntry: {
+      id: "cross-process-cron-intent",
+      enqueuedAt: Date.now() - (owner === "stale" ? 60_000 : 0),
+      retryCount: 0,
+      platformSendStartedAt: Date.now() - (owner === "stale" ? 30_001 : 0),
+      recoveryState: "send_attempt_started",
+    },
+  };
+}
+
+export function makeCompletedCronDeliveryReceipt(): DeliveryReceipt {
+  return {
+    status: "completed",
+    completionReceipt: { platformMessageId: "cross-process-message" },
+    pendingEntry: null,
+  };
+}
 
 export function makeResolvedDelivery(
   overrides: Partial<SuccessfulDeliveryResolution> = {},

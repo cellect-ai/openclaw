@@ -4,6 +4,7 @@ import { applyFinalEffectiveToolPolicy } from "../../agents/embedded-agent-runne
 import { makeProviderModelFixture } from "../../agents/test-helpers/provider-model-fixture.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { GatewaySessionEntryRead } from "../session-utils.js";
 import { toolsEffectiveHandlers, testing } from "./tools-effective.js";
 
 type InventoryModule = typeof import("../../agents/tools-effective-inventory.js");
@@ -12,14 +13,23 @@ type AcquiredContext = Awaited<
 >;
 type ModelContext = Parameters<Parameters<AcquiredContext["run"]>[0]>[0];
 const mocks = vi.hoisted(() => ({
-  load: vi.fn<typeof import("../session-utils.js").loadGatewaySessionEntryReadOnly>(),
+  load: vi.fn<() => GatewaySessionEntryRead>(),
   inventory: vi.fn<InventoryModule["resolveEffectiveToolInventory"]>(),
 }));
 
 vi.mock("../session-utils.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../session-utils.js")>()),
-  loadGatewaySessionEntryReadOnly: mocks.load,
   resolveSessionModelRef: () => ({ provider: "openai", model: "gpt-4.1" }),
+}));
+vi.mock("../session-utils-read-lifetime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../session-utils-read-lifetime.js")>()),
+  withGatewaySessionEntryReadOnly: async <T>(
+    params: { assertActive?: () => void },
+    consume: (loaded: GatewaySessionEntryRead, assertCurrent: () => void) => Promise<T>,
+  ) => {
+    params.assertActive?.();
+    return consume(mocks.load(), () => params.assertActive?.());
+  },
 }));
 vi.mock("../../agents/tools-effective-inventory.js", async (importOriginal) => ({
   ...(await importOriginal<InventoryModule>()),
@@ -78,7 +88,7 @@ describe("tools.effective sandbox admission parity", () => {
     mocks.load.mockReset();
     mocks.inventory.mockReset();
     testing.resetToolsEffectiveCacheForTest();
-    mocks.inventory.mockImplementation((params) => {
+    mocks.inventory.mockImplementation(async (params) => {
       const tools = applyFinalEffectiveToolPolicy({
         bundledTools: [
           {

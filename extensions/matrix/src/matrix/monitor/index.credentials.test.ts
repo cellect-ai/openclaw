@@ -134,6 +134,7 @@ describe("Matrix monitor credential discovery", () => {
         await harness.registeredOnRoomMessage?.("!room:example.org", {
           type: "m.room.message",
           event_id: "$synthetic-bot",
+          origin_server_ts: Date.now(),
           sender: "@ops:example.org",
           content: { msgtype: "m.text", body: "synthetic bot message" },
         });

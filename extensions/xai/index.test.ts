@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import type { OpenClawPluginApi, ProviderCatalogContext } from "openclaw/plugin-sdk/plugin-entry";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
-import { registerSingleProviderPlugin } from "openclaw/plugin-sdk/plugin-test-runtime";
+import {
+  registerSingleProviderPlugin,
+  registerProviderPlugin,
+  createCapturedPluginRegistration,
+  requireRegisteredProvider as requireEntry,
+} from "openclaw/plugin-sdk/plugin-test-runtime";
 import {
   clearLiveCatalogCacheForTests,
   type LiveModelCatalogFetchGuard,
@@ -10,7 +15,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { createNonExitingRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { createProviderUsageFetch, makeResponse } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resolveInternalRealtimeVoiceGatewayRelayCapabilities } from "../../src/talk/provider-internal.js";
+import { resolveRealtimeVoiceProviderCapabilitiesAsync } from "../../src/talk/provider-resolver.js";
 
 const providerAuthRuntimeMocks = vi.hoisted(() => ({
   resolveApiKeyForProvider: vi.fn(),
@@ -450,7 +455,7 @@ describe("xai provider plugin", () => {
     expect(realtimeProvider.aliases).toContain("xai-realtime");
   });
 
-  it("registers xAI realtime voice for Talk gateway-relay", () => {
+  it("registers xAI realtime voice for Talk gateway-relay", async () => {
     const captured = createCapturedPluginRegistration({
       id: "xai",
       name: "xAI Provider",
@@ -465,10 +470,13 @@ describe("xai provider plugin", () => {
     expect(litellmProvider.label).toBe("LiteLLM Realtime (Grok / Google)");
     expect(litellmProvider.models).toEqual(["grok-voice-think-fast-2.0", "gemini-3.8-live"]);
     expect(litellmProvider.capabilities?.transports).toEqual(["gateway-relay"]);
-    const voicesByModel = resolveInternalRealtimeVoiceGatewayRelayCapabilities({
-      provider: litellmProvider,
-      providerConfig: { model: "grok-voice-think-fast-2.0" },
-    })?.voicesByModel;
+    const voicesByModel = (
+      await resolveRealtimeVoiceProviderCapabilitiesAsync({
+        surface: "gateway-relay",
+        provider: litellmProvider,
+        providerConfig: { model: "grok-voice-think-fast-2.0" },
+      })
+    )?.voicesByModel;
     expect(voicesByModel?.["grok-voice-think-fast-2.0"]).toEqual([
       "eve",
       "ara",

@@ -1,9 +1,9 @@
 import { type OpenClawConfig } from "../../config/config.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
-import { createReplyTimingTracker } from "./reply-timing-tracker.js";
+import { createReplyTimingTracker, type ReplyTimingLogParams } from "./reply-timing-tracker.js";
 
 export function createReplyPhaseTracer(
-  resolverTiming: ReturnType<typeof createReplyTimingTracker>,
+  resolverTiming: ReturnType<typeof createReplyTimingTracker<ReplyTimingLogParams>>,
   cfg: OpenClawConfig,
   traceAttributes: NonNullable<Parameters<typeof measureDiagnosticsTimelineSpan>[2]>["attributes"],
 ) {

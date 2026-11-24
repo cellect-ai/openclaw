@@ -21,7 +21,6 @@ import {
   serializeXaiRealtimeToolResult,
   type XaiRealtimeResponseToolChoice,
   type XaiRealtimeUserMessageOptions,
-  type XaiRealtimeEvent,
   type XaiRealtimeSessionUpdate,
   type XaiRealtimeVoiceBridgeConfig,
 } from "./realtime-voice-config.js";

@@ -9,6 +9,7 @@ import { registerAgentWorkspaceAccess } from "../../agents/workspace-access.js";
 import * as staging from "../../auto-reply/reply/stage-sandbox-media.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
+import { STAGED_INPUT_MAX_BYTES } from "../../media/staged-inputs.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById } from "../chat-abort.js";
@@ -203,7 +204,7 @@ it.each([
           skipBootstrap: true,
           ...(preparation === "pass-through"
             ? {
-                mediaMaxMb: Math.ceil((staging.SANDBOX_MEDIA_MAX_BYTES + 1) / (1024 * 1024)),
+                mediaMaxMb: Math.ceil((STAGED_INPUT_MAX_BYTES + 1) / (1024 * 1024)),
               }
             : {}),
           sandbox: {
@@ -220,7 +221,7 @@ it.each([
     const runId = "attachment-cancellation";
     const bytes =
       preparation === "pass-through"
-        ? Buffer.alloc(staging.SANDBOX_MEDIA_MAX_BYTES + 1, " ")
+        ? Buffer.alloc(STAGED_INPUT_MAX_BYTES + 1, " ")
         : Buffer.from(pdf ? "%PDF-1.4\n% synthetic attachment\n%%EOF\n" : "synthetic attachment");
     if (preparation === "pass-through") {
       bytes.write("%PDF-1.4\n% synthetic attachment\n");

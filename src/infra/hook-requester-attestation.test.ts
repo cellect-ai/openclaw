@@ -53,7 +53,7 @@ describe("personal review purpose isolation", () => {
       [SHADOW, REVIEW_ATTESTATION],
       [REVIEW.replace("fi-review", "fi-shadow"), REVIEW_ATTESTATION],
       [REVIEW.replace("hook:", "agent:other:hook:"), REVIEW_ATTESTATION],
-    ]) {
+    ] as const) {
       expect(normalizeHookRequesterAttestation({ requesterAttestation }, sessionKey).ok).toBe(
         false,
       );

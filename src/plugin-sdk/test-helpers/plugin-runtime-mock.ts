@@ -533,9 +533,10 @@ export function createPluginRuntimeMock(overrides: PluginRuntimeMockOverrides = 
     events: {
       registerConversationLifecycleTransport: vi.fn(() => ({
         flush: async () => {},
-        stop: () => {},
+        ready: Promise.resolve(),
+        stop: async () => {},
         resolveRun: () => undefined,
-        noteResult: () => {},
+        noteResult: async () => {},
       })),
       onAgentEvent: vi.fn<PluginRuntime["events"]["onAgentEvent"]>(() => () => {}),
       onSessionTranscriptUpdate: vi.fn<PluginRuntime["events"]["onSessionTranscriptUpdate"]>(

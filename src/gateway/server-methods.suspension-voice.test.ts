@@ -1,5 +1,5 @@
 // Registered RPC boundary: suspension preserves a live call, not a generic bypass.
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   prepareGatewaySuspend,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
@@ -9,6 +9,10 @@ import {
   resetGatewayWorkAdmission,
   tryBeginGatewayRootWorkAdmission,
 } from "../process/gateway-work-admission.js";
+import {
+  createOpenClawTestState,
+  type OpenClawTestState,
+} from "../test-utils/openclaw-test-state.js";
 import { dispatchSuspensionRequest as dispatch } from "./server-methods.suspension-admission.test-support.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { talkSessionHandlers } from "./talk/handlers/session.js";
@@ -18,30 +22,38 @@ import {
 } from "./talk/relay/index.js";
 import { createIdleRelayProvider, makeRelayTransport } from "./talk/relay/index.test-support.js";
 import { rememberUnifiedTalkSession } from "./talk/session-registry.js";
+import { prepareTalkSessionTarget } from "./talk/session-target.js";
 import {
   createTalkTranscriptionRelaySession,
   stopTalkTranscriptionRelaySession,
 } from "./talk/transcription-relay.js";
 
-afterEach(() => {
-  resetGatewaySuspendCoordinatorForLifecycleRestart();
-  resetGatewayWorkAdmission();
+let testState: OpenClawTestState;
+beforeEach(async () => {
+  testState = await createOpenClawTestState({
+    label: "suspension-voice",
+    scenario: "minimal",
+    applyEnv: true,
+  });
+});
+afterEach(async () => {
+  try {
+    await testState.cleanup();
+  } finally {
+    resetGatewaySuspendCoordinatorForLifecycleRestart();
+    resetGatewayWorkAdmission();
+  }
 });
 
 it("keeps registered audio and close usable while rejecting new calls and foreign call ids", async () => {
   const creating = tryBeginGatewayRootWorkAdmission("ws:talk.session.create")!;
   const transport = makeRelayTransport();
-  const target = {
-    agentId: "main",
-    sessionKey: "agent:main:main",
-    canonicalKey: "agent:main:main",
-    storePath: "/fixture/sessions",
-  };
+  const target = await creating.run(() =>
+    prepareTalkSessionTarget({ agents: { entries: { main: {} } } }, "agent:main:main"),
+  );
   const context = {
     broadcastToConnIds: vi.fn(),
     logGateway: { warn: vi.fn() },
-    chatAbortControllers: new Map(),
-    chatQueuedTurns: new Map(),
     getRuntimeConfig: () => ({ agents: { entries: { main: {} } } }),
   } as unknown as GatewayRequestContext;
   const session = await creating.run(async () =>

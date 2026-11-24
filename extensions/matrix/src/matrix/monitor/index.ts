@@ -106,8 +106,6 @@ function formatSyncLifecycleError(state: MatrixSyncState, error?: unknown): Erro
   return new Error(message ?? `Matrix sync entered ${state} unexpectedly`);
 }
 
-const DEFAULT_MEDIA_MAX_MB = 20;
-
 export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promise<void> {
   // Fast-cancel callers should not pay the full Matrix startup/import cost.
   if (opts.abortSignal?.aborted) {

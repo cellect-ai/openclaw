@@ -221,6 +221,13 @@ export class RealtimeTalkPcmOutputQueue {
     this.sampleRateHz = sampleRateHz;
   }
 
+  resume(): Promise<void> {
+    if (!this.context) {
+      return Promise.reject(new Error("Audio output is closed"));
+    }
+    return this.context.resume();
+  }
+
   close(): void {
     this.stop();
     void this.context?.close();

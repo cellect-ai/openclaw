@@ -12,20 +12,34 @@ import type { GatewayClient, GatewayRequestContext } from "./types.js";
 
 const {
   sessions,
-  loadSessionEntryReadOnly,
+  loadRequesterSessionEntry,
   upsertSessionEntryCore,
+  beforeSessionCommit,
   maybeSteerSubagentAnnounce,
   sendSubagentAnnounceDirectly,
   readFiUserMatrixRoom,
 } = vi.hoisted(() => {
   const sessions = new Map<string, SessionEntry>();
+  const beforeSessionCommit = vi.fn<() => void>();
   return {
     sessions,
-    loadSessionEntryReadOnly: vi.fn((scope: { sessionKey?: string }) =>
-      scope.sessionKey ? sessions.get(scope.sessionKey) : undefined,
-    ),
+    beforeSessionCommit,
+    loadRequesterSessionEntry: vi.fn<
+      typeof import("../../agents/subagents/announce/subagent-announce-delivery.runtime.js").loadRequesterSessionEntry
+    >(async (sessionKey, agentId) => ({
+      cfg: { agents: { defaults: {} } },
+      canonicalKey: sessionKey,
+      agentId,
+      entry: sessions.get(sessionKey),
+    })),
     upsertSessionEntryCore: vi.fn(
-      async (scope: { sessionKey: string }, patch: Partial<SessionEntry>) => {
+      async (
+        scope: { sessionKey: string },
+        patch: Partial<SessionEntry>,
+        options?: { assertCommitAllowed?: () => void },
+      ) => {
+        beforeSessionCommit();
+        options?.assertCommitAllowed?.();
         const existing = sessions.get(scope.sessionKey);
         const next = {
           sessionId: existing?.sessionId ?? `created:${scope.sessionKey}`,
@@ -52,8 +66,18 @@ vi.mock("../../config/config.js", async (importOriginal) => {
 });
 vi.mock("../../config/sessions/session-accessor.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../config/sessions/session-accessor.js")>();
-  return { ...actual, loadSessionEntryReadOnly, upsertSessionEntryCore };
+  return { ...actual, upsertSessionEntryCore };
 });
+vi.mock(
+  "../../agents/subagents/announce/subagent-announce-delivery.runtime.js",
+  async (importOriginal) => {
+    const actual =
+      await importOriginal<
+        typeof import("../../agents/subagents/announce/subagent-announce-delivery.runtime.js")
+      >();
+    return { ...actual, loadRequesterSessionEntry };
+  },
+);
 vi.mock("../../agents/subagents/announce/subagent-announce-active-wake.js", () => ({
   maybeSteerSubagentAnnounce,
 }));
@@ -100,7 +124,9 @@ function params(extra: Record<string, unknown> = {}) {
   };
 }
 
-function dispatch(options: { params?: Record<string, unknown>; scopes?: string[] } = {}) {
+function dispatch(
+  options: { params?: Record<string, unknown>; scopes?: string[]; signal?: AbortSignal } = {},
+) {
   const respond = vi.fn();
   const client: GatewayClient = {
     connId: crypto.randomUUID(),
@@ -121,6 +147,7 @@ function dispatch(options: { params?: Record<string, unknown>; scopes?: string[]
       params: options.params ?? params(),
     },
     respond,
+    signal: options.signal,
     client,
     isWebchatConnect: () => false,
     context: { logGateway: { warn: vi.fn() } } as unknown as GatewayRequestContext,
@@ -149,6 +176,7 @@ beforeEach(async () => {
   resetGatewayWorkAdmission();
   sessions.clear();
   vi.clearAllMocks();
+  beforeSessionCommit.mockReset();
   await registerShadowRequesterIdentity(CHILD, OWNER);
   readFiUserMatrixRoom.mockResolvedValue(soleHumanRoom());
   maybeSteerSubagentAnnounce.mockResolvedValue({ status: "none" });
@@ -510,4 +538,28 @@ beforeAll(async () => {
 });
 afterAll(async () => {
   await shadowState.cleanup();
+});
+
+it("does not mutate or announce when cancellation arrives during requester loading", async () => {
+  const controller = new AbortController();
+  const load = loadRequesterSessionEntry.getMockImplementation()!;
+  loadRequesterSessionEntry.mockImplementationOnce(async (...args) => {
+    const result = await load(...args);
+    controller.abort();
+    return result;
+  });
+  await dispatch({ signal: controller.signal }).request;
+  expect(loadRequesterSessionEntry).toHaveBeenCalledExactlyOnceWith(ROOM_KEY, "cellect-fi-user");
+  expect(controller.signal.aborted).toBe(true);
+  expect(upsertSessionEntryCore).not.toHaveBeenCalled();
+  expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
+  expect(sessions.size).toBe(0);
+});
+it("refuses the session write when cancellation arrives at worker commit admission", async () => {
+  const controller = new AbortController();
+  beforeSessionCommit.mockImplementationOnce(() => controller.abort());
+  await dispatch({ signal: controller.signal }).request;
+  expect(upsertSessionEntryCore).toHaveBeenCalledTimes(1);
+  expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
+  expect(sessions.size).toBe(0);
 });

@@ -200,7 +200,7 @@ export function normalizePendingFinalDelivery(
   ) {
     throw new Error("Invalid native final dispatch custody");
   }
-  const base = {
+  const base: Omit<NonNullable<SessionEntry["pendingFinalDelivery"]>, "kind" | "text"> = {
     createdAt,
     ...(isRecord(value.context) ? { context: value.context } : {}),
     ...(intentId ? { intentId } : {}),

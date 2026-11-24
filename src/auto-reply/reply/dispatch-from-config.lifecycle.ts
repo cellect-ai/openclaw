@@ -19,7 +19,6 @@ import {
 } from "../../sessions/session-controller.mailbox.js";
 import { waitForReplyOperationSourceRelease } from "../../sessions/session-controller.settlement.js";
 import { captureSessionTarget } from "../../sessions/session-controller.target.js";
-import { observeAgentRunStart } from "../agent-run-start.js";
 import {
   isNativeCommandTurn,
   isExplicitFollowupCommandTurn,
@@ -39,6 +38,7 @@ import {
   resolveDispatchResetAdmission,
   shouldLetSlackRoutedThreadBypassBusyReplyOperation,
 } from "./dispatch-from-config.context.js";
+import { createDispatchAgentRunObserver } from "./dispatch-from-config.run-observer.js";
 import { createReplyTurnLedger } from "./dispatch-from-config.turn-ledger.js";
 import type {
   DispatchFromConfigParams,
@@ -592,7 +592,7 @@ export function createDispatchReplyOperationCoordinator(
     dispatchReplyOperation?.abortSignal ??
     params.replyOptions?.abortSignal;
   let observedReplyDelivery = false;
-  let agentRunTerminalOutcome: "completed" | "failed" | undefined;
+  const agentRunObserver = createDispatchAgentRunObserver(params);
   const observeDeliveryProgress = (
     deliveryOutcome: Promise<ReplyDispatchDeliveryOutcome> | undefined,
     event: string,
@@ -633,16 +633,7 @@ export function createDispatchReplyOperationCoordinator(
             queuedFollowupAbortSignal: getQueuedFollowupAbortSignal(),
           }
         : {}),
-      ...observeAgentRunStart(params.replyOptions, (start) => {
-        agentRunTerminalOutcome = "completed";
-        params.messageAuditTerminal?.observeRunId(start.runId);
-      }),
-      onAgentRunTerminalOutcome: (outcome) => {
-        if (outcome === "failed" || agentRunTerminalOutcome === undefined) {
-          agentRunTerminalOutcome = outcome;
-        }
-        params.replyOptions?.onAgentRunTerminalOutcome?.(outcome);
-      },
+      ...agentRunObserver.getReplyOptions(),
       ...(dispatchReplyOperation ? { replyOperation: dispatchReplyOperation } : {}),
       // Native command continuations acquire their operation in the runner. Its
       // completion belongs to dispatch so the final answer retains delivery authority.
@@ -732,7 +723,8 @@ export function createDispatchReplyOperationCoordinator(
     turnLedger,
     ensureDispatchReplyOperation,
     failDispatchReplyOperation,
-    getAgentRunTerminalOutcome: () => agentRunTerminalOutcome,
+    getAgentRunId: agentRunObserver.getAgentRunId,
+    getAgentRunTerminalOutcome: agentRunObserver.getAgentRunTerminalOutcome,
     getDispatchAbortOperation: () => dispatchAbortOperation,
     getDispatchAbortSignal,
     getDispatchReplyOperation: () => dispatchReplyOperation,

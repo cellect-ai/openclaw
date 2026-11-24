@@ -242,7 +242,7 @@ it.each(admissionScenarios)(
         observe: observeDispatch,
         hold: holdDispatch,
       } = holdProjectedChatDispatch();
-      observeDispatch.mockImplementation((prepared) => {
+      observeDispatch.mockImplementation(async (prepared) => {
         if (scenario === "timeout-change") {
           const media = prepared.turn.pluginBoundMediaPromise;
           prepared.turn.pluginBoundMediaPromise = media.then(async (value) => {
@@ -251,7 +251,7 @@ it.each(admissionScenarios)(
             return value;
           });
         }
-        startDispatch(prepared);
+        await startDispatch(prepared);
       });
       const context = createBindingContext();
       let owned: Parameters<typeof chatDispatch.startChatDispatch>[0] | undefined;

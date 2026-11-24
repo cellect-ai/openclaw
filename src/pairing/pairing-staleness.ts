@@ -9,7 +9,7 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import { notifyPairingStaleOwner } from "./pairing-owner-notify.js";
 import { formatPairingListHint } from "./pairing-request-notice.js";
-import { resolvePairingRequestAccountId } from "./pairing-store-sqlite.js";
+import { resolvePairingRequestAccountId } from "./pairing-store-keys.js";
 import {
   CHANNEL_PAIRING_STALE_AFTER_MS,
   isPairingRequestStale,

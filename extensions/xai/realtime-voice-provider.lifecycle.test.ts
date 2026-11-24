@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { FakeWebSocket, isProviderAuthProfileConfiguredMock, resolveApiKeyForProviderMock } =
+const { FakeWebSocket, isProviderAuthProfileConfiguredAsyncMock, resolveApiKeyForProviderMock } =
   await vi.hoisted(() => import("./realtime-voice-socket.test-support.js"));
 
 vi.mock("./ws-runtime.js", () => ({
@@ -8,7 +8,8 @@ vi.mock("./ws-runtime.js", () => ({
 }));
 
 vi.mock("openclaw/plugin-sdk/provider-auth", () => ({
-  isProviderAuthProfileConfigured: isProviderAuthProfileConfiguredMock,
+  isProviderAuthProfileConfigured: () => false,
+  isProviderAuthProfileConfiguredAsync: isProviderAuthProfileConfiguredAsyncMock,
 }));
 
 vi.mock("openclaw/plugin-sdk/provider-auth-runtime", () => ({
@@ -43,8 +44,8 @@ async function openTranscriptBridge() {
 describe("xAI realtime response and transcript lifecycle", () => {
   beforeEach(() => {
     FakeWebSocket.instances = [];
-    isProviderAuthProfileConfiguredMock.mockReset();
-    isProviderAuthProfileConfiguredMock.mockReturnValue(false);
+    isProviderAuthProfileConfiguredAsyncMock.mockReset();
+    isProviderAuthProfileConfiguredAsyncMock.mockResolvedValue(false);
     resolveApiKeyForProviderMock.mockReset();
     resolveApiKeyForProviderMock.mockResolvedValue({ apiKey: undefined });
     delete process.env.XAI_API_KEY;

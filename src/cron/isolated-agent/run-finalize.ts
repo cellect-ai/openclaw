@@ -410,7 +410,7 @@ export async function finalizeCronRun(params: {
       policySuppression ??
       (noChange
         ? "silent"
-        : skipQuietDelivery
+        : skipQuietDelivery && deliveryDisposition.kind !== "visible"
           ? hasIntentionalSilentReply
             ? "silent"
             : deliveryDisposition.kind

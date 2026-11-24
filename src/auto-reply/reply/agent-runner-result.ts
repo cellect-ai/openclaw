@@ -241,19 +241,16 @@ export async function finalizeReplyAgentRun(
         const assistantFinalText = normalizeAssistantFinalDeliveryText(
           runResult.meta?.finalAssistantVisibleText ?? rawAssistantText ?? "",
         );
-        const recovery =
-          prepared.replyCompletion.outcome === "pending"
-            ? { kind: "none" as const }
-            : resolveStrandedReplyRecovery({
-                base: followupRun,
-                payloads: finalPayloads,
-                finalText: assistantFinalText,
-                terminalReply: runResult.meta?.terminalReply,
-                sourceReplyDeliveryMode: recoverySourceReplyPolicy.sourceReplyDeliveryMode,
-                sendPolicyDenied: recoverySourceReplyPolicy.sendPolicyDenied,
-                successfulSourceReplyDelivery: completedSourceReplyDelivery,
-                isRoomEvent: sessionCtx.InboundEventKind === "room_event",
-              });
+        const recovery = resolveStrandedReplyRecovery({
+          base: followupRun,
+          payloads: finalPayloads,
+          finalText: assistantFinalText,
+          terminalReply: runResult.meta?.terminalReply,
+          sourceReplyDeliveryMode: recoverySourceReplyPolicy.sourceReplyDeliveryMode,
+          sendPolicyDenied: recoverySourceReplyPolicy.sendPolicyDenied,
+          successfulSourceReplyDelivery: completedSourceReplyDelivery,
+          isRoomEvent: sessionCtx.InboundEventKind === "room_event",
+        });
         if (recovery.kind === "retry") {
           warnPrivateMessageToolFinal({
             sessionKey,

@@ -137,7 +137,6 @@ export async function prepareSlackMessage(params: {
     teamId: opts.eventScope?.teamId ?? ctx.teamId,
   };
   const cfg = ctx.cfg;
-  const conversationEventScope = opts.eventScope;
   const inboundChannel = await resolveSlackInboundChannel(params);
   const {
     channelInfo,
@@ -162,7 +161,6 @@ export async function prepareSlackMessage(params: {
     opts.source === "app_mention" ||
     Boolean(normalizedBotUserId && mentionMetadata.mentionedUserIds.includes(normalizedBotUserId));
   const authorizationEventScope = opts.eventScope;
-  const onVisibleDrop = opts.onVisibleDrop;
   if (isBotMessage) {
     if (
       (ctx.botUserId && message.user === ctx.botUserId) ||
@@ -571,7 +569,7 @@ export async function prepareSlackMessage(params: {
   const threadOwnerPreference = resolveSlackThreadOwnershipPreference(cfg, account.accountId);
   // Top-level messages are the root of the reply thread they will seed, so
   // they share one ownership key with the thread replies that follow.
-  const threadOwnershipRootTs = threadTs ?? message.ts;
+  const threadOwnershipRootTs = routing.threadTs ?? message.ts;
   if (threadOwnerPreference && isRoom && message.channel && threadOwnershipRootTs) {
     const ownerAccountIds = resolveSlackThreadOwnerCandidates({
       preference: threadOwnerPreference,
@@ -583,7 +581,7 @@ export async function prepareSlackMessage(params: {
       hasCurrentThreadParticipation:
         (implicitMentionKinds?.includes("bot_thread_participant") ?? false) &&
         implicitMentions.threadParticipation,
-      isThreadReply,
+      isThreadReply: routing.isThreadReply,
       answersUnmentionedTopLevel: wasMentioned || !shouldRequireMention,
       channelId: message.channel,
       channelName,

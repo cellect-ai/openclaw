@@ -8,6 +8,7 @@ describe("realtime relay output ownership", () => {
       () => "turn-1",
       () => "turn-1",
       fail,
+      () => false,
     );
 
     expect(ownership.responseCreated("response-1")).toBe(true);
@@ -26,6 +27,7 @@ describe("realtime relay output ownership", () => {
       () => "turn-1",
       () => "turn-1",
       fail,
+      () => false,
     );
     ownership.responseCreated("response-1");
     ownership.phase = "cancelling";

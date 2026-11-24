@@ -557,7 +557,7 @@ export async function deliverAgentCommandResult(
       (payload) => getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion?.deliveryId,
     ),
   );
-  for (const payload of payloads) {
+  for (const payload of payloads ?? []) {
     const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
     if (
       completion?.sourceRunId &&

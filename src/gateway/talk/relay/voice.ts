@@ -115,7 +115,7 @@ async function projectRelayTranscriptToOwningMatrix(params: {
 }): Promise<OutboundDeliveryResult[]> {
   const cfg = params.session.voiceConfig ?? params.session.context.getRuntimeConfig();
   const stored = params.session.matrixRoute
-    ? {}
+    ? undefined
     : await extractDeliveryInfo(params.sessionKey, { cfg });
   params.assertCurrent();
   const deliveryContext = params.session.matrixRoute
@@ -125,8 +125,8 @@ async function projectRelayTranscriptToOwningMatrix(params: {
         accountId: params.session.matrixRoute.accountId,
         threadId: params.session.matrixRoute.threadRootEventId,
       }
-    : stored.deliveryContext;
-  const threadId = params.session.matrixRoute?.threadRootEventId ?? stored.threadId;
+    : stored?.deliveryContext;
+  const threadId = params.session.matrixRoute?.threadRootEventId ?? stored?.threadId;
   if (deliveryContext?.channel?.toLowerCase() !== "matrix" || !deliveryContext.to) {
     return [];
   }

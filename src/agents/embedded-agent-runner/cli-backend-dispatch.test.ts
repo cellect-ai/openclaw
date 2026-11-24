@@ -298,7 +298,9 @@ describe("runEmbeddedAgentViaCliBackendIfEligible gate", () => {
       profiles: { "anthropic:claude-cli": { type: "oauth", provider: "claude-cli" } },
     });
     for (const sessionKey of ["hook:fi-shadow:abc", "agent:main:hook:fi-shadow:abc"]) {
-      expect(await runGate({ sessionKey, authProfileId: "anthropic:claude-cli" })).toBeUndefined();
+      expect(
+        await runDispatch({ sessionKey, authProfileId: "anthropic:claude-cli" }),
+      ).toBeUndefined();
     }
     expect(runCliAgent).not.toHaveBeenCalled();
     expect(

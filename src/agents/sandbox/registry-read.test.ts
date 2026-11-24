@@ -532,17 +532,18 @@ function watchNativeSql() {
 }
 
 it("updates and removes both sandbox registries without blocking the gateway thread on SQLite", async () => {
-  fixture();
   await seed();
   const calls = watchNativeSql();
-  await updateRegistry({ ...container, lastUsedAtMs: 99 });
-  await updateBrowserRegistry({ ...browser, lastUsedAtMs: 99 });
-  expect(await readRegistryEntry(container.containerName)).toMatchObject({ lastUsedAtMs: 99 });
+  await updateRegistry({ ...readerContainer, lastUsedAtMs: 99 });
+  await updateBrowserRegistry({ ...readerBrowser, lastUsedAtMs: 99 });
+  expect(await readRegistryEntry(readerContainer.containerName)).toMatchObject({
+    lastUsedAtMs: 99,
+  });
   expect((await readBrowserRegistry()).entries).toEqual([
     expect.objectContaining({ lastUsedAtMs: 99 }),
   ]);
-  await removeRegistryEntry(container.containerName);
-  await removeBrowserRegistryEntry(browser.containerName);
+  await removeRegistryEntry(readerContainer.containerName);
+  await removeBrowserRegistryEntry(readerBrowser.containerName);
   expect(await readRegistry()).toEqual({ entries: [] });
   expect(await readBrowserRegistry()).toEqual({ entries: [] });
   expect(calls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);

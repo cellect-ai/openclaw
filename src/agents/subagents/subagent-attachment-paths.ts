@@ -8,10 +8,11 @@ export const SANDBOX_SUBAGENT_ATTACHMENTS_MOUNT = "/openclaw/attachments";
 export function resolveSubagentSessionAttachmentRootDir(params: {
   agentId: string;
   childSessionKey: string;
+  env?: NodeJS.ProcessEnv;
 }): string {
   const sessionRef = createHash("sha256").update(params.childSessionKey).digest("hex").slice(0, 32);
   return path.join(
-    resolveStateDir(),
+    resolveStateDir(params.env),
     "attachments",
     "subagents",
     normalizeAgentId(params.agentId),

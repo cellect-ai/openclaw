@@ -59,11 +59,13 @@ afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   await closeStateDatabaseForTest();
+  vi.unstubAllEnvs();
 });
 
 function createTestEnv(): { stateDir: string; env: NodeJS.ProcessEnv } {
   const stateDir = path.join(fixtureRoot, `case-${caseId++}`);
   fs.mkdirSync(stateDir, { recursive: true });
+  vi.stubEnv("OPENCLAW_STATE_DIR", stateDir);
   return { stateDir, env: { ...process.env, OPENCLAW_STATE_DIR: stateDir } };
 }
 
@@ -236,7 +238,6 @@ describe("pairing request retention", () => {
         channel: "demo-slots",
         accountId: DEFAULT_ACCOUNT_ID,
         requestId: resolveChannelPairingRequestId("demo-slots", dismissed),
-        env,
       }),
     ).resolves.toMatchObject({ id: dismissed.id });
 
@@ -278,7 +279,6 @@ describe("pairing request retention", () => {
         channel: "telegram",
         accountId: "alpha",
         requestId: resolveChannelPairingRequestId("telegram", alpha),
-        env,
       }),
     ).resolves.toMatchObject({ id: "outsider" });
 
@@ -287,6 +287,12 @@ describe("pairing request retention", () => {
     expect(alphaHistory.map((request) => resolvePairingRequestStatus(request))).toEqual([
       "approved",
     ]);
+    const persisted = readChannelPairingStateSnapshot("telegram", env).requests.find(
+      (request) => resolvePairingRequestAccountId(request) === "alpha",
+    );
+    expect(persisted?.status).toBe("approved");
+    expect(persisted?.resolvedAt).toEqual(expect.any(String));
+    expect(persisted?.resolvedAt).toBe(alphaHistory[0]?.resolvedAt);
     // One tenant's approval must not resolve or expose the other's request.
     expect(betaHistory.map((request) => resolvePairingRequestStatus(request))).toEqual(["pending"]);
     await expect(readChannelAllowFromStore("telegram", env, "beta")).resolves.toEqual([]);
@@ -311,7 +317,6 @@ describe("pairing request retention", () => {
         channel: "demo-history",
         accountId: DEFAULT_ACCOUNT_ID,
         requestId: resolveChannelPairingRequestId("demo-history", target),
-        env,
       });
     }
     const retained = await listChannelPairingRequests("demo-history", env);

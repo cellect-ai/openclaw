@@ -544,7 +544,7 @@ it.each([
         error: { kind: "incomplete_turn", message: "Request was aborted" },
       },
     });
-    const executeAgentTurn = runTurn;
+    const executeAgentTurn = runRawTurn;
     const result = await executeAgentTurn({
       ...createMinimalRunAgentTurnParams({ replyOperation, followupRun }),
       sessionCtx: { Provider: "matrix", MessageSid: "owned-stop-message" },
@@ -584,7 +584,7 @@ it.each(["timeout", "name-only stop spoof"] as const)(
     const caller = new AbortController();
     const followupRun = createFollowupRun();
     followupRun.run.messageProvider = "matrix";
-    const executeAgentTurn = runTurn;
+    const executeAgentTurn = runRawTurn;
     const result = await executeAgentTurn({
       ...createMinimalRunAgentTurnParams({ followupRun }),
       sessionCtx: { Provider: "matrix", MessageSid: "owned-failure-message" },

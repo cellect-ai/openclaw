@@ -226,7 +226,10 @@ export async function handleAgentExecutionError(params: {
     defaultRuntime.error(`Agent workspace preparation failed before reply: ${message}`);
     const reply = buildExternalRunFailureReply(
       { message, error: err },
-      { isHeartbeat: turn.isHeartbeat },
+      {
+        isHeartbeat:
+          turn.followupRun.run.scheduledAutomation?.job.legacyHeartbeatReplyPolicy === true,
+      },
     );
     return await settleFailure({ text: reply.text });
   }

@@ -394,15 +394,15 @@ describe("gateway caller context wrapper", () => {
       await withGatewayToolApprovalOwner(
         "business-plugin",
         async () => {
-          expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBe("plugin");
+          expect(getCaller()?.approvalOrigin).toBe("plugin");
           await withGatewayToolApprovalOwner("codex", async () => {
-            expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBeUndefined();
+            expect(getCaller()?.approvalOrigin).toBeUndefined();
           });
-          expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBe("plugin");
+          expect(getCaller()?.approvalOrigin).toBe("plugin");
         },
         { title: "Place call", summary: "Place a call to the owner." },
       );
-      expect(getGatewayToolCallerIdentity()?.approvalOrigin).toBeUndefined();
+      expect(getCaller()?.approvalOrigin).toBeUndefined();
     });
   });
 
@@ -428,7 +428,7 @@ describe("gateway caller context wrapper", () => {
             turnSourceChannel: "discord",
           },
           () => {
-            nestedIdentity = getGatewayToolCallerIdentity();
+            nestedIdentity = getCaller();
           },
         );
       },

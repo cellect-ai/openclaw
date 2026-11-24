@@ -120,6 +120,7 @@ async function readRequestJson(request: http.IncomingMessage): Promise<unknown> 
 }
 
 type MatrixFixture = {
+  client: MatrixClient;
   senders: ReturnType<typeof registeredSenders>;
   context: Pick<ChannelOutboundContext, "cfg" | "to" | "deps" | "mediaLocalRoots">;
   pendingText: (
@@ -212,6 +213,7 @@ async function withMatrixFixture(
     };
     try {
       await run({
+        client: resolvedClient,
         senders,
         context,
         pendingText: (text, options) => pending(senders.sendText({ ...context, text, ...options })),

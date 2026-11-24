@@ -28,11 +28,7 @@ import {
   dockerPersistentTargetToEngineTarget,
 } from "./docker-persistent-target.js";
 import { planSandboxGeneration } from "./generation-plan.js";
-import {
-  compareSandboxMountPlan,
-  sandboxMountPlanMatchesContainer,
-  prepareSandboxMountPlan,
-} from "./mount-plan.js";
+import { compareSandboxMountPlan, prepareSandboxMountPlan } from "./mount-plan.js";
 import type { DockerPersistentExecTarget } from "./persistent-exec.types.js";
 import {
   assertPodmanSandboxTarget,
@@ -310,11 +306,11 @@ async function ensureSandboxContainerLifecycle(
         const label = physical.configHash;
         if (
           label === expectedHash &&
-          (await sandboxMountPlanMatchesContainer({
+          (await compareSandboxMountPlan({
             engine,
             containerName: physical.id,
             plan: mountPlan,
-          }))
+          })) === "match"
         ) {
           const entry = await readRegistryEntry(name);
           if (
@@ -372,11 +368,11 @@ async function ensureSandboxContainerLifecycle(
           });
           if (
             label !== priorHash ||
-            !(await sandboxMountPlanMatchesContainer({
+            (await compareSandboxMountPlan({
               engine,
               containerName: physical.id,
               plan: priorPlan,
-            }))
+            })) !== "match"
           )
             continue;
           const entry = await readRegistryEntry(name);

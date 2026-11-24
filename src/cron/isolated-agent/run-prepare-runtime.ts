@@ -5,6 +5,7 @@ import { hasAnyAuthProfileStoreSourceAsync } from "../../agents/auth-profiles/so
 import type { CliDeps } from "../../cli/outbound-send-deps.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import type { SkillSnapshot } from "../../skills/types.js";
 import type { CronCompletionDeliveryFence } from "../delivery-attempt-fence.js";
 import type { CronIdleAdmissionWait } from "../service/state.js";
 import type {

@@ -408,7 +408,6 @@ export function registerConversationLifecycleTransport(
     trackOwner,
     heartbeat,
     owesCards,
-    completeSettled,
     releaseCards,
     setAside,
     told,

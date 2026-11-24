@@ -70,7 +70,7 @@ function createTriggerHarness(options: TriggerCase = {}) {
     ...ctx.app,
     client: { conversations: { history, replies }, chat: { getPermalink } },
   } as unknown as SlackMonitorContext["app"];
-  const resolveSlackSystemEventRoute = vi.fn(() => ({
+  const resolveSlackSystemEventRoute = vi.fn(async () => ({
     agentId: "fi-admin",
     sessionKey: "agent:fi-admin:slack:channel:c1:thread:1789000000.000100",
   }));

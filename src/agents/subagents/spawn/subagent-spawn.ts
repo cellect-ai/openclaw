@@ -580,7 +580,7 @@ export async function spawnSubagentDirect(
           queued: params.collect === true,
           ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
           attachmentId,
-          retainAttachmentsOnKeep: retainOnSessionKeep,
+          retainAttachmentsOnKeep: materializedAttachments?.retainOnSessionKeep ?? false,
         };
       },
     });

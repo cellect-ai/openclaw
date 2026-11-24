@@ -1,6 +1,7 @@
 import { expect, it, onTestFinished, vi } from "vitest";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { dispatchGatewayMethodInProcess } from "../../../gateway/server-plugin-in-process-dispatch.js";
+import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import { testing } from "./subagent-announce-delivery.test-support.js";
 import { sendSubagentAnnounceDirectly } from "./subagent-announce-direct-delivery.js";
 
@@ -8,9 +9,11 @@ const TARGET_KEY = "agent:cellect-fi-user:matrix:channel:!room:example.org";
 const SOURCE_KEY = "hook:fi-shadow:bf888001";
 
 it("passes the requester agent into direct delivery when several agents are configured", async () => {
+  const storePath = "/synthetic/fi-user/sessions.json";
   const cfg: OpenClawConfig = {
+    session: { store: storePath },
     agents: {
-      list: [{ id: "cellect-fi-user" }, { id: "cellect-fi-admin" }, { id: "cellect-main" }],
+      entries: { "cellect-fi-user": {}, "cellect-fi-admin": {}, "cellect-main": {} },
     },
   };
   const dispatch = vi.fn(async (...args: Parameters<typeof dispatchGatewayMethodInProcess>) => {
@@ -24,9 +27,19 @@ it("passes the requester agent into direct delivery when several agents are conf
       cfg,
       canonicalKey: key,
       agentId: "cellect-fi-user",
+      storePath,
       entry: { sessionId: "matrix-session", updatedAt: 1 },
     }),
-    getRequesterSessionActivity: () => ({ sessionId: "matrix-session", isActive: false }),
+    getRequesterSessionActivity: () => ({
+      sessionId: "matrix-session",
+      isActive: false,
+      target: captureSessionTarget({
+        agentId: "cellect-fi-user",
+        sessionKey: TARGET_KEY,
+        storeScope: storePath,
+        incarnation: "matrix-session",
+      }),
+    }),
   });
   onTestFinished(() => testing.setDepsForTest());
 

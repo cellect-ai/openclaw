@@ -1,4 +1,5 @@
 import { resolveGroupToolPolicy } from "../../agents/agent-tools.policy.js";
+import type { BootstrapContextMode } from "../../agents/bootstrap-files.js";
 import { resolveScheduledToolCallerContext } from "../../agents/scheduled-tool-policy.js";
 import { resolveCronJobToolPolicyContext } from "../execution-context-admission.js";
 import { isCommandStyleCronMessage } from "./command-style-prompt.js";
@@ -17,7 +18,7 @@ export function prepareCronPromptPolicy(
     | "messageToolFormatPrompt"
   >,
 ) {
-  const bootstrapContextMode =
+  const bootstrapContextMode: BootstrapContextMode | undefined =
     (params.agentPayload?.lightContext ??
     isCommandStyleCronMessage(params.agentPayload?.message ?? ""))
       ? "lightweight"

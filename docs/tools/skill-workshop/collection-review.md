@@ -1,116 +1,71 @@
 ---
-summary: "Weekly Workshop collection review, its change semantics, and backup recovery"
+summary: "Weekly Workshop collection review through the versioned skill library"
 title: "Collection review"
 read_when:
   - You are enabling or debugging the weekly collection review
-  - You need to know what a review can change and what it cannot roll back
-  - You are recovering a Workshop skill from a retained collection backup
+  - You need to know what a review can change and how to inspect retained legacy material
 ---
 
 ## Collection review
 
-In `auto` mode, the Gateway maintains one weekly automation per agent. It is
-a normal isolated agent turn: cron owns scheduling, cancellation, and run
-history. `propose` and `off` disable these reviews.
+In `auto` mode, the Gateway maintains one weekly automation per agent. Cron owns
+scheduling, cancellation, and run history. `propose` and `off` disable these reviews.
+The automation does not announce into a conversation.
 
-The reviewer reads and edits the agent's Workshop directory with normal file
-tools. Directory listings are paged to fit the selected model instead of putting
-every file path into the initial prompt. The reviewer follows each continuation
-before changing that directory.
-Skill contents are review material, not active instructions. It keeps useful
-procedures, simplifies bloated skills, consolidates overlap, and removes obsolete
-files. Absence of use in the current run never justifies removal. Usage tracking
-and experience review remain active; weekly cleanup does not receive a separate
-usage table.
+The reviewer uses only the versioned `skill_workshop` tool. It lists and views the
+learned collection before making changes, treats skill content as untrusted review
+material, and checks the result of each change. Shell, ordinary filesystem,
+network, and business tools are unavailable for this turn. Tool search and Code
+Mode are disabled. The review does not grant new tool or execution authority.
 
-The file tools stay rooted at the Workshop directory. Shell commands use the
-operator's existing cron execution and approval policy; enabling review does not
-grant additional shell access. An approval-required policy can refuse unattended
-shell commands; a full-access policy permits them. File discovery does not need a shell.
+The review can create, patch, write support files, archive, and restore skills
+through the current library. It must preserve distinct triggers, local policy,
+and uncertain rules. Low usage alone does not justify removal. It reports
+completed changes and reasons, remaining scope, or why no changes were necessary.
+The turn uses a bounded prompt and output budget and a maximum two-minute timeout.
 
-Reviews support the embedded runtime and CLI runtimes that declare instruction
-isolation, disable their native tools, and use only the Gateway's restricted
-OpenClaw tool set, including Claude CLI. These CLI reviews retain the host-selected instruction snapshot;
-Workshop skill contents remain review material. OpenClaw carries the Workshop
-file root and prepared sandbox to the mediated tools. Changing the CLI working
-directory alone does not provide containment.
+### Runtime and authorization
 
-Runtimes without those guarantees, including undeclared CLI backends, the Codex harness, and
-node-placed CLI execution, remain unsupported for rooted reviews. When the configured
-model chain is provably unsupported, the weekly job remains visible but disabled
-with `no-rooted-runtime` in its display name. Configure a supported runtime or fallback;
-Gateway startup and config reload reconcile enablement and clear that reason. An agent
-whose global and agent `tools.allow`/`tools.deny` admit none of the review tools (for
-example a dispatcher limited to session tools) is disabled the same way with
-`no-workshop-tools`.
-Reconciliation uses prepared policy and processes one agent at a time, yielding
-between updates so fleet-wide review preparation does not block Gateway health requests.
-Stored session model or runtime preferences are preserved; reviews with these
-preferences remain enabled because configuration alone cannot prove their execution path.
-If eligibility cannot be determined statically, the job remains enabled and runtime
-admission still rejects unsupported execution with an explanation. No runtime is
-substituted to bypass that check. If an enabled sandbox has
-`workspaceAccess: "ro"` or `"none"`, the turn refuses to run rather than editing
-a disposable copy. A writable sandbox uses the agent's Workshop directory.
-Sandbox backends must support directory reads to provide shell-free discovery.
-Bundled backends use their existing filesystem permissions for these reads.
+The embedded OpenClaw runtime is supported. Another harness must declare exact
+conversation-tool-policy support through its loaded native registration before
+execution. Static eligibility may recognize Codex, but runtime admission still
+checks the actual loaded harness. CLI execution is refused. No runtime is
+substituted to bypass these checks.
+
+An agent with no eligible review tool or no provably supported configured runtime
+chain keeps a visible disabled automation. Unknown static eligibility is resolved
+at native candidate admission. Gateway startup and configuration changes reconcile
+the declaration; runtime checks again require the exact agent, weekly schedule,
+isolated session target, fixed prompt, tool allowlist, and no-delivery policy.
+
+Versioned library effects retain current source and authoring capability checks.
+A revoked source cannot authorize a later file change merely because the review
+started earlier. Sandbox policy and native tool availability still apply.
 
 ### Changes and recovery
 
-Collection review follows normal agent file-edit semantics. Completed edits
-remain if a later step fails or the turn is cancelled. There is no collection-wide
-transaction, post-turn scanner, automatic rollback, or separate review history
-writer. This also prevents a failed review from restoring an old tree over
-concurrent operator edits. Per-skill proposal validation, scanning, and apply
-behavior described in [How Skill Workshop works](/tools/skill-workshop/how-it-works)
-are unchanged.
+Completed versioned edits survive cancellation or failure of a later step. There
+is no transaction or automatic rollback across the whole collection. Inspect
+native library history and the automation's run history before retrying an
+interrupted review. If files changed but the change journal was not confirmed,
+the tool reports that uncertainty; it does not claim a successful history entry
+or instruct an automatic retry.
 
-The reviewer ends with a summary of changes and removal reasons, or why no change
-was needed. Find it in the automation's run history. Reviews do not announce into
-a conversation. Future sessions load changed skills; running sessions retain
-their existing instruction snapshot.
+The current tool's `restore` operation belongs to the versioned skill library.
+It is not the retired `restore_collection` action, and it does not imply adoption
+of an older collection backup.
 
-Existing collection backups are preserved. The `restore_collection` action
-can restore a retained backup from the previous review implementation, but new
-reviews do not create collection backups. The `history` action reads those
-historical review records; current results belong to automation history.
-Restore refuses to overwrite affected skills changed after that backup.
+Native Doctor exports retained pending and quarantined proposal drafts into the
+owning agent's Workshop drafts inbox under exclusive state maintenance. Review
+those exports with `/learn drafts`. Missing, unowned, or conflicting material is
+reported for review rather than assigned a new owner. Follow the actual Doctor
+report for the retained source; a successful current library operation does not
+prove that every older proposal or collection backup was migrated.
 
-### When an older backup cannot be restored automatically
-
-Restore also refuses when it cannot completely read the included content in a
-current result tree or its saved original, including content beyond sixteen path
-components. This leaves the current skill files and retained backup intact. Older
-backups may contain hashes that omitted deeper files, so deleting that content
-from the current tree cannot make the backup verifiable. A skill dropped by the
-cleanup can still be restored to its absent path, including deep support files.
-Do not edit backup hashes or delete or flatten live files merely to make restore pass.
-
-For operator-led recovery:
-
-1. Pause writes to the agent's Workshop, including collection review, before comparing or restoring files.
-2. Locate the backup under
-   `<agentDir>/skill-workshop/collection-backups/<backup-id>/`.
-   Its `manifest.json` identifies the affected Workshop-relative directories in
-   `skillDirs` and `resultSkillDirs`.
-3. Create a new private inspection directory outside the Workshop and state
-   directory. Copy the entire backup directory, including `manifest.json` and
-   all saved content, into it. Current backups use `skills/`; history-only imports
-   use `history/workspace/`. Separately copy each existing affected current directory
-   into a `current/` subtree, preserving its Workshop-relative path. Include hidden
-   files and all nested content. If any file cannot be copied, stop rather than use
-   a partial copy.
-4. Compare the inspection copies to select the intended content. Keep the live
-   tree and original backup unchanged during review, and retain unedited copies
-   of both versions before carrying out any operator-approved recovery.
-
-Retained legacy backups may instead live under
-`<state-dir>/skill-workshop/collection-backups/<workspace-hash>/<backup-id>/`
-and contain a `workspace/` subtree. Preserve that original layout in inspection
-copies; do not rewrite the manifest to make an old backup look current.
-
-Doctor retains the legacy source after importing a history-only copy. Once it
-verifies a matching archive and saved workspace contents in a configured agent's
-backup directory, later runs stop reporting that backup as pending, even if the
-original workspace is no longer configured. Missing, incomplete, or mismatched
-copies still require review; the original source remains intact.
+Before operator-led recovery from legacy collection backups, preserve the entire
+original backup and a separate copy of affected current skills, including hidden
+files and nested support content. Compare copies outside the live Workshop and
+state directories. Do not rewrite hashes or manifests, delete deep files to make
+a check pass, or treat a retained backup as authority to overwrite newer edits.
+Use the supported migration and recovery route for that stored format; unresolved
+legacy material must remain intact until its disposition is established.

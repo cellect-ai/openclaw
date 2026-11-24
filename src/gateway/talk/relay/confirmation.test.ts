@@ -6,17 +6,14 @@ import {
   checkClientVoiceToolConfirmationPolicy,
 } from "../../../talk/client-voice-confirmation.js";
 import { resetClientVoiceConfirmationStateForTest } from "../../../talk/client-voice-confirmation.test-support.js";
-import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import { clientVoiceSessionTesting } from "../../../talk/client-voice-session.test-support.js";
-import type {
-  RealtimeVoiceAgentConsultRunner,
-  RealtimeVoiceBridgeCreateRequest,
-} from "../../../talk/provider-types.js";
+import type { RealtimeVoiceBridgeCreateRequest } from "../../../talk/provider-types.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
 } from "../../../test-utils/openclaw-test-state.js";
-import type { TalkAgentConsultLifecycleMethods } from "../client-agent-consult.types.js";
+import type { GatewayControlOwner } from "../client-agent-consult.types.js";
 import { controlBridge, controlContext } from "../client-gateway-control.test-support.js";
 import { prepareTalkSessionTarget } from "../session-target.js";
 import { createTalkRealtimeRelaySession, stopTalkRealtimeRelaySession } from "./index.js";
@@ -98,8 +95,7 @@ describe("native relay confirmation transcript admission", () => {
     });
     const { relaySessionId } = session;
     const relay = relaySessions.get(relaySessionId);
-    const run: (RealtimeVoiceAgentConsultRunner & TalkAgentConsultLifecycleMethods) | undefined =
-      request?.runAgentConsult;
+    const run: GatewayControlOwner["runAgentConsult"] | undefined = request?.runAgentConsult;
     if (!relay || !request || !run) {
       throw new Error("expected a registered native relay");
     }

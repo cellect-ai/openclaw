@@ -28,11 +28,7 @@ export function executeConversationLifecycleCommand(
       ? [read(options.database, command.input.id)].filter(
           (row): row is LifecycleObligation => !!row,
         )
-      : (loadDeliveryQueueEntriesInDatabase(
-          options.database,
-          QUEUE,
-          "pending",
-        ) as LifecycleObligation[]);
+      : (loadDeliveryQueueEntriesInDatabase(options.database, QUEUE) as LifecycleObligation[]);
   }
   return runOpenClawStateWriteTransaction(
     (database) => {

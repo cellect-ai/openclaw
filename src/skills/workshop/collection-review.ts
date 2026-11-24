@@ -1,4 +1,4 @@
-import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
+import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
 import { FailoverError } from "../../agents/failover/error.js";
 import { getRegisteredAgentHarness } from "../../agents/harness/registry.js";
 import { getRuntimeConfig } from "../../config/config.js";
@@ -128,7 +128,7 @@ export async function prepareWorkshopCollectionCandidate(params: {
 export function workshopCollectionRunOptions(
   sessionKey: string,
   timeoutMs: number,
-): Partial<RunEmbeddedAgentParams> {
+): Partial<RunEmbeddedAgentInternalParams> {
   return {
     prompt: WORKSHOP_COLLECTION_REVIEW_PROMPT,
     skillWorkshopReviewOf: sessionKey,

@@ -482,7 +482,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       language: "en",
     });
 
-    const { socket } = await startRealtimeBridge(bridge);
+    const socket = await openRealtimeBridge(bridge);
     await bridge.close();
 
     const session = requireSession(socket);
@@ -514,7 +514,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
           ...options,
         },
       });
-      const { socket } = await startRealtimeBridge(bridge, index);
+      const socket = await openRealtimeBridge(bridge, index);
       await bridge.close();
       expect(requireSession(socket).turn_detection).toEqual(expect.objectContaining(expected));
     }
@@ -542,7 +542,7 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       ...callbacks,
     });
 
-    const { socket } = await startRealtimeBridge(bridge);
+    const socket = await openRealtimeBridge(bridge);
     await bridge.close();
 
     expect(requireSession(socket).reasoning).toEqual({ effort: "none" });
@@ -647,7 +647,6 @@ describe("buildXaiRealtimeVoiceProvider", () => {
       toolArguments(socket, `item_${index}`, `call_${index}`, invalid[index], "lookup");
     }
 
-    socket.emitServer(invalidEvents[0]);
     responseDone(socket);
     expect(onToolCall).not.toHaveBeenCalled();
     expect(

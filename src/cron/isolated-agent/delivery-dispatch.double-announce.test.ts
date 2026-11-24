@@ -150,6 +150,8 @@ import { dispatchCronDelivery } from "./delivery-dispatch.js";
 import { registerPersistentSessionDeliveryTests } from "./delivery-dispatch.persistent-session.test-support.js";
 import {
   makeBaseParams,
+  makeCompletedCronDeliveryReceipt,
+  makePendingCronDeliveryReceipt,
   makeResolvedDelivery,
   messageToolOutcome,
 } from "./delivery-dispatch.test-fixtures.js";
@@ -246,6 +248,7 @@ describe("dispatchCronDelivery", () => {
     });
     vi.spyOn(deliveryQueueSqlite, "inspectDeliveryQueueReceipt").mockResolvedValue({
       status: undefined,
+      completionReceipt: null,
       pendingEntry: null,
     });
     descendants.mockResolvedValue(false);
@@ -964,19 +967,10 @@ describe("dispatchCronDelivery", () => {
       send.mockRejectedValueOnce(new Error("Stable delivery intent is already queued"));
       const status = vi
         .mocked(deliveryQueueSqlite.inspectDeliveryQueueReceipt)
-        .mockResolvedValueOnce({ status: undefined, pendingEntry: null })
-        .mockResolvedValueOnce({
-          status: "pending",
-          pendingEntry: {
-            id: "cross-process-cron-intent",
-            enqueuedAt: Date.now() - (owner === "stale" ? 60_000 : 0),
-            retryCount: 0,
-            platformSendStartedAt: Date.now() - (owner === "stale" ? 30_001 : 0),
-            recoveryState: "send_attempt_started",
-          },
-        });
+        .mockResolvedValueOnce({ status: undefined, completionReceipt: null, pendingEntry: null })
+        .mockResolvedValueOnce(makePendingCronDeliveryReceipt(owner));
       if (owner === "live") {
-        status.mockResolvedValueOnce({ status: "completed", pendingEntry: null });
+        status.mockResolvedValueOnce(makeCompletedCronDeliveryReceipt());
       }
       const state = await dispatchCronDelivery(
         makeBaseParams({ synthesizedText: "Cross-process cron update." }),
@@ -1023,8 +1017,12 @@ describe("dispatchCronDelivery", () => {
 
   it("keeps regenerated signed media URLs on the same durable cron intent", async () => {
     vi.mocked(deliveryQueueSqlite.inspectDeliveryQueueReceipt)
-      .mockResolvedValueOnce({ status: undefined, pendingEntry: null })
-      .mockResolvedValueOnce({ status: "completed", pendingEntry: null });
+      .mockResolvedValueOnce({ status: undefined, completionReceipt: null, pendingEntry: null })
+      .mockResolvedValueOnce({
+        status: "completed",
+        completionReceipt: { platformMessageId: "cross-process-message" },
+        pendingEntry: null,
+      });
     const params = structuredParams(
       [
         {

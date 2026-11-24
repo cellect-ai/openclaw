@@ -97,6 +97,7 @@ async function plan(
         getRunAbortDeadlineAtMs: () => undefined,
         awaitSessionDiffBaseline: undefined,
         watchdogAttempt: undefined,
+        requester: undefined,
         agentId: "main",
         config,
         cwd: attempt.workspaceDir,

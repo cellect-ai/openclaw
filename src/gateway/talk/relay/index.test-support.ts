@@ -93,3 +93,12 @@ export function observeRelayTranscriptFailures() {
     restore: () => observer.mockRestore(),
   };
 }
+
+export function createRelayContext(overrides: Record<string, unknown> = {}) {
+  return {
+    broadcastToConnIds: vi.fn(),
+    getRuntimeConfig: () => ({}),
+    logGateway: { warn: vi.fn() },
+    ...overrides,
+  } as never;
+}

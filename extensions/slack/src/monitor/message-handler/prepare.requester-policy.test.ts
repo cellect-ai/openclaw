@@ -516,7 +516,7 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
 
   it("keeps the original deny behavior when the ephemeral notice fails", async () => {
     const postEphemeral = vi.fn().mockRejectedValue(new Error("invalid_auth xoxb-secret-value"));
-    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+    const ctx = createAllowlistDeniedRoomCtx(postEphemeral);
     const error = vi.fn();
     ctx.runtime.error = error;
 
@@ -614,7 +614,7 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
 
   it("uses generic copy when the bot display-name lookup fails", async () => {
     const postEphemeral = vi.fn().mockResolvedValue({ ok: true });
-    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+    const ctx = createAllowlistDeniedRoomCtx(postEphemeral);
     ctx.resolveUserName = vi.fn().mockRejectedValue(new Error("users.info failed"));
 
     await expect(
@@ -640,7 +640,7 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
 
   it("does not send an allowlist notice for an unmentioned denied room message", async () => {
     const postEphemeral = vi.fn().mockResolvedValue({ ok: true });
-    const ctx = createAllowlistDeniedRoomCtx({ postEphemeral });
+    const ctx = createAllowlistDeniedRoomCtx(postEphemeral);
 
     const prepared = await prepareSlackMessage({
       ctx,

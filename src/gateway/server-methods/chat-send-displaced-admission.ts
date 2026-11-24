@@ -7,7 +7,7 @@ import {
   readChatSendDedupeResponse,
 } from "./chat-send-reservation.js";
 
-export function finishDisplacedChatSendAdmission({
+export function resolveCurrentChatSendAdmission({
   params,
   admittedRunAbort,
   reservation,
@@ -23,7 +23,7 @@ export function finishDisplacedChatSendAdmission({
   reservationSuperseded: boolean;
   supersedingResult?: DedupeEntry;
   lifecycleGeneration: string;
-}): boolean {
+}): Extract<ReturnType<typeof registerChatAbortController>, { registered: true }> | undefined {
   const {
     context,
     respond,
@@ -37,10 +37,10 @@ export function finishDisplacedChatSendAdmission({
       supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
     if (supersedingCached) {
       respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, cachedMeta);
-      return true;
+      return undefined;
     }
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
-    return true;
+    return undefined;
   }
   if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
     if (admittedRunAbort.entry) {
@@ -54,12 +54,12 @@ export function finishDisplacedChatSendAdmission({
     }
     const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
     respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, cachedMeta);
-    return true;
+    return undefined;
   }
   if (!admittedRunAbort.registered) {
     releaseAdmissionOwners();
     respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
-    return true;
+    return undefined;
   }
-  return false;
+  return admittedRunAbort;
 }

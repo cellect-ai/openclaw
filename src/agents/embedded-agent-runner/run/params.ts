@@ -36,6 +36,7 @@ import type { ResolvedToolPromptFinalizer } from "../../resolved-tool-prompt.typ
 import type { AgentRunSessionTarget } from "../../run-session-target.types.js";
 import type { EmbeddedRunTrigger } from "../../run-trigger.js";
 import type { PromptMode } from "../../system-prompt.types.js";
+import type { SkillWorkshopRunOptions } from "../../tools/skill-workshop-tool-factory.js";
 import type { EmbeddedAgentExecutionPhaseInfo } from "../execution-phase.js";
 import type { BlockReplyFlushContext } from "../types.js";
 import type { AuthProfileFailurePolicy } from "./auth-profile-failure-policy.types.js";

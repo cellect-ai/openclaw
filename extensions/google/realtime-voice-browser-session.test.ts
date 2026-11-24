@@ -17,7 +17,7 @@ type MockGoogleLiveConnectParams = {
     onclose: (event?: { code?: number; reason?: string; wasClean?: boolean }) => void;
   };
 };
-const { createGoogleGenAIMock, createTokenMock } = vi.hoisted(() => {
+const { createGoogleGenAIMock, createTokenMock, connectMock } = vi.hoisted(() => {
   const liveSession = {
     close: vi.fn(),
     sendClientContent: vi.fn(),
@@ -67,6 +67,21 @@ function createRealtimeToolDeclaration(name: string) {
 type GoogleLiveBridgeParams = Parameters<
   ReturnType<typeof buildGoogleRealtimeVoiceProvider>["createBridge"]
 >[0];
+
+function createGoogleLiveBridge(params: Partial<GoogleLiveBridgeParams> = {}) {
+  const { providerConfig, ...callbacks } = params;
+  return buildGoogleRealtimeVoiceProvider().createBridge({
+    providerConfig: { apiKey: "gemini-key", ...providerConfig },
+    onAudio: vi.fn(),
+    onClearAudio: vi.fn(),
+    ...callbacks,
+  });
+}
+function lastConnectParams() {
+  const params = connectMock.mock.calls.at(-1)?.[0];
+  if (!params) throw new Error("Expected Google Live connect call");
+  return params;
+}
 
 describe("buildGoogleRealtimeVoiceProvider", () => {
   beforeEach(() => {
@@ -142,15 +157,25 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
   });
 
   it("omits adaptive thinking budgets for Gemini 3.1 Live", async () => {
-    await createGoogleLiveBridge({ providerConfig: { thinkingBudget: -1 } }).connect();
-    expect(lastConnectParams().config).not.toHaveProperty("thinkingConfig");
+    const bridge = createGoogleLiveBridge({ providerConfig: { thinkingBudget: -1 } });
+    try {
+      await bridge.connect();
+      expect(lastConnectParams().config).not.toHaveProperty("thinkingConfig");
+    } finally {
+      await bridge.close();
+    }
   });
 
   it("applies the requested transcription language hint to Google Live sessions", async () => {
-    await createGoogleLiveBridge({ language: "en" }).connect();
-    expect(lastConnectParams().config.inputAudioTranscription).toEqual({
-      languageCodes: ["en-US"],
-    });
+    const bridge = createGoogleLiveBridge({ language: "en" });
+    try {
+      await bridge.connect();
+      expect(lastConnectParams().config.inputAudioTranscription).toEqual({
+        languageCodes: ["en-US"],
+      });
+    } finally {
+      await bridge.close();
+    }
   });
 
   it("creates constrained browser sessions for Google Live Talk", async () => {

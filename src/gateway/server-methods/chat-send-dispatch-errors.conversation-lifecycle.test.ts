@@ -70,7 +70,6 @@ async function prepare(state: { stateDir: string; sessionsDir: () => string }, o
     updatedAt: 1000,
     startedAt: 1000,
     lifecycleRunId: runId,
-    status: "running",
   });
   await appendTranscriptMessage(target, { message: { role: "user", content: "Please continue." } });
   const time = createGatewaySchedulerClock(1000);
@@ -101,9 +100,14 @@ async function prepare(state: { stateDir: string; sessionsDir: () => string }, o
   const context = createDirectChatContext({
     lifecycleScheduler: options.noScheduler ? undefined : scheduler,
   });
-  const owners: ReturnType<typeof createOwner>[] = [];
+  type DispatchOwner = {
+    lifecycle: ReturnType<typeof createChatSendDispatchErrorLifecycle>;
+    cleanup: ReturnType<typeof vi.fn<() => void>>;
+    registration: ReturnType<typeof registerRpcSourceForTest>;
+  };
+  const owners: DispatchOwner[] = [];
   const handling: Promise<void>[] = [];
-  function createOwner(sessionId = target.sessionId) {
+  function createOwner(sessionId = target.sessionId): DispatchOwner {
     const lifecycleGeneration = getAgentRunLifecycleGeneration();
     const registration = registerRpcSourceForTest({
       runId,
@@ -112,8 +116,8 @@ async function prepare(state: { stateDir: string; sessionsDir: () => string }, o
       agentId: target.agentId,
       storeScope: target.storePath,
       lifecycleGeneration,
-      now: 1000,
     });
+    registration.initializeTiming({ now: 1000 });
     const cleanup = vi.fn(() => registration.cleanup());
     const lifecycle = createChatSendDispatchErrorLifecycle({
       admission: { lifecycleGeneration, activeRunAbort: registration, cleanupAdmittedRun: cleanup },

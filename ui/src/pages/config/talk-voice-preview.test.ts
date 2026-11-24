@@ -142,13 +142,15 @@ describe("Talk voice preview lifecycle", () => {
     expect(PreviewAudioContext.instances[0]?.close).toHaveBeenCalledOnce();
   });
 
-  it.each(["provider", "playback"])(
+  it.each(["provider", "playback", "sample-rate"])(
     "reports %s failure and permits a fresh preview",
     async (failure) => {
       const preview = setup();
       const request = vi.fn().mockResolvedValue(clip);
       if (failure === "provider") {
         request.mockRejectedValueOnce(new Error("Provider unavailable"));
+      } else if (failure === "sample-rate") {
+        request.mockResolvedValueOnce({ ...clip, sampleRateHz: 48_000 });
       } else {
         request.mockResolvedValueOnce({ ...clip, audioBase64: "" });
       }

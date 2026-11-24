@@ -293,7 +293,6 @@ vi.mock("openclaw/plugin-sdk/channel-outbound", async (importOriginal) => {
       transformReplyPayload?: (payload: TestReplyPayload) => TestReplyPayload | null;
       typing?: TypingCallbacks;
     }) => {
-      capturedTyping = params.typing;
       return {
         typingCallbacks: params.typing
           ? {
@@ -605,7 +604,6 @@ beforeEach(() => {
   mockedSlackStreamingMode = "partial";
   mockedPinnedMainDmOwner = undefined;
   capturedReplyOptions = undefined;
-  capturedTyping = undefined;
   mockedReplyThreadTs = THREAD_TS;
   mockedStatusThreadTs = THREAD_TS;
   mockedReplyThreadTsSequence = undefined;
