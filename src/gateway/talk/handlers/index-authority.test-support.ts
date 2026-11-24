@@ -87,7 +87,8 @@ export function registerTalkHandlerAuthorityTests({
         args: { question: "Continue" },
       },
       respond,
-      context: { getRuntimeConfig: () => ({}) },
+      // The refused relay settles after acknowledgement; the handler logs that failure.
+      context: { getRuntimeConfig: () => ({}), logGateway: { warn: vi.fn() } },
     });
     expect(chatSend).toHaveBeenCalledOnce();
   });
