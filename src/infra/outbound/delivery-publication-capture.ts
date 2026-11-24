@@ -9,6 +9,7 @@ import {
   capturePayloadPublicationEvidence,
   ContradictoryDeliveryPublicationEvidenceError,
   capturePayloadPublicationSuppression,
+  hasCompletePayloadSuppression,
   mergeDeliveryPublicationEvidence,
 } from "./delivery-queue-publication-evidence.js";
 import type {
@@ -78,7 +79,35 @@ export function createDeliveryPublicationCapture(params: {
       ? mergeDeliveryPublicationEvidence(ordered.map((part) => part.evidence))
       : undefined;
   };
+  /** Aggregate completion evidence; contradicted placement withholds every fallback. */
+  const aggregatePublicationEvidence = () =>
+    contradicted
+      ? undefined
+      : mergeDeliveryPublicationEvidence(
+          publicationEvidenceByPayload.length
+            ? publicationEvidenceByPayload
+                .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
+                .map((part) => part.evidence)
+            : capturedPublicationParts,
+        );
+  /**
+   * Publication staging follows native suppression; dropping the completion row follows
+   * the queue policy (bounded retention only), so permanent rows keep dedupe custody.
+   */
+  const emptyBatchAckOptions = (resultCount: number, completionRetention: unknown) => {
+    const suppressPublication =
+      resultCount === 0 &&
+      hasCompletePayloadSuppression(publicationSuppressionsByPayload, params.payloadCount);
+    const suppressCompletionReceipt = resultCount === 0 && typeof completionRetention === "object";
+    return {
+      ...(suppressCompletionReceipt ? { suppressCompletionReceipt: true } : {}),
+      // Staging defaults to the receipt flag; name publication only where the two differ.
+      ...(suppressPublication !== suppressCompletionReceipt ? { suppressPublication } : {}),
+    };
+  };
   return {
+    aggregatePublicationEvidence,
+    emptyBatchAckOptions,
     publicationEvidenceByPayload,
     publicationSuppressionsByPayload,
     nativeMemberEvidence,

@@ -8,6 +8,11 @@ export type AckDeliveryOptions = {
   retainSpoolArtifacts?: boolean;
   /** An intentionally suppressed pre-send batch must not become a success receipt. */
   suppressCompletionReceipt?: boolean;
+  /**
+   * Skip publication staging for a batch whose every payload was natively suppressed.
+   * Defaults to suppressCompletionReceipt; receipt retention stays a separate policy.
+   */
+  suppressPublication?: boolean;
   publicationEvidence?: DeliveryPublicationEvidence;
   publicationEvidenceByPayload?: readonly PayloadPublicationEvidence[];
   publicationSuppressionsByPayload?: readonly PayloadPublicationSuppression[];

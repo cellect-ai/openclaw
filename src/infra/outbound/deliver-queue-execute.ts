@@ -40,10 +40,7 @@ import { settleDurableDelivery } from "./delivery-completion.js";
 import { prepareOutboundDeliveryGeneration } from "./delivery-generation.js";
 import { createDeliveryPublicationCapture } from "./delivery-publication-capture.js";
 import type { DeliveryProducerLease } from "./delivery-queue-lease.js";
-import {
-  hasCompletePayloadSuppression,
-  mergeDeliveryPublicationEvidence,
-} from "./delivery-queue-publication-evidence.js";
+import { hasCompletePayloadSuppression } from "./delivery-queue-publication-evidence.js";
 import { DeliveryPublicationPendingError } from "./delivery-queue-publication.js";
 import {
   failDelivery,
@@ -91,7 +88,6 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     publicationEvidenceByPayload,
     publicationSuppressionsByPayload,
     nativeMemberEvidence,
-    capturedPublicationParts,
     captureCanonicalResult,
     completeFinalPhysicalReceipt,
   } = publicationCapture;
@@ -174,22 +170,15 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     await owner.fail(failDeliveryAfterPlatformSend, error, ambiguousTransportError);
     queuedPostSendState = "failed";
   };
-  const ackOwnedQueue = async (suppressed = false) => {
+  // Publication follows native suppression; receipt retention follows the queue policy.
+  const ackOwnedQueue = async (suppressed: boolean, suppressCompletionReceipt: boolean) => {
     throwIfProducerLeaseLost();
     if (!queueOwner) throw new Error("Queued acknowledgement requires its current owner");
-    // Contradicted placement withholds every aggregate fallback, not only its own payload.
-    const evidence =
-      suppressed || publicationCapture.contradicted
-        ? undefined
-        : mergeDeliveryPublicationEvidence(
-            publicationEvidenceByPayload.length
-              ? publicationEvidenceByPayload
-                  .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
-                  .map((part) => part.evidence)
-              : capturedPublicationParts,
-          );
+    const evidence = suppressed ? undefined : publicationCapture.aggregatePublicationEvidence();
     await queueOwner.ack({
-      ...(suppressed ? { suppressCompletionReceipt: true } : {}),
+      ...(suppressCompletionReceipt ? { suppressCompletionReceipt: true } : {}),
+      // Staging defaults to the receipt flag; name publication only where the two differ.
+      ...(suppressed !== suppressCompletionReceipt ? { suppressPublication: suppressed } : {}),
       ...(!suppressed ? { publicationEvidenceByPayload, publicationSuppressionsByPayload } : {}),
       ...(evidence
         ? {
@@ -521,7 +510,10 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
         const acked =
           postSendState === "acked" ||
           (postSendState !== "failed" &&
-            (await ackOwnedQueue(results.length === 0 && allPayloadsSuppressed)
+            (await ackOwnedQueue(
+              results.length === 0 && allPayloadsSuppressed,
+              results.length === 0 && typeof params.completionRetention === "object",
+            )
               .then(() => true)
               .catch(async (err: unknown) => {
                 if (err instanceof DeliveryPublicationPendingError) throw err;
@@ -629,7 +621,7 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
               );
             }
           } else if (
-            await ackOwnedQueue(true)
+            await ackOwnedQueue(true, Boolean(producerClaimId))
               .then(() => true)
               .catch(() => false)
           ) {

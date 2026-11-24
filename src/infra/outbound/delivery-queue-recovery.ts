@@ -48,11 +48,7 @@ import {
   cancelDeliveryQueueMediaRetention,
   createDeliveryQueueMediaRetention,
 } from "./delivery-queue-media-staging.js";
-import {
-  captureDeliveryPublicationEvidence,
-  hasCompletePayloadSuppression,
-  mergeDeliveryPublicationEvidence,
-} from "./delivery-queue-publication-evidence.js";
+import { captureDeliveryPublicationEvidence } from "./delivery-queue-publication-evidence.js";
 import { assertDeliveryPublicationOwner } from "./delivery-queue-publication-owner.js";
 import {
   flushDeliveryPublications,
@@ -399,7 +395,6 @@ async function drainQueuedEntry(
     publicationEvidenceByPayload,
     publicationSuppressionsByPayload,
     nativeMemberEvidence,
-    capturedPublicationParts,
     captureCanonicalResult,
     completeFinalPhysicalReceipt,
   } = publicationCapture;
@@ -633,26 +628,11 @@ async function drainQueuedEntry(
     }
     if (postSendState !== "acked") {
       try {
-        // Contradicted placement withholds every aggregate fallback, not only its own payload.
-        const evidence = publicationCapture.contradicted
-          ? undefined
-          : mergeDeliveryPublicationEvidence(
-              publicationEvidenceByPayload.length
-                ? publicationEvidenceByPayload
-                    .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
-                    .map((part) => part.evidence)
-                : capturedPublicationParts,
-            );
+        const evidence = publicationCapture.aggregatePublicationEvidence();
         await owner.ack({
           publicationEvidenceByPayload,
           publicationSuppressionsByPayload,
-          ...(results.length === 0 &&
-          hasCompletePayloadSuppression(
-            publicationSuppressionsByPayload,
-            entry.preparedBatch.sourcePayloadCount,
-          )
-            ? { suppressCompletionReceipt: true }
-            : {}),
+          ...publicationCapture.emptyBatchAckOptions(results.length, entry.completionRetention),
           ...(evidence
             ? {
                 publicationEvidence: evidence,

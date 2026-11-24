@@ -68,6 +68,7 @@ export async function ackDelivery(
           ? structuredClone(options.publicationSuppressionsByPayload)
           : undefined,
         suppressCompletionReceipt: options.suppressCompletionReceipt,
+        suppressPublication: options.suppressPublication,
         ...(options.completionReceipt
           ? {
               completionReceipt: { platformMessageId: options.completionReceipt.platformMessageId },

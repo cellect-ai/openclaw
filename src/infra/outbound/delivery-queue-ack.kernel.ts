@@ -129,7 +129,7 @@ export function ackDeliveryInDatabase(
         evidence: options?.publicationEvidence,
         evidenceByPayload: options?.publicationEvidenceByPayload,
         suppressionsByPayload: options?.publicationSuppressionsByPayload,
-        suppressed: options?.suppressCompletionReceipt,
+        suppressed: options?.suppressPublication ?? options?.suppressCompletionReceipt,
       });
       if (current.completionRetention && options?.suppressCompletionReceipt !== true) {
         completeLoadedDeliveryQueueEntryInDatabase(
