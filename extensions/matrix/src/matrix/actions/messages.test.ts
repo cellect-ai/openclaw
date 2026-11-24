@@ -126,7 +126,8 @@ function createEditClient() {
       },
     },
   } as unknown as import("openclaw/plugin-sdk/plugin-runtime").PluginRuntime);
-  const sendMessage = vi.fn().mockResolvedValue("evt-edit");
+  // Edits return only a confirmed native Matrix event id.
+  const sendMessage = vi.fn().mockResolvedValue("$evt-edit");
   const client = {
     getEvent: vi.fn().mockResolvedValue({ content: { body: "original" } }),
     getRelations: vi.fn().mockResolvedValue({ events: [], nextBatch: null }),
@@ -167,7 +168,7 @@ describe("matrix message actions", () => {
       cfg: MATRIX_ACTION_TEST_CFG,
       client,
     });
-    expect(result).toEqual({ eventId: "evt-edit" });
+    expect(result).toEqual({ eventId: "$evt-edit" });
     expect(sendMessage).toHaveBeenNthCalledWith(
       1,
       ROOM,
