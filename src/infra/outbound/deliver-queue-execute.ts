@@ -82,7 +82,7 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
       to: params.to,
       accountId: params.accountId,
       // A reply anchored to a thread root is physically placed in that thread.
-      threadId: params.threadId ?? params.replyToId,
+      threadId: params.threadId ?? params.reply?.replyToId,
     },
     payloadCount,
     enabled: () => Boolean(queueOwner || params.deliveryCompletion),
