@@ -58,9 +58,18 @@ export function createAgentRunDirectAbortError(
   );
 }
 
+/** `instanceof` reads the prototype, which a revoked proxy refuses; such a reason is not a Stop. */
+function isConversationRunStopReason(value: unknown): value is ConversationRunStopReason {
+  try {
+    return value instanceof ConversationRunStopReason;
+  } catch {
+    return false;
+  }
+}
+
 export function isAgentRunDirectAbortReason(value: unknown): boolean {
   return (
-    value instanceof ConversationRunStopReason ||
+    isConversationRunStopReason(value) ||
     hasAgentRunAbortCode(value, AGENT_RUN_DIRECT_ABORT_ERROR_CODE)
   );
 }
@@ -151,9 +160,7 @@ export function resolveAgentRunAbortLifecycleFields(signal: AbortSignal | undefi
   return {
     aborted: true,
     stopReason,
-    ...(signal.reason instanceof ConversationRunStopReason
-      ? { stopActor: signal.reason.actor }
-      : {}),
+    ...(isConversationRunStopReason(signal.reason) ? { stopActor: signal.reason.actor } : {}),
   };
 }
 
@@ -200,7 +207,7 @@ export function resolveAgentRunErrorLifecycleFields(
   if (abortFields.aborted) {
     return abortFields;
   }
-  if (error instanceof ConversationRunStopReason) {
+  if (isConversationRunStopReason(error)) {
     return { aborted: true, stopReason: AGENT_RUN_ABORTED_STOP_REASON, stopActor: error.actor };
   }
   // A run-owned controller can stop work without aborting its caller's signal.
