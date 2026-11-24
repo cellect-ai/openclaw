@@ -80,12 +80,13 @@ async function stageManifests(body: string, fixture: string, stage: string) {
 describe("Dockerfile", () => {
   it("seeds NSS distrust for root, node, and the retained runtime HOME", async () => {
     const dockerfile = await readDockerfile("Dockerfile", true);
-    expectInOrder(
-      dockerfile,
-      "HOME=/root cellect-nss-distrust",
-      "\nUSER node",
-      "    cellect-nss-distrust",
-    );
+    // Continuations are collapsed, so the node seed is the last command-final call.
+    const userNode = dockerfile.indexOf("\nUSER node");
+    const rootSeed = dockerfile.indexOf("HOME=/root cellect-nss-distrust");
+    const nodeSeed = dockerfile.lastIndexOf("cellect-nss-distrust\n");
+    expect(rootSeed).toBeGreaterThan(-1);
+    expect(rootSeed).toBeLessThan(userNode);
+    expect(nodeSeed).toBeGreaterThan(userNode);
     expect(dockerfile).toContain(
       "ENV OPENCLAW_NSS_DISTRUST_SEED=/usr/local/bin/cellect-nss-distrust",
     );
