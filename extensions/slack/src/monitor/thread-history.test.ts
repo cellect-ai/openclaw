@@ -21,7 +21,7 @@ const replies = vi.fn();
 let workspace = 0;
 beforeEach(() => {
   workspace++;
-  replies.mockReset().mockResolvedValue({ messages: [{ text: "root message" }] });
+  replies.mockReset().mockResolvedValue({ messages: [{ text: "root message", ts: "1000.1" }] });
   vi.mocked(logVerbose).mockClear();
   vi.spyOn(client.conversations, "replies").mockImplementation(replies);
 });
@@ -181,13 +181,13 @@ describe("resolveSlackThreadStarter cache", () => {
     const root = Promise.withResolvers<{ messages: { text: string }[] }>();
     replies
       .mockImplementationOnce(() => root.promise)
-      .mockResolvedValueOnce({ messages: [{ text: "team two root" }] });
+      .mockResolvedValueOnce({ messages: [{ text: "team two root", ts: "1000.1" }] });
     const one = { workspaceScope: { accountId: "account-one", teamId: "T1" } };
     const two = { workspaceScope: { accountId: "account-two", teamId: "T2" } };
     const first = starter(one);
     const shared = starter(one);
     expect((await starter(two))?.text).toBe("team two root");
-    root.resolve({ messages: [{ text: "team one root" }] });
+    root.resolve({ messages: [{ text: "team one root", ts: "1000.1" }] });
     const result = await first;
     expect(result?.text).toBe("team one root");
     expect(await shared).toEqual(result);
@@ -198,7 +198,7 @@ describe("resolveSlackThreadStarter cache", () => {
     await starter();
     replies.mockRejectedValueOnce(new Error("slack down"));
     expect(await starter({ refresh: true })).toBeNull();
-    replies.mockResolvedValueOnce({ messages: [{ text: "updated root" }] });
+    replies.mockResolvedValueOnce({ messages: [{ text: "updated root", ts: "1000.1" }] });
     expect((await starter())?.text).toBe("updated root");
     expect((await starter())?.text).toBe("updated root");
     expect(replies).toHaveBeenCalledTimes(3);
