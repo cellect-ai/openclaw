@@ -493,10 +493,14 @@ it.each([
           expect(loadSessionEntry(target)).toMatchObject({ sessionId, updatedAt: 1_000 });
           expect(loadSessionEntry(target)?.lifecycleRunId).toBeUndefined();
         } else {
-          expect(loadSessionEntry(target)).toMatchObject({
-            status: "killed",
-            abortedLastRun: true,
-          });
+          // The native event subscription persists accepted terminal facts
+          // asynchronously; the lifecycle transport's flush only joins publication.
+          await vi.waitFor(() =>
+            expect(loadSessionEntry(target)).toMatchObject({
+              status: "killed",
+              abortedLastRun: true,
+            }),
+          );
         }
         if (hasForeignQueuedSource) {
           // Session-wide active Stop must not withdraw a different admission's

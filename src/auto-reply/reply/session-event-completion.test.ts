@@ -127,9 +127,9 @@ it.for([
             deliver: false,
             abortSignal: signal,
           });
-          await expect(withinTest(second.settled, signal)).resolves.toMatchObject({
-            status: "completed",
-          });
+          const secondOutcome = await withinTest(second.settled, signal);
+          expect(secondOutcome.error).toBeUndefined();
+          expect(secondOutcome).toMatchObject({ status: "completed" });
           expect(model).toHaveBeenCalledOnce();
           expect(model.mock.lastCall![0].prompt).toContain("import failed");
           expect(model.mock.lastCall![0].prompt).not.toContain("result ready");
@@ -146,6 +146,8 @@ it.for([
           expect(remaining[0]?.id).not.toBe(original.id);
           expect(remaining[0]?.text).toBe(text);
         } else {
+          // Expose the native admission error instead of hiding it behind status fields.
+          expect(outcome.error).toBeUndefined();
           expect(outcome).toMatchObject({ status: "completed", delivered: false });
           expect(model).toHaveBeenCalledOnce();
           const params = model.mock.lastCall![0];

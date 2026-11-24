@@ -86,6 +86,7 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       try {
         const threadContinuation = await describeThreadContinuation({
           context,
+          includeStatus: true,
           owner: { agentId: selectedAgent.agentId, sessionKey: key },
           assertCurrent,
           assertVisible: async (rows) => {

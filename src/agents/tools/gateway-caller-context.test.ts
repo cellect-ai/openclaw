@@ -409,7 +409,7 @@ describe("gateway caller context wrapper", () => {
   it("preserves admitted host authority through nested built-in tool wrappers", async () => {
     const operationalRunInstance = { instanceId: "instance-1", runId: "run-1" };
     const executionIdentityToken = createExecutionIdentityAdmissionToken("run-1");
-    let nestedIdentity: ReturnType<typeof getGatewayToolCallerIdentity>;
+    let nestedIdentity: ReturnType<typeof getCaller>;
 
     await withGatewayToolCallerIdentity(
       {

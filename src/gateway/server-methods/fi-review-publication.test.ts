@@ -6,7 +6,10 @@ import {
 } from "../../config/sessions/session-accessor.js";
 import { isCanonicalSessionTranscriptEntry } from "../../config/sessions/transcript-tree.js";
 import { loadCompletedDeliveryReceipt } from "../../infra/outbound/delivery-queue-storage.js";
-import { installDeliveryQueueTmpDirHooks } from "../../infra/outbound/delivery-queue.test-helpers.js";
+import {
+  installDeliveryQueueTmpDirHooks,
+  loadPendingDeliveries,
+} from "../../infra/outbound/delivery-queue.test-helpers.js";
 import type { ResolveOutboundSessionRouteParams } from "../../infra/outbound/outbound-session.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
@@ -49,7 +52,7 @@ async function reportMessages(threadId?: string) {
     agentId: "cellect-fi-user",
     sessionKey: threadId ? `${base}:thread:${threadId}` : base,
   };
-  const session = expectDefined(loadExactSessionEntry(scope));
+  const session = expectDefined(loadExactSessionEntry(scope), "review destination session");
   return (await loadTranscriptEvents({ ...scope, sessionId: session.entry.sessionId })).filter(
     (event) => isCanonicalSessionTranscriptEntry(event) && event.type === "message",
   );
@@ -140,6 +143,18 @@ afterEach(() => {
   vi.unstubAllEnvs();
 });
 it("publishes the frozen body through the real durable native owner with identified receipt", async () => {
+  beforeEffect.mockImplementationOnce(async () => {
+    const pending = await loadPendingDeliveries(fixture.tmpDir());
+    expect(pending).toHaveLength(1);
+    expect(pending[0]?.session).toEqual({
+      policyKey: `agent:cellect-fi-user:matrix:channel:${owner.roomId}`,
+      agentId: "cellect-fi-user",
+      requesterAccountId: "fi-user",
+      conversationType: "group",
+      conversationKind: "channel",
+    });
+    expect(pending[0]?.session).not.toHaveProperty("key");
+  });
   await expect(publish()).resolves.toMatchObject({
     path: "direct",
     messageId: "$native-report:example.test",

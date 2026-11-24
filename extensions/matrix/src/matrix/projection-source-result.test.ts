@@ -362,7 +362,6 @@ describe("durable exact source-result rendezvous", () => {
       maxBytesPerEntry: 4096,
       maxBytesPerNamespace: 40 * 1024 * 1024,
       overflowPolicy: "reject-new",
-      defaultTtlMs: 30 * 24 * 60 * 60 * 1000,
     });
     for (const entry of await storage.entries()) {
       const stored = await storage.lookup(entry.key);

@@ -93,12 +93,22 @@ export function createRelayAgentRunRegistration(
     ) => Promise<void>;
   }): Promise<RelayAgentRunRegistration> {
     const session = getRelaySession(params.relaySessionId, params.connId);
+    const target = session.sessionTarget;
+    const requestedKey = params.sessionKey.trim();
+    if (
+      requestedKey !== target.sessionKey &&
+      requestedKey !== target.canonicalKey &&
+      `agent:${target.agentId}:${requestedKey}` !== target.canonicalKey
+    ) {
+      throw new Error("Realtime relay session belongs to another agent session");
+    }
+    const sessionKey = target.canonicalKey;
     const callId = params.callId?.trim();
     const previous = session.activeAgentRuns.get(params.runId);
     const run: RelayAgentRun =
-      previous?.sessionKey === params.sessionKey
+      previous?.sessionKey === sessionKey
         ? previous
-        : { runId: params.runId, sessionKey: params.sessionKey };
+        : { runId: params.runId, sessionKey: sessionKey };
     const controllerTarget = captureSessionTarget({
       storeScope: session.sessionTarget.storePath,
       sessionKey: session.sessionTarget.canonicalKey,
@@ -123,7 +133,7 @@ export function createRelayAgentRunRegistration(
             entry: chat,
             connectionId: params.connId,
             sessionId: chatSessionId,
-            sessionKey: params.sessionKey,
+            sessionKey,
             lifecycleGeneration: chatGeneration,
             phase,
           })
@@ -231,7 +241,7 @@ export function createRelayAgentRunRegistration(
         ) {
           abortChatRunById(session.context, {
             runId: params.runId,
-            sessionKey: params.sessionKey,
+            sessionKey,
             expectedEntry: chat,
             stopReason: "voice session binding failed",
           });
@@ -278,7 +288,7 @@ export function createRelayAgentRunRegistration(
             throw new Error("Realtime relay voice session could not be created for agent consult");
           }
           assertCurrent();
-          const { agentId, sessionKey } = session.sessionTarget;
+          const { agentId } = session.sessionTarget;
           const physicalSource = captureRelayVoiceSessionSource(session);
           physicalSource.assertCurrent();
           if (params.transcriptSessionId) {
@@ -286,7 +296,7 @@ export function createRelayAgentRunRegistration(
             transcriptSession = await withSessionEntryReadOnlyInWorker(
               {
                 agentId,
-                sessionKey: params.sessionKey,
+                sessionKey,
                 storePath: session.sessionTarget.storePath,
                 env: physicalSource.options.env,
               },

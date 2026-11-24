@@ -1,5 +1,4 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { SILENT_REPLY_TOKEN } from "../../auto-reply/tokens.js";
 import type { PluginHookAgentContext } from "../../plugins/hook-types.js";
 import { runCliBeforeAgentReply } from "./before-agent-reply.js";
 import type { RunCliAgentParams } from "./types.js";
@@ -38,7 +37,7 @@ it.each(["internal_system", "external_user"] as const)(
       prompt: "[OpenClaw exec completion]",
       provider: "fixture-cli",
       timeoutMs: 1000,
-      trigger: kind === "internal_system" ? "event" : "user",
+      trigger: "user",
       messageChannel: "matrix",
       agentAccountId: "fixture",
       inputProvenance,
@@ -48,8 +47,27 @@ it.each(["internal_system", "external_user"] as const)(
       { cleanedBody: params.prompt },
       expect.objectContaining({ inputProvenance }),
     );
-    expect(result?.payloads).toEqual([
-      { text: kind === "internal_system" ? SILENT_REPLY_TOKEN : "Access verification unavailable" },
-    ]);
+    expect(result?.payloads).toEqual(
+      kind === "internal_system" ? [] : [{ text: "Access verification unavailable" }],
+    );
+    if (kind === "internal_system") {
+      expect(result?.meta.terminalReply).toEqual({ disposition: "silent" });
+    }
   },
 );
+
+it("leaves event turns outside the claiming-hook trigger contract", async () => {
+  const result = await runCliBeforeAgentReply({
+    runId: "cli-completion-event",
+    sessionId: "fixture",
+    sessionFile: "synthetic",
+    workspaceDir: "/synthetic",
+    prompt: "[OpenClaw exec completion]",
+    provider: "fixture-cli",
+    timeoutMs: 1000,
+    trigger: "event",
+    inputProvenance: { kind: "internal_system", sourceTool: "exec" },
+  });
+  expect(hookRunner.runBeforeAgentReply).not.toHaveBeenCalled();
+  expect(result).toBeUndefined();
+});

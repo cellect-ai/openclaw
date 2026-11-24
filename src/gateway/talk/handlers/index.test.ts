@@ -4,7 +4,6 @@ import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { REALTIME_VOICE_AGENT_CONTEXT_INSTRUCTIONS } from "../../../agents/realtime-bootstrap-context.test-support.js";
-import { resolveCommandAuthorization } from "../../../auto-reply/command-auth.js";
 import type { OpenClawConfig } from "../../../config/config.js";
 import { captureRuntimeConfigWithSource } from "../../../config/runtime-config-capture-state.js";
 import { projectConfigOntoRuntimeSourceSnapshot } from "../../../config/runtime-source-projection.js";
@@ -27,10 +26,8 @@ import {
 } from "../../../talk/client-voice-confirmation.test-support.js";
 import { REALTIME_VOICE_DESCRIBE_VIEW_TOOL_NAME } from "../../../talk/describe-view-tool.js";
 import type { RealtimeVoiceProviderResolveConfigContext } from "../../../talk/provider-types.js";
-import { resolveChatSendCallerContext } from "../../server-methods/gateway-client-identity.js";
 import { fixedStoreOwnershipConfig } from "../../server-methods/sessions-fixed-store.test-support.js";
-import type { GatewayClient, GatewayRequestHandlerOptions } from "../../server-methods/types.js";
-import { gatewayProfile } from "../../server/client-fixtures.test-support.js";
+import type { GatewayRequestHandlerOptions } from "../../server-methods/types.js";
 import { bindSessionRowProjection } from "../../session-row-projection-access.js";
 import { claimRpcSourceForTest, createRpcSourceForTest } from "../../test-helpers.rpc-source.js";
 import { relaySessions, type RelaySession } from "../relay/state.js";
@@ -358,6 +355,8 @@ vi.mock("../transcription-relay.js", async (importOriginal) => {
 function setSourceConfig(config: OpenClawConfig) {
   mocks.projectConfigOntoRuntimeSourceSnapshot.mockReturnValue(config);
 }
+
+import { registerTalkHandlerAuthorityTests } from "./index-authority.test-support.js";
 
 const callTalkHandler = createTalkHandlerCaller(talkHandlers);
 
@@ -1836,7 +1835,7 @@ describe("talk.session unified handlers", () => {
           SenderName: undefined,
           SenderUsername: undefined,
         }),
-        toolsAllow: ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
+        toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow("safe-read-only"),
       },
     });
     expectRecordFields(relayCreateInput.providerConfig, {
@@ -2536,6 +2535,7 @@ describe("talk.session unified handlers", () => {
 });
 
 describe("talk.client.toolCall handler", () => {
+  registerTalkHandlerAuthorityTests({ chatSend: mocks.chatSend, callTalkHandler });
   beforeEach(async () => {
     relaySessions.set("relay-1", {
       id: "relay-1",
@@ -2559,52 +2559,6 @@ describe("talk.client.toolCall handler", () => {
         respond(true, { runId: "run-voice-1" }, undefined);
       },
     );
-  });
-
-  it("retains the original human authority through the Talk chat client copy", async () => {
-    const connId = "conn-command-authority";
-    onTestFinished(() => forgetLegacyVoiceBinding(connId, "main", "voice-test"));
-    const client: GatewayClient = {
-      connId,
-      authenticatedUserId: "ada@example.test",
-      authenticatedUserProfile: gatewayProfile("profile-ada", "Ada"),
-      connect: {
-        minProtocol: 1,
-        maxProtocol: 1,
-        client: { id: "openclaw-control-ui", version: "test", platform: "test", mode: "webchat" },
-        scopes: ["operator.write"],
-        caps: ["tool-events", "task-suggestions"],
-      },
-    };
-    let forwardedClient: GatewayClient | null | undefined;
-    mocks.chatSend.mockImplementationOnce(async (request: GatewayRequestHandlerOptions) => {
-      forwardedClient = request.client;
-      request.respond(true, { runId: "run-voice-1" }, undefined);
-    });
-    await callTalkHandler("talk.client.toolCall", {
-      params: {
-        sessionKey: "main",
-        callId: "call-owned",
-        name: "openclaw_agent_consult",
-        args: { question: "Check status" },
-      },
-      client,
-      respond: vi.fn(),
-      context: { getRuntimeConfig: () => ({}) },
-    });
-    const copiedClient = expectDefined(forwardedClient, "Talk consult must dispatch its client");
-    expect(copiedClient).not.toBe(client);
-    const ctx = resolveChatSendCallerContext(copiedClient);
-    const authorize = () =>
-      resolveCommandAuthorization({
-        ctx,
-        cfg: { commands: { ownerAllowFrom: ["profile-ada"], allowFrom: { "*": ["profile-ada"] } } },
-        commandAuthorized: false,
-      });
-    expect(authorize().senderIsOwner).toBe(true);
-    client.invalidated = true;
-    expect(authorize().senderIsOwner).toBe(false);
-    expect(copiedClient.connect.caps).toEqual(["tool-events"]);
   });
 
   it.each(["closed", "relay"] as const)(
@@ -2690,7 +2644,8 @@ describe("talk.client.toolCall handler", () => {
       expect(mockCallArg(mocks.chatSend, 0, 2)).toEqual({
         toolsAllow: configured
           ? undefined
-          : ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"],
+          : resolveRealtimeVoiceAgentConsultToolsAllow("safe-read-only"),
+        talkRelayAdmission: undefined,
         transcript: { display: false, excludeFromContext: true },
         prepareAssistantTranscriptMessage: expect.any(Function),
         beforeDispatch: expect.any(Function),
@@ -2791,7 +2746,8 @@ describe("talk.client.toolCall handler", () => {
       mocks.ensureClientVoiceAgentSessionEntry.mockImplementationOnce(async (params) => {
         writeStarted.resolve();
         await pendingWrite.promise;
-        params.assertCommitAllowed?.();
+        params.assertCurrent?.();
+        params.source?.();
         return "session-main";
       });
       const respond = vi.fn();
@@ -2821,24 +2777,6 @@ describe("talk.client.toolCall handler", () => {
       );
     },
   );
-
-  it("carries the live relay fence to the chat user-turn commit owner", async () => {
-    const respond = vi.fn();
-    await callTalkHandler("talk.client.toolCall", {
-      params: {
-        relaySessionId: "relay-1",
-        callId: "call-relay-commit-fence",
-        name: "openclaw_agent_consult",
-        args: { question: "Continue" },
-      },
-      respond,
-      context: { getRuntimeConfig: () => ({}) as OpenClawConfig },
-    });
-    const input = mockCallArg(mocks.chatSend) as { sessionMutationCommitGuard: () => void };
-    expect(() => input.sessionMutationCommitGuard()).not.toThrow();
-    relaySessions.delete("relay-1");
-    expect(() => input.sessionMutationCommitGuard()).toThrow("retry the request");
-  });
 
   it("carries an exact spoken confirmation into a follow-up consult when its id is omitted", async () => {
     const now = Date.now();
@@ -3071,14 +3009,7 @@ describe("talk.client.create handler", () => {
           surface: "a browser Talk session",
           abortSignal: consultSignal,
           senderIsOwner: false,
-          toolsAllow: [
-            "read",
-            "web_search",
-            "web_fetch",
-            "x_search",
-            "memory_search",
-            "memory_get",
-          ],
+          toolsAllow: resolveRealtimeVoiceAgentConsultToolsAllow("safe-read-only"),
         }),
       );
       expect(createInput).not.toHaveProperty("provider");

@@ -7,7 +7,7 @@ import { isPathInside } from "../infra/path-guards.js";
 import { resolveFileExtractionLimits } from "../media-understanding/file-extraction-limits.js";
 import { resolveLocalMediaRoots } from "../media/local-media-access.js";
 import type { MediaFact } from "../media/media-facts.js";
-import { resolveMediaReferenceLocalPath } from "../media/media-reference.js";
+import { parseInboundMediaUri, resolveMediaReferenceLocalPath } from "../media/media-reference.js";
 import { getMediaDir } from "../media/store.js";
 import { wrapExternalContent } from "../security/external-content.js";
 import { captureChannelReadScope } from "../shared/channel-read-authority.js";
@@ -27,6 +27,8 @@ export async function prepareLocalWorkspaceAttachments(params: {
   media: readonly MediaFact[];
   execution: LocalAttachmentExecutionContext;
   assertCurrent: () => void;
+  /** Recovery requires every original input to remain a verified managed PDF. */
+  requireManagedPdf?: true;
 }): Promise<string | undefined> {
   const { execution } = params;
   if (!execution.readAllowed) {
@@ -51,9 +53,23 @@ export async function prepareLocalWorkspaceAttachments(params: {
     if (!ref) {
       continue;
     }
+    if (
+      params.requireManagedPdf &&
+      (fact.staged || fact.workspaceDir || !fact.url || !parseInboundMediaUri(fact.url))
+    ) {
+      throw new Error("PDF recovery requires original managed inputs");
+    }
     try {
       assertCurrent();
       const filePath = await resolveMediaReferenceLocalPath(ref.resolved);
+      assertCurrent();
+      if (
+        params.requireManagedPdf &&
+        fact.path &&
+        (await resolveMediaReferenceLocalPath(fact.path)) !== filePath
+      ) {
+        throw new Error("PDF recovery input identities disagree");
+      }
       assertCurrent();
       if (!path.isAbsolute(filePath) || !roots.some((root) => isPathInside(root, filePath))) {
         continue;
@@ -75,13 +91,18 @@ export async function prepareLocalWorkspaceAttachments(params: {
         assertCurrent();
         classification = await classifyAttachmentBytes({
           buffer: header.subarray(0, bytesRead),
-          declaredMime: fact.contentType,
-          name: path.basename(opened.realPath),
+          ...(params.requireManagedPdf
+            ? {}
+            : {
+                declaredMime: fact.contentType,
+                name: path.basename(opened.realPath),
+              }),
         });
         assertCurrent();
       }
       assertCurrent();
       if (
+        (params.requireManagedPdf && classification.mime !== "application/pdf") ||
         ["image", "audio", "video"].includes(classification.class) ||
         (limits.allowedMimesConfigured &&
           (!classification.mime || !limits.allowedMimes.has(classification.mime)))
@@ -98,12 +119,18 @@ export async function prepareLocalWorkspaceAttachments(params: {
         break;
       }
       files.push(file);
-    } catch {
+    } catch (error) {
+      if (params.requireManagedPdf) {
+        throw error;
+      }
       // An unavailable input keeps its extraction outcome; cancellation must still stop dispatch.
       assertCurrent();
     }
   }
   assertCurrent();
+  if (params.requireManagedPdf && (files.length === 0 || files.length !== params.media.length)) {
+    throw new Error("PDF recovery could not verify every managed input");
+  }
   const note = files.length
     ? [
         "For file tools, use the verified attachment paths below. Media references identify attachments; they are not filesystem paths.",

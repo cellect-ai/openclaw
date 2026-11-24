@@ -188,10 +188,25 @@ async function sendSubagentAnnounceDirectlyBound(
       params.targetRequesterSessionKey,
       requester,
     );
+    if (params.steerActiveRequester) {
+      const input = params.controllerInput;
+      const target = input?.target;
+      if (
+        !target ||
+        target.storeScope !== requester.storePath ||
+        target.physicalStorePath !== requester.physicalStorePath ||
+        target.sessionKey !== requester.canonicalKey ||
+        target.agentId !== requester.agentId ||
+        target.incarnation !== requesterSessionId
+      ) {
+        return sourceOwnerChangedResult();
+      }
+    }
     // Settlement and private findings bind to the captured requester incarnation,
     // including a visible continuation after the spawning turn has yielded.
     const requesterSessionBound =
       parentOnly ||
+      params.steerActiveRequester === true ||
       ((sourceToolId === "subagent_settle" || agentMediatedCompletion) &&
         params.completionRequesterSessionId !== undefined);
     if (
@@ -277,7 +292,7 @@ async function sendSubagentAnnounceDirectlyBound(
     if (
       !parentOnly &&
       !params.requireDirectDelivery &&
-      params.expectsCompletionMessage &&
+      (params.expectsCompletionMessage || params.steerActiveRequester) &&
       params.controllerInput
     ) {
       let steer: SessionControllerSteerResult;
@@ -325,6 +340,15 @@ async function sendSubagentAnnounceDirectlyBound(
           return sourceOwnerChangedResult();
         }
         throw error;
+      }
+      // Source retirement cannot turn consumed-but-unconfirmed shadow input into a known no-op.
+      if (params.steerActiveRequester && steer.status === "indeterminate") {
+        return {
+          delivered: false,
+          path: "steered",
+          error: steer.errorMessage,
+          disposition: "ambiguous",
+        };
       }
       // Steering consumes admission; its result remains valid while the delivery owner is current.
       if (!isCompletionDeliveryAllowed()) {

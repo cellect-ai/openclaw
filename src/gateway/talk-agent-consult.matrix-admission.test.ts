@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { isWebchatClient } from "../utils/message-channel.js";
 import type { GatewayRequestHandlerOptions } from "./server-methods/types.js";
 import {
   consultRoute,
@@ -29,7 +30,7 @@ describe("native Matrix Talk browser admission boundary", () => {
     const f = await fixture();
     expect((await f.invoke()).mock.lastCall?.[0]).toBe(true);
     expect(mocks.trustedSend.mock.calls[0]?.[0].client).toMatchObject({
-      connId: f.client.connId,
+      connId: f.relay.connId,
       pairedClientId: "openclaw-control-ui",
       allowedAgentIds: ["main"],
     });
@@ -40,10 +41,11 @@ describe("native Matrix Talk browser admission boundary", () => {
     await handleChatSend({
       context: f.context,
       client: f.client,
+      isWebchatConnect: (connect) => isWebchatClient(connect?.client),
       respond,
       req: { type: "req", id: "raw", method: "chat.send" },
       params: { sessionKey: consultSessionKey, message: "inject", idempotencyKey: "raw" },
-    } as GatewayRequestHandlerOptions);
+    });
     expect(respond).toHaveBeenCalledWith(
       false,
       undefined,
@@ -71,7 +73,7 @@ describe("native Matrix Talk browser admission boundary", () => {
     const f = await fixture();
     const input = {
       relaySessionId: f.relay.id,
-      connId: f.client.connId,
+      connId: f.relay.connId,
       sessionKey: consultSessionKey,
       callId: "provider-call",
       matrixRoute: consultRoute,

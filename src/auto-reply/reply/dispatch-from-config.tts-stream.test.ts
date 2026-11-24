@@ -403,14 +403,21 @@ describe("source completion", () => {
       await dispatcher.waitForIdle();
       if (actualSessions && preparedScope) {
         const pending = actualSessions.loadSessionEntry(preparedScope)?.pendingFinalDelivery;
-        if (scenario.nativePlan) {
+        if (scenario.nativePlan && scenario.prefix === "ambiguous") {
           expect(pending?.dispatchState).toBe("closed");
           expect(pending?.deliveries?.[0]).toEqual({
             id: "source-delivery",
-            state: scenario.prefix === "ambiguous" ? "unknown" : "suppressed",
+            state: "unknown",
           });
           expect(pending?.deliveries).toHaveLength(2);
           expect(pending?.deliveries?.[1]?.id).not.toBe("source-delivery");
+        } else if (scenario.nativePlan) {
+          // Closed plans with only suppressed/delivered members and no projection
+          // consumer release their custody through native cleanup.
+          expect(pending).toBeUndefined();
+          expect(
+            actualSessions.loadSessionEntry(preparedScope)?.completedFinalDeliveries ?? [],
+          ).toEqual([]);
         } else if (scenario.prefix === "ambiguous") {
           expect(pending?.deliveries).toEqual([{ id: "source-delivery", state: "unknown" }]);
         } else {

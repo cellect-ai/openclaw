@@ -11,7 +11,16 @@ import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-c
 import { resolveHooksConfig } from "../hooks.js";
 
 const mocks = vi.hoisted(() => ({
-  enqueueSystemEvent: vi.fn(),
+  captureSessionEventTarget: vi.fn(async (agentId: string, sessionKey: string) => ({
+    agentId,
+    sessionKey,
+    sessionId: "captured-session",
+    generation: "captured-generation",
+  })),
+  enqueueSessionEvent: vi.fn((_text: string, _options: Record<string, unknown>) => ({
+    accepted: Promise.resolve({ ok: true }),
+    settled: Promise.resolve({ status: "completed" }),
+  })),
   getRuntimeConfig: vi.fn<() => OpenClawConfig>(),
   requestHeartbeat: vi.fn(),
   runCronIsolatedAgentTurn:
@@ -27,8 +36,11 @@ vi.mock("../../cron/isolated-agent.js", () => ({
 vi.mock("../../infra/heartbeat-wake.js", () => ({
   requestHeartbeat: mocks.requestHeartbeat,
 }));
-vi.mock("../../infra/system-events.js", () => ({
-  enqueueSystemEvent: mocks.enqueueSystemEvent,
+// mock-isolation: Exercise HTTP admission and replay while ordinary reply execution
+// stays at its native handoff boundary, matching hooks.early-failure.test.ts.
+vi.mock("../../auto-reply/reply/session-event-handoff.js", () => ({
+  captureSessionEventTargetForHost: mocks.captureSessionEventTarget,
+  enqueueSessionEventForHost: mocks.enqueueSessionEvent,
 }));
 
 const { createGatewayHooksRequestHandler } = await import("./hooks.js");
@@ -93,6 +105,18 @@ async function post(
 describe("hook background admission", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+  });
+
+  it("rejects a replaced terminal target before executing an isolated turn", async () => {
+    mocks.getRuntimeConfig.mockReturnValue(config);
+    mocks.captureSessionEventTarget.mockRejectedValueOnce(new Error("session target was replaced"));
+    const response = await post(createHandler(100), "/hooks/agent", {
+      message: "Direct",
+      name: "Replaced",
+    });
+    expect(response.res.statusCode).toBe(502);
+    expect(mocks.runCronIsolatedAgentTurn).not.toHaveBeenCalled();
+    expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
   });
 
   describe("attested silent HTTP hooks", () => {
@@ -195,7 +219,7 @@ describe("hook background admission", () => {
         expect(params.hookRequesterEnvironment).toBe(input.requesterEnvironment);
         expect(params.job.delivery).toEqual({ mode: "none" });
         expect(JSON.stringify(params.job)).not.toContain(input.requesterAttestation);
-        expect(mocks.enqueueSystemEvent).not.toHaveBeenCalled();
+        expect(mocks.enqueueSessionEvent).not.toHaveBeenCalled();
       },
     );
     it.each(cases)(
@@ -312,7 +336,7 @@ describe("hook background admission", () => {
     });
 
     expect(mocks.runCronIsolatedAgentTurn).toHaveBeenCalledTimes(4);
-    expect(mocks.enqueueSystemEvent.mock.calls.map(([text]) => text)).toEqual([
+    expect(mocks.enqueueSessionEvent.mock.calls.map(([text]) => text)).toEqual([
       "Hook Gmail (skipped): model provider unavailable",
       "Hook Gmail (skipped): model provider unavailable",
     ]);
@@ -321,7 +345,7 @@ describe("hook background admission", () => {
     try {
       expect((await post(handler, "/hooks/gmail", redelivered)).res.statusCode).toBe(502);
       expect(mocks.runCronIsolatedAgentTurn).toHaveBeenCalledTimes(5);
-      expect(mocks.enqueueSystemEvent.mock.calls.map(([text]) => text)).toEqual([
+      expect(mocks.enqueueSessionEvent.mock.calls.map(([text]) => text)).toEqual([
         "Hook Gmail (skipped): model provider unavailable",
         "Hook Gmail (skipped): model provider unavailable",
         "Hook Gmail (skipped): model provider unavailable",
@@ -350,7 +374,7 @@ describe("hook background admission", () => {
     expect((await post(handler, "/hooks/gmail", redelivered)).res.statusCode).toBe(200);
 
     await vi.waitFor(() =>
-      expect(mocks.enqueueSystemEvent.mock.calls.map(([text]) => text)).toEqual([
+      expect(mocks.enqueueSessionEvent.mock.calls.map(([text]) => text)).toEqual([
         "Hook Gmail (skipped): model provider unavailable",
         "Hook Gmail (error): execution failed",
       ]),

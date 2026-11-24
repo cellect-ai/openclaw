@@ -269,7 +269,10 @@ describe("completed projection replacement restriction", () => {
   };
   function completed() {
     const entry = close(settle(settle(fixture(), "first", "suppressed"), "last", "suppressed"));
-    expectDefined(entry.completedFinalDeliveries?.[0]).projectionConsumers.push("other-binding");
+    expectDefined(
+      entry.completedFinalDeliveries?.[0],
+      "completed receipt",
+    ).projectionConsumers.push("other-binding");
     return entry;
   }
   it("refuses same-session replacement that erases owed completed custody", () => {
@@ -294,7 +297,7 @@ describe("completed projection replacement restriction", () => {
   });
   it("releases exactly one consumer while preserving physical receipt and every other consumer", () => {
     const entry = completed();
-    const receipt = expectDefined(entry.completedFinalDeliveries?.[0]);
+    const receipt = expectDefined(entry.completedFinalDeliveries?.[0], "completed receipt");
     const next = {
       ...entry,
       completedFinalDeliveries: [{ ...receipt, projectionConsumers: ["other-binding"] }],
@@ -311,7 +314,10 @@ describe("completed projection replacement restriction", () => {
         {
           ...next,
           completedFinalDeliveries: [
-            { ...expectDefined(next.completedFinalDeliveries[0]), completedAt: 99 },
+            {
+              ...expectDefined(next.completedFinalDeliveries[0], "retained receipt"),
+              completedAt: 99,
+            },
           ],
         },
         [release],

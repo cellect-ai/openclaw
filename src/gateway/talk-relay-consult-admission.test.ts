@@ -29,7 +29,7 @@ describe("Matrix consult authority at native controller admission", () => {
     const f = await fixture();
     const capability = prepareTalkRelayConsultAdmission({
       relaySessionId: f.relay.id,
-      connId: f.client.connId,
+      connId: f.relay.connId,
       sessionKey: consultSessionKey,
       callId: "provider-call",
       matrixRoute: consultRoute,
@@ -146,7 +146,7 @@ describe("Matrix consult authority at native controller admission", () => {
       );
       registration = await registerTalkRealtimeRelayAgentRun({
         relaySessionId: f.relay.id,
-        connId: f.client.connId,
+        connId: f.relay.connId,
         sessionKey: consultSessionKey,
         runId: "accepted-native-consult",
         callId: "provider-call",

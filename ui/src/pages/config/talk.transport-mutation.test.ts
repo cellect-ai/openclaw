@@ -14,6 +14,7 @@ import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import {
   expectVoiceState,
   mountTalkPage,
+  waitForTalkCatalog,
   readVoiceOptions,
   setTalkRealtimeConfig,
 } from "./talk.test-support.tsx";
@@ -243,17 +244,13 @@ describe("TalkSettingsPage realtime transport mutation", () => {
       model: null,
       ...options,
     });
-    await waitForSolid(() => {
-      expect(harness.request).toHaveBeenCalledExactlyOnceWith("talk.catalog", {});
-      expect(modelPicker(harness.page)).not.toBeNull();
-    });
+    await waitForTalkCatalog(harness.page, harness.request);
     return harness;
   }
   it("keeps same-Gateway provider and model-specific voice choices visible through reconnect and refresh failure", async () => {
     const harness = createTalkMutationHarness();
     const { page, request, configForm, updateGateway } = harness;
-    await vi.waitFor(() => expect(request).toHaveBeenCalledTimes(1));
-    flush();
+    await waitForTalkCatalog(page, request);
 
     const litellmForm = {
       ...configForm,
@@ -305,7 +302,7 @@ describe("TalkSettingsPage realtime transport mutation", () => {
         activeVoiceSelectionPolicy,
         model: null,
       });
-      await vi.waitFor(() => expect(request).toHaveBeenCalledWith("talk.catalog", {}));
+      await waitForTalkCatalog(page, request);
       setTalkRealtimeConfig(page, { provider: "openai", speakerVoice: "custom-voice" });
       flush();
 

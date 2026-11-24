@@ -56,7 +56,7 @@ describe("required event custody", () => {
     await drainRequiredAgentRunPersistence();
     expect(seen).toEqual([1, 2]);
     expect(later).toHaveBeenCalledOnce();
-    expect(expectDefined(later.mock.calls[0])[0].seq).toBe(2);
+    expect(expectDefined(later.mock.calls[0], "later subscriber event")[0].seq).toBe(2);
   });
 
   it("rejects admission and shutdown on a required commit failure without notifying observers", async () => {
@@ -119,7 +119,7 @@ describe("required event custody", () => {
     await drainRequiredAgentRunPersistence();
     expect(commit).toHaveBeenCalledTimes(2);
     expect(observe).toHaveBeenCalledOnce();
-    expect(expectDefined(observe.mock.calls[0])[0].seq).toBe(1);
+    expect(expectDefined(observe.mock.calls[0], "persisted subscriber event")[0].seq).toBe(1);
   });
 
   it("suppresses a captured subscriber that unsubscribes before commit", async () => {

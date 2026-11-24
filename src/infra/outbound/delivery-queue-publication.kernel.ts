@@ -8,6 +8,7 @@ import {
   upsertDeliveryQueueEntryInDatabase,
 } from "../delivery-queue-sqlite.kernel.js";
 import { mergeDeliveryPublicationEvidence } from "./delivery-queue-publication-evidence.js";
+import { assertDeliveryPublicationOwner } from "./delivery-queue-publication-owner.js";
 import { OUTBOUND_PUBLICATION_QUEUE_NAME } from "./delivery-queue-publication.types.js";
 import type {
   DeliveryPublicationEvidence,
@@ -18,7 +19,6 @@ import type {
 } from "./delivery-queue-publication.types.js";
 import type { QueuedDelivery } from "./delivery-queue-types.js";
 import { acceptedPreparedOutboundEntries } from "./prepared-batch.js";
-import { normalizeTargetForProvider } from "./target-normalization.js";
 
 export function stageDeliveryPublicationInDatabase(
   database: OpenClawStateDatabase,
@@ -38,6 +38,7 @@ export function stageDeliveryPublicationInDatabase(
       (part.publication.receiptRequired === true || part.publication.channel !== undefined),
   );
   if (!publications.length || params.suppressed) return;
+  assertDeliveryPublicationOwner(params.entry);
   const byPayload = new Map<number, DeliveryPublicationEvidence>();
   for (const part of params.evidenceByPayload ?? []) {
     if (
@@ -136,8 +137,7 @@ function assertPublicationEvidence(
     !evidence.platformMessageId.trim() ||
     evidence.platformMessageIds.at(-1) !== evidence.platformMessageId ||
     evidence.destination.channel !== entry.channel ||
-    evidence.normalizedTarget !==
-      (normalizeTargetForProvider(entry.channel, entry.to) ?? entry.to) ||
+    evidence.normalizedTarget !== entry.publicationOwner?.normalizedTarget ||
     evidence.destination.to !== entry.to ||
     (evidence.destination.accountId ?? "default") !== (entry.accountId ?? "default") ||
     String(evidence.destination.threadId ?? "") !== String(entry.threadId ?? "") ||

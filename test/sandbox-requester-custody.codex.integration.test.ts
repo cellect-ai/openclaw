@@ -209,7 +209,7 @@ describe("registered Codex sandbox execution requester custody", () => {
           arguments: { command: "cellect commands list" },
         }),
       );
-      expect(JSON.stringify(heldResponse)).toContain(HELD);
+      expect(heldResponse.contentItems).toEqual([{ type: "inputText", text: HELD }]);
       expect(processBoundary.envs).toHaveLength(1);
       expect(await turn.exec(projected, raw)).toMatchObject({ block: true, blockReason: HELD });
       expect(await turn.exec({ ...projected, runId: "unproven-run" }, raw)).toMatchObject({

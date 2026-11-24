@@ -6,6 +6,8 @@ export const databaseWorkerExtensionTestRoots = [
 ];
 
 export const databaseWorkerExtensionTestFiles = [
+  "extensions/fi-user/admin-action-notice-operation.test.ts",
+  "extensions/fi-user/admin-action-slack-notice.test.ts",
   "extensions/alibaba/video-generation-provider.test.ts",
   "extensions/mcp-events/src/service.test.ts",
   "extensions/codex/src/conversation-binding.test.ts",
@@ -165,6 +167,7 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/raft/src/gateway.test.ts",
   "extensions/telegram/src/message-dispatch-dedupe.test.ts",
   "extensions/google-meet/index.test.ts",
+  "extensions/google-meet/index.create.test.ts",
   "extensions/teams-meetings/index.test.ts",
   "extensions/teams-meetings/src/runtime.test.ts",
   "extensions/zoom-meetings/index.test.ts",

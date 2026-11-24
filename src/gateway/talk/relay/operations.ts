@@ -221,7 +221,7 @@ export function prepareTalkRealtimeRelayAgentRunRegistration(params: {
     ) {
       abortChatRunById(session.context, {
         runId,
-        sessionKey,
+        sessionKey: target.canonicalKey,
         stopReason: "realtime provider cancelled tool call",
       });
       throw new Error("Realtime provider cancelled the tool call before run registration");

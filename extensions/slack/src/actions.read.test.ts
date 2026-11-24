@@ -167,23 +167,28 @@ it("reads ISO-bounded channel history through the lookup client and preserves ta
   ];
   const attachments = [{ fallback: "[no preview available]", blocks }];
   client.conversations.history.mockResolvedValueOnce({
-    messages: [{ ts: "1", text: "  Please check these.  ", attachments }],
+    messages: [
+      { ts: "1712309696.789", text: "at lower exclusive bound" },
+      { ts: "1712309696.9", text: "  Please check these.  ", attachments },
+      { ts: "1712309697", text: "at upper exclusive bound" },
+    ],
     has_more: false,
   });
   createSlackLookupClientMock.mockReturnValueOnce(client);
   const result = await readSlackMessages("C1", {
     token,
     cfg: { channels: { slack: { enabled: true, botToken: token } } },
-    before: "2024-04-05T12:34:56+03:00",
+    before: "2024-04-05T12:34:57+03:00",
     after: "2024-04-05T12:34:56.789+03:00",
   });
   expect(createSlackLookupClientMock).toHaveBeenCalledWith(token, { teamId: undefined }, undefined);
   expect(client.conversations.history.mock.calls[0]?.[0]).toMatchObject({
-    latest: "1712309696",
+    latest: "1712309697",
     oldest: "1712309696.789",
   });
   expect(result.messages[0]?.text).toBe("  Please check these.  \nID\tStatus\n12345\tenabled");
   expect(result.messages[0]?.attachments).toBe(attachments);
+  expect(result.messages).toHaveLength(1);
   expect(result.hasMore).toBe(false);
 });
 

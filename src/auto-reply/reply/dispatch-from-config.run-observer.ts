@@ -10,6 +10,9 @@ export function createDispatchAgentRunObserver(
   return {
     getAgentRunId: () => agentRunId,
     getAgentRunTerminalOutcome: () => agentRunTerminalOutcome,
+    markAgentRunFailed: () => {
+      agentRunTerminalOutcome = "failed";
+    },
     getReplyOptions: () => ({
       ...observeAgentRunStart(params.replyOptions, (start) => {
         agentRunId = start.runId;

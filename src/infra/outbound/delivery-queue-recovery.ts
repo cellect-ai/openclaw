@@ -1,9 +1,5 @@
 // Delivery queue recovery drains pending outbound sends with backoff, crash
 // replay protection, unknown-send reconciliation, and failed-entry pruning.
-import type {
-  ChannelMessageSendCommitContext,
-  ChannelMessageUnknownSendReconciliationResult,
-} from "../../channels/message/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { sleep } from "../../utils/sleep.js";
 import {
@@ -22,7 +18,6 @@ import {
   type DeliveryRecoverySummary,
 } from "../delivery-recovery.shared.js";
 import { formatErrorMessage } from "../errors.js";
-import { resolveOutboundChannelMessageAdapter } from "./channel-resolution.js";
 import { prepareDeferredDeliveryAdmission } from "./deferred-delivery-admission.js";
 import type { DeliverOutboundPayloadsParams } from "./deliver-contracts.js";
 import {
@@ -63,6 +58,7 @@ import {
   hasCompletePayloadSuppression,
   mergeDeliveryPublicationEvidence,
 } from "./delivery-queue-publication-evidence.js";
+import { assertDeliveryPublicationOwner } from "./delivery-queue-publication-owner.js";
 import {
   flushDeliveryPublications,
   DeliveryPublicationPendingError,
@@ -78,6 +74,7 @@ import {
   needsUnknownSendReconciliation,
   reconcileUnknownQueuedDelivery,
 } from "./delivery-queue-reconciliation.js";
+import { runReconciledSentCommitHooks } from "./delivery-queue-recovery-commit-hooks.js";
 import { recoveryCoordinator, recoveryLaneKey } from "./delivery-queue-recovery-coordinator.js";
 import {
   emitRecoveredMessageSentEvents,
@@ -146,77 +143,6 @@ type EntryRecoveryOptions = RecoveryOptions & {
   ) => void;
   onAttemptFailed?: (error: OutboundDeliveryError) => void;
 };
-
-async function runReconciledSentCommitHooks(params: {
-  entry: QueuedDelivery;
-  cfg: OpenClawConfig;
-  reconciliation: Extract<ChannelMessageUnknownSendReconciliationResult, { status: "sent" }>;
-  log: RecoveryLogger;
-  assertCurrent: () => void;
-}): Promise<void> {
-  if (params.entry.legacyPreparedContentUnavailable) {
-    return;
-  }
-  const adapter = await resolveOutboundChannelMessageAdapter({
-    channel: params.entry.channel,
-    cfg: params.cfg,
-    agentId: params.entry.session?.agentId,
-    allowBootstrap: true,
-    assertCurrent: params.assertCurrent,
-  });
-  params.assertCurrent();
-  const afterCommit = adapter?.send?.lifecycle?.afterCommit;
-  if (!afterCommit) {
-    return;
-  }
-  const result = buildReconciledSentResult(params.entry, params.reconciliation);
-  try {
-    const { entry } = params;
-    const payload = preparedOutboundPayloads(entry.preparedBatch)[0] ?? {};
-    const base = {
-      cfg: params.cfg,
-      to: entry.to,
-      deliveryQueueId: entry.id,
-      accountId: entry.accountId,
-      replyToId:
-        entry.effectiveReplyToId !== undefined ? entry.effectiveReplyToId : entry.reply?.replyToId,
-      replyToMode: entry.reply?.source === "implicit" ? entry.reply.mode : undefined,
-      threadId: entry.threadId,
-      silent: entry.silent,
-      text: payload.text ?? "",
-      result: {
-        messageId: result.messageId,
-        receipt: result.receipt,
-      },
-    };
-    let context: ChannelMessageSendCommitContext;
-    if (
-      payload.presentation !== undefined ||
-      payload.delivery !== undefined ||
-      payload.interactive !== undefined ||
-      (payload.channelData !== undefined && Object.keys(payload.channelData).length > 0)
-    ) {
-      context = { ...base, kind: "payload", mediaUrl: payload.mediaUrl, payload };
-    } else {
-      const mediaUrl = payload.mediaUrl ?? payload.mediaUrls?.find((url) => url);
-      context = mediaUrl
-        ? {
-            ...base,
-            kind: "media",
-            mediaUrl,
-            audioAsVoice: payload.audioAsVoice,
-            gifPlayback: entry.gifPlayback,
-            forceDocument: entry.forceDocument,
-          }
-        : { ...base, kind: "text" };
-    }
-    await afterCommit(context);
-  } catch (err) {
-    params.log.warn(
-      `Delivery entry ${params.entry.id} reconciled sent afterCommit hook failed: ${formatErrorMessage(err)}`,
-    );
-  }
-}
 
 async function resolveCompletedOwnerBeforeRecovery(
   opts: EntryRecoveryOptions & { owner: QueuedDeliveryOwner },
@@ -313,6 +239,13 @@ async function drainQueuedEntry(
   internalDeliver?: InternalRecoveryDeliver,
 ): Promise<"recovered" | "failed" | "moved-to-failed" | "already-gone" | "stopped"> {
   const { entry } = opts;
+  try {
+    assertDeliveryPublicationOwner(entry);
+  } catch (error) {
+    opts.log.warn(String(error));
+    opts.onFailed?.(entry, String(error));
+    return "failed";
+  }
   const deliver: DeliverFn = internalDeliver
     ? (params) => internalDeliver(params, stateContext)
     : opts.deliver;
@@ -937,6 +870,15 @@ async function processQueuedRecovery(
   internalDeliver?: InternalRecoveryDeliver,
 ): Promise<"continue" | "stop"> {
   const { entry, log } = opts;
+  // Unproven legacy/corrupt publication custody must survive admission failures,
+  // retry exhaustion and reconciliation adapters that may resend transactions.
+  try {
+    assertDeliveryPublicationOwner(entry);
+  } catch (error) {
+    log.warn(String(error));
+    if (context.kind === "startup") context.summary.failed += 1;
+    return "continue";
+  }
   if (opts.shouldContinue?.() === false) {
     return "stop";
   }

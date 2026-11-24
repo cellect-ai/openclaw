@@ -1,5 +1,9 @@
-// Preserve Gateway module setup before the native prepared-model fixture.
+// Install native prepared-model mocks before Gateway model consumers load.
 // oxfmt-ignore
+import {
+  getPreparedModelRuntimeMocks,
+  usePreparedModelRuntimeHarness,
+} from "./prepared-model-runtime.test-harness.js";
 import "../gateway/server-methods/models.js";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
@@ -29,10 +33,6 @@ import {
   type PreparedModelRuntimeSnapshot,
 } from "./prepared-model-runtime.js";
 import { resolvePreparedModelRuntimeOwnerBySnapshot } from "./prepared-model-runtime.owner.js";
-import {
-  getPreparedModelRuntimeMocks,
-  usePreparedModelRuntimeHarness,
-} from "./prepared-model-runtime.test-harness.js";
 
 vi.mock("../logging/subsystem.js", async (importOriginal) => {
   const { createMockSubsystemLogger } = await import("../../test/helpers/mock-subsystem-logger.js");

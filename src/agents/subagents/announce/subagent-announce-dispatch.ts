@@ -66,6 +66,8 @@ export type SubagentAnnounceDirectParams = {
   triggerMessage: string;
   internalEvents?: AgentInternalEvent[];
   expectsCompletionMessage: boolean;
+  /** Host-only steering of a reserved requester input; does not change completion reply policy. */
+  steerActiveRequester?: true;
   completionTarget?: "parent";
   completionRequesterSessionId?: string;
   completionRequesterLifecycleRevision?: string;

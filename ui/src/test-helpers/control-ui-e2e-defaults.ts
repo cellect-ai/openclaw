@@ -152,6 +152,7 @@ export function createControlUiDefaultResponses(scenario: {
     "channels.pairing.list": {
       accounts: [],
       requests: [],
+      history: [],
       commandOwnerConfigured: true,
       limits: {
         pendingPerAccount: 3,

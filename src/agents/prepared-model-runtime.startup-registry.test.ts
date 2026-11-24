@@ -16,6 +16,7 @@ import {
   writePlugin,
 } from "../plugins/loader.test-fixtures.js";
 import { createPluginCache, withPluginCache } from "../plugins/plugin-cache.js";
+import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
@@ -99,7 +100,14 @@ function startupFixture(
     prepareOwnedPluginLoadContext(input, process.env, root, metadata, true);
     return { root, metadata };
   };
-  return { plugin, input, captures, start, [Symbol.dispose]: () => process.off(event, capture) };
+  return {
+    plugin,
+    input,
+    captures,
+    event,
+    start,
+    [Symbol.dispose]: () => process.off(event, capture),
+  };
 }
 
 async function loadRegistryInCallerContext(
@@ -248,7 +256,7 @@ it.each<[boolean, boolean, RuntimePluginLoadPurpose]>([
   },
 );
 
-it("borrows global startup instances across workspaces without borrowing shadowed sources", async () => {
+it("borrows exact startup contexts while isolating changed workspaces and shadowed sources", async () => {
   using fixture = startupFixture("global-startup-provider");
   const { config } = fixture.input;
   await using cache = createPluginCache();
@@ -270,16 +278,19 @@ it("borrows global startup instances across workspaces without borrowing shadowe
       expect(rootMetadata.workspaceDir).toBe(firstWorkspace);
       expect(context?.workspaceDir).toBeUndefined();
       await using resources = new PreparedModelRuntimeBuildResources(retainPreparedPluginRegistry);
-      for (const agent of ["first", "second"]) {
-        const workspaceDir = path.join(fixture.input.workspaceDir, agent);
-        const shadow = agent === "second";
+      for (const mode of ["exact", "workspace", "shadow"] as const) {
+        // The Gateway loaded without a workspace. Only that exact captured
+        // context may borrow; configured source equality alone is not authority.
+        const workspaceDir =
+          mode === "exact" ? undefined : path.join(fixture.input.workspaceDir, mode);
+        const shadow = mode === "shadow";
         const shadowPlugin = shadow
           ? writePlugin({
               id: fixture.plugin.id,
-              dir: path.join(workspaceDir, ".openclaw", "extensions", fixture.plugin.id),
+              dir: path.join(workspaceDir!, ".openclaw", "extensions", fixture.plugin.id),
               filename: "index.cjs",
-              registration:
-                'api.registerProvider({ id: "selected", label: "Workspace", auth: [] });',
+              registration: `process.emit(${JSON.stringify(fixture.event)}, __dirname);
+                api.registerProvider({ id: "selected", label: "Workspace", auth: [] });`,
             })
           : undefined;
         const selectedConfig = shadow
@@ -319,14 +330,19 @@ it("borrows global startup instances across workspaces without borrowing shadowe
           (plugin) => plugin.id === fixture.plugin.id,
         );
         expect(record?.status).toBe("loaded");
-        expect(record === root.plugins[0]).toBe(!shadow);
+        expect(record).toBeDefined();
+        expect(getPluginInstance(record!)).toBeDefined();
+        expect(record === root.plugins[0]).toBe(mode === "exact");
+        expect(getPluginInstance(record!) === getPluginInstance(root.plugins[0]!)).toBe(
+          mode === "exact",
+        );
         expect(record?.source).toBe(shadowPlugin?.file ?? fixture.plugin.file);
         expect(prepared.runtimePluginRegistry?.providers[0]?.provider.label).toBe(
           shadow ? "Workspace" : "Selected",
         );
         expect(getPluginRuntimeLoadContext(root)).toBe(context);
         expect(getPluginRuntimeLoadContext(root)?.workspaceDir).toBeUndefined();
-        expect(fixture.captures).toHaveLength(1);
+        expect(fixture.captures).toHaveLength(mode === "exact" ? 1 : mode === "workspace" ? 2 : 3);
       }
     } finally {
       await gateway.close();

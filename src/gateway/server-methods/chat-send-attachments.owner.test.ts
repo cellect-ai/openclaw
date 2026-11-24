@@ -21,7 +21,6 @@ import type { MsgContext, TemplateContext } from "../../auto-reply/templating.js
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
 import { loadOrCreateProcessDeviceIdentityAsync } from "../../infra/device-identity-async.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
@@ -31,16 +30,14 @@ import {
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById } from "../chat-abort.js";
 import * as attachments from "../chat-attachments.js";
-import { createDirectChatContext } from "../server-chat.agent-events.test-helpers.js";
 import * as workspaceStore from "../worker-environments/local-workspace-store.js";
 import { readLocalWorkspaceProjection } from "../worker-environments/local-workspace-store.test-support.js";
-import { prepareChatSendAttachments } from "./chat-send-attachments.js";
 import {
+  createUpload,
   attachmentConfig,
   attachmentParams,
   prepareAttachmentFixture,
 } from "./chat-send-attachments.test-support.js";
-import { prepareAndAdmitChatSend } from "./chat-send-setup.js";
 import type { RespondFn } from "./types.js";
 
 const it = test.extend<{ state: OpenClawTestState }>({
@@ -51,40 +48,6 @@ const it = test.extend<{ state: OpenClawTestState }>({
     });
   },
 });
-
-async function createUpload(
-  state: OpenClawTestState,
-  cfg: OpenClawConfig,
-  params: ReturnType<typeof attachmentParams>,
-  respond = vi.fn<RespondFn>(),
-) {
-  await state.writeConfig(cfg);
-  const context = createDirectChatContext({ getRuntimeConfig: () => cfg });
-  const setup = await prepareAndAdmitChatSend({ client: null, context, respond, params });
-  assert(setup, "chat admission failed");
-  const { admission } = setup;
-  let prepared: Awaited<ReturnType<typeof prepareChatSendAttachments>> | undefined;
-  return {
-    ...setup,
-    context,
-    respond,
-    get prepared() {
-      return prepared;
-    },
-    prepare: () =>
-      prepareChatSendAttachments({ ...setup, respond, context }).then((result) => {
-        prepared = result;
-        return result;
-      }),
-    async cleanup() {
-      admission.cleanupAdmittedRun();
-      clearAgentRunContext(params.idempotencyKey, admission.lifecycleGeneration);
-      if (prepared?.ok) {
-        await attachments.discardPreparedInboundMedia(prepared.value.offloadedRefs);
-      }
-    },
-  };
-}
 
 async function unexpectedWorkspaceAccess(): Promise<never> {
   throw new Error("unexpected workspace access");
@@ -381,10 +344,15 @@ it.for([
   }
 });
 
-it.for(["signal", "rpc"] as const)(
-  "retains admission until abandoned offloads are deleted after %s cancellation",
-  async (interruption, { state }) => {
-    const cfg = attachmentConfig(state);
+it.for([
+  { interruption: "signal", mode: "all", pdf: false },
+  { interruption: "rpc", mode: "all", pdf: false },
+  { interruption: "signal", mode: "off", pdf: false },
+  { interruption: "signal", mode: "all", pdf: true },
+] as const)(
+  "retains admission until abandoned offloads are deleted: %j",
+  async ({ interruption, mode, pdf }, { state }) => {
+    const cfg = attachmentConfig(state, { mode });
     const runId = "attachment-cancellation";
     let inboundPath: string | undefined;
     const filesPresentAtResponse: boolean[] = [];
@@ -394,7 +362,11 @@ it.for(["signal", "rpc"] as const)(
     const upload = await createUpload(
       state,
       cfg,
-      attachmentParams(runId, "notes.txt", "synthetic attachment"),
+      attachmentParams(
+        runId,
+        pdf ? "notes.pdf" : "notes.txt",
+        pdf ? "%PDF-1.4\n% synthetic\n%%EOF\n" : "synthetic attachment",
+      ),
       respond,
     );
     const { admission, context } = upload;

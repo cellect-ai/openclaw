@@ -1,6 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../config/runtime-snapshot.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../infra/agent-run-registry.js";
+import { ensureClientVoiceAgentSessionEntry } from "../talk/client-voice-session-write.js";
 import { publishChatTerminal } from "./chat-terminal-observer.js";
 import {
   createDirectChatContext,
@@ -13,50 +18,30 @@ import {
   createSessionMessageSubscriberRegistry,
 } from "./server-chat.js";
 import { broadcastChatTerminal } from "./server-methods/chat-broadcast.js";
+import { useRelayFixtures } from "./talk/relay/fixture.test-support.js";
 import {
   closeRelaySession,
-  registerTalkRealtimeRelayAgentRun,
+  prepareTalkRealtimeRelayAgentRunRegistration,
   submitTalkRealtimeRelayToolResult,
 } from "./talk/relay/operations.js";
-import { relaySessions, type RelaySession } from "./talk/relay/state.js";
-import { RelayToolCallLedger } from "./talk/relay/tool-call-ledger.js";
+import { relaySessions } from "./talk/relay/state.js";
 
-vi.mock("../talk/client-voice-session.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../talk/client-voice-session.js")>()),
-  registerClientVoiceConsultRun: vi.fn(),
-}));
-vi.mock("./talk/relay/voice.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./talk/relay/voice.js")>()),
-  closeRelayVoiceSession: async () => {},
-}));
-vi.mock("../config/io.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../config/io.js")>()),
-  getRuntimeConfig: () => ({}),
-}));
-vi.mock("./session-utils.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./session-utils.js")>()),
-  loadGatewaySessionEntryReadOnly: () => ({ cfg: {}, store: {}, entry: undefined }),
-}));
-
-const relayId = "relay-terminal-test";
+const createRelay = useRelayFixtures();
 const runId = "matrix-consult-run";
 const sessionKey = "agent:assistant:matrix:channel:!room:example.test:thread:$root";
 const callId = "owner-call";
 const answer = "Amber lighthouse seven. UTC 02:01.";
 
-function fixture() {
+async function fixture() {
   const context = createDirectChatContext();
-  const providerResult = vi.fn<(...args: unknown[]) => void | Promise<void>>();
-  const toolCalls = new RelayToolCallLedger({
-    onOverflow: () => {
-      throw new Error("overflow");
-    },
-  });
-  toolCalls.tryAdmit([callId, "provider-call"]);
-  const relay = {
-    id: relayId,
+  const cfg = { agents: { entries: { assistant: {} } } };
+  setRuntimeConfigSnapshot(cfg);
+  context.getRuntimeConfig = () => cfg;
+  await ensureClientVoiceAgentSessionEntry({ agentId: "assistant", sessionKey });
+  const { relay } = await createRelay({
+    cfg,
+    key: sessionKey,
     connId: "owner",
-    sessionTarget: { agentId: "assistant", sessionKey, canonicalKey: sessionKey, storePath: "" },
     context,
     speakerMxid: "@speaker:example.test",
     matrixRoute: {
@@ -65,67 +50,44 @@ function fixture() {
       threadRootEventId: "$root",
       accountId: "assistant",
     },
-    expiresAtMs: Date.now() + 60_000,
-    voiceSessionCreated: true,
-    confirmationReadiness: { close: vi.fn() },
-    harness: {
-      close: vi.fn(),
-      forcedConsults: { handles: () => [] },
-      talk: { ensureTurn: () => ({ turnId: "voice-turn" }), emit: (event: unknown) => event },
-    },
-    outputOwnership: { phase: "owned" },
-    bridge: {
-      bridge: { supportsToolResultSuppression: true },
-      submitToolResult: providerResult,
-      close: vi.fn(),
-    },
-    activeAgentRuns: new Map(),
-    activeAgentToolCalls: new Map(),
-    toolCalls,
-    providerToolCallIds: new Map([[callId, "provider-call"]]),
-    relayToolCallIdsByProviderId: new Map([["provider-call", callId]]),
-    pendingFinalToolResults: new Map(),
-    pendingProviderToolResults: new Map(),
-    pendingWorkingToolResults: new Map(),
-    toolResultEpoch: 0,
-    failSession: vi.fn(),
-  } as unknown as RelaySession;
-  relaySessions.set(relayId, relay);
-  registerTalkRealtimeRelayAgentRun({
-    relaySessionId: relayId,
-    connId: "owner",
+  });
+  const providerResult = vi.spyOn(relay.bridge, "submitToolResult").mockImplementation(() => {});
+  vi.spyOn(relay, "failSession").mockImplementation(() => {});
+  relay.toolCalls.tryAdmit([callId, "provider-call"]);
+  relay.providerToolCallIds.set(callId, "provider-call");
+  relay.relayToolCallIdsByProviderId.set("provider-call", callId);
+  const register = prepareTalkRealtimeRelayAgentRunRegistration({
+    relaySessionId: relay.id,
+    connId: relay.connId,
     sessionKey,
-    runId,
     callId,
   });
+  await register(runId);
   const terminal = (state: "final" | "error" | "aborted" = "final", key = sessionKey, id = runId) =>
     broadcastChatTerminal({
       context,
+      terminalEntry: undefined,
       runId: id,
       sessionKey: key,
-      state,
       ...(state === "error"
-        ? { errorMessage: "consult failed" }
-        : { message: { role: "assistant", content: [{ type: "text", text: answer }] } }),
+        ? { state, errorMessage: "consult failed" }
+        : { state, message: { role: "assistant", content: [{ type: "text", text: answer }] } }),
     });
-  return { context, relay, providerResult, terminal };
+  return { context, relay, providerResult, terminal, register };
 }
 
 afterEach(() => {
-  const relay = relaySessions.get(relayId);
-  if (relay) {
-    closeRelaySession(relay, "completed");
-  }
-  relaySessions.delete(relayId);
   clearAgentRunContext(runId);
+  clearAgentRunContext("replacement-run");
+  clearRuntimeConfigSnapshot();
   vi.restoreAllMocks();
 });
 
 describe("Matrix relay consumes its private chat terminal without browser transcript access", () => {
   it.each(["final", "error", "aborted"] as const)(
     "forwards dispatched %s exactly once and retains Matrix broadcast",
-    (state) => {
-      const { context, relay, providerResult, terminal } = fixture();
+    async (state) => {
+      const { context, relay, providerResult, terminal } = await fixture();
       terminal(state);
       terminal(state);
       expect(providerResult).toHaveBeenCalledTimes(1);
@@ -155,10 +117,11 @@ describe("Matrix relay consumes its private chat terminal without browser transc
     },
   );
 
-  it("speaks a display-hidden consult final without putting that text on the chat socket", () => {
-    const { context, providerResult } = fixture();
+  it("speaks a display-hidden consult final without putting that text on the chat socket", async () => {
+    const { context, providerResult } = await fixture();
     broadcastChatTerminal({
       context,
+      terminalEntry: undefined,
       runId,
       sessionKey,
       state: "final",
@@ -171,13 +134,21 @@ describe("Matrix relay consumes its private chat terminal without browser transc
     expect(providerResult).toHaveBeenCalledWith("provider-call", { result: answer }, undefined);
     const chatPayload = vi
       .mocked(context.broadcast)
-      .mock.calls.find(([event]) => event === "chat")?.[1] as { message?: unknown } | undefined;
-    expect(chatPayload?.message).toBeUndefined();
+      .mock.calls.find(([event]) => event === "chat")?.[1];
+    expect(chatPayload).toBeDefined();
+    if (!chatPayload || typeof chatPayload !== "object")
+      throw new Error("Expected native chat frame");
+    expect("message" in chatPayload ? chatPayload.message : undefined).toBeUndefined();
   });
 
   it("forwards native streamed completion even when no browser may receive chat events", async () => {
-    const { context, providerResult } = fixture();
-    registerAgentRunContext(runId, { sessionKey, isControlUiVisible: false, verboseLevel: "off" });
+    const { context, providerResult } = await fixture();
+    registerAgentRunContext(runId, {
+      sessionKey,
+      isControlUiVisible: false,
+      projectSessionMessages: false,
+      verboseLevel: "off",
+    });
     registerChatRun(context.chatRunState, runId, sessionKey, runId);
     const handler = createAgentEventHandler({
       broadcast: context.broadcast,
@@ -207,8 +178,8 @@ describe("Matrix relay consumes its private chat terminal without browser transc
     ).toEqual([]);
   });
 
-  it("ignores another run/session and yielded turns before accepting the exact terminal", () => {
-    const { terminal, providerResult } = fixture();
+  it("ignores another run/session and yielded turns before accepting the exact terminal", async () => {
+    const { terminal, providerResult } = await fixture();
     terminal("final", sessionKey, "other-run");
     terminal("final", "other-session");
     publishChatTerminal({ runId, sessionKey, state: "final", yielded: true });
@@ -219,33 +190,38 @@ describe("Matrix relay consumes its private chat terminal without browser transc
 
   it.each(["detached", "replaced", "cancelled", "remapped"] as const)(
     "does not forward after relay ownership is %s",
-    (state) => {
-      const { relay, terminal, providerResult } = fixture();
+    async (state) => {
+      const { relay, terminal, providerResult, register } = await fixture();
       if (state === "detached") {
-        closeRelaySession(relay, "completed");
+        await closeRelaySession(relay, "completed");
       }
       if (state === "replaced") {
-        relaySessions.set(relayId, { ...relay, agentToolCallTerminalSubscriptions: new Map() });
+        relaySessions.set(relay.id, { ...relay, agentToolCallTerminalSubscriptions: new Map() });
       }
       if (state === "cancelled") {
         relay.toolCalls.markCancelled([callId], "voice-turn");
       }
       if (state === "remapped") {
-        relay.activeAgentToolCalls.set(callId, "replacement-run");
+        await register("replacement-run");
       }
       terminal();
       expect(providerResult).not.toHaveBeenCalled();
+      if (state === "remapped") {
+        expect(relay.agentToolCallTerminalSubscriptions?.size).toBe(1);
+        terminal("final", sessionKey, "replacement-run");
+        expect(providerResult).toHaveBeenCalledTimes(1);
+      }
       expect(relay.agentToolCallTerminalSubscriptions?.size).toBe(0);
     },
   );
 
   it("shares one asynchronous submission with an old browser's duplicate result", async () => {
-    const { providerResult, terminal, relay } = fixture();
+    const { providerResult, terminal, relay } = await fixture();
     const accepted = createDeferred();
     providerResult.mockReturnValue(accepted.promise);
     terminal();
     const duplicate = submitTalkRealtimeRelayToolResult({
-      relaySessionId: relayId,
+      relaySessionId: relay.id,
       connId: "owner",
       callId,
       result: { result: answer },
@@ -257,7 +233,7 @@ describe("Matrix relay consumes its private chat terminal without browser transc
   });
 
   it("turns provider result delivery failure into an owner-visible relay failure", async () => {
-    const { providerResult, terminal, relay } = fixture();
+    const { providerResult, terminal, relay } = await fixture();
     providerResult.mockRejectedValue(new Error("provider output rejected"));
     terminal();
     await vi.waitFor(() =>

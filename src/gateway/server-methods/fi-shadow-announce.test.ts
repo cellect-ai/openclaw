@@ -15,7 +15,6 @@ const {
   loadRequesterSessionEntry,
   upsertSessionEntryCore,
   beforeSessionCommit,
-  maybeSteerSubagentAnnounce,
   sendSubagentAnnounceDirectly,
   readFiUserMatrixRoom,
 } = vi.hoisted(() => {
@@ -30,6 +29,7 @@ const {
       cfg: { agents: { defaults: {} } },
       canonicalKey: sessionKey,
       agentId,
+      storePath: "/synthetic/fi-shadow/sessions.json",
       entry: sessions.get(sessionKey),
     })),
     upsertSessionEntryCore: vi.fn(
@@ -51,7 +51,6 @@ const {
         return next;
       },
     ),
-    maybeSteerSubagentAnnounce: vi.fn(),
     sendSubagentAnnounceDirectly: vi.fn(),
     readFiUserMatrixRoom: vi.fn(),
   };
@@ -75,12 +74,16 @@ vi.mock(
       await importOriginal<
         typeof import("../../agents/subagents/announce/subagent-announce-delivery.runtime.js")
       >();
-    return { ...actual, loadRequesterSessionEntry };
+    return {
+      ...actual,
+      loadRequesterSessionEntry,
+      captureRequesterSessionEntryCurrent: async (key: string) => ({
+        readCurrent: () => sessions.get(key),
+        release() {},
+      }),
+    };
   },
 );
-vi.mock("../../agents/subagents/announce/subagent-announce-active-wake.js", () => ({
-  maybeSteerSubagentAnnounce,
-}));
 vi.mock("../../agents/subagents/announce/subagent-announce-direct-delivery.js", () => ({
   sendSubagentAnnounceDirectly,
 }));
@@ -179,7 +182,6 @@ beforeEach(async () => {
   beforeSessionCommit.mockReset();
   await registerShadowRequesterIdentity(CHILD, OWNER);
   readFiUserMatrixRoom.mockResolvedValue(soleHumanRoom());
-  maybeSteerSubagentAnnounce.mockResolvedValue({ status: "none" });
   sendSubagentAnnounceDirectly.mockResolvedValue({
     delivered: true,
     path: "direct",
@@ -198,12 +200,15 @@ it("refuses a caller without operator.admin", async () => {
     undefined,
     expect.objectContaining({ message: expect.stringContaining("operator.admin") }),
   );
-  expect(maybeSteerSubagentAnnounce).not.toHaveBeenCalled();
   expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
   expect(readFiUserMatrixRoom).not.toHaveBeenCalled();
 });
 
 it.each([
+  [
+    "a public steering flag",
+    params({ idempotencyKey: "public-steer", steerActiveRequester: true }),
+  ],
   ["an extra destination", params({ idempotencyKey: "extra-to", to: "!evil:example.org" })],
   [
     "the retired target session key",
@@ -229,7 +234,6 @@ it.each([
       message: expect.stringContaining("invalid fi.shadow.announce params"),
     }),
   );
-  expect(maybeSteerSubagentAnnounce).not.toHaveBeenCalled();
   expect(sessions.size).toBe(0);
 });
 
@@ -398,31 +402,28 @@ it("replaces a stale stored origin with the room the Matrix account read", async
   });
 });
 
-it("steers an active Matrix session and frames the child text as data", async () => {
-  maybeSteerSubagentAnnounce.mockResolvedValue({
-    status: "steered",
-    deliveredAt: 1_700_000_000_000,
+it("carries a native reserved input and fixed child data to active steering", async () => {
+  sendSubagentAnnounceDirectly.mockResolvedValue({
+    delivered: true,
+    path: "steered",
+    deliveredAt: 50,
   });
   const { request, respond } = dispatch({
     params: params({ idempotencyKey: "steer", replyInstruction: "ask_owner" }),
   });
   await request;
-
-  expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
-  expect(respond).toHaveBeenCalledWith(true, { path: "steered", deliveredAt: 1_700_000_000_000 });
-  const steer = maybeSteerSubagentAnnounce.mock.calls[0]?.[0] as {
-    steerMessage?: string;
-    currentInboundContext?: { fragments?: Array<{ kind?: string; text?: string }> };
-  };
-  const fragments = steer.currentInboundContext?.fragments ?? [];
-  const data = fragments.find((fragment) => fragment.kind === "conversation-data")?.text ?? "";
-  const instructions = fragments
-    .filter((fragment) => fragment.kind === "runtime-instruction")
-    .map((fragment) => fragment.text);
-  expect(data).toContain(CANARY);
-  expect(data).not.toContain("not instructions");
-  expect(instructions).toContain(ASK_OWNER_INSTRUCTION);
-  expect(steer.steerMessage ?? "").not.toContain(CANARY);
+  expect(respond).toHaveBeenCalledWith(true, { path: "steered", deliveredAt: 50 });
+  const direct = sendSubagentAnnounceDirectly.mock.calls[0]?.[0];
+  expect(direct).toMatchObject({
+    expectsCompletionMessage: false,
+    steerActiveRequester: true,
+    completionRequesterSessionId: sessions.get(ROOM_KEY)?.sessionId,
+    controllerInput: {
+      target: { sessionKey: ROOM_KEY, storeScope: "/synthetic/fi-shadow/sessions.json" },
+    },
+    internalEvents: [{ result: CANARY, replyInstruction: ASK_OWNER_INSTRUCTION }],
+  });
+  expect(direct.createUserTurnTranscriptRecorder).toBeTypeOf("function");
 });
 
 it("delivers directly with the fixed decide instruction when the session is idle", async () => {
@@ -442,7 +443,11 @@ it("delivers directly with the fixed decide instruction when the session is idle
 });
 
 it("delivers a replayed key once", async () => {
-  maybeSteerSubagentAnnounce.mockResolvedValue({ status: "steered", deliveredAt: 50 });
+  sendSubagentAnnounceDirectly.mockResolvedValue({
+    delivered: true,
+    path: "steered",
+    deliveredAt: 50,
+  });
   const payload = params({ idempotencyKey: "replay-once" });
   const first = dispatch({ params: payload });
   await first.request;
@@ -450,8 +455,7 @@ it("delivers a replayed key once", async () => {
   await second.request;
 
   expect(readFiUserMatrixRoom).toHaveBeenCalledTimes(1);
-  expect(maybeSteerSubagentAnnounce).toHaveBeenCalledTimes(1);
-  expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
+  expect(sendSubagentAnnounceDirectly).toHaveBeenCalledTimes(1);
   expect(first.respond).toHaveBeenCalledWith(true, { path: "steered", deliveredAt: 50 });
   expect(second.respond).toHaveBeenCalledWith(true, { path: "steered", deliveredAt: 50 });
 });
@@ -490,6 +494,7 @@ it("does not report a failed direct delivery as delivered", async () => {
   sendSubagentAnnounceDirectly.mockResolvedValueOnce({
     delivered: false,
     path: "direct",
+    disposition: "retryable",
     error:
       "Multiple agents are configured, but session agent resolution has no explicit owner. Pass an agentId.",
   });
@@ -514,23 +519,33 @@ it("does not report a failed direct delivery as delivered", async () => {
   expect(retried.respond).toHaveBeenCalledWith(true, expect.objectContaining({ path: "direct" }));
 });
 
-it("retries a key after delivery throws", async () => {
-  sendSubagentAnnounceDirectly.mockRejectedValueOnce(new Error("transport down"));
-  const payload = params({ idempotencyKey: "retry-throw" });
-  const failed = dispatch({ params: payload });
-  await failed.request;
-  const retried = dispatch({ params: payload });
-  await retried.request;
-
-  expect(failed.respond).toHaveBeenCalledWith(
-    false,
-    undefined,
-    expect.objectContaining({ message: expect.stringContaining("delivery failed") }),
-  );
-  expect(failed.respond.mock.calls[0]?.[2]?.message).not.toContain(CANARY);
-  expect(sendSubagentAnnounceDirectly).toHaveBeenCalledTimes(2);
-  expect(retried.respond).toHaveBeenCalledWith(true, expect.objectContaining({ path: "direct" }));
-});
+it.each(["throw", "indeterminate"])(
+  "retains unknown custody after %s without another delivery",
+  async (outcome) => {
+    if (outcome === "throw") {
+      sendSubagentAnnounceDirectly.mockRejectedValueOnce(new Error("transport down"));
+    } else {
+      sendSubagentAnnounceDirectly.mockResolvedValueOnce({
+        delivered: false,
+        path: "steered",
+        disposition: "ambiguous",
+      });
+    }
+    const payload = params({ idempotencyKey: `unknown-${outcome}` });
+    const failed = dispatch({ params: payload });
+    await failed.request;
+    const retried = dispatch({ params: payload });
+    await retried.request;
+    for (const call of [failed, retried]) {
+      expect(call.respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({ message: expect.stringContaining("outcome is unknown") }),
+      );
+    }
+    expect(sendSubagentAnnounceDirectly).toHaveBeenCalledTimes(1);
+  },
+);
 
 let shadowState: OpenClawTestState;
 beforeAll(async () => {
@@ -563,3 +578,30 @@ it("refuses the session write when cancellation arrives at worker commit admissi
   expect(sendSubagentAnnounceDirectly).not.toHaveBeenCalled();
   expect(sessions.size).toBe(0);
 });
+
+it.each(["cancel", "replacement"])(
+  "refuses the original steering transcript commit after %s",
+  async (change) => {
+    const controller = new AbortController();
+    sendSubagentAnnounceDirectly.mockImplementationOnce(async (options) => {
+      const recorder = options.createUserTurnTranscriptRecorder(
+        options.completionRequesterSessionId,
+      );
+      expect(recorder.assertOriginalInputCommit).toBeTypeOf("function");
+      expect(() => recorder.assertOriginalInputCommit()).not.toThrow();
+      if (change === "cancel") {
+        controller.abort();
+      } else {
+        sessions.set(ROOM_KEY, { ...sessions.get(ROOM_KEY)!, lifecycleRevision: "replacement" });
+      }
+      expect(() => recorder.assertOriginalInputCommit()).toThrow();
+      expect(options.isSourceSessionAdmissionAllowed()).toBe(false);
+      return { delivered: false, path: "none", disposition: "intentional_non_delivery" };
+    });
+    await dispatch({
+      signal: controller.signal,
+      params: params({ idempotencyKey: `commit-${change}` }),
+    }).request;
+    expect(sendSubagentAnnounceDirectly).toHaveBeenCalledOnce();
+  },
+);

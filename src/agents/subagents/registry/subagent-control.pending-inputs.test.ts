@@ -17,6 +17,7 @@ import {
   getExistingFollowupQueue,
 } from "../../../auto-reply/reply/queue/state.js";
 import { getRuntimeConfig } from "../../../config/config.js";
+import { loadSessionEntry } from "../../../config/sessions/session-accessor.js";
 import {
   beginSessionEffect,
   captureSessionTarget,
@@ -55,6 +56,7 @@ it.each(["admin", "bulk"] as const)(
       runId,
       childSessionKey: sessionKey,
       childAgentId: "main",
+      sessionEntry: loadSessionEntry({ storePath, sessionKey }),
       requesterSessionKey: owner,
       requesterAgentId: "main",
       requesterDisplayKey: owner,

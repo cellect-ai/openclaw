@@ -260,7 +260,7 @@ describe("createSlackBoltApp", () => {
   });
 
   it.each([false, true])(
-    "settles Socket Mode startup stopped during a URL retry (late=%s)",
+    "settles monitor-owned Socket Mode startup failure around stop (late=%s)",
     async (late) => {
       vi.useFakeTimers();
       const response = Promise.withResolvers<Response>();
@@ -278,9 +278,8 @@ describe("createSlackBoltApp", () => {
         await vi.waitFor(() => expect(fetch).toHaveBeenCalledOnce());
         if (!late) {
           response.resolve(Response.json({ ok: false, error: "internal_error" }));
-          await vi.waitFor(() =>
-            expect(Reflect.get(receiver.client, "reconnectionTimer")).toBeDefined(),
-          );
+          await vi.waitFor(() => expect(settled).toHaveBeenCalledOnce());
+          expect(Reflect.get(receiver.client, "reconnectionTimer")).toBeUndefined();
         }
         controller.abort();
         await gracefulStopSlackApp(app, receiver.client);
@@ -296,7 +295,7 @@ describe("createSlackBoltApp", () => {
     },
   );
 
-  it("recovers a transient error and close through one real SDK socket lifecycle", async () => {
+  it("returns a real SDK disconnect to the monitor before an explicit successor starts", async () => {
     const fixture = await createSocketServer();
     const { app, receiver, socketServer, connectionSizes } = fixture;
 
@@ -309,11 +308,7 @@ describe("createSlackBoltApp", () => {
       socketClient: client,
       abortSignal: abortController.signal,
     });
-    let lifecycleSettled = false;
-    const lifecycleOutcome = lifecycle.then((value) => {
-      lifecycleSettled = true;
-      return value;
-    });
+    let successor: ReturnType<typeof startSlackSocketAndWaitForDisconnect> | undefined;
 
     try {
       await vi.waitFor(() => expect(socketServer.clients.size).toBe(1));
@@ -321,15 +316,24 @@ describe("createSlackBoltApp", () => {
       for (const socket of socketServer.clients) {
         socket.terminate();
       }
+      await expect(lifecycle).resolves.toEqual({ event: "disconnect" });
+      expect(connectionSizes).toEqual([1]);
+      expect(appStart).toHaveBeenCalledOnce();
+      expect(Reflect.get(client, "reconnectionTimer")).toBeUndefined();
+      await gracefulStopSlackApp(app, client);
+      successor = startSlackSocketAndWaitForDisconnect({
+        app,
+        socketClient: client,
+        abortSignal: abortController.signal,
+      });
       await vi.waitFor(() => expect(connectionSizes).toHaveLength(2));
       await vi.waitFor(() => expect(socketServer.clients.size).toBe(1));
 
-      expect(appStart).toHaveBeenCalledTimes(1);
+      expect(appStart).toHaveBeenCalledTimes(2);
       expect(Math.max(...connectionSizes)).toBe(1);
-      expect(lifecycleSettled).toBe(false);
     } finally {
       abortController.abort();
-      await lifecycleOutcome;
+      await successor;
       await stopSocketServer(fixture);
     }
   });

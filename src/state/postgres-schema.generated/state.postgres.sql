@@ -227,6 +227,8 @@ CREATE TABLE "channel_pairing_requests" (
   "created_at" text COLLATE "C" NOT NULL,
   "last_seen_at" text COLLATE "C" NOT NULL,
   "meta_json" text COLLATE "C",
+  "status" text COLLATE "C",
+  "resolved_at" text COLLATE "C",
   PRIMARY KEY ("channel_key", "account_id", "request_id")
 );
 

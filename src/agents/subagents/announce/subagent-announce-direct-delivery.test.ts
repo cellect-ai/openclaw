@@ -482,3 +482,138 @@ it.each([
   }
   expectNoReplay(fixture);
 });
+
+it.each(["accepted", "indeterminate", "rejected"] as const)(
+  "host-only shadow steering keeps native input custody (%s)",
+  async (outcome) => {
+    const fixture = setup("subagent_announce");
+    const { queueMessage, input } = steering(fixture, async (_text, options, assertCurrent) => {
+      assertCurrent();
+      if (outcome === "rejected") {
+        throw new Error("backend rejected before acceptance");
+      }
+      options?.onQueueAccepted?.(true);
+      return outcome === "indeterminate" ? unconfirmedCommit : undefined;
+    });
+    fixture.dispatchDone.resolve(response([{ text: "Idle direct answer" }], sentDeliveryStatus));
+    const result = await sendSubagentAnnounceDirectly({
+      ...fixture.params,
+      expectsCompletionMessage: false,
+      steerActiveRequester: true,
+      completionRequesterSessionId: fixture.state.entry.sessionId,
+      completionRequesterLifecycleRevision: fixture.state.entry.lifecycleRevision,
+      controllerInput: input,
+      internalEvents: [
+        {
+          type: "task_completion",
+          source: "subagent",
+          childSessionKey: "agent:main:hook:fi-shadow:test",
+          announceType: "subagent task",
+          taskLabel: "shadow",
+          status: "ok",
+          statusLabel: "completed",
+          result: "SHADOW_RESULT_CANARY",
+          replyInstruction: "Fixed host instruction",
+        },
+      ],
+    });
+    expect(queueMessage).toHaveBeenCalledOnce();
+    expect(queueMessage.mock.calls[0]?.[0]).not.toContain("SHADOW_RESULT_CANARY");
+    const fragments = queueMessage.mock.calls[0]?.[1]?.currentInboundContext?.fragments ?? [];
+    expect(fragments).toContainEqual(
+      expect.objectContaining({
+        kind: "conversation-data",
+        text: expect.stringContaining("SHADOW_RESULT_CANARY"),
+      }),
+    );
+    expect(fragments).toContainEqual(
+      expect.objectContaining({ kind: "runtime-instruction", text: "Fixed host instruction" }),
+    );
+    if (outcome === "rejected") {
+      expect(result).toMatchObject({ delivered: true, path: "direct" });
+      expect(fixture.dispatch.mock.calls[0]?.[2]?.controllerInput).toBe(input);
+      expectNoReplay(fixture);
+    } else {
+      expect(result).toMatchObject(
+        outcome === "accepted"
+          ? { delivered: true, path: "steered" }
+          : { delivered: false, path: "steered", disposition: "ambiguous" },
+      );
+      expectNoReplay(fixture, 0);
+    }
+  },
+);
+
+it.each(["generation", "session", "cancelled", "source", "physical", "foreign"] as const)(
+  "refuses shadow steering after %s replacement without direct fallback",
+  async (change) => {
+    const fixture = setup("subagent_announce");
+    const { queueMessage, input } = steering(fixture, async () => {
+      throw new Error("Unexpected steer");
+    });
+    const sessionId = fixture.state.entry.sessionId;
+    const lifecycleRevision = fixture.state.entry.lifecycleRevision;
+    if (change === "generation") {
+      fixture.state.entry = { ...fixture.state.entry, lifecycleRevision: "new" };
+    }
+    if (change === "session") {
+      fixture.state.entry = { ...fixture.state.entry, sessionId: "new" };
+    }
+    if (change === "cancelled") {
+      fixture.controller.abort();
+    }
+    if (change === "source") {
+      fixture.state.allowed = false;
+    }
+    let selectedInput = input;
+    if (change === "physical" || change === "foreign") {
+      selectedInput = reserveSessionControllerSource(sessionKey, {
+        target: captureSessionTarget({
+          ...fixture.target,
+          ...(change === "physical"
+            ? { physicalStorePath: "/foreign/agent.sqlite" }
+            : { sessionKey: "agent:main:other" }),
+        }),
+        policy: { mode: "followup" },
+      });
+      const cleanup = selectedInput;
+      onTestFinished(() => {
+        retireSessionControllerInput(cleanup);
+        clearSessionControllerMailbox(cleanup.mailbox, () => {});
+      });
+    }
+    const result = await sendSubagentAnnounceDirectly({
+      ...fixture.params,
+      expectsCompletionMessage: false,
+      steerActiveRequester: true,
+      completionRequesterSessionId: sessionId,
+      completionRequesterLifecycleRevision: lifecycleRevision,
+      controllerInput: selectedInput,
+    });
+    expect(result.delivered).toBe(false);
+    expect(queueMessage).not.toHaveBeenCalled();
+    expectNoReplay(fixture, 0);
+  },
+);
+
+it("retains unknown shadow steering when the source retires after native acceptance", async () => {
+  const fixture = setup("subagent_announce");
+  const { input, queueMessage } = steering(fixture, async (_text, options, assertCurrent) => {
+    assertCurrent();
+    options?.onQueueAccepted?.(true);
+    fixture.state.allowed = false;
+    return unconfirmedCommit;
+  });
+  await expect(
+    sendSubagentAnnounceDirectly({
+      ...fixture.params,
+      expectsCompletionMessage: false,
+      steerActiveRequester: true,
+      completionRequesterSessionId: fixture.state.entry.sessionId,
+      completionRequesterLifecycleRevision: fixture.state.entry.lifecycleRevision,
+      controllerInput: input,
+    }),
+  ).resolves.toMatchObject({ delivered: false, path: "steered", disposition: "ambiguous" });
+  expect(queueMessage).toHaveBeenCalledOnce();
+  expectNoReplay(fixture, 0);
+});

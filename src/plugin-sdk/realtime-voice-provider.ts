@@ -447,11 +447,9 @@ export class RealtimeVoiceWebSocketTransport<Event extends RealtimeWireEvent> {
             return;
           }
           this.options.onEvent(event, connection);
-          if (
-            event.type === "session.updated" &&
-            this.lifecycle.isCurrent(connection) &&
-            this.lifecycle.isReady()
-          ) {
+          // Providers own acknowledgement semantics; readiness is bound to this
+          // exact connection and rechecked after callbacks may close or replace it.
+          if (this.lifecycle.isCurrent(connection) && this.lifecycle.isReady()) {
             attempt.resolve(true);
           }
         } catch (error) {

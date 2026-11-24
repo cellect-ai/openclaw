@@ -8,10 +8,6 @@ import {
 } from "../../infra/agent-events.js";
 import { withPluginRuntimeGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import type { createPluginRuntime } from "../../plugins/runtime/index.js";
-import {
-  GatewayDrainingError,
-  tryBeginGatewayIndependentRootWorkAdmission,
-} from "../../process/gateway-work-admission.js";
 import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import type { SessionControllerInput } from "../../sessions/session-controller.mailbox.js";
 import {
@@ -40,6 +36,7 @@ import { buildRealtimeTalkSessionContextInstructions } from "../../talk/session-
 import { deliveryContextFromSession } from "../../utils/delivery-context.read.js";
 import { registerChatAbortController } from "../chat-abort.js";
 import type { GatewayRequestContext } from "../server-methods/shared-types.js";
+import { createTalkClientAgentConsultAdmission } from "./client-agent-consult-admission.js";
 import type {
   TalkAgentConsultRequest,
   TalkAgentConsultSource,
@@ -111,6 +108,7 @@ export function createTalkClientAgentConsultRunner(params: {
     isCurrent: (phase?: "active" | "completion") => boolean;
   }>;
 }) {
+  const runAdmitted = createTalkClientAgentConsultAdmission();
   const { agentId, sessionKey, canonicalKey, storePath } = params.sessionTarget;
   const getConfig = () => params.context.getRuntimeConfig?.() ?? params.config;
   const authority: TalkAgentConsultAuthority = {
@@ -232,242 +230,232 @@ export function createTalkClientAgentConsultRunner(params: {
         : {}),
     });
     const talkConfig = config.talk;
-    // A voice turn outlives offer setup and must drain under its own root,
-    // while new turns still respect suspension and restart admission.
-    const admission = tryBeginGatewayIndependentRootWorkAdmission("talk-agent-consult", {
-      detachedWork: true,
-    });
-    if (!admission) {
-      throw new GatewayDrainingError();
-    }
-    return await admission
-      .run(() =>
-        consultRealtimeVoiceAgent({
-          cfg: config,
-          agentRuntime: runtime,
-          logger: params.context.logGateway,
-          agentId,
-          sessionKey: canonicalKey,
-          storePath,
-          messageProvider: "webchat",
-          lane: "talk",
-          runIdPrefix: params.runIdPrefix ?? "talk-realtime-consult",
-          args: parsedArgs,
-          transcript: params.initialItems,
-          extraSystemPrompt: [
-            "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
-            buildRealtimeTalkSessionContextInstructions(params.sessionCapsule),
-          ]
-            .filter(Boolean)
-            .join("\n\n"),
-          surface: params.surface ?? "a browser Talk session",
-          userLabel: "User",
-          questionSourceLabel: "user",
-          thinkLevel: talkConfig?.consultThinkingLevel,
-          fastMode: talkConfig?.consultFastMode,
-          senderIsOwner: authority.senderIsOwner,
-          senderId: authority.senderId,
-          channelContext: authority.channelContext,
-          deliveryContext: authority.deliveryContext,
-          trigger: authority.trigger,
-          toolsAllow: authority.toolsAllow,
-          prepareToolContext: (sessionEntry) => {
-            const toolContext = prepareTalkClientToolContext({
-              config,
-              agentId,
-              authority,
-              sessionEntry,
-            });
-            if (!toolContext) {
-              return {};
+    return await runAdmitted.run(() =>
+      consultRealtimeVoiceAgent({
+        cfg: config,
+        agentRuntime: runtime,
+        logger: params.context.logGateway,
+        agentId,
+        sessionKey: canonicalKey,
+        storePath,
+        messageProvider: "webchat",
+        lane: "talk",
+        runIdPrefix: params.runIdPrefix ?? "talk-realtime-consult",
+        args: parsedArgs,
+        transcript: params.initialItems,
+        extraSystemPrompt: [
+          "You are the configured OpenClaw agent receiving delegated requests from a live voice bridge. Act on behalf of the user, use available tools when appropriate, and return a brief speakable result.",
+          buildRealtimeTalkSessionContextInstructions(params.sessionCapsule),
+        ]
+          .filter(Boolean)
+          .join("\n\n"),
+        surface: params.surface ?? "a browser Talk session",
+        userLabel: "User",
+        questionSourceLabel: "user",
+        thinkLevel: talkConfig?.consultThinkingLevel,
+        fastMode: talkConfig?.consultFastMode,
+        senderIsOwner: authority.senderIsOwner,
+        senderId: authority.senderId,
+        channelContext: authority.channelContext,
+        deliveryContext: authority.deliveryContext,
+        trigger: authority.trigger,
+        toolsAllow: authority.toolsAllow,
+        prepareToolContext: (sessionEntry) => {
+          const toolContext = prepareTalkClientToolContext({
+            config,
+            agentId,
+            authority,
+            sessionEntry,
+          });
+          if (!toolContext) {
+            return {};
+          }
+          // Source authority belongs to prepared admission, not loose runtime
+          // params. Direct attempts also do not implement reply tracing.
+          const {
+            sessionKey: _sessionKey,
+            operatorAuthority: _operatorAuthority,
+            traceAuthorized: _traceAuthorized,
+            originatingChannel: _originatingChannel,
+            ...executionContext
+          } = toolContext.toolAuthorityOverlay;
+          return {
+            ...executionContext,
+            execOverrides: toolContext.execOverrides,
+            bashElevated: toolContext.bashElevated,
+            currentChannelId: undefined,
+            currentThreadTs: undefined,
+          };
+        },
+        abortSignal: signal,
+        onRunStarted: async ({ runId, sessionId, timeoutMs }) => {
+          let registeredRun:
+            | {
+                release: () => void;
+                isCurrent: (phase?: "active" | "completion") => boolean;
+              }
+            | undefined;
+          const assertRunCurrent = () => {
+            signal?.throwIfAborted();
+            if (registeredRun && !registeredRun.isCurrent()) {
+              throw new Error("The active Talk consult admission is no longer current");
             }
-            // Source authority belongs to prepared admission, not loose runtime
-            // params. Direct attempts also do not implement reply tracing.
-            const {
-              sessionKey: _sessionKey,
-              operatorAuthority: _operatorAuthority,
-              traceAuthorized: _traceAuthorized,
-              originatingChannel: _originatingChannel,
-              ...executionContext
-            } = toolContext.toolAuthorityOverlay;
-            return {
-              ...executionContext,
-              execOverrides: toolContext.execOverrides,
-              bashElevated: toolContext.bashElevated,
-              currentChannelId: undefined,
-              currentThreadTs: undefined,
-            };
-          },
-          abortSignal: signal,
-          onRunStarted: async ({ runId, sessionId, timeoutMs }) => {
-            let registeredRun:
-              | {
-                  release: () => void;
-                  isCurrent: (phase?: "active" | "completion") => boolean;
-                }
-              | undefined;
-            const assertRunCurrent = () => {
-              signal?.throwIfAborted();
-              if (registeredRun && !registeredRun.isCurrent()) {
-                throw new Error("The active Talk consult admission is no longer current");
-              }
-              if (
-                owner &&
-                (promptOwner !== owner ||
-                  owner.requestSignal?.aborted === true ||
-                  !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration) ||
-                  params.getVoiceSessionId() !== voiceSessionId)
-              ) {
-                throw new Error("The active Talk consult admission is no longer current");
-              }
-            };
-            assertConsultCurrent();
-            assertRunCurrent();
-            const target = captureSessionTarget({
-              storeScope: storePath,
-              sessionKey: canonicalKey,
-              agentId,
-              incarnation: sessionId,
-            });
-            const registration = params.ownerConnId
-              ? withPluginRuntimeGatewayContextResolver(resolveGatewayContext, () =>
-                  registerChatAbortController({
-                    target,
-                    runId,
-                    sessionId,
-                    sessionKey: canonicalKey,
-                    agentId,
-                    timeoutMs,
-                    ownerConnId: params.ownerConnId,
-                    controlUiVisible: false,
-                    kind: "chat-send",
-                    sourceInput,
-                  }),
-                )
-              : undefined;
-            const entry = registration?.entry;
-            const generation = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
-            const isChatRegistrationCurrent = (phase: "active" | "completion" = "active") =>
-              !params.ownerConnId ||
-              isTalkConsultSourceCurrent({
-                entry,
-                connectionId: params.ownerConnId,
-                sessionId,
-                sessionKey: canonicalKey,
-                lifecycleGeneration: generation,
-                phase,
-              });
-            assertRunRegistrationCurrent = () => {
-              assertRunCurrent();
-              if (!isChatRegistrationCurrent()) {
-                throw new Error("The active Talk consult admission is no longer current");
-              }
-            };
-            let releaseVoice: void | (() => void) = undefined;
-            try {
-              assertRunRegistrationCurrent();
-              registeredSource = entry;
-              if (params.registerRun) {
-                registeredRun = await params.registerRun({
+            if (
+              owner &&
+              (promptOwner !== owner ||
+                owner.requestSignal?.aborted === true ||
+                !isAgentEventLifecycleGenerationCurrent(owner.lifecycleGeneration) ||
+                params.getVoiceSessionId() !== voiceSessionId)
+            ) {
+              throw new Error("The active Talk consult admission is no longer current");
+            }
+          };
+          assertConsultCurrent();
+          assertRunCurrent();
+          const target = captureSessionTarget({
+            storeScope: storePath,
+            sessionKey: canonicalKey,
+            agentId,
+            incarnation: sessionId,
+          });
+          const registration = params.ownerConnId
+            ? withPluginRuntimeGatewayContextResolver(resolveGatewayContext, () =>
+                registerChatAbortController({
+                  target,
                   runId,
-                  assertCurrent: assertConsultCurrent,
-                });
-                releaseVoice = registeredRun.release;
-              } else {
-                releaseVoice = await registerClientVoiceConsultRun({
+                  sessionId,
+                  sessionKey: canonicalKey,
                   agentId,
-                  sessionKey,
-                  voiceSessionId,
-                  runId,
-                  config: getConfig(),
-                  physicalSource,
-                  assertCurrent: assertConsultCurrent,
-                });
-              }
-              assertConsultCurrent();
-              confirmationObservation = observeClientVoiceConfirmationRun({
+                  timeoutMs,
+                  ownerConnId: params.ownerConnId,
+                  controlUiVisible: false,
+                  kind: "chat-send",
+                  sourceInput,
+                }),
+              )
+            : undefined;
+          const entry = registration?.entry;
+          const generation = entry ? getRpcSourceLifecycleGeneration(entry) : undefined;
+          const isChatRegistrationCurrent = (phase: "active" | "completion" = "active") =>
+            !params.ownerConnId ||
+            isTalkConsultSourceCurrent({
+              entry,
+              connectionId: params.ownerConnId,
+              sessionId,
+              sessionKey: canonicalKey,
+              lifecycleGeneration: generation,
+              phase,
+            });
+          assertRunRegistrationCurrent = () => {
+            assertRunCurrent();
+            if (!isChatRegistrationCurrent()) {
+              throw new Error("The active Talk consult admission is no longer current");
+            }
+          };
+          let releaseVoice: void | (() => void) = undefined;
+          try {
+            assertRunRegistrationCurrent();
+            registeredSource = entry;
+            if (params.registerRun) {
+              registeredRun = await params.registerRun({
+                runId,
+                assertCurrent: assertConsultCurrent,
+              });
+              releaseVoice = registeredRun.release;
+            } else {
+              releaseVoice = await registerClientVoiceConsultRun({
                 agentId,
+                sessionKey,
                 voiceSessionId,
                 runId,
+                config: getConfig(),
+                physicalSource,
+                assertCurrent: assertConsultCurrent,
               });
-              if (
-                confirmationGrant &&
-                bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId })
-              ) {
-                confirmationRetryContext = confirmationGrant.retryContext;
-              }
-              if (owner) {
-                owner.identity = { runId, sessionId };
-                owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(
-                  sessionId,
-                  runId,
-                  target,
-                );
-                if (owner.requesterFinal) {
-                  const requesterFinal = owner.requesterFinal;
-                  const finalRegistration = registerRequesterFinalAttachment({
-                    requesterAgentId: agentId,
-                    requesterSessionKey: canonicalKey,
-                    requesterSessionId: sessionId,
-                    requesterTurnRunId: runId,
-                    lifecycleGeneration: owner.lifecycleGeneration,
-                    timeoutMs,
-                    append: (text) =>
-                      requesterFinal.append(confirmationObservation?.readReply() ?? text),
-                  });
-                  owner.requesterFinalRegistration = finalRegistration;
-                  requesterFinalRegistration = finalRegistration;
-                }
-                void owner.completionClaim.registered.then(owner.resolveRegistration);
-              }
-              if (owner) {
-                owner.cleanup = () => {
-                  try {
-                    releaseVoice?.();
-                  } finally {
-                    registration?.cleanup();
-                  }
-                };
-                owner.signal = entry?.input.abortSignal;
-                owner.isCurrent = (resolvedSessionId, phase = "active") =>
-                  params.getVoiceSessionId() === voiceSessionId &&
-                  isChatRegistrationCurrent(phase) &&
-                  (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
-                  (registeredRun?.isCurrent(phase) ?? true);
-              }
-              return {
-                // Owned failures keep their registration until the existing failure claim settles.
-                cleanupBeforeRun: owner ? undefined : releaseVoice || undefined,
-                ...(registration
-                  ? {
-                      abortSignal: registration.controller.signal,
-                      cleanup: owner ? undefined : registration.cleanup,
-                    }
-                  : {}),
-              };
-            } catch (error) {
-              try {
-                releaseVoice?.();
-              } finally {
-                registration?.cleanup();
-              }
-              throw error;
             }
-          },
-        }),
-      )
-      .then((result) => {
-        yielded = result.yielded === true;
-        const confirmationReply = confirmationObservation?.readReply({
-          includeConfirmationId: source === "tool-call",
-        });
-        return confirmationReply ? { ...result, text: confirmationReply } : result;
+            assertConsultCurrent();
+            confirmationObservation = observeClientVoiceConfirmationRun({
+              agentId,
+              voiceSessionId,
+              runId,
+            });
+            if (
+              confirmationGrant &&
+              bindAuthorizedClientVoiceConfirmation({ grant: confirmationGrant, runId })
+            ) {
+              confirmationRetryContext = confirmationGrant.retryContext;
+            }
+            if (owner) {
+              owner.identity = { runId, sessionId };
+              owner.completionClaim = prepareEmbeddedAgentRunCompletionClaim(
+                sessionId,
+                runId,
+                target,
+              );
+              if (owner.requesterFinal) {
+                const requesterFinal = owner.requesterFinal;
+                const finalRegistration = registerRequesterFinalAttachment({
+                  requesterAgentId: agentId,
+                  requesterSessionKey: canonicalKey,
+                  requesterSessionId: sessionId,
+                  requesterTurnRunId: runId,
+                  lifecycleGeneration: owner.lifecycleGeneration,
+                  timeoutMs,
+                  append: (text) =>
+                    requesterFinal.append(confirmationObservation?.readReply() ?? text),
+                });
+                owner.requesterFinalRegistration = finalRegistration;
+                requesterFinalRegistration = finalRegistration;
+              }
+              void owner.completionClaim.registered.then(owner.resolveRegistration);
+            }
+            if (owner) {
+              owner.cleanup = () => {
+                try {
+                  releaseVoice?.();
+                } finally {
+                  registration?.cleanup();
+                }
+              };
+              owner.signal = entry?.input.abortSignal;
+              owner.isCurrent = (resolvedSessionId, phase = "active") =>
+                params.getVoiceSessionId() === voiceSessionId &&
+                isChatRegistrationCurrent(phase) &&
+                (resolvedSessionId === undefined || resolvedSessionId === sessionId) &&
+                (registeredRun?.isCurrent(phase) ?? true);
+            }
+            return {
+              // Owned failures keep their registration until the existing failure claim settles.
+              cleanupBeforeRun: owner ? undefined : releaseVoice || undefined,
+              ...(registration
+                ? {
+                    abortSignal: registration.controller.signal,
+                    cleanup: owner ? undefined : registration.cleanup,
+                  }
+                : {}),
+            };
+          } catch (error) {
+            try {
+              releaseVoice?.();
+            } finally {
+              registration?.cleanup();
+            }
+            throw error;
+          }
+        },
       })
-      .finally(() => {
-        if (!yielded) confirmationObservation?.release();
-        registeredSource = undefined;
-        admission.release();
-      });
+        .then((result) => {
+          yielded = result.yielded === true;
+          const confirmationReply = confirmationObservation?.readReply({
+            includeConfirmationId: source === "tool-call",
+          });
+          return confirmationReply ? { ...result, text: confirmationReply } : result;
+        })
+        .finally(() => {
+          if (!yielded) confirmationObservation?.release();
+          registeredSource = undefined;
+        }),
+    );
   };
   const isOwnerCurrent = (
     owner: PromptOwner,

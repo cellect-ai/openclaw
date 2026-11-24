@@ -13,8 +13,6 @@ import type {
   RealtimeVoiceAudioFormat,
   RealtimeVoiceBargeInOptions,
   RealtimeVoiceBridge,
-  RealtimeVoiceBrowserSession,
-  RealtimeVoiceBrowserSessionCreateRequest,
   RealtimeVoiceProviderPlugin,
   RealtimeVoiceRole,
   RealtimeVoiceToolResultOptions,
@@ -29,14 +27,13 @@ import {
   realtimeVoiceAudioDurationMs,
   resamplePcm,
 } from "openclaw/plugin-sdk/realtime-voice-provider";
-import { asSafeIntegerInRange, isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { canonicalizeGoogleProviderBase64 } from "./base64.js";
 import { resolveGoogleEnvApiKey } from "./gemini-auth.js";
 import { createGoogleGenAI } from "./google-genai-runtime.js";
+import { createGoogleRealtimeBrowserSession } from "./realtime-voice-browser-session.js";
 import {
-  buildBrowserInitialSetup,
   buildGoogleLiveConnectConfig,
-  GOOGLE_REALTIME_DEFAULT_VOICE,
   type GoogleLiveTranscriptAccumulator,
   type GoogleLiveTranscription,
   type GoogleRealtimeVoiceBridgeConfig,
@@ -58,12 +55,7 @@ import {
 
 const GOOGLE_REALTIME_DEFAULT_API_VERSION = "v1beta";
 const GOOGLE_REALTIME_INPUT_SAMPLE_RATE = 16_000;
-const GOOGLE_REALTIME_BROWSER_API_VERSION = "v1alpha";
-const GOOGLE_REALTIME_BROWSER_WEBSOCKET_URL =
-  "wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained";
 const DEFAULT_AUDIO_STREAM_END_SILENCE_MS = 500;
-const GOOGLE_REALTIME_BROWSER_SESSION_TTL_MS = 30 * 60 * 1000;
-const GOOGLE_REALTIME_BROWSER_NEW_SESSION_TTL_MS = 60 * 1000;
 const GOOGLE_REALTIME_RECONNECT_MAX_ATTEMPTS = 3;
 const GOOGLE_REALTIME_RECONNECT_BASE_DELAY_MS = 250;
 const GOOGLE_REALTIME_RECONNECT_MAX_DELAY_MS = 2_000;
@@ -917,80 +909,6 @@ function convertMulaw8kToPcm16k(muLaw: Buffer): Buffer {
     pcm.writeInt16LE(Math.round((current + next) / 2), i * 4 + 2);
   }
   return pcm;
-}
-
-async function createGoogleRealtimeBrowserSession(
-  req: RealtimeVoiceBrowserSessionCreateRequest,
-): Promise<RealtimeVoiceBrowserSession> {
-  const providerConfig = normalizeProviderConfig(req.providerConfig);
-  const prefixPaddingMs = asSafeIntegerInRange(req.prefixPaddingMs, { min: 0 });
-  const silenceDurationMs = asSafeIntegerInRange(req.silenceDurationMs, { min: 0 });
-  const config = {
-    ...providerConfig,
-    ...(prefixPaddingMs !== undefined ? { prefixPaddingMs } : {}),
-    ...(silenceDurationMs !== undefined ? { silenceDurationMs } : {}),
-  };
-  const apiKey = config.apiKey || resolveGoogleEnvApiKey();
-  if (!apiKey) {
-    throw new Error("Google Gemini API key missing");
-  }
-  const model = req.model ?? config.model ?? GOOGLE_REALTIME_DEFAULT_MODEL;
-  const voice = req.voice ?? config.voice ?? GOOGLE_REALTIME_DEFAULT_VOICE;
-  const nowMs = Date.now();
-  const expireTime = new Date(nowMs + GOOGLE_REALTIME_BROWSER_SESSION_TTL_MS).toISOString();
-  const newSessionExpiresAtMs = nowMs + GOOGLE_REALTIME_BROWSER_NEW_SESSION_TTL_MS;
-  const newSessionExpireTime = new Date(newSessionExpiresAtMs).toISOString();
-  const ai = createGoogleGenAI({
-    apiKey,
-    httpOptions: {
-      apiVersion: GOOGLE_REALTIME_BROWSER_API_VERSION,
-      timeout: 30_000,
-    },
-  });
-  const token = await ai.authTokens.create({
-    config: {
-      uses: 1,
-      expireTime,
-      newSessionExpireTime,
-      liveConnectConstraints: {
-        model,
-        config: buildGoogleLiveConnectConfig(
-          {
-            ...config,
-            apiKey,
-            model,
-            voice,
-            instructions: req.instructions,
-            tools: req.tools,
-            language: req.language,
-          },
-          model,
-        ),
-      },
-    },
-  });
-  const clientSecret = token.name?.trim();
-  if (!clientSecret) {
-    throw new Error("Google Live browser session did not return an ephemeral token");
-  }
-
-  return {
-    provider: "google",
-    transport: "provider-websocket",
-    protocol: "google-live-bidi",
-    clientSecret,
-    websocketUrl: GOOGLE_REALTIME_BROWSER_WEBSOCKET_URL,
-    audio: {
-      inputEncoding: "pcm16",
-      inputSampleRateHz: GOOGLE_REALTIME_INPUT_SAMPLE_RATE,
-      outputEncoding: "pcm16",
-      outputSampleRateHz: 24_000,
-    },
-    initialMessage: buildBrowserInitialSetup(model, req.language),
-    model,
-    voice,
-    expiresAt: newSessionExpiresAtMs,
-  };
 }
 
 export function buildGoogleRealtimeVoiceProvider(): RealtimeVoiceProviderPlugin {

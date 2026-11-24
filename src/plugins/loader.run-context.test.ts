@@ -110,7 +110,9 @@ it("allows only run-context state from an admitted non-activating plugin hook", 
   expect(state.observations).toEqual([{ wrote: true, value: 3, cleared: undefined }]);
   // Running one hook does not turn the caller-owned inspection into a process-global writer.
   expect(state.api.runContext.setRunContext({ ...selected, value: 1 })).toBe(false);
-  expect(state.api.emitAgentEvent({ runId, stream: "lifecycle", data: {} }).emitted).toBe(false);
+  expect(
+    state.api.agent.events.emitAgentEvent({ runId, stream: "lifecycle", data: {} }).emitted,
+  ).toBe(false);
 });
 
 it("admits borrowed hooks only while their exact lending instance remains live", async () => {

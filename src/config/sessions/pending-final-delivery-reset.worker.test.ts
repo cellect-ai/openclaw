@@ -1,4 +1,4 @@
-import { expect } from "vitest";
+import { expect, vi } from "vitest";
 import {
   applySessionEntryLifecycleMutation,
   replaceSessionEntry,
@@ -7,6 +7,7 @@ import {
 } from "./session-accessor.js";
 import { applySessionEntryOperation } from "./session-accessor.sqlite-entry.js";
 import { sessionTests } from "./session-entry-fixture.test-support.js";
+import * as sessionReads from "./session-entry-read-runtime.js";
 import { readSessionEntryReadOnlyInWorker } from "./session-entry-read-runtime.js";
 
 const test = sessionTests({ prefix: "openclaw-final-projection-debt-", layout: "state-only" });
@@ -60,7 +61,7 @@ test.for(["reset", "replace", "batched"] as const)(
     });
   },
 );
-test("enrollment during reset preparation cannot be erased by the older reset snapshot", async ({
+test("enrollment after the reset precheck cannot be erased by its stale read", async ({
   store,
 }) => {
   const { sessionKey, storePath } = store.scope;
@@ -70,24 +71,33 @@ test("enrollment during reset preparation cannot be erased by the older reset sn
     updatedAt: 1,
     pendingFinalDelivery: { ...pending, projectionConsumers: [] },
   });
+  // The public reset precheck has released its read lease. Enroll through the
+  // real native writer before returning the stale precheck snapshot; never nest
+  // an awaited write inside buildNextEntry, which already owns the writer lane.
+  const read = sessionReads.readSessionEntryReadOnlyInWorker;
+  using precheck = vi
+    .spyOn(sessionReads, "readSessionEntryReadOnlyInWorker")
+    .mockImplementationOnce(async (...args) => {
+      const snapshot = await read(...args);
+      await applySessionEntryOperation(scope, {
+        kind: "pending-final-projection",
+        sessionId: "original",
+        intentId: "intent",
+        sourceRunId: "run",
+        sourceGeneration: "generation",
+        consumerId: "matrix",
+        retainDeliveryId: "delivery",
+      });
+      return snapshot;
+    });
   await expect(
     resetSessionEntryLifecycle({
       storePath,
       target: { canonicalKey: sessionKey, storeKeys: [sessionKey] },
-      buildNextEntry: async () => {
-        await applySessionEntryOperation(scope, {
-          kind: "pending-final-projection",
-          sessionId: "original",
-          intentId: "intent",
-          sourceRunId: "run",
-          sourceGeneration: "generation",
-          consumerId: "matrix",
-          retainDeliveryId: "delivery",
-        });
-        return { sessionId: "replacement", updatedAt: 2 };
-      },
+      buildNextEntry: () => ({ sessionId: "replacement", updatedAt: 2 }),
     }),
-  ).rejects.toThrow();
+  ).rejects.toThrow(/projection/i);
+  expect(precheck).toHaveBeenCalled();
   expect(await readSessionEntryReadOnlyInWorker(scope)).toMatchObject({
     sessionId: "original",
     pendingFinalDelivery: { projectionConsumers: ["matrix"] },

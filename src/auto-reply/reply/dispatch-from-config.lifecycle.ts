@@ -684,7 +684,7 @@ export function createDispatchReplyOperationCoordinator(
 
   const failDispatchReplyOperation = (error: unknown, terminalOutcome?: "failed") => {
     if (terminalOutcome === "failed") {
-      agentRunTerminalOutcome = "failed";
+      agentRunObserver.markAgentRunFailed();
     }
     dispatchReplyOperation?.freezeAbort();
     if (dispatchReplyOperation && !dispatchReplyOperation.result) {

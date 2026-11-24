@@ -247,7 +247,7 @@ async function deliverSubagentAnnouncementBound(
   let createCompletionUserTurnTranscriptRecorder:
     | ((sessionId: string) => UserTurnTranscriptRecorder)
     | undefined;
-  if (params.expectsCompletionMessage) {
+  if (params.expectsCompletionMessage || params.steerActiveRequester) {
     const directIdempotencyKey = params.directIdempotencyKey;
     const requesterAgentId = params.requesterAgentId;
     const sourceSessionKey = params.sourceSessionKey;
@@ -270,12 +270,31 @@ async function deliverSubagentAnnouncementBound(
           idempotencyKey: `${directIdempotencyKey}:active-wake`,
           provenance,
         },
+        ...(params.steerActiveRequester
+          ? {
+              assertOriginalInputCommit: () => {
+                params.signal?.throwIfAborted();
+                if (sourceOwnerChanged()) {
+                  throw new Error("Requester source changed before shadow input commit");
+                }
+              },
+            }
+          : {}),
         target: async () => {
           const loaded = await loadRequesterSessionEntry(
             targetRequesterSessionKey,
             requesterAgentId,
           );
-          if (!loaded.entry || loaded.entry.sessionId?.trim() !== sessionId || !loaded.agentId) {
+          if (
+            !loaded.entry ||
+            loaded.entry.sessionId?.trim() !== sessionId ||
+            !loaded.agentId ||
+            (params.steerActiveRequester &&
+              (params.signal?.aborted ||
+                sourceOwnerChanged() ||
+                sessionId !== params.completionRequesterSessionId ||
+                loaded.entry.lifecycleRevision !== params.completionRequesterLifecycleRevision))
+          ) {
             return undefined;
           }
           return {

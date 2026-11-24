@@ -473,7 +473,10 @@ describe("talk.client.create handler", () => {
         isWebchatConnect: () => false,
         respond,
         context: { getRuntimeConfig: () => ({ talk: { realtime: { provider: "openai" } } }) },
-        sessionMutationAuthorization: { talkSessionTarget: authorizedTarget },
+        sessionMutationAuthorization: {
+          talkSessionTarget: authorizedTarget,
+          assertCurrent: () => target.assertCurrent({ talk: { realtime: { provider: "openai" } } }),
+        },
       } as never);
       expectRespondError(respond, {
         code: ErrorCodes.INVALID_REQUEST,

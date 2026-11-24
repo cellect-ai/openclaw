@@ -44,10 +44,37 @@ export const ThreadContinuationSnapshotSchema = closedObject({
 });
 export type ThreadContinuationSnapshot = Static<typeof ThreadContinuationSnapshotSchema>;
 export type ThreadContinuationMember = Static<typeof ThreadContinuationMemberSchema>;
+/** Retained observations only. These fields never authorize continuation. */
+export type ThreadObservedTask = {
+  taskId: string;
+  status: string;
+  agentId: string;
+  ownerKey: string;
+  requesterSessionKey: string;
+  createdAt: number | null;
+  lastEventAt: number;
+  sequence: number;
+  error?: string;
+  task: string | null;
+  observationSummary: string;
+};
+export type ThreadStatusObservation = {
+  lastTool: string | null;
+  lastToolAt: string | null;
+  lastError: string | null;
+  latestTask: ThreadObservedTask | null;
+  taskCount: number | null;
+  historyAvailable: boolean;
+  historyComplete: boolean;
+  historyScope: "retained-terminal-observations";
+  currentTerminalCoverageComplete: boolean;
+  transcriptComplete: boolean;
+};
 export type ThreadContinuationDescription = {
   complete: boolean;
   reason?: string;
   members: ThreadContinuationMember[];
   continuation?: ThreadContinuationSnapshot;
   originalTask?: string;
+  status?: ThreadStatusObservation;
 };

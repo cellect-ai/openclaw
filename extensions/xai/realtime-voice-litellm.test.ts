@@ -218,6 +218,57 @@ describe("buildLiteLlmRealtimeVoiceProvider", () => {
     });
   });
 
+  it("keeps direct xAI created and unrelated events pending until session.updated", async () => {
+    const onReady = vi.fn();
+    const bridge = createTestBridge({ onReady });
+    const connecting = bridge.connect();
+    let settled = false;
+    void connecting.then(() => {
+      settled = true;
+    });
+    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = requireSocket();
+    socket.open();
+    for (const type of ["session.created", "synthetic.unrelated"]) {
+      socket.emitServer({ type });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(bridge.isConnected()).toBe(false);
+      expect(onReady).not.toHaveBeenCalled();
+    }
+    socket.emitServer({ type: "session.updated" });
+    await connecting;
+    expect(onReady).toHaveBeenCalledOnce();
+  });
+
+  it("does not accept LiteLLM setup when its observer closes the original connection", async () => {
+    const onReady = vi.fn();
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const bridge = provider.createBridge({
+      providerConfig: {
+        apiKey: "synthetic-key",
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "gemini-3.8-live",
+      },
+      onAudio: vi.fn(),
+      onClearAudio: vi.fn(),
+      onReady,
+      onEvent: (event) => {
+        if (event.direction === "server" && event.type === "session.created") bridge.close();
+      },
+    });
+    bridges.push(bridge);
+    const connecting = bridge.connect();
+    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = requireSocket();
+    socket.open();
+    socket.emitServer({ type: "session.created" });
+    await connecting;
+    socket.emitServer({ type: "session.created" });
+    expect(bridge.isConnected()).toBe(false);
+    expect(onReady).not.toHaveBeenCalled();
+  });
+
   it("accepts LiteLLM's session.created event as the Gemini setup acknowledgement", async () => {
     const provider = buildLiteLlmRealtimeVoiceProvider();
     const onReady = vi.fn();
@@ -240,6 +291,7 @@ describe("buildLiteLlmRealtimeVoiceProvider", () => {
     await connecting;
 
     expect(bridge.isConnected()).toBe(true);
+    socket.emitServer({ type: "session.created" });
     expect(onReady).toHaveBeenCalledOnce();
     bridge.close();
   });

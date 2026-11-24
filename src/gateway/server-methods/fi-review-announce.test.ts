@@ -1,4 +1,8 @@
-import { beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import { resetGatewayWorkAdmission } from "../../process/gateway-work-admission.js";
 import { handleGatewayRequest } from "../server-methods.js";
 import type { GatewayClient, GatewayRequestContext } from "./types.js";
@@ -20,6 +24,7 @@ const params = () => ({
 });
 beforeEach(() => {
   resetGatewayWorkAdmission();
+  setRuntimeConfigSnapshot({});
   vi.clearAllMocks();
   resolve.mockResolvedValue(owner);
   deliver.mockImplementation(async ({ assertOwnerCurrent }) => {
@@ -27,6 +32,7 @@ beforeEach(() => {
     return { path: "direct" };
   });
 });
+afterEach(() => clearRuntimeConfigSnapshot());
 async function call(input: Record<string, unknown> = params(), scopes = ["operator.admin"]) {
   const respond = vi.fn();
   const client: GatewayClient = {
@@ -76,6 +82,8 @@ it.each([
 ])("refuses a changed owner, job or destination before native delivery: %j", async (change) => {
   resolve.mockResolvedValueOnce(owner).mockResolvedValueOnce({ ...owner, ...change });
   expect((await call()).mock.calls[0]?.[0]).toBe(false);
+  expect(resolve).toHaveBeenCalledTimes(2);
+  expect(deliver).toHaveBeenCalledOnce();
 });
 it("refuses caller destinations, wrong grant purposes and non-admin transport", async () => {
   expect((await call({ ...params(), roomId: "!other:example.test" })).mock.calls[0]?.[0]).toBe(

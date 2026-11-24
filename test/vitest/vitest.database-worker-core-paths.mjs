@@ -1,5 +1,14 @@
 // These consumers need the host-owned SQLite broker, which runs in forked processes.
 export const databaseWorkerCoreTestFiles = [
+  "src/auto-reply/reply/session-event-completion.test.ts",
+  "src/agents/tools/sessions-send-owner-continuation.test.ts",
+  "src/agents/prepared-model-runtime.auth-publication.test.ts",
+  "src/agents/embedded-agent-runner/run-orchestrator.input-provenance.test.ts",
+  "src/auto-reply/reply/managed-pdf-staging-recovery.test.ts",
+  "src/infra/outbound/delivery-completion.final-physical.test.ts",
+  "src/infra/outbound/delivery-completion.members.test.ts",
+  "src/pairing/pairing-retention.worker.test.ts",
+  "src/talk/client-voice-confirmability.worker.test.ts",
   "src/agents/subagents/registry/subagent-registry-restart-collector.test.ts",
   "src/infra/approval-session-audience.sqlite.test.ts",
   "src/gateway/server-methods.workshop-contract.test.ts",

@@ -95,8 +95,15 @@ export async function publishPersonalReviewReport(params: {
     accountId,
     ...(threadId ? { threadId } : {}),
     agentId: "cellect-fi-user",
-    requesterSessionKey: sessionKey,
-    conversationType: "channel",
+    // A frozen report is not a turn produced by the destination conversation.
+    // Carry its delivery policy without suppressing native destination history.
+    session: {
+      policyKey: sessionKey,
+      agentId: "cellect-fi-user",
+      requesterAccountId: accountId,
+      conversationType: "group",
+      conversationKind: "channel",
+    },
     content: params.resultText,
     payloads: [{ text: params.resultText }],
     gatewayOwnedDelivery: true,

@@ -34,4 +34,19 @@ describe("dispatch run observation", () => {
     expect(observer.getAgentRunTerminalOutcome()).toBe("failed");
     expect(onAgentRunTerminalOutcome.mock.calls).toEqual([["failed"], ["completed"]]);
   });
+
+  it("retains dispatch failure without emitting another agent terminal callback", () => {
+    const onAgentRunTerminalOutcome = vi.fn();
+    const observer = createDispatchAgentRunObserver({
+      replyOptions: { onAgentRunTerminalOutcome },
+    });
+    const options = observer.getReplyOptions();
+    notifyPreparedAgentRunStart(options, { runId: "dispatch-failed-run", transcriptStart: null });
+    observer.markAgentRunFailed();
+    expect(onAgentRunTerminalOutcome).not.toHaveBeenCalled();
+    options.onAgentRunTerminalOutcome("completed");
+    expect(observer.getAgentRunId()).toBe("dispatch-failed-run");
+    expect(observer.getAgentRunTerminalOutcome()).toBe("failed");
+    expect(onAgentRunTerminalOutcome.mock.calls).toEqual([["completed"]]);
+  });
 });

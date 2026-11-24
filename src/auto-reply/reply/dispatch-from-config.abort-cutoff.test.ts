@@ -166,6 +166,8 @@ it("still posts the fallback after a failed agent turn with no reply", async () 
   });
   expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({
     text: MISSING_REPLY_NOTICE_TEXT,
+    isError: true,
+    isStatusNotice: true,
   });
   expect(result.noVisibleReplyFallbackDelivered).toBe(true);
 });

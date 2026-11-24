@@ -66,7 +66,7 @@ describe("native Talk Matrix consult delivery", () => {
     const registered = createDeferred();
     const acknowledge = createDeferred();
     let source: ReturnType<typeof registerChatAbortController> | undefined;
-    let release: void | (() => void);
+    let release: void | (() => void) = undefined;
     mocks.send.mockImplementationOnce(
       async (
         request: GatewayRequestHandlerOptions,

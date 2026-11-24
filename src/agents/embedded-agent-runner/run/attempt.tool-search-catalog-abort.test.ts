@@ -174,9 +174,16 @@ describe("runEmbeddedAttempt tool boundaries", () => {
       });
       expect(result.codeModeEngaged).toBe(true);
       expect(contexts[0]).toMatchObject({
-        toolName: "ask_user",
+        toolName: "exec",
         requester: { channel: "matrix", accountId, ...(verifiedSender ? { senderId } : {}) },
       });
+      const questionContexts = contexts.filter((context) => context.toolName === "ask_user");
+      expect(questionContexts).toHaveLength(verifiedSender ? 1 : 0);
+      if (verifiedSender) {
+        expect(questionContexts[0]).toMatchObject({
+          requester: { channel: "matrix", accountId, senderId },
+        });
+      }
       expect(publishQuestion).toHaveBeenCalledTimes(verifiedSender ? 1 : 0);
       if (!verifiedSender) {
         expect(contexts[0]?.requester).not.toHaveProperty("senderId");

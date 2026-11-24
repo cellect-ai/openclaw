@@ -1,4 +1,4 @@
-import { assert, expect, it, vi } from "vitest";
+import { assert, expect, it, onTestFinished, vi } from "vitest";
 import {
   awaitGateBeforeSettlement,
   createDeferred,
@@ -51,6 +51,7 @@ function runningOperation(name: string, sessionId = name, upstreamAbortSignal?: 
     upstreamAbortSignal,
   });
   operation.setPhase("running");
+  onTestFinished(() => operation.complete());
   return operation;
 }
 

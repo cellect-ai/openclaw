@@ -33,6 +33,7 @@ import type { UserTurnOriginalInputCommit } from "../sessions/user-turn-transcri
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { requireSessionRowProjection } from "./session-row-projection-access.js";
 import type { EntryRow } from "./session-row-projection-record.js";
+import { readThreadStatusObservation } from "./thread-status-observation.js";
 import { getWorkerInferenceSessionControl } from "./worker-environments/inference-control-internal.js";
 
 const gatewayInstance = randomUUID();
@@ -261,6 +262,7 @@ export async function describeThreadContinuation(params: {
   owner: { agentId: string; sessionKey: string };
   assertVisible: (rows: EntryRow[]) => Promise<void>;
   assertCurrent: () => void;
+  includeStatus?: boolean;
 }): Promise<ThreadContinuationDescription> {
   const projection = requireSessionRowProjection(params.context);
   await projection.prepareSelection({ metadataOnly: true });
@@ -269,6 +271,26 @@ export async function describeThreadContinuation(params: {
   await params.assertVisible(rows);
   params.assertCurrent();
   const members = rows.map((row) => describeMember(params.context, row));
+  const status = params.includeStatus
+    ? await readThreadStatusObservation({
+        rows,
+        owner: params.owner,
+        assertCurrent: params.assertCurrent,
+      })
+    : undefined;
+  if (params.includeStatus) {
+    await params.assertVisible(rows);
+    params.assertCurrent();
+    if (
+      !isDeepStrictEqual(
+        rowsForThread(params.context, params.owner).map((row) =>
+          describeMember(params.context, row),
+        ),
+        members,
+      )
+    )
+      throw changed();
+  }
   const root = members.find(
     (member) =>
       member.sessionKey === params.owner.sessionKey && member.agentId === params.owner.agentId,
@@ -278,6 +300,7 @@ export async function describeThreadContinuation(params: {
     return {
       complete: true,
       members,
+      ...(status ? { status } : {}),
       reason: "No current idle terminal failure is eligible for continuation.",
     };
   const registry = registrySignature(root.sessionKey);
@@ -323,6 +346,7 @@ export async function describeThreadContinuation(params: {
     return {
       complete: true,
       members,
+      ...(status ? { status } : {}),
       reason:
         "Exact complete triggering text is unavailable; continuation requires native input custody.",
     };
@@ -330,6 +354,7 @@ export async function describeThreadContinuation(params: {
   return {
     complete: true,
     members,
+    ...(status ? { status } : {}),
     originalTask,
     continuation: {
       version: 1,

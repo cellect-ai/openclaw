@@ -55,6 +55,11 @@ export async function prepareChatSendAttachments(params: {
   let mediaPathOffloads: MediaFact[] = [];
   let explicitOriginTargetsPlugin = false;
   let prepareAttachmentsMs: number | undefined;
+  let parserFailureAborted: boolean | undefined;
+  const failureWasAborted = (error: unknown) =>
+    activeRunAbort.controller.signal.aborted &&
+    (context.chatRunState.hasAbortMarker(clientRunId) ||
+      Object.is(error, activeRunAbort.controller.signal.reason));
 
   try {
     const explicitOriginTargets = await resolveExplicitOriginBindingTargets(explicitOrigin);
@@ -98,6 +103,10 @@ export async function prepareChatSendAttachments(params: {
             acceptNonImage: true,
             signal: activeRunAbort.controller.signal,
             assertCurrent: assertInputCurrent,
+            onFailure: (error) => {
+              parserFailureAborted = failureWasAborted(error);
+              if (!parserFailureAborted) activeRunAbort.cleanup();
+            },
           });
           // The parser owns MIME classification. An unresolved capability means no image was seen,
           // so post-processing must not trigger catalog discovery for a non-image attachment.
@@ -136,10 +145,7 @@ export async function prepareChatSendAttachments(params: {
       );
     }
   } catch (err) {
-    const aborted =
-      activeRunAbort.controller.signal.aborted &&
-      (context.chatRunState.hasAbortMarker(clientRunId) ||
-        Object.is(err, activeRunAbort.controller.signal.reason));
+    const aborted = parserFailureAborted ?? failureWasAborted(err);
     // Retire failed-run cancellation before cleanup yields, but retain work
     // admission until deletion finishes so a late abort cannot replace the error.
     if (!aborted) {

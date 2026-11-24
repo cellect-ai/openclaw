@@ -31,6 +31,7 @@ import {
 } from "./talk-voicewake.test-support.ts";
 import {
   mountTalkPage,
+  waitForTalkCatalog,
   mountTalkSettingsRoutes,
   nativeVoice,
   readVoiceOptions,
@@ -354,8 +355,7 @@ describe("Talk speaker voice previews", () => {
     const harness = createTalkMutationHarness({
       voicesByModel: { "gpt-realtime-2.1": ["marin", "spruce"] },
     });
-    await vi.waitFor(() => expect(harness.request).toHaveBeenCalledWith("talk.catalog", {}));
-    flush();
+    await waitForTalkCatalog(harness.page, harness.request);
     harness.runtimeConfig.patchForm.mockImplementation((_path: unknown, value: unknown) => {
       Object.assign(harness.configForm.talk.realtime, { speakerVoice: value });
     });

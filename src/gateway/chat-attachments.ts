@@ -297,6 +297,8 @@ export async function parseMessageWithAttachments(
     imageStorage?: "inline";
     signal?: AbortSignal;
     assertCurrent?: () => void;
+    /** Settle the caller's failure classification before parser-owned cleanup yields. */
+    onFailure?: (error: unknown) => void;
   },
 ): Promise<{
   message: string;
@@ -445,7 +447,7 @@ export async function parseMessageWithAttachments(
         if (err instanceof SessionMutationAuthorizationChangedError) {
           throw err;
         }
-        opts?.assertCurrent?.();
+        if (opts?.signal?.aborted && Object.is(err, opts.signal.reason)) throw err;
         throw new MediaOffloadError(
           `[Gateway Error] Failed to save intercepted media to disk: ${formatErrorMessage(err)}`,
           { cause: err },
@@ -490,19 +492,25 @@ export async function parseMessageWithAttachments(
     await enrichOffloadedMediaMetadata(offloadedRefs);
     opts?.assertCurrent?.();
   } catch (err) {
-    if (savedMediaIds.length > 0) {
-      await Promise.allSettled(savedMediaIds.map((id) => deleteMediaBuffer(id, "inbound")));
-    }
+    let failure = err;
     if (err instanceof WorkerTaskError && err !== opts?.signal?.reason) {
       if (err.code === "failed") {
-        throw new Error(err.message, { cause: err });
+        failure = new Error(err.message, { cause: err });
+      } else {
+        failure = new MediaOffloadError(
+          `[Gateway Error] Failed to prepare attachments: ${formatErrorMessage(err)}`,
+          { cause: err },
+        );
       }
-      throw new MediaOffloadError(
-        `[Gateway Error] Failed to prepare attachments: ${formatErrorMessage(err)}`,
-        { cause: err },
-      );
     }
-    throw err;
+    try {
+      opts?.onFailure?.(failure);
+    } finally {
+      if (savedMediaIds.length > 0) {
+        await Promise.allSettled(savedMediaIds.map((id) => deleteMediaBuffer(id, "inbound")));
+      }
+    }
+    throw failure;
   }
 
   return {

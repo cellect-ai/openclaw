@@ -47,6 +47,42 @@ describe("slack socket reconnect loop", () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
   });
+  it("retries an established socket disconnect through the monitor after stopping its predecessor", async () => {
+    const ready = createDeferred<void>();
+    const order: string[] = [];
+    let starts = 0;
+    slackTestState.appStartMock.mockImplementation(async () => {
+      order.push("start");
+      if (++starts === 2) controller.abort();
+    });
+    slackTestState.appStopMock.mockImplementation(async () => {
+      order.push("stop");
+    });
+    setStatus.mockImplementation((patch) => {
+      if (patch.connected === true) ready.resolve();
+    });
+    const run = start();
+    try {
+      await ready.promise;
+      expect(slackTestState.socketModeReceiverArgs).toMatchObject({ autoReconnectEnabled: false });
+      slackTestState.socketModeClient?.emit("disconnected");
+      await vi.runAllTimersAsync();
+      await expect(run).resolves.toBeUndefined();
+      expect(order.slice(0, 3)).toEqual(["start", "stop", "start"]);
+      expect(slackTestState.appStartMock).toHaveBeenCalledTimes(2);
+      expect(setStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          connected: false,
+          lifecycle: "recovering",
+          lastDisconnect: { at: expect.any(Number) },
+        }),
+      );
+    } finally {
+      controller.abort();
+      await run;
+      setStatus.mockReset();
+    }
+  });
   it("continues after thirteen consecutive recoverable Slack Web API HTTP failures", async () => {
     failStarts(13, () =>
       Object.assign(new Error("Slack Web API HTTP error"), {

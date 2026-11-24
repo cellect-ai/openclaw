@@ -6,6 +6,7 @@ import {
 import { scopeCommandTranscriptId } from "../../config/sessions/command-transcript.js";
 import { logVerbose } from "../../globals.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import { withClaimingHookAdmission } from "../../plugins/hook-claim-admission.js";
 import { createPluginSubagentRequesterContext } from "../../plugins/runtime/subagent-requester-context.js";
 import {
@@ -417,6 +418,14 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
         await suppressPendingFinalDelivery(payload);
       }
       if (pendingBlock || sourceRecovery) {
+        const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
+        if (completion && blockDeliveryOutcome === "failed-deliver" && !pendingBlock) {
+          // Record the text's uncertain effect before media admission can reject a
+          // retired plan. That rejection must not leave already-attempted text retryable.
+          await settlePendingFinalDelivery({ kind: "pending-final", ...completion }, "unknown", [
+            "prepared",
+          ]);
+        }
         const sourceFinal = nativeFinalDeliveryReference(payload);
         const commandOwnerReference =
           getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion?.commandOwnerReference;

@@ -348,62 +348,73 @@ describe("talk realtime gateway relay", () => {
     }
   });
 
-  it("creates the relay voice record and rejects a mismatched consult session", async () => {
-    const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
-    const tempDir = await fs.realpath(
-      await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-relay-voice-consult-")),
-    );
-    setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
-    try {
-      const session = await createRelay({
-        context: {
-          broadcastToConnIds: vi.fn(),
-          chatAbortControllers: new Map(),
-          getRuntimeConfig: () => ({}),
-          logGateway: { warn: vi.fn() },
-        } as never,
-        connId: "conn-consult",
-        cfg: {},
-        provider: createIdleRelayProvider(),
-        sessionKey: "agent:main:main",
-      });
-      expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)).toBeUndefined();
+  it.each(["main", "agent:main:main"])(
+    "creates the relay voice record from %s and rejects a mismatched consult session",
+    async (requestedKey) => {
+      const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);
+      const tempDir = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-relay-voice-consult-")),
+      );
+      setTestEnvValue("OPENCLAW_STATE_DIR", tempDir);
+      try {
+        const session = await createRelay({
+          context: {
+            broadcastToConnIds: vi.fn(),
+            chatAbortControllers: new Map(),
+            getRuntimeConfig: () => ({}),
+            logGateway: { warn: vi.fn() },
+          } as never,
+          connId: "conn-consult",
+          cfg: {},
+          provider: createIdleRelayProvider(),
+          sessionKey: "agent:main:main",
+        });
+        expect(
+          clientVoiceSessionTesting.readRecord("main", session.relaySessionId),
+        ).toBeUndefined();
 
-      registerTalkRealtimeRelayAgentRun({
-        relaySessionId: session.relaySessionId,
-        connId: "conn-consult",
-        sessionKey: "agent:main:main",
-        runId: "run-before-transcript",
-      });
-      expect(() =>
-        registerTalkRealtimeRelayAgentRun({
+        await registerTalkRealtimeRelayAgentRun({
           relaySessionId: session.relaySessionId,
           connId: "conn-consult",
-          sessionKey: "agent:main:other",
-          runId: "run-other-session",
-        }),
-      ).toThrow("Realtime relay session belongs to another agent session");
+          sessionKey: requestedKey,
+          runId: "run-before-transcript",
+        });
+        await expect(
+          registerTalkRealtimeRelayAgentRun({
+            relaySessionId: session.relaySessionId,
+            connId: "conn-consult",
+            sessionKey: "agent:main:other",
+            runId: "run-other-session",
+          }),
+        ).rejects.toThrow("Realtime relay session belongs to another agent session");
+        const relay = relaySessions.get(session.relaySessionId);
+        expect(relay?.activeAgentRuns.size).toBe(1);
+        expect(relay?.activeAgentRuns.get("run-before-transcript")?.sessionKey).toBe(
+          "agent:main:main",
+        );
+        expect(relay?.activeAgentRuns.has("run-other-session")).toBe(false);
 
-      expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)).toMatchObject({
-        status: "open",
-        consultRunIds: ["run-before-transcript"],
-      });
-      void stopRelay({
-        relaySessionId: session.relaySessionId,
-        connId: "conn-consult",
-      });
-      await vi.waitFor(() =>
-        expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)?.status).toBe(
-          "closed",
-        ),
-      );
-    } finally {
-      await cleanupIsolatedRelayState(tempDir);
-      clientVoiceSessionTesting.reset();
-      envSnapshot.restore();
-      await fs.rm(tempDir, { recursive: true, force: true });
-    }
-  });
+        expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)).toMatchObject({
+          status: "open",
+          consultRunIds: ["run-before-transcript"],
+        });
+        void stopRelay({
+          relaySessionId: session.relaySessionId,
+          connId: "conn-consult",
+        });
+        await vi.waitFor(() =>
+          expect(clientVoiceSessionTesting.readRecord("main", session.relaySessionId)?.status).toBe(
+            "closed",
+          ),
+        );
+      } finally {
+        await cleanupIsolatedRelayState(tempDir);
+        clientVoiceSessionTesting.reset();
+        envSnapshot.restore();
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it("logs transcript append failures and rejects an incomplete close", async () => {
     const envSnapshot = captureEnv(["OPENCLAW_STATE_DIR"]);

@@ -10,6 +10,7 @@ import { buildChannelInboundEventContext } from "../channels/inbound-event/conte
 import { createHostChannelInboundEventContextBuilder } from "../channels/inbound-event/host-context-builder.js";
 import { createHostIngressFixture } from "../channels/message-access/host-ingress.test-support.js";
 import { createHostChannelIngressRuntime } from "../channels/message-access/runtime.js";
+import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
 import { listWorkshopChanges } from "../skills/workshop/changes.js";
@@ -59,6 +60,7 @@ async function nativeFixture(stateDir: string, group: boolean) {
       },
     },
   };
+  setRuntimeConfigSnapshot(cfg);
   const { gateway } = createHostIngressFixture(channelId, cfg);
   let live = true;
   const owner = { channelId, isLive: () => live, resolveGatewayContext: () => gateway };

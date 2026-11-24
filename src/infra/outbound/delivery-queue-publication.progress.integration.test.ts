@@ -51,10 +51,17 @@ it.each(
 )(
   "captures a distinct final aggregate after progress before mutable observers ($mode, $primaryId)",
   async ({ mode, primaryId }) => {
+    const native = await seedNativeFinal();
     const payload = { text: "synthetic final answer" };
     const publication = bindReplyPublication(
       {},
-      { payload, kind: "final", channel: "matrix", sessionKey: "session", runId: "run" },
+      {
+        payload,
+        kind: "final",
+        channel: "matrix",
+        sessionKey: native.scope.sessionKey,
+        runId: "run",
+      },
     );
     requireReplyPublicationReceipt(payload);
     const send = vi.fn(async (context: ChannelMessageSendTextContext) => {
@@ -121,7 +128,6 @@ it.each(
           }
         },
       });
-    const native = await seedNativeFinal();
     const params = {
       cfg: {},
       channel: "matrix",

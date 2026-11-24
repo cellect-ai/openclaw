@@ -86,8 +86,34 @@ export async function inspectThread(rawPermalink: string) {
   }
   const members = observations.flatMap((observation) => observation.members);
   const complete = observations.every((observation) => observation.complete);
+  const statuses = observations.map((observation) => observation.status);
+  const status = owners.length === 1 ? statuses[0] : undefined;
+  const latestTask = status?.latestTask ?? null;
+  const owner =
+    owners.length === 1
+      ? members.find(
+          (member) => member.sessionKey === owners[0]?.key && member.agentId === owners[0]?.agentId,
+        )
+      : undefined;
   return {
     ref,
+    permalink: ref.permalink,
+    channelId: ref.channelId,
+    threadTs: ref.threadTs,
+    agentId: latestTask?.agentId ?? owner?.agentId ?? null,
+    sessionKey: latestTask?.ownerKey ?? owner?.sessionKey ?? null,
+    sessionExists: owners.length > 0,
+    sessionUpdatedAt: owner?.updatedAt ?? null,
+    lastTool: status?.lastTool ?? null,
+    lastToolAt: status?.lastToolAt ?? null,
+    lastError: status?.lastError ?? null,
+    latestTask,
+    taskCount: status?.taskCount ?? null,
+    historyAvailable: status?.historyAvailable ?? false,
+    historyComplete: status?.historyComplete ?? false,
+    historyScope: "retained-terminal-observations" as const,
+    currentTerminalCoverageComplete: status?.currentTerminalCoverageComplete ?? false,
+    transcriptComplete: status?.transcriptComplete ?? false,
     members,
     complete,
     active: members.some((member) => member.status === "running" || member.status === "queued"),
@@ -111,7 +137,25 @@ export async function threadStatusCommand(
     return;
   }
   runtime.log(`Slack thread ${state.ref.channelId}/${state.ref.threadTs}`);
+  runtime.log(`agent: ${state.agentId ?? "unknown"}`);
+  runtime.log(`session: ${state.sessionExists ? (state.sessionKey ?? "ambiguous") : "missing"}`);
   runtime.log(`active: ${state.active ? "yes" : "no"}`);
+  runtime.log(
+    `latest task: ${state.latestTask ? `${state.latestTask.taskId} (${state.latestTask.status})` : state.historyAvailable && state.historyComplete ? "none" : "unknown"}`,
+  );
+  runtime.log(
+    `last activity: ${state.latestTask?.lastEventAt ?? state.sessionUpdatedAt ?? "unknown"}`,
+  );
+  runtime.log(`last tool: ${state.lastTool ?? "unknown"}`);
+  runtime.log(
+    `last error: ${state.lastError ?? (state.historyComplete && state.transcriptComplete ? "none" : "unknown")}`,
+  );
+  if (!state.historyAvailable) runtime.log("task history: unavailable");
+  else if (!state.historyComplete)
+    runtime.log("task history: incomplete (retained current-session observations only)");
+  runtime.log("task count and latest task describe retained terminal observations");
+  if (!state.transcriptComplete)
+    runtime.log("transcript history: incomplete (bounded current-session tail)");
   for (const member of state.members)
     runtime.log(
       `${member.agentId} ${member.sessionKey}: ${member.status}${member.recoveryPending ? " (recovery pending)" : ""}${member.terminalRunId ? ` [${member.terminalRunId}]` : ""}`,

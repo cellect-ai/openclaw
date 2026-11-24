@@ -14,6 +14,7 @@ import { resolveConversationDeliveryScope } from "./delivery-completion.js";
 import { releaseSpoolArtifacts, stageQueuePayloadMedia } from "./delivery-queue-media-spool.js";
 import { cancelDeliveryQueueMediaRetention } from "./delivery-queue-media-staging.js";
 import { projectQueuedDeliveryOptions } from "./delivery-queue-projection.js";
+import { assertDeliveryPublicationOwner } from "./delivery-queue-publication-owner.js";
 import {
   loadPendingDelivery,
   type QueuedDelivery,
@@ -34,6 +35,7 @@ export function restoreQueuedDeliveryCustody(
   params: InternalDeliverOutboundPayloadsParams,
   entry: QueuedDelivery,
 ): InternalDeliverOutboundPayloadsParams {
+  assertDeliveryPublicationOwner(entry);
   // A regenerated caller owns current runtime authority, never the durable
   // effect. Recipient, staged payload, and completion stay with the first row.
   const {

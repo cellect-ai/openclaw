@@ -1,6 +1,7 @@
 // Registered RPC boundary: suspension preserves a live call, not a generic bypass.
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
+  armGatewaySuspendHandoff,
   prepareGatewaySuspend,
   resetGatewaySuspendCoordinatorForLifecycleRestart,
 } from "../infra/gateway-suspend-coordinator.js";
@@ -45,6 +46,48 @@ afterEach(async () => {
   }
 });
 
+function prepareVoiceSuspension(requestId: string) {
+  const lease = prepareGatewaySuspend({
+    requestId,
+    drain: true,
+    pauseScheduling: () => {},
+    resumeScheduling: () => {},
+    inspect: { getTerminalPersistence: () => 0 },
+  });
+  // Native READY certifies write custody, while requireIdle separately guards
+  // noninterrupting stop. Keep real root inspectors; never fabricate idle work.
+  expect(lease).toMatchObject({
+    status: "ready",
+    blockers: expect.arrayContaining([expect.objectContaining({ kind: "root-request", count: 1 })]),
+  });
+  if (lease.status !== "ready") throw new Error("Expected native write-drain readiness");
+  const owner = { isCurrent: () => true, commitStop: vi.fn() };
+  return {
+    expectStopBlocked() {
+      expect(getActiveGatewayRootWorkCount()).toBe(1);
+      expect(
+        armGatewaySuspendHandoff({
+          suspensionId: lease.suspensionId,
+          owner,
+          requireIdle: true,
+          commit: true,
+        }),
+      ).toMatchObject({
+        ok: true,
+        value: { status: "busy", reason: "active-work", suspensionId: lease.suspensionId },
+      });
+      expect(owner.commitStop).not.toHaveBeenCalled();
+    },
+    expectCanArmAfterRelease() {
+      expect(getActiveGatewayRootWorkCount()).toBe(0);
+      expect(
+        armGatewaySuspendHandoff({ suspensionId: lease.suspensionId, owner, requireIdle: true }),
+      ).toMatchObject({ ok: true, value: { status: "armed", suspensionId: lease.suspensionId } });
+      expect(owner.commitStop).not.toHaveBeenCalled();
+    },
+  };
+}
+
 it("keeps registered audio and close usable while rejecting new calls and foreign call ids", async () => {
   const creating = tryBeginGatewayRootWorkAdmission("ws:talk.session.create")!;
   const transport = makeRelayTransport();
@@ -75,27 +118,21 @@ it("keeps registered audio and close usable while rejecting new calls and foreig
     sessionTarget: target,
   });
   creating.release();
-  const lease = prepareGatewaySuspend({
-    requestId: "voice-deploy",
-    drain: true,
-    pauseScheduling: () => {},
-    resumeScheduling: () => {},
-    inspect: { getTerminalPersistence: () => 0 },
-  });
-  expect(lease.status).toBe("draining");
-  const rpc = async (method: keyof typeof talkSessionHandlers, requestParams: unknown) => {
-    const result = dispatch({
-      method,
-      requestParams,
-      handler: talkSessionHandlers[method]!,
-      scope: "operator.write",
-      core: true,
-      context,
-    });
-    await result.request;
-    return result.respond;
-  };
   try {
+    const suspension = prepareVoiceSuspension("voice-deploy");
+    suspension.expectStopBlocked();
+    const rpc = async (method: keyof typeof talkSessionHandlers, requestParams: unknown) => {
+      const result = dispatch({
+        method,
+        requestParams,
+        handler: talkSessionHandlers[method]!,
+        scope: "operator.write",
+        core: true,
+        context,
+      });
+      await result.request;
+      return result.respond;
+    };
     expect(
       await rpc("talk.session.appendAudio", {
         sessionId: session.relaySessionId,
@@ -116,7 +153,7 @@ it("keeps registered audio and close usable while rejecting new calls and foreig
     expect(
       await rpc("talk.session.close", { sessionId: session.relaySessionId }),
     ).toHaveBeenCalledWith(true, { ok: true }, undefined);
-    expect(getActiveGatewayRootWorkCount()).toBe(0);
+    suspension.expectCanArmAfterRelease();
   } finally {
     try {
       await stopTalkRealtimeRelaySession({
@@ -165,28 +202,21 @@ it("keeps registered transcription audio live and blocks stop until provider fin
     }),
   );
   creating.release();
-  expect(
-    prepareGatewaySuspend({
-      requestId: "transcription-release",
-      drain: true,
-      pauseScheduling: () => {},
-      resumeScheduling: () => {},
-      inspect: { getTerminalPersistence: () => 0 },
-    }).status,
-  ).toBe("draining");
-  const rpc = async (method: keyof typeof talkSessionHandlers, requestParams: unknown) => {
-    const result = dispatch({
-      method,
-      requestParams,
-      handler: talkSessionHandlers[method]!,
-      scope: "operator.write",
-      core: true,
-      context,
-    });
-    await result.request;
-    return result.respond;
-  };
   try {
+    const suspension = prepareVoiceSuspension("transcription-release");
+    suspension.expectStopBlocked();
+    const rpc = async (method: keyof typeof talkSessionHandlers, requestParams: unknown) => {
+      const result = dispatch({
+        method,
+        requestParams,
+        handler: talkSessionHandlers[method]!,
+        scope: "operator.write",
+        core: true,
+        context,
+      });
+      await result.request;
+      return result.respond;
+    };
     expect(
       await rpc("talk.session.appendAudio", {
         sessionId: session.transcriptionSessionId,
@@ -197,9 +227,9 @@ it("keeps registered transcription audio live and blocks stop until provider fin
     expect(
       await rpc("talk.session.close", { sessionId: session.transcriptionSessionId }),
     ).toHaveBeenCalledWith(true, { ok: true }, undefined);
-    expect(getActiveGatewayRootWorkCount()).toBe(1);
+    suspension.expectStopBlocked();
     await vi.advanceTimersByTimeAsync(5_000);
-    expect(getActiveGatewayRootWorkCount()).toBe(0);
+    suspension.expectCanArmAfterRelease();
   } finally {
     try {
       stopTalkTranscriptionRelaySession({

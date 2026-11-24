@@ -1,5 +1,6 @@
 import path from "node:path";
 import { expect, it, vi } from "vitest";
+import { captureRuntimeConfigAsyncReader } from "../../config/io.js";
 import {
   appendTranscriptMessage,
   loadSessionEntry,
@@ -47,6 +48,7 @@ async function withBoundDispatch(
   check: (fixture: Awaited<ReturnType<typeof prepare>>) => Promise<void>,
 ) {
   await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+    await captureRuntimeConfigAsyncReader()();
     resetAgentEventsForTest();
     const fixture = await prepare(state, options);
     try {

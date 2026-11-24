@@ -1,14 +1,14 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { waitForGatewayDispatch } from "../../gateway/server-in-process-dispatch.js";
 import type { DispatchGatewayMethodInProcessOptions } from "../../gateway/server-plugin-in-process-dispatch.types.js";
 import * as agentRuns from "../../infra/agent-run-registry.js";
 import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
 import { createDeferredCore } from "../../shared/deferred.js";
+import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
   getAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
 } from "../admitted-run-context.js";
-import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
 import {
   bindRequesterOwnerIdentity,
   bindRequesterYieldCronAuthority,
@@ -33,7 +33,10 @@ const fixture = vi.hoisted(() => ({
   wait: vi.fn(),
   gatewayContext: {},
 }));
-vi.mock("../../config/config.js", () => ({ getRuntimeConfig: () => ({}) }));
+vi.mock("../../config/config.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../config/config.js")>()),
+  getRuntimeConfig: () => ({}),
+}));
 // mock-isolation: The fixture owns dispatch and continuation custody without booting a Gateway.
 vi.mock("../../gateway/server-plugin-in-process-dispatch.js", () => ({
   getInProcessGatewayRequestContext: () => fixture.gatewayContext,
@@ -157,10 +160,17 @@ async function inRun<T>(
   work: () => Promise<T>,
   scope?: NonNullable<ReturnType<typeof createCronCreatorAuthorityCapability>>,
 ) {
-  const { operationalRunInstance } = createTestAdmittedRunContext(runId);
-  const approvalAuthority = agentRuns.claimAgentRunDelegatedAuthority(operationalRunInstance);
-  agentRuns.registerAgentRunContext(runId, { ...requester, sessionId: SESSION_ID });
+  const admission = prepareSystemAgentRunAdmission({}, runId, "main", "owner-continuation-test");
   try {
+    const admitted = await admission.admit("embedded");
+    const { operationalRunInstance } = admitted;
+    const approvalAuthority = getAdmittedRunDelegatedAuthority(admitted)!;
+    expect(approvalAuthority).toBeDefined();
+    agentRuns.registerAgentRunContext(runId, {
+      ...requester,
+      sessionId: SESSION_ID,
+      delegatedAuthority: approvalAuthority,
+    });
     return await withGatewayToolCallerIdentity(
       {
         ...requester,
@@ -171,16 +181,21 @@ async function inRun<T>(
       () => (scope ? runWithCronCreatorAuthorityCapability(scope, work) : work()),
     );
   } finally {
-    agentRuns.releaseAgentRunDelegatedAuthority(approvalAuthority);
+    admission.close();
     agentRuns.clearAgentRunContext(runId);
   }
 }
-afterEach(() => {
+let state: Awaited<ReturnType<typeof createOpenClawTestState>>;
+beforeEach(async () => {
+  state = await createOpenClawTestState({ label: "owner-continuation" });
+});
+afterEach(async () => {
   revokeRequesterCronAuthority(SESSION);
   fixture.callGateway.mockReset();
   fixture.wait.mockReset();
   vi.useRealTimers();
   vi.clearAllMocks();
+  await state.cleanup();
 });
 
 describe("child followup requester continuation", () => {

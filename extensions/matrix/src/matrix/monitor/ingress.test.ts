@@ -54,7 +54,7 @@ describe("Matrix sync admission", () => {
             events: [
               {
                 ...event,
-                event_id: JSON.stringify(["!left:example.org", "$left"]),
+                event_id: "$left",
                 type: "m.room.message",
               },
             ],
@@ -75,7 +75,7 @@ describe("Matrix sync admission", () => {
           },
         },
         {
-          id: "$left",
+          id: JSON.stringify(["!left:example.org", "$left"]),
           laneKey: "!left:example.org",
           payload: { rawEvent: expect.stringContaining("$left") },
         },

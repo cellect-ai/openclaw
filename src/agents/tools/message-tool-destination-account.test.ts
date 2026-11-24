@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import * as commandSecretGateway from "../../cli/command-secret-gateway.js";
 import * as commandSecretTargets from "../../cli/command-secret-targets.js";
+import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../../config/config.js";
 import type {
   MessageActionInput,
   MessageActionResult,
@@ -18,10 +19,12 @@ import {
 
 const EMPTY_CATALOG = { version: 0, channels: [], getChannel: () => undefined } as const;
 beforeEach(() => {
+  setRuntimeConfigSnapshot({});
   stubMessageSecrets();
 });
 afterEach(() => {
   vi.restoreAllMocks();
+  clearRuntimeConfigSnapshot();
 });
 
 describe("message tool destination account selection", () => {

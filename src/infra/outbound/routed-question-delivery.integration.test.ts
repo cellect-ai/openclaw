@@ -88,6 +88,8 @@ it.for(["tool", "subscriber"] as const)(
             workspaceDir: state.workspaceDir,
             disablePluginTools: true,
             wrapBeforeToolCallHook: false,
+            // The fixture Gateway supplies the native question request/answer owner.
+            questionInputMode: "native",
           }).find((candidate) => candidate.name === "ask_user");
           if (!tool) {
             throw new Error("routed question tool was not constructed");

@@ -9,7 +9,7 @@ import type { SelectPicker } from "../../components/select-picker.ts";
 import { t } from "../../i18n/index.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
-import { flush } from "../../test-helpers/solid-settle.ts";
+import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
 import { completeConfigContext } from "./config-page.test-support.ts";
 import type { ConfigPageId, ConfigPageRouteData } from "./config-page.tsx";
 import { pages } from "./route.ts";
@@ -50,6 +50,15 @@ export function nativeVoice(snapshot: NonNullable<NativeDeviceSettingsCapability
       flush();
     },
   };
+}
+
+/** An issued RPC is not an accepted, rendered catalog. */
+export function waitForTalkCatalog(page: TalkPageElement, request: unknown) {
+  return waitForSolid(() => {
+    expect(request).toHaveBeenCalledExactlyOnceWith("talk.catalog", {}, undefined);
+    expect(page.querySelector('input[type="radio"]')).not.toBeNull();
+    expect(page.querySelector("openclaw-select-picker")).not.toBeNull();
+  });
 }
 
 export function readVoiceOptions(page: HTMLElement): string[] {

@@ -47,12 +47,18 @@ describe("realtime voice agent consult tool", () => {
     ).toBe("What changed?\n\nContext:\nPR #123\n\nSpoken style:\nconcise");
   });
 
-  it("does not accept a model-supplied spoken confirmation as authority", () => {
-    const args = { question: "Send it now", confirmationId: " confirm-123 " };
+  it("normalizes a confirmation reference without accepting model-supplied authority fields", () => {
+    const args = {
+      question: "Send it now",
+      confirmationId: " confirm-123 ",
+      confirmed: true,
+      senderIsOwner: true,
+    };
     expect(parseArgs(args)).toStrictEqual({
       question: "Send it now",
       context: undefined,
       responseStyle: undefined,
+      confirmationId: "confirm-123",
     });
   });
 

@@ -20,6 +20,7 @@ import {
 import { getSessionBindingService } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { createReplyDispatcher, type ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { resolveSlackAccount } from "../../accounts.js";
 import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
 import {
@@ -726,7 +727,9 @@ it.each(["reverse-write", "read-only"] as const)(
     ]);
     try {
       const cfg = { channels: { slack: { botToken: "xoxb-test" } } };
-      await dispatchPreparedSlackMessage(createPreparedSlackMessage({ cfg }));
+      const prepared = createPreparedSlackMessage({ cfg });
+      prepared.account = resolveSlackAccount({ cfg, accountId: "default" });
+      await dispatchPreparedSlackMessage(prepared);
       const durable = capturedTurn?.delivery?.durable;
       if (typeof durable !== "function") {
         throw new Error("Expected a Slack durable final adapter");

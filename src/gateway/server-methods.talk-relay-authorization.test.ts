@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { captureRuntimeConfigAsyncReader } from "../config/io.js";
 import { upsertSessionEntryCore } from "../config/sessions/session-accessor.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createDirectChatContext } from "./server-chat.agent-events.test-helpers.js";
@@ -20,8 +21,10 @@ describe("bound Talk relay authorization at gateway dispatch", () => {
     scenario = "owned",
     role: Parameters<typeof roleClient>[0] = "write",
   ) {
-    return withOpenClawTestState({ scenario: "minimal" }, async () => {
+    return withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const cfg = rolePolicyConfig();
+      await state.writeConfig(cfg);
+      await captureRuntimeConfigAsyncReader()();
       const requestClient = roleClient(role, "voice-browser");
       requestClient.connId = "voice-browser-connection";
       await upsertSessionEntryCore(

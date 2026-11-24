@@ -1,5 +1,9 @@
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
+import {
+  getPreparedModelRuntimeMocks,
+  usePreparedModelRuntimeHarness,
+} from "./prepared-model-runtime.test-harness.js";
 import "../gateway/server-methods/models.js";
 import { queryObjects } from "node:v8";
 import { describe, expect, it, vi } from "vitest";
@@ -61,10 +65,6 @@ import {
 import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import * as pluginLifetime from "./prepared-model-runtime.plugin-lifetime.js";
 import { updateOwnersForScopedRefresh } from "./prepared-model-runtime.refresh-scope.js";
-import {
-  getPreparedModelRuntimeMocks,
-  usePreparedModelRuntimeHarness,
-} from "./prepared-model-runtime.test-harness.js";
 
 vi.mock("../logging/subsystem.js", async (importOriginal) => {
   const { createMockSubsystemLogger } = await import("../../test/helpers/mock-subsystem-logger.js");

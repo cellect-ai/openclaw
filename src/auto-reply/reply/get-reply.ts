@@ -58,7 +58,6 @@ import { handleInlineActions } from "./get-reply-inline-actions.js";
 import { maybeResolveNativeSlashCommandFastReply } from "./get-reply-native-slash-fast-path.js";
 import {
   applyLinkUnderstandingIfNeeded,
-  canReadReplyAttachmentPaths,
   applyMediaUnderstandingIfNeeded,
   hasExplicitAudioUnderstandingConfig,
   hasLinkCandidate,
@@ -76,6 +75,7 @@ import {
   hasInboundMedia,
   hasInboundMediaForUnderstanding,
 } from "./inbound-media.js";
+import { prepareReplyAttachmentPaths } from "./managed-pdf-staging-recovery.js";
 import { emitPreAgentMessageHooks } from "./message-preprocess-hooks.js";
 import { createModelSelectionState, resolveTurnModelSelection } from "./model-selection.js";
 import { getPreparedReplyDispatchRuntime } from "./prepared-reply-dispatch-context.js";
@@ -883,51 +883,16 @@ async function resolveReplyFromConfig(
     }
     const modelLevels = await resolveRunModelLevels();
 
-    let stagedAttachmentPaths: ReadonlyMap<number, string> = hasStagedMediaFacts(finalized.media)
-      ? new Map(
-          (finalized.media ?? []).flatMap((fact, index) =>
-            fact.path ? [[index, fact.path] as const] : [],
-          ),
-        )
-      : new Map<number, string>();
-    // Already-staged facts or SDK projections must remain a single-stage contract.
-    if (
-      !useFastTestBootstrap &&
-      sessionKey &&
-      !inboundMediaWasAlreadyStaged &&
-      !hasStagedMediaFacts(ctx.media) &&
-      hasInboundMedia(ctx)
-    ) {
-      const stagingSessionEntry =
-        sessionEntryHandle?.getCurrent() ?? sessionStore?.[sessionKey] ?? sessionEntry;
-      const stageResult = await traceGetReplyPhase("reply.stage_media", async () =>
-        (await stageReplyMediaRuntimeLoader.load()).stageReplyMedia({
-          ctx,
-          sessionCtx,
-          cfg,
-          agentId,
-          sessionKey,
-          workspaceDir,
-          sessionEntry: stagingSessionEntry,
-          skillFilter: preparedReplyOpts?.skillFilter,
-          skillOverrides: preparedReplyOpts?.skillOverrides,
-          abortSignal: optsWithSkillFilter?.abortSignal,
-          awaitSessionDiffBaseline: resolvedOpts?.awaitSessionDiffBaseline,
-        }),
-      );
-      stagedAttachmentPaths = stageResult.staged;
-    }
-
-    if (
-      enableLocalPathSelfServe &&
-      resolvedOpts?.disableTools !== true &&
-      (await canReadReplyAttachmentPaths({
+    const stagingSessionEntry =
+      sessionEntryHandle?.getCurrent() ?? sessionStore?.[sessionKey ?? ""] ?? sessionEntry;
+    await prepareReplyAttachmentPaths({
+      policy: {
         cfg,
         agentId,
         sessionKey,
         sessionCtx,
         workspaceDir,
-        stagedAttachmentCount: stagedAttachmentPaths.size,
+        stagedAttachmentCount: 0,
         spawnedBy: sessionEntry.spawnedBy,
         senderIsOwner: command.senderIsOwner,
         modelProvider: runProvider,
@@ -935,13 +900,46 @@ async function resolveReplyFromConfig(
         operatorProfileId: resolvedOpts?.operatorAuthority?.profileId,
         toolsAllow: resolvedOpts?.toolsAllow,
         sessionEntry,
-      }))
-    ) {
-      enableLocalPathSelfServe(
-        [finalized, sessionCtx],
-        stagedAttachmentPaths.size > 0 ? stagedAttachmentPaths : undefined,
-      );
-    }
+      },
+      options: resolvedOpts,
+      enableLocalPathSelfServe,
+      contexts: [finalized, sessionCtx],
+      assertCurrent: () => {
+        command.assertOwnerCurrent?.();
+        if (
+          ctx.MediaRemoteHost ||
+          (sessionEntryHandle?.getCurrent() ?? sessionEntry) !== stagingSessionEntry
+        ) {
+          throw new Error("Attachment session owner changed");
+        }
+      },
+      stagedMedia: finalized.media,
+      beforeStage: resolvedOpts?.awaitSessionDiffBaseline,
+      // Already-staged facts remain a single-stage contract.
+      stage:
+        !useFastTestBootstrap &&
+        sessionKey &&
+        !inboundMediaWasAlreadyStaged &&
+        !hasStagedMediaFacts(ctx.media) &&
+        hasInboundMedia(ctx)
+          ? (awaitSessionDiffBaseline) =>
+              traceGetReplyPhase("reply.stage_media", async () =>
+                (await stageReplyMediaRuntimeLoader.load()).stageReplyMedia({
+                  ctx,
+                  sessionCtx,
+                  cfg,
+                  agentId,
+                  sessionKey,
+                  workspaceDir,
+                  sessionEntry: stagingSessionEntry,
+                  skillFilter: preparedReplyOpts?.skillFilter,
+                  skillOverrides: preparedReplyOpts?.skillOverrides,
+                  abortSignal: optsWithSkillFilter?.abortSignal,
+                  awaitSessionDiffBaseline,
+                }),
+              )
+          : undefined,
+    });
 
     logResolverTiming("milestone", "before_run_prepared_reply");
     const replyResult = await traceGetReplyPhase("reply.run_prepared_reply", () =>

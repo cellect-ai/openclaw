@@ -31,7 +31,7 @@ describe("native Matrix voice consult requester", () => {
     const f = await fixture({ speakerMxid: "@member:threads.example" });
     const channelRequester = prepareTalkRelayConsultAdmission({
       relaySessionId: f.relay.id,
-      connId: f.client.connId,
+      connId: f.relay.connId,
       sessionKey: consultSessionKey,
       callId: "provider-call",
       matrixRoute: consultRoute,
@@ -66,7 +66,7 @@ describe("native Matrix voice consult requester", () => {
     const f = await fixture({ speakerMxid: null });
     const capability = prepareTalkRelayConsultAdmission({
       relaySessionId: f.relay.id,
-      connId: f.client.connId,
+      connId: f.relay.connId,
       sessionKey: consultSessionKey,
       callId: "provider-call",
       matrixRoute: consultRoute,

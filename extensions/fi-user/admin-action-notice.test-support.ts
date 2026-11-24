@@ -4,11 +4,13 @@ import {
 } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
-import { afterAll } from "vitest";
+import { afterAll, afterEach } from "vitest";
 import { NOTICE_STORE_OPTIONS, type NoticeOperations } from "./notice-operation-api.js";
 
 /** Actual worker-backed state, isolated from both other fixtures and deployed state. */
 export function useNoticeStores() {
+  // Native option signatures are process-wide; each completed case owns its policy.
+  afterEach(() => resetPluginStateStoreForTests({ closeDatabase: false }));
   const dirs = useAutoCleanupTempDirTracker((cleanup) =>
     afterAll(async () => {
       await closeOpenClawStateDatabaseAsync();

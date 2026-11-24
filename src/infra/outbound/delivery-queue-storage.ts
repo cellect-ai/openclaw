@@ -40,6 +40,10 @@ import {
   projectOutboundDelivery,
   projectQueuedDeliveryOptions,
 } from "./delivery-queue-projection.js";
+import {
+  captureDeliveryPublicationOwner,
+  requiresDeliveryPublicationOwner,
+} from "./delivery-queue-publication-owner.js";
 import type { StableDeliveryPreparation } from "./delivery-queue-storage.types.js";
 import type {
   LegacyQueuedDelivery,
@@ -54,6 +58,7 @@ import {
   projectPreparedOutboundBatchForStorage,
   type PreparedOutboundBatch,
 } from "./prepared-batch.js";
+import { normalizeTargetForProvider } from "./target-normalization.js";
 
 export { ackDelivery } from "./delivery-queue-ack.js";
 
@@ -107,7 +112,7 @@ function createQueuedDelivery(
   id: string,
   retainOnFailure: boolean,
 ): QueuedDelivery {
-  return {
+  const entry: QueuedDelivery = {
     id,
     enqueuedAt: Date.now(),
     ...projectQueuedDeliveryOptions(params),
@@ -129,6 +134,13 @@ function createQueuedDelivery(
     retryCount: 0,
     attemptCount: 0,
   };
+  if (requiresDeliveryPublicationOwner(entry)) {
+    entry.publicationOwner = captureDeliveryPublicationOwner(
+      entry,
+      normalizeTargetForProvider(entry.channel, entry.to) ?? entry.to,
+    );
+  }
+  return entry;
 }
 
 /** Keep uncertain publication with recovery even when the broker returns a cleanup error. */

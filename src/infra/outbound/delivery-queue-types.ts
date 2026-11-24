@@ -18,6 +18,7 @@ import type {
   DeliveryQueueEntryState,
 } from "../delivery-queue-sqlite.types.js";
 import type { IndexedOutboundAuditTerminal } from "./deliver-types.js";
+import type { DeliveryPublicationOwner } from "./delivery-queue-publication-owner.js";
 import type { OutboundDeliveryFormattingOptions } from "./formatting.js";
 import type { OutboundIdentity } from "./identity.js";
 import type { PreparedOutboundBatch } from "./prepared-batch.js";
@@ -151,6 +152,8 @@ export type DeliveryFailureSettlement = {
 export type QueuedDelivery = Omit<QueuedDeliveryPayload, "preparedBatch" | "payloads"> &
   Omit<DeliveryQueueEntryState, "attemptCount" | "recoveryState" | "acknowledgedAt"> & {
     preparedBatch: PreparedOutboundBatch;
+    /** Captured once by admission; absent legacy owners require reconciliation. */
+    publicationOwner?: DeliveryPublicationOwner;
     attemptCount: number;
     effectiveReplyToId?: string | null;
     recoveryState?:
