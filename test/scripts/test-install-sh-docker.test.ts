@@ -1042,8 +1042,10 @@ printf 'status=%s\\n' "$status"
   });
 
   it("installs Playwright into the runtime browser cache", () => {
+    // Cellect keeps the browsers root-owned under /opt (outside the /home/node
+    // volume) and links the upstream runtime cache path to them.
     expect(readFileSync("Dockerfile", "utf8")).toMatch(
-      /ENV PLAYWRIGHT_BROWSERS_PATH=\/home\/node\/\.cache\/ms-playwright[\s\S]*?mkdir -p "\$PLAYWRIGHT_BROWSERS_PATH"[\s\S]*?playwright-core\/cli\.js install --with-deps "\$@" chromium/u,
+      /ENV PLAYWRIGHT_BROWSERS_PATH=\/opt\/ms-playwright[\s\S]*?mkdir -p "\$PLAYWRIGHT_BROWSERS_PATH"[\s\S]*?playwright-core\/cli\.js install --with-deps "\$@" chromium[\s\S]*?ln -s "\$PLAYWRIGHT_BROWSERS_PATH" \/home\/node\/\.cache\/ms-playwright/u,
     );
     expectIncludes(
       readFileSync("Dockerfile", "utf8"),
