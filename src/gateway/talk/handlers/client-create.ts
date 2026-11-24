@@ -43,7 +43,6 @@ import {
   type InternalRealtimeVoiceBrowserSessionCreateRequest,
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProviderAsync } from "../../../talk/provider-resolver.js";
-import { prepareRawMatrixBrowserSessionAuthorization } from "../../matrix-browser-session-authorization.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandler } from "../../server-methods/types.js";
@@ -79,6 +78,7 @@ import {
   forgetLegacyVoiceBinding,
   rememberLegacyVoiceBinding,
 } from "./client-legacy-voice-bindings.js";
+import { prepareTalkMatrixBrowserRefusal } from "./matrix-browser-talk-authorization.js";
 
 const REALTIME_VOICE_CLIENT_SESSION_MIN_TTL_MS = 5_000;
 
@@ -145,11 +145,11 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
     if (
       rawMatrixSessionKey &&
       (!isWebchatSessionAllowed({ cfg: runtimeConfig, client, sessionKey: rawMatrixSessionKey }) ||
-        (await prepareRawMatrixBrowserSessionAuthorization({
+        (await prepareTalkMatrixBrowserRefusal({
           cfg: runtimeConfig,
-          clientInfo: client?.connect?.client,
-          pairedClientId: client?.pairedClientId,
+          client,
           sessionKey: rawMatrixSessionKey,
+          agentId,
           authorizedByBinding: false,
         })))
     ) {

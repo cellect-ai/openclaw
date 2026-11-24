@@ -14,7 +14,6 @@ import {
   resolveInternalRealtimeVoiceGatewayRelayLaunchError,
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProviderAsync } from "../../../talk/provider-resolver.js";
-import { prepareRawMatrixBrowserSessionAuthorization } from "../../matrix-browser-session-authorization.js";
 import { ADMIN_SCOPE, hasGatewayAdminScope } from "../../operator-scopes.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
@@ -46,6 +45,7 @@ import { restoreTalkSessionTarget } from "../session-start.js";
 import { prepareTalkSessionTarget, requirePreparedTalkSessionTarget } from "../session-target.js";
 import { createTalkTranscriptionRelaySession } from "../transcription-relay.js";
 import { prepareTalkVoiceReplacement } from "../voice-selection.js";
+import { prepareTalkMatrixBrowserRefusal } from "./matrix-browser-talk-authorization.js";
 import { talkSessionControlHandlers } from "./session-controls.js";
 import { respondInvalidRequest, respondOk, talkSessionError } from "./session-responses.js";
 
@@ -229,11 +229,11 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         );
         assertCommitAllowed();
         if (
-          (await prepareRawMatrixBrowserSessionAuthorization({
+          (await prepareTalkMatrixBrowserRefusal({
             cfg: runtimeConfig,
-            clientInfo: client?.connect?.client,
-            pairedClientId: client?.pairedClientId,
+            client,
             sessionKey: target.canonicalKey,
+            agentId: target.agentId,
             authorizedByBinding: Boolean(bound),
           })) ||
           !isWebchatSessionAllowed({ cfg: runtimeConfig, client, sessionKey: target.canonicalKey })

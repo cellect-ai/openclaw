@@ -13,7 +13,6 @@ import {
   appendClientVoiceTranscript,
   closeClientVoiceSession,
 } from "../../../talk/client-voice-session.js";
-import { prepareRawMatrixBrowserSessionAuthorization } from "../../matrix-browser-session-authorization.js";
 import { captureGatewayOperatorRunAuthority } from "../../operator-run-authority.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
@@ -32,6 +31,7 @@ import { resolveOwnedActiveTalkRunTarget } from "../run-ownership.js";
 import { prepareTalkSessionTarget, requirePreparedTalkSessionTarget } from "../session-target.js";
 import { unregisterTalkVoiceSession } from "../voice-selection.js";
 import { forgetLegacyVoiceBinding } from "./client-legacy-voice-bindings.js";
+import { prepareTalkMatrixBrowserRefusal } from "./matrix-browser-talk-authorization.js";
 const clientMutationError = (error: unknown) =>
   errorShape(ErrorCodes.INVALID_REQUEST, formatForLog(error));
 export const talkClientControlHandlers: GatewayRequestHandlers = {
@@ -71,10 +71,9 @@ export const talkClientControlHandlers: GatewayRequestHandlers = {
       const config = context.getRuntimeConfig();
       if (
         !isWebchatSessionAllowed({ cfg: config, client, sessionKey: params.sessionKey }) ||
-        (await prepareRawMatrixBrowserSessionAuthorization({
+        (await prepareTalkMatrixBrowserRefusal({
           cfg: config,
-          clientInfo: client?.connect?.client,
-          pairedClientId: client?.pairedClientId,
+          client,
           sessionKey: params.sessionKey,
           authorizedByBinding: false,
         }))
@@ -118,10 +117,9 @@ export const talkClientControlHandlers: GatewayRequestHandlers = {
       const config = context.getRuntimeConfig();
       if (
         !isWebchatSessionAllowed({ cfg: config, client, sessionKey: params.sessionKey }) ||
-        (await prepareRawMatrixBrowserSessionAuthorization({
+        (await prepareTalkMatrixBrowserRefusal({
           cfg: config,
-          clientInfo: client?.connect?.client,
-          pairedClientId: client?.pairedClientId,
+          client,
           sessionKey: params.sessionKey,
           authorizedByBinding: false,
         }))

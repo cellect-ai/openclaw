@@ -51,7 +51,6 @@ import {
 } from "../../../talk/client-voice-session.js";
 import { abortChatRunById } from "../../chat-abort.js";
 import { transferGatewayLocalUserIngress } from "../../local-user-ingress.js";
-import { prepareRawMatrixBrowserSessionAuthorization } from "../../matrix-browser-session-authorization.js";
 import { authorizeGatewaySessionCreation } from "../../operator-role-policy.js";
 import { transferGatewayOperatorSourceIdentity } from "../../operator-run-authority.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
@@ -82,6 +81,7 @@ import {
   readLegacyVoiceBinding,
   rememberLegacyVoiceBinding,
 } from "./client-legacy-voice-bindings.js";
+import { prepareTalkMatrixBrowserRefusal } from "./matrix-browser-talk-authorization.js";
 
 function terminalTalkChatSendAckError(result: unknown): ErrorShape | undefined {
   const status = asNullableRecord(result)?.status;
@@ -156,11 +156,11 @@ export const talkClientHandlers: GatewayRequestHandlers = {
       request.sessionMutationAuthorization?.assertCurrent();
       if (
         !isWebchatSessionAllowed({ cfg: config, client: request.client, sessionKey }) ||
-        (await prepareRawMatrixBrowserSessionAuthorization({
+        (await prepareTalkMatrixBrowserRefusal({
           cfg: config,
-          clientInfo: request.client?.connect?.client,
-          pairedClientId: request.client?.pairedClientId,
+          client: request.client,
           sessionKey,
+          agentId: target.agentId,
           authorizedByBinding: Boolean(
             connId &&
             relay?.matrixRoute &&
