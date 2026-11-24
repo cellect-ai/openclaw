@@ -624,12 +624,14 @@ export async function monitorSlackProvider(opts: MonitorSlackOpts) {
               attempt.stopped = true;
             },
             onStarted: async () => {
-              if (attempt.stopped || opts.abortSignal?.aborted) {
-                return;
-              }
+              // A started socket ends the failure episode even when the SDK reports
+              // its disconnect before start() settles; only live-socket work is gated.
               reconnectAttempts = 0;
               disconnectedAt = undefined;
               authState.consecutiveInvalidAuth = 0;
+              if (attempt.stopped || opts.abortSignal?.aborted) {
+                return;
+              }
               socketConnectedAt = Date.now();
               await recoverSlackIdentity();
               if (attempt.stopped || opts.abortSignal?.aborted) {
