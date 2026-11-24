@@ -12,6 +12,7 @@ import type { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { installMatrixTestRuntime } from "../test-runtime.js";
 import { prepareMockMatrixClientStorage } from "./client/shared.test-support.js";
 import { createMatrixCryptoApi } from "./sdk/crypto.test-support.js";
 import { registerDecryptRetentionTests } from "./sdk/decrypt-retention.test-support.js";
@@ -283,6 +284,9 @@ function createCryptoSignalClient(prefix: string) {
 
 describe("MatrixClient event bridge", () => {
   beforeEach(() => {
+    // Split from sdk.test.ts, whose earlier suites installed the runtime that
+    // encrypted clients need to take crypto-store ownership.
+    installMatrixTestRuntime();
     matrixJsClient = createMatrixJsClientStub();
     lastCreateClientOpts = null;
   });
