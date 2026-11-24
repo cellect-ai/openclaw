@@ -225,13 +225,23 @@ export async function settlePendingFinalDelivery(
   });
   const live: SessionActorAuthority = {
     assertCurrent() {},
-    authorize(_stage, facts) {
+    authorize(stage, facts) {
       const entry = facts.entry;
+      const sourceMatches = (plan?: { sourceRunId?: string; sourceGeneration?: string }) =>
+        (completion.sourceRunId === undefined || plan?.sourceRunId === completion.sourceRunId) &&
+        (completion.sourceGeneration === undefined ||
+          plan?.sourceGeneration === completion.sourceGeneration);
+      // The commit postimage of this owner's own cleanup has no pending plan; the
+      // transaction stage already matched it, and a retained receipt must still match.
+      const cleared =
+        stage === "commit" && options.clearAfterSettled && !entry?.pendingFinalDelivery;
+      const receipt = entry?.completedFinalDeliveries?.find(
+        (candidate) => candidate.intentId === completion.intentId,
+      );
       if (
-        (completion.sourceRunId !== undefined &&
-          entry?.pendingFinalDelivery?.sourceRunId !== completion.sourceRunId) ||
-        (completion.sourceGeneration !== undefined &&
-          entry?.pendingFinalDelivery?.sourceGeneration !== completion.sourceGeneration)
+        cleared
+          ? receipt !== undefined && !sourceMatches(receipt)
+          : !sourceMatches(entry?.pendingFinalDelivery)
       ) {
         refused = true;
         throw new Error("Pending final source identity changed");
