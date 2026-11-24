@@ -421,7 +421,16 @@ export function createChatSendDispatchErrorLifecycle(params: {
       return;
     }
 
-    if (visibility && !hidden && !suppressLifecycle && !agentTerminalOwnedAtDispatchReject) {
+    // A context retired by its own terminal (a yielded end) has no native owner left;
+    // the session lifecycle write below records the failure. A successor still refuses.
+    const terminalOwnerRetired = getAgentRunContext(clientRunId) === undefined;
+    if (
+      visibility &&
+      !hidden &&
+      !suppressLifecycle &&
+      !agentTerminalOwnedAtDispatchReject &&
+      !terminalOwnerRetired
+    ) {
       requiredTerminal ??= (async () => {
         if (!isSourceCurrent() || getAgentRunContext(clientRunId) !== visibility) {
           throw new Error("Chat dispatch terminal owner changed before persistence");
