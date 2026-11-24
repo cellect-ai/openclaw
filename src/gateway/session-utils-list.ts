@@ -358,7 +358,8 @@ export function prepareProjectedSessionList(params: {
             // Invitations can change without replacing the entry retained across yields.
             const visibility =
               presentation.sharing.sessionCap === "invited" ? undefined : params.visibility;
-            let visible = visibility?.get(entry);
+            // An unrestricted list has no sharing decision to memoize (11.7 skips it).
+            let visible = presentation.sharing.entryFilter ? visibility?.get(entry) : true;
             if (visible === undefined) {
               const selected = getTarget(key)!;
               visible =
