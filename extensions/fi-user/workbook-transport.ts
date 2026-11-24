@@ -3,6 +3,7 @@ import {
   brokerToken,
   configFromRuntime,
   delegationTurnFor,
+  exchange,
   FI_ADMIN_DELEGATION_AGENT_ID,
   FI_USER_AGENT_ID,
   lookupDelegation,
@@ -85,7 +86,11 @@ export function delegatedWorkbookTransport(
         return undefined;
       }
       const { channel: _channel, ...body } = identity;
-      return { connection: pluginConfig(api, context), body, agentId: FI_USER_AGENT_ID } as const;
+      return {
+        connection: pluginConfig(api, context),
+        body,
+        agentId: FI_USER_AGENT_ID,
+      } as const;
     }
     const proven = adminRequester(context);
     return proven ? ({ ...proven, agentId: FI_ADMIN_DELEGATION_AGENT_ID } as const) : undefined;
@@ -127,6 +132,31 @@ export function delegatedWorkbookTransport(
       }
       return {
         url: `${initial.connection.baseUrl}/api/${encodeURIComponent(delegation.user.orgSlug)}/workbook`,
+        token: delegation.fi.token,
+        orgId: delegation.user.orgId,
+      };
+    },
+  };
+}
+
+/** An admin review run's workbook calls use the review's own Fi token, minted per call. */
+export function reviewWorkbookTransport(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext<2>,
+): WorkbookTransport {
+  return {
+    assertCurrent: () => context.assertInvocationCurrent(),
+    async authorize(signal) {
+      context.assertInvocationCurrent();
+      signal.throwIfAborted();
+      const { delegation, config } = await exchange(api, context);
+      context.assertInvocationCurrent();
+      signal.throwIfAborted();
+      if (!delegation.user.orgId || !delegation.user.orgSlug) {
+        throw new Error("Workbook requester scope unavailable");
+      }
+      return {
+        url: `${config.baseUrl}/api/${encodeURIComponent(delegation.user.orgSlug)}/workbook`,
         token: delegation.fi.token,
         orgId: delegation.user.orgId,
       };

@@ -3,7 +3,7 @@ import { registerShadowRequesterIdentity } from "openclaw/plugin-sdk/session-key
 import { mailWakeDelegationContext } from "./mail-wake-context.js";
 import { projectedMatrixRun } from "./projected-matrix-runs.js";
 import { RECONCILE_FULL_REFRESH_BUDGET } from "./reconciliation-batch.js";
-import { reviewToolAttestation } from "./review-requester.js";
+import { reviewRunAgent, reviewToolAttestation } from "./review-requester.js";
 import { shadowToolAttestation } from "./shadow-requester.js";
 
 export type PluginConfig = {
@@ -76,7 +76,14 @@ export type Delegation = {
   fi: { token: string; expiresAt: number };
   /** Fi's authorship of the Matrix event the mint named (`turn`); older Fi omits it. */
   turn?: { authorship: "person" | "desk_handoff" };
-  review?: { profile: Record<string, unknown>; roomId: string; jobId: string; expiresAt: string };
+  review?: {
+    profile: Record<string, unknown>;
+    roomId: string;
+    jobId: string;
+    expiresAt: string;
+    /** The tier Fi ran this review on; absent from an older Fi, which only wakes the user agent. */
+    agentId?: string;
+  };
   /** Fi's resolved requester; `email` is the active member's own address. Older Fi omits it. */
   requester?: { channel?: string; email?: string };
 };
@@ -316,7 +323,11 @@ export function pluginConfig(
     if (!connection) {
       throw new Error("The current Matrix account environment is not configured");
     }
-    return { ...resolved, ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
+    return {
+      ...resolved,
+      ...connection,
+      baseUrl: connection.baseUrl.replace(/\/+$/, ""),
+    };
   }
   const accountId = context.agentAccountId?.trim();
   const deliveryAccountId = context.deliveryContext?.accountId?.trim();
@@ -330,7 +341,11 @@ export function pluginConfig(
   if (!connection) {
     throw new Error("The current Matrix account environment is not configured");
   }
-  return { ...resolved, ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
+  return {
+    ...resolved,
+    ...connection,
+    baseUrl: connection.baseUrl.replace(/\/+$/, ""),
+  };
 }
 
 /**
@@ -445,7 +460,11 @@ export async function exchange(
   api: OpenClawPluginApi,
   context: OpenClawPluginToolContext,
   options: { privateConversation?: { roomId: string } } = {},
-): Promise<{ delegation: Delegation; config: ResolvedPluginConfig; identity: RequesterIdentity }> {
+): Promise<{
+  delegation: Delegation;
+  config: ResolvedPluginConfig;
+  identity: RequesterIdentity;
+}> {
   let config = pluginConfig(api, context);
   const wakeContext = mailWakeDelegationContext(context);
   if (wakeContext.sessionKey) {
@@ -453,7 +472,11 @@ export async function exchange(
     if (!connection) {
       throw new Error("The host mail source environment is not configured");
     }
-    config = { ...config, ...connection, baseUrl: connection.baseUrl.replace(/\/+$/, "") };
+    config = {
+      ...config,
+      ...connection,
+      baseUrl: connection.baseUrl.replace(/\/+$/, ""),
+    };
   }
   const reviewAttestation = reviewToolAttestation(context);
   if (reviewAttestation) {
@@ -464,8 +487,14 @@ export async function exchange(
     context.assertInvocationCurrent?.();
     const response = await fetch(`${config.baseUrl}/api/personal-agent/background-grant`, {
       method: "POST",
-      headers: { authorization: `Bearer ${broker}`, "content-type": "application/json" },
-      body: JSON.stringify({ reviewAttestation, sessionKey: context.sessionKey }),
+      headers: {
+        authorization: `Bearer ${broker}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        reviewAttestation,
+        sessionKey: context.sessionKey,
+      }),
       signal: AbortSignal.timeout(15_000),
       redirect: "error",
     });
@@ -483,7 +512,22 @@ export async function exchange(
     ) {
       throw new Error("Personal review identity does not match this tenant");
     }
-    return { delegation, config, identity: { channel: "personal-agent-review" } };
+    // Fi names the tier it granted for; it must be this run's own agent. An admin
+    // run needs Fi to say so and this runtime's admin agent to be that agent.
+    const runAgent = reviewRunAgent(context);
+    const grantAgent = delegation.review.agentId;
+    if (
+      (runAgent === FI_ADMIN_DELEGATION_AGENT_ID &&
+        (grantAgent !== runAgent || config.adminAgentId.toLowerCase() !== runAgent)) ||
+      (grantAgent !== undefined && grantAgent !== runAgent)
+    ) {
+      throw new Error("Personal review grant does not match this agent");
+    }
+    return {
+      delegation,
+      config,
+      identity: { channel: "personal-agent-review" },
+    };
   }
   // Fi decides whom the attestation names; it is never kept in the identity.
   const shadowAttestation = isFiUserShadowTurn(context)
@@ -766,7 +810,10 @@ export async function lookupRequesterEmail(
   if (Date.now() >= (resolveRouteUnavailableUntil.get(config.baseUrl) ?? 0)) {
     const response = await fetch(`${config.baseUrl}/api/openclaw-user-delegation/resolve`, {
       method: "POST",
-      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
       body: JSON.stringify({
         ...requester,
         agentId: options.agentId ?? FI_USER_AGENT_ID,

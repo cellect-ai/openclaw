@@ -81,10 +81,14 @@ import { registerPersonalAgentContext } from "./personal-agent-context.js";
 import { createPersonalAgentTools } from "./personal-agent-tools.js";
 import { projectionFailureKind } from "./projection-failure.js";
 import { createReadConversationTool, registerReadConversationCap } from "./read-conversation.js";
-import { reviewRunClaimed, reviewToolAttestation } from "./review-requester.js";
+import { reviewRunAgent, reviewRunClaimed, reviewToolAttestation } from "./review-requester.js";
 import { registerSourceReplyAuthorization } from "./source-reply-authorization.js";
 import { createWorkbookTool } from "./workbook-tool.js";
-import { delegatedWorkbookTransport, matrixWorkbookTransport } from "./workbook-transport.js";
+import {
+  delegatedWorkbookTransport,
+  matrixWorkbookTransport,
+  reviewWorkbookTransport,
+} from "./workbook-transport.js";
 
 const MAX_DRIVE_TEXT_CHARS = 200_000;
 const SLACK_USER_ID = /^U[A-Z0-9]{8,}$/i;
@@ -148,7 +152,10 @@ const GDriveSchema = Type.Object(
     action: stringEnum(["search", "read"] as const),
     query: Type.Optional(Type.String({ maxLength: 1_000 })),
     maxResults: Type.Optional(
-      Type.Integer({ minimum: 1, description: "Values above 50 are reduced to 50." }),
+      Type.Integer({
+        minimum: 1,
+        description: "Values above 50 are reduced to 50.",
+      }),
     ),
     fileId: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]+$" })),
     startPage: Type.Optional(Type.Integer({ minimum: 1, maximum: 10_000 })),
@@ -243,7 +250,12 @@ async function readDriveFile(params: {
         {
           type: "text",
           text: JSON.stringify(
-            { mailbox: params.mailbox, file: metadata, requestedPages, text: extracted.text },
+            {
+              mailbox: params.mailbox,
+              file: metadata,
+              requestedPages,
+              text: extracted.text,
+            },
             null,
             2,
           ),
@@ -444,7 +456,10 @@ export default definePluginEntry({
             { channelId: channel, sessionKey: context.sessionKey },
           );
           if (outcome.claimed) {
-            return { handled: true, ...(outcome.text ? { text: outcome.text } : {}) };
+            return {
+              handled: true,
+              ...(outcome.text ? { text: outcome.text } : {}),
+            };
           }
         } catch {
           api.logger.warn("fi-user: admin approval handling failed");
@@ -525,7 +540,9 @@ export default definePluginEntry({
             return delegated
               ? delegated.then((minted) =>
                   minted && !("block" in minted)
-                    ? { params: withOnBehalfOfEnv(event.params, assertion, minted) }
+                    ? {
+                        params: withOnBehalfOfEnv(event.params, assertion, minted),
+                      }
                     : held,
                 )
               : held;
@@ -534,7 +551,9 @@ export default definePluginEntry({
             ? delegated.then((minted) =>
                 minted && "block" in minted
                   ? minted
-                  : { params: withOnBehalfOfEnv(event.params, assertion, minted) },
+                  : {
+                      params: withOnBehalfOfEnv(event.params, assertion, minted),
+                    },
               )
             : { params: withOnBehalfOfEnv(event.params, assertion) };
         };
@@ -557,7 +576,24 @@ export default definePluginEntry({
           return attestation ? [createGuestApiTool(api, context, attestation)] : null;
         }
         if (reviewRunClaimed(context)) {
-          return reviewToolAttestation(context) ? createPersonalAgentTools(api, context) : null;
+          if (!reviewToolAttestation(context)) {
+            return null;
+          }
+          const personal = createPersonalAgentTools(api, context);
+          // An owner/admin's review runs on the admin agent: it adds the admin
+          // operation tool and workbook, both on the review's own Fi token.
+          return reviewRunAgent(context) === FI_ADMIN_DELEGATION_AGENT_ID &&
+            configFromRuntime(api).adminAgentId.toLowerCase() === FI_ADMIN_DELEGATION_AGENT_ID
+            ? [
+                ...personal,
+                createWorkbookTool(context, reviewWorkbookTransport(api, context)),
+                createAdminOperationTool(
+                  context,
+                  () => undefined,
+                  () => exchange(api, context),
+                ),
+              ]
+            : personal;
         }
         // Inbound email is untrusted and the turn reads private data, so a
         // shadow turn only reads Fi as its member: nothing that sends, shares,

@@ -2,7 +2,13 @@ import type { AnyAgentTool, OpenClawPluginToolContext } from "openclaw/plugin-sd
 import { jsonResult } from "openclaw/plugin-sdk/tool-results";
 import { Type, type Static } from "typebox";
 import { Value } from "typebox/value";
-import { delegatedFetch, FI_ADMIN_DELEGATION_AGENT_ID, lookupDelegation } from "./fi-delegation.js";
+import {
+  delegatedFetch,
+  FI_ADMIN_DELEGATION_AGENT_ID,
+  lookupDelegation,
+  type Delegation,
+  type ResolvedPluginConfig,
+} from "./fi-delegation.js";
 import type { ProvenRequester } from "./requester-proof.js";
 import { actionBranch, firstSchemaError } from "./schema-errors.js";
 
@@ -68,7 +74,10 @@ function identity(proof: ProvenRequester): string {
   });
 }
 
-function filelessSupport(row: JsonRecord): { supported: boolean; reason?: string } {
+function filelessSupport(row: JsonRecord): {
+  supported: boolean;
+  reason?: string;
+} {
   const arrays = [row.localFiles, row.outputFiles, row.requiredOutputs];
   if (
     !(row.file === null || isRecord(row.file)) ||
@@ -77,7 +86,10 @@ function filelessSupport(row: JsonRecord): { supported: boolean; reason?: string
       (value) => !Array.isArray(value) || value.some((entry) => typeof entry !== "string"),
     )
   ) {
-    return { supported: false, reason: "Fi has not described this variant's file transport." };
+    return {
+      supported: false,
+      reason: "Fi has not described this variant's file transport.",
+    };
   }
   return row.file !== null ||
     Object.keys(row.inputFiles).length > 0 ||
@@ -110,6 +122,11 @@ async function envelope(response: Response): Promise<JsonRecord | undefined> {
 export function createAdminOperationTool(
   context: OpenClawPluginToolContext<2>,
   proven: () => ProvenRequester | undefined,
+  /** An admin review run: its own Fi token (minted for the person's review, never a lookup). */
+  reviewGrant?: () => Promise<{
+    delegation: Delegation;
+    config: ResolvedPluginConfig;
+  }>,
 ): AnyAgentTool {
   return {
     name: "fi_admin_operation",
@@ -132,26 +149,31 @@ export function createAdminOperationTool(
       if (serialized && Buffer.byteLength(serialized) > 128 * 1024) {
         throw new Error("Operation input exceeds 128 KiB; no operation was dispatched.");
       }
-      const requester = proven();
-      if (!requester) {
+      const granted = reviewGrant ? await reviewGrant() : undefined;
+      const requester = granted ? undefined : proven();
+      if (!granted && !requester) {
         throw new Error(
           "This turn has no current verified Fi-admin requester; no operation was dispatched.",
         );
       }
-      const expectedIdentity = identity(requester);
+      const connection = granted ? granted.config : requester!.connection;
+      const expectedIdentity = requester ? identity(requester) : "";
       const assertCurrent = () => {
         context.assertInvocationCurrent();
         signal?.throwIfAborted();
+        if (granted) return;
         const current = proven();
         if (!current || identity(current) !== expectedIdentity) {
           throw new Error("The requester or Fi environment changed; no further request was sent.");
         }
       };
-      const delegation = await lookupDelegation(requester.connection, requester.body, {
-        agentId: FI_ADMIN_DELEGATION_AGENT_ID,
-        turn: requester.turn,
-        signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
-      });
+      const delegation =
+        granted?.delegation ??
+        (await lookupDelegation(requester!.connection, requester!.body, {
+          agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+          turn: requester!.turn,
+          signal: AbortSignal.any([AbortSignal.timeout(15000), ...(signal ? [signal] : [])]),
+        }));
       assertCurrent();
       if (
         !delegation ||
@@ -172,7 +194,7 @@ export function createAdminOperationTool(
         if (input.limit !== undefined) query.set("limit", String(Math.min(input.limit, 50)));
         if (input.offset !== undefined) query.set("offset", String(input.offset));
       }
-      const response = await delegatedFetch(requester.connection, delegation, `${root}?${query}`, {
+      const response = await delegatedFetch(connection, delegation, `${root}?${query}`, {
         method: "GET",
         cache: "no-store",
         redirect: "error",
@@ -183,7 +205,11 @@ export function createAdminOperationTool(
       if (!body)
         throw new Error("Fi operation discovery is unavailable; no operation was dispatched.");
       if (!response.ok || body.ok !== true) {
-        return jsonResult({ httpStatus: response.status, response: body, dispatched: false });
+        return jsonResult({
+          httpStatus: response.status,
+          response: body,
+          dispatched: false,
+        });
       }
       const rows = catalog(body);
       if (input.action === "discover") {
@@ -215,7 +241,7 @@ export function createAdminOperationTool(
       let result: Response;
       let reply: JsonRecord | undefined;
       try {
-        result = await delegatedFetch(requester.connection, delegation, path, {
+        result = await delegatedFetch(connection, delegation, path, {
           method: "POST",
           body: form,
           redirect: "error",
