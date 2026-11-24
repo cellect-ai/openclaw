@@ -30,6 +30,11 @@ vi.mock("./runtime-setter-api.js", async (importOriginal) => ({
   setMatrixRuntime: runtimeMocks.setMatrixRuntime,
 }));
 vi.mock("./src/matrix/subagent-hooks.js", () => runtimeMocks);
+// mock-isolation: Projection hooks load their handlers lazily; record them without Matrix I/O.
+vi.mock("./src/matrix/session-projection.js", () => runtimeMocks);
+vi.mock("./src/matrix/session-projection-snapshot.js", () => ({
+  planMatrixProjectionRoom: runtimeMocks.planMatrixProjectionRoom,
+}));
 
 describe("matrix plugin", () => {
   it("registers matrix CLI through a descriptor-backed lazy registrar", async () => {
