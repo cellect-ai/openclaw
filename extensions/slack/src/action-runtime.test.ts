@@ -395,7 +395,7 @@ it("authorizes a context-only download and reports unavailable attachments", asy
     expect.objectContaining({
       channelId: "C_ALLOWED",
       cfg,
-      maxBytes: 20 * 1024 * 1024,
+      maxBytes: 200 * 1024 * 1024,
     }),
   );
   expect(result.details).toMatchObject({
