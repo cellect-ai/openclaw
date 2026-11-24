@@ -59,7 +59,10 @@ import { shouldSuppressLocalSlackExecApprovalPrompt } from "./exec-approvals.js"
 import { formatSlackUserMention } from "./format.js";
 import { resolveSlackGroupRequireMention, resolveSlackGroupToolPolicy } from "./group-policy.js";
 import { setSlackHeartbeatThreadStatus } from "./heartbeat-status.js";
-import { isSlackWorkspaceInstallation } from "./installation-identity-state.js";
+import {
+  isSlackWorkspaceInstallation,
+  resolveSlackAccountBindingScope,
+} from "./installation-identity-state.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
 import { SLACK_PRESENTATION_CAPABILITIES } from "./presentation.js";
 import type { SlackProbe } from "./probe.js";
@@ -285,6 +288,7 @@ export const slackPlugin = createChatChannelPlugin<ResolvedSlackAccount, SlackPr
         isSlackWorkspaceInstallation(accountId),
     },
     messaging: {
+      resolveAccountBindingScope: resolveSlackAccountBindingScope,
       ...slackConversationRouteOwners,
       targetPrefixes: ["slack"],
       directTargetStyle: "user-prefixed",
