@@ -114,10 +114,7 @@ export function captureDeliveryPublicationEvidence(
   if (!platformMessageId) return undefined;
   const observed = placement.snapshot();
   if (!deliveryPlacementMatchesContext(observed, destination)) {
-    throw new Error(
-      "Delivery publication received contradictory destination evidence PROBE " +
-        JSON.stringify({ observed, destination }),
-    );
+    throw new Error("Delivery publication received contradictory destination evidence");
   }
   const primaryIds = results.map((result) =>
     result.outcome === "not_sent"
