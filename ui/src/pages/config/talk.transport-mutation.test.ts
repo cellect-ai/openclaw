@@ -274,7 +274,8 @@ describe("TalkSettingsPage realtime transport mutation", () => {
 
     updateGateway({ phase: "reconnecting" });
     flush();
-    expect(page.textContent).toContain(t("talkPage.status.staleHint"));
+    // The catalog view is an async memo; the stale snapshot renders once it settles.
+    await waitForSolid(() => expect(page.textContent).toContain(t("talkPage.status.staleHint")));
     expect(page.querySelector<HTMLInputElement>('input[type="radio"]')?.disabled).toBe(true);
     expect(page.querySelector("select")?.disabled).toBe(true);
 
