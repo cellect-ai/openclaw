@@ -15,6 +15,14 @@ import type {
 } from "./delivery-queue-publication.types.js";
 import { normalizeTargetForProvider } from "./target-normalization.js";
 
+/** A provider reported a physical placement other than the owned destination. */
+export class ContradictoryDeliveryPublicationEvidenceError extends Error {
+  constructor() {
+    super("Delivery publication received contradictory destination evidence");
+    this.name = "ContradictoryDeliveryPublicationEvidenceError";
+  }
+}
+
 export function capturePayloadPublicationSuppression(
   outcome: OutboundPayloadDeliveryOutcome,
 ): PayloadPublicationSuppression | undefined {
@@ -114,7 +122,7 @@ export function captureDeliveryPublicationEvidence(
   if (!platformMessageId) return undefined;
   const observed = placement.snapshot();
   if (!deliveryPlacementMatchesContext(observed, destination)) {
-    throw new Error("Delivery publication received contradictory destination evidence");
+    throw new ContradictoryDeliveryPublicationEvidenceError();
   }
   const primaryIds = results.map((result) =>
     result.outcome === "not_sent"

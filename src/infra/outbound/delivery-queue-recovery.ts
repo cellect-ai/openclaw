@@ -40,12 +40,9 @@ import {
   isOutboundDeliveryResultArray,
   runOutboundDeliveryCommitHooks,
 } from "./delivery-commit-hooks.js";
-import {
-  captureNativeFinalMemberEvidence,
-  type NativeFinalMemberEvidence,
-} from "./delivery-completion-members.js";
 import { markDurableDeliveryQueued, settleDurableDelivery } from "./delivery-completion.js";
 import { prepareOutboundDeliveryGeneration } from "./delivery-generation.js";
+import { createDeliveryPublicationCapture } from "./delivery-publication-capture.js";
 import { collectEntrySpoolPaths, releaseSpoolArtifacts } from "./delivery-queue-media-spool.js";
 import {
   cancelDeliveryQueueMediaRetention,
@@ -53,8 +50,6 @@ import {
 } from "./delivery-queue-media-staging.js";
 import {
   captureDeliveryPublicationEvidence,
-  capturePayloadPublicationEvidence,
-  capturePayloadPublicationSuppression,
   hasCompletePayloadSuppression,
   mergeDeliveryPublicationEvidence,
 } from "./delivery-queue-publication-evidence.js";
@@ -64,11 +59,6 @@ import {
   DeliveryPublicationPendingError,
   findDeliveryPublicationPendingError,
 } from "./delivery-queue-publication.js";
-import type {
-  DeliveryPublicationEvidence,
-  PayloadPublicationEvidence,
-  PayloadPublicationSuppression,
-} from "./delivery-queue-publication.types.js";
 import {
   buildReconciledSentResult,
   needsUnknownSendReconciliation,
@@ -399,23 +389,20 @@ async function drainQueuedEntry(
     }
   }
   const payloadOutcomes: OutboundPayloadDeliveryOutcome[] = [];
-  let incompletePayloadSend = false;
-  const publicationEvidenceByPayload: PayloadPublicationEvidence[] = [];
-  const publicationSuppressionsByPayload: PayloadPublicationSuppression[] = [];
-  const nativeMemberEvidence: NativeFinalMemberEvidence[] = [];
-  const capturedPublicationResults = new WeakMap<
-    OutboundDeliveryResult,
-    DeliveryPublicationEvidence
-  >();
-  const capturedPublicationParts: DeliveryPublicationEvidence[] = [];
-  const captureCanonicalResult = (result: OutboundDeliveryResult) => {
-    if (capturedPublicationResults.has(result)) return;
-    const evidence = captureDeliveryPublicationEvidence([result], entry);
-    if (evidence) {
-      capturedPublicationResults.set(result, evidence);
-      capturedPublicationParts.push(evidence);
-    }
-  };
+  // Recovery captures physical evidence exactly as live delivery does.
+  const publicationCapture = createDeliveryPublicationCapture({
+    destination: entry,
+    payloadCount: entry.preparedBatch.sourcePayloadCount,
+    enabled: () => true,
+  });
+  const {
+    publicationEvidenceByPayload,
+    publicationSuppressionsByPayload,
+    nativeMemberEvidence,
+    capturedPublicationParts,
+    captureCanonicalResult,
+    completeFinalPhysicalReceipt,
+  } = publicationCapture;
   // Deliberately process-local: a crash may lose best-effort observers, but
   // persisting plugin callbacks must never become part of delivery custody.
   const messageSentEvents: IndexedMessageSentEvent[] = [];
@@ -424,26 +411,9 @@ async function drainQueuedEntry(
   let attemptError: OutboundDeliveryError | undefined;
   let deliveredResults: OutboundDeliveryResult[] = [];
   let commitHooksRun = false;
-  const completeFinalPhysicalReceipt = () => {
-    const ordered = publicationEvidenceByPayload.toSorted((a, b) => a.sourceIndex - b.sourceIndex);
-    return !incompletePayloadSend &&
-      ordered.length === entry.preparedBatch.sourcePayloadCount &&
-      ordered.every((part, index) => part.sourceIndex === index)
-      ? mergeDeliveryPublicationEvidence(ordered.map((part) => part.evidence))
-      : undefined;
-  };
   const collectPayloadOutcome = (outcome: OutboundPayloadDeliveryOutcome): void => {
-    incompletePayloadSend ||= outcome.status === "sent" && outcome.incompleteReason !== undefined;
     if (!payloadOutcomes.includes(outcome)) {
-      const evidence = capturePayloadPublicationEvidence(
-        outcome,
-        entry,
-        capturedPublicationResults,
-      );
-      if (evidence) publicationEvidenceByPayload.push(evidence);
-      const suppressed = capturePayloadPublicationSuppression(outcome);
-      if (suppressed) publicationSuppressionsByPayload.push(suppressed);
-      nativeMemberEvidence.push(captureNativeFinalMemberEvidence(outcome, evidence));
+      publicationCapture.captureOutcome(outcome);
       payloadOutcomes.push(outcome);
     }
   };
@@ -592,7 +562,7 @@ async function drainQueuedEntry(
         outcome.status === "suppressed" && outcome.reason === "adapter_returned_no_identity",
     );
     if (
-      incompletePayloadSend ||
+      publicationCapture.incompletePayloadSend ||
       adapterReturnedNoIdentity ||
       (results.length === 0 &&
         // Reported failures carry dispatch evidence and own retry classification.
@@ -601,7 +571,7 @@ async function drainQueuedEntry(
         platformSendStarted &&
         !areOutboundPayloadsIntentionallySuppressed(payloadOutcomes))
     ) {
-      const error = incompletePayloadSend
+      const error = publicationCapture.incompletePayloadSend
         ? "recovered platform send returned an incomplete physical result for the delivery batch"
         : "recovered platform send returned no delivery identity";
       await owner.fail(failDeliveryAfterPlatformSend, error);
@@ -663,13 +633,16 @@ async function drainQueuedEntry(
     }
     if (postSendState !== "acked") {
       try {
-        const evidence = mergeDeliveryPublicationEvidence(
-          publicationEvidenceByPayload.length
-            ? publicationEvidenceByPayload
-                .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
-                .map((part) => part.evidence)
-            : capturedPublicationParts,
-        );
+        // Contradicted placement withholds every aggregate fallback, not only its own payload.
+        const evidence = publicationCapture.contradicted
+          ? undefined
+          : mergeDeliveryPublicationEvidence(
+              publicationEvidenceByPayload.length
+                ? publicationEvidenceByPayload
+                    .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
+                    .map((part) => part.evidence)
+                : capturedPublicationParts,
+            );
         await owner.ack({
           publicationEvidenceByPayload,
           publicationSuppressionsByPayload,

@@ -177,15 +177,17 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
   const ackOwnedQueue = async (suppressed = false) => {
     throwIfProducerLeaseLost();
     if (!queueOwner) throw new Error("Queued acknowledgement requires its current owner");
-    const evidence = suppressed
-      ? undefined
-      : mergeDeliveryPublicationEvidence(
-          publicationEvidenceByPayload.length
-            ? publicationEvidenceByPayload
-                .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
-                .map((part) => part.evidence)
-            : capturedPublicationParts,
-        );
+    // Contradicted placement withholds every aggregate fallback, not only its own payload.
+    const evidence =
+      suppressed || publicationCapture.contradicted
+        ? undefined
+        : mergeDeliveryPublicationEvidence(
+            publicationEvidenceByPayload.length
+              ? publicationEvidenceByPayload
+                  .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
+                  .map((part) => part.evidence)
+              : capturedPublicationParts,
+          );
     await queueOwner.ack({
       ...(suppressed ? { suppressCompletionReceipt: true } : {}),
       ...(!suppressed ? { publicationEvidenceByPayload, publicationSuppressionsByPayload } : {}),

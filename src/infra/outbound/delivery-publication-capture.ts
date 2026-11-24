@@ -6,6 +6,7 @@ import {
 import {
   captureDeliveryPublicationEvidence,
   capturePayloadPublicationEvidence,
+  ContradictoryDeliveryPublicationEvidenceError,
   capturePayloadPublicationSuppression,
   mergeDeliveryPublicationEvidence,
 } from "./delivery-queue-publication-evidence.js";
@@ -30,11 +31,24 @@ export function createDeliveryPublicationCapture(params: {
     DeliveryPublicationEvidence
   >();
   const capturedPublicationParts: DeliveryPublicationEvidence[] = [];
+  // A physical send placed elsewhere already happened: it withholds publication and
+  // final-receipt evidence, never the delivery itself. Its result is never recaptured,
+  // so a later observer mutation cannot launder it into matching evidence.
+  const contradictedResults = new WeakSet<OutboundDeliveryResult>();
+  let contradicted = false;
   const captureCanonicalResult = (result: OutboundDeliveryResult) => {
-    if (capturedPublicationResults.has(result)) return;
-    const evidence = params.enabled()
-      ? captureDeliveryPublicationEvidence([result], params.destination)
-      : undefined;
+    if (capturedPublicationResults.has(result) || contradictedResults.has(result)) return;
+    let evidence: DeliveryPublicationEvidence | undefined;
+    try {
+      evidence = params.enabled()
+        ? captureDeliveryPublicationEvidence([result], params.destination)
+        : undefined;
+    } catch (error) {
+      if (!(error instanceof ContradictoryDeliveryPublicationEvidenceError)) throw error;
+      contradictedResults.add(result);
+      contradicted = true;
+      return;
+    }
     if (evidence) {
       capturedPublicationResults.set(result, evidence);
       capturedPublicationParts.push(evidence);
@@ -70,6 +84,10 @@ export function createDeliveryPublicationCapture(params: {
     completeFinalPhysicalReceipt,
     get incompletePayloadSend() {
       return incompletePayloadSend;
+    },
+    /** Some physical send reported a placement other than the owned destination. */
+    get contradicted() {
+      return contradicted;
     },
   };
 }
