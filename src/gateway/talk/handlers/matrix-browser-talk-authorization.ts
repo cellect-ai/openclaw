@@ -1,4 +1,5 @@
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
+import { parseSessionDeliveryRoute } from "../../../routing/session-key.js";
 import {
   isUnauthorizedRawMatrixBrowserSession,
   prepareRawMatrixBrowserSessionAuthorization,
@@ -8,9 +9,10 @@ import { loadGatewaySessionEntryReadOnlyInWorker } from "../../session-utils-sto
 
 /**
  * Browser Talk may not reach a Matrix conversation through a raw key. The
- * route proof comes from the current native row (null when it is absent), so
- * a fresh internal session is admitted and an unrouted alias of a Matrix row
- * is not. The caller revalidates its own owner after awaiting.
+ * route proof comes from the current native row (null when it is absent) under
+ * the canonical key it resolves to, so a fresh or internal session such as an
+ * aliased main is admitted and an alias of a Matrix row is not. The caller
+ * revalidates its own owner after awaiting.
  */
 export async function prepareTalkMatrixBrowserRefusal(params: {
   cfg: OpenClawConfig;
@@ -29,10 +31,19 @@ export async function prepareTalkMatrixBrowserRefusal(params: {
   if (!isUnauthorizedRawMatrixBrowserSession(facts)) {
     return false;
   }
-  const { entry } = await loadGatewaySessionEntryReadOnlyInWorker({
+  // A raw key that itself names a Matrix route stays refused whatever it aliases.
+  if (parseSessionDeliveryRoute(params.sessionKey)?.channel?.trim()) {
+    return true;
+  }
+  const { entry, canonicalKey } = await loadGatewaySessionEntryReadOnlyInWorker({
     cfg: params.cfg,
     key: params.sessionKey,
     ...(params.agentId ? { agentId: params.agentId } : {}),
   });
-  return prepareRawMatrixBrowserSessionAuthorization({ ...facts, sessionEntry: entry ?? null });
+  // Judge the alias-qualified row under the key the native read resolved it to.
+  return prepareRawMatrixBrowserSessionAuthorization({
+    ...facts,
+    sessionKey: canonicalKey,
+    sessionEntry: entry ?? null,
+  });
 }
