@@ -55,6 +55,18 @@ describe("Fi shadow hook tool cap", () => {
       }).policy.runtimeToolPolicyForInheritance,
     ).toEqual({ allow: [...REVIEW_HOOK_TOOL_ALLOWLIST] });
   });
+  it("lets an admin-agent review key carry the same cap, with the admin tools allowlisted", () => {
+    const session = `agent:cellect-fi-admin:hook:fi-review:${"a".repeat(40)}`;
+    expect(REVIEW_HOOK_TOOL_ALLOWLIST).toEqual(
+      expect.arrayContaining(["fi_admin_operation", "fi_workbook"]),
+    );
+    expect(capBackgroundHookToolsAllow([session], ["*"])).toEqual([...REVIEW_HOOK_TOOL_ALLOWLIST]);
+    expect(shadowHookRunParams(session, { toolsAllow: ["*"] })).toMatchObject({
+      disableMessageTool: true,
+      disableToolSearch: true,
+      forceCodeModeTools: false,
+    });
+  });
   it("cuts any request to the two shadow tools", () => {
     expect(capShadowHookToolsAllow(undefined)).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);
     expect(capShadowHookToolsAllow(["*"])).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);

@@ -38,16 +38,43 @@ describe("personal review purpose isolation", () => {
   it("refuses swapped purposes, delivery knobs, and non-user review sessions", () => {
     expect(
       hookRequesterScopeAllowed(
-        { requesterAttestation: REVIEW_ATTESTATION, effectiveAgentId: "cellect-fi-user" },
+        {
+          requesterAttestation: REVIEW_ATTESTATION,
+          effectiveAgentId: "cellect-fi-user",
+        },
         REVIEW,
       ),
     ).toBe(true);
     expect(
       hookRequesterScopeAllowed(
-        { requesterAttestation: REVIEW_ATTESTATION, effectiveAgentId: "cellect-fi-admin" },
+        {
+          requesterAttestation: REVIEW_ATTESTATION,
+          effectiveAgentId: "cellect-fi-admin",
+        },
+        REVIEW,
+      ),
+    ).toBe(true);
+    expect(
+      hookRequesterScopeAllowed(
+        {
+          requesterAttestation: REVIEW_ATTESTATION,
+          effectiveAgentId: "cellect-main",
+        },
         REVIEW,
       ),
     ).toBe(false);
+    expect(
+      hookRequesterScopeAllowed(
+        { requesterAttestation: REVIEW_ATTESTATION, effectiveAgentId: "other" },
+        REVIEW,
+      ),
+    ).toBe(false);
+    expect(
+      isPersonalReviewHookSessionKey(REVIEW.replace("hook:", "agent:cellect-fi-admin:hook:")),
+    ).toBe(true);
+    expect(isPersonalReviewHookSessionKey(REVIEW.replace("hook:", "agent:other:hook:"))).toBe(
+      false,
+    );
     for (const [sessionKey, requesterAttestation] of [
       [REVIEW, ATTESTATION],
       [SHADOW, REVIEW_ATTESTATION],
@@ -114,7 +141,11 @@ describe("hook requester attestation run context", () => {
       [SHADOW, "fsa:x:short"],
       [SHADOW, undefined],
     ] as const) {
-      registerHookRequesterAttestation({ runId: "run-3", sessionKey, attestation });
+      registerHookRequesterAttestation({
+        runId: "run-3",
+        sessionKey,
+        attestation,
+      });
       expect(lookupHookRequesterAttestation("run-3", sessionKey)).toBeUndefined();
     }
   });
@@ -133,13 +164,20 @@ describe("shadow hook ingress delivery knobs", () => {
         { requesterAttestation: ATTESTATION, ...extra },
         "hook:fi-shadow:abc",
       ),
-    ).toEqual({ ok: false, error: `${name} is not accepted on a hook:fi-shadow: session` });
+    ).toEqual({
+      ok: false,
+      error: `${name} is not accepted on a hook:fi-shadow: session`,
+    });
   });
 
   it("accepts the quiet form and leaves other sessions alone", () => {
     expect(
       normalizeHookRequesterAttestation(
-        { requesterAttestation: ATTESTATION, deliver: false, allowUnsafeExternalContent: false },
+        {
+          requesterAttestation: ATTESTATION,
+          deliver: false,
+          allowUnsafeExternalContent: false,
+        },
         "hook:fi-shadow:abc",
       ),
     ).toEqual({ ok: true, value: { requesterAttestation: ATTESTATION } });
@@ -169,7 +207,9 @@ describe("shadow session predicate", () => {
       ok: true,
       value: { requesterAttestation: ATTESTATION },
     });
-    expect(normalizeHookRequesterAttestation({}, qualified)).toMatchObject({ ok: false });
+    expect(normalizeHookRequesterAttestation({}, qualified)).toMatchObject({
+      ok: false,
+    });
   });
 
   it("rejects channel last at ingress even though the dispatcher tolerates it with delivery none", () => {
@@ -178,7 +218,10 @@ describe("shadow session predicate", () => {
         { requesterAttestation: ATTESTATION, channel: "last" },
         "hook:fi-shadow:abc",
       ),
-    ).toEqual({ ok: false, error: "channel is not accepted on a hook:fi-shadow: session" });
+    ).toEqual({
+      ok: false,
+      error: "channel is not accepted on a hook:fi-shadow: session",
+    });
   });
 });
 
@@ -191,12 +234,18 @@ describe("guest conversation purpose isolation", () => {
     expect(isGuestHookSessionKey(`agent:cellect-fi-guest:${GUEST}`)).toBe(true);
     expect(
       normalizeHookRequesterAttestation(
-        { requesterAttestation: GUEST_ATTESTATION, requesterEnvironment: "dev" },
+        {
+          requesterAttestation: GUEST_ATTESTATION,
+          requesterEnvironment: "dev",
+        },
         GUEST,
       ),
     ).toEqual({
       ok: true,
-      value: { requesterAttestation: GUEST_ATTESTATION, requesterEnvironment: "dev" },
+      value: {
+        requesterAttestation: GUEST_ATTESTATION,
+        requesterEnvironment: "dev",
+      },
     });
     const release = registerHookRequesterAttestation({
       runId: "guest-1",
@@ -226,7 +275,10 @@ describe("guest conversation purpose isolation", () => {
       );
     }
     expect(normalizeHookRequesterAttestation({}, GUEST).ok).toBe(false);
-    expect(normalizeHookRequesterAttestation({}, undefined)).toEqual({ ok: true, value: {} });
+    expect(normalizeHookRequesterAttestation({}, undefined)).toEqual({
+      ok: true,
+      value: {},
+    });
     registerHookRequesterAttestation({
       runId: "wrong",
       sessionKey: SHADOW,
@@ -261,14 +313,20 @@ describe("guest conversation purpose isolation", () => {
     expect(lookupHookRequesterAttestation("guest-no-env", GUEST)).toBeUndefined();
     expect(
       hookRequesterScopeAllowed(
-        { requesterAttestation: GUEST_ATTESTATION, effectiveAgentId: "cellect-fi-guest" },
+        {
+          requesterAttestation: GUEST_ATTESTATION,
+          effectiveAgentId: "cellect-fi-guest",
+        },
         GUEST,
       ),
     ).toBe(true);
     expect(hookRequesterScopeAllowed({ effectiveAgentId: "cellect-fi-guest" }, GUEST)).toBe(false);
     expect(
       hookRequesterScopeAllowed(
-        { requesterAttestation: GUEST_ATTESTATION, effectiveAgentId: "cellect-fi-guest" },
+        {
+          requesterAttestation: GUEST_ATTESTATION,
+          effectiveAgentId: "cellect-fi-guest",
+        },
         SHADOW,
       ),
     ).toBe(false);

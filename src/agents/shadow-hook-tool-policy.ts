@@ -21,6 +21,10 @@ export const REVIEW_HOOK_TOOL_ALLOWLIST: readonly string[] = [
   "fi_user_review_sources",
   "fi_user_review_report",
   "m365_review_read",
+  // Admin-tier review runs only; the cap intersects with registered tools, so
+  // a user-tier review run never has them.
+  "fi_admin_operation",
+  "fi_workbook",
 ];
 
 /** A guest turn reaches the outside person's own data through one requester-bound API tool. */

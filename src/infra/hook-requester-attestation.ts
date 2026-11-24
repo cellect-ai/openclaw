@@ -13,7 +13,11 @@ export const SHADOW_HOOK_SESSION_PREFIX = "hook:fi-shadow:";
 const SHADOW_HOOK_SESSION = /(?:^|:)hook:fi-(?:shadow|rfi|co):/i;
 const MAX_ATTESTATION_LENGTH = 256;
 const ATTESTATION = /^(?:fsa|fcw):[^:\s]{1,200}:[A-Za-z0-9_-]{43}$/;
-const REVIEW_SESSION = /^(?:agent:cellect-fi-user:)?hook:fi-review:[a-f0-9]{40}$/i;
+// A person's review runs on their default tier: the user agent, or the admin
+// agent for an org owner/admin. Fi names the tier per run and rechecks it.
+const REVIEW_AGENT_IDS: readonly string[] = ["cellect-fi-user", "cellect-fi-admin"];
+const REVIEW_SESSION =
+  /^(?:agent:(?:cellect-fi-user|cellect-fi-admin):)?hook:fi-review:[a-f0-9]{40}$/i;
 const REVIEW_ATTESTATION = /^pra:[A-Za-z0-9_-]{1,100}:[A-Za-z0-9_-]{43}$/;
 export function isPersonalReviewHookSessionKey(sessionKey: string | undefined | null): boolean {
   return typeof sessionKey === "string" && REVIEW_SESSION.test(sessionKey);
@@ -82,7 +86,8 @@ export function hookRequesterScopeAllowed(
   return Boolean(
     receipt &&
     attestationPurposeMatches(sessionKey, receipt) &&
-    (!isPersonalReviewHookSessionKey(sessionKey) || value.effectiveAgentId === "cellect-fi-user"),
+    (!isPersonalReviewHookSessionKey(sessionKey) ||
+      REVIEW_AGENT_IDS.includes(value.effectiveAgentId)),
   );
 }
 
