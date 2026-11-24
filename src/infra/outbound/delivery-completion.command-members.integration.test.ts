@@ -14,6 +14,7 @@ import type { ChannelMessageSendTextContext } from "../../channels/message/types
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
+import { isOutboundDeliveryError } from "./deliver-types.js";
 import { matrixOutboundForQueueTest } from "./deliver.queue-integration.test-support.js";
 import {
   installRecoveryHooks,
@@ -21,6 +22,7 @@ import {
 } from "./delivery-completion.shard-test-support.js";
 import {
   DeliveryPublicationPendingError,
+  findDeliveryPublicationPendingError,
   flushDeliveryPublications,
 } from "./delivery-queue-publication.js";
 import { enqueueDeliveryOnce } from "./delivery-queue-storage.js";
@@ -117,7 +119,13 @@ it.each(
         await enqueueDeliveryOnce(params, completion.deliveryId, fixtures.tmpDir());
         await fixtures.recover(fixtures.deliver);
       } else if (refuse) {
-        await expect(fixtures.deliver(params)).rejects.toBeInstanceOf(
+        // The native wrapper carries released send custody; the owed publication is its cause.
+        const failure = await fixtures.deliver(params).then(
+          () => undefined,
+          (error: unknown) => error,
+        );
+        expect(isOutboundDeliveryError(failure) && failure.queueCustody).toBe("released");
+        expect(findDeliveryPublicationPendingError(failure)).toBeInstanceOf(
           DeliveryPublicationPendingError,
         );
       } else {
