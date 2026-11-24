@@ -178,7 +178,7 @@ describe("resolveSlackThreadHistory", () => {
 
 describe("resolveSlackThreadStarter cache", () => {
   it("shares in-flight and cached roots without leaking across accounts", async () => {
-    const root = Promise.withResolvers<{ messages: { text: string }[] }>();
+    const root = Promise.withResolvers<{ messages: { text: string; ts?: string }[] }>();
     replies
       .mockImplementationOnce(() => root.promise)
       .mockResolvedValueOnce({ messages: [{ text: "team two root", ts: "1000.1" }] });
