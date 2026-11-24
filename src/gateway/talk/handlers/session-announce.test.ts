@@ -3,8 +3,9 @@ import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
 import { forgetUnifiedTalkSession, rememberUnifiedTalkSession } from "../session-registry.js";
 
 const announce = vi.hoisted(() => vi.fn(() => "accepted"));
-vi.mock("../relay/index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../relay/index.js")>()),
+// session-controls.ts imports the announcement owner directly, not the relay barrel.
+vi.mock("../relay/announce.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../relay/announce.js")>()),
   announceTalkRealtimeRelayAnswer: announce,
 }));
 
