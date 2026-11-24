@@ -500,11 +500,10 @@ describe("Slack thread failure notices", () => {
     const failure = { text: AUTH_FAILURE, isError: true };
     for (const [index, source] of sources.entries()) {
       const end = source.begin();
-      expect(source.shouldSuppressReply?.(failure)).toBe(index === 1);
-      if (index !== 1) {
-        source.onReplyDelivered?.(failure);
-      }
-      end?.({ visibleReplySent: index !== 1, failed: true });
+      // Each admitted Cellect turn owns its notice, so no queued turn is suppressed as a repeat.
+      expect(source.shouldSuppressReply?.(failure)).toBe(false);
+      source.onReplyDelivered?.(failure);
+      end?.({ visibleReplySent: true, failed: true });
     }
   });
 
@@ -540,8 +539,12 @@ describe("Slack thread failure notices", () => {
     await dispatchEvent({ ts: "101.100002", thread_ts: threadTs, parent_user_id: "U1" });
 
     expect(slackTestState.replyMock).toHaveBeenCalledTimes(2);
-    expect(slackTestState.sendMock).toHaveBeenCalledTimes(1);
-    expect(slackTestState.sendMock.mock.calls[0]?.[1]).toBe(AUTH_FAILURE);
+    // The first failure is announced for the restored thread, and each admitted turn owns its own.
+    expect(slackTestState.sendMock).toHaveBeenCalledTimes(2);
+    expect(slackTestState.sendMock.mock.calls.map((call) => call[1])).toEqual([
+      AUTH_FAILURE,
+      AUTH_FAILURE,
+    ]);
   });
 
   it("announces the same failure again after a successful reply", async () => {
@@ -568,7 +571,7 @@ describe("Slack thread failure notices", () => {
     await threadReply("104.000001", "104.000000");
     await threadReply("104.000002", "104.000000", "<@bot-user> are you working now?");
 
-    expect(slackTestState.sendMock).toHaveBeenCalledTimes(2);
+    expect(slackTestState.sendMock).toHaveBeenCalledTimes(3);
   });
 
   it("always answers an explicit mention after an unmentioned channel failure", async () => {
@@ -579,8 +582,8 @@ describe("Slack thread failure notices", () => {
     await dispatchEvent({ ts: "105.030001" });
     await dispatchEvent({ text: "<@bot-user> are you working now?", ts: "105.030002" });
 
-    expect(slackTestState.sendMock).toHaveBeenCalledTimes(2);
-    expect(slackTestState.sendMock.mock.calls[1]?.[1]).toBe(AUTH_FAILURE);
+    expect(slackTestState.sendMock).toHaveBeenCalledTimes(3);
+    expect(slackTestState.sendMock.mock.calls[2]?.[1]).toBe(AUTH_FAILURE);
   });
 
   it("does not retry a thread failure whose first Slack send is ambiguous", async () => {
@@ -597,7 +600,8 @@ describe("Slack thread failure notices", () => {
     await expect(threadReply("105.040001", "105.040000")).rejects.toBe(failure);
     await threadReply("105.040002", "105.040000");
 
-    expect(slackTestState.sendMock).toHaveBeenCalledTimes(2);
+    // The ambiguous send is attempted once; the next admitted turn announces its own failure.
+    expect(slackTestState.sendMock).toHaveBeenCalledTimes(3);
   });
 
   it("does not suppress warnings for non-terminal tool failures", async () => {
