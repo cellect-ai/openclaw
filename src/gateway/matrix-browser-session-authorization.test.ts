@@ -127,6 +127,31 @@ it("allows native proven absence and channel-less main while refusing opaque exi
       sessionEntry: { sessionId: "main", updatedAt: 1 },
     }),
   ).toBe(false);
+  for (const sentinel of ["global", "unknown"]) {
+    expect(
+      isUnauthorizedRawMatrixBrowserSession({
+        ...common,
+        sessionKey: sentinel,
+        sessionEntry: { sessionId: sentinel, updatedAt: 1 },
+      }),
+    ).toBe(false);
+  }
+  expect(
+    isUnauthorizedRawMatrixBrowserSession({
+      ...common,
+      sessionKey: "global",
+      sessionEntry: {
+        sessionId: "global",
+        updatedAt: 1,
+        delivery: {
+          kind: "external",
+          route: { channel: "matrix", target: { to: "!secret" } },
+          context: { channel: "matrix", to: "!secret" },
+          origin: { provider: "matrix" },
+        },
+      },
+    }),
+  ).toBe(true);
   expect(
     isUnauthorizedRawMatrixBrowserSession({
       ...common,

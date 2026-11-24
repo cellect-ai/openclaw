@@ -2,7 +2,11 @@ import type { GatewayClientInfo } from "../../packages/gateway-protocol/src/clie
 import { extractDeliveryInfo } from "../config/sessions/delivery-info.js";
 import type { SessionEntry } from "../config/sessions/types.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { parseAgentSessionKey, parseSessionDeliveryRoute } from "../routing/session-key.js";
+import {
+  isUnscopedSessionKeySentinel,
+  parseAgentSessionKey,
+  parseSessionDeliveryRoute,
+} from "../routing/session-key.js";
 import { sessionDeliveryChannel, sessionDeliveryRoute } from "../utils/delivery-context.read.js";
 import { isBrowserOperatorUiClient, isWebchatClient } from "../utils/message-channel.js";
 import type { GatewayClient } from "./server-methods/types.js";
@@ -48,9 +52,12 @@ export function isUnauthorizedRawMatrixBrowserSession(
   if (params.sessionEntry === null) {
     return false;
   }
-  const agent = parseAgentSessionKey(params.sessionKey)?.agentId;
-  // A current canonical native row with no external route is an internal session.
-  if (params.sessionEntry && agent && params.sessionEntry.delivery?.kind !== "external") {
+  // Agent-qualified keys and the unscoped global/unknown sentinels are canonical, so a
+  // current native row under one with no external route is an internal session.
+  const canonical =
+    Boolean(parseAgentSessionKey(params.sessionKey)?.agentId) ||
+    isUnscopedSessionKeySentinel(params.sessionKey);
+  if (params.sessionEntry && canonical && params.sessionEntry.delivery?.kind !== "external") {
     return false;
   }
   // An unproven existing route cannot acquire owning-app authority through a missing channel.
