@@ -1,3 +1,4 @@
+import { redactSensitiveText } from "../logging/redact.js";
 import {
   sanitizeApprovalScope,
   summarizeApprovalScope,
@@ -55,7 +56,11 @@ export function resolveBusinessApprovalConversation(request: {
     if (typeof raw !== "string" || raw.length > LIMITS[key] || INVISIBLE.test(raw)) {
       return undefined;
     }
-    const text = sanitizeExecApprovalDisplayText(raw).trim();
+    // The display sanitizer only escapes spoofing characters; secrets are redacted here,
+    // independent of the operator's logging redaction setting.
+    const text = sanitizeExecApprovalDisplayText(
+      redactSensitiveText(raw, { mode: "tools" }),
+    ).trim();
     if (!VISIBLE.test(text) || text.length > LIMITS[key] || INVISIBLE.test(text)) {
       return undefined;
     }
