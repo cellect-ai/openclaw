@@ -107,6 +107,53 @@ describe("delegation is bound to this runtime's tenant", () => {
     );
   });
 
+  it("declares an approval decision only for an admin Matrix mint without a turn", async () => {
+    const sent = () => JSON.parse(String(fetchMock.mock.calls.at(-1)?.[1]?.body));
+    const config = { ...connection, tenantOrgId: "org-a" };
+    const matrix = { requesterMatrixUserId: "@approver:matrix.example.test" };
+    const approvalDecision = { requestId: "AB12CD", revision: 3 };
+    fetchMock.mockImplementation(async () => member({ orgId: "org-a" }));
+    await lookupDelegation(config, matrix, { agentId: "cellect-fi-admin", approvalDecision });
+    expect(sent().approvalDecision).toEqual(approvalDecision);
+    for (const [body, options] of [
+      [matrix, { agentId: "cellect-fi-user" as const, approvalDecision }],
+      [
+        { requesterSenderId: "U12345678" },
+        { agentId: "cellect-fi-admin" as const, approvalDecision },
+      ],
+      [
+        matrix,
+        {
+          agentId: "cellect-fi-admin" as const,
+          approvalDecision: { requestId: "ab12cd", revision: 3 },
+        },
+      ],
+      [
+        matrix,
+        {
+          agentId: "cellect-fi-admin" as const,
+          approvalDecision: { requestId: "AB12CD", revision: 0 },
+        },
+      ],
+      [
+        matrix,
+        {
+          agentId: "cellect-fi-admin" as const,
+          approvalDecision,
+          turn: {
+            roomId: "!r:matrix.example.test",
+            eventId: "$e",
+            senderId: matrix.requesterMatrixUserId,
+            markBrief: () => {},
+          },
+        },
+      ],
+    ] as const) {
+      await lookupDelegation(config, body, options);
+      expect(sent().approvalDecision, JSON.stringify(options)).toBeUndefined();
+    }
+  });
+
   it("refuses a member Fi resolved in another organization", async () => {
     fetchMock.mockResolvedValue(member({ orgId: "org-b", orgSlug: "tenant-b" }));
     await expect(

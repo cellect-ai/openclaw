@@ -5,6 +5,7 @@ import {
   FI_ADMIN_DELEGATION_AGENT_ID,
   type Delegation,
   type ResolvedPluginConfig,
+  type DelegationTurn,
 } from "./fi-delegation.js";
 
 export type ApprovedRoomFiling = {
@@ -113,6 +114,8 @@ export async function prepareRoomFiling(
   config: ResolvedPluginConfig,
   record: AdminActionRecord,
   assertCurrent: () => void,
+  /** The requester's admitted Matrix event (the request turn itself); Fi requires it for a Matrix mint. */
+  turn?: DelegationTurn,
 ): Promise<PreparedRoomFiling> {
   const identity = record.requester.identity;
   if (identity.channel !== "matrix" && identity.channel !== "slack") {
@@ -123,7 +126,10 @@ export async function prepareRoomFiling(
     identity.channel === "matrix"
       ? { requesterMatrixUserId: identity.requesterMatrixUserId }
       : { requesterSenderId: identity.requesterSenderId },
-    { agentId: FI_ADMIN_DELEGATION_AGENT_ID },
+    {
+      agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+      ...(identity.channel === "matrix" && turn ? { turn } : {}),
+    },
   );
   if (
     !delegation ||

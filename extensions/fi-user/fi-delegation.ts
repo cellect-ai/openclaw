@@ -626,6 +626,12 @@ export async function lookupDelegation(
     mailWakeEnvironment?: "dev" | "staging" | "prod";
     /** The admitted Matrix event this mint is for; sent only for that event's own Matrix sender. */
     turn?: DelegationTurn;
+    /**
+     * A person's own decision on an admin action card, relayed by Fi's
+     * authenticated RPC: there is no Matrix event to bind, so Fi accepts the
+     * mint without a turn only with this. Gateway code only; never a model field.
+     */
+    approvalDecision?: { requestId: string; revision: number };
   } = {},
 ): Promise<Delegation | null> {
   if (config.tenantOrgConflict) {
@@ -656,6 +662,18 @@ export async function lookupDelegation(
     options.turn.eventId.length <= 256
       ? options.turn
       : undefined;
+  const approvalDecision =
+    options.approvalDecision &&
+    requester.requesterMatrixUserId !== undefined &&
+    options.agentId === FI_ADMIN_DELEGATION_AGENT_ID &&
+    /^[A-Z0-9]{6}$/.test(options.approvalDecision.requestId) &&
+    Number.isSafeInteger(options.approvalDecision.revision) &&
+    options.approvalDecision.revision >= 1
+      ? {
+          requestId: options.approvalDecision.requestId,
+          revision: options.approvalDecision.revision,
+        }
+      : undefined;
   const response = await fetch(`${config.baseUrl}/api/openclaw-user-delegation`, {
     method: "POST",
     headers: {
@@ -667,6 +685,7 @@ export async function lookupDelegation(
       agentId: options.agentId ?? FI_USER_AGENT_ID,
       ...(options.privateConversation ? { privateConversation: options.privateConversation } : {}),
       ...(turn ? { turn: { roomId: turn.roomId, eventId: turn.eventId } } : {}),
+      ...(!turn && approvalDecision ? { approvalDecision } : {}),
     }),
     ...(options.signal ? { signal: options.signal } : {}),
   });

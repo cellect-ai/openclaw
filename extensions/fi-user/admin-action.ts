@@ -31,6 +31,7 @@ import {
 import {
   configFromRuntime,
   delegatedJson,
+  delegationTurnFor,
   exchange,
   lookupDelegation,
   type RequesterIdentity,
@@ -634,6 +635,7 @@ export function createRequestAdminActionTool(
             config,
             record,
             context.assertInvocationCurrent ?? (() => {}),
+            delegationTurnFor(api, context),
           );
         }
       } else if (record.task === "company_wiring_share") {

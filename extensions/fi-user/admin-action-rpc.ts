@@ -154,7 +154,11 @@ export async function applyAdminDecision(
       : undefined;
   const delegation =
     filing || wiring
-      ? await lookupDelegation(config, requester, { agentId: FI_ADMIN_DELEGATION_AGENT_ID, signal })
+      ? await lookupDelegation(config, requester, {
+          agentId: FI_ADMIN_DELEGATION_AGENT_ID,
+          signal,
+          approvalDecision: { requestId: record.id, revision },
+        })
       : undefined;
   if (filing || wiring) {
     if (
