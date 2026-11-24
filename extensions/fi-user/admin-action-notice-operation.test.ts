@@ -63,19 +63,22 @@ describe("native Slack notice admission", () => {
         createdAt: now - 10_000,
         ttlMs: NOTICE_COOLDOWN_MS,
       },
+      // Native import measures a row's TTL from the import, not from createdAt, so a
+      // legacy row past its window is modelled by a TTL that has already run out.
       {
         key: expired.countKey,
         value: { at: now - NOTICE_WINDOW_MS - 1 },
         createdAt: now - NOTICE_WINDOW_MS - 1,
-        ttlMs: NOTICE_WINDOW_MS,
+        ttlMs: 1,
       },
       {
         key: expired.dedupeKey,
         value: { at: now - NOTICE_COOLDOWN_MS - 1 },
         createdAt: now - NOTICE_COOLDOWN_MS - 1,
-        ttlMs: NOTICE_COOLDOWN_MS,
+        ttlMs: 1,
       },
     ]);
+    await new Promise((resolve) => setTimeout(resolve, 20));
     for (let n = 0; n < 3; n++) {
       await store.register(
         `${countPrefix}other-live-${n}`,

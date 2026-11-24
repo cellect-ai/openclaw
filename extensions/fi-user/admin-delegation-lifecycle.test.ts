@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
-import { redactToolPayloadText } from "openclaw/plugin-sdk/logging-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { redactAgentDiagnosticPayload } from "../../src/agents/diagnostic-redaction.js";
 import { adminActionSessions } from "./admin-action.js";
 import {
   fiToken,
@@ -604,8 +604,10 @@ describe("the admin agent's delegated user token", () => {
     await turn.start();
     const rewritten = await turn.exec();
     expect(rewritten?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
-    // Diagnostic redaction is separate from the live execution arguments.
-    const recorded = redactToolPayloadText(JSON.stringify(rewritten?.params));
+    // Diagnostic redaction is separate from the live execution arguments. The host
+    // records tool-start arguments through this structured redactor, which masks the
+    // credential by its env key whatever the token looks like.
+    const recorded = JSON.stringify(redactAgentDiagnosticPayload(rewritten?.params));
     expect(recorded).not.toContain(TOKEN);
     expect(recorded).toContain("/usr/local/bin/cellect commands list");
   });
