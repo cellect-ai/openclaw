@@ -295,6 +295,121 @@ describe("gateway hooks helpers", () => {
     });
   });
 
+  test("normalizeAgentPayload enforces the shadow attestation in both directions", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const accepted = normalizeAgentPayload({
+      message: "prepare",
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: attestation,
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.value.requesterAttestation).toBe(attestation);
+      expect(accepted.value.message).toBe("prepare");
+    }
+    for (const sessionKey of ["hook:fi-mail:abc", "hook:gmail:1", "hook:fi-shadow-x:1"]) {
+      expect(
+        normalizeAgentPayload({ message: "x", sessionKey, requesterAttestation: attestation }).ok,
+      ).toBe(false);
+    }
+    expect(
+      normalizeAgentPayload({
+        message: "x",
+        requesterAttestation: attestation,
+      }).ok,
+    ).toBe(false);
+    expect(normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-shadow:abc" })).toEqual({
+      ok: false,
+      error: "requesterAttestation is required on a hook:fi-shadow: session",
+    });
+    for (const bad of ["fsa:a:short", `fsa:a:b:${"A".repeat(43)}`, `xyz:a:${"A".repeat(43)}`, 7]) {
+      expect(
+        normalizeAgentPayload({
+          message: "x",
+          sessionKey: "hook:fi-shadow:abc",
+          requesterAttestation: bad,
+        }),
+      ).toEqual({ ok: false, error: "requesterAttestation is malformed" });
+    }
+    // Shared mail keeps its own behaviour and accepts no attestation field.
+    expect(normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-mail:abc" }).ok).toBe(true);
+  });
+
+  test("normalizeAgentPayload refuses delivery knobs on a shadow session and never delivers it", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const base = {
+      message: "x",
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: attestation,
+    };
+    const ok = normalizeAgentPayload(base);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) {
+      // An omitted `deliver` means true elsewhere; a shadow turn is never delivered.
+      expect(ok.value.deliver).toBe(false);
+      expect(ok.value.delivery).toEqual({ mode: "none" });
+    }
+    for (const knob of [
+      { deliver: true },
+      { channel: "slack" },
+      { to: "u1" },
+      { accountId: "work" },
+      { allowUnsafeExternalContent: true },
+    ]) {
+      const result = normalizeAgentPayload({ ...base, ...knob });
+      expect(result.ok).toBe(false);
+    }
+    expect(normalizeAgentPayload({ ...base, deliver: false }).ok).toBe(true);
+    // Other sessions keep their delivery behaviour.
+    const plain = normalizeAgentPayload({ message: "x", sessionKey: "hook:fi-mail:abc" });
+    expect(plain.ok && plain.value.deliver).toBe(true);
+  });
+
+  test("normalizeAgentPayload accepts a mail requester only on a shared-mail hook", () => {
+    const accepted = normalizeAgentPayload({
+      message: "file this",
+      sessionKey: "hook:fi-mail:abc",
+      mailRequesterEmail: " Alex@Cellect.ai ",
+      mailRequesterSlackUserId: "u0admin001",
+    });
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) {
+      expect(accepted.value.mailRequesterEmail).toBe("alex@cellect.ai");
+      expect(accepted.value.mailRequesterSlackUserId).toBe("U0ADMIN001");
+    }
+    expect(
+      normalizeAgentPayload({
+        message: "file this",
+        sessionKey: "hook:gmail:1",
+        mailRequesterEmail: "alex@cellect.ai",
+      }),
+    ).toEqual({
+      ok: false,
+      error: "mail requester fields are only accepted on a hook:fi-mail: session",
+    });
+    expect(
+      normalizeAgentPayload({
+        message: "file this",
+        sessionKey: "hook:fi-mail:abc",
+        mailRequesterSlackUserId: "not-a-slack-id",
+      }),
+    ).toEqual({
+      ok: false,
+      error: "mailRequesterSlackUserId must be a Slack user id",
+    });
+    const absent = normalizeAgentPayload({
+      message: "file this",
+      sessionKey: "hook:gmail:1",
+      mailRequesterEmail: "  ",
+      mailRequesterSlackUserId: "",
+    });
+    expect(absent.ok).toBe(true);
+    if (absent.ok) {
+      expect(absent.value.mailRequesterEmail).toBeUndefined();
+      expect(absent.value.mailRequesterSlackUserId).toBeUndefined();
+    }
+  });
+
   test("normalizeAgentPayload passes agentId", () => {
     expect(agentPayload({ agentId: "hooks" })).toMatchObject({
       ok: true,
@@ -584,3 +699,27 @@ describe("gateway hooks helpers", () => {
 });
 
 const emptyRegistry = createTestRegistry([]);
+
+test("normalizes a generic mail source receipt from the hook body without reading prompt text", () => {
+  const sourceLockCapability = `slw:fixture:${"a".repeat(43)}`;
+  expect(
+    normalizeAgentPayload({
+      message: "routine mail",
+      sessionKey: "hook:fi-mail:thread",
+      sourceLockCapability,
+    }),
+  ).toMatchObject({ ok: true, value: { sourceLockCapability } });
+  expect(
+    normalizeAgentPayload({
+      message: `sourceLockCapability ${sourceLockCapability}`,
+      sessionKey: "hook:fi-mail:thread",
+    }),
+  ).toMatchObject({ ok: true });
+  expect(
+    normalizeAgentPayload({
+      message: "routine",
+      sessionKey: "hook:other:thread",
+      sourceLockCapability,
+    }).ok,
+  ).toBe(false);
+});

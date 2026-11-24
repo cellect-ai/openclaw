@@ -1,10 +1,18 @@
-import type {
-  AllMiddlewareArgs,
-  BlockAction,
-  SlackActionMiddlewareArgs,
-  SlackCommandMiddlewareArgs,
-  SlackOptionsMiddlewareArgs,
-} from "@slack/bolt";
+import type { BlockAction } from "@slack/bolt";
+import type { SlackActionMiddlewareArgs } from "@slack/bolt";
+import type { AllMiddlewareArgs } from "@slack/bolt";
+import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
+import type { ResolvedSlackAccount } from "../accounts.js";
+import type { SlackChannelConfigResolved } from "./channel-config.js";
+import type { SlackMonitorContext } from "./context.js";
+import type { SlackExternalArgMenuChoice } from "./external-arg-menu-store.js";
+import {
+  createSlackSlashResponderWithFallback,
+  deliverSlackSlashResponseWithWebApi,
+} from "./slash-response.js";
+import type { SlackCommandInvocation } from "./types.js";
+export { deliverSlackSlashResponseWithWebApi } from "./slash-response.js";
+import type { SlackCommandMiddlewareArgs, SlackOptionsMiddlewareArgs } from "@slack/bolt";
 import {
   buildCommandTextFromArgs,
   findCommandByNativeName,
@@ -31,35 +39,30 @@ import type {
   PluginCommandCatalogDecision,
   PluginCommandNativeCandidate,
 } from "openclaw/plugin-sdk/plugin-command-runtime";
-import type { ResolvedAgentRoute } from "openclaw/plugin-sdk/routing";
 import { danger, logVerbose, warn } from "openclaw/plugin-sdk/runtime-env";
 import { normalizeLowercaseStringOrEmpty } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkItems } from "openclaw/plugin-sdk/text-chunking";
-import { resolveSlackAccount, type ResolvedSlackAccount } from "../accounts.js";
+import { resolveSlackAccount } from "../accounts.js";
 import { buildSlackCompleteBlocksFallbackText } from "../blocks-fallback.js";
 import { SLACK_MAX_BLOCKS } from "../blocks-input.js";
-import { requireSlackPostMessageTimestamp } from "../client-delivery.js";
 import { formatSlackError } from "../errors.js";
 import { truncateSlackText } from "../truncate.js";
 import { resolveSlackCommandIngress, resolveSlackEffectiveAllowFrom } from "./auth.js";
-import { resolveSlackChannelConfig, type SlackChannelConfigResolved } from "./channel-config.js";
+import { resolveSlackChannelConfig } from "./channel-config.js";
 import { buildSlackSlashCommandMatcher, resolveSlackSlashCommandConfig } from "./commands.js";
-import {
-  normalizeSlackChannelType,
-  resolveSlackChatType,
-  type SlackMonitorContext,
-} from "./context.js";
+import { normalizeSlackChannelType, resolveSlackChatType } from "./context.js";
 import { resolveSlackDeferredActionTarget } from "./deferred-action-routing.js";
 import { authorizeSlackDirectMessage } from "./dm-auth.js";
 import { resolveSlackMonitorEventScope } from "./event-scope.js";
 import {
   createSlackExternalArgMenuStore,
   SLACK_EXTERNAL_ARG_MENU_PREFIX,
-  type SlackExternalArgMenuChoice,
 } from "./external-arg-menu-store.js";
 import { resolveSlackSenderAuthentication } from "./ingress.js";
 import { resolveSlackSessionEventRoutingContext } from "./message-handler/prepare-routing.js";
 import { escapeSlackMrkdwn } from "./mrkdwn.js";
+import { isSlackChannelAllowedByPolicy } from "./policy.js";
+import { resolveSlackRequestUserAllowed } from "./request-users.js";
 import {
   createSlackResponseUrlBudget,
   SlackResponseAlreadyReportedError,
@@ -67,7 +70,6 @@ import {
 import { resolveSlackRoomContextHints } from "./room-context.js";
 import { captureSlackSessionTargetGuard } from "./session-run-targets.js";
 import { resolveSlackCommandMenuModelContext } from "./slash-menu-model-context.js";
-import type { SlackCommandInvocation } from "./types.js";
 
 const SLACK_COMMAND_ARG_ACTION_ID = "openclaw_cmdarg";
 const SLACK_COMMAND_ARG_ACTION_LISTENER = /^openclaw_cmdarg/;
@@ -424,6 +426,41 @@ export function createSlackCommandHandler(params: {
           defaultRequireMention: ctx.defaultRequireMention,
           allowNameMatching: ctx.allowNameMatching,
         });
+        if (ctx.useAccessGroups) {
+          const channelAllowlistConfigured = (ctx.channelsConfigKeys?.length ?? 0) > 0;
+          const channelAllowed = channelConfig?.allowed !== false;
+          if (
+            !isSlackChannelAllowedByPolicy({
+              groupPolicy: ctx.groupPolicy,
+              channelAllowlistConfigured,
+              channelAllowed,
+            })
+          ) {
+            await respondEphemeral("This channel is not allowed.");
+            return false;
+          }
+          // When groupPolicy is "open", only block channels that are EXPLICITLY denied
+          // (i.e., have a matching config entry with allow:false). Channels not in the
+          // config (matchSource undefined) should be allowed under open policy.
+          const hasExplicitConfig = Boolean(channelConfig?.matchSource);
+          if (!channelAllowed && (ctx.groupPolicy !== "open" || hasExplicitConfig)) {
+            await respondEphemeral("This channel is not allowed.");
+            return false;
+          }
+        }
+        if (
+          !resolveSlackRequestUserAllowed({
+            requestUsers: channelConfig?.requestUsers,
+            teamId: eventScope?.teamId ?? ctx.teamId,
+            userId: command.user_id,
+          })
+        ) {
+          await respond({
+            text: "You may contribute context here, but only an authorized requester can start or administer agent work.",
+            response_type: "ephemeral",
+          });
+          return;
+        }
       }
 
       const sender = await ctx.resolveUserName(command.user_id, eventScope);
@@ -1085,69 +1122,4 @@ export async function registerSlackMonitorSlashCommands(params: {
   return { mode: "native" };
 }
 
-function createSlackSlashResponderWithFallback(params: {
-  respond: SlackCommandMiddlewareArgs["respond"];
-  client: AllMiddlewareArgs["client"];
-  command: SlackCommandMiddlewareArgs["command"];
-  runtime: SlackMonitorContext["runtime"];
-}): SlackCommandMiddlewareArgs["respond"] {
-  return async (message) => {
-    try {
-      return await params.respond(message);
-    } catch (error) {
-      if (!isSlackBoltRespondError(error)) {
-        throw error;
-      }
-      params.runtime.log?.(
-        warn(
-          `slack slash response_url failed; falling back to Web API: ${formatErrorMessage(error)}`,
-        ),
-      );
-      return await deliverSlackSlashResponseWithWebApi({
-        client: params.client,
-        command: params.command,
-        message,
-      });
-    }
-  };
-}
-
-export async function deliverSlackSlashResponseWithWebApi(params: {
-  client: AllMiddlewareArgs["client"];
-  token?: string;
-  command: Pick<SlackCommandMiddlewareArgs["command"], "channel_id" | "user_id">;
-  threadTs?: string;
-  message: Parameters<SlackCommandMiddlewareArgs["respond"]>[0];
-}): Promise<Response> {
-  const payload = typeof params.message === "string" ? { text: params.message } : params.message;
-  const text = payload.text ?? "";
-  const blocks = "blocks" in payload && Array.isArray(payload.blocks) ? payload.blocks : undefined;
-  const mrkdwn =
-    "mrkdwn" in payload && typeof payload.mrkdwn === "boolean" ? payload.mrkdwn : undefined;
-
-  const message = {
-    ...(params.token !== undefined ? { token: params.token } : {}),
-    channel: params.command.channel_id,
-    ...(params.threadTs ? { thread_ts: params.threadTs } : {}),
-    text,
-    ...(blocks ? { blocks } : {}),
-    ...(mrkdwn !== undefined ? { mrkdwn } : {}),
-  };
-  if (payload.response_type === "in_channel") {
-    const postSlackMessage = params.client.chat.postMessage.bind(params.client.chat);
-    const response = await postSlackMessage(message);
-    requireSlackPostMessageTimestamp(response);
-  } else {
-    await params.client.chat.postEphemeral({ ...message, user: params.command.user_id });
-  }
-  return new Response(null, { status: 200 });
-}
-
-function isSlackBoltRespondError(error: unknown): boolean {
-  return (
-    Boolean(error) &&
-    typeof error === "object" &&
-    (error as { code?: unknown }).code === "slack_bolt_respond_error"
-  );
-}
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

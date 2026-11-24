@@ -9,6 +9,8 @@ import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import { PreparedModelRuntimePublicationSupersededError } from "../../agents/prepared-model-runtime.errors.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
 import { readUserProfileAliasRevision } from "../../state/user-profile-events.js";
+import { readGatewayAccessRevision } from "../gateway-access-revision.js";
+import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
 import type { UserModelAccountSelection } from "../model-account-authority.js";
 import { ModelAccountConnectAuthorityError } from "../model-account-connect-errors.js";
 import { prepareOperatorModelPresentation } from "../operator-model-presentation.js";
@@ -44,12 +46,14 @@ export async function resolveChatMetadataReadParams(
   const requester = await prepareAuthenticatedProfile(options);
   requester.assertCurrent();
   // Session mutations are checked against the retained target before publication.
+  const accessRevision = readGatewayAccessRevision();
   const roleRevision = readOperatorRolePolicyRevision();
   const aliasRevision = readUserProfileAliasRevision();
   const profileInput = client?.authenticatedUserProfile?.profileId;
   const userInput = client?.authenticatedUserId;
   const isRequestCurrent = () =>
     !signal?.aborted &&
+    readGatewayAccessRevision() === accessRevision &&
     readOperatorRolePolicyRevision() === roleRevision &&
     readUserProfileAliasRevision() === aliasRevision &&
     client?.authenticatedUserProfile?.profileId === profileInput &&
@@ -92,6 +96,16 @@ export async function resolveChatMetadataReadParams(
     const isCurrent = () => isRequestCurrent() && read.isCurrent();
     const assertVisible = () => {
       const currentConfig = (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)();
+      if (
+        !isBrowserSessionReadAllowed({
+          cfg: currentConfig,
+          client,
+          sessionKey: session.canonicalKey,
+          sessionEntry: session.entry ?? null,
+        })
+      ) {
+        throw new SessionMutationAuthorizationChangedError(hiddenSessionNotFound(sessionKey));
+      }
       const visible = createSessionListEntryFilter({
         client,
         cfg: currentConfig,

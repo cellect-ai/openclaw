@@ -10,6 +10,7 @@ import type {
   NativeDeviceSettingsSnapshot,
   NativeDeviceSettingsCapability,
 } from "../../app/native-device-settings.ts";
+import { Icon } from "../../components/solid/icon.tsx";
 import { ModelPicker } from "../../components/solid/model-picker.tsx";
 import {
   SettingsPage,
@@ -24,6 +25,7 @@ import { t, registerEnglishCatalog } from "../../lib/reactive/i18n.ts";
 import { SettingsSelectRow } from "./settings-select-row.tsx";
 import { DeviceTalk, VoiceWakeEditor, type VoiceWakeEditorState } from "./talk-device.tsx";
 import { resolveTalkModelFamilySettings, type TalkRealtimeSelection } from "./talk-schema.ts";
+import type { TalkVoicePreviewState } from "./talk-voice-preview.ts";
 
 registerEnglishCatalog(registerSettingsEnglish);
 
@@ -35,9 +37,10 @@ export type TalkRealtimeProviderOption = TalkCatalogResult["realtime"]["provider
  */
 export type TalkCatalogState =
   | { kind: "loading" }
-  | { kind: "unavailable" }
+  | { kind: "unavailable"; reason?: "disconnected" | "request-failed" }
   | {
       kind: "ready";
+      stale?: boolean;
       ready: boolean;
       activeProvider: string | null;
       providers: readonly TalkRealtimeProviderOption[];
@@ -55,6 +58,7 @@ type TalkViewProps = {
     onInput: (text: string) => void;
     onRetry: () => void;
   };
+  voicePreview?: { state: TalkVoicePreviewState; onPlay: () => void };
   selection: TalkRealtimeSelection;
   catalog: TalkCatalogState;
   catalogScope?: object | null;
@@ -136,9 +140,22 @@ function StatusRow(props: TalkViewProps) {
     if (catalog.kind !== "ready") {
       return {
         description:
-          catalog.kind === "unavailable" ? t("talkPage.status.unavailableHint") : undefined,
+          catalog.kind === "unavailable"
+            ? t(
+                catalog.reason === "request-failed"
+                  ? "talkPage.status.requestFailedHint"
+                  : "talkPage.status.disconnectedHint",
+              )
+            : undefined,
         kind: "muted" as const,
         label: t(catalog.kind === "loading" ? "common.loading" : "talkPage.status.unavailable"),
+      };
+    }
+    if (catalog.stale) {
+      return {
+        description: t("talkPage.status.staleHint"),
+        kind: "warn" as const,
+        label: t("talkPage.status.stale"),
       };
     }
     return {
@@ -168,7 +185,12 @@ function ConfiguredTalkValue(props: { field: "provider" | "model" | "voice"; val
   );
 }
 
+function talkPickersDisabled(props: TalkViewProps) {
+  return props.configBusy || (props.catalog.kind === "ready" && props.catalog.stale === true);
+}
+
 function ProviderRow(props: TalkViewProps) {
+  const autoUnavailable = () => Object.keys(props.selection.providerEntries).length > 1;
   const providers = () => (props.catalog.kind === "ready" ? props.catalog.providers : []);
   const selected = () => findProviderOption(providers(), props.selection.provider);
   // A disabled plugin's configured id must stay visible rather than becoming Auto.
@@ -177,7 +199,7 @@ function ProviderRow(props: TalkViewProps) {
   const options = createMemo(() => [
     ...providers().map((provider) => ({ value: provider.id, label: provider.label })),
     ...(unknownConfigured() ? [{ value: unknownConfigured()!, label: unknownConfigured()! }] : []),
-    { value: TALK_PICKER_UNSET, label: t("talkPage.provider.auto") },
+    { value: TALK_PICKER_UNSET, label: t("talkPage.provider.auto"), disabled: autoUnavailable() },
   ]);
   return (
     <>
@@ -189,13 +211,17 @@ function ProviderRow(props: TalkViewProps) {
       ) : (
         <SettingsRow
           title={t("talkPage.provider.title")}
-          description={t("talkPage.provider.description")}
+          description={t(
+            autoUnavailable()
+              ? "talkPage.provider.explicitRequired"
+              : "talkPage.provider.description",
+          )}
           stacked
           control={
             <SettingsSegmented
               value={selected()?.id ?? unknownConfigured() ?? TALK_PICKER_UNSET}
               options={options()}
-              disabled={props.configBusy}
+              disabled={talkPickersDisabled(props)}
               ariaLabel={t("talkPage.provider.title")}
               onChange={(value) => props.onProviderChange(value || null)}
             />
@@ -242,7 +268,7 @@ function ModelRow(props: TalkViewProps) {
               label={t("talkPage.model.title")}
               value={model() ?? TALK_PICKER_UNSET}
               options={options()}
-              disabled={props.configBusy}
+              disabled={talkPickersDisabled(props)}
               onChange={(value) => props.onModelChange(value || null)}
             />
           }
@@ -305,7 +331,7 @@ function VoiceRow(props: TalkViewProps) {
           }
           value={state().voice ?? TALK_PICKER_UNSET}
           options={state().options}
-          disabled={props.configBusy}
+          disabled={talkPickersDisabled(props)}
           onChange={(value) => props.onVoiceChange(value || null)}
         />
       )}
@@ -340,6 +366,44 @@ function ModelFamilyRow(props: TalkViewProps) {
   );
 }
 
+function VoicePreviewRow(props: TalkViewProps) {
+  const provider = () => selectedTalkProviderOption(props.catalog, props.selection);
+  const state = () => props.voicePreview?.state ?? "idle";
+  return (
+    <Show when={props.voicePreview}>
+      <SettingsRow
+        title={t("talkPage.voice.preview")}
+        description={
+          <span role={state() === "error" ? "alert" : "status"} aria-live="polite">
+            {t(
+              state() === "loading"
+                ? "talkPage.voice.previewLoading"
+                : state() === "playing"
+                  ? "talkPage.voice.previewPlaying"
+                  : state() === "error"
+                    ? "talkPage.voice.previewError"
+                    : "talkPage.voice.previewHint",
+            )}
+          </span>
+        }
+        control={
+          <button
+            type="button"
+            class="btn btn--icon"
+            aria-label={t("talkPage.voice.preview")}
+            disabled={
+              talkPickersDisabled(props) || !provider()?.configured || state() === "loading"
+            }
+            onClick={() => props.voicePreview?.onPlay()}
+          >
+            <Icon name="play" />
+          </button>
+        }
+      />
+    </Show>
+  );
+}
+
 function TalkCatalogRows(props: TalkViewProps) {
   return (
     <>
@@ -347,6 +411,7 @@ function TalkCatalogRows(props: TalkViewProps) {
       <ProviderRow {...props} />
       <ModelRow {...props} />
       <VoiceRow {...props} />
+      <VoicePreviewRow {...props} />
       <ModelFamilyRow {...props} />
     </>
   );

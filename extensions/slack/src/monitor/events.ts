@@ -22,6 +22,12 @@ import {
 import { registerSlackInteractionEvents } from "./events/interactions.js";
 import { registerSlackMemberEvents } from "./events/members.js";
 import { registerSlackMessageEvents as registerSlackMessageEventHandlers } from "./events/messages.js";
+import {
+  logSlackReactionTriggerDecision,
+  normalizeSlackReactionName,
+  resolveSlackReactionTrigger,
+  runSlackReactionTrigger,
+} from "./events/reaction-triggers.js";
 import { authorizeAndResolveSlackSystemEventContext } from "./events/system-event-context.js";
 import { resolveSlackIngressTurnLifecycle, resolveSlackSenderAuthentication } from "./ingress.js";
 import type { SlackMessageHandler } from "./message-handler.js";
@@ -96,8 +102,30 @@ export function registerSlackCommonEvents(params: {
           try {
             const runtimeContext = await params.ctx.readRuntimeContext();
             const item = event.item;
+            // One INFO line per reaction this account receives; identifiers only, never message text.
+            ctx.runtime.log?.(
+              `slack reaction ${action} account=${ctx.accountId} emoji=${event.reaction ?? "-"} channel=${item?.channel ?? "-"} actor=${event.user ?? "-"} ts=${item?.ts ?? "-"}`,
+            );
             if (!item || item.type !== "message") {
               return;
+            }
+            // Trigger emojis fire on any message, independent of reactionNotifications.
+            if (action === "added") {
+              const trigger = resolveSlackReactionTrigger(ctx, event.reaction);
+              if (trigger) {
+                trackEvent?.();
+                await runSlackReactionTrigger({ ctx, event, trigger, eventScope });
+              } else {
+                logSlackReactionTriggerDecision({
+                  ctx,
+                  emoji: normalizeSlackReactionName(event.reaction),
+                  channelId: item.channel,
+                  actorId: event.user,
+                  messageTs: item.ts,
+                  decision: "skipped",
+                  reason: "not-a-trigger-emoji",
+                });
+              }
             }
             if (runtimeContext.reactionMode === "off") {
               return;

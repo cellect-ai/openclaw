@@ -452,6 +452,8 @@ export type CronToolsAllowProvenance =
 
 /** Persisted row shape; public Gateway and wire contracts use CronJob. */
 export type CronStoredJob = Omit<CronJob, "streamExecutionHost" | "payloadSource"> & {
+  /** Doctor-only legacy producer marker; preserves explicit-only finals, never grants authority. */
+  legacyHeartbeatReplyPolicy?: true;
   /** Immutable host-captured scheduled command invocation; never public create/patch input. */
   pluginCommand?: PluginCommandSchedule;
   /** Original authenticated source for a same-conversation continuation, never a public grant. */

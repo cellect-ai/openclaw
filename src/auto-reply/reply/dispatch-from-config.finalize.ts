@@ -5,8 +5,10 @@ import {
 } from "../../agents/reply-completion.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { logVerbose } from "../../globals.js";
+import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
+import { recordRunFinalDelivered } from "../../infra/run-final-deliveries.js";
 import { cleanDeferredFinalText } from "../../tts/captioned-final.js";
 import { extractTtsDirectiveFacts } from "../../tts/directive-facts.js";
 import { resolveTtsSettingsSnapshot } from "../../tts/tts-settings.js";
@@ -32,6 +34,12 @@ import {
   clearPendingFinalDeliveryAfterSuccess,
   suppressPendingFinalDelivery,
 } from "./dispatch-from-config.pending-final.js";
+import {
+  appendNativeFinalDelivery,
+  closeNativeFinalDelivery,
+  nativeFinalDeliveryReference,
+  resolveNativeFinalDeliveryPlan,
+} from "./native-final-delivery.js";
 
 type ExecuteDispatchReadyState = Extract<
   Awaited<ReturnType<typeof executeDispatch>>,
@@ -42,6 +50,7 @@ export const needsTtsFallback = (clean: boolean, visible: string, fallback?: str
   clean && !visible.trim() && Boolean(fallback?.trim());
 
 export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState) {
+  const finalDeliveryGeneration = getAgentRunLifecycleGeneration();
   const {
     cfg,
     ctx,
@@ -103,6 +112,21 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
   const pendingFinalDeliveryIdentity = replies
     .map((reply) => getReplyPayloadMetadata(reply)?.pendingFinalDeliveryCompletion)
     .find((completion) => completion !== undefined);
+  const nativeFinalPlan =
+    resolveNativeFinalDeliveryPlan(state.replyOperationRunState.agentTurnOwner) ??
+    replies
+      .map((reply) => {
+        const reference = nativeFinalDeliveryReference(reply);
+        return reference
+          ? {
+              ...reference,
+              commandOwnerReference:
+                getReplyPayloadMetadata(reply)?.pendingFinalDeliveryCompletion
+                  ?.commandOwnerReference,
+            }
+          : undefined;
+      })
+      .find(Boolean);
   const beforeAgentRunBlocked =
     state.replyOperationRunState.replyCompletion?.outcome === "blocked" ||
     replies.some((reply) => getReplyPayloadMetadata(reply)?.beforeAgentRunBlocked === true);
@@ -177,6 +201,7 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
         continue;
       }
       sentFinalPayloadDedupeKeys.add(finalPayloadDedupeKey);
+      await appendNativeFinalDelivery(nativeFinalPlan, reply, throwIfDispatchOperationAborted);
       if (getReplyPayloadMetadata(reply)?.pendingFinalDeliveryCompletion) {
         setReplyPayloadMetadata(reply, { pendingFinalDeliveryCleanup: {} });
       }
@@ -345,6 +370,7 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
       (ttsConfig.mode === "final" && (replies.length === 0 || deferFinalTtsText))
     ) {
       const sendTtsFinal = async (payload: ReplyPayload) => {
+        await appendNativeFinalDelivery(nativeFinalPlan, payload, throwIfDispatchOperationAborted);
         const finalReply = await state.sendFinalPayload(payload, {
           abortSignal: getDispatchAbortSignal(),
           skipTts: true,
@@ -442,7 +468,14 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
       currentInboundEventKind: ctx.InboundEventKind,
       trigger: ctx.InternalTurnSource === "event" ? "event" : undefined,
     });
+  // A Stop can reach only the run's own operation, or only the native run,
+  // leaving dispatch's signal live. The reader asked for no reply; silence is
+  // not a delivery failure.
+  const agentTurnStoppedByUser =
+    state.replyOperationRunState.agentTurn === "cancelled" &&
+    state.replyOperationRunState.agentTurnAbortReason === "user";
   const noVisibleReplyFallbackAllowed = () =>
+    !agentTurnStoppedByUser &&
     replyCompletion().outcome === "missing" &&
     missingReplyNoticeAllowed &&
     !suppressDelivery &&
@@ -490,6 +523,11 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
       const fallbackPayload: ReplyPayload = queueCapRejected
         ? { text: QUEUE_CAP_REJECTION_TEXT }
         : createMissingReplyNotice();
+      await appendNativeFinalDelivery(
+        nativeFinalPlan,
+        fallbackPayload,
+        throwIfDispatchOperationAborted,
+      );
       const result = await routeReplyToOriginating(fallbackPayload, {
         abortSignal: getDispatchAbortSignal(),
         kind: "final",
@@ -539,6 +577,21 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
     }
   }
   counts.final += routedFinalCount;
+  const agentRunId = state.getAgentRunId();
+  if (agentRunId && sessionKey && !pendingContinuation) {
+    // Only a settled terminal reply establishes context for later completions.
+    const recordDeliveredFinal = () =>
+      recordRunFinalDelivered({
+        sessionKey,
+        runId: agentRunId,
+        generation: finalDeliveryGeneration,
+      });
+    if (getObservedReplyDelivery()) {
+      recordDeliveredFinal();
+    } else {
+      turnLedger.onTerminalDelivered(recordDeliveredFinal);
+    }
+  }
   const agentRunTerminalOutcome = state.getAgentRunTerminalOutcome();
   state.commitInboundDedupeIfClaimed();
   const messageInjectionAborted = state.replyOperationRunState.messageInjectionAborted === true;
@@ -593,6 +646,9 @@ export async function finalizeDispatchAndAudit(state: ExecuteDispatchReadyState)
   );
   const completion = replyCompletion();
   state.replyOperationRunState.replyCompletion = completion;
+  // Membership is closed only after this producer has made its TTS/fallback decisions.
+  // Member settlement may arrive later through the native durable queue.
+  await closeNativeFinalDelivery(nativeFinalPlan);
   state.completeDispatchReplyOperation();
   const result = state.attachSourceReplyDeliveryMode({
     queuedFinal,

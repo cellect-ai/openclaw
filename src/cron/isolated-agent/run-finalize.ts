@@ -17,6 +17,10 @@ import { resolveSourceDeliveryOutcome } from "../../infra/outbound/source-delive
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { hasPendingAutomationContinuation } from "../automation-result.js";
 import {
+  requiresLegacyHeartbeatExplicitReply,
+  selectLegacyHeartbeatReplyPayloads,
+} from "../legacy-heartbeat-reply-policy.js";
+import {
   createCronRunDiagnosticsFromAgentResult,
   createCronRunDiagnosticsFromError,
   mergeCronRunDiagnostics,
@@ -55,7 +59,18 @@ export async function finalizeCronRun(params: {
 }): Promise<RunCronAgentTurnResult> {
   const { prepared, execution } = params;
   const finalRunResult = execution.runResult;
-  const replyDisposition = finalRunResult.meta?.terminalReply?.disposition ?? "empty";
+  let replyDisposition = finalRunResult.meta?.terminalReply?.disposition ?? "empty";
+  const legacyHeartbeatExplicitOnly = requiresLegacyHeartbeatExplicitReply({
+    job: prepared.input.job,
+    config: prepared.cfgWithAgentDefaults,
+    chatType: prepared.resolvedDelivery.ok
+      ? prepared.resolvedDelivery.sessionRoute?.chatType
+      : undefined,
+    runtime:
+      finalRunResult.meta?.agentMeta?.agentHarnessId ??
+      prepared.cronSession.sessionEntry.agentHarnessId ??
+      "openclaw",
+  });
   const pendingContinuation = hasPendingAutomationContinuation(finalRunResult.meta);
   const includeReasoning = prepared.agentPayload?.includeReasoning === true;
   const payloads = (finalRunResult.payloads ?? []).filter(
@@ -212,8 +227,8 @@ export async function finalizeCronRun(params: {
       ...telemetry,
     });
   }
-  const { deliveryDisposition, hasFatalStructuredErrorPayload, pendingPresentationWarningError } =
-    cronPayloadOutcome;
+  const { hasFatalStructuredErrorPayload, pendingPresentationWarningError } = cronPayloadOutcome;
+  let { deliveryDisposition } = cronPayloadOutcome;
   let {
     synthesizedText,
     deliveryPayloads,
@@ -222,7 +237,27 @@ export async function finalizeCronRun(params: {
     hasFatalErrorPayload,
     embeddedRunError,
   } = cronPayloadOutcome;
-  if (includeReasoning && !hasFatalErrorPayload && deliveryDisposition.kind === "visible") {
+  if (legacyHeartbeatExplicitOnly) {
+    deliveryPayloads = selectLegacyHeartbeatReplyPayloads({
+      explicitOnly: true,
+      payloads: deliveryPayloads,
+      result: params.automationResult,
+      successful: !hasFatalErrorPayload && finalRunResult.meta?.aborted !== true,
+      pending: pendingContinuation,
+    });
+    // Never let the normal fallback-text path reconstruct the withheld final.
+    synthesizedText = undefined;
+    outputText = deliveryPayloads.findLast((payload) => payload.text?.trim())?.text;
+    summary = outputText;
+    deliveryDisposition = { kind: deliveryPayloads.length ? "visible" : "silent" };
+    if (!hasFatalErrorPayload) replyDisposition = deliveryDisposition.kind;
+  }
+  if (
+    includeReasoning &&
+    !legacyHeartbeatExplicitOnly &&
+    !hasFatalErrorPayload &&
+    deliveryDisposition.kind === "visible"
+  ) {
     deliveryPayloads = [
       ...(finalRunResult.payloads ?? []).filter(shouldSuppressReasoningPayload),
       ...deliveryPayloads,

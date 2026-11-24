@@ -31,8 +31,67 @@ only those senders, and pairing-store approvals do not widen `open` access.
 Pairing codes:
 
 - 8 characters, uppercase, no ambiguous chars (`0O1I`).
-- **Expire after 1 hour**. The bot only sends the pairing message when a new request is created (roughly once per hour per sender).
+- **Expire after 7 days**. The full pairing message is sent when a new request is created. A sender who
+  writes again while their request is still pending gets a shorter "still waiting for approval" reminder
+  carrying the same code, at most once every 15 minutes per sender, so a repeat sender is never answered
+  with silence and is never spammed.
 - Pending DM pairing requests are capped at **3 per channel account**; additional requests are ignored until one expires or is approved.
+
+### Requests are kept after they expire
+
+Expiry stops a code being accepted; it does not delete the request. `openclaw
+pairing list` still shows it, marked `expired`, together with requests that were
+approved or dismissed — up to 25 retained records per channel account. The
+gateway `channels.pairing.list` method returns the same records in a separate
+`history` array, so the Control UI's queue keeps offering only requests that can
+actually be approved. An access request that nobody answered has to stay visible: one that
+silently disappears looks exactly like one nobody ever made, which is how an
+outside contractor's request went unnoticed for a month.
+
+**An expired request cannot be approved.** Approving grants an outsider a
+conversation with your assistant, so the approval must answer a request the
+sender still wants, not a code that aged out in a chat log weeks ago. The sender
+messages again — one DM — and gets a fresh code and a fresh request. Dismissed
+and previously approved senders revive the same way.
+
+A pending request nobody has acted on for **24 hours** is reported as stale:
+`openclaw pairing list` labels it, the Gateway logs a warning naming the channel,
+account, sender and age, and repeats that warning every few hours for as long as
+the request goes unanswered. The same escalation is also sent as a direct
+message to a human operator; see [When a request arrives](#when-a-request-arrives)
+below for who that is and how to configure it.
+
+### When a request arrives
+
+The Gateway logs a warning naming the channel, account and sender, and the
+`openclaw pairing list` command that reviews it. The pairing code is deliberately
+not logged: it is the secret the sender and the approver share.
+
+**The Gateway log is not enough on its own.** Nothing tails it live, and a
+self-hosted deployment may only retain it for a bounded window, so a request
+that only ever reaches the log is exactly as invisible as one that reaches
+nothing. To close that gap, the same "a request needs your attention" text is
+also sent as an ordinary message to a resolved human operator, on the channel
+they already have open:
+
+- If `commands.ownerAllowFrom` names this channel (or is unprefixed, e.g. a
+  bare Telegram user id with one configured channel), that operator is used.
+- Otherwise, the request's own channel account's configured DM allowlist is
+  used — whoever is already allowed to DM that exact bot. This never crosses
+  into another channel account's allowlist: an `fi-user`-scoped request is
+  never sent to `fi-admin`'s operator, or the reverse.
+- If neither resolves to anyone, no message is sent; the log line above is
+  still there.
+
+This repeats on the same six-hour cadence as the stale-request log warning
+above, for as long as the request goes unanswered. It never grants access and
+never adds an approve/deny control of its own — it only names the exact
+`openclaw pairing list` / `openclaw pairing approve` commands to run.
+Approval stays in the CLI.
+
+Plugins can subscribe to the `channel_pairing_requested` hook to route the same
+event somewhere else. Neither the log line nor the direct notice above depends
+on any plugin being installed.
 
 ### Approve from the Control UI
 
@@ -130,7 +189,7 @@ For channels that use OpenClaw's pairing API, state is stored in the shared SQLi
 database at
 `~/.openclaw/state/openclaw.sqlite`:
 
-- pending requests in `channel_pairing_requests`
+- requests in `channel_pairing_requests`, with their `status` and `resolved_at`
 - approved senders in `channel_pairing_allow_entries`
 
 Account scoping behavior:

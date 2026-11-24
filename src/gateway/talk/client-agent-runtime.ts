@@ -37,7 +37,9 @@ export function createTalkClientAgentRuntime(params: {
   /** Present only when this consultation registers an exact source before execution. */
   getRegisteredSource?: () => RpcSourceRef | undefined;
   runAuthority?: TalkClientRunAuthority;
+  forwardOperatorAuthority?: boolean;
   assertCurrent?: () => void;
+  getAdditionalSystemPrompt?: () => string | undefined;
   bindOperationalRunInstance?: (instance: OperationalRunInstanceRef) => void;
 }) {
   const agentRuntime = createPluginRuntime().agent;
@@ -135,7 +137,8 @@ export function createTalkClientAgentRuntime(params: {
             cfg: config,
             operationalRunInstance,
             assertSourceCurrent: retained?.assertSourceCurrent,
-            operatorAuthority: retained?.authority,
+            operatorAuthority:
+              params.forwardOperatorAuthority === false ? undefined : retained?.authority,
             facts: {
               runId: runParams.runId,
               agentId,
@@ -164,6 +167,9 @@ export function createTalkClientAgentRuntime(params: {
             // its final transcript would lose the answer when no spoken replacement arrives.
             return await execution.runEmbeddedAgent({
               ...runParams,
+              extraSystemPrompt: [runParams.extraSystemPrompt, params.getAdditionalSystemPrompt?.()]
+                .filter(Boolean)
+                .join("\n\n"),
               preparedRunAdmission,
               // Speech is mirrored separately. Keep generated input in current-turn custody,
               // but never display it or replay it as a later user request.

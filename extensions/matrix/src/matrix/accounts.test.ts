@@ -6,6 +6,7 @@ import {
   resolveConfiguredMatrixBotUserIds,
   resolveDefaultMatrixAccountId,
   resolveMatrixAccount,
+  resolveMatrixAccountAsync,
 } from "./accounts.js";
 import type { MatrixStoredCredentials } from "./credentials-state.js";
 
@@ -225,5 +226,45 @@ describe("resolveMatrixAccount", () => {
     });
 
     expect(resolveMatrixAccount({ cfg, accountId: "ops" }).config.rooms).toBeUndefined();
+  });
+});
+
+describe("resolveMatrixAccountAsync token-only identity", () => {
+  beforeEach(() => {
+    loadMatrixCredentialsMock.mockReset().mockReturnValue(null);
+  });
+
+  const cfg = {
+    channels: { matrix: { homeserver: "https://matrix.example.org", accounts: { fiadmin: {} } } },
+  } as unknown as CoreConfig;
+  const env = {
+    [getMatrixScopedEnvVarNames("fiadmin").accessToken]: "token-1",
+  } as NodeJS.ProcessEnv;
+
+  it("projects the stored MXID for an env-token account whose token matches", async () => {
+    loadMatrixCredentialsMock.mockReturnValue({
+      homeserver: "https://matrix.example.org",
+      userId: "@admin:example.org",
+      accessToken: "token-1",
+    } as MatrixStoredCredentials);
+    const account = await resolveMatrixAccountAsync({ cfg, accountId: "fiadmin", env });
+    expect(account.userId).toBe("@admin:example.org");
+    // Sync/async contract (deliberate alignment): the synchronous hook reads
+    // the same stored identity as the async resolver for a token-matching
+    // env account, so real sync operational callers resolve the stored MXID.
+    // A stored MXID for a different token is never adopted (next case).
+    expect(resolveMatrixAccount({ cfg, accountId: "fiadmin", env }).userId).toBe(
+      "@admin:example.org",
+    );
+  });
+
+  it("does not adopt an MXID stored for a different token", async () => {
+    loadMatrixCredentialsMock.mockReturnValue({
+      homeserver: "https://matrix.example.org",
+      userId: "@admin:example.org",
+      accessToken: "rotated-away",
+    } as MatrixStoredCredentials);
+    const account = await resolveMatrixAccountAsync({ cfg, accountId: "fiadmin", env });
+    expect(account.userId).toBeUndefined();
   });
 });

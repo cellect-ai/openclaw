@@ -2,8 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { waitForGatewayDispatch } from "../../gateway/server-in-process-dispatch.js";
 import type { DispatchGatewayMethodInProcessOptions } from "../../gateway/server-plugin-in-process-dispatch.types.js";
 import * as agentRuns from "../../infra/agent-run-registry.js";
+import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { createTestAdmittedRunContext } from "../admitted-run-context.test-support.js";
+import {
+  getAdmittedRunDelegatedAuthority,
+  prepareSystemAgentRunAdmission,
+} from "../admitted-run-context.js";
 import {
   bindRequesterOwnerIdentity,
   bindRequesterYieldCronAuthority,
@@ -253,6 +257,9 @@ describe("child followup requester continuation", () => {
       senderId: "owner",
       channel: "telegram",
       accountId: "test",
+      sourceTurnId: "channel-user:v1:original-owner-task",
+      chatId: "original-chat",
+      eventId: "original-event",
       isCurrent: () => ownerCurrent,
     };
     const capability = createCronCreatorAuthorityCapability(
@@ -324,6 +331,20 @@ describe("child followup requester continuation", () => {
           });
           expect(binding?.isCurrent()).toBe(true);
           binding!.assertCurrent();
+          const hook = buildAgentHookContextChannelFields({
+            runId: admission!.runId,
+            sessionKey: SESSION,
+            sessionId: SESSION_ID,
+          });
+          expect(hook.requesterContinuation).toMatchObject({
+            sourceTurnId: "channel-user:v1:original-owner-task",
+            senderId: "owner",
+            accountId: "test",
+            channel: "telegram",
+            chatId: "original-chat",
+            eventId: "original-event",
+          });
+          hook.requesterContinuation!.assertCurrent();
           invoked();
         },
         scope,

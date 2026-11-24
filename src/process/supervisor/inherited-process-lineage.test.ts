@@ -10,15 +10,20 @@ describe("inherited process lineage", () => {
     const host = await import("./inherited-process-lineage.js");
     const releaseOwner = host.bindInheritedNativeProcessOwner("file:///owner/anchor.js");
     const releaseFds = host.bindInheritedProcessLineageFds([7, 9]);
-    vi.resetModules();
-    const plugin = await import("./inherited-process-lineage.js");
-    expect(plugin).not.toBe(host);
-    expect(plugin.getInheritedNativeProcessOwner()).toBe("file:///owner/anchor.js");
-    expect(plugin.getInheritedProcessLineageFds()).toEqual([7, 9]);
+    try {
+      vi.resetModules();
+      const plugin = await import("./inherited-process-lineage.js");
+      expect(plugin).not.toBe(host);
+      expect(plugin.getInheritedNativeProcessOwner()).toBe("file:///owner/anchor.js");
+      expect(plugin.getInheritedProcessLineageFds()).toEqual([7, 9]);
 
-    releaseOwner();
-    releaseFds();
-    expect(plugin.getInheritedNativeProcessOwner()).toBeUndefined();
-    expect(plugin.getInheritedProcessLineageFds()).toEqual([]);
+      releaseOwner();
+      releaseFds();
+      expect(plugin.getInheritedNativeProcessOwner()).toBeUndefined();
+      expect(plugin.getInheritedProcessLineageFds()).toEqual([]);
+    } finally {
+      releaseOwner();
+      releaseFds();
+    }
   });
 });

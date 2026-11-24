@@ -1,8 +1,10 @@
 import { coerceErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { getReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
 import { recordGoalContinuationSettlement } from "../../auto-reply/reply/goal-continuation-return.js";
+import { notifyNativeFinalDeliveryChanged } from "../../auto-reply/reply/native-final-delivery.js";
 import { recordAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import type { CliDeps } from "../../cli/deps.types.js";
+import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import {
   captureSessionActorStorageOwner,
   readCapturedSessionActorEntry,
@@ -285,6 +287,8 @@ export async function finalizeEmbeddedAgentCommand(params: {
       payloads: selectSourceDeliverablePayloads(payloads, params.opts),
       deliveryContext: params.currentRunDeliveryContext,
       runOwnedSessionId,
+      sourceRunId: runId,
+      sourceGeneration: lifecycleGeneration,
     });
     sessionEntry = pendingFinalDeliveryMarker.sessionEntry;
     let deliveryLifecycleRevision = sessionEntry?.lifecycleRevision;
@@ -543,7 +547,39 @@ export async function finalizeEmbeddedAgentCommand(params: {
       const clearOwnedPendingFinal =
         deliveryResult?.deliverySucceeded === true &&
         pendingFinalDeliveryMarker.pendingFinalDeliveryIntentId !== undefined;
-      if (clearOwnedPendingFinal || clearStaleTransportOnly) {
+      if (clearOwnedPendingFinal && entry.pendingFinalDelivery?.dispatchState === "closed") {
+        const native = entry.pendingFinalDelivery;
+        const assertCurrent = () => {
+          assertSourceCurrent?.();
+          operatorAuthority?.assertCurrent();
+          assertAgentRunLifecycleGenerationCurrent(lifecycleGeneration);
+          deferredLifecycle.signal.throwIfAborted();
+        };
+        const updated = await applySessionEntryOperation(
+          { agentId: sessionAgentId, sessionKey, storePath },
+          {
+            kind: "pending-final-clear",
+            sessionId: runOwnedSessionId,
+            intentId: pendingFinalDeliveryMarker.pendingFinalDeliveryIntentId!,
+            now: Date.now(),
+          },
+          { skipMaintenance: true, preserveActivity: true, workerGuard: { assertCurrent } },
+        );
+        if (updated) {
+          sessionEntry = updated;
+          sessionStore[sessionKey] = updated;
+        }
+        if (native.sourceRunId && native.sourceGeneration)
+          await notifyNativeFinalDeliveryChanged({
+            agentId: sessionAgentId,
+            sessionKey,
+            storePath,
+            sessionId: runOwnedSessionId,
+            intentId: native.intentId!,
+            sourceRunId: native.sourceRunId,
+            sourceGeneration: native.sourceGeneration,
+          });
+      } else if (clearOwnedPendingFinal || clearStaleTransportOnly) {
         const now = Date.now();
         sessionEntry = await persistAgentSession({
           agentId: sessionAgentId,

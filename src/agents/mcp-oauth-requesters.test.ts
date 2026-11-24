@@ -37,6 +37,7 @@ vi.mock("@modelcontextprotocol/client", async (importOriginal) => ({
 const saveAccessToken = (identity: McpOAuthIdentity, accessToken: string) =>
   withMcpOAuthProviderForTest({ identity }, async (provider) => {
     await provider.saveTokens({
+      issuer: "https://auth.example.com",
       access_token: accessToken,
       token_type: "Bearer",
       expires_in: 3600,
@@ -47,7 +48,11 @@ requesterTest("fails closed when canonical SQLite JSON is malformed", async () =
   const { serverName, serverUrl } = REMOTE_IDENTITY;
   const identity = requesterIdentity(serverName, serverUrl, "alice");
   await withMcpOAuthProviderForTest({ identity }, async (provider) => {
-    await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+    await provider.saveTokens({
+      issuer: "https://auth.example.com",
+      access_token: "access",
+      token_type: "Bearer",
+    });
     const storeKey = identity.storeKey;
     sql("UPDATE mcp_oauth_stores SET store_json = ? WHERE store_key = ?").run("{", storeKey);
 

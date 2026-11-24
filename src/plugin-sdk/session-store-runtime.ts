@@ -21,6 +21,7 @@ import {
   cleanupSessionLifecycleArtifactsCore as cleanupAccessorSessionLifecycleArtifacts,
   deleteSessionEntryLifecycle as deleteAccessorSessionEntryLifecycle,
   loadTranscriptEventsSync as loadAccessorTranscriptEventsSync,
+  listSessionEntryKeysReadOnly as listAccessorSessionEntryKeysReadOnly,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
   loadSessionEntryReadOnly,
@@ -244,6 +245,17 @@ export function listSessionEntries(
     sessionKey,
     entry: projectPluginSessionEntry(entry),
   }));
+}
+
+/** Lists durable session keys without materializing entry JSON. */
+export async function listSessionKeys(
+  params: Partial<Omit<SessionStoreReadParams, "sessionKey">> = {},
+): Promise<string[]> {
+  return await listAccessorSessionEntryKeysReadOnly({
+    ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
+    ...(params.env !== undefined ? { env: params.env } : {}),
+    ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+  });
 }
 
 /** Lists public session metadata without hydrating saved prompts or opening a writable database. */

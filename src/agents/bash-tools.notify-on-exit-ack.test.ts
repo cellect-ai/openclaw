@@ -7,6 +7,10 @@ import {
 } from "../config/runtime-snapshot.js";
 import { writeSessionEntry } from "../config/sessions/session-accessor.sqlite-entry-store.js";
 import {
+  clearRunFinalDeliveriesForTest,
+  recordRunFinalDelivered,
+} from "../infra/run-final-deliveries.js";
+import {
   consumeSelectedSystemEventEntries,
   enqueueSystemEventEntry,
   peekSystemEventEntries,
@@ -92,6 +96,7 @@ beforeEach(async () => {
   vi.spyOn(Date, "now").mockReturnValue(Date.now());
 });
 afterEach(async () => {
+  clearRunFinalDeliveriesForTest();
   resetProcessRegistryForTests();
   resetSystemEventsForTest();
   await Promise.allSettled(
@@ -117,6 +122,39 @@ it("keeps selected-agent global completions scoped to their owner", async () => 
   expect(peekSystemEventEntries("agent:research:global")).toHaveLength(1);
   expect(peekSystemEventEntries("agent:main:global")).toEqual([]);
 });
+
+it("binds a completion to the agent run that started the command", async () => {
+  const process = await startDeferredNotifyRun({
+    spawn: supervisorSpawnMock,
+    sessionKey: QUEUE_KEY,
+    originRunId: "run-origin",
+  });
+  await process.finish();
+
+  expect(peekSystemEventEntries(QUEUE_KEY)[0]?.origin).toEqual({
+    runId: "run-origin",
+    sessionKey: QUEUE_KEY,
+    outcome: "success",
+  });
+});
+
+it.each([0, 1])(
+  "preserves unreviewed completion after a delivered status (exit=%s)",
+  async (exitCode) => {
+    const process = await startDeferredNotifyRun({
+      spawn: supervisorSpawnMock,
+      sessionKey: QUEUE_KEY,
+      originRunId: "answered-run",
+    });
+    recordRunFinalDelivered({ sessionKey: QUEUE_KEY, runId: "answered-run" });
+    await process.finish(exitCode);
+
+    expect(peekSystemEventEntries(QUEUE_KEY)).toHaveLength(1);
+    expect(enqueueSessionEvent).toHaveBeenCalledTimes(1);
+    const result = await execute("poll", process.run.session.id);
+    expect(result.details).toMatchObject({ exitCode });
+  },
+);
 
 it("isolates identical completions across exact full-slug reuse", async () => {
   const first = await startNotifyRun();

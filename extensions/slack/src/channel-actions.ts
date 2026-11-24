@@ -23,6 +23,7 @@ import { normalizeSlackOutboundText } from "./format.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
 import { extractSlackToolSend } from "./message-actions.js";
 import { describeSlackMessageTool } from "./message-tool-api.js";
+import { parseSlackPermalink, type SlackPermalink } from "./permalink.js";
 import { renderSlackMessagePresentationFallbackText } from "./presentation-fallback.js";
 import { SLACK_SECTION_TEXT_MAX } from "./presentation.js";
 import {
@@ -47,6 +48,28 @@ const SLACK_MESSAGE_ACTIONS = new Map([
   ["unpin", "unpinMessage"],
   ["list-pins", "listPins"],
 ]);
+
+/** Reads the Slack permalink an action names, from `permalink` or a URL-shaped `url`/`link`. */
+function readSlackPermalinkParam(params: Record<string, unknown>): SlackPermalink | undefined {
+  for (const key of ["permalink", "url", "link"]) {
+    const raw = readStringParam(params, key);
+    if (!raw) {
+      continue;
+    }
+    const parsed = parseSlackPermalink(raw);
+    if (!parsed) {
+      throw new Error(
+        `${key} is not a Slack message or file permalink (expected https://<workspace>.slack.com/archives/<conversation>/p<ts> or .../files/<user>/<file>/...).`,
+      );
+    }
+    return parsed;
+  }
+  return undefined;
+}
+
+const SLACK_SEARCH_UNAVAILABLE =
+  "Slack message search is not available: Slack's search.messages API requires a user token with search:read, and this Slack account only has a bot token. " +
+  'Use action="read" with a channelId (and threadId) or a Slack permalink, or action="download-file" with a file permalink.';
 
 function readSlackForceDocument(params: Record<string, unknown>): boolean {
   return (
@@ -109,6 +132,19 @@ const SLACK_TOOL_DELIVERY_ACTIONS = new Set([
 
 const loadSlackActionRuntime = createLazyRuntimeModule(() => import("./action-runtime.runtime.js"));
 
+const SLACK_PERMALINK_PARAM_KEYS = ["permalink", "url", "link"];
+
+/** A pasted message permalink names the conversation to read; Slack gates the read itself. */
+function resolveSlackPermalinkReadTarget(args: Record<string, unknown>): string | undefined {
+  for (const key of SLACK_PERMALINK_PARAM_KEYS) {
+    const parsed = parseSlackPermalink(args[key]);
+    if (parsed?.kind === "message") {
+      return parsed.channelId;
+    }
+  }
+  return undefined;
+}
+
 function resolveSlackActionContext(
   ctx: ChannelMessageActionContext,
   toolContext: unknown,
@@ -133,9 +169,12 @@ function resolveSlackActionContext(
     mediaLocalRoots: ctx.mediaLocalRoots,
     mediaReadFile: ctx.mediaReadFile,
     conversationReadOrigin: ctx.conversationReadOrigin,
+    agentId: ctx.agentId ?? undefined,
+    sessionKey: ctx.sessionKey ?? undefined,
     requesterAccountId: ctx.requesterAccountId ?? undefined,
     requesterSenderId: ctx.requesterSenderId ?? undefined,
     assertDirectAdapterHandoff: ctx.assertDirectAdapterHandoff,
+    mediaWorkspaceDir: ctx.mediaAccess?.workspaceDir,
   };
 }
 
@@ -153,6 +192,12 @@ export function createSlackActions(
       "emoji-list",
       "download-file",
     ],
+    messageActionTargetAliases: {
+      read: {
+        aliases: SLACK_PERMALINK_PARAM_KEYS,
+        resolveDeliveryTarget: ({ args }) => resolveSlackPermalinkReadTarget(args),
+      },
+    },
     describeMessageTool: describeSlackMessageTool,
     extractToolSend: ({ args }) => extractSlackToolSend(args),
     isToolDeliveryAction: ({ args }) =>
@@ -199,7 +244,11 @@ export function createSlackActions(
         });
       }
 
-      if (action === "send") {
+      if (action === "search") {
+        throw new Error(SLACK_SEARCH_UNAVAILABLE);
+      }
+
+      if (action === "send" || action === "thread-reply") {
         const to = readStringParam(actionParams, "to", { required: true });
         const content = readStringParam(actionParams, "message", {
           required: false,
@@ -241,6 +290,20 @@ export function createSlackActions(
         const replyTo = readStringParam(actionParams, "replyTo");
         const topLevel =
           readBooleanParam(actionParams, "topLevel") === true || actionParams.threadId === null;
+        // thread-reply is a send that must land in a thread: the named parent
+        // (threadId/replyTo/messageId) or, failing that, the current Slack thread.
+        const threadReplyTs =
+          action === "thread-reply"
+            ? (resolveSlackThreadTsValue({
+                replyToId: replyTo ?? readStringParam(actionParams, "messageId"),
+                threadId,
+              }) ?? normalizeOptionalString(ctx.toolContext?.currentThreadTs))
+            : undefined;
+        if (action === "thread-reply" && (!threadReplyTs || topLevel)) {
+          throw new Error(
+            "Slack thread-reply requires threadId (the parent message timestamp) or replyTo, or must be called from inside a Slack thread.",
+          );
+        }
         const toolContext =
           preparedMessages.length > 0
             ? {
@@ -255,7 +318,7 @@ export function createSlackActions(
             content: content ?? "",
             mediaUrl,
             ...(readSlackForceDocument(actionParams) ? { forceDocument: true } : {}),
-            threadTs: resolveSlackThreadTsValue({ replyToId: replyTo, threadId }),
+            threadTs: threadReplyTs ?? resolveSlackThreadTsValue({ replyToId: replyTo, threadId }),
             ...(topLevel ? { topLevel: true } : {}),
             ...(replyBroadcast ? { replyBroadcast } : {}),
           },
@@ -300,14 +363,22 @@ export function createSlackActions(
       }
 
       if (action === "read") {
+        const permalink = readSlackPermalinkParam(actionParams);
+        if (permalink?.kind === "file") {
+          throw new Error(
+            'That permalink names a Slack file; use action="download-file" with the same permalink.',
+          );
+        }
         return await invokeSlackAction({
           action: "readMessages",
-          channelId: resolveChannelId(),
+          channelId: permalink
+            ? formatSlackTarget({ kind: "channel", id: resolveSlackChannelId(permalink.channelId) })
+            : resolveChannelId(),
           limit: actionParams.limit,
           before: readStringParam(actionParams, "before"),
           after: readStringParam(actionParams, "after"),
-          messageId: readStringParam(actionParams, "messageId"),
-          threadId: readStringParam(actionParams, "threadId"),
+          messageId: readStringParam(actionParams, "messageId") ?? permalink?.messageTs,
+          threadId: readStringParam(actionParams, "threadId") ?? permalink?.threadTs,
         });
       }
 
@@ -377,24 +448,78 @@ export function createSlackActions(
       }
 
       if (action === "download-file") {
-        const fileIdParam = readStringParam(actionParams, "fileId");
+        const permalink = readSlackPermalinkParam(actionParams);
+        const explicitFileId = readStringParam(actionParams, "fileId");
+        if (
+          permalink?.kind === "file" &&
+          explicitFileId &&
+          explicitFileId.toUpperCase() !== permalink.fileId
+        ) {
+          throw new Error("download-file received a fileId that differs from the file permalink.");
+        }
+        const fileIdParam = permalink?.kind === "file" ? permalink.fileId : explicitFileId;
+        const allThreadFiles = readBooleanParam(actionParams, "allThreadFiles") === true;
+        const fileIdsParam = actionParams.fileIds;
+        const fileIds = Array.isArray(fileIdsParam)
+          ? fileIdsParam.map((value) => (typeof value === "string" ? value.trim() : ""))
+          : undefined;
+        if (fileIdsParam !== undefined && (!fileIds || fileIds.some((value) => !value))) {
+          throw new Error("download-file fileIds must be an array of non-empty Slack file ids.");
+        }
+        const uniqueFileIds = fileIds ? Array.from(new Set(fileIds)) : undefined;
+        if (uniqueFileIds && (uniqueFileIds.length === 0 || uniqueFileIds.length > 20)) {
+          throw new Error("download-file fileIds must contain between 1 and 20 unique ids.");
+        }
+        if (
+          [Boolean(fileIdParam), Boolean(uniqueFileIds), allThreadFiles].filter(Boolean).length > 1
+        ) {
+          throw new Error(
+            "download-file accepts exactly one of fileId, fileIds, or allThreadFiles.",
+          );
+        }
         const messageIdParam =
           readStringParam(actionParams, "messageId") ?? readStringParam(actionParams, "message_id");
-        if (!fileIdParam && messageIdParam) {
+        const permalinkMessageTs =
+          permalink?.kind === "message" && !fileIdParam && !uniqueFileIds && !allThreadFiles
+            ? permalink.messageTs
+            : undefined;
+        if (permalink?.kind === "message" && !fileIdParam && !uniqueFileIds && !allThreadFiles) {
+          if (!permalinkMessageTs) {
+            throw new Error(
+              "download-file needs a message or file permalink; a conversation link names no file.",
+            );
+          }
+        } else if (!fileIdParam && !uniqueFileIds && messageIdParam) {
           throw new Error(
             "download-file requires fileId (the Slack file id, for example F0B0LTT8M36 from event.files[].id), not messageId. Did you mean to pass fileId? messageId is the Slack message timestamp and is used by react / reactions / edit / delete / pin / unpin actions, not download-file.",
           );
         }
-        const fileId = fileIdParam ?? readStringParam(actionParams, "fileId", { required: true });
-        const channelId =
+        if (!fileIdParam && !uniqueFileIds && !allThreadFiles && !permalinkMessageTs) {
+          throw new Error("download-file requires fileId, fileIds, or allThreadFiles.");
+        }
+        const explicitChannelId =
           readStringParam(actionParams, "channelId") ?? readStringParam(actionParams, "to");
+        const channelId =
+          permalink?.kind === "message"
+            ? formatSlackTarget({ kind: "channel", id: resolveSlackChannelId(permalink.channelId) })
+            : explicitChannelId;
         const threadId =
-          readStringParam(actionParams, "threadId") ?? readStringParam(actionParams, "replyTo");
+          readStringParam(actionParams, "threadId") ??
+          readStringParam(actionParams, "replyTo") ??
+          (permalink?.kind === "message" ? permalink.threadTs : undefined);
+        if (allThreadFiles && !threadId) {
+          throw new Error("download-file allThreadFiles requires threadId.");
+        }
         return await invokeSlackAction({
           action: "downloadFile",
-          fileId,
-          channelId,
-          threadId,
+          fileId: fileIdParam,
+          fileIds: uniqueFileIds,
+          allThreadFiles,
+          ...(permalinkMessageTs ? { messageId: permalinkMessageTs } : {}),
+          ...(permalink?.kind === "file" && !explicitChannelId ? { fromPermalink: true } : {}),
+          ...(readBooleanParam(actionParams, "original") === true ? { original: true } : {}),
+          channelId: channelId ?? undefined,
+          threadId: threadId ?? undefined,
         });
       }
 

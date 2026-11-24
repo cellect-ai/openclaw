@@ -9,6 +9,7 @@ import {
   createDynamicSessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
 import { emitAgentRunStatusEvent } from "../../infra/agent-run-status-events.js";
+import { ConversationRunStopReason } from "../../infra/run-stop-actor.js";
 import { markDiagnosticRunProgress } from "../../logging/diagnostic-run-activity.js";
 import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
@@ -460,7 +461,13 @@ export function createWorkerSessionTurnPlacementProvider(options: WorkerTurnLaun
                 },
                 () => execute(executionOptions),
               );
-            } catch (error) {
+            } catch (caughtError) {
+              // The exact host owner accepted this person's Stop before a
+              // transport shutdown could replace its cause with a generic error.
+              const error =
+                activeWorkerTurn?.signal.reason instanceof ConversationRunStopReason
+                  ? activeWorkerTurn.signal.reason
+                  : caughtError;
               if (
                 workspaceResolutionFailed ||
                 error instanceof AcceptedWorkspacePublicationIndeterminateError

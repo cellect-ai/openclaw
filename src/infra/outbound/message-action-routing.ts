@@ -85,6 +85,35 @@ function inferPeerKindForAccountBinding(
   return undefined;
 }
 
+export function resolveTargetBoundAccountId(params: {
+  cfg: OpenClawConfig;
+  channel: ChannelId;
+  channelPlugin?: ChannelPlugin;
+  args: Record<string, unknown>;
+  agentId?: string;
+}): string | undefined {
+  if (!params.agentId) return undefined;
+  const target = readTrimmedStringAlias(params.args, ["to", "channelId"]);
+  const resolveScope = params.channelPlugin?.messaging?.resolveAccountBindingScope;
+  const resolveAccountScope = resolveScope
+    ? (accountId: string) => resolveScope({ cfg: params.cfg, accountId, target })
+    : undefined;
+  const candidates = new Set<string>();
+  if (target) addTargetCandidates(candidates, target, params.channel);
+  const [peerId, ...exactPeerIdAliases] = [...candidates];
+  return resolveFirstBoundAccountId({
+    cfg: params.cfg,
+    channelId: params.channel,
+    agentId: params.agentId,
+    peerId,
+    exactPeerIdAliases,
+    peerKind: target
+      ? inferPeerKindForAccountBinding(params.channel, target, params.channelPlugin)
+      : undefined,
+    resolveAccountScope,
+  });
+}
+
 function hasExplicitSingularTargetParam(params: Record<string, unknown>): boolean {
   return readTrimmedStringAlias(params, ["target", "to", "channelId"]) !== undefined;
 }
@@ -241,26 +270,13 @@ export async function prepareMessageRoute(params: {
   });
   let accountId = explicitAccountId ?? input.defaultAccountId;
   if (!accountId && agentId) {
-    const target = readTrimmedStringAlias(actionParams, ["to", "channelId"]);
-    if (!target) {
-      accountId = resolveFirstBoundAccountId({
-        cfg,
-        channelId: channel,
-        agentId,
-      });
-    } else {
-      const candidates = new Set<string>();
-      addTargetCandidates(candidates, target, channel);
-      const [peerId, ...exactPeerIdAliases] = Array.from(candidates);
-      accountId = resolveFirstBoundAccountId({
-        cfg,
-        channelId: channel,
-        agentId,
-        peerId,
-        exactPeerIdAliases,
-        peerKind: inferPeerKindForAccountBinding(channel, target, channelPlugin),
-      });
-    }
+    accountId = resolveTargetBoundAccountId({
+      cfg,
+      channel,
+      agentId,
+      channelPlugin,
+      args: actionParams,
+    });
   }
   const delegatesActionToGateway =
     Boolean(input.gateway) &&

@@ -30,6 +30,35 @@ import {
 
 const FORCED_CONSULT_FALLBACK_DELAY_MS = 200;
 const FORCED_CONSULT_RESULT_MAX_CHARS = 1_800;
+const REALTIME_CHECKING_BACKCHANNEL_PATTERNS = [
+  /^let me (?:check|look|see|verify|review|investigate|search|find out|pull (?:up|(?:that|it|the\b))|take a look)\b/iu,
+  /^i(?:'|’)ll (?:check|look|see|verify|review|investigate|search|find out|pull up|take a look)\b/iu,
+  /^i(?:'|’)m (?:checking|looking|verifying|reviewing|investigating|searching|pulling (?:up|(?:that|it|the\b))|going to (?:check|look|review|investigate|search|verify))\b/iu,
+  /^i am (?:checking|looking|verifying|reviewing|investigating|searching|going to (?:check|look|review|investigate|search|verify))\b/iu,
+  /^i will (?:check|look|see|verify|review|investigate|search|find out|pull up|take a look)\b/iu,
+  /^checking\b/iu,
+  /^i can (?:check|look|review|investigate|search|verify|find out)\b/iu,
+  /^(?:give me a moment|one moment|hold on)\b/iu,
+] as const;
+
+/**
+ * A short provider utterance that promises a lookup is only a backchannel, not
+ * an answer. Keep this deliberately narrow: it is used to recover a skipped
+ * OpenClaw consult, not to reinterpret arbitrary spoken output.
+ */
+export function isRealtimeCheckingBackchannel(text: string): boolean {
+  const normalized = text.replace(/\s+/gu, " ").trim();
+  if (!normalized || normalized.length > 180 || normalized.split(" ").length > 24) {
+    return false;
+  }
+  const body = normalized.replace(/[.!?…]+$/u, "").trim();
+  if (!body || /[.!?…:;]/u.test(body)) {
+    return false;
+  }
+  return REALTIME_CHECKING_BACKCHANNEL_PATTERNS.some((pattern) => pattern.test(body));
+}
+
+export type ForcedAgentConsultTrigger = "missing-native-consult" | "checking-backchannel";
 
 const FORCED_CONSULT_CHECKING_PROMPT = [
   "Briefly tell the person that you are checking with OpenClaw.",
@@ -38,8 +67,8 @@ const FORCED_CONSULT_CHECKING_PROMPT = [
 
 function buildForcedConsultSpeechPrompt(text: string): string {
   return [
-    "OpenClaw finished checking. Speak this result naturally and concisely.",
-    "Do not mention tool calls, JSON, or internal routing.",
+    "OpenClaw finished checking. Read this result aloud in full.",
+    "Do not shorten it, and do not mention tool calls, JSON, or internal routing.",
     "",
     text,
   ].join("\n");
@@ -150,7 +179,14 @@ export function submitRelayAgentControlProviderResults(
   };
 }
 
-export function scheduleForcedAgentConsult(session: RelaySession, question: string): void {
+export function scheduleForcedAgentConsult(
+  session: RelaySession | undefined,
+  question: string,
+  trigger: ForcedAgentConsultTrigger = "missing-native-consult",
+): void {
+  if (!session || !question.trim()) {
+    return;
+  }
   if (session.harness.forcedConsults.hasRecentNativeConsult(question)) {
     return;
   }
@@ -183,7 +219,9 @@ export function scheduleForcedAgentConsult(session: RelaySession, question: stri
       args: {
         question: handle.question,
         context:
-          "The realtime provider produced a final user transcript without invoking openclaw_agent_consult, so OpenClaw is forcing the consult for realtime Talk.",
+          trigger === "checking-backchannel"
+            ? "The realtime provider promised to check the user's request but has not returned a result. Complete the original request with OpenClaw or report a clear failure or limitation."
+            : "The realtime provider produced a final user transcript without invoking openclaw_agent_consult, so OpenClaw is forcing the consult for realtime Talk.",
         responseStyle: "Reply in a concise spoken tone.",
       },
       talkEvent: session.harness.talk.emit({

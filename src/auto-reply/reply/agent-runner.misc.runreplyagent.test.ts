@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
-import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import type { RunEmbeddedAgentInternalParams } from "../../agents/embedded-agent-runner/run/internal-params.js";
@@ -21,7 +20,6 @@ import {
 import { createUsageFixture } from "../../agents/test-helpers/usage-fixtures.js";
 import type { NormalizedUsage } from "../../agents/usage.js";
 import { setRuntimeConfigSnapshot, type OpenClawConfig } from "../../config/config.js";
-import type { SessionEntry } from "../../config/sessions.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
@@ -42,6 +40,19 @@ import {
 } from "../../sessions/session-controller.js";
 import type { VisibleWorkSession } from "../get-reply-options.types.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
+import {
+  requireRecord,
+  sessionFixture,
+  sessionState,
+  storedSession,
+  agentRun,
+  assistantMessage,
+  flushPlan,
+  channelRun,
+  replyResult,
+  replyText,
+  expectReplyText,
+} from "./agent-runner.misc.runreplyagent.fixtures.test-support.js";
 import {
   compactState,
   loadCronStoreMock,
@@ -65,93 +76,6 @@ function registerMemoryFlushPlanResolverForTest(resolver: MemoryFlushPlanResolve
 
 type RunWithModelFallbackParams = TestModelFallbackRunnerParams;
 
-const requireRecord = createRequireRecord("record", "expected-label-object");
-
-function sessionFixture(overrides: Partial<SessionEntry> = {}): SessionEntry {
-  return { sessionId: "session", updatedAt: Date.now(), ...overrides };
-}
-
-function sessionState(sessionKey: string, sessionEntry: SessionEntry) {
-  return { sessionKey, sessionEntry, sessionStore: { [sessionKey]: sessionEntry } };
-}
-
-async function storedSession(
-  overrides: Partial<SessionEntry> = {},
-  sessionKey = "main",
-  tmp = tempDirs.make("openclaw-reply-"),
-) {
-  const storePath = path.join(tmp, "sessions.json");
-  const sessionEntry = sessionFixture(overrides);
-  await replaceSessionEntry({ storePath, sessionKey }, sessionEntry);
-  return {
-    tmp,
-    storePath,
-    sessionKey,
-    sessionEntry,
-    scope: { agentId: "main", sessionId: sessionEntry.sessionId, sessionKey, storePath },
-    reply: { ...sessionState(sessionKey, sessionEntry), storePath },
-  };
-}
-
-function agentRun(options: BaseRunOptions = {}) {
-  return createBaseRun({
-    ...options,
-    run: { agentId: "main", agentDir: path.join(rootDir, "agent"), ...options.run },
-  });
-}
-
-function assistantMessage(input: number, output: number, text = "NO_REPLY") {
-  return makeAssistantMessageFixture({
-    provider: "anthropic",
-    api: "anthropic-messages",
-    model: "claude-opus-4-6",
-    content: [{ type: "text", text }],
-    stopReason: "stop",
-    errorMessage: undefined,
-    usage: createUsageFixture(input, output, input + output),
-  });
-}
-
-function flushPlan(overrides: { softThresholdTokens?: number; systemPrompt?: string } = {}) {
-  return {
-    softThresholdTokens: 4_000,
-    reserveTokensFloor: 20_000,
-    forceFlushTranscriptBytes: 1_000_000_000,
-    prompt: "Pre-compaction memory flush.",
-    systemPrompt: "Write durable memory, then reply NO_REPLY.",
-    relativePath: "memory/active.md",
-    ...overrides,
-  };
-}
-
-function channelRun(provider: string, to: string, options: BaseRunOptions = {}) {
-  return createBaseRun({
-    ...options,
-    context: {
-      Provider: provider,
-      OriginatingTo: to,
-      AccountId: "primary",
-      MessageSid: "msg",
-      ...options.context,
-    },
-    run: { messageProvider: provider, thinkLevel: "low", ...options.run },
-  });
-}
-
-function replyResult<T extends Record<string, unknown>>(text: string, meta: T) {
-  return { payloads: [{ text }], meta };
-}
-
-function replyText(result: Awaited<ReturnType<typeof runReplyAgent>>) {
-  return (Array.isArray(result) ? result : [result])
-    .map((payload) => payload?.text ?? "")
-    .join("\n");
-}
-
-function expectReplyText(result: unknown, text: string): void {
-  expect(requireRecord(result, "reply result")).toMatchObject({ text });
-}
-
 // Hoist mocks before static dependencies, but defer the runner to avoid incomplete cyclic exports.
 await vi.hoisted(async () => {
   await import("./agent-runner.misc.runreplyagent.test-support.js");
@@ -160,50 +84,60 @@ const { runReplyAgent } = await import("./agent-runner-run.js");
 
 setupAgentRunnerTestHooks();
 
-it("refuses an unbound question without falling through to active-run queueing", async () => {
-  const gatewayCall = vi.fn(async () => ({ status: "answered" }));
-  const reservation = registerPendingAgentQuestion({
-    questionId: "ask_direct_cli_answer",
-    sessionKey: "main",
-    questions: [
-      {
-        id: "color",
-        header: "Color",
-        question: "Which color?",
-        options: [{ label: "Blue" }, { label: "Green" }],
-      },
-    ],
-    gatewayCall,
-    answer: Promise.resolve({ status: "pending" }),
-  });
-  reservation.attachRegistration(Promise.resolve({ id: "ask_direct_cli_answer" }));
-  const replyOperationRunState = {};
-  const testRun = createBaseRun({
-    context: { agentText: "Green" },
-    followup: { transcriptPrompt: "Green" },
-    reply: {
-      commandBody: "Green",
-      transcriptCommandBody: "Green",
+it.each(["unbound", "stale"])(
+  "refuses a %s question without falling through to active-run queueing",
+  async (kind) => {
+    const gatewayCall = vi.fn(async () => ({ status: "answered" }));
+    const reservation = registerPendingAgentQuestion({
+      questionId: "ask_direct_cli_answer",
       sessionKey: "main",
-      isActive: true,
-      shouldSteer: true,
-      opts: { [REPLY_OPERATION_RUN_STATE]: replyOperationRunState },
-    },
-  });
-
-  try {
-    await expect(testRun.run()).resolves.toEqual({
-      text: expect.stringContaining("pending question has no prepared creator authority"),
-      isError: true,
+      questions: [
+        {
+          id: "color",
+          header: "Color",
+          question: "Which color?",
+          options: [{ label: "Blue" }, { label: "Green" }],
+        },
+      ],
+      gatewayCall,
+      answer: Promise.resolve({ status: "pending" }),
     });
-    expect(gatewayCall).not.toHaveBeenCalled();
-    expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
-    expect(runCliAgentMock).not.toHaveBeenCalled();
-    expect(testRun.typing.cleanup).toHaveBeenCalledOnce();
-  } finally {
-    reservation.dispose();
-  }
-});
+    reservation.attachRegistration(Promise.resolve({ id: "ask_direct_cli_answer" }));
+    const replyOperationRunState = {};
+    const testRun = createBaseRun({
+      context: { agentText: "Green" },
+      followup: {
+        transcriptPrompt: "Green",
+        ...(kind === "stale" ? { expectedQuestionId: "ask_older_question" } : {}),
+      },
+      reply: {
+        commandBody: "Green",
+        transcriptCommandBody: "Green",
+        sessionKey: "main",
+        isActive: true,
+        shouldSteer: true,
+        opts: { [REPLY_OPERATION_RUN_STATE]: replyOperationRunState },
+      },
+    });
+
+    try {
+      await expect(testRun.run()).resolves.toEqual({
+        text: expect.stringContaining(
+          kind === "stale"
+            ? "selected question is no longer current"
+            : "pending question has no prepared creator authority",
+        ),
+        isError: true,
+      });
+      expect(gatewayCall).not.toHaveBeenCalled();
+      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+      expect(runCliAgentMock).not.toHaveBeenCalled();
+      expect(testRun.typing.cleanup).toHaveBeenCalledOnce();
+    } finally {
+      reservation.dispose();
+    }
+  },
+);
 
 describe("runReplyAgent auto-compaction token update", () => {
   it("keeps an unarmed preflight drain visible instead of dropping the reply", async () => {

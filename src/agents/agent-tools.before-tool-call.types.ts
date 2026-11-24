@@ -57,6 +57,9 @@ export type HookContext = {
   channelId?: string;
   /** Host-derived message requester for sender-aware tool hooks. */
   requester?: PluginHookToolRequesterContext;
+  requesterContinuation?: import("../plugins/hook-agent-context.types.js").PluginHookRequesterContinuation;
+  spawnedFrom?: import("../plugins/hook-agent-context.types.js").PluginHookSpawnedRequester;
+  spawnedFromChannel?: string;
   /** Originating channel for approval delivery routing; mirrors exec approval turn-source fields. */
   turnSourceChannel?: string;
   turnSourceTo?: string;
@@ -103,6 +106,7 @@ export type BeforeToolCallPolicyDiagnosticState = {
 };
 
 export type HookBlockedReason =
+  | "client-voice-confirmation"
   | "plugin-before-tool-call"
   | "plugin-approval"
   | "plugin-approval-unavailable"

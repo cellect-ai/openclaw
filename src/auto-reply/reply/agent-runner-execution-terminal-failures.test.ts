@@ -522,3 +522,83 @@ it("forwards sanitized generic errors on external chat channels when verbose is 
     "⚠️ Agent failed before reply: INVALID_ARGUMENT: some other failure. Please try again, or use /new to start a fresh session.",
   );
 });
+
+it.each([
+  { stopReason: "aborted", reason: "user" },
+  { stopReason: "restart", reason: "restart" },
+  { stopReason: "superseded", reason: "superseded" },
+] as const)(
+  "keeps a run-owned $stopReason result quiet while the caller stays live",
+  async ({ stopReason, reason }) => {
+    const { emitAgentEvent } = await import("../../infra/agent-events.js");
+    const caller = new AbortController();
+    const replyOperation = runningOperation("owned-stop");
+    const failMock = vi.spyOn(replyOperation, "fail");
+    const followupRun = createFollowupRun();
+    followupRun.run.messageProvider = "matrix";
+    state.runEmbeddedAgentMock.mockResolvedValueOnce({
+      payloads: [{ text: "provider cancellation detail", isError: true }],
+      meta: {
+        aborted: true,
+        stopReason,
+        error: { kind: "incomplete_turn", message: "Request was aborted" },
+      },
+    });
+    const executeAgentTurn = runTurn;
+    const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams({ replyOperation, followupRun }),
+      sessionCtx: { Provider: "matrix", MessageSid: "owned-stop-message" },
+      opts: { abortSignal: caller.signal },
+    });
+    expect(caller.signal.aborted).toBe(false);
+    expect(result.outcome).toEqual({ kind: "aborted", reason });
+    expect(failMock).not.toHaveBeenCalled();
+    expect(state.runEmbeddedAgentMock).toHaveBeenCalledOnce();
+    const terminals = vi
+      .mocked(emitAgentEvent)
+      .mock.calls.map(([event]) => event)
+      .filter(
+        (event) =>
+          event.runId === result.runId &&
+          event.stream === "lifecycle" &&
+          (event.data.phase === "end" || event.data.phase === "error"),
+      );
+    expect(terminals).toHaveLength(1);
+    expect(terminals[0]?.data).toMatchObject({ aborted: true, stopReason });
+  },
+);
+
+it.each(["timeout", "name-only stop spoof"] as const)(
+  "still reports a real %s as failure",
+  async (kind) => {
+    if (kind === "timeout") {
+      state.runEmbeddedAgentMock.mockResolvedValueOnce({
+        payloads: [],
+        meta: { aborted: true, stopReason: "timeout", timeoutPhase: "provider" },
+      });
+    } else {
+      state.runEmbeddedAgentMock.mockRejectedValueOnce(
+        Object.assign(new Error("provider failed"), { name: "ConversationRunStopReason" }),
+      );
+    }
+    const caller = new AbortController();
+    const followupRun = createFollowupRun();
+    followupRun.run.messageProvider = "matrix";
+    const executeAgentTurn = runTurn;
+    const result = await executeAgentTurn({
+      ...createMinimalRunAgentTurnParams({ followupRun }),
+      sessionCtx: { Provider: "matrix", MessageSid: "owned-failure-message" },
+      opts: { abortSignal: caller.signal },
+    });
+    expect(caller.signal.aborted).toBe(false);
+    if (kind === "timeout") {
+      expect(result.outcome).toMatchObject({
+        kind: "settled",
+        status: "failed",
+        terminalFailurePayload: { text: GENERIC_RUN_FAILURE_TEXT },
+      });
+    } else {
+      expect(result.outcome.kind).toBe("rejected");
+    }
+  },
+);

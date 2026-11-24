@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { createAsyncGate as createPause } from "../../test-support/async-gate.test-support.js";
 import { matrixPlugin } from "./channel.js";
 import { MatrixClient } from "./matrix/sdk.js";
+import { editMessageMatrix } from "./matrix/send.js";
 import { sendMessageMatrix } from "./matrix/send.js";
 import type { MatrixSendOpts } from "./matrix/send/types.js";
 import { getMatrixRuntime, setMatrixRuntime } from "./runtime.js";
@@ -598,6 +599,51 @@ describe("registered Matrix sender currentness", () => {
         );
         expect(survivorResults).toEqual([secondRoom, thirdRoom]);
         expect(timeline).toHaveLength(canceled ? 3 : 4);
+      });
+    },
+  );
+
+  it.each(["authority", "signal"] as const)(
+    "stops an edit when %s is revoked during the original-event read",
+    async (kind) => {
+      await withMatrixFixture("outbound", async ({ client, handlers, timeline }) => {
+        const caller = new AbortController();
+        let current = true;
+        let originalRead = false;
+        const revoked = new Error("Edit authority revoked during original-event read");
+        handlers.request = async ({ request, response, path }) => {
+          if (request.method !== "GET" || !path.endsWith("/event/$original")) return false;
+          originalRead = true;
+          if (kind === "authority") current = false;
+          else caller.abort(revoked);
+          respondJson(response, {
+            event_id: "$original",
+            room_id: ROOM_ID,
+            sender: "@bot:example.org",
+            type: "m.room.message",
+            origin_server_ts: 1,
+            content: {
+              msgtype: "m.text",
+              body: "request",
+              "m.relates_to": { rel_type: "m.thread", event_id: "$thread" },
+            },
+          });
+          return true;
+        };
+        await expect(
+          editMessageMatrix(ROOM_ID, "$original", "approved link", {
+            client,
+            cfg: {},
+            threadId: "$thread",
+            includeMentions: false,
+            signal: caller.signal,
+            assertDirectAdapterHandoff: () => {
+              if (!current) throw revoked;
+            },
+          }),
+        ).rejects.toThrow(revoked.message);
+        expect(originalRead).toBe(true);
+        expect(timeline).toEqual([]);
       });
     },
   );

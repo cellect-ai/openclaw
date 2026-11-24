@@ -68,6 +68,7 @@ type MessageSendParams = Pick<
   | "deps"
   | "preparedMessageId"
   | "deliveryIntentId"
+  | "recoveryPolicy"
   | "transcriptRoute"
   | "skipDestinationHistory"
   | "transcriptExpectedGeneration"
@@ -395,6 +396,7 @@ export async function sendMessage(params: MessageSendParams): Promise<MessageSen
         reusePendingDeliveryIntent: params.reusePendingDeliveryIntent,
         deliveryRetryOwner: params.deliveryRetryOwner,
         completionRetention: params.completionRetention,
+        recoveryPolicy: params.recoveryPolicy,
         ...(params.onDeliveryIntent ? { onDeliveryIntent: params.onDeliveryIntent } : {}),
         ...(params.onDeliveryAttempt ? { onDeliveryAttempt: params.onDeliveryAttempt } : {}),
         withDirectAdapterHandoff: params.withDirectAdapterHandoff,

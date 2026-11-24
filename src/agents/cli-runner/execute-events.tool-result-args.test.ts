@@ -104,6 +104,27 @@ function displayParser(handlers: ReturnType<typeof createCliEventHandlers>) {
 }
 
 describe("cli tool result events", () => {
+  it("projects credential environments for observers while tracking original CLI arguments", () => {
+    const tracking = buildToolTracking();
+    const fixture = eventFixture(buildContext("delegated-cli-observation"), tracking);
+    const token = "synthetic-delegated-cli-secret";
+    const args = {
+      command: "cellect commands list",
+      env: { FI_DELEGATED_USER_TOKEN: token, KEEP: "visible" },
+    };
+    fixture.start("call-env", "exec", args);
+    expect(fixture.data("tool", "start")).toEqual([
+      expect.objectContaining({
+        args: {
+          ...args,
+          env: { FI_DELEGATED_USER_TOKEN: "[redacted]", KEEP: "visible" },
+        },
+      }),
+    ]);
+    expect(tracking.handleCliToolUseStart).toHaveBeenCalledWith(expect.objectContaining({ args }));
+    expect(JSON.stringify(fixture.events)).not.toContain(token);
+    expect(args.env.FI_DELEGATED_USER_TOKEN).toBe(token);
+  });
   it.each([
     "host",
     "host-blocks",

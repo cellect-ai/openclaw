@@ -29,7 +29,6 @@ import {
   type QueuedDeliveryOwner,
 } from "./deliver-queue-state.js";
 import {
-  areOutboundPayloadsIntentionallySuppressed,
   OutboundDeliveryError,
   PlatformMessageNotDispatchedError,
   isOutboundDeliveryAdmissionClosedError,
@@ -39,7 +38,13 @@ import {
 import { runOutboundDeliveryCommitHooks } from "./delivery-commit-hooks.js";
 import { settleDurableDelivery } from "./delivery-completion.js";
 import { prepareOutboundDeliveryGeneration } from "./delivery-generation.js";
+import { createDeliveryPublicationCapture } from "./delivery-publication-capture.js";
 import type { DeliveryProducerLease } from "./delivery-queue-lease.js";
+import {
+  hasCompletePayloadSuppression,
+  mergeDeliveryPublicationEvidence,
+} from "./delivery-queue-publication-evidence.js";
+import { DeliveryPublicationPendingError } from "./delivery-queue-publication.js";
 import {
   failDelivery,
   failDeliveryAfterPlatformSend,
@@ -71,6 +76,24 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
   const ownsAuditTerminal = params.deliveryQueueId === undefined;
   // Terminal evidence belongs to delivery custody, independently of audit subscribers.
   const payloadOutcomes: OutboundPayloadDeliveryOutcome[] = [];
+  const publicationCapture = createDeliveryPublicationCapture({
+    destination: {
+      channel: params.channel,
+      to: params.to,
+      accountId: params.accountId,
+      threadId: params.threadId,
+    },
+    payloadCount,
+    enabled: () => Boolean(queueOwner || params.deliveryCompletion),
+  });
+  const {
+    publicationEvidenceByPayload,
+    publicationSuppressionsByPayload,
+    nativeMemberEvidence,
+    capturedPublicationParts,
+    captureCanonicalResult,
+    completeFinalPhysicalReceipt,
+  } = publicationCapture;
   const reusableProducerClaimId = params.reusePendingDeliveryIntent ? producerClaimId : undefined;
   const queuePolicy = params.queuePolicy ?? "best_effort";
   const platformQueueId = queueId ?? params.deliveryQueueId;
@@ -97,8 +120,16 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     await settleDurableDelivery(
       params.deliveryCompletion,
       result
-        ? { result, batch: { results: deliveredResults, payloadCount, payloadOutcomes } }
-        : { platformSendStarted: platformSendStarted && !allPayloadsSuppressed },
+        ? {
+            result,
+            batch: { results: deliveredResults, payloadCount, payloadOutcomes },
+            finalPhysicalReceipt: completeFinalPhysicalReceipt(),
+            memberEvidence: nativeMemberEvidence,
+          }
+        : {
+            platformSendStarted: platformSendStarted && !allPayloadsSuppressed,
+            memberEvidence: nativeMemberEvidence,
+          },
       platformQueueStateDir,
       params.deliveryQueueStateContext,
       params.conversationDeliveryTarget,
@@ -141,6 +172,29 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
   ): Promise<void> => {
     await owner.fail(failDeliveryAfterPlatformSend, error, ambiguousTransportError);
     queuedPostSendState = "failed";
+  };
+  const ackOwnedQueue = async (suppressed = false) => {
+    throwIfProducerLeaseLost();
+    if (!queueOwner) throw new Error("Queued acknowledgement requires its current owner");
+    const evidence = suppressed
+      ? undefined
+      : mergeDeliveryPublicationEvidence(
+          publicationEvidenceByPayload.length
+            ? publicationEvidenceByPayload
+                .toSorted((a, b) => a.sourceIndex - b.sourceIndex)
+                .map((part) => part.evidence)
+            : capturedPublicationParts,
+        );
+    await queueOwner.ack({
+      ...(suppressed ? { suppressCompletionReceipt: true } : {}),
+      ...(!suppressed ? { publicationEvidenceByPayload, publicationSuppressionsByPayload } : {}),
+      ...(evidence
+        ? {
+            publicationEvidence: evidence,
+            completionReceipt: { platformMessageId: evidence.platformMessageId },
+          }
+        : {}),
+    });
   };
   const emitTerminals = (
     terminals: Parameters<typeof emitOutboundAuditTerminals>[0]["terminals"],
@@ -291,7 +345,13 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
       throwIfProducerLeaseLost();
       params.onError?.(err, payload);
     },
+    onCanonicalDeliveryResult: (result) => {
+      captureCanonicalResult(result);
+      params.onCanonicalDeliveryResult?.(result);
+    },
     onPayloadDeliveryOutcome: (outcome: OutboundPayloadDeliveryOutcome) => {
+      // Identified progress cannot complete a payload with a discarded physical result.
+      // Retain this before a caller can mutate its observer-owned outcome.
       if (
         outcome.status === "failed" &&
         platformDispatchedPayloads.has(outcome.index) &&
@@ -299,10 +359,12 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
       ) {
         outcome.sentBeforeError = true;
       }
+      publicationCapture.captureOutcome(outcome);
       payloadOutcomes.push(outcome);
       params.onPayloadDeliveryOutcome?.(outcome);
     },
     onDeliveryResult: async (result) => {
+      captureCanonicalResult(result);
       deliveredResults.push(result);
       if (queueOwner && queuedPostSendState === undefined) {
         queuedPostSendState = await persistPostSendState(queueOwner);
@@ -353,9 +415,20 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     deliveredResults = results;
     const failedOutcomes = payloadOutcomes.filter((outcome) => outcome.status === "failed");
     allPayloadsSuppressed =
-      results.length === 0 && areOutboundPayloadsIntentionallySuppressed(payloadOutcomes);
+      results.length === 0 &&
+      hasCompletePayloadSuppression(publicationSuppressionsByPayload, payloadCount);
     throwIfProducerLeaseLost();
     platformResultsReturned = true;
+    if (queueOwner && publicationCapture.incompletePayloadSend) {
+      const error = "platform send returned an incomplete physical result for the delivery batch";
+      await failAfterPlatformSend(queueOwner, error);
+      throw new OutboundDeliveryError(error, {
+        cause: new Error(error),
+        results,
+        payloadOutcomes,
+        stage: "platform_send",
+      });
+    }
     if (
       queueOwner &&
       reusableProducerClaimId &&
@@ -445,14 +518,10 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
         const acked =
           postSendState === "acked" ||
           (postSendState !== "failed" &&
-            (await queueOwner
-              .ack(
-                results.length === 0 && typeof params.completionRetention === "object"
-                  ? { suppressCompletionReceipt: true }
-                  : undefined,
-              )
+            (await ackOwnedQueue(results.length === 0 && allPayloadsSuppressed)
               .then(() => true)
               .catch(async (err: unknown) => {
+                if (err instanceof DeliveryPublicationPendingError) throw err;
                 const hasSendEvidence =
                   deliveredResults.length > 0 ||
                   (queuedPreSendState !== undefined && !allPayloadsSuppressed);
@@ -491,6 +560,16 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     }
     return results;
   } catch (caughtError) {
+    if (caughtError instanceof DeliveryPublicationPendingError) {
+      // Send custody has committed; neither a failed-send terminal nor retry is valid.
+      throw queueOwner
+        ? queueOwner.project(caughtError, {
+            results: deliveredResults,
+            payloadOutcomes,
+            stage: "queue",
+          })
+        : caughtError;
+    }
     let err = caughtError;
     try {
       throwIfProducerLeaseLost();
@@ -547,8 +626,7 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
               );
             }
           } else if (
-            await queueOwner
-              .ack(producerClaimId ? { suppressCompletionReceipt: true } : undefined)
+            await ackOwnedQueue(true)
               .then(() => true)
               .catch(() => false)
           ) {

@@ -121,6 +121,7 @@ export type RunEmbeddedAgentParams = Pick<
    * view, and changes credit "review" with this originating session key as their provenance.
    */
   skillWorkshopReviewOf?: string;
+  skillWorkshopWorkspaceAuthoring?: SkillWorkshopRunOptions["workspaceAuthoring"];
   /** Explicit system prompt mode override for trusted callers. */
   promptMode?: PromptMode;
   /** Keep the message tool available even when a narrow profile would omit it. */

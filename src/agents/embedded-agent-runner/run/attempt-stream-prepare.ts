@@ -6,6 +6,10 @@ import {
   validateAgentRunDelegatedAuthority,
 } from "../../../infra/agent-run-registry.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
+import {
+  ConversationRunStopReason,
+  type VerifiedRunStopActor,
+} from "../../../infra/run-stop-actor.js";
 import type { AssistantMessage } from "../../../llm/types.js";
 import { closeDiagnosticEmbeddedRunOwner } from "../../../logging/diagnostic-run-activity.js";
 import { getGlobalHookRunner } from "../../../plugins/hook-runner-global.js";
@@ -52,6 +56,7 @@ import {
   withEmbeddedAttemptSteeringAdmission,
   type EmbeddedAttemptSteeringAdmission,
 } from "./attempt-steering-admission.js";
+import { isEmbeddedAttemptSteeringOpen } from "./attempt-stream-admission.js";
 import type { PrepareEmbeddedAttemptStreamInput } from "./attempt-stream-prepare.types.js";
 import { createSubscribedToolSearchExecutor } from "./attempt-tool-search-executor.js";
 import {
@@ -67,7 +72,10 @@ import { resolveProviderRefusal } from "./provider-refusal.js";
 
 type AttemptStreamQueueHandle = EmbeddedAgentQueueHandle & {
   kind: "embedded";
-  cancel: (reason?: "user_abort" | "restart" | "superseded") => void;
+  cancel: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
 };
 
 export function prepareEmbeddedAttemptStream(input: PrepareEmbeddedAttemptStreamInput) {
@@ -89,15 +97,8 @@ function prepareStream(
   let beforeAgentFinalizeRevisionReason: string | undefined;
   let beforeAgentFinalizeRevisionEntryId: string | undefined;
   let activeQueueAdmissions = 0;
-  const isSteeringAdmissionOpen = () => {
-    const state = input.getRunState();
-    return (
-      admission.accepting &&
-      !state.aborted &&
-      !state.yieldDetected &&
-      !input.runAbortController.signal.aborted
-    );
-  };
+  const isSteeringAdmissionOpen = () => isEmbeddedAttemptSteeringOpen(input, admission);
+
   const shouldRunBeforeAgentFinalize =
     attempt.operation !== "settled-tool-finalization" &&
     hookRunner?.hasHooks("before_agent_finalize");
@@ -409,7 +410,10 @@ function prepareStream(
   });
 
   let externalAbortAccepted = false;
-  const abortActiveRunExternally = (reason?: "user_abort" | "restart" | "superseded") => {
+  const abortActiveRunExternally = (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => {
     // Reply cancellation can synchronously re-enter through this same backend.
     // Latch before callbacks so the first reason owns every abort side effect.
     if (externalAbortAccepted) {
@@ -417,14 +421,20 @@ function prepareStream(
     }
     externalAbortAccepted = true;
     input.markExternalAbort();
-    attempt.onDeferredLifecycleAbort?.(reason);
+    if (stopActor) {
+      attempt.onDeferredLifecycleAbort?.(reason, stopActor);
+    } else {
+      attempt.onDeferredLifecycleAbort?.(reason);
+    }
     attempt.onAttemptAbort?.();
     const abortReason =
       reason === "restart"
         ? createAgentRunRestartAbortError()
         : reason === "superseded"
           ? createAgentRunSupersededAbortError()
-          : undefined;
+          : stopActor
+            ? new ConversationRunStopReason(stopActor)
+            : undefined;
     input.abortRun(false, abortReason);
   };
   const isCurrentRegistration = () =>

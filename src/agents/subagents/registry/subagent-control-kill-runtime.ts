@@ -61,6 +61,8 @@ export async function mutateSubagentRunForKill(
     commands?: ReturnType<typeof captureSubagentCommands>;
     beforeSessionKill?: () => boolean | Promise<boolean>;
     requiredSessionId?: string;
+    /** Preserve unrelated input custody using the exact native run selection. */
+    preservePendingInputs?: true;
     isCurrent: (entry: SubagentRunRecord, requirePreparedSession?: boolean) => boolean;
     withdrawQueuedReservation: () => void;
     refreshDescendants: () => Promise<number>;
@@ -167,7 +169,8 @@ export async function mutateSubagentRunForKill(
     params.requiredSessionId !== undefined && params.beforeSessionKill !== undefined;
   const resolved = params.session;
   const legacy = resolveSubagentChildAuthority(initial).status === "legacy-unverified";
-  const exactRun = legacy || params.exactRunSelection === true;
+  const exactRun =
+    legacy || params.exactRunSelection === true || params.preservePendingInputs === true;
   const commands = params.commands ?? captureSubagentCommands(initial, resolved);
   const sessionId = resolved.entry?.sessionId;
   const captureSessionId = params.requiredSessionId ?? sessionId;

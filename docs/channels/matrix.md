@@ -176,7 +176,7 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `responsePrefix`: optional string prepended to outbound replies.
 - `textChunkLimit`: outbound chunk size in characters when `streaming.chunkMode: "length"`. Default: `4000`.
 - `streaming.chunkMode`: `"length"` (default, splits by character count) or `"newline"` (splits at line boundaries).
-- `historyLimit`: number of recent room messages included as `InboundHistory` when a room message triggers the agent. Falls back to `messages.groupChat.historyLimit`; effective default `0` (disabled).
+- `historyLimit`: number of recent room messages included as `InboundHistory` when a room message triggers the agent. Falls back to `messages.groupChat.historyLimit`; effective default `20`. Set `0` to disable.
 - `mediaMaxMb`: media size cap in MB for outbound sends and inbound processing. Default: `20`.
 
 ### Reaction settings
@@ -187,6 +187,12 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 
 ### Tooling and per-room overrides
 
+- `message` with `action: "download-file"` reopens an earlier attachment by its
+  `messageId` in the authorized target room. Use `action: "read"` to find that
+  event ID. Images return an inline preview and stage the original file for
+  agent workspace access; `original: true` skips the preview. Downloads use the
+  same room-read policy, `actions.messages` gate, and `mediaMaxMb` cap as normal
+  inbound media. Tool arguments cannot supply an arbitrary media URL.
 - `actions`: per-action tool gating (`messages`, `reactions`, `pins`, `profile`, `memberInfo`, `channelInfo`, `verification`).
 - `groups`: per-room policy map. Session identity uses the stable room ID after resolution. (`rooms` is a legacy alias.)
   Room tool and mention policies use room IDs resolved from configured keys; inbound display names never select another room's policy.
@@ -207,6 +213,58 @@ Room allowlist keys (`groups`, legacy `rooms`) should be room IDs or aliases. Pl
 - `execApprovals.approvers`: Matrix user IDs allowed to approve. Falls back to `dm.allowFrom`.
 - `execApprovals.target`: `"dm"` (default), `"channel"`, or `"both"`.
 - `execApprovals.agentFilter` / `execApprovals.sessionFilter`: optional agent/session allowlists for delivery.
+
+## Mirror an existing session into Matrix
+
+An operator can add a Matrix view to an existing session without copying its transcript or creating another agent session:
+
+```bash
+openclaw gateway call matrix.sessionProjection.create --params '{
+  "targetSessionKey": "agent:main:slack:channel:C123:thread:1700000000.000001",
+  "roomId": "!room:example.org",
+  "accountId": "default",
+  "label": "Slack support thread"
+}'
+```
+
+The Matrix account must already be running and joined to the target room. The method creates one durable child thread, binds it to the existing canonical session, and is idempotent for the same session, account, and room. Subsequent non-Matrix user messages and final assistant answers appear in that thread; progress, reasoning, status notices, and tool output are not mirrored. Matrix replies route to the canonical session through the normal conversation binding and are not reflected back as duplicate events.
+
+The method does not replay prior transcript. A trusted product bridge may include the single source message that triggered the request so the new thread has a visible starting point. It requires `operator.admin`, returns `threadRootEventId`, and does not infer a destination room: the caller must choose a room the user is authorized to read and pass its exact, case-sensitive Matrix room ID.
+
+## Conversation lifecycle status
+
+For a conversation projected into a Matrix room, the gateway publishes each run's status as `m.cellect.conversation.lifecycle` events. Two environment switches, both off unless set, add to them. Each is read when a fact or card is sent, so turning one off stops it at once, including for facts already queued.
+
+Native rooms retain one canonical conversation binding even when several agents
+are present. After access and addressing checks, native ingress admits each
+executing account against that binding, its exact thread root, configured agent
+route, and authenticated joined Matrix producer. The separately typed execution
+relationship is persisted in the Matrix plugin's SQLite state before dispatch;
+it neither reroutes the conversation nor grants source-publication authority.
+The lifecycle event retains the canonical binding identity while the executing
+account sends it. Configuring or joining an additional account alone cannot
+make it a lifecycle publisher. In particular, production and development
+accounts routed to the same agent do not make the executing account ambiguous.
+Contradictory relationships refuse admission rather than silently omitting status.
+Lifecycle delivery already in durable custody keeps its original frozen target.
+
+Replies to a structured question keep the selected question event in
+`m.in_reply_to` while retaining the conversation's `m.thread` root. When the
+homeserver event identifies the executing account's own question, ingress carries
+its exact question ID through queued and active-run input. The native question
+owner checks that ID at answer admission; old controls cannot answer a newer
+question from the same agent. Ordinary quotes and quotes of another agent remain
+ordinary conversation input. Legacy text-only prompts without a structured
+question ID do not acquire this extra fence.
+
+| Switch                                    | Effect                                                                                                                                                                                                                                                                 |
+| ----------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `OPENCLAW_CONVERSATION_LIFECYCLE_SIGNALS` | Adds `atMs`, `admittedAtMs`, `waitingOn`, `failureKind` and `stoppedBy` to each fact and sends a heartbeat for a run whose executor still holds its claim. The heartbeat does not keep a silent run out of the 30 minute silence sweep, and stops an hour into a wait. |
+| `OPENCLAW_CONVERSATION_DECISION_CARDS`    | Sends a confirmation card for an approval a person may decide from the conversation, and lets `waitingOn` name it.                                                                                                                                                     |
+
+Turn the signals on only after the projector, Fi and the apps accept the fields. A consumer built before them rejects the whole fact.
+
+Decision cards are inert today. A card needs an approval of kind `plugin` whose emitter sets `chatDecidable`, and nothing sets it: the Codex bridge sends its file-change and permission-escalation prompts as kind `plugin`, and those are not decided from a conversation. Fi also refuses a chat decision unless the approval's `presentation.origin` is `plugin`, which the gateway does not write. A later, separate change adds that origin, in this order so no running consumer breaks: first the Android key list and the stored-row validation accept the new field, then the gateway writes it, then the cards switch is turned on.
 
 ## Related
 

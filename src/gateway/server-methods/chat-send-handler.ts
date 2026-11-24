@@ -76,6 +76,9 @@ export async function handleTrustedInternalChatSend(
     | "prepareAssistantTranscriptMessage"
     | "beforeDispatch"
     | "stageCreatedInput"
+    | "talkRelayAdmission"
+    | "inboundEventKind"
+    | "sourceReplyDeliveryMode"
   >,
 ): Promise<void> {
   await handleChatSendWithOptions(options, onAdmissionOwned, undefined, {

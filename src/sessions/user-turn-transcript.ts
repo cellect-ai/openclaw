@@ -33,6 +33,7 @@ import {
   createUserTurnProcessingCompletion,
   notifyUserTurnObserver,
 } from "./user-turn-transcript-processing.js";
+import { projectRequesterOrigin } from "./user-turn-transcript-requester-projection.js";
 import {
   capturePersistedModelPromptProjection,
   confirmPersistedSteerTargetRunId,
@@ -124,27 +125,6 @@ export function createUserTurnTranscriptRecorder(
     params.pendingInputSources,
   );
   let staging: Promise<boolean> | undefined;
-
-  // Exposed messages are projections. Only producer facts or exact accepted
-  // pending custody can supply identity to a fresh write.
-  const projectRequesterOrigin = <T extends PersistedUserTurnMessage | undefined>(
-    candidate: T,
-    origin: typeof requesterOrigin,
-  ): T => {
-    if (!candidate) {
-      return candidate;
-    }
-    const { requesterOrigin: _previousOrigin, ...metadata } = candidate["__openclaw"] ?? {};
-    if (origin) {
-      metadata.requesterOrigin = origin;
-    }
-    const next = { ...candidate };
-    delete next["__openclaw"];
-    if (Object.keys(metadata).length > 0) {
-      next["__openclaw"] = metadata;
-    }
-    return next;
-  };
 
   const adoptPendingInput = (receipt: NonNullable<typeof pendingInput>) => {
     pendingInput = receipt;
@@ -583,7 +563,11 @@ export function createUserTurnTranscriptRecorder(
             retryCancelled: options.retryCancelled || params.sessionTurnMutation?.kind === "goal",
             replaySourceSessionKeys: params.pendingInputReplaySourceSessionKeys,
             message: projectRequesterOrigin(candidate, requesterOrigin),
-            onCommitted: adoptPendingInput,
+            onCommitted: (receipt) => {
+              // Adopt canonical custody before any consumer callback can fail.
+              adoptPendingInput(receipt);
+              params.onPendingInputCommitted?.(receipt);
+            },
             prepareMessageAfterIdempotencyCheck: (next) =>
               preparePersistedUserTurnMessageForTranscriptWrite(
                 projectRequesterOrigin(next, stagedOrigin),

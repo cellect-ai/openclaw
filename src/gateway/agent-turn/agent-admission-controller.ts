@@ -19,6 +19,7 @@ import {
   type ExpectedExistingSessionConstraint,
 } from "../server-methods/agent-expected-session.js";
 import { loadGatewaySessionEntryReadOnlyInWorker } from "../session-utils-store-worker.js";
+import { prepareThreadContinuationGuard } from "../thread-continuation.js";
 import type { AgentDedupeLifecycle } from "./agent-dedupe-lifecycle.js";
 import {
   buildAbortedAgentPayload,
@@ -181,6 +182,20 @@ export function createAgentAdmissionController(params: {
     if (admission) {
       return;
     }
+    if (
+      params.expectedSession?.threadContinuation &&
+      !params.expectedSession.threadContinuationGuard
+    ) {
+      const context = params.context.resolveGatewayContext?.();
+      if (!context)
+        throw new Error("Thread continuation requires the current native gateway owner.");
+      params.expectedSession.threadContinuationGuard = await prepareThreadContinuationGuard({
+        context,
+        snapshot: params.expectedSession.threadContinuation,
+        runId: params.runId,
+        source: admittedRunAbort?.entry,
+      });
+    }
     const isSettling = () => admittedRunAbort?.entry?.adapter.terminalOutcomeObserved === true;
     const getAbortReason = () => admittedRunAbort?.controller.signal.reason;
     const sessionKey = params.getResolvedSessionKey();
@@ -265,8 +280,10 @@ export function createAgentAdmissionController(params: {
     getAdmittedRunAbort: () => admittedRunAbort,
     setAdmittedRunAbort: (value: ReturnType<typeof registerChatAbortController>) => {
       admittedRunAbort = value;
+      if (value.entry) params.expectedSession?.threadContinuationGuard?.bindSource(value.entry);
     },
     release: () => {
+      params.expectedSession?.threadContinuationGuard?.dispose();
       admittedRunAbort?.cleanup();
       admission?.release();
     },

@@ -92,6 +92,7 @@ export type ChannelHandler = {
   renderPresentation?: (
     payload: ReplyPayload,
     sourcePresentation?: MessagePresentation,
+    fallbackText?: string,
   ) => Promise<ReplyPayload | null>;
   /** Resolved for the delivery's account when the adapter declares an account-aware resolver. */
   presentationCapabilities?: ChannelOutboundAdapter["presentationCapabilities"];
@@ -186,6 +187,8 @@ export type ChannelHandlerParams = OutboundChannelContext & {
 };
 
 export type DeliverOutboundPayloadsCoreParams = OutboundChannelContext & {
+  /** @internal Core captures each native receipt before observer callbacks, including aggregate replacements. */
+  onCanonicalDeliveryResult?: (result: OutboundDeliveryResult) => void;
   payloads: ReplyPayload[];
   /** Admitted run correlation copied into the prepared durable batch. */
   runId?: string;
@@ -207,6 +210,8 @@ export type DeliverOutboundPayloadsCoreParams = OutboundChannelContext & {
   onPlatformSendStart?: (route: PlatformSendRoute, sourceIndex?: number) => Promise<void>;
   /** @internal Stable producer id used to make queue creation idempotent across crashes. */
   deliveryIntentId?: string;
+  /** Persist custody for reconciliation only; a fresh live owner must authorize every new send. */
+  recoveryPolicy?: "reconcile_only";
   /** @internal Retain the completed receipt for a producer-owned replayable intent. */
   completionRetention?: DeliveryQueueCompletionRetention;
   /** @internal Producer-specific durable recovery attempt budget. */

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import { classifyAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.types.js";
@@ -10,6 +11,7 @@ import { COLLABORATIVE_STEERING_DISABLED_TEXT } from "../../auto-reply/reply/dis
 import { DispatchSessionRefreshRequiredError } from "../../auto-reply/reply/dispatch-session-refresh-error.js";
 import { readAgentRunTerminalOutcome } from "../../channels/turn/agent-run-terminal-outcome.js";
 import { SessionGoalOperationError } from "../../config/sessions/goals-operations.js";
+import { prepareAgentEventForRunContext } from "../../infra/agent-events.js";
 import { clearAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
 import {
   getRpcSourceIdentity,
@@ -37,6 +39,7 @@ import {
   readChatSendReplyPayload,
   type DeliveredChatSendReply,
 } from "./chat-send-command-replies.js";
+import { persistDispatchTerminal } from "./chat-send-dispatch-terminal.js";
 import type { createChatSendInjectionDisposition } from "./chat-send-message-injection.js";
 import {
   classifyAcceptedChatSendFailure,
@@ -298,12 +301,18 @@ export function createChatSendDispatchErrorLifecycle(params: {
   // Cleanup releases the run context before delayed failure publication. Keep
   // the original projection policy so maintenance cannot become a visible turn.
   const visibility = getAgentRunContext(clientRunId);
+  const ownsOriginalProjection = () => {
+    const current = getAgentRunContext(clientRunId);
+    return isSourceCurrent() && (!visibility || !current || current === visibility);
+  };
   const hidden = visibility?.projectSessionMessages === false;
   const suppressLifecycle = visibility?.projectSessionLifecycle === false;
   let abortedDispatchMarker: ChatAbortMarker | undefined;
   let pendingDispatchLifecycleError: PendingDispatchLifecycleError | undefined;
   let persistDispatchErrorUserTurn: (() => Promise<void>) | undefined;
   let publishDispatchError: (() => void) | undefined;
+  let requiredTerminal: Promise<void> | undefined;
+  const terminalPersistenceJobId = `chat-dispatch-terminal:${randomUUID()}`;
   const classifyFailure = (error: unknown): AcceptedChatSendFailureDisposition =>
     params.injectionDisposition?.isRefused()
       ? "reconcile"
@@ -412,6 +421,56 @@ export function createChatSendDispatchErrorLifecycle(params: {
       return;
     }
 
+    if (visibility && !hidden && !suppressLifecycle && !agentTerminalOwnedAtDispatchReject) {
+      requiredTerminal ??= (async () => {
+        if (!isSourceCurrent() || getAgentRunContext(clientRunId) !== visibility) {
+          throw new Error("Chat dispatch terminal owner changed before persistence");
+        }
+        const occurrence = prepareAgentEventForRunContext(
+          {
+            runId: clientRunId,
+            ...getRpcSourceIdentity(activeRunAbort.entry),
+            lifecycleGeneration,
+            stream: "lifecycle",
+            data: {
+              phase: "error",
+              executionSettled: true,
+              startedAt: getRpcSourceStartedAt(activeRunAbort.entry) ?? now,
+              endedAt: Date.now(),
+              error: errorMessage,
+              errorKind,
+              ...terminationFields,
+            },
+          },
+          visibility,
+        );
+        if (!occurrence) throw new Error("Chat dispatch terminal was not accepted by its owner");
+        const receipt = await persistDispatchTerminal({
+          id: terminalPersistenceJobId,
+          scheduler: context.lifecycleScheduler,
+          publish: async () => {
+            if (!isSourceCurrent() || getAgentRunContext(clientRunId) !== visibility) return false;
+            await occurrence.retry();
+            return true;
+          },
+          onFailure: (attempt) => {
+            if ((attempt & (attempt - 1)) === 0)
+              context.logGateway.warn("Native dispatch terminal persistence remains pending.");
+          },
+        });
+        if (receipt !== "accepted") {
+          throw new Error(
+            receipt === "closed"
+              ? "Native dispatch terminal remains unresolved at Gateway shutdown."
+              : "Chat dispatch terminal owner changed while persistence remained unresolved",
+          );
+        }
+      })();
+      await requiredTerminal;
+      if (!isSourceCurrent()) {
+        throw new Error("Chat dispatch source changed while its terminal settled");
+      }
+    }
     context.chatRunState.deleteAbortMarker(clientRunId);
     activeRunAbort.cleanup();
 
@@ -497,11 +556,19 @@ export function createChatSendDispatchErrorLifecycle(params: {
   };
 
   const finalize = async () => {
+    // Failed required custody retains its admitted owner and rejects shutdown;
+    // native best-effort projection cleanup cannot turn it into success.
+    await requiredTerminal;
     await settleTerminalPersistence();
+    if (!ownsOriginalProjection()) {
+      cleanupAdmittedRun();
+      return;
+    }
     const dispatchError = pendingDispatchLifecycleError;
     // Commands and reply-dispatch runtimes have already published their terminal.
     // Native agent events keep ownership until their own terminal delivery completes.
     const clearRun = () => {
+      if (!ownsOriginalProjection()) return;
       if (
         !isQueuedFollowupEnqueued() &&
         (!params.isAgentRunStarted() || params.isReplyDispatchRun?.())
@@ -529,6 +596,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
               payload: buildAbortedChatSendPayload({
                 runId: clientRunId,
                 stopReason: activeRunAbort.entry.adapter.abortStopReason ?? "rpc",
+                stopActor: activeRunAbort.entry.adapter.stopActor,
                 endedAt,
               }),
             },
@@ -545,6 +613,7 @@ export function createChatSendDispatchErrorLifecycle(params: {
           `webchat user transcript update failed after error: ${formatForLog(transcriptErr)}`,
         );
       });
+      if (!ownsOriginalProjection()) return;
       clearAgentRunContext(clientRunId, lifecycleGeneration);
       context.removeChatRun(clientRunId, clientRunId, sessionKey);
       try {

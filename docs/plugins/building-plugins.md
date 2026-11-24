@@ -274,8 +274,16 @@ plugin is enabled. Optional tools need explicit user opt-in before OpenClaw
 loads the owning plugin runtime.
 
 Tool factories receive trusted runtime context, including `deliveryContext`,
-`nativeChannelId` for the active platform conversation when available, and
-`requesterSenderId`. A factory can use
+`nativeChannelId` for the active platform conversation when available,
+`currentMessageId` for the host-supplied current platform message, and
+`requesterSenderId`. The optional `runId` identifies the exact host execution,
+including its retries and model fallbacks; it is unavailable to inventory without
+an active execution. Use it only to look up a capability held by the admission
+owner, never as an entitlement or a fallback to session-level identity.
+These fields are optional provenance, not an authorization
+decision: verify the native event and current requester entitlement with the
+owning service before accessing requester resources. Missing message identity
+must not be inferred from the prompt, thread root, or delivery target. A factory can use
 `toolContext.delivery?.send({ text, mediaUrl })` to send text or media to the
 current conversation. The property is unavailable outside an active channel
 turn or when the channel uses Gateway-owned delivery. OpenClaw binds the route,

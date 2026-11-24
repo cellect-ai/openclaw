@@ -1,24 +1,22 @@
+import {
+  CONTROL_PLANE_WRITE,
+  OBSERVATION,
+  PROFILE_DEPENDENT,
+  PROFILE_STARTUP,
+  SESSION_METADATA_READ,
+  UNADVERTISED,
+  UNADVERTISED_OBSERVATION,
+  SIDECAR_CONTROL_PLANE_WRITE,
+  PORTAL_SESSION_WRITE,
+  SESSION_WRITE,
+  OWN_SESSION_WRITE,
+} from "./core-descriptor-options.js";
+import {
+  MODEL_METADATA_READ,
+  CRON_LIST_READ,
+  CRON_STATUS_READ,
+} from "./core-descriptor-read-sharing.js";
 import type { CoreGatewayMethodSpecRow } from "./core-descriptor-types.js";
-import { cronListShareKey, modelsListShareKey, operatorReadShareKey } from "./read-share-keys.js";
-
-// Canonical append-only method table; derived lookup and dispatch policy lives in core-method-policy.ts.
-const CONTROL_PLANE_WRITE = { controlPlaneWrite: true } as const;
-const SIDECAR_CONTROL_PLANE_WRITE = { startup: true, controlPlaneWrite: true } as const;
-const UNADVERTISED = { advertise: false } as const;
-const PROFILE_DEPENDENT = { profileAccess: "required" } as const;
-const PROFILE_STARTUP = { startup: true, ...PROFILE_DEPENDENT } as const;
-const SESSION_METADATA_READ = {
-  shareKey: operatorReadShareKey,
-  shareMaxAgeMs: 1_000,
-  shareInvalidationEvents: ["sessions.changed", "chat.metadata.changed"],
-} as const;
-const OBSERVATION = { lifetime: "observation" } as const;
-const UNADVERTISED_OBSERVATION = { ...UNADVERTISED, ...OBSERVATION } as const;
-const SESSION_WRITE = { sessionAccess: { mode: "write" } } as const;
-const OWN_SESSION_WRITE = { sessionAccess: { mode: "write", allowOwnSessionScope: true } } as const;
-const PORTAL_SESSION_WRITE = {
-  sessionAccess: { mode: "write", allowOwnSessionScope: true, requiredTool: "portal" },
-} as const;
 
 // This is the canonical core method policy table: every core handler must appear here so
 // listing, authorization, startup availability, and write throttling stay in sync.
@@ -111,18 +109,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["talk.mode", "talk-mode", "operator.talk", "<=2026.7"],
   ["commands.list", "commands", "operator.read", "<=2026.7"],
   // Wait for identity hydration before caching the caller's personal model catalog.
-  [
-    "models.list",
-    "models",
-    "operator.read",
-    "<=2026.7",
-    {
-      ...PROFILE_STARTUP,
-      shareKey: modelsListShareKey,
-      shareMaxAgeMs: 1_000,
-      shareInvalidationEvents: ["chat.metadata.changed", "sessions.changed"],
-    },
-  ],
+  ["models.list", "models", "operator.read", "<=2026.7", MODEL_METADATA_READ],
   ["models.authStatus", "models-auth-status", "operator.read", "<=2026.7"],
   ["models.authLogout", "models-auth-status", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
   ["tools.catalog", "tools-catalog", "operator.read", "<=2026.7"],
@@ -302,28 +289,8 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["node.invoke.result", "nodes", "node", "<=2026.7"],
   ["node.event", "nodes", "node", "<=2026.7"],
   ["cron.get", "cron", "operator.read", "<=2026.7"],
-  [
-    "cron.list",
-    "cron",
-    "operator.read",
-    "<=2026.7",
-    {
-      shareKey: cronListShareKey,
-      shareMaxAgeMs: 1_000,
-      shareInvalidationEvents: ["cron", "sessions.changed"],
-    },
-  ],
-  [
-    "cron.status",
-    "cron",
-    "operator.read",
-    "<=2026.7",
-    {
-      shareKey: operatorReadShareKey,
-      shareMaxAgeMs: 1_000,
-      shareInvalidationEvents: ["cron"],
-    },
-  ],
+  ["cron.list", "cron", "operator.read", "<=2026.7", CRON_LIST_READ],
+  ["cron.status", "cron", "operator.read", "<=2026.7", CRON_STATUS_READ],
   ["cron.scratch.get", "cron", "operator.admin", "2026.7"],
   ["cron.scratch.set", "cron", "operator.admin", "2026.7"],
   ["cron.add", "cron", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
@@ -358,6 +325,9 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["chat.metadata", "chat", "operator.read", "<=2026.7", SESSION_METADATA_READ],
   ["chat.message.get", "chat", "operator.read", "<=2026.7"],
   ["chat.abort", "chat-abort", "operator.write", "<=2026.7"],
+  ["chat.handoff.arm", "chat", "operator.write", "<=2026.9", { compatibilityRestored: true }],
+  ["chat.handoff.seen", "chat", "operator.write", "<=2026.9", { compatibilityRestored: true }],
+  ["conversation.continue", "chat", "operator.admin", "<=2026.9", { compatibilityRestored: true }],
   ["chat.send", "chat-send", "operator.write", "<=2026.7", { startup: true }],
   // Operator terminal: admin-only PTY surface. Appended to the advertised block
   // so existing advertised method indices stay stable for older clients.
@@ -373,6 +343,13 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["assistant.media.get", null, "operator.read", "<=2026.7", UNADVERTISED],
   ["sessions.get", "sessions-read", "operator.read", "<=2026.7", UNADVERTISED_OBSERVATION],
   ["sessions.resolve", "sessions-read", "operator.read", "<=2026.7", UNADVERTISED],
+  [
+    "talk.binding.resolve",
+    "talk",
+    "operator.admin",
+    "<=2026.9",
+    { ...UNADVERTISED, compatibilityRestored: true },
+  ],
   ["sessions.usage", "usage", "operator.read", "<=2026.7", UNADVERTISED],
   ["sessions.usage.timeseries", "usage", "operator.read", "<=2026.7", UNADVERTISED],
   ["sessions.usage.logs", "usage", "operator.read", "<=2026.7", UNADVERTISED],
@@ -665,6 +642,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["users.merge", "users", "operator.admin", "2026.9", PROFILE_DEPENDENT],
   ["gateway.stop.request", "restart", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["diagnostics.heapSnapshot", "diagnostics", "operator.admin", "2026.9"],
+
   ["sessions.catalog.import", "session-catalog", "operator.write", "2026.9"],
   ["backup.status", "backup", "operator.read", "2026.9"],
   ["backup.recordOutcome", "backup", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
@@ -756,4 +734,9 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     "2026.10",
     { startup: true, ...OBSERVATION },
   ],
+  ["talk.voice.preview", "talk", "operator.write", "<=2026.9", { compatibilityRestored: true }],
+  ["talk.session.announce", "talk", "operator.talk", "<=2026.10", { compatibilityRestored: true }],
+  // Fi shadow reports deliver into an existing cellect-fi-user Matrix session.
+  ["fi.shadow.announce", "fi-shadow", "operator.admin", "2026.11"],
+  ["fi.review.announce", "fi-review", "operator.admin", "2026.11"],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

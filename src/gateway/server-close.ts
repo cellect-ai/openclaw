@@ -12,9 +12,9 @@ import { type ChannelId, listChannelPlugins } from "../channels/plugins/index.js
 import { memorySessionActorOwners } from "../config/sessions/session-actor-memory-owner.js";
 import { closeSessionTranscriptReconcileWorkerPool } from "../config/sessions/session-transcript-reconcile-pool.js";
 import { createInternalHookEvent, triggerInternalHook } from "../hooks/internal-hooks.js";
-import { formatErrorMessage, hasErrnoCode } from "../infra/errors.js";
+import { drainRequiredAgentRunPersistence } from "../infra/agent-events.js";
+import { formatErrorMessage } from "../infra/errors.js";
 import { heartbeatNotifications } from "../infra/heartbeat-events.js";
-import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { GatewayPluginMetadataOwner } from "../plugins/plugin-metadata-lifecycle.js";
 import { hasRetainedPluginRuntimeCloseError } from "../plugins/runtime-close-error.js";
 import type { createPluginRegistryOwner } from "../plugins/runtime.js";
@@ -34,6 +34,12 @@ import {
   recordGatewayRestartTrace,
 } from "./restart-trace.js";
 import type { ChatRunState } from "./server-chat-state.js";
+import {
+  shutdownLog,
+  HTTP_CLOSE_GRACE_MS,
+  HTTP_CLOSE_FORCE_WAIT_MS,
+  closeHttpListener,
+} from "./server-close-http.js";
 import { WEBSOCKET_CLOSE_GRACE_MS } from "./server-constants.js";
 import type { GatewayMaintenanceHandles } from "./server-maintenance-lifecycle.js";
 import {
@@ -50,13 +56,11 @@ import {
   isGatewayCleanupRetainedError,
 } from "./server-shutdown.js";
 
-const shutdownLog = createSubsystemLogger("gateway/shutdown");
 const GATEWAY_SHUTDOWN_HOOK_TIMEOUT_MS = 1_000;
 const GATEWAY_PRE_RESTART_HOOK_TIMEOUT_MS = 1_000;
 const ACTIVE_SESSIONS_SHUTDOWN_DRAIN_TIMEOUT_MS = 2_000;
 const WEBSOCKET_CLOSE_FORCE_CONTINUE_MS = 250;
-const HTTP_CLOSE_GRACE_MS = 1_000;
-const HTTP_CLOSE_FORCE_WAIT_MS = 5_000;
+
 const RUNTIME_CLOSE_GRACE_MS = 5_000;
 const PERSISTENCE_CLOSE_GRACE_MS = 3_000;
 const REGISTRY_CLOSE_GRACE_MS = 10_000;
@@ -121,65 +125,6 @@ export async function runGatewayClosePrelude(params: {
   await measureGatewayCloseStep("restart.close.mcp-server", () =>
     params.closeMcpServer?.().catch(() => {}),
   );
-}
-
-async function waitForHttpClose(params: {
-  closePromise: Promise<void>;
-  timeoutMs: number;
-  label: string;
-  warnings: string[];
-}): Promise<boolean> {
-  return await settlesWithin(params.closePromise, params.timeoutMs).catch((err: unknown) => {
-    const detail = err instanceof Error ? err.message : String(err);
-    shutdownLog.warn(`${params.label}: ${detail}`);
-    recordShutdownWarning(params.warnings, params.label);
-    return true;
-  });
-}
-
-async function closeHttpListener(params: {
-  server: HttpServer;
-  label: string;
-  warnings: string[];
-}): Promise<void> {
-  const { server, label, warnings } = params;
-  server.closeIdleConnections?.();
-  const closePromise = new Promise<void>((resolve, reject) => {
-    server.close((err) => {
-      if (!err || hasErrnoCode(err, "ERR_SERVER_NOT_RUNNING")) {
-        resolve();
-        return;
-      }
-      reject(err);
-    });
-  });
-  void closePromise.catch(() => undefined);
-  const closedWithinGrace = await waitForHttpClose({
-    closePromise,
-    timeoutMs: HTTP_CLOSE_GRACE_MS,
-    label,
-    warnings,
-  });
-  if (closedWithinGrace) {
-    return;
-  }
-  shutdownLog.warn(
-    `${label} close exceeded ${HTTP_CLOSE_GRACE_MS}ms; forcing connection shutdown and waiting for close`,
-  );
-  recordShutdownWarning(warnings, label);
-  server.closeAllConnections?.();
-  const closedAfterForce = await waitForHttpClose({
-    closePromise,
-    timeoutMs: HTTP_CLOSE_FORCE_WAIT_MS,
-    label,
-    warnings,
-  });
-  if (!closedAfterForce) {
-    throw new GatewayShutdownCleanupRetainedError(
-      [],
-      `${label} close still pending after forced connection shutdown (${HTTP_CLOSE_FORCE_WAIT_MS}ms)`,
-    );
-  }
 }
 
 export type GatewayCloseParams = {
@@ -653,6 +598,10 @@ async function closeGatewayResources(
                 // A settled failure has joined owned runs; failed out-of-process trees own
                 // their own connections and leases. Pending cleanup still retains our handles.
                 // Releasing agent leases still writes shared state; keep its owner alive until then.
+                await measureCloseStep(
+                  "required-agent-run-persistence",
+                  drainRequiredAgentRunPersistence,
+                );
                 await measureCloseStep("agent-databases", closeOpenClawAgentDatabasesAsync);
                 if (supervisorFailure) {
                   throw supervisorFailure.error;

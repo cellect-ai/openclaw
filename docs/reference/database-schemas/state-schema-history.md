@@ -646,3 +646,18 @@ Schema 11 removes the `skill_lifecycle` and `skill_workshop_proposal_origin_runs
 ### State schema 9
 
 Schema 9 stores an `agent_databases.path` value relative to the state directory when the registered agent database is inside that directory. During migration, a foreign default-layout row is re-anchored to the in-root counterpart when that file exists. It is deleted only when the same agent already holds its in-root registration, because dual default-layout registrations cannot produce a valid combined session list. Otherwise, the absolute row is preserved, so genuine external registrations are never deleted. This keeps a copied state directory self-contained without dropping supported external database paths.
+
+### Cellect fork schema 21 compatibility
+
+The Cellect 10.4 fork used shared-state schema 21 for retained immutable sandbox
+generations in the existing registry, without adding SQL columns. Upstream schema
+21 instead adds the derived meeting transcript and bounded delivery retention
+columns described above. The version number alone does not prove those columns
+exist. Native migration recognizes missing projections at historical version 21;
+startup and Doctor must preserve their canonical JSON while deriving the columns.
+
+Retained sandbox generations may still own detached work. Their retention remains
+monotonic until explicit reconciled retirement; timestamp pruning cannot remove
+them. Rollback requires the verified pre-upgrade state checkpoint and matching
+build, with containers created or retained since that checkpoint reconciled before
+restoration. Restoring an older configuration alone is insufficient.

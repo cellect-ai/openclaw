@@ -165,9 +165,14 @@ export const toolIconData = {
     ["polyline", { points: "7 10 12 15 17 10" }],
     ["line", { x1: "12", x2: "12", y1: "15", y2: "3" }],
   ]),
-  mic: strokePathData(
-    "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v3",
-  ),
+  mic: strokeIconData([
+    [
+      "path",
+      { class: "icon-mic-capsule", d: "M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z" },
+    ],
+    ["path", { d: "M19 10v2a7 7 0 0 1-14 0v-2" }],
+    ["path", { d: "M12 19v3" }],
+  ]),
   volume2: strokeIconData([
     ["polygon", { points: "11 5 6 9 2 9 2 15 6 15 11 19 11 5" }],
     ["path", { d: "M15.54 8.46a5 5 0 0 1 0 7.07M19.07 4.93a10 10 0 0 1 0 14.14" }],

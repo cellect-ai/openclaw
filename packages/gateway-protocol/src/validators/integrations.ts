@@ -267,3 +267,12 @@ export const validateWebLoginWaitParams = createProtocolValidator(
   S.WebLoginWaitParamsSchema,
   Checks.isWebLoginWaitParams,
 );
+
+export const validateTalkVoicePreviewParams = createProtocolValidator(
+  S.TalkVoicePreviewParamsSchema,
+  Checks.isTalkVoicePreviewParams,
+);
+export const validateTalkSessionAnnounceParams = createProtocolValidator(
+  S.TalkSessionAnnounceParamsSchema,
+  Checks.isTalkSessionAnnounceParams,
+);

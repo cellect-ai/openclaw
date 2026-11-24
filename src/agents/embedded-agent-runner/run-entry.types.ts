@@ -73,6 +73,8 @@ export type EmbeddedAgentRunEntryParams<T extends EmbeddedAgentRunResult> = {
     model: string;
     requestedRouteResolution?: ModelFallbackRouteResolution;
     fallbacksOverride?: string[];
+    /** Tried only after a format failure when a user pin emptied the normal ladder. */
+    formatFailureFallbacks?: string[];
     agentDir?: string;
     userLockedAuthProfileId?: string;
     cyberAccessProgram?: CyberAccessProgram;

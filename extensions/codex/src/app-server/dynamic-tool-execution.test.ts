@@ -2,6 +2,7 @@ import {
   embeddedAgentLog,
   type EmbeddedRunAttemptParamsV2 as EmbeddedRunAttemptParams,
 } from "openclaw/plugin-sdk/agent-harness-runtime";
+import { buildContractReplyPayloads } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { createContractToolTerminalObserver } from "openclaw/plugin-sdk/agent-runtime-test-contracts";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -488,6 +489,18 @@ describe("dynamic tool execution helpers", () => {
       timeoutMs: 90_000,
       observeToolTerminal: createContractToolTerminalObserver("run-partial-memory-timeout"),
     });
+    expect(
+      buildContractReplyPayloads({
+        assistantText: "",
+        lastToolError: response.terminalResolution?.lastToolError,
+      }),
+    ).toEqual([
+      expect.objectContaining({
+        text: expect.stringMatching(
+          /^⚠️ Memory Search timed out after 30s; 2 partial results are available\./,
+        ),
+      }),
+    ]);
     expect(response.terminalResolution?.lastToolError?.terminalDiagnostic).toEqual({
       kind: "timeout",
       timeoutMs: 30_000,

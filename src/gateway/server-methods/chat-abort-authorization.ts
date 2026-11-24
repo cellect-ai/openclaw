@@ -2,6 +2,7 @@ import { normalizeOptionalString } from "@openclaw/normalization-core/string-coe
 import { assertAdmittedRunOperatorAuthority } from "../../agents/admitted-run-context.js";
 import type { SubagentRequestSessionOrigin } from "../../agents/subagents/registry/subagent-exec-request-ownership.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
+import { isPersonRunStopReason, type VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { isCurrentSessionControllerTurnInput } from "../../sessions/session-controller.context.js";
 import {
@@ -101,12 +102,16 @@ export function buildAbortedChatSendPayload(params: {
   runId: string;
   endedAt: number;
   stopReason?: string;
+  stopActor?: VerifiedRunStopActor;
 }) {
   return {
     runId: params.runId,
     status: "timeout" as const,
     summary: "aborted",
     ...(params.stopReason ? { stopReason: params.stopReason } : {}),
+    ...(isPersonRunStopReason(params.stopReason) && params.stopActor
+      ? { stopActor: params.stopActor }
+      : {}),
     endedAt: params.endedAt,
   };
 }
@@ -342,6 +347,7 @@ export function writePreRegisteredChatAbort(params: {
   context: GatewayRequestContext;
   runId: string;
   stopReason: string;
+  stopActor?: VerifiedRunStopActor;
   attemptId?: string;
   requestIdentity?: string;
 }) {
@@ -357,6 +363,7 @@ export function writePreRegisteredChatAbort(params: {
   const payload = buildAbortedChatSendPayload({
     runId: params.runId,
     stopReason: params.stopReason,
+    stopActor: params.stopActor,
     endedAt,
   });
   params.context.chatRunState.getOrCreate(params.runId).abortMarker =
@@ -449,18 +456,21 @@ export function resolveAuthorizedQueuedTurnsForSession(params: {
   agentId?: string;
   defaultAgentId?: string;
   requester: ChatAbortRequester;
+  preservePendingInputs?: true;
   preserveSideRuns?: boolean;
   includeProtectedRuns?: boolean;
   matchesScope: (entry: RpcSourceRef) => boolean;
 }) {
-  const matches = listRpcSourceEntriesForSession({
-    queuedOnly: true,
-    sessionKeys: params.sessionKeys,
-    sessionIds: [params.sessionId],
-    requiredSessionId: params.requiredSessionId,
-    agentId: params.agentId,
-    defaultAgentId: params.defaultAgentId,
-  });
+  const matches = params.preservePendingInputs
+    ? []
+    : listRpcSourceEntriesForSession({
+        queuedOnly: true,
+        sessionKeys: params.sessionKeys,
+        sessionIds: [params.sessionId],
+        requiredSessionId: params.requiredSessionId,
+        agentId: params.agentId,
+        defaultAgentId: params.defaultAgentId,
+      });
   const { authorizedRuns, ...result } = selectAuthorizedRpcSourceRuns(
     matches.filter(({ entry }) => params.matchesScope(entry)),
     params,

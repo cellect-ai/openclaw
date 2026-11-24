@@ -1,4 +1,5 @@
 import { copyReplyPayloadMetadata } from "../../auto-reply/reply-payload.js";
+import { copyReplyPublication } from "../../auto-reply/reply-publication.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import type { ChannelOutboundTargetRef } from "../../channels/plugins/types.adapters.js";
 import { hasReplyPayloadContent, type ReplyPayloadDeliveryPin } from "../../interactive/payload.js";
@@ -92,6 +93,7 @@ export function normalizePayloadsForChannelDelivery(
       copyMetadata,
     );
     if (normalized) {
+      copyReplyPublication(entry.payload, normalized);
       normalizedPayloads.push({ index: entry.sourceIndex, payload: normalized });
     }
   }

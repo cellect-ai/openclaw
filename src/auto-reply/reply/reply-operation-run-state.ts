@@ -11,6 +11,7 @@ export type {
   ReplyOperationRunState,
   ReplyPreRunRejectionCode,
 } from "../../sessions/session-controller.contracts.js";
+import { isReplyOperationSuperseded } from "./reply-operation-abort.js";
 
 // Carries this invocation's admission decision through reply option spreads so
 // cleanup never infers it from whichever operation is active later.
@@ -40,12 +41,18 @@ export function resolveReplySessionEventDelivery(
     ? false
     : undefined;
 }
+const ABORT_REASON_BY_CODE = {
+  aborted_by_user: "user",
+  aborted_for_restart: "restart",
+  aborted_for_supersession: "superseded",
+} as const;
 
 export function recordReplyOperationAgentTurn(
   states: readonly ReplyOperationRunState[] | undefined,
   owner: ReplyOperation | undefined,
   outcome?:
-    | { kind: "aborted" | "rejected" }
+    | { kind: "aborted"; reason?: "user" | "restart" | "superseded" }
+    | { kind: "rejected" }
     | {
         kind: "settled";
         status: "ok" | "failed";
@@ -59,6 +66,12 @@ export function recordReplyOperationAgentTurn(
     state.agentTurn = resolveAgentTurnExecutionStatus(
       outcome ?? (owner?.result?.kind === "aborted" ? owner.result : undefined),
     );
+    state.agentTurnAbortReason =
+      outcome?.kind === "aborted"
+        ? outcome.reason
+        : !outcome && owner?.result?.kind === "aborted"
+          ? ABORT_REASON_BY_CODE[owner.result.code]
+          : undefined;
     if (outcome?.kind === "settled") {
       state.messagingToolSentTargets = outcome.result.messagingToolSentTargets;
       state.backgroundWorkStarted = Boolean(

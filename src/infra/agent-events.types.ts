@@ -1,4 +1,5 @@
 import type { AgentEvent } from "../../packages/gateway-protocol/src/schema/agent.js";
+import type { AgentRunPersistenceWork } from "./agent-run-persistence.js";
 import type { AgentRunContext, AgentRunEventState } from "./agent-run-registry.types.js";
 import type { captureAgentRunTerminalPersistence } from "./agent-run-terminal-writes.js";
 
@@ -6,6 +7,11 @@ import type { captureAgentRunTerminalPersistence } from "./agent-run-terminal-wr
 export type AgentApprovalEventData = {
   phase: "requested" | "resolved";
   kind: "exec" | "plugin" | "unknown";
+  /** Explicit host-verified business intent, never inferred from the plugin kind. */
+  chatDecidable?: true;
+  conversation?: { title: string; summary: string };
+  expiresAtMs?: number;
+  allowedDecisions?: readonly ("allow-once" | "allow-always" | "deny")[];
   status: "pending" | "unavailable" | "approved" | "denied" | "failed";
   title: string;
   itemId?: string;
@@ -107,6 +113,9 @@ export type AgentEventState = {
   runListeners: Map<string, AgentEventListeners>;
   nextListenerId: number;
   auditListeners: Set<(evt: AgentEventPayload) => void>;
+  persistenceHandlers?: Set<
+    (evt: AgentEventRuntimePayload) => void | Promise<void> | AgentRunPersistenceWork
+  >;
   lifecycleRotationHandlers?: Map<string, (lifecycleGeneration: string) => void>;
 };
 

@@ -166,6 +166,7 @@ contracts above; a modifying hook is not an observation hook.
 | `reply_payload_sending`     | Modify / gate | Mutate or cancel normalized reply payloads before delivery                   |
 | `message_sent`              | Observe       | Observe outbound delivery success or failure                                 |
 | `before_dispatch`           | Claim         | Handle an inbound message before the normal model dispatch                   |
+| `before_steer`              | Claim         | Queue a message as its own turn instead of steering the active run           |
 | `reply_dispatch`            | Claim         | Own reply generation and dispatch instead of the default model path          |
 
 `inbound_claim` is not a global pre-routing broadcast. OpenClaw invokes it only
@@ -174,6 +175,15 @@ suppress an ordinary agent turn before model input without retaining the
 original prompt in transcript, use `before_agent_run` on a supported runner.
 To short-circuit an agent turn with a synthetic reply or silence, use
 `before_agent_reply`.
+
+`before_steer` is asked in the reply runner just before a channel message for a
+session with an active run would be steered (injected) into that run. The event
+carries `messageId`, `channel`, `sessionKey`, `senderId` and `isGroup`; return
+`{ handled: true }` to have the message queued on the existing FIFO followup path
+instead, so it runs as its own turn with its own `before_dispatch` proof and the
+usual message-id dedupe. Handlers must answer from memory: errors and timeouts
+fail open and the message is steered as before. Use it when the active run cannot
+act for the sender (for example a run proven for a different sender).
 
 The retired `heartbeatEventQueueSessionKey` context field is no longer supplied.
 Use the admitted `ctx.sessionKey`; do not infer another session by stripping a
@@ -287,3 +297,8 @@ channel-scoped `senderId`, pairing `code`, and channel metadata. Treat the
 pairing code as a live single-use approval credential and deliver it only to a
 trusted operator sink. Treat `metadata` as untrusted sender-supplied identity
 text. The hook does not include the inbound message body or media.
+
+This hook adds a destination; it is not what makes a request visible. The
+Gateway always logs a warning naming the channel, account and sender when a
+request arrives, and repeats it while the request goes unanswered, whether or
+not any plugin subscribes. See [Pairing](/channels/pairing).

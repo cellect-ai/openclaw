@@ -24,7 +24,15 @@ Every job carries exactly one payload kind, chosen by flag:
 
 Doctor converts former heartbeat monitors into ordinary editable `agentTurn` jobs. Gateway startup no longer reconciles a system-owned monitor from config. Use `openclaw automations list --all` to inspect both enabled and disabled jobs. See [Heartbeat migration](/gateway/heartbeat).
 
-The weekly Skill Workshop curator (declaration key `skill-collection-review:<agentId>`, and the older `skillCollectionReview` payload kind) is retired. The Gateway deletes those stored rows when it loads the cron store and creates no replacement; the declaration-key namespace stays reserved. Learned-skill cleanup now runs without a schedule; see [Unused-skill cleanup](/tools/skill-workshop#unused-skill-cleanup).
+Skill collection review runs every 7 days as one system-owned automation per agent (`workshop-collection-review:<agentId>`). It is enabled in `skills.workshop.autonomous.mode: auto`; `propose` and `off` disable it. The Gateway converges the declaration at startup and config reload. Existing schedule anchors and explicit pauses are retained. Policy-disabled jobs resume when their policy becomes eligible again.
+
+Reviews use only the versioned `skill_workshop` tool to inspect, create, patch, archive, or restore learned skills. They do not execute skill instructions or run shell commands. The native cron runner retains model selection, fallback and run authority. Each candidate must support host-enforced tool restrictions; generic CLI execution without that capability is refused. A supported fallback keeps the job eligible. Unknown eligibility and stored model/runtime preferences are checked at execution. A known unsupported chain is disabled with `no-rooted-runtime`; a denied Workshop tool is disabled with `no-workshop-tools`. Inspect disabled jobs with `openclaw automations list --all`.
+
+An empty learned collection skips model dispatch; an unavailable library is reported as an error. Reviews wait for idle admission, yield to foreground work or Gateway drain, and have bounded context, output and time. Every write uses the native Workshop version and current run guard. This weekly collection pass is separate from daily unused-skill cleanup and skill dieting.
+
+Recognized declarations from the released Cellect fork (`skill-collection-review:<agentId>`) migrate in place, retaining their job ID, schedule, enabled intent, history, receipts and scratch. Unrecognized older `skillCollectionReview` payloads, changed declarations and duplicates remain quarantined for explicit repair; their stored data is retained and they cannot execute. The legacy declaration namespace remains reserved.
+
+Scheduled reviews require automations. When `cron.enabled` is `false` or `OPENCLAW_SKIP_CRON=1`, the Gateway logs a warning and does not run reviews. There is no separate weekly Gateway timer.
 
 ### Agent-turn options
 

@@ -495,6 +495,8 @@ export function createPluginRuntimeResolver(state: PluginRegistryState) {
                     };
                   });
               }),
+            listSessionKeys: (params) =>
+              runWithCurrentPluginScope(() => session.listSessionKeys(params)),
             createSessionEntry: async (params) => {
               const { createSessionEntry } = await loadSessionOwnership();
               return await runWithPluginScope(() => createSessionEntry(session, params));

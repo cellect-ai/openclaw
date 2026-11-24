@@ -5,10 +5,14 @@ import {
 import { uniqueValues } from "@openclaw/normalization-core/string-normalization";
 import { stripPlainTextToolCallBlocks } from "../../../packages/tool-call-repair/src/index.js";
 import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";
+import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
+import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
+import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { AgentRuntimeMessageActionContext } from "../../gateway/message-action-turn-capability.js";
 import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import { sourceDeliveryTargetsMatch } from "../../infra/outbound/source-delivery-plan.js";
 import { normalizeOptionalAccountId } from "../../routing/account-id.js";
+import { listAgentBoundAccountCandidates } from "../../routing/bound-account-read.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
 import { parseInlineDirectives } from "../../utils/directive-tags.js";
 import { INTERNAL_MESSAGE_CHANNEL, normalizeMessageChannel } from "../../utils/message-channel.js";
@@ -51,6 +55,45 @@ const SOURCE_REPLY_ONLY_ARG_NAMES = new Set([
   "channelId",
   "final",
 ]);
+
+/** Select credentials before secret redemption; Slack still owns workspace and target admission. */
+export function resolveMatrixSlackReadAccount(params: {
+  cfg: OpenClawConfig;
+  action: ChannelMessageActionName;
+  currentChannel?: string;
+  channel?: string;
+  agentId?: string;
+  requestedAccountId?: string;
+  directOperator?: boolean;
+}): string | undefined {
+  if (
+    params.directOperator ||
+    params.action !== "read" ||
+    normalizeMessageChannel(params.currentChannel) !== "matrix" ||
+    params.channel !== "slack"
+  ) {
+    return undefined;
+  }
+  const accounts = params.agentId
+    ? listAgentBoundAccountCandidates({
+        cfg: params.cfg,
+        channelId: "slack",
+        agentId: params.agentId,
+      })
+    : [];
+  const requested = normalizeOptionalAccountId(params.requestedAccountId);
+  if (requested && accounts.includes(requested)) return requested;
+  if (!requested && accounts.length === 1) return accounts[0];
+  throw new MessageActionDeniedError(
+    requested
+      ? "Slack read account is not bound to this agent."
+      : accounts.length > 1
+        ? "Slack read has multiple bound accounts; specify the authorized account."
+        : "Slack read requires a configured account binding for this agent.",
+    "message_account_binding_required",
+    "message-account:agent-binding",
+  );
+}
 
 export function enforceSourceReplyOnlyTextDirectives(args: Record<string, unknown>): void {
   // Preserve Markdown indentation when checking sanitizer-assembled reply/audio directives.

@@ -8,33 +8,32 @@ import type { ChannelMessageActionName } from "../../channels/plugins/types.publ
 import { resolveCommandSecretRefsViaGateway } from "../../cli/command-secret-gateway.js";
 import { getScopedChannelsCommandSecretTargets } from "../../cli/command-secret-targets.js";
 import { resolveMessageSecretScope } from "../../cli/message-secret-scope.js";
-import { getRuntimeConfig } from "../../config/config.js";
 import { composeSessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
 import * as messageActionTurnCapability from "../../gateway/message-action-turn-capability.js";
 import type { MessageActionAuthorization } from "../../gateway/message-action-turn-capability.js";
+import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
 import { resolveMessageChannelSelection } from "../../infra/outbound/channel-selection.js";
 import {
   resolveMessageBroadcastAccountPlan,
   validateExplicitMessageAccountSelection,
 } from "../../infra/outbound/message-account-selection.js";
 import type { MessageActionResult } from "../../infra/outbound/message-action-contracts.js";
+import { MessageActionDeniedError } from "../../infra/outbound/message-action-denial.js";
 import { projectGatewayQueuedDeliveryResult } from "../../infra/outbound/message-action-execution.js";
 import { hasAcceptedMessageActionResult } from "../../infra/outbound/message-action-result-acceptance.js";
+import { resolveTargetBoundAccountId } from "../../infra/outbound/message-action-routing.js";
 import { getToolResult, runMessageAction } from "../../infra/outbound/message-action-runner.js";
 import { enforceMessageActionAllowlist } from "../../infra/outbound/outbound-policy.js";
 import { isDeliveredCurrentSourceReplyAsync } from "../../infra/outbound/source-reply-mirror.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
-import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
-import { getPreparedMessageToolCatalog } from "../../plugins/prepared-message-tool-catalog.js";
-import { isCronSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
+import { listAgentBoundAccountCandidates } from "../../routing/bound-account-read.js";
+import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { normalizeMessageChannel } from "../../utils/message-channel.js";
-import { resolveSessionAgentId } from "../agent-scope.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import * as embeddedMessageDelivery from "../embedded-agent-message-delivery.js";
 import { resolveMessageToolSourceReplyFinal } from "../embedded-agent-message-tool-source-reply.js";
-import { createSandboxBridgeReadFile } from "../sandbox-media-paths.js";
 import { captureAgentWorkspaceReadiness } from "../workspace-readiness.js";
 import { type AnyAgentTool, jsonResult, readToolStringParam } from "./common.js";
 import { captureGatewayToolCallerAssertion } from "./gateway-caller-context.js";
@@ -46,25 +45,21 @@ import {
   buildMessageToolDescription,
   buildMessageToolSchema,
   type MessageToolDiscoveryParams,
-  resolveAgentAccountId,
-  resolveEffectiveCurrentChannelContext,
   resolveEffectiveCurrentChannelContextForRequest,
   resolveMessageToolActionSchemaActions,
   resolveMessageToolDiscoveryAsync,
-  resolveMessageToolDefinitionContext,
   prepareMessageToolSessionBinding,
   readMessageToolSessionEntry,
-  resolveMessageToolScheduledAccountScope,
-  supportsMessageToolPromptReactions,
 } from "./message-tool-discovery.js";
+import { prepareMessageToolExecution } from "./message-tool-execution-prepare.js";
 import type { MessageToolOptions } from "./message-tool-execution.types.js";
-import { createMessageToolExplicitTargetGuard } from "./message-tool-explicit-target.js";
 import { createMessageToolGateway } from "./message-tool-gateway.js";
 import { prepareMessageToolGroupThread } from "./message-tool-group-thread.js";
 import {
   buildMessageToolDeliveryFingerprint,
   normalizeMessageToolIdempotencyKeyPart,
 } from "./message-tool-idempotency.js";
+import { resolveMessageToolSandboxMediaAccess } from "./message-tool-sandbox-media.js";
 import {
   projectScheduledMessageActionPartialResult,
   shouldRevalidateCompletedMessageAction,
@@ -74,9 +69,8 @@ import {
   enforceSourceReplyOnlyMessageAction,
   enforceSourceReplyOnlyTextDirectives,
   enforceTrustedTurnExplicitAccount,
-  resolveSourceReplySinkDeliveryMode,
+  resolveMatrixSlackReadAccount,
 } from "./message-tool-source-policy.js";
-import { createMessageToolTurnAuthority } from "./message-tool-turn-authority.js";
 import {
   hasSanitizedSendPayloadContent,
   sanitizeMessageToolVisiblePayload,
@@ -119,78 +113,21 @@ function* createMessageToolSteps(
     options?.runSessionKey ?? options?.agentSessionKey,
   );
   let generatedIdempotencyCounter = 0;
-  const rawPollEchoSessionKey = options?.agentSessionKey?.trim() || undefined;
   const failedAutogeneratedIdempotencyKeys = new Map<string, string>();
-  const inferredCurrentChannel = resolveEffectiveCurrentChannelContext(options);
-  const definitionContext = resolveMessageToolDefinitionContext(options, sessionEntry);
-  const supportsPromptReactions = supportsMessageToolPromptReactions(options);
-  const preparedMessageToolCatalog =
-    options?.preparedMessageToolCatalog ?? getPreparedMessageToolCatalog();
-  const currentThreadTs =
-    options?.currentThreadTs ??
-    (options?.agentThreadId != null
-      ? stringifyRouteThreadId(options.agentThreadId)
-      : inferredCurrentChannel.currentThreadTs);
-  const replyToMode = options?.replyToMode ?? (currentThreadTs ? "all" : undefined);
-  const agentAccountId =
-    resolveAgentAccountId(options?.agentAccountId) ?? inferredCurrentChannel.accountId;
-  const sourceReplySinkDeliveryMode = resolveSourceReplySinkDeliveryMode(
-    inferredCurrentChannel.currentChannelProvider,
-    options?.sourceReplyDeliveryMode,
-  );
-  const resolvedAgentId =
-    options?.agentId ??
-    (options?.agentSessionKey
-      ? resolveSessionAgentId({ sessionKey: options.agentSessionKey, config: options.config })
-      : undefined);
-  const pollEchoSessionKey =
-    rawPollEchoSessionKey && resolvedAgentId && sourceReplySinkDeliveryMode === "message_tool_only"
-      ? `${resolvedAgentId}\0${rawPollEchoSessionKey}`
-      : undefined;
-  const turnAuthority = createMessageToolTurnAuthority({
-    token: options?.messageActionTurnCapability,
-    agentId: resolvedAgentId,
-    runId: options?.runId,
-    sessionKey: options?.agentSessionKey,
-    sessionId: options?.sessionId,
-    getConfig: () => options?.config ?? getRuntimeConfig(),
-    admitScheduledInvocation: options?.admitScheduledInvocation,
-  });
-  const messageToolDiscoveryParams: MessageToolDiscoveryParams | undefined = options?.config
-    ? {
-        cfg: options.config,
-        currentChatType: definitionContext.currentChatType,
-        currentChannelProvider: definitionContext.currentChannelProvider,
-        currentChannelId: definitionContext.currentChannelId,
-        currentThreadTs: definitionContext.currentThreadTs,
-        supportsPromptReactions,
-        currentAccountId:
-          definitionContext.accountId ??
-          (options.agentSessionKey ? undefined : options.agentAccountId),
-        isScheduledRun: isCronSessionKey(options.agentSessionKey),
-        scheduledAccountScope: resolveMessageToolScheduledAccountScope(
-          options.scheduledToolPolicy,
-          sessionEntry,
-        ),
-        sessionKey: options.agentSessionKey,
-        sessionId: options.sessionId,
-        agentId: resolvedAgentId,
-        preparedMessageToolCatalog,
-      }
-    : undefined;
-  // Model-supplied channel text is untrusted until routing resolves it. Early
-  // denials retain only the host-prepared source provider.
-  const decisionChannel = resolveTrustedDecisionChannel(
-    inferredCurrentChannel.currentChannelProvider,
+  const {
+    supportsPromptReactions,
     preparedMessageToolCatalog,
-  );
-  const explicitTargetGuard = options?.requireExplicitTarget
-    ? createMessageToolExplicitTargetGuard({
-        currentChannelProvider: inferredCurrentChannel.currentChannelProvider,
-        preparedMessageToolCatalog,
-        decisionChannel,
-      })
-    : undefined;
+    currentThreadTs,
+    replyToMode,
+    agentAccountId,
+    sourceReplySinkDeliveryMode,
+    resolvedAgentId,
+    pollEchoSessionKey,
+    turnAuthority,
+    messageToolDiscoveryParams,
+    decisionChannel,
+    explicitTargetGuard,
+  } = prepareMessageToolExecution(options, sessionEntry);
   // Schema and prompt must use the same snapshot; repeated discovery can drift
   // across plugin hooks while needlessly loading channel action metadata twice.
   const discovered = messageToolDiscoveryParams ? yield messageToolDiscoveryParams : undefined;
@@ -203,21 +140,7 @@ function* createMessageToolSteps(
     (supportsPromptReactions && (!actions || actions.includes("react"))
       ? " When the current WebChat prompt permits reactions, react with emoji (and optional remove:true) as the agent. Omit channel, target, and messageId. This stays local; use an explicit external channel and messageId for external reactions."
       : "");
-  const sandboxRoot = options?.sandboxRoot?.trim();
-  const sandboxWorkspaceMediaAccess =
-    sandboxRoot && options?.sandboxFsBridge && options.sandboxWorkspaceMediaReadAllowed === true
-      ? {
-          localRoots: [
-            sandboxRoot,
-            ...(options?.sandboxContainerWorkdir ? [options.sandboxContainerWorkdir] : []),
-            ...(options?.sandboxReadOnlyResourceMounts?.map((mount) => mount.containerPath) ?? []),
-          ],
-          readFile: createSandboxBridgeReadFile({
-            sandbox: { root: sandboxRoot, bridge: options.sandboxFsBridge },
-          }),
-          workspaceDir: sandboxRoot,
-        }
-      : undefined;
+  const sandboxWorkspaceMediaAccess = resolveMessageToolSandboxMediaAccess(options);
 
   return {
     label: "Message",
@@ -276,6 +199,7 @@ function* createMessageToolSteps(
         decisions.recordTurnCapabilityInactive();
         throw new Error("message action turn capability is no longer active");
       }
+      let assertDestinationAccountCurrent: (() => void) | undefined;
       const scheduled = messageActionAuthorization.scheduled;
       const assertActionCurrent = composeSessionSourceAssertion(
         [
@@ -288,6 +212,7 @@ function* createMessageToolSteps(
           turnAuthority.assertCurrent();
           assertSources();
           assertDashboardReadCurrent?.();
+          assertDestinationAccountCurrent?.();
         },
       );
       assertActionCurrent();
@@ -434,6 +359,78 @@ function* createMessageToolSteps(
         accountId: requestedAccountId,
         fallbackAccountId: scheduledAccountId ?? agentAccountId,
       });
+      const boundReadAccountId = decisions.runBoundary(() =>
+        resolveMatrixSlackReadAccount({
+          cfg: rawConfig,
+          action,
+          currentChannel: effectiveCurrentChannel.currentChannelProvider,
+          channel: scope.channel,
+          agentId: resolvedAgentId,
+          requestedAccountId: requestedAccountId ?? scheduledAccountId,
+          directOperator: options?.conversationReadOrigin === "direct-operator",
+        }),
+      );
+      if (boundReadAccountId) scope.accountId = boundReadAccountId;
+      if (
+        scope.channel &&
+        scope.channel !== normalizeMessageChannel(effectiveCurrentChannel.currentChannelProvider) &&
+        !scope.accountId &&
+        resolvedAgentId
+      ) {
+        // Use the outbound owner's destination binding for both secret scope
+        // and delivery, before resolving any provider credentials.
+        const destinationChannel = scope.channel;
+        const destinationAgent = resolvedAgentId;
+        scope.accountId = decisions.runBoundary(() => {
+          const accountId = resolveTargetBoundAccountId({
+            cfg: rawConfig,
+            channel: destinationChannel,
+            channelPlugin: resolveOutboundChannelPlugin({
+              cfg: rawConfig,
+              channel: destinationChannel,
+            }),
+            agentId: destinationAgent,
+            args: { ...params, to: params.target ?? params.to },
+          });
+          if (
+            !accountId &&
+            listAgentBoundAccountCandidates({
+              cfg: rawConfig,
+              channelId: destinationChannel,
+              agentId: destinationAgent,
+            }).length
+          ) {
+            throw new MessageActionDeniedError(
+              "No destination account binding matches the provider's current authenticated scope.",
+              "message_account_binding_required",
+              "message-account:agent-binding",
+            );
+          }
+          return accountId;
+        });
+        const selectedAccount = scope.accountId;
+        if (selectedAccount) {
+          assertDestinationAccountCurrent = () =>
+            decisions.runBoundary(() => {
+              const currentAccount = resolveTargetBoundAccountId({
+                cfg: rawConfig,
+                channel: destinationChannel,
+                channelPlugin: resolveOutboundChannelPlugin({
+                  cfg: rawConfig,
+                  channel: destinationChannel,
+                }),
+                agentId: destinationAgent,
+                args: { ...params, to: params.target ?? params.to },
+              });
+              if (currentAccount !== selectedAccount)
+                throw new MessageActionDeniedError(
+                  "The destination account's authenticated binding scope changed before delivery.",
+                  "message_account_binding_required",
+                  "message-account:agent-binding",
+                );
+            });
+        }
+      }
       // Broadcast execution only narrows on an explicit non-all channel. Target
       // prefixes cannot authorize fewer providers than the runner will execute.
       const unscopedExplicitBroadcast =
@@ -444,7 +441,7 @@ function* createMessageToolSteps(
         validateExplicitMessageAccountSelection({
           cfg: rawConfig,
           channel: unscopedExplicitBroadcast ? undefined : scope.channel,
-          accountId: requestedAccountId ?? scheduledAccountId,
+          accountId: requestedAccountId ?? boundReadAccountId ?? scheduledAccountId,
           checkResolvedAccount: false,
         }),
       );
@@ -487,7 +484,8 @@ function* createMessageToolSteps(
       ).resolvedConfig;
       assertActionCurrent();
 
-      const accountId = explicitAccountId ?? scheduledAccountId ?? agentAccountId;
+      const accountId =
+        explicitAccountId ?? boundReadAccountId ?? scheduledAccountId ?? scope.accountId;
       const pollVoteEchoRoute = resolvePollVoteEchoRoute({
         action,
         args: params,

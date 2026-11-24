@@ -588,6 +588,7 @@ function* createOpenClawToolsSteps(
     resolveSkillWorkshopToolConstructionBlock({
       sandboxed: options?.sandboxed,
       libraryAuthoring: options?.skillWorkshop?.libraryAuthoring,
+      workspaceAuthoring: options?.skillWorkshop?.workspaceAuthoring,
     }) || !resolvedConfig
       ? null
       : createConfiguredSkillWorkshopTool({
@@ -655,6 +656,7 @@ function* createOpenClawToolsSteps(
           config: sessionConfig,
           requesterAgentIdOverride: sessionAgentId,
           requesterRunId: options?.runId,
+          parentTurnMedia: options?.currentTurnMedia,
           workspaceDir: spawnWorkspaceDir,
         })
       : null,

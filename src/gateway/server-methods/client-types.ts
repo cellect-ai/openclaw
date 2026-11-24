@@ -46,6 +46,7 @@ export type GatewayClient = Pick<
   | "includeSessionMessageBodies"
   | "clientIp"
   | "pairedClientId"
+  | "allowedAgentIds"
   | "authenticatedUserId"
   | "authenticatedFactoryGitHubAccountId"
   | "authenticatedUserIsTailscaleProvider"

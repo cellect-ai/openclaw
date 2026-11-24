@@ -35,6 +35,7 @@ import {
   vi,
 } from "vitest";
 import { isMissingRegisteredMemoryToolsError } from "./config.js";
+import { registerRecallCacheCases } from "./index.cache.test-support.js";
 import { registerActiveMemoryDiagnosticTests } from "./index.diagnostics.test-support.js";
 import plugin from "./index.js";
 import { registerActiveMemoryProviderTests } from "./index.memory-provider.test-support.js";
@@ -49,13 +50,10 @@ import {
 } from "./index.transcript.test-support.js";
 import * as recallRun from "./recall-run.js";
 import {
-  buildCacheKey,
   buildCircuitBreakerKey,
-  getCachedResult,
   forgetActiveRecallRun,
   isCircuitBreakerOpen,
   resolveActiveRecallForRun,
-  setCachedResult,
 } from "./recall-state.js";
 import { readPartialAssistantText } from "./transcript-result.js";
 import * as transcriptWatch from "./transcript-watch.js";
@@ -1276,6 +1274,17 @@ describe("active-memory plugin", () => {
     }
     expect(api.runtime.config.mutateConfigFile).not.toHaveBeenCalled();
   });
+  it.each(["hook:fi-shadow:abc", "agent:main:hook:fi-shadow:abc"])(
+    "never recalls memory into a Fi shadow hook turn (%s)",
+    async (sessionKey) => {
+      const result = await runPromptBuild("what wings should i order?", { sessionKey });
+
+      expect(result).toBeUndefined();
+      expect(hoisted.getActiveMemorySearchManager).not.toHaveBeenCalled();
+      expect(runEmbeddedAgent).not.toHaveBeenCalled();
+      expect(hasInfoLine("active-memory: recall skipped reason=fi_shadow_session")).toBe(true);
+    },
+  );
 
   it("escalates retrospective Russian recall when recall mode is unset", async () => {
     const prompt = "Помнишь, что мы решили вчера?";
@@ -2805,54 +2814,7 @@ describe("active-memory plugin", () => {
     ).rejects.toMatchObject({ code: "ENOENT" });
   });
 
-  it("caps the active-memory cache size and evicts the oldest entries", () => {
-    const key = (index: number) =>
-      buildCacheKey({
-        agentId: "main",
-        sessionKey: "agent:main:cache-cap",
-        query: `cache pressure prompt ${index}`,
-        authorityFingerprint: "cache-authority",
-        recallToolNames: ["memory_search"],
-      });
-    for (let index = 0; index <= 1000; index += 1) {
-      setCachedResult(
-        key(index),
-        {
-          status: "ok",
-          elapsedMs: 1,
-          rawReply: `memory ${index}`,
-          summary: `memory ${index}`,
-        },
-        15_000,
-      );
-    }
-    expect(getCachedResult(key(0))).toBeUndefined();
-    expect(getCachedResult(key(1))).toMatchObject({ status: "ok", summary: "memory 1" });
-  });
-
-  it("partitions cached recall by turn authority and memory resource scope", () => {
-    const base = {
-      agentId: "main",
-      sessionKey: "agent:main:cache-scope",
-      query: "same prompt",
-      authorityFingerprint: "authority-a",
-      recallToolNames: ["memory_search"],
-      memorySlot: "memory-core",
-      activeProjectKeys: ["project-a"],
-      modelProviderId: "openai",
-      modelId: "gpt-5",
-    };
-    const original = buildCacheKey(base);
-    for (const scope of [
-      { authorityFingerprint: "authority-b" },
-      { activeProjectKeys: ["project-b"] },
-      { modelId: "gpt-5-mini" },
-      { recallToolNames: ["memory_get"] },
-      { resourceScope: "same-agent-private:sessions" },
-    ]) {
-      expect(buildCacheKey({ ...base, ...scope })).not.toBe(original);
-    }
-  });
+  registerRecallCacheCases();
 
   it("pauses failed cooldown probes and clears the streak after a completed recall", async () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
@@ -2911,5 +2873,3 @@ describe("active-memory plugin", () => {
     }
   });
 });
-
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

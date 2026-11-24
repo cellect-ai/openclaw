@@ -114,6 +114,7 @@ function createQueuedDelivery(
     queuePolicy: params.queuePolicy,
     requireUnknownSendReconciliation: params.requireUnknownSendReconciliation,
     retryAmbiguousFinalText: params.retryAmbiguousFinalText,
+    recoveryPolicy: params.recoveryPolicy,
     ...(params.initialProducerClaim ??
       (params.requiresProducerClaim === true ? { requiresProducerClaim: true } : {})),
     preparedBatch: projectPreparedOutboundBatchForStorage(preparedBatchFromLowLevelInput(params)),
@@ -401,6 +402,18 @@ function outboundDeliveryReader(mode: "pending" | "unfinished") {
 
 export const loadPendingDelivery = outboundDeliveryReader("pending");
 export const loadUnfinishedDelivery = outboundDeliveryReader("unfinished");
+
+/** Read the provider receipt retained for a stable delivery intent. */
+export const loadCompletedDeliveryReceipt = async (
+  id: string,
+  stateDir?: string,
+  context?: DeliveryQueueStateContext,
+): Promise<Readonly<{ platformMessageId: string }> | null> => {
+  return await executeDeliveryQueueOperation(context, stateDir, {
+    type: "deliveryQueue.completedReceipt",
+    input: { id },
+  });
+};
 
 /** Includes unfinished settlement in FIFO order across both executable formats. */
 export async function loadUnfinishedDeliveries(

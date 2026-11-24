@@ -61,6 +61,7 @@ const MAX_TRACKED_RUNS = 256;
 const viewedSkillsByRun = new Map<string, Set<string>>();
 
 export type SkillWorkshopToolOptions = {
+  workspaceAuthoring?: import("../../skills/workshop/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
   config: OpenClawConfig;
   agentId: string;
   sessionKey?: string;
@@ -80,6 +81,10 @@ function formatChange(verb: string, change: WorkshopChange): string {
 }
 
 export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyAgentTool {
+  const capability = options.workspaceAuthoring;
+  if (capability && capability.agentId !== options.agentId) {
+    throw new ToolInputError("Workshop authority belongs to another agent");
+  }
   let viewed = new Set<string>();
   if (options.runId) {
     viewed = viewedSkillsByRun.get(options.runId) ?? viewed;
@@ -100,7 +105,11 @@ export function createSkillWorkshopTool(options: SkillWorkshopToolOptions): AnyA
 
   const execute = async (params: Record<string, unknown>, signal?: AbortSignal) => {
     // Captured before any await; library writes recheck it under the skill lock.
-    const assertSourceCurrent = captureAgentToolSourceExecutionGuard(signal);
+    const assertSourceCurrent = composeSessionSourceAssertion(
+      [captureAgentToolSourceExecutionGuard(signal), capability?.assertCurrent],
+      (assertSource) => assertSource(),
+    );
+    assertSourceCurrent();
     const action = readToolStringParam(params, "action", { required: true });
     const ctx: WorkshopMutationContext = {
       ...baseCtx,

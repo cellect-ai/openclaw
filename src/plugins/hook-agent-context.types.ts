@@ -21,6 +21,45 @@ export type PluginHookToolAuthority = {
   assertActive(): void;
 };
 
+/** Original requester retained by the native owner of this exact resumed task. */
+export type PluginHookRequesterContinuation = Readonly<{
+  runId: string;
+  agentId: string;
+  sessionKey: string;
+  sessionId: string;
+  sourceTurnId: string;
+  /** Original native text event, retained only with the owning source task. */
+  chatId?: string;
+  eventId?: string;
+  channel: string;
+  senderId: string;
+  accountId?: string;
+  /** Checks current native task custody; identity fields alone grant nothing. */
+  assertCurrent: () => void;
+}>;
+
+/**
+ * Host-proven lineage of a spawned child run back to the admitted parent run that
+ * launched it, projected only to that exact child run and session. It proves
+ * lineage, never a person: the plugin that admitted the parent decides that.
+ */
+export type PluginHookSpawnedRequester = Readonly<{
+  parentRunId: string;
+  parentAgentId: string;
+  parentSessionKey: string;
+  parentSessionId?: string;
+  childRunId: string;
+  childAgentId: string;
+  childSessionKey: string;
+  childSessionId: string;
+  /** "parent" when the child's result returns only to its parent, never to a channel. */
+  completionTarget?: "parent";
+  /** Epoch ms after which the lineage grants nothing. */
+  expiresAt: number;
+  /** Rejects revoked, expired or drifted lineage; identity fields alone grant nothing. */
+  assertCurrent: () => void;
+}>;
+
 export type PluginHookAgentContext = PluginHookContextWindow & {
   runId?: string;
   jobId?: string;
@@ -52,6 +91,23 @@ export type PluginHookAgentContext = PluginHookContextWindow & {
   channelId?: string;
   /** Typed origin of the turn's user-role input when supplied by the producer. */
   inputProvenance?: InputProvenance;
+  /** Host-owned capability; absent for unbound operator or inter-session input. */
+  requesterContinuation?: PluginHookRequesterContinuation;
+  /** Host-owned lineage of a spawned child run; absent for every other run. */
+  spawnedFrom?: PluginHookSpawnedRequester;
+  /** Channel a spawned child's parent run arrived on, with or without lineage; grants nothing. */
+  spawnedFromChannel?: string;
+  /**
+   * Opaque Fi shadow-turn attestation of a `hook:fi-shadow:` cron run. Given
+   * to before_agent_reply only; Fi, not the gateway, verifies it.
+   */
+  hookRequesterAttestation?: string;
+  /** Host-owned source binding for a generic mail hook, including isolated cron projection. */
+  hookSourceLockCapability?: string;
+  hookMailWakeSessionKey?: string;
+  hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment the authenticated hook of this run named; host context only. */
+  hostHookFiEnvironment?: "dev" | "staging" | "prod";
   /** @deprecated Use `channelContext.sender` for channel-specific identities. */
   senderExternalId?: string;
   /** Channel-owned sender/chat details. Plugins may augment the nested interfaces. */

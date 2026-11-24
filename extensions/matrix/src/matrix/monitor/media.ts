@@ -4,6 +4,10 @@ import type { EncryptedFile, MatrixClient } from "../sdk.js";
 
 const MATRIX_MEDIA_DOWNLOAD_IDLE_TIMEOUT_MS = 30_000;
 
+export function resolveMatrixInboundMediaMaxBytes(mediaMaxMb = 20): number {
+  return Math.max(1, mediaMaxMb) * 1024 * 1024;
+}
+
 export async function downloadMatrixMedia(params: {
   client: MatrixClient;
   mxcUrl: string;

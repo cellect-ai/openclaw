@@ -19,6 +19,11 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import {
+  isPersonRunStopReason,
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../infra/run-stop-actor.js";
+import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
 } from "../plugins/runtime/gateway-request-scope.js";
@@ -77,6 +82,7 @@ import {
   resolveSessionSubscriptionKey,
   resolveSessionSubscriptionKeys,
 } from "./session-subscription-keys.js";
+import type { WebchatCompletionDeliveryState } from "./webchat-completion-delivery.js";
 
 export { resolveAgentRunExpiresAtMs, resolveChatRunExpiresAtMs } from "./chat-run-deadline.js";
 
@@ -111,13 +117,20 @@ export function resolveChatAbortStopReason(signal: AbortSignal): string {
     : (resolveAgentRunAbortLifecycleFields(signal).stopReason ?? "rpc");
 }
 
-export function createChatAbortSignalReason(stopReason: string | undefined): Error {
+export function createChatAbortSignalReason(
+  stopReason: string | undefined,
+  stopActor?: VerifiedRunStopActor,
+): Error {
   if (stopReason === "restart") {
     return createAgentRunRestartAbortError();
   }
   if (stopReason !== "timeout") {
     // Keep transport presentation separate from the typed lifecycle cause.
-    return Object.assign(createAgentRunDirectAbortError(), { gatewayStopReason: stopReason });
+    const userInitiated = isPersonRunStopReason(stopReason);
+    return Object.assign(
+      createAgentRunDirectAbortError(userInitiated, userInitiated ? stopActor : undefined),
+      { gatewayStopReason: stopReason },
+    );
   }
   const reason = new Error("chat run timed out");
   reason.name = "TimeoutError";
@@ -151,6 +164,7 @@ export function registerChatAbortController(params: {
   timeoutMs: number;
   ownerConnId?: string;
   ownerDeviceId?: string;
+  webchatCompletionDelivery?: WebchatCompletionDeliveryState;
   providerId?: string;
   authProviderId?: string;
   controlUiVisible?: boolean;
@@ -190,6 +204,7 @@ export function registerChatAbortController(params: {
   }
   const adapter: RpcSourceAdapter = {
     authority: params.authority,
+    webchatCompletionDelivery: params.webchatCompletionDelivery,
     requester: { connectionId: params.ownerConnId, deviceId: params.ownerDeviceId },
     lifecycleGeneration: params.lifecycleGeneration ?? getAgentEventLifecycleGeneration(),
     operationalRunInstance: params.operationalRunInstance,
@@ -374,6 +389,7 @@ export function abortChatRunById(
     runId: string;
     sessionKey: string;
     stopReason?: string;
+    stopActor?: VerifiedRunStopActor;
     diagnosticReason?: ChatAbortDiagnosticReason;
     onAbortPrepared?: () => (() => void) | void;
     onAbortCommitted?: () => void;
@@ -396,6 +412,10 @@ export function abortChatRunById(
   if (identity.sessionKey !== sessionKey) {
     return { aborted: false };
   }
+  const stopActor =
+    isPersonRunStopReason(stopReason) && matchesVerifiedRunStopActor(params.stopActor, identity)
+      ? Object.freeze({ ...params.stopActor })
+      : undefined;
   const executionStarted = isRpcSourceExecuting(active);
   const terminal = params.preserveTerminal
     ? undefined
@@ -415,6 +435,7 @@ export function abortChatRunById(
   const previousProjectSessionActive = getRpcSourceProjectSessionActive(active);
   const previous = {
     abortStopReason: active.adapter.abortStopReason,
+    stopActor: active.adapter.stopActor,
     abortDiagnosticReason: active.adapter.abortDiagnosticReason,
     projectSessionTerminalPending: active.adapter.projectSessionTerminalPending,
     projectSessionTerminalObservedAt: active.adapter.projectSessionTerminalObservedAt,
@@ -423,6 +444,7 @@ export function abortChatRunById(
   if (stopReason) {
     active.adapter.abortStopReason = stopReason;
   }
+  active.adapter.stopActor = stopActor;
   active.adapter.abortDiagnosticReason = params.diagnosticReason;
   // Reserve transcript settlement while this exact producer still has authority.
   let revokeAbortPreparation: (() => void) | undefined;
@@ -456,7 +478,7 @@ export function abortChatRunById(
       ? params.cancel()
       : requestRpcSourceCancellation(
           active,
-          createChatAbortSignalReason(stopReason),
+          createChatAbortSignalReason(stopReason, stopActor),
           params.assertCurrent,
         );
   } catch (error) {
@@ -541,6 +563,7 @@ export function abortChatRunById(
       status: "cancelled",
       aborted: true,
       stopReason,
+      ...(stopActor ? { stopActor } : {}),
       ...(active.adapter.toolErrorSummary
         ? { toolErrorSummary: active.adapter.toolErrorSummary }
         : {}),

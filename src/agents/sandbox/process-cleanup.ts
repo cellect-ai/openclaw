@@ -75,6 +75,7 @@ find_owned_pids() {
 const SANDBOX_REMOTE_TERMINATE_SCRIPT = String.raw`
 ${SANDBOX_REMOTE_FIND_OWNED_PIDS}
 owned="$(find_owned_pids "$1")"
+[ -n "$owned" ] || exit 0
 [ -z "$owned" ] || kill -TERM $owned 2>/dev/null || true
 sleep 1
 owned="$(find_owned_pids "$1")"

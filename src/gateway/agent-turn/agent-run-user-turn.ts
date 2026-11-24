@@ -56,6 +56,7 @@ import { gatewayClientSenderFields } from "../server-methods/gateway-client-iden
 import { resolveGatewayInputParticipant } from "../session-input-participant.js";
 import { readSessionSendDeliveryAdmission } from "../session-send-delivery.js";
 import { loadGatewaySessionEntryReadOnlyInWorker } from "../session-utils-store-worker.js";
+import type { ThreadContinuationGuard } from "../thread-continuation.js";
 import { formatForLog } from "../ws-log.js";
 import type { RestoredCronContinuation } from "./agent-handler-helpers.js";
 import type { RequesterSettleWakeReplay } from "./internal-facade.types.js";
@@ -147,6 +148,7 @@ export function recordAgentRunUserTurnParticipant(
 }
 
 export async function prepareAgentRunUserTurn(params: {
+  threadContinuationGuard?: ThreadContinuationGuard;
   assertCurrent: () => void;
   onUserTurnMediaPersisted: () => void;
   assertCompletionCurrent?: () => void;
@@ -389,6 +391,9 @@ export async function prepareAgentRunUserTurn(params: {
         agentId: params.activeSessionAgentId,
       });
       recorder = createUserTurnTranscriptRecorder({
+        assertOriginalInputCommit: params.threadContinuationGuard?.assertCurrent,
+        onOriginalInputCommitted: params.threadContinuationGuard?.onOriginalInputCommitted,
+        onPendingInputCommitted: params.threadContinuationGuard?.onPendingInputCommitted,
         trackInputCompletion: trackRequesterCompletion || peerDelivery !== undefined,
         pendingInputReplaySourceSessionKeys: settleWakeReplay?.sourceSessionKeys,
         input,

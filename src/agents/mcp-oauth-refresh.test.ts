@@ -18,6 +18,7 @@ const authMock = vi.hoisted(() => vi.fn());
 const FRESH_ACCESS = "test-token-placeholder";
 const ROTATED_ACCESS = "gateway-token";
 const ROTATED_TOKENS = {
+  issuer: "https://auth.example.com",
   access_token: ROTATED_ACCESS,
   refresh_token: "secret-token",
   token_type: "Bearer",

@@ -1,10 +1,6 @@
-/** Executes one isolated cron prompt with model fallback candidates. */
-import { resolveGroupToolPolicy } from "../../agents/agent-tools.policy.js";
 import { resolveCliBackendConfig } from "../../agents/cli-backends.js";
-import {
-  cliBackendAcceptsAuthProfileForwarding,
-  resolveCliExecutionAuthProfileId,
-} from "../../agents/cli-execution-auth.js";
+/** Executes one isolated cron prompt with model fallback candidates. */
+import { cliBackendAcceptsAuthProfileForwarding } from "../../agents/cli-execution-auth.js";
 import { resolveCliRuntimeToolsAllow } from "../../agents/cli-runner/tool-policy.js";
 import { settleCliSessionResult } from "../../agents/cli-session-store.js";
 import {
@@ -25,26 +21,29 @@ import {
   prepareModelRunCapabilities,
 } from "../../agents/model-catalog-lookup.js";
 import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
-import { resolveScheduledToolCallerContext } from "../../agents/scheduled-tool-policy.js";
-import { createUnrecordedScheduledAccountRefusal } from "../../agents/scheduled-unrecorded-account.js";
 import { withLocalSessionPlacementTurnSettlement } from "../../agents/session-placement-admission.js";
 import { resolveAgentLifecycleTerminalMetadata } from "../../auto-reply/reply/agent-lifecycle-terminal.js";
 import type { VerboseLevel } from "../../auto-reply/thinking.js";
-import type { CliSessionBinding } from "../../config/sessions.js";
+import { getRuntimeConfig } from "../../config/config.js";
 import { buildGenericCliContextEngineHostSupport } from "../../context-engine/host-compat.js";
-import { registerCronRunExecSource } from "../../infra/cron-run-exec-source.js";
 import {
   createUserTurnTranscriptRecorder,
   type UserTurnTranscriptRecorder,
 } from "../../sessions/user-turn-transcript.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
-import { resolveCronJobConfigRevision } from "../config-revision.js";
-import { resolveCronJobToolPolicyContext } from "../execution-context-admission.js";
+import {
+  assertWorkshopCollectionReviewCurrent,
+  isWorkshopCollectionReview,
+  prepareWorkshopCollectionCandidate,
+  workshopCollectionRunOptions,
+  WORKSHOP_COLLECTION_REVIEW_PROMPT,
+} from "../../skills/workshop/collection-review.js";
+import { captureSkillReviewBackground } from "../../skills/workshop/review-background.js";
+import { requiresLegacyHeartbeatExplicitReply } from "../legacy-heartbeat-reply-policy.js";
 import { prepareCronRunAdmission } from "../run-admission.js";
 import { prepareCronRunInference } from "../run-inference.js";
 import { resolveCronAuthenticatedChannelRequester } from "../tools-allow-provenance.js";
 import type { CronAgentExecutionPhaseUpdate } from "../types.js";
-import { isCommandStyleCronMessage } from "./command-style-prompt.js";
 import { resolveIsolatedCronPromptCacheKey } from "./prompt-cache-key.js";
 import {
   assertCronCandidateSandboxPlacement,
@@ -52,13 +51,12 @@ import {
   resolveCronSandboxPlacement,
   type CronSandboxPlacement,
 } from "./run-admission.js";
+import { assertShadowRunNotCli } from "./run-candidate-runtime.js";
 import {
   createCronCandidateExecutionResolver,
   createCronRuntimeOverrideResolver,
 } from "./run-candidate-runtime.js";
-import { finalizeCronPromptForResolvedTools } from "./run-delivery-trace.js";
 import {
-  getCliSessionBinding,
   resolveBootstrapWarningSignaturesSeen,
   resolveCronAgentLane,
   resolveFastModeState,
@@ -69,6 +67,13 @@ import {
   prepareCronModelResolveInput,
   resolveCronFallbacksOverride,
 } from "./run-fallback-policy.js";
+import {
+  resolveCliChildAbortSignal,
+  hasCliSessionReuseMetadata,
+  prepareCronCliSessionAuth,
+} from "./run-prompt-cli-auth.js";
+import { prepareCronPromptPolicy } from "./run-prompt-policy.js";
+import { registerCronPromptSources } from "./run-prompt-sources.js";
 import { setCronSessionAgentHarnessId, setCronSessionRuntimeModel } from "./run-session-state.js";
 import { resolveThinkingSelection } from "./run.runtime.js";
 import type { CronCompletedPromptRun } from "./run.types.js";
@@ -78,22 +83,6 @@ type CronEmbeddedRuntime = typeof import("./run-embedded.runtime.js");
 const cronEmbeddedRuntimeLoader = createLazyImportLoader<CronEmbeddedRuntime>(
   () => import("./run-embedded.runtime.js"),
 );
-
-// A CLI child in its parent's workspace runs native tools no tool check sees, so
-// its process also ends when the parent resets.
-function resolveCliChildAbortSignal(
-  runSignal: AbortSignal | undefined,
-  parentSignal: AbortSignal | undefined,
-): AbortSignal | undefined {
-  if (!parentSignal) {
-    return runSignal;
-  }
-  return runSignal ? AbortSignal.any([runSignal, parentSignal]) : parentSignal;
-}
-
-function hasCliSessionReuseMetadata(binding: CliSessionBinding): boolean {
-  return Object.entries(binding).some(([key, value]) => key !== "sessionId" && value !== undefined);
-}
 
 /** Creates the model-fallback executor for one isolated cron prompt run. */
 export function createCronPromptExecutor(
@@ -117,43 +106,13 @@ export function createCronPromptExecutor(
   let bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
     params.cronSession.sessionEntry.systemPromptReport,
   );
-  const bootstrapContextMode =
-    (params.agentPayload?.lightContext ??
-    isCommandStyleCronMessage(params.agentPayload?.message ?? ""))
-      ? "lightweight"
-      : undefined;
-  const scheduledToolPolicy = resolveCronJobToolPolicyContext(
-    params.job,
-    params.agentPayload?.toolsAllow,
-  );
   const { sourceDelivery, runId } = params;
-  const messageChannel = sourceDelivery.target.channel ?? params.resolvedDelivery.channel;
-  if (scheduledToolPolicy?.mode === "account") {
-    const callerContext = resolveScheduledToolCallerContext({ scheduledToolPolicy });
-    resolveGroupToolPolicy({
-      config: params.cfgWithAgentDefaults,
-      sessionKey: scheduledToolPolicy.ownerSessionKey,
-      messageProvider: callerContext.local ? messageChannel : (callerContext.channel ?? undefined),
-      accountId: scheduledToolPolicy.ownerAccountId,
-      requireConfiguredAccount: true,
-      senderPolicyMode: "never",
-    });
-  }
-  const finalizePromptForResolvedTools = ({
-    prompt,
-    messageToolAvailable,
-  }: {
-    prompt: string;
-    messageToolAvailable: boolean;
-  }) =>
-    finalizeCronPromptForResolvedTools({
-      prompt,
-      messageToolAvailable,
-      deliveryRequested: params.deliveryRequested,
-      resolvedDelivery: params.resolvedDelivery,
-      sourceDelivery,
-      messageToolFormatPrompt: params.messageToolFormatPrompt,
-    });
+  const {
+    bootstrapContextMode,
+    scheduledToolPolicy,
+    messageChannel,
+    finalizePromptForResolvedTools,
+  } = prepareCronPromptPolicy(params);
   let pendingUserTurn:
     | {
         promptText: string;
@@ -172,7 +131,29 @@ export function createCronPromptExecutor(
   // candidate (initial, fallback, override) reuses the same placement facts.
   let sandboxPlacement: CronSandboxPlacement | undefined;
 
+  const originalParams = params;
   return async (promptText: string, runStartedAt: number): Promise<CronCompletedPromptRun> => {
+    const collectionReview = isWorkshopCollectionReview(originalParams.job);
+    const collectionConfig = collectionReview ? getRuntimeConfig() : undefined;
+    using reviewBackground = collectionReview
+      ? captureSkillReviewBackground(
+          originalParams.cronSession.sessionEntry.sessionId,
+          originalParams.abortSignal,
+        )
+      : undefined;
+    const params = reviewBackground
+      ? { ...originalParams, abortSignal: reviewBackground.signal }
+      : originalParams;
+    const assertCollectionCurrent = () => {
+      if (!collectionReview) return;
+      reviewBackground?.assertCurrent();
+      if (getRuntimeConfig() !== collectionConfig)
+        throw new Error("Workshop review configuration changed");
+      assertWorkshopCollectionReviewCurrent(params.job, getRuntimeConfig(), params.agentId);
+    };
+    assertCollectionCurrent();
+    if (collectionReview) promptText = WORKSHOP_COLLECTION_REVIEW_PROMPT;
+
     using inferenceLease = new DisposableStack();
     const binding = params.job.inferenceBinding;
     const inference = await prepareCronRunInference({
@@ -221,8 +202,14 @@ export function createCronPromptExecutor(
       operatorAuthority: params.operatorAuthority,
       admissionSource: params.admissionSource,
       // A child running in its parent's workspace loses every effect once that parent resets.
-      ...(params.occurrence.childParent?.binding
-        ? { assertSourceCurrent: params.occurrence.childParent.assertCurrent }
+      ...(collectionReview || params.occurrence.childParent?.binding
+        ? {
+            assertSourceCurrent: () => {
+              params.occurrence.childParent?.binding &&
+                params.occurrence.childParent.assertCurrent();
+              assertCollectionCurrent();
+            },
+          }
         : {}),
       deliveryAttemptFence: params.deliveryAttemptFence,
       cfg: params.cfgWithAgentDefaults,
@@ -242,20 +229,7 @@ export function createCronPromptExecutor(
     // from session keys or run ids. Cleared when the run settles. A job whose
     // config cannot be canonicalized simply keeps standing grants inert; the
     // run itself must never fail for this diagnostic-side registration.
-    using cronRunExecSource = new DisposableStack();
-    try {
-      cronRunExecSource.defer(
-        registerCronRunExecSource(runId, {
-          agentId: params.agentId,
-          jobId: params.job.id,
-          jobConfigRevision: resolveCronJobConfigRevision(params.job),
-          jobName: params.job.name,
-          standingGrantAuthority: cronAdmission.standingGrantAuthority,
-        }),
-      );
-    } catch {
-      // Non-canonicalizable job config: no grant registration for this run.
-    }
+    using cronRunExecSource = registerCronPromptSources(params, runId, cronAdmission);
     const { modelResolve, currentChannelId } = await prepareCronModelResolveInput({
       ...params,
       trigger,
@@ -382,6 +356,14 @@ export function createCronPromptExecutor(
           agentRuntime: candidateRuntime,
         });
         inference?.assertCandidate(providerOverride, cliExecution, candidateRuntime);
+        const legacyHeartbeatExplicitOnly = requiresLegacyHeartbeatExplicitReply({
+          job: params.job,
+          config: params.cfgWithAgentDefaults,
+          chatType: params.resolvedDelivery.ok
+            ? params.resolvedDelivery.sessionRoute?.chatType
+            : undefined,
+          runtime: candidateRuntime,
+        });
         assertCronRuntimeAuthorityCandidate({
           authority: params.job.runtimeAuthority,
           candidateRuntime,
@@ -404,6 +386,21 @@ export function createCronPromptExecutor(
           cliExecution,
           executionProvider,
         });
+        if (collectionReview) {
+          await prepareWorkshopCollectionCandidate({
+            config: params.cfgWithAgentDefaults,
+            agentId: params.agentId,
+            provider: providerOverride,
+            model: modelOverride,
+            runtime: candidateRuntime,
+            cliExecution,
+            sessionKey: params.runSessionKey,
+            workspaceDir: params.workspaceDir,
+            sandboxed:
+              sandboxPlacement.sessionSandboxed || sandboxPlacement.sessionSandboxRequired === true,
+            assertCurrent: assertCollectionCurrent,
+          });
+        }
         // The validated candidate that admits detached work owns its continuation
         // even if the provider throws before returning result metadata.
         const modelChanged = setCronSessionRuntimeModel({
@@ -453,6 +450,11 @@ export function createCronPromptExecutor(
             // Embedded, Codex and CLI candidates share this one sender bit for the run;
             // the CLI loopback reads the same decision from the run's context.
             ...cronAdmission.scheduledSender,
+            ...((params.mailWakeSessionKey ||
+              params.agentSessionKey.toLowerCase().includes(":hook:fi-mail:")) &&
+            params.mailRequesterSenderId
+              ? { senderId: params.mailRequesterSenderId }
+              : {}),
             messageActionTurnCapability: cronAdmission.messageActionTurnCapability,
             config: params.cfgWithAgentDefaults,
             prompt: promptText,
@@ -473,7 +475,9 @@ export function createCronPromptExecutor(
             extraSystemPromptTurnContext: params.deliverySystemPrompt
               ? { start: 0, text: params.deliverySystemPrompt }
               : undefined,
-            sourceReplyDeliveryMode: sourceDelivery.sourceReplyDeliveryMode,
+            sourceReplyDeliveryMode: legacyHeartbeatExplicitOnly
+              ? "message_tool_only"
+              : sourceDelivery.sourceReplyDeliveryMode,
             requireExplicitMessageTarget: sourceDelivery.messageTool.requireExplicitTarget,
             messageToolFinalByDefault: sourceDelivery.messageTool.finalByDefault,
             scheduledToolPolicy,
@@ -524,45 +528,21 @@ export function createCronPromptExecutor(
               },
               async (assertSettlementCurrent) => {
                 const diagnosticOwner = deferredLifecycle.handoffToCli();
-                const cliSessionBinding = params.cronSession.isNewSession
-                  ? undefined
-                  : await getCliSessionBinding(params.cronSession.sessionEntry, executionProvider);
-                const resolveForwardedProfile = (
-                  selected: Parameters<typeof resolveCliExecutionAuthProfileId>[0]["selected"],
-                ) =>
-                  allowCliAuthProfileForwarding
-                    ? resolveCliExecutionAuthProfileId({
-                        cliExecutionProvider: executionProvider,
-                        authProfileProvider: providerOverride,
-                        config: params.cfgWithAgentDefaults,
-                        agentDir: params.agentDir,
-                        sessionBinding: cliSessionBinding,
-                        selected,
-                      })
-                    : Promise.resolve(undefined);
-                // A recorded account runs only when this backend forwards exactly that account.
-                const authProfileId = inference
-                  ? await inference.resolveCliAuthProfile(resolveForwardedProfile)
-                  : await resolveForwardedProfile(
-                      params.liveSelection.authProfileId
-                        ? {
-                            authProfileId: params.liveSelection.authProfileId,
-                            authProfileIdSource:
-                              params.liveSelection.authProfileIdSource === "user" ? "user" : "auto",
-                          }
-                        : undefined,
-                    );
-                if (trigger === "cron" && !binding && authProfileId) {
-                  throw createUnrecordedScheduledAccountRefusal({
-                    runtime: executionProvider,
-                    modelRef: `${providerOverride}/${modelOverride}`,
-                    profileId: authProfileId,
-                  });
-                }
+                const { cliSessionBinding, authProfileId } = await prepareCronCliSessionAuth({
+                  params,
+                  executionProvider,
+                  providerOverride,
+                  allowCliAuthProfileForwarding,
+                  inference,
+                  trigger,
+                  binding,
+                  modelOverride,
+                });
                 const guardedCliSessionBinding =
                   cliSessionBinding && hasCliSessionReuseMetadata(cliSessionBinding)
                     ? cliSessionBinding
                     : undefined;
+                assertShadowRunNotCli([params.runSessionKey, params.agentSessionKey], true);
                 const candidateResult = await runCliAgent({
                   ...buildCommonRunParams(),
                   // The CLI backend marks internal provenance as non-user input.
@@ -592,7 +572,12 @@ export function createCronPromptExecutor(
                   nativeAuthOnly: trigger === "cron" && !binding ? true : undefined,
                   cliSessionId: cliSessionBinding?.sessionId,
                   cliSessionBinding: guardedCliSessionBinding,
-                  cliSessionBindingFacts: params.cliSessionBindingFacts,
+                  cliSessionBindingFacts: legacyHeartbeatExplicitOnly
+                    ? {
+                        ...params.cliSessionBindingFacts,
+                        sourceReplyDeliveryMode: "message_tool_only",
+                      }
+                    : params.cliSessionBindingFacts,
                   toolsAllow: resolveCliRuntimeToolsAllow(params.agentPayload?.toolsAllow),
                   abortSignal: cliAbortSignal,
                 });
@@ -696,11 +681,17 @@ export function createCronPromptExecutor(
           deferTerminalLifecycle: true,
           onAgentEvent: params.lifecycle.note,
           disableMessageTool: !sourceDelivery.messageTool.enabled,
+          sourceReplyDeliveryMode: legacyHeartbeatExplicitOnly
+            ? "message_tool_only"
+            : sourceDelivery.sourceReplyDeliveryMode,
           forceMessageTool: sourceDelivery.messageTool.force,
           allowTransientCooldownProbe: runOptions.allowTransientCooldownProbe,
           assistantErrorTranscript: runOptions.assistantErrorTranscript,
           abortSignal: params.abortSignal,
           onLaneWait: params.onLaneWait,
+          ...(collectionReview
+            ? workshopCollectionRunOptions(params.runSessionKey, params.timeoutMs)
+            : {}),
         });
         bootstrapPromptWarningSignaturesSeen = resolveBootstrapWarningSignaturesSeen(
           result.meta?.systemPromptReport,

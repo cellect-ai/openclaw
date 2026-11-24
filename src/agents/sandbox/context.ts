@@ -1,4 +1,6 @@
 import fs from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
+import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { observeDiagnosticsTimelinePhases } from "../../infra/diagnostics-timeline.js";
@@ -47,12 +49,19 @@ import {
   resolveSandboxRuntimeStatusAsync,
   withSandboxRuntimeStatusInWorker,
 } from "./runtime-status.js";
-import { assertSshSandboxSecretOwnerAvailable } from "./secret-owner.js";
+import {
+  type ResolvedSandboxSession,
+  assertSandboxSessionSecretOwnerAvailable,
+} from "./session-secret-owner.js";
 import { resolveSandboxSession } from "./session-selection.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
 import { captureSandboxStateOwner, SandboxStateOwnerRequiredError } from "./state-owner.js";
 import { bindStreamSandboxContext } from "./stream-context.js";
-import type { SandboxContext, SandboxWorkspaceInfo } from "./types.js";
+import {
+  SANDBOX_DEFAULT_TOOL_ALLOW,
+  type SandboxContext,
+  type SandboxWorkspaceInfo,
+} from "./types.js";
 import { ensureReadOnlyWorkspaceSkillMountSources } from "./workspace-mounts.js";
 
 const sandboxLog = createSubsystemLogger("agent/sandbox");
@@ -212,24 +221,6 @@ type ResolveSandboxContextParams = {
   /** Classification already prepared for this session's workspace setup. */
   preparedRuntimeStatus?: ReturnType<typeof resolveSandboxRuntimeStatus>;
 };
-
-type ResolvedSandboxSession = NonNullable<Awaited<ReturnType<typeof resolveSandboxSession>>>;
-
-function assertSandboxSessionSecretOwnerAvailable(
-  config: OpenClawConfig | undefined,
-  resolved: ResolvedSandboxSession,
-): void {
-  if (resolved.cfg.backend !== "ssh") {
-    return;
-  }
-  // Never let an unresolved inline SSH credential silently fall through to
-  // ambient host SSH identities for this agent.
-  assertSshSandboxSecretOwnerAvailable({
-    config,
-    scope: resolved.cfg.scope,
-    agentId: resolved.runtime.agentId,
-  });
-}
 
 async function prepareSandboxWorkspaceSelection(
   params: ResolveSandboxContextParams,
@@ -420,6 +411,14 @@ async function resolveSandboxContextWithAuthority(
             workspaceDir,
           });
           const resolvedCfg = docker === cfg.docker ? cfg : { ...cfg, docker };
+          if (
+            cfg.docker.readOnlyBindRollovers?.length &&
+            (cfg.backend !== "docker" || cfg.browser.enabled)
+          ) {
+            throw new Error(
+              "Read-only resource rollover requires the Docker execution backend with browser sandboxing disabled",
+            );
+          }
           const executionCfg = githubIdentity
             ? {
                 ...resolvedCfg,
@@ -460,6 +459,34 @@ async function resolveSandboxContextWithAuthority(
             (readOnlyResourceMounts ??= []).push(githubMount);
           }
 
+          const admittedConfig = resolveSandboxConfigForAgent(ownedParams.config, runtime.agentId);
+          // structuredClone omits symbol keys. Capture the default-allow provenance in
+          // the same graph so its alias to the allowlist survives, then restore the
+          // in-process marker before comparing complete resolved policies.
+          const admittedSnapshot = structuredClone({
+            config: admittedConfig,
+            defaultToolAllow: admittedConfig.tools[SANDBOX_DEFAULT_TOOL_ALLOW],
+          });
+          const admittedSandboxConfig = admittedSnapshot.config;
+          if (Object.hasOwn(admittedConfig.tools, SANDBOX_DEFAULT_TOOL_ALLOW)) {
+            admittedSandboxConfig.tools[SANDBOX_DEFAULT_TOOL_ALLOW] =
+              admittedSnapshot.defaultToolAllow;
+          }
+          const assertProvisionCurrent = () => {
+            if (!executionCfg.docker.readOnlyBindRollovers?.length) return;
+            const current = getRuntimeConfigSnapshot();
+            if (
+              current &&
+              !isDeepStrictEqual(
+                admittedSandboxConfig,
+                resolveSandboxConfigForAgent(current, runtime.agentId),
+              )
+            ) {
+              throw new Error(
+                "Sandbox configuration changed during generation admission; retry using the current configuration",
+              );
+            }
+          };
           const provisionBackend = () => {
             ownedParams.assertCurrent?.();
             return createSandboxBackend(
@@ -476,6 +503,7 @@ async function resolveSandboxContextWithAuthority(
                   ownedParams.assertCurrent?.();
                   localWorkspace?.assertCurrent();
                 },
+                assertProvisionCurrent,
                 agentWorkspaceDir,
                 skillsWorkspaceDir,
                 readOnlyResourceMounts,

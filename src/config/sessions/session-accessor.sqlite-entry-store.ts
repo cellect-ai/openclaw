@@ -12,6 +12,7 @@ import {
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { isInternalSessionEffectsKey } from "./internal-session-key.js";
+import { assertNoPendingFinalProjectionDebt } from "./pending-final-delivery-receipt.js";
 import { conversationPublication } from "./session-accessor.sqlite-conversation-publication.js";
 import { commitSqliteSessionDeletion } from "./session-accessor.sqlite-deletion.js";
 import { publishSessionEntryCacheInvalidation } from "./session-accessor.sqlite-entry-cache.js";
@@ -93,6 +94,7 @@ export function deleteSessionEntryRows(
   const previousEntry =
     options.validatedEntry ?? readExactSessionEntryRow(database, sessionKey)?.entry;
   if (previousEntry) {
+    assertNoPendingFinalProjectionDebt(previousEntry);
     commitSqliteSessionDeletion(sessionKey, previousEntry);
   }
   const db = getSessionKysely(database.db);

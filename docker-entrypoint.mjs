@@ -1,5 +1,5 @@
 // Image activation owns unattended retained-volume repair; ordinary CLI startup only admits state.
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -68,6 +68,21 @@ function gatewayInvocation(program) {
   });
   // Reset owns deletion before initialization; do not migrate state it will discard.
   return options && !options.commandOptions.includes("--reset") ? options : undefined;
+}
+
+// The image names a seed that distrusts compromised CAs in $HOME/.pki/nssdb for
+// the runtime user; a retained HOME volume never receives the image's copy.
+// Headless-shell does not load the managed policy: failed seeding must stop
+// activation before the original wrapper can start an unprotected runtime.
+const nssSeed = process.env.OPENCLAW_NSS_DISTRUST_SEED;
+if (nssSeed) {
+  const seeded = spawnSync(nssSeed, [], { stdio: "inherit" });
+  if (seeded.status !== 0) {
+    console.error(
+      `OPENCLAW_NSS_SEED_FAILED: ${nssSeed} ${seeded.error?.message ?? `exited ${seeded.status ?? seeded.signal}`}`,
+    );
+    process.exit(78);
+  }
 }
 
 // Doctor owns this marker: it skips its full pre-repair capture while the marker

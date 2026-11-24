@@ -6,6 +6,7 @@ import {
   resolveThreadBindingFarewellText,
   type SessionBindingAdapterV2,
 } from "openclaw/plugin-sdk/thread-bindings-session-runtime";
+import { parseProjectionBindingMetadata } from "./projection-source.js";
 import type { MatrixClient } from "./sdk.js";
 import { sendMessageMatrix } from "./send.js";
 import {
@@ -15,6 +16,12 @@ import {
   type MatrixThreadBindingManagerV2,
   type MatrixThreadBindingRecord,
 } from "./thread-bindings-shared.js";
+
+function normalizeBindingTimeoutOverride(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.max(0, Math.floor(value))
+    : undefined;
+}
 
 export function sameBindingIncarnation(a: MatrixThreadBindingRecord, b: MatrixThreadBindingRecord) {
   return (
@@ -29,6 +36,9 @@ function buildMatrixBindingIntroText(params: {
   metadata?: Record<string, unknown>;
   targetSessionKey: string;
 }): string {
+  if (params.metadata?.introText === false) {
+    return "";
+  }
   const introText = normalizeOptionalString(params.metadata?.introText);
   if (introText) {
     return introText;
@@ -85,6 +95,12 @@ export function createMatrixSessionBindingAdapter(
 ) {
   const { removeBindingsAsync, touchBindingAsync } = manager;
   const sendFarewellMessage = async (record: MatrixThreadBindingRecord, reason?: string) => {
+    if (
+      reason === "projection-history-rebased" &&
+      record.boundBy === "session-projection-read-only"
+    ) {
+      return;
+    }
     const roomId = record.parentConversationId ?? record.conversationId;
     const idleTimeoutMs =
       typeof record.idleTimeoutMs === "number" ? record.idleTimeoutMs : defaults.idleTimeoutMs;
@@ -193,10 +209,12 @@ export function createMatrixSessionBindingAdapter(
           resolveSessionAgentIdStrict({ config: params.cfg, sessionKey: targetSessionKey }),
         label: normalizeOptionalString(input.metadata?.label) || undefined,
         boundBy: normalizeOptionalString(input.metadata?.boundBy) || "system",
+        ...parseProjectionBindingMetadata(input.metadata),
         boundAt: now,
         lastActivityAt: now,
-        idleTimeoutMs: defaults.idleTimeoutMs,
-        maxAgeMs: defaults.maxAgeMs,
+        idleTimeoutMs:
+          normalizeBindingTimeoutOverride(input.metadata?.idleTimeoutMs) ?? defaults.idleTimeoutMs,
+        maxAgeMs: normalizeBindingTimeoutOverride(input.metadata?.maxAgeMs) ?? defaults.maxAgeMs,
       };
       await mutateBindings(
         (current) => [

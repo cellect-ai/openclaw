@@ -1,0 +1,13 @@
+{
+  "repo": "cellect-threads",
+  "commit": "5c47417d6b8f70654b081cdf834cc33327744c44",
+  "dir": "kit/fixtures",
+  "note": "The two files under sha256 are vendored unchanged from that commit. Refresh by copying them and updating this record; the test compares the checksums and, when CELLECT_THREADS_DIR is set, the files in that checkout.",
+  "sha256": {
+    "conversation-lifecycle-signals-v2.json": "ab68e2b3769a25913aa68680cd30fa01c9b7d1f8d049eec5aef3ba72e1ac1854",
+    "decision-card-v1.json": "8fe239d5df5cddef96e0fea8d5559379922c327835360bd3fb17b6b9037f6908"
+  },
+  "recordedHere": {
+    "gateway-emitted-lifecycle-v2.json": "Written by conversation-lifecycle.signals.test.ts (UPDATE_GATEWAY_EMITTED_FIXTURE=1) and copied to cellect-threads kit/fixtures, where the kit and the projector read it. Keep the two byte-identical."
+  }
+}

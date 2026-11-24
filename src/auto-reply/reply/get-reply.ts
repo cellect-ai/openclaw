@@ -22,7 +22,6 @@ import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecy
 import { resolveSessionModelOverrideSource } from "../../config/sessions/model-override-provenance.js";
 import { logVerbose } from "../../globals.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
-import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { ApplyMediaUnderstandingResult } from "../../media-understanding/apply.js";
@@ -88,6 +87,8 @@ import {
   resolveReplyOperationRunState,
 } from "./reply-operation-run-state.js";
 import { assertReplyPreprocessingActive } from "./reply-preprocessing-abort.js";
+import { createReplyPhaseTracer } from "./reply-resolver-phase.js";
+import { logReplyResolverTiming } from "./reply-resolver-timing.js";
 import { prepareReplySourceInput, retireUnadoptedReplySource } from "./reply-source-binding.js";
 import { createReplyTimingTracker, isReplyProfilerEnabled } from "./reply-timing-tracker.js";
 import { prepareReplyWorkspace } from "./reply-workspace.js";
@@ -199,28 +200,19 @@ async function resolveReplyFromConfig(
     const messageId = finalized.MessageSid ?? finalized.MessageSidFirst ?? finalized.MessageSidLast;
     let resolverTimingSessionKey = agentSessionKey;
     const logResolverTiming = (outcome: string, reason?: string, error?: string) =>
-      resolverTiming.logIfSlow({
-        message: `reply resolver timings surface=${traceAttributes.surface} messageId=${
-          messageId ?? "unknown"
-        } sessionKey=${resolverTimingSessionKey ?? "unknown"} agentId=${agentId}`,
-        outcome,
-        reason,
-        error,
-        details: {
+      logReplyResolverTiming(
+        resolverTiming,
+        {
           surface: traceAttributes.surface,
           messageId,
           sessionKey: resolverTimingSessionKey,
           agentId,
         },
-      });
-    const traceGetReplyPhase = <T>(name: string, run: () => Promise<T> | T): Promise<T> =>
-      resolverTiming.measure(name, () =>
-        measureDiagnosticsTimelineSpan(name, run, {
-          phase: "agent-turn",
-          config: cfg,
-          attributes: traceAttributes,
-        }),
+        outcome,
+        reason,
+        error,
       );
+    const traceGetReplyPhase = createReplyPhaseTracer(resolverTiming, cfg, traceAttributes);
     const mergedSkillFilter = resolverTiming.measureSync("reply.resolve_skill_filter", () =>
       mergeSkillFilters(opts?.skillFilter, resolveAgentSkillsFilter(cfg, agentId)),
     );
@@ -254,21 +246,18 @@ async function resolveReplyFromConfig(
     let hasResolvedTurnModelOverride = turnModelOverride !== undefined;
     let turnAuthProfile = turnModelOverride?.authProfile;
 
-    const { workspaceDirRaw, workspaceDirForNativeCommand, agentDir, timeoutMs } =
-      resolverTiming.measureSync("reply.resolve_workspace_agent_dir", () => {
+    const { workspaceDirRaw, workspaceDirForNativeCommand, agentDir } = resolverTiming.measureSync(
+      "reply.resolve_workspace_agent_dir",
+      () => {
         const workspaceDirRawLocal =
           resolveAgentWorkspaceDir(cfg, agentId) ?? DEFAULT_AGENT_WORKSPACE_DIR;
         return {
           workspaceDirRaw: workspaceDirRawLocal,
           workspaceDirForNativeCommand: preparedWorkspaceDir ?? workspaceDirRawLocal,
           agentDir: preparedAgentDir ?? resolveAgentDir(cfg, agentId),
-          timeoutMs: resolveAgentTimeoutMs({
-            cfg,
-            overrideSeconds: opts?.timeoutOverrideSeconds,
-            overrideMs: opts?.timeoutOverrideMs,
-          }),
         };
-      });
+      },
+    );
     const typing = resolverTiming.measureSync("reply.create_typing_controller", () => {
       const typingIntervalSeconds = agentCfg?.typingIntervalSeconds ?? 6;
       const controller = createTypingController({
@@ -528,6 +517,12 @@ async function resolveReplyFromConfig(
       triggerBodyNormalized,
       bodyStripped,
     } = sessionState;
+    const timeoutMs = resolveAgentTimeoutMs({
+      cfg,
+      sessionSeconds: sessionEntry.timeoutSeconds,
+      overrideSeconds: opts?.timeoutOverrideSeconds,
+      overrideMs: opts?.timeoutOverrideMs,
+    });
     const replySession = { sessionEntry, sessionStore, sessionKey, storePath };
     const replyContext = { ...workspaceContext, ...replySession };
     const sessionModelSelectionLocked = isModelSelectionLocked(sessionEntry);
@@ -995,4 +990,3 @@ async function resolveReplyFromConfig(
     }
   }
 }
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

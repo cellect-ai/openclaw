@@ -169,3 +169,33 @@ describe("skill_workshop", () => {
     expect(result).not.toContain("- staging-deploy:");
   });
 });
+
+it("rejects revoked host workspace authoring without changing the skill", async () => {
+  let current = true;
+  const tool = workshop({
+    workspaceAuthoring: {
+      agentId: "main",
+      bind: () => {},
+      assertCurrent: () => {
+        if (!current) throw new Error("caller revoked");
+      },
+    },
+  });
+  await tool("view");
+  current = false;
+  await expect(tool("patch", patch)).rejects.toThrow("caller revoked");
+  expect(await workshop()("view")).toContain("make deploy");
+  expect(await listWorkshopChanges("main", {})).toHaveLength(1);
+});
+
+it("rejects workspace authoring for another agent", () => {
+  expect(() =>
+    workshop({
+      workspaceAuthoring: {
+        agentId: "other",
+        bind: () => {},
+        assertCurrent: () => {},
+      },
+    }),
+  ).toThrow("Workshop authority belongs to another agent");
+});

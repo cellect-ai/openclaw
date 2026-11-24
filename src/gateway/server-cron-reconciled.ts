@@ -1,5 +1,6 @@
 // Suppresses stale scheduler completions across reload and shutdown boundaries.
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { reconcileWorkshopCollectionReviews } from "../cron/workshop-collection-review.js";
 import type {
   PluginHookCronReconciledContext,
   PluginHookCronReconciledEvent,
@@ -82,6 +83,29 @@ export function createGatewayCronReconciliation(params: {
           if (params.isClosing() || abortController.signal.aborted) {
             return;
           }
+          const reviewIsCurrent = () =>
+            !params.isClosing() &&
+            !abortController.signal.aborted &&
+            cleanupConfig === params.getConfig();
+          if (!reviewIsCurrent()) return;
+          try {
+            await reconcileWorkshopCollectionReviews({
+              cron: service,
+              cfg: cleanupConfig,
+              enabled: cronState.cronEnabled,
+              logger: params.logger,
+              isCurrent: () =>
+                !params.isClosing() &&
+                !abortController.signal.aborted &&
+                cleanupConfig === params.getConfig(),
+            });
+          } catch (error) {
+            if (!reviewIsCurrent()) return;
+            params.logger.warn(
+              `Weekly Workshop reconciliation failed: ${error instanceof Error ? error.message : String(error)}`,
+            );
+          }
+          if (params.isClosing() || abortController.signal.aborted) return;
           await params.runHook(event, {
             port: params.port,
             config,

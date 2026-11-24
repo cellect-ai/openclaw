@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import {
+  isNoiseOnlyVoiceTranscript,
   buildPersistedVoiceMessage,
   VoiceTranscriptOperationRegistry,
   VOICE_TRANSCRIPT_QUEUE_POLICY,
@@ -27,6 +28,27 @@ describe("persisted speech presentation", () => {
       });
     },
   );
+});
+
+it("recognizes only provider-only noise annotations, preserving meaningful speech", () => {
+  for (const text of [
+    "[noise] ...",
+    " [SILENCE] ",
+    "[background noise]…[no speech]",
+    "[blank_audio]",
+  ]) {
+    expect(isNoiseOnlyVoiceTranscript(text)).toBe(true);
+  }
+  for (const text of [
+    "noise",
+    "",
+    "...",
+    "Explain [noise]",
+    "[noise] check the email",
+    "Don't send [noise].",
+  ]) {
+    expect(isNoiseOnlyVoiceTranscript(text)).toBe(false);
+  }
 });
 
 describe("VoiceTranscriptOperationRegistry", () => {

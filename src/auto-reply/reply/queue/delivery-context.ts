@@ -108,6 +108,9 @@ export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
     run.originatingReplyToMode ?? "",
     normalizeChatType(run.originatingChatType) ?? "",
     resolveFollowupAuthorizationKey(run),
+    run.expectedQuestionId
+      ? [run.expectedQuestionId, run.messageId ?? run.sourceTurnId ?? ""]
+      : null,
     run.turnAdoptionLifecycle?.ownerKey ?? "",
     normalizeOptionalString(execution.runtimePolicySessionKey ?? execution.sessionKey) ?? "",
     execution.provider,
@@ -355,6 +358,7 @@ export function collectRuntimeMetadata(items: FollowupRun[], abortSignal?: Abort
         ? true
         : undefined,
     currentInboundEventKind: currentTurnSource?.currentInboundEventKind,
+    expectedQuestionId: authoritySource?.expectedQuestionId,
     currentInboundAudio: currentTurnSource?.currentInboundAudio,
     currentInboundContext: collectCurrentInboundContext(items),
     explicitSkillSelections:
@@ -418,6 +422,7 @@ export function createOverflowSummaryRetrySource(source: InternalFollowupRun): I
     sourceTurnId: source.sourceTurnId,
     createChannelCronAuthority: source.createChannelCronAuthority,
     readAdmissionConfig: source.readAdmissionConfig,
+    expectedQuestionId: source.expectedQuestionId,
     admissionSessionId: source.admissionSessionId,
     operatorAuthority: source.operatorAuthority,
     personalBootstrapEligible: source.personalBootstrapEligible,

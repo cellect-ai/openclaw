@@ -3,6 +3,7 @@ import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-i
 import type { ChannelIngressMonitorLifecycle } from "openclaw/plugin-sdk/channel-outbound";
 import { describe, expect, it, vi } from "vitest";
 import { matrixSyncResponse, useSyncStoreFixture } from "../client/sync-store.test-support.js";
+import { MatrixAdmissionRefusedError } from "../projection-execution.js";
 import { MatrixClient, type MatrixRawEvent } from "../sdk.js";
 import { createMatrixCryptoFacade } from "../sdk/crypto-facade.js";
 import { matrixEventToRaw } from "../sdk/event-helpers.js";
@@ -10,7 +11,7 @@ import { MatrixRecoveryKeyStore } from "../sdk/recovery-key-store.js";
 import { MatrixVerificationManager } from "../sdk/verification-manager.js";
 import { createMatrixIngressMonitor } from "./ingress.js";
 
-type IngressPayload = { version: 1; roomId: string; event: MatrixRawEvent };
+type IngressPayload = { version: 1; rawEvent: string };
 const roomId = "!room:example.org";
 const createClient = () => new MatrixClient("https://example.org", "synthetic-token");
 const encryptedEvent = (event_id: string, origin_server_ts: number) =>
@@ -50,7 +51,13 @@ describe("Matrix sync admission", () => {
         "!left:example.org": {
           state: { events: [] },
           timeline: {
-            events: [{ ...event, event_id: "$left", type: "m.room.message" }],
+            events: [
+              {
+                ...event,
+                event_id: JSON.stringify(["!left:example.org", "$left"]),
+                type: "m.room.message",
+              },
+            ],
             prev_batch: "left-previous",
           },
           account_data: { events: [] },
@@ -60,14 +67,17 @@ describe("Matrix sync admission", () => {
       await monitor.admitSync(sync, { hasSavedSync: true });
       expect(await queue.listPending()).toMatchObject([
         {
-          id: "$ciphertext",
-          laneKey: `room:${roomId}`,
-          payload: { version: 1, roomId, event: { ...event, room_id: roomId } },
+          id: JSON.stringify([roomId, "$ciphertext"]),
+          laneKey: roomId,
+          payload: {
+            version: 1,
+            rawEvent: JSON.stringify({ roomId, event: { ...event, room_id: roomId } }),
+          },
         },
         {
           id: "$left",
-          laneKey: "room:!left:example.org",
-          payload: { event: { event_id: "$left" } },
+          laneKey: "!left:example.org",
+          payload: { rawEvent: expect.stringContaining("$left") },
         },
       ]);
     } finally {
@@ -110,7 +120,11 @@ describe("Matrix sync admission", () => {
       expect(dispatch).not.toHaveBeenCalled();
       expect(await queue.listClaims()).toEqual([]);
       expect(await queue.listPending()).toMatchObject([
-        { id: event.event_id, payload: { event }, attempts: 1 },
+        {
+          id: JSON.stringify([roomId, event.event_id]),
+          payload: { rawEvent: expect.stringContaining(event.event_id!) },
+          attempts: 1,
+        },
       ]);
     } finally {
       await first.stop();
@@ -176,7 +190,9 @@ describe("Matrix sync admission", () => {
       await first.admitSync(sync, { hasSavedSync: true });
       await first.stop();
       if (headState === "claimed") {
-        await queue.claim("$a-second", { ownerId: "2147483647:0:dead-worker" });
+        await queue.claim(JSON.stringify([roomId, "$a-second"]), {
+          ownerId: "2147483647:0:dead-worker",
+        });
       }
 
       const restarted = createMatrixIngressMonitor(params);
@@ -193,4 +209,75 @@ describe("Matrix sync admission", () => {
       }
     },
   );
+  it("ignores protocol receipts and fails noncanonical work once without blocking its lane", async () => {
+    const queue = createQueue();
+    const client = createClient();
+    const dispatched: string[] = [];
+    const dispatch = vi.fn(
+      async (_room: string, event: MatrixRawEvent, lifecycle: ChannelIngressMonitorLifecycle) => {
+        dispatched.push(event.event_id!);
+        if (event.event_id === "$wrong-thread") {
+          throw new MatrixAdmissionRefusedError("thread_not_canonical");
+        }
+        await lifecycle.onAdopted();
+      },
+    );
+    const monitor = createMatrixIngressMonitor({
+      accountId: "default",
+      client,
+      startupMs: 0,
+      queue,
+      dispatch,
+    });
+    const message = {
+      ...encryptedEvent("$wrong-thread", Date.now()),
+      type: "m.room.message",
+      content: { msgtype: "m.text", body: "synthetic" },
+    };
+    const sync = matrixSyncResponse("cursor", roomId, message, "previous");
+    sync.rooms.join[roomId]!.timeline!.events.unshift({
+      ...message,
+      event_id: "$receipt",
+      type: "m.receipt",
+    });
+    sync.rooms.join[roomId]!.timeline!.events.push({ ...message, event_id: "$next" });
+    try {
+      await monitor.admitSync(sync, { hasSavedSync: true });
+      expect(await queue.listPending()).toHaveLength(2);
+      monitor.start();
+      await monitor.waitForIdle();
+      expect(dispatched).toEqual(["$wrong-thread", "$next"]);
+      expect(await queue.listPending()).toEqual([]);
+    } finally {
+      await monitor.stop();
+    }
+  });
+  it("retains malformed supported messages before rejecting their dispatch", async () => {
+    const queue = createQueue();
+    const dispatch = vi.fn();
+    const monitor = createMatrixIngressMonitor({
+      accountId: "default",
+      client: createClient(),
+      startupMs: 0,
+      queue,
+      dispatch,
+    });
+    const event = {
+      ...encryptedEvent("$malformed", Date.now()),
+      type: "m.room.message",
+      sender: undefined,
+    };
+    try {
+      await monitor.admitSync(matrixSyncResponse("cursor", roomId, event, "previous"), {
+        hasSavedSync: true,
+      });
+      expect(await queue.listPending()).toHaveLength(1);
+      monitor.start();
+      await monitor.waitForIdle();
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(await queue.listPending()).toEqual([]);
+    } finally {
+      await monitor.stop();
+    }
+  });
 });

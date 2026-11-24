@@ -49,7 +49,19 @@ it.skipIf(process.platform !== "linux")(
       async (state) => {
         const native =
           await vi.importActual<typeof import("node:child_process")>("node:child_process");
+        // The readonly sync worker must execute for real, so the fixture
+        // keeps its native fallback; fuser alone is pinned to a mocked
+        // free result because the builder image has no fuser binary
+        // (upstream CI happens to have one).
         const tools = createDoctorNoCowToolFixture(state.root, native.spawnSync);
+        tools.fuserResult = {
+          status: 1,
+          stdout: "",
+          stderr: "",
+          pid: 0,
+          output: [],
+          signal: null,
+        };
         const cfg = createDoctorConfig(state);
         await state.writeConfig(cfg);
         setRuntimeConfigSnapshot(cfg);

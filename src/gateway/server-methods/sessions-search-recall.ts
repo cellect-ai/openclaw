@@ -15,6 +15,7 @@ import {
 } from "../../config/sessions/targets.js";
 import { createAgentToAgentPolicy } from "../../plugin-sdk/session-visibility.js";
 import { isIncognitoSessionKey, parseAgentSessionKey } from "../../routing/session-key.js";
+import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
 import { filterSessionEntries } from "../session-list-filters.js";
 import {
   toProjectedSessionSharingTarget,
@@ -123,7 +124,17 @@ export async function searchRecallSessionTranscripts(params: {
       // another store's federated copy of the same sentinel.
       const globalRow = key === "global" ? read.describe({ ...target, key }) : undefined;
       const row = key === "global" ? globalRow : prepared.getTarget(key);
-      if (!row || row.entry.incognito || row.selection.isPhantom) {
+      if (
+        !row ||
+        !isBrowserSessionReadAllowed({
+          cfg: read.state.policyConfig,
+          client: params.client,
+          sessionKey: row.key,
+          sessionEntry: row.entry,
+        }) ||
+        row.entry.incognito ||
+        row.selection.isPhantom
+      ) {
         return false;
       }
       if (

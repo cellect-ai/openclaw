@@ -12,6 +12,7 @@ import {
 import type { ExecutionIdentityAdmissionToken } from "../audit/execution-identity-admission.js";
 import { recordRuntimeActionDecision } from "../audit/runtime-action-decision.js";
 import { finalizeGroupThreadToolReply } from "../auto-reply/group-thread-context.js";
+import { copyReplyPublication } from "../auto-reply/reply-publication.js";
 import { formatHookErrorForLog } from "../hooks/fire-and-forget.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { concatOptionalTextSegments } from "../shared/text/join-segments.js";
@@ -33,9 +34,15 @@ import {
   clonePromptHookEvent,
   HookIsolationError,
 } from "./hook-isolation.js";
+import type { PluginHookMessageContext } from "./hook-message.types.js";
 import { createPluginSystemContextLimiter, mergeAgentTurnPrepare } from "./hook-prompt-context.js";
-import type { GlobalHookRunnerRegistry, HookRunnerRegistry } from "./hook-registry.types.js";
+import type { GlobalHookRunnerRegistry } from "./hook-registry.types.js";
 import { acceptPluginReplyPayload, toPluginReplyPayload } from "./hook-reply-payload.js";
+import {
+  isHookContextEligible,
+  getHooksForName,
+  getHooksForNameAndPlugin,
+} from "./hook-runner-selection.js";
 import type {
   BeforeAgentFinalizeResultWithRetryCandidates,
   BeforeAgentFinalizeRetry,
@@ -49,14 +56,15 @@ import type {
   VoidHookRunOptions,
 } from "./hook-runner-types.js";
 import { withHookTimeout } from "./hook-timeout.js";
-import { isPluginHookReplyDispatchKind, PLUGIN_HOOK_METADATA } from "./hook-types.js";
+import { PLUGIN_HOOK_METADATA } from "./hook-types.js";
 import type {
   PluginHookAgentContext,
-  PluginHookAgentTrigger,
   PluginHookBeforeAgentFinalizeResult,
   PluginHookBeforeDispatchContext,
   PluginHookBeforeDispatchEvent,
   PluginHookBeforeDispatchResult,
+  PluginHookBeforeSteerEvent,
+  PluginHookBeforeSteerResult,
   PluginHookBeforePromptBuildEvent,
   PluginHookBeforePromptBuildResult,
   PluginHookInboundClaimContext,
@@ -84,11 +92,6 @@ import {
   withPluginSubagentRequesterContext,
 } from "./runtime/subagent-requester-context.js";
 import { projectSessionEndTranscriptContext } from "./session-end-transcript.js";
-import {
-  createPluginToolMatcherScope,
-  pluginToolMatcherCoversTool,
-  type PluginToolMatcherScope,
-} from "./tool-hook-matcher.js";
 
 export type { VoidHookRunOptions } from "./hook-runner-types.js";
 
@@ -134,57 +137,6 @@ type PluginTargetedInboundClaimOutcome =
 type SyncHookName = "tool_result_persist" | "before_message_write";
 type SyncHookMessage = PluginHookToolResultPersistEvent["message"];
 type SyncMessageHookStepResult = { message?: SyncHookMessage; block?: true };
-
-function isHookContextEligible(hook: PluginHookRegistration, ctx?: unknown): boolean {
-  if (hook.hookName === "reply_dispatch" && hook.eligibleDispatchKinds !== undefined) {
-    const kind =
-      typeof ctx === "object" && ctx !== null && "dispatchKind" in ctx
-        ? ctx.dispatchKind
-        : undefined;
-    // Unknown callers cannot prove exclusion from a hook, including during recovery checks.
-    return !isPluginHookReplyDispatchKind(kind) || hook.eligibleDispatchKinds.includes(kind);
-  }
-  if (hook.hookName !== "before_agent_reply" || hook.eligibleTriggers === undefined) {
-    return true;
-  }
-  const trigger =
-    typeof ctx === "object" && ctx !== null && "trigger" in ctx
-      ? (ctx as { trigger?: unknown }).trigger
-      : undefined;
-  return (
-    typeof trigger === "string" && hook.eligibleTriggers.includes(trigger as PluginHookAgentTrigger)
-  );
-}
-
-/** Get hooks for a specific hook name, sorted by priority (higher first). */
-function getHooksForName<K extends PluginHookName>(
-  registry: HookRunnerRegistry,
-  hookName: K,
-  ctx?: unknown,
-  toolName?: string,
-): PluginHookRegistration<K>[] {
-  return (registry.typedHooks as PluginHookRegistration<K>[])
-    .filter((hook) => hook.hookName === hookName && isHookContextEligible(hook, ctx))
-    .filter((hook) => toolName === undefined || pluginToolMatcherCoversTool(hook.matcher, toolName))
-    .toSorted((a, b) => (b.priority ?? 0) - (a.priority ?? 0));
-}
-
-export function getToolHookMatcherScope(
-  registry: HookRunnerRegistry,
-  hookName: "before_tool_call" | "after_tool_call",
-): PluginToolMatcherScope | undefined {
-  return createPluginToolMatcherScope(
-    getHooksForName(registry, hookName).map((registration) => registration.matcher),
-  );
-}
-
-function getHooksForNameAndPlugin<K extends PluginHookName>(
-  registry: HookRunnerRegistry,
-  hookName: K,
-  pluginId: string,
-): PluginHookRegistration<K>[] {
-  return getHooksForName(registry, hookName).filter((hook) => hook.pluginId === pluginId);
-}
 
 export function createHookRunner(
   registry: GlobalHookRunnerRegistry,
@@ -941,6 +893,14 @@ export function createHookRunner(
     );
   }
 
+  /** First claim wins: a claimed steer is queued as its own turn instead of injected. */
+  async function runBeforeSteer(
+    event: PluginHookBeforeSteerEvent,
+    ctx: PluginHookMessageContext,
+  ): Promise<PluginHookBeforeSteerResult | undefined> {
+    return runClaimingHook<"before_steer", PluginHookBeforeSteerResult>("before_steer", event, ctx);
+  }
+
   /** After session preparation, the first block wins; void handlers allow inference. */
   async function runBeforeAgentRun(
     event: PluginHookBeforeAgentRunEvent,
@@ -1124,13 +1084,19 @@ export function createHookRunner(
     runChannelPairingRequested: bindVoidHook("channel_pairing_requested"),
     runMessageReceived: bindVoidHook("message_received"),
     runBeforeDispatch,
+    runBeforeSteer,
     runReplyDispatch: bindClaimingHook("reply_dispatch", (ctx) => ctx.dispatchKind === "acp"),
     runReplyPayloadSending: bindModifyingHook("reply_payload_sending", {
       // Handlers see the latest payload without inheriting host-only media trust.
-      eventForHandler: (event, result) => ({
-        ...event,
-        payload: toPluginReplyPayload(result?.payload ?? event.payload),
-      }),
+      eventForHandler: (event, result) => {
+        const isolatedEvent = {
+          ...event,
+          payload: toPluginReplyPayload(result?.payload ?? event.payload),
+        };
+        // Publication custody is non-enumerable and must survive handler isolation.
+        copyReplyPublication(event, isolatedEvent);
+        return isolatedEvent;
+      },
       mergeResults: (acc, next, _registration, event) => ({
         payload:
           next.payload === undefined
@@ -1222,3 +1188,5 @@ export type SubagentLifecycleHookRunner = Pick<
   "hasHooks" | "runSubagentSpawned" | "runSubagentProgress" | "runSubagentEnded"
 >;
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+export { getToolHookMatcherScope } from "./hook-runner-selection.js";

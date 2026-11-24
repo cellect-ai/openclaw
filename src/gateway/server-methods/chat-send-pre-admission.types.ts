@@ -1,3 +1,4 @@
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import type { ChatSendDiagnostics } from "./chat-send-diagnostics.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import type { LoadedChatSendSession, PreparedChatSendSession } from "./chat-send-session.js";
@@ -15,6 +16,8 @@ export type ChatSendPreAdmissionParams = {
 };
 
 export type ChatSendAdmissionParams = ChatSendPreAdmissionParams & {
+  talkRelayAdmission?: TalkRelayConsultAdmission;
+  assertDelegatedAdmission?: () => void;
   diagnostics?: ChatSendDiagnostics;
   session: PreparedChatSendSession;
   withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];

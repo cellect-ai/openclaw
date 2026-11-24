@@ -53,6 +53,7 @@ export async function ensureDeviceToken(params: {
   deviceId: string;
   role: string;
   scopes: string[];
+  allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
   isIssuanceCurrent?: () => boolean;
 }): Promise<DeviceAuthToken | null> {

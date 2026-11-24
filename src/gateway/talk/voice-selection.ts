@@ -9,6 +9,10 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
+import {
+  retainGatewayRootWorkAdmissionContinuationScope,
+  type GatewayRootWorkAdmissionContinuationScope,
+} from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { registerTalkConnectionCleanup } from "./session-registry.js";
@@ -22,6 +26,8 @@ type VoiceSession = {
   /** Exact provider route; private model identifiers never leave this owner. */
   launch: { provider: string; model?: string };
   providerReady: boolean;
+  /** Native call ownership also keeps normal suspension from interrupting audio. */
+  admission?: GatewayRootWorkAdmissionContinuationScope;
 };
 
 type VoiceChange = {
@@ -153,13 +159,16 @@ function trackConnection(connId: string) {
     }
     for (const [key, session] of sessions) {
       if (session.connId === connId) {
+        session.admission?.release();
         sessions.delete(key);
       }
     }
   });
 }
 
-export function registerTalkVoiceSession(params: VoiceSession & { voiceChangeId?: string }) {
+export function registerTalkVoiceSession(
+  params: Omit<VoiceSession, "admission"> & { voiceChangeId?: string },
+) {
   const { voiceChangeId, ...session } = params;
   const change = voiceChangeId ? changes.get(voiceChangeId) : undefined;
   if (voiceChangeId) {
@@ -180,10 +189,19 @@ export function registerTalkVoiceSession(params: VoiceSession & { voiceChangeId?
     change.replacement = session;
   }
   const key = sessionKey(session);
-  sessions.set(key, session);
+  sessions.get(key)?.admission?.release();
+  const ownedSession: VoiceSession = {
+    ...session,
+    admission: retainGatewayRootWorkAdmissionContinuationScope() ?? undefined,
+  };
+  // Replacement tracking and the registry must retain the same exact identity.
+  if (change) {
+    change.replacement = ownedSession;
+  }
+  sessions.set(key, ownedSession);
   trackConnection(session.connId);
   return () => {
-    if (sessions.get(key) === session) {
+    if (sessions.get(key) === ownedSession) {
       unregisterTalkVoiceSession(
         session.voiceSessionId,
         session.connId,
@@ -203,6 +221,7 @@ export function unregisterTalkVoiceSession(
   }
   const key = `${connId}\0${agentId}\0${voiceSessionId}`;
   const session = sessions.get(key);
+  session?.admission?.release();
   sessions.delete(key);
   for (const change of changes.values()) {
     if (change.replacement === session && session) {
@@ -211,6 +230,30 @@ export function unregisterTalkVoiceSession(
       finishIfReady(change);
     }
   }
+}
+
+/** Continue only an exact live call; this is not authority to create another call. */
+export function runTalkVoiceSessionContinuation<T>(params: {
+  connId: string;
+  voiceSessionId?: string;
+  sessionKey?: string;
+  run: () => Promise<T>;
+}): Promise<T> | null {
+  let session: VoiceSession;
+  try {
+    session = resolveTalkVoiceSession({ kind: "client", ...params });
+  } catch {
+    return null;
+  }
+  if (!session.admission) {
+    return null;
+  }
+  return session.admission.run(async () => {
+    if (sessions.get(sessionKey(session)) !== session) {
+      throw new Error("Voice call is no longer active");
+    }
+    return await params.run();
+  });
 }
 
 export function cancelTalkVoiceSessionChange(

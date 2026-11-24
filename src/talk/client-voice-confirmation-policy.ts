@@ -1,0 +1,48 @@
+import { createHash } from "node:crypto";
+import { buildToolMutationState } from "../agents/tool-mutation.js";
+
+/** Shell on a voice consult has the same authority as shell from a typed message. */
+const VOICE_SHELL_TOOLS = new Set(["bash", "exec", "gateway_exec", "node_exec", "sandbox_exec"]);
+
+export function stableToolFingerprint(toolName: string, params: unknown): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) {
+      return value.map(normalize);
+    }
+    if (!value || typeof value !== "object") {
+      return value;
+    }
+    return Object.fromEntries(
+      Object.entries(value)
+        .toSorted(([left], [right]) => left.localeCompare(right))
+        .map(([key, entry]) => [key, normalize(entry)]),
+    );
+  };
+  return createHash("sha256")
+    .update(`${toolName}\0${JSON.stringify(normalize(params))}`)
+    .digest("hex");
+}
+
+export function requiresHighImpactVoiceConfirmation(
+  toolName: string,
+  params: unknown,
+  isCurrentSourceMessageSend = false,
+): boolean {
+  const normalizedTool = toolName.trim().toLowerCase();
+  if (normalizedTool === "message" && isCurrentSourceMessageSend) {
+    return false;
+  }
+  // Reading CLIs and other shell commands run without a spoken yes. Sends, session
+  // delegation, and gateway changes still require one.
+  if (VOICE_SHELL_TOOLS.has(normalizedTool)) {
+    return false;
+  }
+  if (!buildToolMutationState(normalizedTool, params).mutatingAction) {
+    return false;
+  }
+  // Workspace-local edits stay bound to this run. Session delegation is gated because
+  // delegated runs leave the voice binding and otherwise bypass spoken confirmation.
+  return !["write", "edit", "apply_patch", "create_goal", "update_goal", "get_goal"].includes(
+    normalizedTool,
+  );
+}

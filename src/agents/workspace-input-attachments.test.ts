@@ -8,6 +8,7 @@ import { stageSandboxMedia } from "../auto-reply/reply/stage-sandbox-media.js";
 import { root as fsRoot } from "../infra/fs-safe.js";
 import type { MediaFact } from "../media/media-facts.js";
 import {
+  STAGED_INPUT_MAX_BYTES,
   createStagedInputPathMatcher,
   stagedInputDirectory,
   stagedInputFileName,
@@ -155,12 +156,16 @@ describe.runIf(process.platform === "linux")("workspace attachments over remote 
 
   it("retains an explicitly configured allowance above the ordinary staging limit", async () => {
     const source = await writeMedia("remote-cache/configured.bin", "");
-    await fs.truncate(source, 51 * 1024 * 1024);
+    const allowance = STAGED_INPUT_MAX_BYTES + 1024 * 1024;
+    await fs.truncate(source, allowance);
     await f.prepare(
-      { ...turn([{ path: source }]), config: { agents: { defaults: { mediaMaxMb: 51 } } } },
+      {
+        ...turn([{ path: source }]),
+        config: { agents: { defaults: { mediaMaxMb: allowance / (1024 * 1024) } } },
+      },
       () => {},
     );
-    expect((await fs.stat(f.destination(source))).size).toBe(51 * 1024 * 1024);
+    expect((await fs.stat(f.destination(source))).size).toBe(allowance);
   });
 
   it("hydrates a managed video for a sandboxed remote turn without rewriting its recorded reference", async () => {
@@ -223,7 +228,7 @@ describe.runIf(process.platform === "linux")("workspace attachments over remote 
       source = "media://inbound/nested%2Fsecret.txt";
     } else if (kind === "oversized") {
       source = await writeMedia("remote-cache/large.bin", "");
-      await fs.truncate(source, 50 * 1024 * 1024 + 1);
+      await fs.truncate(source, STAGED_INPUT_MAX_BYTES + 1);
     }
     const destination = f.destination(source);
     const markerPath = path.join(path.dirname(destination), ".gitignore");

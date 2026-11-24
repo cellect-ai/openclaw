@@ -285,6 +285,19 @@ export async function handleChatSendWithStorage(
       assertInputCurrent: assertInputAdmissionCurrent,
       userTurn,
     });
+    if (options?.inboundEventKind) {
+      preparedUserTurn.ctx.InboundEventKind = options.inboundEventKind;
+    }
+    if (options?.talkRelayAdmission?.speakerMxid) {
+      options.talkRelayAdmission.assertCurrent(sessionKey, client?.connId, request.explicitOrigin);
+      preparedUserTurn.ctx.SenderId = options.talkRelayAdmission.speakerMxid;
+      preparedUserTurn.ctx.ChannelContext = options.talkRelayAdmission.channelContext;
+      const roomId = options.talkRelayAdmission.channelContext?.chat?.id;
+      if (typeof roomId === "string" && roomId.startsWith("!")) {
+        preparedUserTurn.ctx.ChatId = roomId;
+        preparedUserTurn.ctx.NativeChannelId = roomId;
+      }
+    }
     const { ctx, isInternalTextSlashCommandTurn } = preparedUserTurn;
     // Retained inputs need queue custody even after the resume run has finished.
     commitFreshInput =
@@ -614,10 +627,11 @@ export async function handleChatSendWithStorage(
       context,
       toolsAllow: options?.toolsAllow,
       prepareAssistantTranscriptMessage: options?.prepareAssistantTranscriptMessage,
+      sourceReplyDeliveryMode: options?.sourceReplyDeliveryMode,
       skillLibrary: {
         sessionKey,
         owner: {
-          client,
+          client: admission.channelRequester ? null : client,
           context,
           sessionMutationCommitGuard: () => {
             sessionMutationCommitGuard?.();

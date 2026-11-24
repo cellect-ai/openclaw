@@ -5,6 +5,7 @@ import { readSessionHistoryPageInWorker } from "../../config/sessions/session-hi
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { isIncognitoSessionKey, scopeLegacySessionKeyToAgent } from "../../routing/session-key.js";
+import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { withReadySessionRows, type SessionRowReadView } from "../session-row-prepared-read.js";
 import { prepareProjectedSessionPresentation } from "../session-row-presentation.js";
@@ -111,6 +112,21 @@ export async function prepareChatHistorySessionRead({
     sharing: ReturnType<typeof prepareProjectedSessionSharing>,
   ) => {
     sessionMutationAuthorization?.assertCurrent();
+    if (
+      !isBrowserSessionReadAllowed({
+        cfg: (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)(),
+        client,
+        sessionKey: current.canonicalKey,
+        sessionEntry: current.entry ?? null,
+      })
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.FORBIDDEN, "Matrix conversation access requires the owning app"),
+      );
+      return undefined;
+    }
     if (
       current.entry
         ? !sharing.canReadTarget({

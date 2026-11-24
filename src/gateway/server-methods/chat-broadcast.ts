@@ -9,6 +9,7 @@ import {
   markChatAbortTerminalOutcome,
 } from "../chat-abort-lifecycle-internal.js";
 import { projectChatDisplayMessage } from "../chat-display-projection.js";
+import { publishChatTerminal } from "../chat-terminal-observer.js";
 import { capLiveAssistantText } from "../live-chat-projector.js";
 import type { GatewayBroadcastOpts } from "../server-broadcast-types.js";
 import { tryResolveSessionCompatibilityOwnerAgentId } from "../session-request-agent.js";
@@ -123,17 +124,26 @@ type ChatTerminalBroadcastParams = ChatBroadcastParams & {
 
 type ChatFrame = ChatTerminal | { state: "delta"; text: string };
 
+function chatSocketSuppressed(runId: string): boolean {
+  const visibility = getAgentRunContext(runId);
+  return visibility?.isControlUiVisible === false && visibility.projectSessionMessages === false;
+}
+
 function broadcastChatFrame(
   params: ChatBroadcastParams & ChatFrame,
   liveText?: GatewayBroadcastOpts["liveText"],
   excludeClientCapability?: GatewayBroadcastOpts["excludeClientCapability"],
 ): void {
-  const visibility = getAgentRunContext(params.runId);
-  if (visibility?.isControlUiVisible === false && visibility.projectSessionMessages === false) {
+  const suppressSocket = chatSocketSuppressed(params.runId);
+  // Deltas stay silent for hidden runs. Terminals still reach in-process
+  // observers so a voice consult can speak an answer the chat UI must not show.
+  if (suppressSocket && params.state === "delta") {
     return;
   }
   const seq = nextChatSeq(params.context, params.runId);
   const payloadAgentId = parseAgentSessionKey(params.sessionKey) ? undefined : params.agentId;
+  const rawMessage =
+    params.state !== "error" && params.state !== "delta" ? params.message : undefined;
   const frame =
     params.state === "delta"
       ? {
@@ -165,6 +175,18 @@ function broadcastChatFrame(
     ...frame,
   };
   const group = params.context.chatRunState?.runs.get(params.runId)?.liveTextGroup?.signal;
+  if (payload.state !== "delta") {
+    // Display projection drops display:false consult finals. The voice relay
+    // still needs that text; the socket payload stays projected.
+    const projectedMessage = "message" in payload ? payload.message : undefined;
+    const speakableMessage = projectedMessage ?? rawMessage;
+    publishChatTerminal(
+      speakableMessage === projectedMessage ? payload : { ...payload, message: speakableMessage },
+    );
+  }
+  if (suppressSocket) {
+    return;
+  }
   const delivery: GatewayBroadcastOpts["liveText"] =
     liveText ??
     (group

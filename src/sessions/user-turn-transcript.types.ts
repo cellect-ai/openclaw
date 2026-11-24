@@ -196,6 +196,10 @@ export type PersistUserTurnTranscriptParams = UserTurnTranscriptTarget & {
 type UserTurnInputResolver = () => UserTurnInput | undefined | Promise<UserTurnInput | undefined>;
 
 export type CreateUserTurnTranscriptRecorderParams = {
+  /** Native COMMIT accepted pending custody; execution still uses the pending owner. */
+  onPendingInputCommitted?: (
+    receipt: import("../config/sessions/session-pending-input-receipt.types.js").SessionPendingInputReceipt,
+  ) => void;
   /** Authenticated input identity independent of prepared media paths. */
   pendingInputRequestFingerprint?: string;
   trackInputCompletion?: boolean;

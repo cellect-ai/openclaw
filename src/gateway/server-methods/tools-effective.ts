@@ -18,6 +18,7 @@ import { prepareConversationCapabilityProfile } from "../../agents/conversation-
 import { resolveConversationToolPolicies } from "../../agents/conversation-tool-policy-pipeline.js";
 import { applyFinalEffectiveToolPolicy } from "../../agents/embedded-agent-runner/effective-tool-policy.js";
 import { getRegisteredAgentHarness } from "../../agents/harness/registry.js";
+import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
 import { readToolAllowlistIntersection } from "../../agents/tool-policy-shared.js";
 import type { ToolPolicyLike } from "../../agents/tool-policy.js";
 import { buildEffectiveToolInventoryGroups } from "../../agents/tools-effective-inventory-groups.js";
@@ -529,6 +530,14 @@ async function resolveTrustedToolsEffectiveContext(
       loaded.entry.chatType ?? origin?.chatType,
     ),
   };
+  // Use the already-read session's immutable isolation and mode override. Do
+  // not activate a sandbox merely to describe its effective tool policy.
+  const sandbox = resolveSandboxRuntimeStatus({
+    cfg: context.cfg,
+    agentId: context.agentId,
+    sessionKey: canonicalKey,
+    preparedSessionEntry: loaded.entry,
+  });
   return {
     ...context,
     capabilityProfile: await prepareConversationCapabilityProfile({
@@ -544,6 +553,7 @@ async function resolveTrustedToolsEffectiveContext(
       groupChannel: context.groupChannel,
       groupSpace: context.groupSpace,
       spawnedBy: context.spawnedBy,
+      sandboxToolPolicy: sandbox.sandboxed ? sandbox.toolPolicy : undefined,
     }),
   };
 }

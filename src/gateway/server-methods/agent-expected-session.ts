@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import type { ThreadContinuationSnapshot } from "../../../packages/gateway-protocol/src/schema/thread-continuation.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import {
   consumeSessionEffectHandoff,
@@ -6,9 +7,12 @@ import {
   type SessionEffectRef,
   type SessionTarget,
 } from "../../sessions/session-controller.lifecycle.js";
+import type { ThreadContinuationGuard } from "../thread-continuation.js";
 
 export type ExpectedExistingSessionConstraint = {
   handoffId?: string;
+  threadContinuation?: ThreadContinuationSnapshot;
+  threadContinuationGuard?: ThreadContinuationGuard;
   sessionId: string;
   lifecycleRevision?: string | null;
 };
@@ -23,10 +27,25 @@ export class ExpectedExistingSessionChangedError extends Error {
 export function resolveExpectedExistingSessionConstraint(params: {
   canUseInternalRuntimeHandoff: boolean;
   expectedExistingSessionId?: unknown;
+  expectedThreadContinuation?: ThreadContinuationSnapshot;
   expectedExistingSessionLifecycleRevision?: string | null;
   internalRuntimeHandoffId?: unknown;
 }): { ok: true; constraint?: ExpectedExistingSessionConstraint } | { ok: false; error: string } {
   const sessionId = normalizeOptionalString(params.expectedExistingSessionId);
+  if (
+    params.expectedThreadContinuation &&
+    (!sessionId ||
+      params.internalRuntimeHandoffId ||
+      params.expectedThreadContinuation.owner.sessionId !== sessionId ||
+      params.expectedThreadContinuation.owner.lifecycleRevision !==
+        params.expectedExistingSessionLifecycleRevision)
+  ) {
+    return {
+      ok: false,
+      error:
+        "Thread continuation requires its exact existing session generation and cannot use a runtime handoff.",
+    };
+  }
   if (!sessionId) {
     if (params.expectedExistingSessionLifecycleRevision !== undefined) {
       return {
@@ -47,6 +66,9 @@ export function resolveExpectedExistingSessionConstraint(params: {
     ok: true,
     constraint: {
       sessionId,
+      ...(params.expectedThreadContinuation
+        ? { threadContinuation: structuredClone(params.expectedThreadContinuation) }
+        : {}),
       lifecycleRevision: params.expectedExistingSessionLifecycleRevision,
       ...(handoffId ? { handoffId } : {}),
     },
@@ -61,6 +83,11 @@ export function validateExpectedExistingSessionTarget(params: {
   if (!params.constraint) {
     return undefined;
   }
+  if (
+    params.constraint.threadContinuation &&
+    params.requestedSessionKey !== params.constraint.threadContinuation.owner.sessionKey
+  )
+    return "Thread continuation owner does not match the requested session.";
   if (!params.requestedSessionKey) {
     return "expectedExistingSessionId requires an explicit session key.";
   }
@@ -75,6 +102,8 @@ export function assertExpectedExistingSession(params: {
   entry?: SessionEntry;
   message: string;
 }): void {
+  params.constraint?.threadContinuationGuard?.assertCurrent();
+  params.constraint?.threadContinuationGuard?.assertEntry(params.entry);
   if (
     params.constraint &&
     (params.entry?.sessionId !== params.constraint.sessionId ||

@@ -263,6 +263,7 @@ export function requiresIndividualCollectDrain(item: FollowupRun): boolean {
     item.userTurnTranscriptRecorder?.hasPersisted() === true ||
     item.disableCollectBatching === true ||
     item.run.skillLibraryAuthoring !== undefined ||
+    item.run.skillWorkshopWorkspaceAuthoring !== undefined ||
     item.currentInboundEventKind === "room_event" ||
     item.currentInboundAudio === true
   );

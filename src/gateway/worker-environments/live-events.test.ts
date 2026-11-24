@@ -184,6 +184,12 @@ describe("worker live events", () => {
 
   it("persists cloud-worker progress for sessions tail", async () => {
     const credential = ["trajectory", "credential", "secret"].join("-");
+    const delegatedToken = "synthetic-worker-environment-secret";
+    const args = {
+      path: "proof.txt",
+      credential,
+      env: { FI_DELEGATED_USER_TOKEN: delegatedToken, KEEP: "visible" },
+    };
     unsubscribe?.();
     unsubscribe = onAgentRuntimeEvent((event) => {
       events.push(event);
@@ -199,7 +205,7 @@ describe("worker live events", () => {
           phase: "start",
           name: "write",
           toolCallId: "call-write",
-          args: { path: "proof.txt", credential },
+          args,
         }),
       ),
     );
@@ -245,6 +251,12 @@ describe("worker live events", () => {
     expect(rows[3]?.event.data).toMatchObject({ stopReason: "length" });
     expect(rows[4]?.event.data).toMatchObject({ status: "success", stopReason: "length" });
     expect(rows[1]?.event.data).toMatchObject({ args: { credential } });
+    expect(rows[1]?.event.data).toMatchObject({
+      args: { env: { FI_DELEGATED_USER_TOKEN: "[redacted]", KEEP: "visible" } },
+    });
+    expect(JSON.stringify(rows)).not.toContain(delegatedToken);
+    expect(JSON.stringify(events)).not.toContain(delegatedToken);
+    expect(args.env.FI_DELEGATED_USER_TOKEN).toBe(delegatedToken);
   });
 
   const lifecycleCredential = ["lifecycle", "credential", "value"].join("-");

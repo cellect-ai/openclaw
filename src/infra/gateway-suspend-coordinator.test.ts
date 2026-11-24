@@ -441,6 +441,44 @@ describe("external restart handoff", () => {
     };
   };
 
+  it("refuses idle-required commitment when work arrives after READY", () => {
+    const fixture = setup(false);
+    fixture.state.work = 1;
+    expect(fixture.commit({ requireIdle: true })).toMatchObject({
+      ok: true,
+      value: { status: "busy", reason: "active-work" },
+    });
+    expect(fixture.commitStop).not.toHaveBeenCalled();
+    fixture.state.work = 0;
+    expect(fixture.commit({ requireIdle: true }).ok).toBe(true);
+    expect(fixture.commitStop).toHaveBeenCalledOnce();
+  });
+
+  it.each(["pending", "mutations"] as const)("never overrides %s write custody", (key) => {
+    const fixture = setup(false);
+    fixture.state[key] = 1;
+    expect(fixture.commit({ requireIdle: true })).toMatchObject({
+      ok: true,
+      value: { status: "busy", reason: "write-custody" },
+    });
+    expect(fixture.commit().ok).toBe(false);
+    expect(fixture.commitStop).not.toHaveBeenCalled();
+  });
+
+  it("rechecks idle work when consuming an armed handoff", () => {
+    const fixture = setup(false);
+    expect(
+      armGatewaySuspendHandoff({
+        suspensionId: LEASE,
+        owner: fixture.owner,
+        requireIdle: true,
+      }).ok,
+    ).toBe(true);
+    fixture.state.work = 1;
+    expect(fixture.consume()).toEqual({ ok: false, error: "gateway active work is still pending" });
+    expect(fixture.commitStop).not.toHaveBeenCalled();
+  });
+
   it("commits the host's one-way shutdown before acknowledging and preserves it after expiry", () => {
     const fixture = setup(false);
     expect(fixture.commit()).toEqual({

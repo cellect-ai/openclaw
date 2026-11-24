@@ -63,7 +63,9 @@ export {
 export { normalizeSlackWebhookPath } from "./src/http/paths.js";
 export type {
   SlackInteractiveHandlerContext,
+  SlackInteractiveHandlerContextV2,
   SlackInteractiveHandlerRegistration,
+  SlackInteractiveHandlerRegistrationV2,
 } from "./src/interactive-dispatch.js";
 export { extractSlackToolSend, listSlackMessageActions } from "./src/message-actions.js";
 export {

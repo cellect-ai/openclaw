@@ -62,6 +62,13 @@ import { registerRequiredRootThreadPolicyTests } from "./thread-lifecycle-rooted
 import { startOrResumeThread as startOrResumeThreadImpl } from "./thread-lifecycle-run.js";
 import { registerThreadWebSearchBindingTests } from "./thread-lifecycle-web-search.test-support.js";
 import {
+  createMessageDynamicTool,
+  createNamedDynamicTool,
+  createDeferredNamedDynamicTool,
+  createPluginAppConfigPatch,
+  createPluginAppPolicyContext,
+} from "./thread-lifecycle.catalog.fixtures.test-support.js";
+import {
   createAppServerOptions,
   createLeasedCodexLifecycleHarness,
   DEFAULT_CODEX_RUNTIME_THREAD_CONFIG,
@@ -265,87 +272,6 @@ function writeEmptyToolsBinding(
     dynamicToolsFingerprint: "[]",
     ...binding,
   });
-}
-
-function createMessageDynamicTool(
-  description: string,
-  actions: string[] = ["send"],
-): CodexDynamicToolFunctionSpec {
-  return {
-    type: "function",
-    name: "message",
-    description,
-    inputSchema: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: actions,
-        },
-      },
-      required: ["action"],
-      additionalProperties: false,
-    },
-  };
-}
-
-function createNamedDynamicTool(name: string): CodexDynamicToolFunctionSpec {
-  return {
-    type: "function",
-    name,
-    description: `${name} test tool`,
-    inputSchema: {
-      type: "object",
-      properties: {},
-      additionalProperties: false,
-    },
-  };
-}
-
-function createDeferredNamedDynamicTool(name: string): LifecycleInput["dynamicTools"][number] {
-  return {
-    type: "namespace",
-    name: "openclaw",
-    description: "",
-    tools: [{ ...createNamedDynamicTool(name), deferLoading: true }],
-  };
-}
-
-function createPluginAppConfigPatch(options: { approvalsReviewer?: "user" } = {}) {
-  return {
-    apps: {
-      _default: {
-        enabled: false,
-        destructive_enabled: false,
-        open_world_enabled: false,
-      },
-      "google-calendar-app": {
-        enabled: true,
-        destructive_enabled: true,
-        open_world_enabled: true,
-        default_tools_approval_mode: "auto",
-        ...(options.approvalsReviewer ? { approvals_reviewer: options.approvalsReviewer } : {}),
-      },
-    },
-  };
-}
-
-function createPluginAppPolicyContext() {
-  return {
-    fingerprint: "plugin-policy-1",
-    apps: {
-      "google-calendar-app": {
-        configKey: "google-calendar",
-        marketplaceName: "openai-curated" as const,
-        pluginName: "google-calendar",
-        allowDestructiveActions: true,
-        mcpServerNames: ["google-calendar"],
-      },
-    },
-    pluginAppIds: {
-      "google-calendar": ["google-calendar-app"],
-    },
-  };
 }
 
 async function createManualResumeFixture(
@@ -3145,6 +3071,50 @@ describe("Codex app-server thread lifecycle bindings", () => {
     ]);
     const savedBinding = await readCodexAppServerBinding(sessionFile);
     expect(savedBinding?.contextEngine).toBeUndefined();
+  });
+
+  it("replaces a guest question catalog with direct-only questions before the next turn", async () => {
+    const { sessionFile } = createPaths();
+    const fixture = await createSequentialLifecycleHarness(() => threadStartResult("thread-2"));
+    const oldTools = [createDeferredNamedDynamicTool("ask_user")];
+    const directTools: LifecycleInput["dynamicTools"] = [
+      {
+        type: "namespace",
+        name: "openclaw_direct",
+        description: "",
+        tools: [createNamedDynamicTool("ask_user")],
+      },
+    ];
+    await startOrResumeThread({ client: fixture.client, dynamicTools: oldTools });
+    await fixture.endTurn("thread-1");
+    const repaired = await startOrResumeThread({
+      client: fixture.client,
+      dynamicTools: directTools,
+    });
+    expect(repaired.threadId).toBe("thread-2");
+    const starts = fixture.request.mock.calls.filter(([method]) => method === "thread/start");
+    expect(starts).toHaveLength(2);
+    expect(starts[1]?.[1]).toMatchObject({
+      dynamicTools: directTools,
+      config: {
+        "features.code_mode": expect.objectContaining({
+          direct_only_tool_namespaces: expect.arrayContaining(["openclaw_direct"]),
+        }),
+      },
+    });
+    const fingerprint = (await readCodexAppServerBinding(sessionFile))?.dynamicToolsFingerprint;
+    await fixture.endTurn("thread-2");
+    const resumed = await startOrResumeThread({
+      client: fixture.client,
+      dynamicTools: directTools,
+    });
+    expect(resumed.threadId).toBe("thread-2");
+    expect((await readCodexAppServerBinding(sessionFile))?.dynamicToolsFingerprint).toBe(
+      fingerprint,
+    );
+    expect(fixture.request.mock.calls.filter(([method]) => method === "thread/start")).toHaveLength(
+      2,
+    );
   });
 
   it("keeps the previous dynamic tool fingerprint for transient no-tool maintenance turns", async () => {

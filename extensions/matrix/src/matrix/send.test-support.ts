@@ -21,7 +21,7 @@ export function createEncryptedMediaPayload() {
 }
 
 export const makeClient = () => {
-  const sendMessage = vi.fn().mockResolvedValue("evt1");
+  const sendMessage = vi.fn().mockResolvedValue("$evt1");
   const sendEvent = vi.fn().mockResolvedValue("evt-poll-vote");
   const getEvent = vi.fn();
   const getRelations = vi.fn().mockResolvedValue({ events: [], nextBatch: null });

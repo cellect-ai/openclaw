@@ -5,6 +5,7 @@ import { recordTalkObservabilityEvent } from "../../talk/observability.js";
 import {
   createTalkSessionController,
   type TalkBrain,
+  type TalkEvent,
   type TalkMode,
   type TalkSessionController,
   type TalkTransport,
@@ -25,6 +26,13 @@ type TalkHandoffCreateParams = {
   ttlMs?: number;
 };
 
+/** Fork room state: upstream 10.4 dropped tokenHash (its own test asserts
+ * absence); the managed-room owner pin stays fork-owned. */
+type TalkHandoffRoomState = {
+  activeClientId?: string;
+  talk: TalkSessionController;
+};
+
 /** Private handoff state and its event controller. */
 type TalkHandoffRecord = Omit<TalkHandoffCreateParams, "ttlMs" | "mode" | "transport" | "brain"> & {
   id: string;
@@ -35,7 +43,14 @@ type TalkHandoffRecord = Omit<TalkHandoffCreateParams, "ttlMs" | "mode" | "trans
   brain: TalkBrain;
   createdAt: number;
   expiresAt: number;
-  room: { talk: TalkSessionController };
+  room: TalkHandoffRoomState;
+};
+
+type TalkHandoffRevokeResult = {
+  revoked: boolean;
+  roomId?: string;
+  activeClientId?: string;
+  events: TalkEvent[];
 };
 
 const handoffs = resolveGlobalMap<string, TalkHandoffRecord>(
@@ -79,9 +94,14 @@ export function createTalkHandoff(params: TalkHandoffCreateParams) {
     payload: { handoffId: id, roomId },
   });
   handoffs.set(id, record);
-  const { room: _room, ...publicRecord } = record;
+  const { room, ...publicRecord } = record;
   return {
     ...publicRecord,
+    room: {
+      activeClientId: room.activeClientId,
+      activeTurnId: room.talk.activeTurnId,
+      recentTalkEvents: [...room.talk.recentEvents],
+    },
     token,
   };
 }
@@ -93,18 +113,24 @@ export function getTalkHandoff(id: string): TalkHandoffRecord | undefined {
 }
 
 /** Revokes a handoff and emits the final room-close event if it existed. */
-export function revokeTalkHandoff(id: string): void {
+export function revokeTalkHandoff(id: string): TalkHandoffRevokeResult {
   pruneExpiredTalkHandoffs();
   const record = handoffs.get(id);
   if (!record) {
-    return;
+    return { revoked: false, events: [] };
   }
-  record.room.talk.emit({
+  const event = record.room.talk.emit({
     type: "session.closed",
     payload: { reason: "revoked", handoffId: id, roomId: record.roomId },
     final: true,
   });
   handoffs.delete(id);
+  return {
+    revoked: true,
+    roomId: record.roomId,
+    activeClientId: record.room.activeClientId,
+    events: [event],
+  };
 }
 
 function normalizeTtlMs(value: number | undefined): number {

@@ -341,6 +341,10 @@ describe("OpenAI realtime voice bridge connection", () => {
     const bridge = createNativeBridge({
       instructions: "Be helpful.",
       language: "de",
+      transcriptionHints: {
+        prompt: "Real estate finance.",
+        keywords: ["Fixture Name", "46 Coles"],
+      },
       onReady,
     });
     const { connecting, socket } = beginBridgeConnection(bridge);
@@ -370,7 +374,13 @@ describe("OpenAI realtime voice bridge connection", () => {
             input: {
               format: { type: "audio/pcmu" },
               noise_reduction: null,
-              transcription: { model: "gpt-4o-mini-transcribe", language: "de" },
+              transcription: {
+                model: "gpt-live-transcribe",
+                delay: "low",
+                languages: ["de"],
+                prompt: "Real estate finance.",
+                keywords: ["Fixture Name", "46 Coles"],
+              },
               turn_detection: {
                 type: "server_vad",
                 threshold: 0.5,

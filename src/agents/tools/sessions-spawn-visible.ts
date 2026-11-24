@@ -1,4 +1,4 @@
-import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { promises as fs } from "node:fs";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import { Value } from "typebox/value";
 import { readMissingScopeErrorDetails } from "../../../packages/gateway-protocol/src/gateway-error-details.js";
@@ -24,7 +24,7 @@ import { isValidAgentId, normalizeAgentId } from "../../routing/session-key.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { resolveUserPath } from "../../utils.js";
 import { normalizeDeliveryContext } from "../../utils/delivery-context.shared.js";
-import { listAgentIds, resolveSessionAgentId } from "../agent-scope.js";
+import { listAgentIds, resolveAgentWorkspaceDir, resolveSessionAgentId } from "../agent-scope.js";
 import { runWithAgentToolSourceExecutionScope } from "../agent-tool-source-execution-guard.js";
 import { reserveChildAdmissionSlot } from "../child-admission.js";
 import { prepareNativeDelegatedToolPolicy } from "../delegated-tool-policy.js";
@@ -40,7 +40,10 @@ import { resolveSpawnedWorkspaceInheritance } from "../spawned-context.js";
 import { prepareSubagentSessionListReadCache } from "../subagents/registry/subagent-registry-state.js";
 import { registerSubagentRun } from "../subagents/registry/subagent-registry.js";
 import { getSubagentDepthFromSessionStoreInWorker } from "../subagents/spawn/subagent-depth.js";
-import { terminateAcceptedCollectorRun } from "../subagents/spawn/subagent-spawn-cleanup.js";
+import {
+  stageParentTurnAttachmentsInWorkspace,
+  type StagedParentTurnAttachments,
+} from "../subagents/spawn/subagent-parent-attachments.js";
 import {
   callNativeSubagentGateway,
   captureSubagentSpawnGatewayContext,
@@ -63,7 +66,6 @@ import { getGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import {
   callInProcessGatewayTool,
   callInProcessGatewayToolWithCreation,
-  runWithGatewayToolCleanupContext,
   type InProcessGatewayCaller,
 } from "./in-process-gateway.js";
 import { startVisibleCloudSession } from "./sessions-spawn-cloud.js";
@@ -72,6 +74,7 @@ import {
   cleanupVisibleSpawnSession,
   summarizeVisibleSessionSpawnError,
 } from "./sessions-spawn-visible-cleanup.js";
+import { createVisibleCloudRunTerminator } from "./sessions-spawn-visible-cloud-cleanup.js";
 import { resolveVisibleSessionOwner } from "./sessions-spawn-visible-owner.js";
 import {
   correctedVisibleSpawnCall,
@@ -386,6 +389,8 @@ export async function maybeSpawnVisibleSession(params: {
   }
   // Successful admission reserves a child before Gateway work can start.
   params.options?.onSpawnEffectsStart?.();
+  let parentAttachments: StagedParentTurnAttachments | null = null;
+  let keepParentAttachments = false;
   try {
     const caller = getGatewayToolCallerIdentity();
     const childSessionPublication = readChildSessionPublication(caller?.operationalRunInstance);
@@ -442,8 +447,18 @@ export async function maybeSpawnVisibleSession(params: {
       placement?: SessionsDispatchResult["placement"];
       initialTaskStatus?: "unknown" | "not-sent";
     };
+    // The child sees only its task; copy the requester turn's own attachments
+    // into the child workspace and list them in that task. A cloud placement
+    // runs elsewhere and cannot read files staged on this host.
+    parentAttachments = placement
+      ? null
+      : await stageParentTurnAttachmentsInWorkspace({
+          media: params.options?.parentTurnMedia,
+          workspaceDir:
+            spawnedCwd ?? spawnedWorkspaceCwd ?? resolveAgentWorkspaceDir(cfg, targetAgentId),
+        });
     const taskMessage = buildSubagentTaskMessage({
-      task: params.task,
+      task: parentAttachments ? `${params.task}\n\n${parentAttachments.taskSuffix}` : params.task,
       spawnMode: "session",
       childDepth: callerDepth + 1,
       maxSpawnDepth: maxDepth,
@@ -507,25 +522,7 @@ export async function maybeSpawnVisibleSession(params: {
     const cleanupGateway = resolveGatewayContext
       ? (getCanonicalGatewayContextResolver(resolveGatewayContext) ?? resolveGatewayContext)
       : undefined;
-    const terminateCloudRun = (key: string, runId: string) =>
-      runWithGatewayToolCleanupContext(
-        () =>
-          terminateAcceptedCollectorRun({
-            childSessionKey: key,
-            gatewayRunId: runId,
-            sessionCleanup: "preserve",
-            callGateway: ({ method, params: request, timeoutMs }) => {
-              if (!isRecord(request)) {
-                throw new Error("Invalid cloud cleanup request");
-              }
-              return gatewayCall(method, request, {
-                timeoutMs,
-                resolveGatewayContext: cleanupGateway,
-              });
-            },
-          }),
-        cleanupGateway,
-      );
+    const terminateCloudRun = createVisibleCloudRunTerminator(gatewayCall, cleanupGateway);
     if (placement && childSessionKey && sessionId) {
       response = {
         ...response,
@@ -679,6 +676,7 @@ export async function maybeSpawnVisibleSession(params: {
       sessionKey: childSessionKey,
       storePath: resolveSessionStorePathCore(cfg.session?.store, { agentId: targetAgentId }),
     });
+    keepParentAttachments = true;
     const ownerLabel = normalizeOptionalString(resolveAgentIdentity(cfg, requesterAgentId)?.name);
     const sessionUrl = resolveControlUiSessionUrl(cfg, {
       sessionKey: childSessionKey,
@@ -700,5 +698,8 @@ export async function maybeSpawnVisibleSession(params: {
     };
   } finally {
     reservation.release();
+    if (parentAttachments && !keepParentAttachments) {
+      await fs.rm(parentAttachments.absDir, { recursive: true, force: true }).catch(() => {});
+    }
   }
 }

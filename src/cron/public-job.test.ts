@@ -46,6 +46,7 @@ describe("toPublicCronJob", () => {
   it("strips private provenance and sandbox targets without mutating the stored job", () => {
     const target = { version: 1, host: "gateway", ask: "always" } as const;
     const fields: Partial<CronStoredJob> = {
+      legacyHeartbeatReplyPolicy: true,
       runtimeAuthority: { version: 1, runtimeId: "test", namespace: "test", payload: {} },
       runtimeAuthorityRecoveryRequired: true,
       toolsAllowProvenance: { version: 1, source: "final-executable-surface" },

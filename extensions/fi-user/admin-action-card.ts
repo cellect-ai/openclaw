@@ -1,0 +1,269 @@
+import type {
+  OpenClawConfig,
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/core";
+import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { isSlackOrigin } from "./admin-action-origin.js";
+import { publishSlackAdminAction } from "./admin-action-slack-publish.js";
+import { isSlackUserId } from "./admin-action-slack.js";
+import { wiringSummary } from "./admin-action-wiring.js";
+import {
+  ADMIN_TASKS,
+  RECORD_TTL_MS,
+  transitionAdminAction,
+  type AdminActionRecord,
+} from "./admin-action.js";
+import type { RequesterIdentity, ResolvedPluginConfig } from "./fi-delegation.js";
+import { slackConversation } from "./slack-files.js";
+
+/** Only host-selected routing and explicit account identity bind a business request. */
+export function prepareAdminActionOrigin(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+  config: ResolvedPluginConfig,
+  identity?: RequesterIdentity,
+): NonNullable<AdminActionRecord["origin"]> {
+  const route = context.deliveryContext;
+  if (route?.channel === "slack" || identity?.channel === "slack") {
+    return prepareSlackOrigin(context, config, identity);
+  }
+  const accountId = context.agentAccountId ?? route?.accountId;
+  const cfg = context.getRuntimeConfig?.() ?? context.runtimeConfig ?? api.runtime.config.current();
+  const matrix = asOptionalRecord(cfg.channels?.matrix);
+  const account = asOptionalRecord(asOptionalRecord(matrix?.accounts)?.[accountId ?? ""]);
+  const agentMxid = account?.userId;
+  const roomId = route?.to?.replace(/^room:/, "");
+  const threadRootEventId = route?.threadId;
+  if (
+    !config.tenantOrgId ||
+    config.tenantOrgConflict ||
+    route?.channel !== "matrix" ||
+    !accountId ||
+    (route.accountId && route.accountId !== accountId) ||
+    typeof agentMxid !== "string" ||
+    !/^@[^\s:]+:[^\s]+$/.test(agentMxid) ||
+    !roomId ||
+    !/^![^\s:]+:[^\s]+$/.test(roomId) ||
+    typeof threadRootEventId !== "string" ||
+    !threadRootEventId.startsWith("$") ||
+    (context.nativeChannelId && context.nativeChannelId !== roomId)
+  ) {
+    throw new Error("Cannot bind this approval to a verified Fi conversation and account.");
+  }
+  return { channel: "matrix", orgId: config.tenantOrgId, roomId, threadRootEventId, agentMxid };
+}
+
+/**
+ * A Slack origin is bound only from host-selected routing: the delivery route,
+ * the agent's account, the host's session conversation and the sender Slack
+ * verified for this turn. No model-supplied parameter reaches it.
+ */
+function prepareSlackOrigin(
+  context: OpenClawPluginToolContext,
+  config: ResolvedPluginConfig,
+  identity: RequesterIdentity | undefined,
+): NonNullable<AdminActionRecord["origin"]> {
+  const route = context.deliveryContext;
+  const accountId = context.agentAccountId ?? route?.accountId;
+  const conversation = slackConversation(context);
+  const requester = identity?.channel === "slack" ? identity.requesterSenderId : undefined;
+  const teamId = /^team:([A-Z0-9]+):/i.exec(route?.to ?? "")?.[1]?.toUpperCase();
+  const routeThread = route?.threadId === undefined ? undefined : String(route.threadId);
+  if (
+    !config.tenantOrgId ||
+    config.tenantOrgConflict ||
+    route?.channel !== "slack" ||
+    !accountId ||
+    (route.accountId && route.accountId !== accountId) ||
+    !conversation ||
+    !isSlackUserId(requester) ||
+    (routeThread && conversation.threadTs && routeThread !== conversation.threadTs)
+  ) {
+    throw new Error("Cannot bind this approval to a verified Fi conversation and account.");
+  }
+  const threadTs =
+    conversation.threadTs ??
+    (routeThread && /^\d+\.\d+$/.test(routeThread) ? routeThread : undefined);
+  return {
+    channel: "slack",
+    orgId: config.tenantOrgId,
+    accountId,
+    channelId: conversation.channelId,
+    ...(teamId ? { teamId } : {}),
+    ...(threadTs ? { threadTs } : {}),
+    requesterSlackUserId: requester,
+  };
+}
+
+const singleLine = (value: string, max: number) =>
+  value
+    .replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ")
+    .trim()
+    .slice(0, max) || "Review this administrator request.";
+
+/** A card is a projection, never an approval authority or a generic question. */
+export function adminActionCard(record: AdminActionRecord) {
+  const state =
+    ["pending", "held"].includes(record.status) && Date.now() >= record.createdAt + RECORD_TTL_MS
+      ? "expired"
+      : record.status === "denied"
+        ? "declined"
+        : ["done", "failed"].includes(record.status)
+          ? "approved"
+          : record.status;
+  const prepared = record.preparedFiling;
+  const title = prepared ? `File ${prepared.input.displayName}` : ADMIN_TASKS[record.task].label;
+  const targetSummary = prepared
+    ? `${prepared.documentFilename === prepared.input.displayName ? "" : `Source: ${prepared.documentFilename}. `}${prepared.roomName} / ${prepared.input.section}; ${prepared.input.noOrder ? "no order" : `order ${prepared.input.order}`}; ${prepared.input.visibility}. ${
+        prepared.tasks.some((task) => !task.complete)
+          ? `Link: ${prepared.tasks
+              .filter((task) => !task.complete)
+              .map((task) => task.title)
+              .join(", ")}. `
+          : ""
+      }${
+        prepared.tasks.some((task) => task.complete)
+          ? `Link/complete: ${prepared.tasks
+              .filter((task) => task.complete)
+              .map((task) => task.title)
+              .join(", ")}.`
+          : prepared.tasks.length
+            ? ""
+            : "No checklist links."
+      }${prepared.input.acknowledgeRestricted ? " Restricted sharing." : ""}${prepared.input.tag.length ? ` Tags: ${prepared.input.tag.join(", ")}.` : ""}${prepared.input.highlight ? " Highlighted." : ""}`
+    : undefined;
+  // Never hide part of the approved target behind a truncated count or label.
+  // Oversized requests must be narrowed before a decision control is published.
+  if (
+    targetSummary &&
+    !record.execution &&
+    (targetSummary.replace(/[\p{Cc}\p{Cf}\u2028\u2029]+/gu, " ").trim().length > 280 ||
+      title.length > 80)
+  ) {
+    throw new Error(
+      "The exact filing targets do not fit this approval card. Narrow the request before asking for approval.",
+    );
+  }
+  return {
+    type: "m.cellect.decision",
+    version: 1,
+    kind: "workflowApproval",
+    id: record.id,
+    revision: record.revision ?? 1,
+    status: state,
+    title: singleLine(title, 80),
+    summary: singleLine(
+      record.execution?.message ??
+        targetSummary ??
+        (record.preparedWiring ? wiringSummary(record.preparedWiring) : undefined) ??
+        (record.fields.displayName && record.fields.roomName
+          ? `${record.fields.displayName} → ${record.fields.roomName}, ${record.fields.section ?? "section unresolved"}; ${record.fields.visibility ?? "visibility unresolved"}${record.fields.order ? `; order ${record.fields.order}` : "; no order"}; ${record.fields.taskIds?.length ?? 0} checklist links, ${record.fields.completeTaskIds?.length ?? 0} completions${record.fields.acknowledgeRestricted ? "; restricted sharing requested" : ""}.`
+          : record.fields.description) ??
+        "Review the exact requested action. Approval is separate from completion.",
+      280,
+    ),
+    decisions: state === "held" ? ["resume", "decline"] : ["approve", "hold", "decline"],
+    expiresAtMs: record.createdAt + RECORD_TTL_MS,
+    workflowRef: `admin-action:${record.id}`,
+    ...((state === "approved" || state === "declined") && record.decidedBy?.startsWith("@")
+      ? { decidedByUserId: record.decidedBy }
+      : {}),
+  };
+}
+
+/** The card a Slack reviewer sees: the neutral card plus who decided, from the stored record. */
+export function slackCardView(record: AdminActionRecord) {
+  return {
+    ...adminActionCard(record),
+    ...(record.decidedBy ? { decidedBy: record.decidedBy } : {}),
+  };
+}
+
+export async function publishAdminActionCard(
+  api: OpenClawPluginApi,
+  record: AdminActionRecord,
+  assertCurrent: () => void = () => {},
+  options: { announce?: boolean } = {},
+): Promise<AdminActionRecord> {
+  if (isSlackOrigin(record.origin)) {
+    return await publishSlackAdminAction(
+      api,
+      record,
+      slackCardView,
+      assertCurrent,
+      options.announce === true,
+    );
+  }
+  if (!record.origin || !record.delivery?.accountId) {
+    throw new Error("Missing approval origin.");
+  }
+  const adapter = await api.runtime.channel.outbound.loadAdapter("matrix");
+  if (!adapter?.sendPayload) {
+    throw new Error("Decision-card delivery is unavailable.");
+  }
+  assertCurrent();
+  const card = adminActionCard(record);
+  const wiring = record.execution?.wiringReceipt;
+  const text = `${card.title}\n${card.summary}${wiring ? `\n${wiring.companyName}\nRecipient: ${wiring.recipientEmail}\n${wiring.url}\nExpires: ${wiring.expiresAt}` : ""}`;
+  const result = await adapter.sendPayload({
+    // SAFETY: Matrix outbound only reads this host-validated immutable snapshot;
+    // its adapter contract still accepts the mutable OpenClawConfig type.
+    cfg: api.runtime.config.current() as OpenClawConfig,
+    to: record.origin.roomId,
+    accountId: record.delivery.accountId,
+    threadId: record.origin.threadRootEventId,
+    text,
+    assertDirectAdapterHandoff: assertCurrent,
+    payload: {
+      text,
+      channelData: {
+        matrix: {
+          ...(record.publicationEventId ? { editEventId: record.publicationEventId } : {}),
+          extraContent: { "ai.cellect.card": card },
+        },
+      },
+    },
+  });
+  if (!record.publicationEventId) {
+    const eventId = result.messageId;
+    if (typeof eventId !== "string" || !eventId.startsWith("$")) {
+      throw new Error("Approval publication has no native receipt; nothing can be approved.");
+    }
+    if (
+      !(await transitionAdminAction(
+        api,
+        record,
+        { ...record, publicationEventId: eventId },
+        assertCurrent,
+      ))
+    ) {
+      throw new Error("Approval publication could not be recorded; nothing was executed.");
+    }
+  }
+  return record;
+}
+
+/** Publication can be retried from durable custody without creating another bank share. */
+export async function deliverWiringReceipt(
+  api: OpenClawPluginApi,
+  record: AdminActionRecord,
+  assertCurrent: () => void,
+): Promise<AdminActionRecord> {
+  if (!record.execution?.wiringReceipt || record.execution.wiringDelivered) {
+    return record;
+  }
+  if (Date.parse(record.execution.wiringReceipt.expiresAt) <= Date.now()) {
+    throw new Error(
+      "This recipient link expired. A new release needs a new administrator approval.",
+    );
+  }
+  const published = await publishAdminActionCard(api, record, assertCurrent, { announce: true });
+  const delivered = { ...published, execution: { ...record.execution, wiringDelivered: true } };
+  if (!(await transitionAdminAction(api, published, delivered, assertCurrent))) {
+    throw new Error(
+      "The wire-link delivery receipt could not be recorded. Retry delivery with the same requestId; do not create another share.",
+    );
+  }
+  return delivered;
+}

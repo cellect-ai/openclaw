@@ -51,6 +51,11 @@ export function buildAgentHookContext(params: AgentHarnessHookContext): PluginHo
     ...(params.channel ? { channel: params.channel } : {}),
     ...(params.trigger ? { trigger: params.trigger } : {}),
     ...(params.inputProvenance ? { inputProvenance: params.inputProvenance } : {}),
+    ...(params.requesterContinuation
+      ? { requesterContinuation: params.requesterContinuation }
+      : {}),
+    ...(params.spawnedFrom ? { spawnedFrom: params.spawnedFrom } : {}),
+    ...(params.spawnedFromChannel ? { spawnedFromChannel: params.spawnedFromChannel } : {}),
     ...(params.channelId ? { channelId: params.channelId } : {}),
     ...(params.contextTokenBudget ? { contextTokenBudget: params.contextTokenBudget } : {}),
     ...(params.contextWindowSource ? { contextWindowSource: params.contextWindowSource } : {}),

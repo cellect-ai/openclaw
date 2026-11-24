@@ -1,3 +1,7 @@
+import {
+  classifyAsyncCompletion,
+  clearRunFinalDeliveriesForTest,
+} from "../../infra/run-final-deliveries.js";
 // Tests dispatch-from-config reply dispatch integration and final payload routing.
 // Register dispatch mocks before modules that consume them.
 // oxfmt-ignore
@@ -794,4 +798,63 @@ describe("dispatchReplyFromConfig reply_dispatch hook", () => {
       }
     },
   );
+});
+
+it.each([
+  "delivered",
+  "cancelled",
+  "failed-before-deliver",
+  "failed-deliver",
+  "pending",
+  "continuing",
+] as const)("records a final answer only from settled terminal delivery: %s", async (outcome) => {
+  clearRunFinalDeliveriesForTest();
+  hookMocks.runner.hasHooks.mockReturnValue(false);
+  const dispatcher = createReplyDispatcher({
+    beforeDeliver: (payload) => {
+      if (outcome === "cancelled") {
+        return null;
+      }
+      if (outcome === "failed-before-deliver") {
+        throw new Error("hook refused");
+      }
+      return payload;
+    },
+    deliver: async () => {
+      if (outcome === "failed-deliver") {
+        throw new Error("transport outcome unknown");
+      }
+      if (outcome === "pending") {
+        return {
+          visibleReplySent: false,
+          suppression: { reason: "adapter_returned_no_identity" },
+        };
+      }
+      return undefined;
+    },
+  });
+  await withReplyDispatcher({
+    dispatcher,
+    run: () =>
+      dispatchReplyFromConfig({
+        ctx: createHookCtx(),
+        cfg: emptyConfig,
+        dispatcher,
+        replyOptions: { runId: "settlement-proof-run" },
+        replyResolver: async (_ctx, options) => {
+          if (outcome === "continuing") {
+            options?.onPendingContinuation?.();
+          }
+          return {
+            text: outcome === "continuing" ? "The job is still running." : "The requested answer.",
+          };
+        },
+      }),
+  });
+  expect(
+    classifyAsyncCompletion({
+      sessionKey: "agent:test:session",
+      runId: "settlement-proof-run",
+    }),
+  ).toBe(outcome === "delivered" ? "answered" : "fresh");
 });

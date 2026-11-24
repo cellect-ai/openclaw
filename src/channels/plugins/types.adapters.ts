@@ -150,6 +150,29 @@ export type ChannelSecretsAdapter = {
 export type ChannelGroupAdapter = {
   resolveRequireMention?: (params: ChannelGroupContext) => boolean | undefined;
   resolveToolPolicy?: (params: ChannelGroupContext) => GroupToolPolicyConfig | undefined;
+  /** Native membership proof, never inferred from a local directory cache. */
+  isJoinedMember?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    expectedAccountUserId: string;
+    groupId: string;
+    userId: string;
+    assertCurrent: () => void;
+  }) => Promise<boolean>;
+  /** Joined member ids from the account's own client. Throws when the read is not proof. */
+  listJoinedMembers?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    expectedAccountUserId: string;
+    groupId: string;
+    assertCurrent: () => void;
+  }) => Promise<readonly string[]>;
+  /** The thread a group's bound conversation lives in, when it has one. */
+  resolveCanonicalThreadId?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    groupId: string;
+  }) => Promise<string | undefined>;
 };
 export type ChannelStatusAdapter<ResolvedAccount, Probe = unknown, Audit = unknown> = {
   defaultRuntime?: ChannelAccountSnapshot;

@@ -14,6 +14,7 @@ vi.mock("../../agents/model-selection-config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/model-selection-config.js")>()),
   resolveModelFallbackAvailability: (...args: unknown[]) =>
     hoisted.resolveModelFallbackAvailabilityMock(...args),
+  resolveFormatFailureFallbackModels: () => undefined,
 }));
 
 vi.mock("../../channels/plugins/index.js", () => ({

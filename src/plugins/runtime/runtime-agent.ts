@@ -23,6 +23,7 @@ import { getRuntimeConfig } from "../../config/config.js";
 import * as session from "../../config/sessions/lifecycle.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
+  listSessionEntryKeysReadOnly as listAccessorSessionEntryKeysReadOnly,
   listSessionEntriesCore as listAccessorSessionEntries,
   listSessionEntriesReadOnly as listAccessorSessionEntriesReadOnly,
   loadSessionEntryReadOnly,
@@ -103,6 +104,16 @@ const listSessionEntries: RuntimeSession["listSessionEntries"] = (params = {}) =
     ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
   });
 };
+
+async function listSessionKeys(
+  params: Partial<Omit<RuntimeSessionStoreReadParams, "sessionKey">> = {},
+): Promise<string[]> {
+  return await listAccessorSessionEntryKeysReadOnly({
+    ...(params.agentId !== undefined ? { agentId: params.agentId } : {}),
+    ...(params.env !== undefined ? { env: params.env } : {}),
+    ...(params.storePath !== undefined ? { storePath: params.storePath } : {}),
+  });
+}
 
 async function runWithSessionWorkAdmission<T>(
   input: { storePath: string; sessionKey: string; signal?: AbortSignal },
@@ -300,6 +311,7 @@ export function createRuntimeAgent(): PluginRuntime["agent"] {
       (
         await import("../../config/sessions/session-entry-read-runtime.js")
       ).createSessionEntryListReader(params),
+    listSessionKeys,
     patchSessionEntry,
     prepareSessionEntryPatch,
     upsertSessionEntry,

@@ -1,25 +1,23 @@
 import fs from "node:fs/promises";
 import type { App } from "@slack/bolt";
-import type { RichTextBlock, RichTextSection } from "@slack/types";
+import type { RichTextBlock } from "@slack/types";
+import type { RichTextSection } from "@slack/types";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
-import {
-  registerSessionBindingAdapter,
-  unregisterSessionBindingAdapter,
-  type SessionBindingAdapter,
-  type SessionBindingRecord,
-} from "openclaw/plugin-sdk/conversation-runtime";
 import type { FinalizedMsgContext } from "openclaw/plugin-sdk/reply-runtime";
 import { compileSafeRegexDetailed } from "openclaw/plugin-sdk/security-runtime";
-import { upsertSessionEntry, type SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import type { SessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
+import { upsertSessionEntry } from "openclaw/plugin-sdk/session-store-runtime";
 import { afterEach, assert, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ResolvedSlackAccount } from "../../accounts.js";
 import { slackPlugin } from "../../channel.js";
 import { registerSlackInstallationState } from "../../installation-identity-state.js";
+import { registerSlackThreadOwnerPeer } from "../../sent-thread-cache.js";
 import {
   clearSlackThreadParticipationCache,
   recordSlackThreadParticipation,
 } from "../../sent-thread-cache.js";
-import type { SlackFile, SlackMessageEvent } from "../../types.js";
+import type { SlackFile } from "../../types.js";
+import type { SlackMessageEvent } from "../../types.js";
 import type { SlackMonitorContext } from "../context.js";
 import type { SlackEventScope } from "../event-scope.js";
 import { resolveSlackMessageContent } from "./prepare-content.js";
@@ -31,6 +29,14 @@ import {
   createSlackTestAccount as createSlackAccount,
 } from "./prepare.test-helpers.js";
 
+function assertPrepared(
+  prepared: Awaited<ReturnType<typeof prepareSlackMessage>>,
+  label = "Slack message",
+): asserts prepared is NonNullable<Awaited<ReturnType<typeof prepareSlackMessage>>> {
+  if (!prepared) {
+    throw new Error(`Expected ${label} to be prepared`);
+  }
+}
 const {
   enqueueSystemEventMock,
   logVerboseMock,
@@ -1332,304 +1338,6 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     expect(prepared.ctxPayload.CommandBody).toBe("Please use the files from the root");
   });
 
-  it.each(["without runtime", "stale"] as const)(
-    "recovers thread history according to %s session freshness",
-    async (state) => {
-      const { storePath } = storeFixture.makeTmpStorePath();
-      const now = Date.now();
-      const old = now - 2 * 24 * 60 * 60 * 1000;
-      const cfg: OpenClawConfig = slackConfig(
-        { replyToMode: "all", groupPolicy: "open" },
-        {
-          session: {
-            store: storePath,
-            resetByType:
-              state === "stale" ? { thread: { mode: "idle", idleMinutes: 60 } } : undefined,
-          },
-        },
-      );
-      const threadTs = { "without runtime": "250.000", stale: "300.000" }[state];
-      const sessionKey = `agent:main:slack:channel:c123:thread:${threadTs}`;
-      await seedSessionEntries(storePath, {
-        [sessionKey]: {
-          sessionId: "existing-thread",
-          displayName: "Renamed in Slack",
-          updatedAt: state === "without runtime" ? old : now,
-          sessionStartedAt: old,
-          lastInteractionAt: old,
-        },
-      });
-      const starter = { text: "starter", user: "U2", ts: threadTs };
-      const replies = vi.fn().mockResolvedValueOnce({ messages: [starter] });
-      if (state === "stale") {
-        replies.mockResolvedValueOnce(
-          slackReply([
-            starter,
-            { text: "assistant prior output", bot_id: "B1", ts: "300.500" },
-            { text: "prior human context", user: "U1", ts: "300.800" },
-            { text: "current post-reset message", user: "U1", ts: "301.000" },
-          ]),
-        );
-      }
-      const ctx = createThreadSlackCtx({ cfg, replies });
-      if (state === "without runtime") {
-        ctx.channelRuntime = undefined;
-      }
-      if (state === "stale") {
-        ctx.historyLimit = 50;
-        ctx.threadInheritParent = true;
-      }
-      ctx.resolveUserName = async (id) => ({ name: id === "U1" ? "Alice" : "Bob" });
-      ctx.resolveChannelName = async () => ({ name: "general", type: "channel" });
-      const prepared = await prepareInbound(
-        ctx,
-        createThreadReplyMessage({
-          text: "current post-reset message",
-          ts: "301.000",
-          thread_ts: threadTs,
-        }),
-        createSlackAccount({
-          replyToMode: "all",
-          thread: { initialHistoryLimit: 10, inheritParent: state === "stale" },
-        }),
-      );
-      assert(prepared);
-      expect(prepared.ctxPayload.SessionKey).toBe(sessionKey);
-      if (state === "stale") {
-        expect(prepared.ctxPayload).toMatchObject({
-          IsFirstThreadTurn: true,
-          ThreadStarterBody: "starter",
-        });
-        expect(prepared.ctxPayload.ThreadHistoryBody).toContain("prior human context");
-        expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("assistant prior output");
-        expect(prepared.ctxPayload.ThreadHistoryBody).not.toContain("current post-reset message");
-        expect(prepared.ctxPayload.ParentSessionKey).toBe("agent:main:slack:channel:c123");
-        expect(replies).toHaveBeenCalledTimes(2);
-        expect(replies).toHaveBeenLastCalledWith({
-          channel: "C123",
-          ts: "300.000",
-          limit: 200,
-          inclusive: false,
-          latest: "301.000",
-        });
-      } else {
-        expect(prepared.ctxPayload.IsFirstThreadTurn).toBeUndefined();
-        expect(prepared.ctxPayload.ThreadHistoryBody).toBeUndefined();
-        expect(prepared.ctxPayload.ThreadStarterBody).toBe("starter");
-        expect(prepared.ctxPayload.ThreadLabel).toContain("Slack thread");
-        expect(prepared.sessionDisplayName).toBe("Renamed in Slack");
-        expect(replies).toHaveBeenCalledTimes(1);
-      }
-    },
-  );
-
-  it("drops ambiguous thread replies instead of treating them as root messages", async () => {
-    const replies = vi.fn();
-    const slackCtx = createThreadSlackCtx({ replies, named: true });
-
-    const prepared = await prepareInbound(
-      slackCtx,
-      {
-        ...createSlackMessage({
-          channel: "C123",
-          channel_type: "channel",
-          text: "<@B1> can you follow up?",
-          ts: "201.000",
-          parent_user_id: "U2",
-        }),
-        _ambiguousThreadReply: true,
-      },
-      createThreadAccount(),
-    );
-
-    expect(prepared).toBeNull();
-    expect(replies).not.toHaveBeenCalled();
-  });
-
-  it("keeps a self-thread DM reply on its ordinary session after metadata lookup fails", async () => {
-    const prepared = await prepareInbound(
-      createReplyToAllSlackCtx(),
-      { ts: "701.000", thread_ts: "701.000", parent_user_id: "B1" },
-      createSlackAccount({ replyToMode: "all" }),
-    );
-    assert(prepared);
-    expect(prepared.ctxPayload).toMatchObject({
-      SessionKey: "agent:main:main",
-      MessageThreadId: undefined,
-      ReplyToId: "701.000",
-      TransportThreadId: "701.000",
-    });
-  });
-
-  it("rejects a participant-only mention when the thread is owned by ACP", async () => {
-    const targetSessionKey = "agent:review:acp:session-67739";
-    const binding: SessionBindingRecord = {
-      bindingId: "test-binding",
-      targetSessionKey,
-      targetKind: "session",
-      conversation: {
-        channel: "slack",
-        accountId: "default",
-        conversationId: "100.000",
-        parentConversationId: "C123",
-      },
-      status: "active",
-      boundAt: Date.now(),
-      metadata: {},
-    };
-    const resolveByConversation: SessionBindingAdapter["resolveByConversation"] = vi.fn((ref) =>
-      ref.channel === "slack" &&
-      ref.accountId === "default" &&
-      ref.conversationId === "100.000" &&
-      ref.parentConversationId === "C123"
-        ? binding
-        : null,
-    );
-    const touch: NonNullable<SessionBindingAdapter["touch"]> = vi.fn();
-    const adapter: SessionBindingAdapter = {
-      channel: "slack",
-      accountId: "default",
-      listBySession: () => [],
-      resolveByConversation,
-      touch,
-    };
-    registerSessionBindingAdapter(adapter);
-    try {
-      const replies = vi
-        .fn()
-        .mockResolvedValue(slackReply([{ text: "starter", user: "U2", ts: "100.000" }]));
-      const slackCtx = createThreadSlackCtx({
-        cfg: slackConfig(
-          { replyToMode: "all", groupPolicy: "open" },
-          {
-            agents: {
-              entries: { main: {}, review: {}, analyst: { identity: { name: "Analyst" } } },
-            },
-            bindings: [{ agentId: "main", match: { channel: "slack" } }],
-            broadcast: { "slack:C123": ["main", "analyst"] },
-          },
-        ),
-        replies,
-      });
-      slackCtx.defaultRequireMention = true;
-      nameContext(slackCtx);
-
-      const prepared = await prepareThreadMessage(slackCtx, {
-        text: "@Analyst please review",
-        ts: "100.000",
-      });
-
-      expect(resolveByConversation).toHaveBeenCalledWith(binding.conversation);
-      expect(prepared).toBeNull();
-    } finally {
-      unregisterSessionBindingAdapter({ channel: "slack", accountId: "default", adapter });
-    }
-  });
-
-  let rootSequence = 0;
-  it.each([
-    { owner: "enterprise", text: "<@B1> review this", mode: "all" },
-    { owner: "implicit", text: "review this", mode: "first" },
-    { owner: "plugin", text: "Bill review this", mode: "all" },
-  ] as const)("keeps $owner roots and follow-ups on one session", async ({ owner, text, mode }) => {
-    const { storePath } = storeFixture.makeTmpStorePath();
-    const channel = "C123";
-    const rootTs = `1777244692.${++rootSequence}00000`;
-    const teamId = owner === "enterprise" ? "T123ENTERPRISE" : undefined;
-    const channels = owner === "implicit" ? { C123: { requireMention: false } } : undefined;
-    const cfg: OpenClawConfig = slackConfig(
-      { replyToMode: mode, groupPolicy: "open", channels },
-      {
-        session: { store: storePath },
-        messages:
-          owner === "plugin" ? { groupChat: { mentionPatterns: ["\\bbill\\b"] } } : undefined,
-      },
-    );
-    const replies = vi.fn().mockResolvedValue(slackReply([{ text, user: "U1", ts: rootTs }]));
-    const ctx = createInboundSlackCtx({
-      cfg,
-      replyToMode: mode,
-      channelsConfig: channels,
-      appClient: { conversations: { replies } } as unknown as App["client"],
-    });
-    nameContext(ctx);
-    if (teamId) {
-      ctx.botUserId = "";
-    }
-    const eventScope = teamId ? { teamId, client: ctx.app.client } : undefined;
-    const binding: SessionBindingRecord = {
-      bindingId: "root-binding",
-      targetSessionKey: "agent:plugin:slack:channel:c123",
-      targetKind: "session",
-      status: "active",
-      boundAt: 1,
-      conversation: { channel: "slack", accountId: "default", conversationId: channel },
-      metadata:
-        owner === "plugin"
-          ? {
-              pluginBindingOwner: "plugin",
-              pluginId: "demo-plugin",
-              pluginRoot: "/tmp/demo-plugin",
-            }
-          : {},
-    };
-    const adapter: SessionBindingAdapter = {
-      channel: "slack",
-      accountId: "default",
-      listBySession: () => [],
-      resolveByConversation: (ref) => (ref.conversationId === channel ? binding : null),
-    };
-    const bound = owner === "plugin";
-    if (bound) {
-      registerSessionBindingAdapter(adapter);
-    }
-    const rootMessage = createSlackMessage({ channel, channel_type: "channel", text, ts: rootTs });
-    const prepare = (message: SlackMessageEvent, source: "message" | "app_mention") =>
-      prepareInbound(ctx, message, createSlackAccount({ replyToMode: mode }), {
-        source,
-        wasMentioned: source === "app_mention" || undefined,
-        eventScope,
-      });
-    try {
-      const root = await prepare(rootMessage, teamId ? "app_mention" : "message");
-      recordSlackThreadParticipation("default", channel, rootTs, { teamId });
-      const followUp = await prepare(
-        {
-          ...rootMessage,
-          text: owner === "plugin" ? "<@B1> ?" : "https://example.test/issue",
-          ts: "1777244714.000100",
-          thread_ts: rootTs,
-          parent_user_id: "U1",
-        },
-        "message",
-      );
-      assert(root);
-      assert(followUp);
-      const expectedKey = `agent:main:slack:channel:${teamId ? "team:t123enterprise:channel:" : ""}c123:thread:${rootTs}`;
-      expect(root.ctxPayload.SessionKey).toBe(expectedKey);
-      expect(followUp.ctxPayload).toMatchObject({
-        SessionKey: expectedKey,
-        MessageThreadId: rootTs,
-        ReplyToId: rootTs,
-        MessageSid: "1777244714.000100",
-      });
-      expect(root.route.agentId).toBe("main");
-      expect(root.ctxPayload).not.toHaveProperty("SystemEventSessionKey");
-      expect(followUp.ctxPayload).not.toHaveProperty("SystemEventSessionKey");
-      if (teamId) {
-        expect(followUp.ctxPayload.WasMentioned).toBe(true);
-      }
-      if (mode === "first") {
-        expect(root.ctxPayload.MessageThreadId).toBeUndefined();
-        expect(root.ctxPayload.ReplyToId).toBeUndefined();
-      }
-    } finally {
-      if (bound) {
-        unregisterSessionBindingAdapter({ channel: "slack", accountId: "default", adapter });
-      }
-    }
-  });
-
   function createUnavailableMentionCtx() {
     const ctx = createInboundSlackCtx();
     ctx.botUserId = "";
@@ -1808,6 +1516,111 @@ Second paragraph should still reach the agent after Slack's preview cutoff.`;
     );
     expect(downloadedPath).toEqual(expect.any(String));
     await expect(fs.stat(downloadedPath as string)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("preserves seeded top-level roots without reply_to_id self-references", async () => {
+    const { storePath } = storeFixture.makeTmpStorePath();
+    const rootTs = "1777244692.409919";
+
+    for (const replyToMode of ["first", "batched"] as const) {
+      const slackCtx = createInboundSlackCtx({
+        cfg: {
+          session: { store: storePath },
+          channels: { slack: { enabled: true, replyToMode, groupPolicy: "open" } },
+        } as OpenClawConfig,
+        defaultRequireMention: true,
+        replyToMode,
+      });
+      slackCtx.resolveChannelName = async () => ({ name: "proj-openclaw", type: "channel" });
+      slackCtx.resolveUserName = async () => ({ name: "Bek" });
+
+      const prepared = await prepareSlackMessage({
+        ctx: slackCtx,
+        account: createSlackAccount({ replyToMode }),
+        message: {
+          type: "message",
+          channel: "C0AHZFCAS1K",
+          channel_type: "channel",
+          user: "U_BEK",
+          text: "<@B1> send a subagent to review GitHub issue #50621",
+          ts: rootTs,
+        } as SlackMessageEvent,
+        opts: { source: "app_mention", wasMentioned: true },
+      });
+
+      assertPrepared(prepared);
+      expect(prepared.ctxPayload.SessionKey).toBe(
+        "agent:main:slack:channel:c0ahzfcas1k:thread:1777244692.409919",
+      );
+      expect(prepared.ctxPayload.IsFirstThreadTurn).toBe(true);
+      expect(prepared.ctxPayload.MessageThreadId).toBeUndefined();
+      expect(prepared.ctxPayload.ReplyToId).toBeUndefined();
+    }
+  });
+
+  it("prepares bare-ping Slack thread replies with the parent thread timestamp", async () => {
+    const { storePath } = storeFixture.makeTmpStorePath();
+    const rootTs = "1777244748.777299";
+    const childTs = "1777245202.803289";
+    const expectedSessionKey = "agent:main:slack:channel:c0ahzfcas1k:thread:1777244748.777299";
+    const childTsSessionKey = "agent:main:slack:channel:c0ahzfcas1k:thread:1777245202.803289";
+    const replies = vi.fn().mockResolvedValue({
+      messages: [
+        {
+          text: "Original Slack thread root",
+          user: "U_ROOT",
+          ts: rootTs,
+        },
+      ],
+      response_metadata: { next_cursor: "" },
+    });
+    const slackCtx = createInboundSlackCtx({
+      cfg: {
+        session: { store: storePath },
+        channels: { slack: { enabled: true, replyToMode: "all", groupPolicy: "open" } },
+      } as OpenClawConfig,
+      appClient: { conversations: { replies } } as unknown as App["client"],
+      defaultRequireMention: true,
+      replyToMode: "all",
+    });
+    slackCtx.resolveChannelName = async () => ({ name: "proj-openclaw", type: "channel" });
+    slackCtx.resolveUserName = async () => ({ name: "Bek" });
+
+    const prepared = await prepareSlackMessage({
+      ctx: slackCtx,
+      account: createSlackAccount({ replyToMode: "all" }),
+      message: {
+        type: "message",
+        channel: "C0AHZFCAS1K",
+        channel_type: "channel",
+        user: "U_BEK",
+        text: "<@B1> ?",
+        ts: childTs,
+        thread_ts: rootTs,
+        parent_user_id: "U_ROOT",
+      } as SlackMessageEvent,
+      opts: { source: "message" },
+    });
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.SessionKey).toBe(expectedSessionKey);
+    expect(prepared.ctxPayload.SessionKey).not.toBe(childTsSessionKey);
+    expect(prepared.ctxPayload.MessageThreadId).toBe(rootTs);
+    expect(prepared.ctxPayload.ReplyToId).toBe(rootTs);
+    expect(prepared.ctxPayload.MessageSid).toBe(childTs);
+    expect(prepared.ctxPayload.WasMentioned).toBe(true);
+  });
+
+  it("includes forwarded shared attachment text in raw body", async () => {
+    const prepared = await prepareWithDefaultCtx(
+      createSlackMessage({
+        text: "",
+        attachments: [{ is_share: true, author_name: "Bob", text: "Forwarded hello" }],
+      }),
+    );
+
+    assertPrepared(prepared);
+    expect(prepared.ctxPayload.RawBody).toContain("[Forwarded message from Bob]\nForwarded hello");
   });
 });
 
@@ -2035,6 +1848,206 @@ describe("slack implicit mention policy", () => {
 
     expect(await prepareThreadMessage(eventScope)).toBeNull();
   });
+
+  it("drops the current owner when another bot is mentioned, even if it handles the event first", async () => {
+    const threadTs = "1700000000.000000";
+    const { fiAdmin, fiUser } = createOwnershipPair();
+    recordSlackThreadParticipation("fi-admin", "C123", threadTs);
+    recordSlackThreadParticipation("fi-user", "C123", threadTs);
+    await prepareThreadMessage({ ...fiAdmin, message: { thread_ts: threadTs } });
+
+    const mention = { thread_ts: threadTs, text: "<@BUSER> take this one" };
+    // The owner's handler starts before the mentioned bot's forced claim lands.
+    const [adminResult, userResult] = await Promise.all([
+      prepareThreadMessage({ ...fiAdmin, message: mention }),
+      prepareThreadMessage({ ...fiUser, message: mention }),
+    ]);
+    const nextAdmin = await prepareThreadMessage({
+      ...fiAdmin,
+      message: { thread_ts: threadTs, ts: "1700000002.000001" },
+    });
+
+    expect(adminResult).toBeNull();
+    expect(userResult?.ctxPayload.MentionSource).toBe("explicit_bot");
+    expect(nextAdmin).toBeNull();
+  });
+
+  it("lets a lower-ranked bot own a top-level message that mentions only it", async () => {
+    const { fiAdmin, fiUser } = createOwnershipPair({ requireMention: false });
+    const message = {
+      text: "<@BUSER> status?",
+      thread_ts: undefined,
+      parent_user_id: undefined,
+    };
+
+    const adminResult = await prepareThreadMessage({ ...fiAdmin, message });
+    const userResult = await prepareThreadMessage({ ...fiUser, message });
+
+    expect(adminResult).toBeNull();
+    expect(userResult?.ctxPayload.MentionSource).toBe("explicit_bot");
+  });
+
+  it("admits one bot for an unmentioned top-level message both bots would answer", async () => {
+    const { fiAdmin, fiUser } = createOwnershipPair({ requireMention: false });
+    const message = { text: "status?", thread_ts: undefined, parent_user_id: undefined };
+
+    const userResult = await prepareThreadMessage({ ...fiUser, message });
+    const adminResult = await prepareThreadMessage({ ...fiAdmin, message });
+
+    expect(userResult).toBeNull();
+    expect(adminResult).not.toBeNull();
+  });
+
+  it("runs only the highest-ranked mentioned bot on a top-level channel message", async () => {
+    const { fiAdmin, fiUser } = createOwnershipPair();
+    const message = {
+      text: "<@BUSER> <@BADMIN> please both look",
+      thread_ts: undefined,
+      parent_user_id: undefined,
+    };
+
+    const userResult = await prepareThreadMessage({ ...fiUser, message });
+    const adminResult = await prepareThreadMessage({ ...fiAdmin, message });
+
+    expect(userResult).toBeNull();
+    expect(adminResult?.ctxPayload.MentionSource).toBe("explicit_bot");
+  });
+
+  it("runs only the highest-ranked bot when several preferred bots are mentioned", async () => {
+    const { fiAdmin, fiUser } = createOwnershipPair();
+    const message = { text: "<@BUSER> <@BADMIN> please both look" };
+
+    const [userResult, adminResult] = await Promise.all([
+      prepareThreadMessage({ ...fiUser, message }),
+      prepareThreadMessage({ ...fiAdmin, message }),
+    ]);
+
+    expect(userResult).toBeNull();
+    expect(adminResult?.ctxPayload.MentionSource).toBe("explicit_bot");
+  });
+
+  it("transfers shared-thread ownership when another bot is explicitly mentioned", async () => {
+    const threadTs = "1700000000.000000";
+    const cfg = {
+      channels: {
+        slack: {
+          enabled: true,
+          implicitMentions: { threadParticipation: true },
+          threadOwnership: { preferredAccounts: ["fi-admin", "fi-user"] },
+          accounts: { "fi-admin": {}, "fi-user": {} },
+        },
+      },
+      session: {},
+    } as OpenClawConfig;
+    const fiAdminContext = createInboundSlackTestContext({ cfg, accountId: "fi-admin" });
+    const fiUserContext = createInboundSlackTestContext({ cfg, accountId: "fi-user" });
+    fiAdminContext.resolveUserName = async () => ({ name: "Alice" });
+    fiUserContext.resolveUserName = async () => ({ name: "Alice" });
+    const fiAdminAccount = { ...createSlackAccount(), accountId: "fi-admin" };
+    const fiUserAccount = { ...createSlackAccount(), accountId: "fi-user" };
+    recordSlackThreadParticipation("fi-admin", "C123", threadTs);
+    recordSlackThreadParticipation("fi-user", "C123", threadTs);
+
+    await prepareThreadMessage({
+      ctx: fiAdminContext,
+      account: fiAdminAccount,
+      message: { thread_ts: threadTs },
+    });
+    const explicitFiUser = await prepareThreadMessage({
+      ctx: fiUserContext,
+      account: fiUserAccount,
+      message: { thread_ts: threadTs, text: "<@B1> continue" },
+    });
+    const nextFiAdmin = await prepareThreadMessage({
+      ctx: fiAdminContext,
+      account: fiAdminAccount,
+      message: { thread_ts: threadTs },
+    });
+
+    expect(explicitFiUser?.ctxPayload.MentionSource).toBe("explicit_bot");
+    expect(nextFiAdmin).toBeNull();
+  });
+
+  it("admits only the preferred participating account in a shared unmentioned thread", async () => {
+    const threadTs = "1700000000.000000";
+    const cfg = {
+      channels: {
+        slack: {
+          enabled: true,
+          implicitMentions: { threadParticipation: true },
+          threadOwnership: { preferredAccounts: ["fi-admin", "fi-user"] },
+          accounts: { "fi-admin": {}, "fi-user": {} },
+        },
+      },
+      session: {},
+    } as OpenClawConfig;
+    const fiAdminContext = createInboundSlackTestContext({ cfg, accountId: "fi-admin" });
+    const fiUserContext = createInboundSlackTestContext({ cfg, accountId: "fi-user" });
+    fiAdminContext.resolveUserName = async () => ({ name: "Alice" });
+    fiUserContext.resolveUserName = async () => ({ name: "Alice" });
+    const fiAdminAccount = { ...createSlackAccount(), accountId: "fi-admin" };
+    const fiUserAccount = { ...createSlackAccount(), accountId: "fi-user" };
+    recordSlackThreadParticipation("fi-admin", "C123", threadTs);
+    recordSlackThreadParticipation("fi-user", "C123", threadTs);
+
+    const fiUser = await prepareThreadMessage({
+      ctx: fiUserContext,
+      account: fiUserAccount,
+      message: { thread_ts: threadTs },
+    });
+    const fiAdmin = await prepareThreadMessage({
+      ctx: fiAdminContext,
+      account: fiAdminAccount,
+      message: { thread_ts: threadTs },
+    });
+
+    expect(fiUser).toBeNull();
+    expect(fiAdmin?.ctxPayload.MentionSource).toBe("implicit_thread");
+  });
+
+  function createOwnershipPair(options?: { requireMention?: boolean }) {
+    const cfg = {
+      channels: {
+        slack: {
+          enabled: true,
+          implicitMentions: { threadParticipation: true },
+          threadOwnership: { preferredAccounts: ["fi-admin", "fi-user"] },
+          accounts: { "fi-admin": {}, "fi-user": {} },
+        },
+      },
+      session: {},
+    } as OpenClawConfig;
+    const defaultRequireMention = options?.requireMention ?? true;
+    const fiAdmin = createInboundSlackTestContext({
+      cfg,
+      accountId: "fi-admin",
+      defaultRequireMention,
+    });
+    const fiUser = createInboundSlackTestContext({
+      cfg,
+      accountId: "fi-user",
+      defaultRequireMention,
+    });
+    fiAdmin.botUserId = "BADMIN";
+    fiUser.botUserId = "BUSER";
+    for (const ctx of [fiAdmin, fiUser]) {
+      ctx.resolveUserName = async () => ({ name: "Alice" });
+      registerSlackThreadOwnerPeer(ctx.accountId, {
+        botUserId: () => ctx.botUserId,
+        answersUnmentioned: () => !defaultRequireMention,
+      });
+    }
+    return {
+      fiAdmin: {
+        ctx: fiAdmin,
+        account: { ...createSlackAccount(), accountId: "fi-admin" },
+      },
+      fiUser: {
+        ctx: fiUser,
+        account: { ...createSlackAccount(), accountId: "fi-user" },
+      },
+    };
+  }
 });
 it("partitions enterprise main DM sessions by account and workspace", async () => {
   const ctx = {

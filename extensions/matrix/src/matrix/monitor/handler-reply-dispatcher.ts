@@ -27,6 +27,8 @@ import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixExtraContent } from "../../outbound.js";
 import { getMatrixRuntime } from "../../runtime.js";
 import type { CoreConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
+import { deliverBoundSourceReply } from "../bound-source-reply.js";
+import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import { sendMessageMatrix } from "../send.js";
 import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY, type MatrixSendResult } from "../send/types.js";
@@ -93,6 +95,9 @@ function resolveVisibleMatrixReplyText(text?: string): string | undefined {
   return visibleText.trim() ? visibleText : undefined;
 }
 
+/** Fi pairs a finished answer with the person's "Let me know" request by this field. */
+const MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY = "ai.cellect.let_me_know_answer";
+
 export function createMatrixReplyDispatcher(config: {
   cfg: CoreConfig;
   prefixOptions: Omit<ReturnType<typeof createReplyPrefixOptions>, "onModelSelected">;
@@ -109,6 +114,10 @@ export function createMatrixReplyDispatcher(config: {
   replyToMode: ReplyToMode;
   threadTarget?: string;
   replyToEventId?: string;
+  /** The turn's own triggering "Let me know" event; only its final replies are marked. */
+  letMeKnowTriggerEventId?: string;
+  /** This turn was admitted into the bound source session. */
+  sourceReply?: { sessionKey: string; eventId: string };
   accountId: string;
   mediaLocalRoots: readonly string[];
   logVerboseMessage: (message: string) => void;
@@ -127,15 +136,29 @@ export function createMatrixReplyDispatcher(config: {
     replyToMode,
     threadTarget,
     replyToEventId,
+    letMeKnowTriggerEventId,
+    sourceReply,
     accountId,
     mediaLocalRoots,
     logVerboseMessage,
   } = config;
   const quietDraftStreaming = streaming === "quiet" || streaming === "progress";
+  let sourceReplyPart = 0;
+  const letMeKnowAnswerContent = letMeKnowTriggerEventId
+    ? {
+        [MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY]: {
+          version: 1,
+          triggerEventId: letMeKnowTriggerEventId,
+        },
+      }
+    : undefined;
   const progressDraftStreaming = streaming === "progress";
   // Tool, block, and final payloads are delivered separately but share one first-reply slot.
   let hasReplied = false;
-  const deliverPayload = async (reply: ReplyPayload): Promise<MatrixReplyDeliveryResult> => {
+  const deliverPayload = async (
+    reply: ReplyPayload,
+    additionalContent?: Record<string, unknown>,
+  ): Promise<MatrixReplyDeliveryResult> => {
     const core = getMatrixRuntime();
     const logVerbose = (message: string) => {
       if (core.logging.shouldLogVerbose()) {
@@ -176,7 +199,7 @@ export function createMatrixReplyDispatcher(config: {
       }
     };
     // The reply's own event fields ride its first event, not a later chunk.
-    const extraContent = resolveMatrixExtraContent(reply);
+    const extraContent = { ...resolveMatrixExtraContent(reply), ...additionalContent };
     const targets = mediaUrls.length > 0 ? mediaUrls : [undefined];
     try {
       for (const [index, mediaUrl] of targets.entries()) {
@@ -196,6 +219,14 @@ export function createMatrixReplyDispatcher(config: {
           threadId: threadTarget,
           accountId,
           extraContent: index === 0 ? extraContent : undefined,
+          publication: resolveMatrixReplyPublication(
+            reply,
+            accountId,
+            roomId,
+            threadTarget,
+            index,
+            index === targets.length - 1,
+          ),
           onDeliveryResult,
         });
       }
@@ -226,6 +257,9 @@ export function createMatrixReplyDispatcher(config: {
       onIdle: typingCallbacks.onIdle,
     },
     deliverReply: async (payload: ReplyPayload, info: MatrixReplyDispatchInfo) => {
+      const publication = resolveMatrixReplyPublication(payload, accountId, roomId, threadTarget);
+      // Tool progress and streamed blocks are working frames, not the answer.
+      const answerContent = info.kind === "final" ? letMeKnowAnswerContent : undefined;
       const createDraftReceipt = (id: string): MessageReceipt =>
         createPreviewMessageReceipt({
           id,
@@ -282,6 +316,7 @@ export function createMatrixReplyDispatcher(config: {
                   payloadText?.trim() &&
                   !payload.isError &&
                   !payloadReplyMismatch &&
+                  !publication &&
                   !draftStream.mustDeliverFinalNormally() &&
                   !(hasMedia && !ttsSupplement && progressDraftStreaming)
                     ? { text: payloadText }
@@ -290,6 +325,7 @@ export function createMatrixReplyDispatcher(config: {
                   // A flush can discover a single-event limit, and mentions require a
                   // fresh event because draft mentions are deliberately inert.
                   if (
+                    Boolean(publication) ||
                     draftStream.mustDeliverFinalNormally() ||
                     (await matrixTextWouldActivateMentions(client, edit.text))
                   ) {
@@ -305,10 +341,12 @@ export function createMatrixReplyDispatcher(config: {
                       ? { [MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY]: true }
                       : {}),
                     ...presentationContent,
+                    ...answerContent,
                   };
                   if (
                     !quietDraftStreaming &&
                     !presentationContent &&
+                    !answerContent &&
                     draftStream.matchesPreparedText(edit.text)
                   ) {
                     if (!(await draftStream.finalizeLive())) {
@@ -321,6 +359,7 @@ export function createMatrixReplyDispatcher(config: {
                       threadId: threadTarget,
                       accountId,
                       ...(Object.keys(extraContent).length > 0 ? { extraContent } : {}),
+                      streamPhase: "answer",
                     });
                   }
                   return createDraftDeliveryResult(
@@ -338,7 +377,7 @@ export function createMatrixReplyDispatcher(config: {
                       ? buildTtsSupplementMediaPayload(payload)
                       : { ...payload, text: undefined }
                     : undefined,
-                deliverSupplemental: deliverPayload,
+                deliverSupplemental: (supplemental) => deliverPayload(supplemental),
                 logPreviewEditFailure: (err) => {
                   logVerboseMessage(`matrix: preview final edit failed: ${String(err)}`);
                 },
@@ -352,6 +391,7 @@ export function createMatrixReplyDispatcher(config: {
                 payloadText?.trim() ||
                 payload.isError ||
                 payloadReplyMismatch ||
+                Boolean(publication) ||
                 draftStream?.mustDeliverFinalNormally())
             ) {
               const id = draftStream?.eventId();
@@ -362,6 +402,7 @@ export function createMatrixReplyDispatcher(config: {
             }
             return await deliverPayload(
               normalPayload === payload ? fallbackPayload : normalPayload,
+              answerContent,
             );
           },
         });
@@ -406,6 +447,32 @@ export function createMatrixReplyDispatcher(config: {
       if (blockBoundary) {
         beginNextBlockDraft(blockBoundary);
         await typingCallbacks.onReplyStart();
+      }
+      if (
+        sourceReply &&
+        (info.kind === "final" || info.kind === "block") &&
+        mergedDelivery?.visibleReplySent &&
+        payload.text?.trim() &&
+        payload.isCompactionNotice !== true &&
+        payload.isReasoning !== true &&
+        payload.isCommentary !== true &&
+        payload.isStatusNotice !== true
+      ) {
+        const partIndex = sourceReplyPart;
+        sourceReplyPart += 1;
+        try {
+          await deliverBoundSourceReply({
+            matrixAccountId: accountId,
+            roomId,
+            sessionKey: sourceReply.sessionKey,
+            triggerEventId: sourceReply.eventId,
+            partIndex,
+            text: payload.text,
+          });
+        } catch {
+          // The room already has the answer. A Slack miss must not fail that delivery.
+          logVerboseMessage(`matrix: bound source reply was not delivered room=${roomId}`);
+        }
       }
       return mergedDelivery;
     },

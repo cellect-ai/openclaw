@@ -7,11 +7,16 @@ import {
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import { logVerbose } from "../../globals.js";
 import {
+  deriveInboundMessageHookContext,
+  toPluginMessageContext,
+} from "../../hooks/message-hook-mappers.js";
+import {
   assertAgentRunLifecycleGenerationCurrent,
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline.js";
 import { diagnosticLogger } from "../../logging/diagnostic-runtime.js";
+import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import {
   getGatewayContextResolver,
   getPluginRuntimeGatewayRequestScope,
@@ -26,6 +31,7 @@ import { hasReplySteeringRequesterMismatch } from "../../sessions/session-contro
 import { captureReplyOperationSessionReader } from "../../sessions/session-controller.session-reader.js";
 import { isExplicitFollowupCommandTurn } from "../command-turn-context.js";
 import { markReplyPayloadForSourceSuppressionDelivery } from "../reply-payload.js";
+import type { FinalizedMsgContext } from "../templating.js";
 import type { ReplyPayload } from "../types.js";
 import {
   BLOCK_REPLY_SEND_TIMEOUT_MS,
@@ -72,6 +78,50 @@ import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
 import { readChannelSourceTurnId } from "./source-turn-id.js";
 import { createTypingSignaler } from "./typing-mode.js";
+/**
+ * A plugin may refuse to have a channel message written into the run that is
+ * active (it cannot act for that message's sender). The message then takes the
+ * existing FIFO followup path and runs as its own turn, keeping its channel
+ * proof and its message-id dedupe. A failing plugin never blocks steering.
+ */
+async function askPluginsToQueueSteer(params: {
+  sessionCtx: RunReplyAgentParams["sessionCtx"];
+  sessionKey: string | undefined;
+  messageId: string | undefined;
+  /** Report that a claimed message could not be queued. */
+  queueRefused?: true;
+}): Promise<boolean> {
+  const runner = getGlobalHookRunner();
+  // Without a message id the queued copy cannot be deduplicated: steer as before.
+  if (!params.messageId || !runner?.hasHooks("before_steer")) {
+    return false;
+  }
+  try {
+    const context = toPluginMessageContext(
+      deriveInboundMessageHookContext(params.sessionCtx as FinalizedMsgContext, {
+        messageId: params.messageId,
+      }),
+    );
+    const result = await runner.runBeforeSteer(
+      {
+        messageId: params.messageId,
+        ...(params.queueRefused ? { queueRefused: true as const } : {}),
+        ...(context.channelId ? { channel: context.channelId } : {}),
+        ...(params.sessionKey ? { sessionKey: params.sessionKey } : {}),
+        ...(context.senderId ? { senderId: context.senderId } : {}),
+      },
+      context,
+    );
+    if (!params.queueRefused && result?.handled) {
+      logVerbose("queue: a plugin kept this message out of the active run; queuing instead");
+      return true;
+    }
+  } catch {
+    // Fail open: a plugin fault must not change steering.
+  }
+  return false;
+}
+
 export async function runReplyAgent(
   params: RunReplyAgentParams,
 ): Promise<ReplyPayload | ReplyPayload[] | undefined> {
@@ -186,6 +236,11 @@ export async function runReplyAgent(
     const activeReplyOperation = controllerInput.mailbox.owner.active;
     const steeringRequesterMismatch =
       isActiveSteer && hasReplySteeringRequesterMismatch(followupRun, activeReplyOperation);
+    const pluginQueuesSteer =
+      isActiveSteer &&
+      !steeringRequesterMismatch &&
+      messageInjectionDisposition === "none" &&
+      (await askPluginsToQueueSteer({ sessionCtx, sessionKey, messageId: followupRun.messageId }));
     const collaborationBlocked = messageInjectionDisposition === "collaborative-steering-disabled";
     if (
       collaborationBlocked &&
@@ -202,7 +257,8 @@ export async function runReplyAgent(
     // independently of whether the incoming requester could collaborate.
     const shouldQueueUnavailableSteer =
       isActiveSteer &&
-      (collaborationBlocked ||
+      (pluginQueuesSteer ||
+        collaborationBlocked ||
         messageInjectionDisposition === "rejected" ||
         (messageInjectionDisposition === "none" && !activeReplyOperation));
     const typingSignals = createTypingSignaler({
@@ -300,6 +356,14 @@ export async function runReplyAgent(
     });
     if (activeRunQueueAction === "enqueue-followup") {
       bindReplyOperationQueueDisposition(followupRun, replyOperationRunState);
+      let refusedByQueueCap = false;
+      if (pluginQueuesSteer) {
+        const observeDisposition = followupRun.onQueueDisposition;
+        followupRun.onQueueDisposition = (disposition) => {
+          observeDisposition?.(disposition);
+          refusedByQueueCap ||= disposition === "queue-cap-new";
+        };
+      }
       const enqueued = await enqueueReplySourceAdmission({
         options: explicitFollowup ? opts : undefined,
         input: controllerInput,
@@ -319,6 +383,14 @@ export async function runReplyAgent(
             false,
           ),
       });
+      if (!enqueued && pluginQueuesSteer && refusedByQueueCap) {
+        await askPluginsToQueueSteer({
+          sessionCtx,
+          sessionKey,
+          messageId: followupRun.messageId,
+          queueRefused: true,
+        });
+      }
       if (shouldQueueUnavailableSteer) {
         diagnosticLogger.warn("steering rejected; applying follow-up policy", {
           reason:

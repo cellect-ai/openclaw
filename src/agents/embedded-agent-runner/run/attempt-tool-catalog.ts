@@ -294,6 +294,7 @@ export async function prepareEmbeddedAttemptToolCatalog(input: {
         ? resolveSkillWorkshopToolConstructionBlock({
             sandboxed: input.setup.sandbox?.enabled,
             libraryAuthoring: attempt.skillLibraryAuthoring,
+            workspaceAuthoring: attempt.skillWorkshopWorkspaceAuthoring,
           })
         : undefined;
       if (toolsEnabled && !toolsIntentionallyDisabled && workshopBlock) {

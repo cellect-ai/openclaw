@@ -39,6 +39,7 @@ import {
   capturePluginLifecycleAuthority,
   getPluginRecordRegistry,
   isPluginRecordActive,
+  isPluginRegistryPreparing,
 } from "./registry-lifecycle.js";
 import { createPluginRegistrars, type PluginRegistrars } from "./registry-registrars.js";
 import { createPluginRuntimeResolver } from "./registry-runtime.js";
@@ -231,13 +232,18 @@ export function createPluginRegistry(registryOptions: PluginRegistryParams) {
       capturePluginLifecycleAuthority(getPluginRecordRegistry(registry, record), record, {
         registration: true,
       })?.() === true;
-    // Run-local scratch state bridges admitted hooks and services without
-    // granting a scoped registration process-global workflow side effects.
-    const shouldAccessRunContext = () =>
-      capturePluginLifecycleAuthority(getPluginRecordRegistry(registry, record), record, {
-        registration: true,
-        admittedRuntime: true,
-      })?.() === true;
+    // Inspection loads may access run-local state only during their admitted live call.
+    const shouldAccessRunContext = () => {
+      if (registryParams.activateGlobalSideEffects !== false) {
+        return shouldCommitWorkflowSideEffect();
+      }
+      const owner = getPluginRecordRegistry(registry, record);
+      return (
+        getPluginInstance(record)?.hasActiveCall === true &&
+        !isPluginRegistryPreparing(owner) &&
+        capturePluginLifecycleAuthority(owner, record, { admittedRuntime: true })?.() === true
+      );
+    };
     const boundRegistrars = Object.fromEntries(
       Object.entries(registrars).map(([name, register]) => [
         name,

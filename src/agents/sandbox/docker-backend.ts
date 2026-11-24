@@ -77,7 +77,10 @@ async function createContainerSandboxBackend(
       scopeKey: params.scopeKey,
       workspaceDir: params.workspaceDir,
       workspaceSource: params.workspaceSource,
-      assertCurrent,
+      assertCurrent: () => {
+        assertCurrent();
+        params.assertProvisionCurrent?.();
+      },
       operatorAuthority,
       agentWorkspaceDir: params.agentWorkspaceDir,
       skillsWorkspaceDir: params.skillsWorkspaceDir,

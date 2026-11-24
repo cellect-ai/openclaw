@@ -36,6 +36,9 @@ export function createReplyCronAuthorityFactory(
   context: object,
   params: Parameters<typeof resolveReplyCronChannelRequester>[1] & {
     channel: string;
+    sourceTurnId?: string;
+    chatId?: string;
+    eventId?: string;
   },
 ) {
   const authority = getCommandOwnerAuthority(context);
@@ -55,6 +58,12 @@ export function createReplyCronAuthorityFactory(
       { source: "channel-owner", isCurrent: isCurrentOwner },
       undefined,
       requester,
-      { isCurrent: isCurrentOwner, ...owner },
+      {
+        isCurrent: isCurrentOwner,
+        ...owner,
+        sourceTurnId: params.sourceTurnId,
+        chatId: params.chatId,
+        eventId: params.eventId,
+      },
     );
 }

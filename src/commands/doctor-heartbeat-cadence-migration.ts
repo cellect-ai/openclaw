@@ -144,6 +144,9 @@ function convertMonitor(
         payload: { kind: "agentTurn", message: DEFAULT_PROACTIVE_PROMPT },
       }
     : createDefaultProactiveJob(cfg, agentId, nowMs);
+  // This conversion owns historical heartbeat producers. Fresh/manual native
+  // automations never receive this restrict-only compatibility marker.
+  job.legacyHeartbeatReplyPolicy = true;
   const session = resolveLegacyHeartbeatSessionKey(cfg, agentId, heartbeat, undefined, env);
   const target = heartbeat?.target?.trim() || "owner";
   job.payload = {

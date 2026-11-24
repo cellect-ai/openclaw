@@ -13,14 +13,12 @@ import { isSessionTranscriptProjectionUnavailableError } from "../../config/sess
 import type { InternalSessionEntry } from "../../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
 import {
-  claimAgentRunContext,
+  awaitAgentRunAdmission,
+  getAgentRunContext,
   clearAgentRunContext,
   resolveProjectedAgentRunProgressState,
 } from "../../infra/agent-run-registry.js";
-import {
-  isProgressCardRefreshInputProvenance,
-  progressCardRefreshRunProjection,
-} from "../../sessions/input-provenance.js";
+import { isProgressCardRefreshInputProvenance } from "../../sessions/input-provenance.js";
 import { resolveActiveReplyRunOwnerForSignal } from "../../sessions/session-controller.barriers.js";
 import type {
   ReplyMessageInjectionTarget,
@@ -55,6 +53,8 @@ import {
   respondChatSendAdmissionError,
   respondChatSessionRoutingChanged,
 } from "./chat-send-admission-errors.js";
+import { prepareChatCompletionDelivery } from "./chat-send-completion-claim.js";
+import { finishDisplacedChatSendAdmission } from "./chat-send-displaced-admission.js";
 import {
   isLocalChatInputAdmission,
   resolveCodexGoalAdmission,
@@ -73,6 +73,7 @@ import {
   inspectGoalChatSendRetry,
   readChatSendDedupeResponse,
 } from "./chat-send-reservation.js";
+import { claimChatSendRunContext } from "./chat-send-run-context.js";
 import { bindChatSendPreparedSession } from "./chat-send-session-binding.js";
 import { captureAdmittedChatSendSessionSettings } from "./chat-send-session-settings.js";
 import { prepareChatSendSessionEntry } from "./chat-send-session.js";
@@ -117,6 +118,14 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     }
   };
   const cachedMeta = { cached: true, runId: clientRunId };
+  params.assertDelegatedAdmission?.();
+  const channelRequester = params.talkRelayAdmission;
+  if (channelRequester && !channelRequester.speakerMxid) {
+    throw new Error("Matrix Talk consultation requires an attested speaker");
+  }
+  const completion = prepareChatCompletionDelivery(params);
+  if (!completion.ok) return { ok: false as const };
+  const { webchatCompletionDelivery } = completion;
   const { chatSendTraceAttributes, originatingRoute } = prepareChatSendAdmissionContext(params);
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   const pendingAttemptId = randomUUID();
@@ -226,6 +235,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     timeoutMs,
     ownerConnId: normalizeOptionalString(client?.connId),
     ownerDeviceId: normalizeOptionalString(client?.connect?.device?.id),
+    webchatCompletionDelivery,
     providerId: resolvedSessionModel.provider,
     authProviderId: resolvedSessionAuthProvider,
     resolveTerminalProducer: (active) =>
@@ -449,6 +459,9 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
       abortSignal: admittedRunAbort.controller.signal,
     });
     capturedOperator = preparedInterrupt.operator;
+    if (channelRequester && admittedRunAbort.entry) {
+      delete admittedRunAbort.entry.adapter.initiatingPersonalOperator;
+    }
     releaseCapturedOperator = capturedOperator.release;
     const acp = await prepareChatSendAcpMetadata(params);
     admissionPhase?.mark("detail.admission.lifecycle_prepare");
@@ -485,6 +498,7 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     }
     admittedRunAbort.controller.signal.throwIfAborted();
     params.assertCurrent?.();
+    params.assertDelegatedAdmission?.();
     retainedRequestConflict = await consumeChatSendCurrent(params, () =>
       resolveChatSendRequestConflict(params, retryComparison, pendingAttemptId),
     );
@@ -543,37 +557,18 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     gatewayWorkAdmission.release();
     capturedOperator.release();
   };
-  if (reservationSuperseded) {
-    admittedRunAbort.cleanup();
-    releaseAdmissionOwners();
-    const supersedingCached =
-      supersedingResult ?? readChatSendDedupeResponse(context.dedupe, clientRunId);
-    if (supersedingCached) {
-      respond(supersedingCached.ok, supersedingCached.payload, supersedingCached.error, cachedMeta);
-      return { ok: false as const };
-    }
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
+  if (
+    finishDisplacedChatSendAdmission({
+      params,
+      admittedRunAbort,
+      reservation,
+      releaseAdmissionOwners,
+      reservationSuperseded,
+      supersedingResult,
+      lifecycleGeneration,
+    })
+  )
     return { ok: false as const };
-  }
-  if (lifecycleGeneration !== getAgentEventLifecycleGeneration()) {
-    if (admittedRunAbort.entry) {
-      admittedRunAbort.entry.adapter.abortStopReason = "restart";
-    }
-    admittedRunAbort.controller.abort();
-    admittedRunAbort.cleanup();
-    releaseAdmissionOwners();
-    if (!readChatSendDedupeResponse(context.dedupe, clientRunId)) {
-      reservation.abort(admittedRunAbort.entry?.adapter.abortStopReason ?? "restart");
-    }
-    const aborted = readChatSendDedupeResponse(context.dedupe, clientRunId);
-    respond(aborted?.ok ?? true, aborted?.payload, aborted?.error, cachedMeta);
-    return { ok: false as const };
-  }
-  if (!admittedRunAbort.registered) {
-    releaseAdmissionOwners();
-    respond(true, { runId: clientRunId, status: "in_flight" as const }, undefined, cachedMeta);
-    return { ok: false as const };
-  }
   assertSourceAuthority = () => {
     capturedOperator.authority?.assertCurrent();
     assertAcceptedInputAuthority?.();
@@ -642,19 +637,21 @@ export async function admitChatSend(params: ChatSendAdmissionParams) {
     clearAgentRunContext(clientRunId, lifecycleGeneration);
     respondChatSessionRoutingChanged(respond);
   };
-  claimAgentRunContext(clientRunId, {
-    agentId: selectedAgent.agentId ?? agentId,
-    sessionKey,
-    sessionId: admittedSessionId,
-    lifecycleGeneration,
-    ...progressCardRefreshRunProjection(request.systemInputProvenance),
-  });
+  claimChatSendRunContext(params, admittedSessionId, lifecycleGeneration);
+  try {
+    await awaitAgentRunAdmission(clientRunId, getAgentRunContext(clientRunId));
+  } catch (error) {
+    cleanupAdmittedRun();
+    clearAgentRunContext(clientRunId, lifecycleGeneration);
+    throw error;
+  }
 
   return {
     ok: true as const,
     value: {
       activeRunAbort: admittedRunAbort,
-      operatorAuthority: capturedOperator.authority,
+      operatorAuthority: channelRequester ? undefined : capturedOperator.authority,
+      channelRequester,
       armOperatorRunCancellation: capturedOperator.armCancellation,
       retireOperatorRunCancellation: capturedOperator.retireCancellation,
       admittedSessionSettings,

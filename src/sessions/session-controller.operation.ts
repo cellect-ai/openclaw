@@ -9,6 +9,7 @@ import {
 import type { ReplyFollowupAdmissionBarrierTimeoutPolicy } from "../auto-reply/reply/reply-dispatcher.types.js";
 import type * as replyRunSettle from "../auto-reply/reply/reply-run-finalization-lease.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
+import { ConversationRunStopReason, matchesVerifiedRunStopActor } from "../infra/run-stop-actor.js";
 import { markDiagnosticRunProgress } from "../logging/diagnostic-run-activity.js";
 import { diagnosticLogger as diag } from "../logging/diagnostic-runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -44,6 +45,7 @@ import {
   type CreateReplyOperationParams,
 } from "./session-controller.operation-admission.js";
 import { createReplyOperationRecovery } from "./session-controller.operation-recovery.js";
+import { createReplyOwnerSettlement } from "./session-controller.owner-settlement.js";
 import {
   clearReplyRunState,
   evictReplyOperationByOperation,
@@ -122,20 +124,8 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     ownerSettlement.resolve(undefined);
     releaseSessionControllerOperation(operation);
   };
-  const settleOwner = (): void => {
-    const pending = ownerCompletionBarrier;
-    if (!pending) {
-      finishOwner();
-      return;
-    }
-    void pending.then(() => {
-      if (pending !== ownerCompletionBarrier) {
-        settleOwner();
-        return;
-      }
-      finishOwner();
-    });
-  };
+  const settleOwner = createReplyOwnerSettlement(() => ownerCompletionBarrier, finishOwner);
+
   const startedAtMs = Date.now();
   const lifecycleGeneration = getAgentEventLifecycleGeneration();
   let lastActivityAtMs = startedAtMs;
@@ -317,7 +307,15 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     abortInternally(abortReason);
     // Cancellation may throw. Only actual producer completion releases custody.
     try {
-      backend?.cancel(reason);
+      const stopActor =
+        abortReason instanceof ConversationRunStopReason &&
+        matchesVerifiedRunStopActor(abortReason.actor, {
+          sessionKey: currentSessionKey,
+          agentId: currentAgentId,
+        })
+          ? abortReason.actor
+          : undefined;
+      backend?.cancel(reason, stopActor);
     } finally {
       watchdog.beginTerminal();
     }
@@ -631,7 +629,18 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
       }
     },
     abort: (reason) => abortIfAbortable(() => reason ?? createAgentRunDirectAbortError()),
-    abortByUser: () => abortIfAbortable(() => createAgentRunDirectAbortError(true)),
+    abortByUser: (stopActor) =>
+      abortIfAbortable(() =>
+        createAgentRunDirectAbortError(
+          true,
+          matchesVerifiedRunStopActor(stopActor, {
+            agentId: currentAgentId,
+            sessionKey: currentSessionKey,
+          })
+            ? stopActor
+            : undefined,
+        ),
+      ),
     abortForRestart: () => abortIfAbortable(createAgentRunRestartAbortError),
     abortForStall() {
       if (!isReplyOperationAbortable(operation)) {

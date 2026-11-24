@@ -207,11 +207,19 @@ export function resolveMatrixAccount(params: {
   env?: NodeJS.ProcessEnv;
 }): ResolvedMatrixAccount {
   const prepared = prepareMatrixAccount(params);
+  // Mirror the async resolver: a token-only account without a configured userId
+  // learns its MXID from the credential store, so load it for projection.
   const stored =
-    prepared.hasHomeserver && !prepared.hasConfiguredAuth
+    prepared.hasHomeserver && (!prepared.hasConfiguredAuth || !prepared.authView.userId)
       ? loadMatrixCredentials(params.env ?? process.env, prepared.account.accountId)
       : null;
-  return { ...prepared.account, configured: isMatrixAccountConfigured(prepared, stored) };
+  return {
+    ...prepared.account,
+    configured: isMatrixAccountConfigured(prepared, stored),
+    // Token-only auth learns the MXID through whoami and persists it at login.
+    // Project that identity only while the stored homeserver and token still match.
+    userId: resolveMatrixAccountUserId(prepared.authView, stored) ?? undefined,
+  };
 }
 
 export async function resolveMatrixAccountAsync(params: {
@@ -220,14 +228,23 @@ export async function resolveMatrixAccountAsync(params: {
   env?: NodeJS.ProcessEnv;
 }): Promise<ResolvedMatrixAccount> {
   const prepared = prepareMatrixAccount(params);
+  // A token-only account (access token from env or config, no userId) learns
+  // its MXID from the credential store at login. The operational hook must
+  // project it, or every identity lookup by MXID (Talk bindings) finds nothing.
   const stored =
-    prepared.hasHomeserver && !prepared.hasConfiguredAuth
+    prepared.hasHomeserver && (!prepared.hasConfiguredAuth || !prepared.authView.userId)
       ? await loadMatrixCredentialsAsync(
           captureMatrixCredentialsEnv(params.env ?? process.env),
           prepared.account.accountId,
         )
       : null;
-  return { ...prepared.account, configured: isMatrixAccountConfigured(prepared, stored) };
+  return {
+    ...prepared.account,
+    configured: isMatrixAccountConfigured(prepared, stored),
+    // Token-only auth learns the MXID through whoami and persists it at login.
+    // Project that identity only while the stored homeserver and token still match.
+    userId: resolveMatrixAccountUserId(prepared.authView, stored) ?? undefined,
+  };
 }
 
 export { resolveMatrixAccountConfig } from "./account-config.js";

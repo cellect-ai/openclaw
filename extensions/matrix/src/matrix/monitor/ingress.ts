@@ -6,9 +6,11 @@ import {
   type ChannelIngressMonitorLifecycle,
   type ChannelIngressQueue,
 } from "openclaw/plugin-sdk/channel-outbound";
+import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { getMatrixRuntime } from "../../runtime.js";
 import type { MatrixSyncIngressHandler } from "../client/file-sync-store.js";
 import { isPollEventType } from "../poll-types.js";
+import { isMatrixThreadNotCanonicalError } from "../projection-execution.js";
 import type { MatrixClient, MatrixRawEvent } from "../sdk.js";
 import { getMatrixEventProjection } from "../sdk/event-helpers.js";
 import { emitMatrixLog } from "../sdk/logger.js";
@@ -20,7 +22,8 @@ type MatrixIngressEvent = {
   historical?: boolean;
 };
 
-type MatrixIngressPayload = MatrixIngressEvent & { version: 1 };
+type MatrixIngressPayload = { version: 1; rawEvent: string };
+export type MatrixIngressLifecycle = ChannelIngressMonitorLifecycle;
 
 const MatrixIngressPayloadError = createChannelIngressError("MatrixIngressPayloadError");
 
@@ -35,7 +38,7 @@ function inspectMatrixIngressEvent(raw: MatrixIngressEvent) {
   ) {
     throw new MatrixIngressPayloadError("Matrix ingress event is missing its room or event ID");
   }
-  return { eventId: raw.event.event_id, laneKey: `room:${raw.roomId}` };
+  return { eventId: JSON.stringify([raw.roomId, raw.event.event_id]), laneKey: raw.roomId };
 }
 
 export function createMatrixIngressMonitor(params: {
@@ -89,10 +92,20 @@ export function createMatrixIngressMonitor(params: {
       version: 1,
       serialize: (raw) => raw,
       deserialize: (body) => body,
-      encode: ({ body }) => ({ version: 1, ...body }),
+      encode: ({ body }) => ({ version: 1, rawEvent: JSON.stringify(body) }),
       decode: (payload) => {
-        inspectMatrixIngressEvent(payload);
-        return { version: payload.version, body: payload };
+        const body = JSON.parse(payload.rawEvent) as MatrixIngressEvent;
+        inspectMatrixIngressEvent(body);
+        if (
+          !isRecord(body.event) ||
+          typeof body.event.sender !== "string" ||
+          typeof body.event.type !== "string" ||
+          typeof body.event.origin_server_ts !== "number" ||
+          !isRecord(body.event.content)
+        ) {
+          throw new MatrixIngressPayloadError("Invalid Matrix durable ingress event");
+        }
+        return { version: payload.version, body };
       },
       createClaimError: (kind) =>
         new MatrixIngressPayloadError(
@@ -138,7 +151,9 @@ export function createMatrixIngressMonitor(params: {
       resolveNonRetryableFailure: (error) =>
         error instanceof MatrixIngressPayloadError
           ? { reason: "invalid-event", message: error.message }
-          : null,
+          : isMatrixThreadNotCanonicalError(error)
+            ? { reason: "matrix-thread-not-canonical", message: (error as Error).message }
+            : null,
     },
     onError: params.onError,
   });

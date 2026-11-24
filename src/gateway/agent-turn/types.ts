@@ -30,6 +30,7 @@ export type AgentTurnPrincipal = Pick<
   | "authenticatedUserProfile"
   | "authPolicy"
   | "connId"
+  | "pairedClientId"
   | "connect"
   | "internal"
   | "isDeviceTokenAuth"

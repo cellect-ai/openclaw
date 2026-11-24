@@ -384,9 +384,21 @@ async function consult(question: string | typeof args, callId: string) {
 
 async function startHeldConsult() {
   const ack = await consult("Keep this task running until released.", "held-task");
+  const settlement = captureSessionControllerSettlement({
+    scope: storePath,
+    identities: [canonicalKey, sessionId],
+  });
+  // No held controller operation means no settlement promise. Never race undefined.
   await Promise.race([
     modelStarted.promise,
-    captureSessionControllerSettlement({ scope: storePath, identities: [canonicalKey, sessionId] }),
+    ...(settlement
+      ? [
+          settlement.then(() => {
+            if (runEmbeddedAgent.mock.calls.length === 0)
+              throw new Error("Held consult settled before model dispatch");
+          }),
+        ]
+      : []),
   ]);
   const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "held model invocation");
   const abortSignal = expectDefined(run.abortSignal, "admitted model cancellation signal");
@@ -547,14 +559,16 @@ it("keeps read-only Talk operator consult scaffolding out of chat and later cont
   const ack = await consult(args, "native-consult");
   expect(ack.runId).toEqual(expect.any(String));
   expect(ack.idempotencyKey).toBe(ack.runId);
-  await Promise.race([
-    modelStarted.promise,
-    captureSessionControllerSettlement({ scope: storePath, identities: [sessionKey, sessionId] }),
-  ]);
+  await modelStarted.promise;
   expect(runEmbeddedAgent).toHaveBeenCalledOnce();
   const run = expectDefined(runEmbeddedAgent.mock.calls[0]?.[0], "consult model invocation");
   expect(run.toolsAllow).toEqual([
     "read",
+    "fi_user_api",
+    "sessions_history",
+    "sessions_search",
+    "tavily_search",
+    "tavily_extract",
     "web_search",
     "web_fetch",
     "x_search",

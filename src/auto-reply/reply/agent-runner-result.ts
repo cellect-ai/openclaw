@@ -5,6 +5,7 @@ import {
   createSessionMaintenanceFollowup,
   scheduleSessionMaintenance,
 } from "../../agents/session-maintenance/run.js";
+import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { withSystemEventOwner } from "../../infra/system-event-ownership.js";
 import { enqueueSystemEvent } from "../../infra/system-events.js";
 import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
@@ -25,6 +26,10 @@ import { prepareReplyAgentPayloads } from "./agent-runner-result-payloads.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
 import { appendUsageLine } from "./agent-runner-usage-line.js";
 import { enqueueGoalContinuation } from "./goal-continuation.js";
+import {
+  bindNativeFinalDeliveryPlan,
+  admitNativeFinalDeliveryPlan,
+} from "./native-final-delivery.js";
 import {
   buildRecoverablePendingFinalDeliveryText,
   normalizePendingFinalDeliveryPayloads,
@@ -72,14 +77,41 @@ export async function finalizeReplyAgentRun(
           resolvedBlockStreamingBreak: context.resolvedBlockStreamingBreak,
           preflightCompactionApplied: context.preflightCompactionApplied,
         });
-        await completion?.complete();
-        if (!diagnostics) {
-          return { result: prepared.value, accounting };
-        }
+        const payloads = [
+          ...(Array.isArray(prepared.value)
+            ? prepared.value
+            : prepared.value
+              ? [prepared.value]
+              : []),
+          ...(diagnostics ? [diagnostics] : []),
+        ];
+        if (
+          completion &&
+          context.sessionKey &&
+          context.storePath &&
+          !context.replyOperation.abortSignal.aborted
+        ) {
+          const commandOwner = getCommandOwnerAuthority(context.followupRun.run);
+          await admitNativeFinalDeliveryPlan({
+            completion,
+            operation: context.replyOperation,
+            agentId: context.followupRun.run.agentId,
+            storePath: context.storePath,
+            sessionKey: context.sessionKey,
+            runId: context.runId,
+            payloads,
+            commandOwnerReference: commandOwner
+              ? (commandOwner.recoveryReference ?? null)
+              : undefined,
+            context: resolveReplyRunDeliveryContext({
+              ...context,
+              sessionEntry: accounting.activeSessionEntry,
+              sessionKey: context.sessionKey,
+            }),
+          });
+        } else await completion?.complete();
         return {
-          result: prepared.value
-            ? [...(Array.isArray(prepared.value) ? prepared.value : [prepared.value]), diagnostics]
-            : diagnostics,
+          result: payloads.length <= 1 ? payloads[0] : payloads,
           accounting,
         };
       }
@@ -198,15 +230,12 @@ export async function finalizeReplyAgentRun(
       // Capture only policy-visible final payloads in session store to support
       // durable delivery retries. Hidden reasoning, message-tool-only replies,
       // and sendPolicy-denied replies must not become replayable text.
-      const isStrandedReplyRetryRun = followupRun.strandedReplyRetry === true;
       if (
         sessionKey &&
         storePath &&
         runResult.meta?.terminalReply?.disposition !== "silent" &&
         prepared.replyCompletion.outcome !== "silent" &&
-        (finalPayloads.length > 0 ||
-          isStrandedReplyRetryRun ||
-          runResult.meta?.terminalReply !== undefined)
+        prepared.replyCompletion.outcome !== "pending"
       ) {
         const recoverySourceReplyPolicy = sourceReplyPolicy ?? resolveReplyPolicy(sessionKey);
         const assistantFinalText = normalizeAssistantFinalDeliveryText(
@@ -288,13 +317,15 @@ export async function finalizeReplyAgentRun(
                 normalizePendingFinalDeliveryPayloads([payload]).length > 0
               );
             });
-        if (sendableFinalPayloads.length > 0) {
+        {
           const commandOwner = getCommandOwnerAuthority(followupRun.run);
           const commandOwnerReference = commandOwner
             ? (commandOwner.recoveryReference ?? null)
             : undefined;
           const pendingFinalDeliveryIntentId = crypto.randomUUID();
           const expectedSessionId = activeSessionEntry?.sessionId ?? followupRun.run.sessionId;
+          const sourceGeneration =
+            context.replyOperation.lifecycleGeneration ?? getAgentRunLifecycleGeneration();
           const pendingFinalDeliveries = sendableFinalPayloads.map((payload) => {
             const deliveryId = crypto.randomUUID();
             setReplyPayloadMetadata(payload, {
@@ -303,6 +334,8 @@ export async function finalizeReplyAgentRun(
                 agentId: followupRun.run.agentId,
                 deliveryId,
                 intentId: pendingFinalDeliveryIntentId,
+                sourceRunId: context.runId,
+                sourceGeneration,
                 sessionId: expectedSessionId,
                 sessionKey,
                 storePath,
@@ -328,6 +361,9 @@ export async function finalizeReplyAgentRun(
               ? { kind: "replayable" as const, text: pendingText }
               : { kind: "transport-only" as const }),
             intentId: pendingFinalDeliveryIntentId,
+            sourceRunId: context.runId,
+            sourceGeneration,
+            dispatchState: "open",
             deliveries: pendingFinalDeliveries,
             context: pendingFinalDeliveryContext,
             createdAt: Date.now(),
@@ -340,6 +376,16 @@ export async function finalizeReplyAgentRun(
             throw new Error("pending final delivery session changed or was deleted");
           }
           activeSessionEntry = persistedPendingFinalDelivery;
+          bindNativeFinalDeliveryPlan(context.replyOperation, {
+            agentId: followupRun.run.agentId,
+            storePath,
+            sessionKey,
+            sessionId: expectedSessionId,
+            intentId: pendingFinalDeliveryIntentId,
+            sourceRunId: context.runId,
+            sourceGeneration,
+            commandOwnerReference,
+          });
         }
       }
       activeSessionEntry = (await completion?.complete()) ?? activeSessionEntry;

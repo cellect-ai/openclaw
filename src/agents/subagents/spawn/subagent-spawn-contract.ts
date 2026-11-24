@@ -1,5 +1,6 @@
 import type { CyberAccessProgram } from "../../../../packages/gateway-protocol/src/schema/sessions-row.js";
 import type { SessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
+import type { MediaFact } from "../../../media/media-facts.js";
 import type { FastMode } from "../../../shared/fast-mode.js";
 import type { SpawnRequesterConversationSource } from "../../spawn-requester-origin.js";
 import type { SpawnedToolContext } from "../../spawned-context.js";
@@ -75,6 +76,7 @@ export type SpawnSubagentContext = SpawnedToolContext &
     /** Private invocation fence, consumed only before registration transfers ownership. */
     assertActive?: SessionSourceAssertion;
     /** Cancels initial preparation only; accepted children own their execution lifetime. */
+    parentTurnMedia?: readonly MediaFact[];
     signal?: AbortSignal;
   };
 

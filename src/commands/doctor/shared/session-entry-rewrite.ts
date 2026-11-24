@@ -3,6 +3,8 @@ import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion"
 import { asFiniteNumber } from "@openclaw/normalization-core/number-coercion";
 import { uniqueStrings } from "@openclaw/normalization-core/string-normalization";
 import { sql } from "kysely";
+import { inspectLegacyRequesterRecovery } from "../../../config/sessions/legacy-requester-recovery.js";
+import { SessionStoreMigrationRequiredError } from "../../../config/sessions/migration-required.js";
 import type { DoctorSessionScanScope } from "../../../config/sessions/session-accessor.sqlite-canonical-inventory.js";
 import { publishSessionEntryCacheInvalidation } from "../../../config/sessions/session-accessor.sqlite-entry-cache.js";
 import { invalidateSessionEntryMaintenanceAgeFact } from "../../../config/sessions/session-accessor.sqlite-maintenance-age.js";
@@ -114,6 +116,7 @@ export function scanDoctorSessionEntryRecords(
             WHERE key IN (${sql.join(LEGACY_SESSION_ENTRY_STATE_FIELDS)})
               OR key IN ('provider', 'lastProvider', 'room')
               OR key = 'mainRestartRecovery'
+              OR key LIKE 'restartRecovery%'
               OR (key = 'pendingFinalDelivery' AND json_typeof(value) = 'boolean')
               OR (key = 'status' AND value #>> '{}' IN ('running', 'queued'))
               OR (key IN (${sql.join(SESSION_ENTRY_NUMERIC_FIELDS)}) AND json_typeof(value) = 'string')
@@ -123,6 +126,7 @@ export function scanDoctorSessionEntryRecords(
             WHERE key IN (${sql.join(LEGACY_SESSION_ENTRY_STATE_FIELDS)})
               OR key IN ('provider', 'lastProvider', 'room')
               OR key = 'mainRestartRecovery'
+              OR key LIKE 'restartRecovery%'
               OR (key = 'pendingFinalDelivery' AND type IN ('true', 'false'))
               OR (key = 'status' AND value IN ('running', 'queued'))
               OR (key IN (${sql.join(SESSION_ENTRY_NUMERIC_FIELDS)}) AND type = 'text')
@@ -133,6 +137,12 @@ export function scanDoctorSessionEntryRecords(
       const visitLegacyRow = (row: { session_key: string; entry_json: string }) => {
         const entry = safeParseJsonRecord(row.entry_json);
         if (entry) {
+          const requesterRecovery = inspectLegacyRequesterRecovery(entry);
+          if (requesterRecovery) {
+            throw new SessionStoreMigrationRequiredError(
+              `${row.session_key}: ${requesterRecovery.warning}`,
+            );
+          }
           assertSupportedSessionStoreEntry(entry);
           visit({ sessionKey: row.session_key, entry });
         }

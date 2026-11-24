@@ -21,6 +21,7 @@ import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import {
   bindPluginRegistryGatewayOwner,
   getPluginRegistryGatewayOwner,
+  getPluginRegistryResourceOwner,
 } from "../plugins/registry-lifecycle.js";
 import type { PluginRegistry } from "../plugins/registry-types.js";
 import {
@@ -398,3 +399,152 @@ it.each(["inbound", "selected", "inspection"] as const)(
     });
   },
 );
+
+it("keeps dispatched native-event proof in the same hook instance when a prepared runtime adds its provider", async () => {
+  useNoBundledPlugins();
+  const workspaceDir = tempDirs.make("openclaw-prepared-agent-workspace-");
+  const rootWorkspace = tempDirs.make("openclaw-prepared-root-workspace-");
+  vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-prepared-proof-state-"));
+  const hook = writePlugin({
+    id: "native-proof",
+    registration: `api.registerTool({ name: "native_proof_probe", description: "Read-only fixture",
+        parameters: { type: "object", properties: {} }, async execute() { return { content: [] }; } });
+      const arrivals = new Map();
+      const runs = new Map();
+      api.on("before_dispatch", (event) => {
+        if (event.senderAuthentication === "verified") arrivals.set(event.sessionKey, event);
+      });
+      api.on("before_agent_reply", (_event, context) => {
+        const arrival = arrivals.get(context.sessionKey);
+        arrivals.delete(context.sessionKey);
+        if (context.trigger === "user" && arrival?.senderId === context.senderId &&
+            arrival.messageId === context.channelContext?.chat?.eventId)
+          runs.set(context.runId, arrival.messageId);
+      });
+      api.on("before_tool_call", (_event, context) => ({
+        params: { provenNativeEvent: runs.get(context.runId) ?? null }
+      }));`,
+  });
+  const hookManifest = path.join(hook.dir, "openclaw.plugin.json");
+  fs.writeFileSync(
+    hookManifest,
+    JSON.stringify({
+      ...JSON.parse(fs.readFileSync(hookManifest, "utf8")),
+      contracts: { tools: ["native_proof_probe"] },
+    }),
+  );
+  const provider = writePlugin({
+    id: "selected-provider",
+    registration: 'api.registerProvider({ id: "selected", label: "Selected", auth: [] });',
+  });
+  const providerManifest = path.join(provider.dir, "openclaw.plugin.json");
+  fs.writeFileSync(
+    providerManifest,
+    JSON.stringify({
+      ...JSON.parse(fs.readFileSync(providerManifest, "utf8")),
+      providers: ["selected"],
+    }),
+  );
+  const config: OpenClawConfig = {
+    plugins: {
+      allow: [hook.id, provider.id],
+      load: { paths: [hook.file, provider.file] },
+      entries: {
+        [hook.id]: { enabled: true, hooks: { allowConversationAccess: true } },
+        [provider.id]: { enabled: true },
+      },
+      slots: { memory: "none" },
+    },
+  };
+  const input = {
+    config,
+    workspaceDir,
+    agentDir: workspaceDir,
+    allowGatewaySubagentBinding: true,
+    runtimePluginSelections: [{ provider: "selected", modelId: "model", runtime: "openclaw" }],
+  };
+  await using cache = createPluginCache();
+  await withPluginCache(cache, async () => {
+    const metadata = loadPluginMetadataSnapshot({ config, workspaceDir });
+    const root = await loadAndActivateRootPluginRegistry({
+      config,
+      workspaceDir: rootWorkspace,
+      manifestRegistry: metadata.manifestRegistry,
+      discovery: metadata.discovery,
+      onlyPluginIds: [hook.id],
+      channelPluginLoadIntent: "full",
+      runtimeOptions: { allowGatewaySubagentBinding: true },
+      cache: false,
+      throwOnLoadError: true,
+    });
+    prepareOwnedPluginLoadContext(
+      { ...input, workspaceDir: rootWorkspace },
+      process.env,
+      root,
+      { ...metadata, workspaceDir: rootWorkspace },
+      true,
+    );
+    bindPluginRegistryGatewayOwner(root, { current: () => root });
+    await using resources = new PreparedModelRuntimeBuildResources(retainPreparedPluginRegistry);
+    try {
+      const prepared = await withPluginRuntimeRegistryScope(root, () =>
+        prepareWorkspacePluginRegistries(
+          input,
+          metadata,
+          (registry) => resources.retainRegistry(registry),
+          createPreparedInboundRegistryLoader(),
+          true,
+          undefined,
+          () => [],
+          undefined,
+          resources.load.bind(resources),
+          "agent",
+        ),
+      );
+      const inbound = prepared.inboundPluginRegistry,
+        selected = prepared.runtimePluginRegistry;
+      if (!inbound || !selected) {
+        throw new Error("Expected both prepared registries");
+      }
+      expect(inbound).not.toBe(root);
+      // Like Fi-user, this plugin also has Gateway-owned tools; adoption returns
+      // a composed view while its stateful hooks still belong to the raw source.
+      expect(inbound).not.toBe(getPluginRegistryResourceOwner(inbound));
+      expect(
+        selected.providers.map(({ provider: selectedProvider }) => selectedProvider.id),
+      ).toEqual(["selected"]);
+      const context = {
+        agentId: "test-agent",
+        runId: "native-run",
+        sessionKey: "agent:test-agent:matrix:room",
+        trigger: "user" as const,
+        channel: "matrix",
+        senderId: "@person:matrix.test",
+        channelContext: { chat: { eventId: "$native-event" } },
+      };
+      await createHookRunner(inbound, { catchErrors: false }).runBeforeDispatch(
+        {
+          content: "read-only request",
+          channel: "matrix",
+          sessionKey: context.sessionKey,
+          senderId: context.senderId,
+          senderAuthentication: "verified",
+          messageId: "$native-event",
+        },
+        { channelId: "matrix", sessionKey: context.sessionKey },
+      );
+      const runner = createHookRunner(selected, { catchErrors: false });
+      await runner.runBeforeAgentReply({ cleanedBody: "read-only request" }, context);
+      const result = await runner.runBeforeToolCall(
+        { toolName: "exec", params: {} },
+        { ...context, toolName: "exec" },
+      );
+      expect(result?.params?.provenNativeEvent).toBe("$native-event");
+      expect(selected.plugins.find((record) => record.id === hook.id)).toBe(
+        inbound.plugins.find((record) => record.id === hook.id),
+      );
+    } finally {
+      await disposePluginRegistryInstances(root);
+    }
+  });
+});

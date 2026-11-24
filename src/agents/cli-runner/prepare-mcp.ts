@@ -70,6 +70,7 @@ export async function prepareCliMcpToolProjection(
       | "cfg"
       | "skillLibraryAuthoring"
       | "bundledTools"
+      | "skillWorkshopWorkspaceAuthoring"
       | "authProfileStore"
       | "authProfileStoreAgentDir"
     >;
@@ -133,7 +134,8 @@ export function resolveCliMcpToolOwnership(
       options.nodePlacement &&
       !options.skipPreparation &&
       run.disableTools !== true &&
-      run.skillLibraryAuthoring !== undefined,
+      (run.skillLibraryAuthoring !== undefined ||
+        run.skillWorkshopWorkspaceAuthoring !== undefined),
   };
 }
 
@@ -168,5 +170,18 @@ export function prepareCliMcpGrant(
       Boolean(projectNativeToolAuthority),
       run,
     ),
+  };
+}
+
+/** Both authoring capabilities remain host-private across projection and grant storage. */
+export function resolveCliMcpSkillAuthoring(
+  run: RunCliAgentParams,
+  skillLibraryAuthoring: RunCliAgentParams["skillLibraryAuthoring"],
+) {
+  return {
+    ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
+    ...(run.skillWorkshopWorkspaceAuthoring
+      ? { skillWorkshopWorkspaceAuthoring: run.skillWorkshopWorkspaceAuthoring }
+      : {}),
   };
 }

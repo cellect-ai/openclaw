@@ -7,6 +7,7 @@ import {
 } from "../../state/openclaw-state-db.js";
 import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import {
+  completeLoadedDeliveryQueueEntryInDatabase,
   updateDeliveryQueueEntryInDatabase,
   upsertDeliveryQueueEntryInDatabase,
 } from "../delivery-queue-sqlite.kernel.js";
@@ -26,6 +27,7 @@ import {
   failDeliveryBeforePlatformSend,
   loadPendingDelivery,
   loadUnfinishedDeliveries,
+  loadCompletedDeliveryReceipt,
   markDeliveryPlatformOutcomeUnknown,
   markDeliveryPlatformSendDispatched,
   markDeliveryPlatformSendAttemptStarted,
@@ -104,6 +106,85 @@ describe("delivery-queue storage", () => {
     maxAgeMs: 24 * 60 * 60_000,
     maxEntries: 2_000,
   };
+
+  it.each([false, true])(
+    "reads the actual retained provider receipt in its native namespace (generation: %s)",
+    async (bound) => {
+      const id = "cron-direct-delivery:v1:provider-receipt";
+      await enqueueStable(id, {
+        payloads: [{ text: "provider accepted" }],
+        completionRetention,
+        ...(bound
+          ? {
+              sessionGeneration: {
+                agentId: "main",
+                storePath: tmpDir() + "/sessions.sqlite",
+                sessionKey: "agent:main:test",
+                sessionId: "test",
+                lifecycleRevision: null,
+              },
+            }
+          : {}),
+      });
+      expect(await loadCompletedDeliveryReceipt(id, tmpDir())).toBeNull();
+      await ackDelivery(id, tmpDir(), {
+        completionReceipt: { platformMessageId: "actual-final-part" },
+      });
+      expect(await loadCompletedDeliveryReceipt(id, tmpDir())).toEqual({
+        platformMessageId: "actual-final-part",
+      });
+    },
+  );
+
+  it("does not return expired or foreign-namespace provider receipts", async () => {
+    const id = "cron-direct-delivery:v1:expired-receipt";
+    await enqueueStable(id, { payloads: [{ text: "expired" }], completionRetention });
+    const pending = await loadPendingDelivery(id, tmpDir());
+    assert(pending, "Expected pending native custody");
+    const database = openDb();
+    runOpenClawStateWriteTransaction(
+      (db) => {
+        completeLoadedDeliveryQueueEntryInDatabase(
+          db,
+          OUTBOUND_DELIVERY_QUEUE_NAME,
+          id,
+          pending,
+          Date.now() - completionRetention.maxAgeMs - 1,
+          { platformMessageId: "expired-provider-part" },
+        );
+        upsertDeliveryQueueEntryInDatabase(
+          {
+            queueName: "unrelated-owner",
+            status: "completed",
+            entry: {
+              id: "foreign-receipt",
+              enqueuedAt: Date.now(),
+              acknowledgedAt: Date.now(),
+              retryCount: 0,
+              completionRetention: "permanent",
+              recoveryState: "completed_permanent",
+              completionReceipt: { platformMessageId: "foreign-provider-part" },
+            },
+          },
+          db,
+        );
+      },
+      { database },
+    );
+    expect(await loadCompletedDeliveryReceipt(id, tmpDir())).toBeNull();
+    expect(await loadCompletedDeliveryReceipt("foreign-receipt", tmpDir())).toBeNull();
+  });
+
+  it("suppression never retains a successful provider receipt", async () => {
+    const id = "cron-direct-delivery:v1:suppressed-receipt";
+    await enqueueStable(id, { payloads: [{ text: "suppressed" }], completionRetention });
+    await ackDelivery(id, tmpDir(), {
+      suppressCompletionReceipt: true,
+      completionReceipt: { platformMessageId: "must-not-persist" },
+    });
+    expect(await loadCompletedDeliveryReceipt(id, tmpDir())).toBeNull();
+  });
+
   function failedFence(id: string, timestamp: unknown) {
     return {
       id,

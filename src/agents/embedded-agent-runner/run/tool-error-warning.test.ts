@@ -8,6 +8,9 @@ import {
 } from "./payloads.test-helpers.js";
 import { buildFailureWarning } from "./tool-error-warning.js";
 
+const HINT =
+  " I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.";
+
 describe("embedded run tool warnings", () => {
   const makeStoppedAssistant = (text = "") =>
     makeAssistant({
@@ -99,9 +102,9 @@ describe("embedded run tool warnings", () => {
   );
 
   it.each([
-    [false, "off", "⚠️ Exec blocked (exit 7)"],
+    [false, "off", "⚠️ Exec blocked (exit 7)." + HINT],
     [false, "full", "⚠️ Exec blocked: `make build`: Command exited with code 7"],
-    [undefined, "off", "⚠️ Exec failed (exit 7)"],
+    [undefined, "off", "⚠️ Exec failed (exit 7)." + HINT],
     [undefined, "full", "⚠️ Exec failed: `make build`: Command exited with code 7"],
   ] as const)(
     "renders executionStarted=%s at %s verbosity from structured state",
@@ -212,3 +215,17 @@ describe("embedded run tool warnings", () => {
     );
   });
 });
+
+it.each([true, false, undefined])(
+  "does not infer rollback from executionStarted=%s",
+  (executionStarted) => {
+    const warning = buildFailureWarning({
+      lastToolError: { toolName: "exec", error: "exit 1", executionStarted },
+      hasUserFacingReply: false,
+      useMarkdown: false,
+      verboseLevel: "off",
+    });
+    expect(warning).toContain("Check any partial results");
+    expect(warning).not.toContain("nothing was saved or sent");
+  },
+);

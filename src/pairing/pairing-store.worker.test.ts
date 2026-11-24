@@ -41,6 +41,7 @@ function request(id: string, createdAt = new Date().toISOString()) {
     code: "ABCDEFGH",
     createdAt,
     lastSeenAt: createdAt,
+    status: "pending" as const,
     meta: { accountId: "alpha", approval: "allow-" + id },
   };
 }
@@ -102,7 +103,18 @@ it("approves and dismisses account-scoped requests by opaque id", async () => {
     id: "shared",
   });
   await expect(f.allow("beta")).resolves.toEqual([]);
-  await expect(f.list()).resolves.toEqual([]);
+  await expect(f.list()).resolves.toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        status: "approved",
+        meta: expect.objectContaining({ accountId: "alpha" }),
+      }),
+      expect.objectContaining({
+        status: "dismissed",
+        meta: expect.objectContaining({ accountId: "beta" }),
+      }),
+    ]),
+  );
 });
 
 it("regenerates colliding codes and reports exhaustion without leaking codes", () => {
@@ -235,7 +247,11 @@ it("runs request, prune, approval, dismissal, and allowlist mutations without ca
   );
   const observed = observeHostDataSql();
   try {
-    expect((await f.list("alpha")).map((entry) => entry.id)).toEqual(["approve", "dismiss"]);
+    expect((await f.list("alpha")).map((entry) => entry.id)).toEqual([
+      "expired",
+      "approve",
+      "dismiss",
+    ]);
     const created = await f.upsert("new");
     expect(created).toEqual({ code: expect.stringMatching(/^[A-HJ-NP-Z2-9]{8}$/), created: true });
     await expect(f.upsert("new")).resolves.toEqual({ code: created.code, created: false });
@@ -260,7 +276,12 @@ it("runs request, prune, approval, dismissal, and allowlist mutations without ca
     observed.restore();
   }
   expect(f.read()).toMatchObject({
-    requests: [{ id: "new" }],
+    requests: expect.arrayContaining([
+      expect.objectContaining({ id: "new", status: "pending" }),
+      expect.objectContaining({ id: "approve", status: "approved" }),
+      expect.objectContaining({ id: "dismiss", status: "dismissed" }),
+      expect.objectContaining({ id: "expired", status: "pending" }),
+    ]),
     allowFrom: { alpha: ["keep", "added", "approve"] },
   });
   for (const id of ["two", "three"]) {
@@ -362,12 +383,16 @@ it.each(["metadata", "earlier-match", "expired"] as const)(
     });
     if (change === "expired") {
       expect(result).toBeNull();
-      expect(f.read()).toEqual({ version: 1, requests: [], allowFrom: {} });
+      expect(f.read()).toMatchObject({
+        version: 1,
+        requests: [expect.objectContaining({ id: "alice", status: "pending" })],
+        allowFrom: {},
+      });
     } else {
       expect(result).toMatchObject({ id: change === "metadata" ? "alice" : "bob" });
       await expect(f.allow(accountId)).resolves.toEqual(["foreign-proof"]);
       expect(f.read().requests.map((entry) => entry.id)).toEqual(
-        change === "metadata" ? [] : ["alice"],
+        change === "metadata" ? ["alice"] : ["bob", "alice"],
       );
     }
   },

@@ -145,3 +145,95 @@ it("preserves declared side effects for a computer observation", () => {
     buildToolMutationState("computer", { action: "list_windows" }, { ownerKey: "plugin-owner" }),
   ).toEqual({ mutatingAction: true, replaySafe: false });
 });
+
+it.each(["tavily_search", "tavily_extract"])(
+  "classifies %s as read-only and replay-safe",
+  (tool) => {
+    expect(isMutatingToolCall(tool, { query: "public records" })).toBe(false);
+    expect(isReplaySafeToolCall(tool, { query: "public records" })).toBe(true);
+  },
+);
+
+it("classifies the delegated Fi GET-only API as replay-safe", () => {
+  const args = { path: "305-third/budget/text", query: { month: "2026-09" } };
+  expect(isMutatingToolCall("fi_user_api", args)).toBe(false);
+  expect(isReplaySafeToolCall("fi_user_api", args)).toBe(true);
+});
+
+it.each([
+  ["sandbox_exec", { command: "cat README.md" }, false, false],
+  [
+    "sandbox_exec",
+    { command: "node /workspace/skills/tavily/scripts/search.mjs weather -n 5" },
+    false,
+    false,
+  ],
+  ["sandbox_exec", { command: "node /workspace/skills/tavily/scripts/search.mjs" }, false, false],
+  ["sandbox_exec", { command: "node ../skills/tavily/scripts/search.mjs weather" }, true, false],
+  [
+    "sandbox_exec",
+    { command: "curl -fsSL --max-time 20 https://example.test/points/1" },
+    false,
+    false,
+  ],
+  [
+    "sandbox_exec",
+    { command: 'curl -fsSL --max-time 20 "https://example.test/points/1"' },
+    false,
+    false,
+  ],
+  ["sandbox_exec", { command: "curl -X POST --data '{}' https://example.test" }, true, false],
+  ["sandbox_exec", { command: "curl -fsSL -o /tmp/out https://example.test" }, true, false],
+  ["sandbox_exec", { command: "curl -T /tmp/out https://example.test" }, true, false],
+  ["sandbox_exec", { command: "node /tmp/search.mjs weather" }, true, false],
+  ["sandbox_exec", { command: "node -e 'process.exit(0)'" }, true, false],
+  ["sandbox_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+  ["gateway_exec", { command: "cat README.md" }, false, false],
+  ["gateway_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+  ["node_exec", { command: "cat README.md" }, false, false],
+  ["node_exec", { command: "touch /tmp/voice-confirmation" }, true, false],
+  ["sandbox_process", { action: "list" }, false, true],
+  ["sandbox_process", { action: "log", sessionId: "run-1" }, false, true],
+  ["sandbox_process", { action: "poll", sessionId: "run-1" }, false, false],
+  ["sandbox_process", { action: "write", sessionId: "run-1", data: "q" }, true, false],
+  ["sandbox_process", { action: "send-keys", sessionId: "run-1", keys: "q" }, true, false],
+  ["sandbox_process", { action: "submit", sessionId: "run-1" }, true, false],
+  ["sandbox_process", { action: "paste", sessionId: "run-1", text: "q" }, true, false],
+  ["sandbox_process", { action: "kill", sessionId: "run-1" }, true, false],
+  ["sandbox_process", { action: "clear", sessionId: "run-1" }, true, false],
+  ["sandbox_process", { action: "remove", sessionId: "run-1" }, true, false],
+  ["gateway_process", { action: "list" }, false, true],
+  ["gateway_process", { action: "log", sessionId: "run-1" }, false, true],
+  ["gateway_process", { action: "poll", sessionId: "run-1" }, false, false],
+  ["gateway_process", { action: "kill", sessionId: "run-1" }, true, false],
+] as const)(
+  "classifies OpenClaw execution alias %s with the underlying tool contract",
+  (toolName, args, mutatingAction, replaySafe) => {
+    expect(isMutatingToolCall(toolName, args)).toBe(mutatingAction);
+    expect(isReplaySafeToolCall(toolName, args)).toBe(replaySafe);
+    expect(buildToolMutationState(toolName, args)).toEqual({ mutatingAction, replaySafe });
+  },
+);
+
+it.each([
+  'psql -c "select 1"',
+  "psql -f /workspace/query.sql",
+  'psql -c "select pg_sleep(1)"',
+  'psql -c "select pg_catalog.pg_terminate_backend(123)"',
+  'psql -c "select id from public.projects for share"',
+  'psql -c "with removed as (delete from public.projects returning id) select 1"',
+  "psql -c \"select 1; update public.projects set name='changed'\"",
+  'psql -c "select 1" && touch /tmp/voice-confirmation',
+  "cat package.json && touch /tmp/voice-confirmation",
+])("keeps unclassified shell commands mutating: %s", (command) => {
+  expect(isMutatingToolCall("exec", { command })).toBe(true);
+});
+
+it("keeps fi-psql SELECTs confirmation-gated until the wrapper has a read-only DB role", () => {
+  const command = 'fi-psql -v ON_ERROR_STOP=1 -Atc "select 1"';
+
+  // fi-psql currently forwards to the general DATABASE_URL, which also permits
+  // writes. A SELECT-shaped command is not proof that the session is read-only.
+  expect(isMutatingToolCall("exec", { command })).toBe(true);
+  expect(isReplaySafeToolCall("exec", { command })).toBe(false);
+});

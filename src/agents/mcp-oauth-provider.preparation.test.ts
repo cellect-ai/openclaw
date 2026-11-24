@@ -64,7 +64,7 @@ it.each(["acknowledged", "uncertain"] as const)(
   "publishes metadata only after an %s write settles",
   async (outcome) => {
     const committed = {
-      clientInformation: { client_id: "updated-client" },
+      clientInformation: { client_id: "updated-client", issuer: "https://issuer.example.test" },
       redirectUrl: "https://callback.example.test/updated",
     } satisfies McpOAuthStore;
     read.mockResolvedValueOnce(original);

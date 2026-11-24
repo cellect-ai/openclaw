@@ -5,6 +5,7 @@ import type {
   AgentRunApprovalClosureReason,
 } from "./agent-run-approval-leases.js";
 import type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
+import type { AgentRunPersistenceWork } from "./agent-run-persistence.js";
 
 export type AgentRunModel = { provider: string; model: string };
 
@@ -100,6 +101,7 @@ export type AgentRunContextOwnership = {
 };
 
 export type AgentRunRegistryState = {
+  admissionHandlers?: Set<(runId: string) => void | Promise<void> | AgentRunPersistenceWork>;
   contexts: Map<string, AgentRunContext>;
   owners: Map<string, AgentRunContextOwnership>;
   queuedRunContextLeases?: WeakMap<AgentRunContext, number>;

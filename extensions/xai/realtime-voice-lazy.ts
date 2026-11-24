@@ -6,7 +6,11 @@ import {
   type RealtimeVoiceBridgeCreateRequest,
   type RealtimeVoiceToolResultOptions,
 } from "openclaw/plugin-sdk/realtime-voice-provider";
-import { assertXaiRealtimeVoiceRequestSupported } from "./capability-provider-metadata-factory.js";
+import type { RealtimeVoiceProviderPlugin } from "openclaw/plugin-sdk/realtime-voice-provider";
+import {
+  assertLiteLlmRealtimeVoiceRequestSupported,
+  assertXaiRealtimeVoiceRequestSupported,
+} from "./capability-provider-metadata-factory.js";
 import { serializeXaiRealtimeToolResult } from "./realtime-voice-config.js";
 
 const MAX_LAZY_REALTIME_VOICE_USER_MESSAGES = 128;
@@ -18,14 +22,48 @@ const loadXaiRealtimeVoiceProvider = createLazyRuntimeModule(async () =>
   (await import("./realtime-voice-provider.js")).buildXaiRealtimeVoiceProvider(),
 );
 
+const loadLiteLlmRealtimeVoiceProvider = createLazyRuntimeModule(async () =>
+  (await import("./realtime-voice-provider.js")).buildLiteLlmRealtimeVoiceProvider(),
+);
+
 export function createLazyXaiRealtimeVoiceBridge(
   req: RealtimeVoiceBridgeCreateRequest,
 ): RealtimeVoiceBridge {
-  assertXaiRealtimeVoiceRequestSupported(req);
+  return createLazyRealtimeVoiceBridge(req, {
+    loadProvider: loadXaiRealtimeVoiceProvider,
+    label: "xAI",
+    validate: assertXaiRealtimeVoiceRequestSupported,
+  });
+}
+
+export function createLazyLiteLlmRealtimeVoiceBridge(
+  req: RealtimeVoiceBridgeCreateRequest,
+): RealtimeVoiceBridge {
+  return createLazyRealtimeVoiceBridge(req, {
+    loadProvider: loadLiteLlmRealtimeVoiceProvider,
+    label: "LiteLLM",
+    validate: assertLiteLlmRealtimeVoiceRequestSupported,
+  });
+}
+
+function createLazyRealtimeVoiceBridge(
+  req: RealtimeVoiceBridgeCreateRequest,
+  bridgeOptions: {
+    loadProvider: () => Promise<RealtimeVoiceProviderPlugin>;
+    label: string;
+    validate: (req: RealtimeVoiceBridgeCreateRequest) => void;
+  },
+): RealtimeVoiceBridge {
+  bridgeOptions.validate(req);
   type PendingVoiceOperation =
     | { type: "audio" }
     | { timestamp: number; type: "media-timestamp" }
-    | { bytes: number; text: string; type: "user-message" }
+    | {
+        bytes: number;
+        options?: Parameters<NonNullable<RealtimeVoiceBridge["sendUserMessage"]>>[1];
+        text: string;
+        type: "user-message";
+      }
     | { instructions?: string; type: "greeting" }
     | {
         bytes: number;
@@ -47,9 +85,9 @@ export function createLazyXaiRealtimeVoiceBridge(
   const pendingAudio = createRealtimeVoiceAudioQueue("reject-newest");
   const pendingOperations: PendingVoiceOperation[] = [];
   const lifecycle = createLazyRealtimeVoiceBridgeLifecycle({
-    label: "xAI",
+    label: bridgeOptions.label,
     request: req,
-    load: async (request) => (await loadXaiRealtimeVoiceProvider()).createBridge(request),
+    load: async (request) => (await bridgeOptions.loadProvider()).createBridge(request),
     clearPending: () => {
       acceptsInput = false;
       pendingAudio.clear();
@@ -92,7 +130,9 @@ export function createLazyXaiRealtimeVoiceBridge(
         case "audio": {
           const chunk = pendingAudio.dequeue();
           if (!chunk) {
-            throw new Error("xAI realtime voice pending audio queue invariant violated");
+            throw new Error(
+              `${bridgeOptions.label} realtime voice pending audio queue invariant violated`,
+            );
           }
           loadedBridge.sendAudio(chunk);
           break;
@@ -104,7 +144,12 @@ export function createLazyXaiRealtimeVoiceBridge(
           loadedBridge.setMediaTimestamp(operation.timestamp);
           break;
         case "user-message":
-          loadedBridge.sendUserMessage?.(operation.text);
+          // Keep the call's arity: providers and their tests see no trailing undefined.
+          if (operation.options) {
+            loadedBridge.sendUserMessage?.(operation.text, operation.options);
+          } else {
+            loadedBridge.sendUserMessage?.(operation.text);
+          }
           break;
         case "tool-result":
           await loadedBridge.submitToolResult(
@@ -167,8 +212,12 @@ export function createLazyXaiRealtimeVoiceBridge(
         type: "media-timestamp",
       });
     },
-    sendUserMessage: (text) => {
-      if (dispatchOrIgnoreInput((bridge) => bridge.sendUserMessage?.(text))) {
+    sendUserMessage: (text, options) => {
+      if (
+        dispatchOrIgnoreInput((bridge) =>
+          options ? bridge.sendUserMessage?.(text, options) : bridge.sendUserMessage?.(text),
+        )
+      ) {
         return;
       }
       const messageBytes = Buffer.byteLength(text, "utf8");
@@ -177,12 +226,15 @@ export function createLazyXaiRealtimeVoiceBridge(
         pendingUserMessageBytes + messageBytes > MAX_LAZY_REALTIME_VOICE_USER_MESSAGE_BYTES
       ) {
         req.onError?.(
-          new Error("xAI realtime voice pending user message overflow during lazy startup"),
+          new Error(
+            `${bridgeOptions.label} realtime voice pending user message overflow during lazy startup`,
+          ),
         );
         return;
       }
       pendingOperations.push({
         bytes: messageBytes,
+        ...(options ? { options } : {}),
         text,
         type: "user-message",
       });
@@ -230,7 +282,7 @@ export function createLazyXaiRealtimeVoiceBridge(
         pendingToolResultBytes + resultBytes > MAX_LAZY_REALTIME_VOICE_TOOL_RESULT_BYTES
       ) {
         const error = new Error(
-          "xAI realtime voice pending tool result overflow during lazy startup",
+          `${bridgeOptions.label} realtime voice pending tool result overflow during lazy startup`,
         );
         req.onError?.(error);
         throw error;

@@ -80,7 +80,7 @@ const coreEntrySpecs: readonly (readonly [
     async (program) => (await import("./register.agent.js")).registerAgentsCommands(program),
   ],
   [
-    ["status", "health", "sessions"],
+    ["thread", "status", "health", "sessions"],
     async (program) =>
       (await import("./register.status-health-sessions.js")).registerStatusHealthSessionsCommands(
         program,

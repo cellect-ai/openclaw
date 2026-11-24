@@ -12,14 +12,11 @@ import {
   withAgentRunLifecycleGeneration,
 } from "../../infra/agent-events.js";
 import { captureExecRequestOwners, withExecRequestTurn } from "../../infra/exec-request-context.js";
+import { lookupHookRequesterAttestation } from "../../infra/hook-requester-attestation.js";
 import {
   buildHandledBeforeAgentReplyPayloads,
   runBeforeAgentReplyForTurn,
 } from "../../plugins/before-agent-reply.js";
-import {
-  buildAgentHookContextChannelFields,
-  buildAgentHookContextIdentityFields,
-} from "../../plugins/hook-agent-context.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import { loadPluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.js";
 import { withPluginRetentionOwner } from "../../plugins/plugin-retention-diagnostics.js";
@@ -67,6 +64,7 @@ import { withRequiredSessionPlacement } from "../session-placement-admission.js"
 import { resolveSessionPlacementTurnSettlementAssertion } from "../session-placement-forced-terminal-settlement.js";
 import { captureSessionSuspension, type SessionSuspensionParams } from "../session-suspension.js";
 import { SessionManager } from "../sessions/session-manager.js";
+import { shadowHookRunParams } from "../shadow-hook-tool-policy.js";
 import { redactRunIdentifier } from "../workspace-run.js";
 import { runEmbeddedAgentViaCliBackendIfEligible } from "./cli-backend-dispatch.js";
 import { buildCompletedAgentUsageMeta, mergeCompletedAgentUsage } from "./completed-usage.js";
@@ -74,6 +72,7 @@ import { resolveGlobalLane } from "./lanes.js";
 import { log } from "./logger.js";
 import { createEmbeddedAgentPluginRuntimeRefresh } from "./plugin-runtime-refresh.js";
 import { runPreparedEmbeddedLoop } from "./run-loop.js";
+import { buildEmbeddedPreReplyHookContext } from "./run/agent-hook-context.js";
 import { createEmbeddedRunStageSummaryEmitter } from "./run/attempt-stage-timing.js";
 import { publishClaimedSessionWriter } from "./run/compaction-accounting-bridge.js";
 import { withExecutionPhaseDiagnostics } from "./run/execution-phase-diagnostics.js";
@@ -166,6 +165,8 @@ async function runEmbeddedAgentForSession(
       (paramsBase.sessionPersistence === "detached"
         ? SessionManager.inMemory(paramsBase.cwd ?? paramsBase.workspaceDir)
         : undefined),
+    // Preserve the host-limited Fi shadow tool surface across retries.
+    ...shadowHookRunParams(runSessionTarget.sessionKey, paramsBase),
   });
   const globalLane = resolveGlobalLane(params.lane, params);
   // Outer fallback attempts defer session suspension only while another
@@ -464,7 +465,6 @@ async function runEmbeddedAgentForSession(
                   hasSessionModelOverride: false,
                   modelFallbacksOverride: params.modelFallbacksOverride,
                 });
-              const fallbackConfigured = modelFallbackAvailability.kind === "active";
               if (modelFallbackAvailability.kind === "disabled_by_model_override") {
                 log.warn(
                   `[model-fallback] configured fallbacks disabled by user model override run=${params.runId} session=${redactedSessionId}`,
@@ -472,27 +472,28 @@ async function runEmbeddedAgentForSession(
               }
               const resolvedSessionKey = normalizedSessionKey ?? runSessionTarget.sessionKey;
               const hookRunner = getGlobalHookRunner();
-              const hookCtx = {
-                runId: params.runId,
-                jobId: params.jobId,
+              const hookCtx = buildEmbeddedPreReplyHookContext(params, {
                 agentId: workspaceResolution.agentId,
                 sessionKey: resolvedSessionKey,
-                sessionId: params.sessionId,
                 workspaceDir: resolvedWorkspace,
-                activeProjectKeys: [...activeProjectKeys],
-                modelProviderId: provider,
+                activeProjectKeys,
+                provider,
                 modelId,
-                trigger: params.trigger,
-                ...buildAgentHookContextChannelFields(params),
-                ...buildAgentHookContextIdentityFields(params),
-              };
+              });
+              const hookRequesterAttestation =
+                params.trigger === "cron"
+                  ? lookupHookRequesterAttestation(params.runId, resolvedSessionKey)
+                  : undefined;
               const hookResult = await runBeforeAgentReplyForTurn({
                 awaitSessionDiffBaseline: params.awaitSessionDiffBaseline,
                 assertCurrent: preReplyAssertCurrent,
                 runId: params.runId,
                 trigger: params.trigger,
                 event: { cleanedBody: params.prompt },
-                context: hookCtx,
+                // Only this hook sees the attestation; later hooks reuse hookCtx.
+                context: hookRequesterAttestation
+                  ? { ...hookCtx, hookRequesterAttestation }
+                  : hookCtx,
                 onDispatch: () =>
                   notifyExecutionPhase("before_agent_reply", { provider, model: modelId }),
                 onDeclined: () =>
@@ -569,7 +570,7 @@ async function runEmbeddedAgentForSession(
                 globalLane,
                 hookRunner,
                 hookContext: hookCtx,
-                fallbackConfigured,
+                fallbackConfigured: modelFallbackAvailability.kind === "active",
                 isProbeSession,
                 resolvedSessionKey,
                 resolvedToolResultFormat,

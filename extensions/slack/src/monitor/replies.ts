@@ -22,6 +22,10 @@ import {
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-payload";
 import { createReplyReferencePlanner } from "openclaw/plugin-sdk/reply-reference";
+import {
+  emitReplyPublicationAccepted,
+  settleNativeFinalDeliveryPayload,
+} from "openclaw/plugin-sdk/reply-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime-env";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
 import { SLACK_MAX_BLOCKS } from "../blocks-input.js";
@@ -203,7 +207,7 @@ export async function deliverReplies(params: {
         ...(mediaLocalRoots ? { mediaLocalRoots } : {}),
         mediaAccess,
         onDeliveryResult: (result) => {
-          acceptedResults.push(result);
+          acceptedResults.push(structuredClone(result));
           if (questionId) {
             registerSlackQuestionDelivery({
               questionId,
@@ -318,6 +322,28 @@ export async function deliverReplies(params: {
       );
     }
     if (delivered) {
+      const accepted = lastResult ?? acceptedResults.at(-1);
+      const finalMessageId = await settleNativeFinalDeliveryPayload(
+        payload,
+        acceptedResults.map((result) => ({
+          ...result,
+          channel: "slack",
+          ...(threadTs ? { threadId: threadTs } : {}),
+        })),
+        {
+          channel: "slack",
+          to: params.messageSentHookTarget ?? params.target,
+          accountId: params.accountId,
+          threadId: threadTs,
+        },
+      );
+      if (finalMessageId ?? accepted?.messageId)
+        await emitReplyPublicationAccepted(payload, {
+          channel: "slack",
+          accountId: params.accountId ?? "default",
+          conversationId: params.messageSentHookTarget ?? params.target,
+          messageId: finalMessageId ?? accepted!.messageId,
+        });
       const hookContent = hookParts.join("\n\n") || textRaw || spokenText || "";
       // Preserve the media hook contract even when a trailing block send has a
       // message `ts`; the logical payload still spans multiple Slack objects.

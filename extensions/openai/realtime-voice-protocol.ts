@@ -18,6 +18,7 @@ import {
   buildOpenAIRealtimeTurnDetectionConfig,
   normalizeOpenAIRealtimeTools,
   parsePlaybackMarkSequence,
+  mergeOpenAIRealtimeResponseToolChoice,
   type OpenAIRealtimeUserMessageOptions,
   type OpenAIRealtimeVoiceBridgeConfig,
 } from "./realtime-voice-session-policy.js";
@@ -48,6 +49,12 @@ export abstract class OpenAIRealtimeProtocol {
   protected manualResponseCancelEventId: string | null = null;
 
   protected responseCreatePending = false;
+
+  /** Tool choice the deferred response.create must carry once it is sent. */
+  protected pendingResponseToolChoice: OpenAIRealtimeUserMessageOptions["toolChoice"];
+
+  /** Tool choice of the manual response.create sent and not yet settled. */
+  protected inFlightResponseToolChoice: OpenAIRealtimeUserMessageOptions["toolChoice"];
 
   protected autoRespondSuppressedForManualResponse = false;
 
@@ -128,6 +135,7 @@ export abstract class OpenAIRealtimeProtocol {
         instructions: cfg.instructions,
         interruptResponseOnInputAudio: cfg.interruptResponseOnInputAudio,
         language: cfg.language,
+        transcriptionHints: cfg.transcriptionHints,
         inputTranscriptionModel: cfg.inputTranscriptionModel,
         model: cfg.model ?? OPENAI_REALTIME_DEFAULT_MODEL,
         noiseReduction: null,
@@ -316,15 +324,21 @@ export abstract class OpenAIRealtimeProtocol {
   }
 
   protected requestResponseCreate(options?: OpenAIRealtimeUserMessageOptions): void {
+    const toolChoice = mergeOpenAIRealtimeResponseToolChoice(
+      this.pendingResponseToolChoice,
+      options?.toolChoice,
+    );
     if (
       this.responseBusy ||
       this.continuingToolCallIds.size > 0 ||
       this.pendingToolCallIds.size > 0
     ) {
       this.responseCreatePending = true;
+      this.pendingResponseToolChoice = toolChoice;
       return;
     }
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
     this.responseCreateState = "preparing";
     this.suppressAutoRespondForManualResponse();
     if (this.responseCreateState !== "preparing") {
@@ -335,11 +349,12 @@ export abstract class OpenAIRealtimeProtocol {
     // Realtime errors can describe unrelated client events. Keep this id until
     // the manual turn settles so only its rejection may release VAD suppression.
     this.manualResponseCreateEventId = eventId;
+    this.inFlightResponseToolChoice = toolChoice;
     this.sendEvent({
       type: "response.create",
       event_id: eventId,
-      ...(options?.toolChoice
-        ? { response: { output_modalities: ["audio"], tool_choice: options.toolChoice } }
+      ...(toolChoice
+        ? { response: { output_modalities: ["audio"], tool_choice: toolChoice } }
         : {}),
     });
   }
@@ -394,8 +409,20 @@ export abstract class OpenAIRealtimeProtocol {
     if (!this.responseCreatePending) {
       return;
     }
+    const toolChoice = this.pendingResponseToolChoice;
     this.responseCreatePending = false;
-    this.requestResponseCreate();
+    this.pendingResponseToolChoice = undefined;
+    this.requestResponseCreate(toolChoice ? { toolChoice } : undefined);
+  }
+
+  /** A manual response.create rejected for an active response is owed again as it was asked. */
+  protected deferRejectedResponseCreate(): void {
+    this.responseCreatePending = true;
+    this.pendingResponseToolChoice = mergeOpenAIRealtimeResponseToolChoice(
+      this.pendingResponseToolChoice,
+      this.inFlightResponseToolChoice,
+    );
+    this.inFlightResponseToolChoice = undefined;
   }
 
   protected resetRealtimeSessionState(): void {
@@ -404,6 +431,8 @@ export abstract class OpenAIRealtimeProtocol {
     this.assistantAudioItem = null;
     this.releaseResponseState({ drain: false });
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
+    this.inFlightResponseToolChoice = undefined;
     this.autoRespondSuppressedForManualResponse = false;
     this.continuingToolCallIds.clear();
     this.pendingToolCallIds.clear();

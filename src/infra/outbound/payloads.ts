@@ -2,10 +2,13 @@ import {
   applyReplyPayloadTargetPolicy,
   addReplyPayloadMediaFailures,
   copyReplyPayloadMetadata,
+  getReplyPayloadMetadata,
+  setReplyPayloadMetadata,
   formatBtwTextForExternalDelivery,
   isRenderablePayload,
   shouldSuppressReasoningPayload,
 } from "../../auto-reply/reply-payload.js";
+import { copyReplyPublication } from "../../auto-reply/reply-publication.js";
 import { parseReplyDirectives } from "../../auto-reply/reply/reply-directives.js";
 import { stripLeadingInboundMetadata } from "../../auto-reply/reply/strip-inbound-meta.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
@@ -173,6 +176,7 @@ function normalizeRawOutboundPayload(
     ...(parsed.mediaFailures ?? []),
     ...(strippedParsed === parsed ? [] : (strippedParsed.mediaFailures ?? [])),
   ]);
+  copyReplyPublication(payload, normalizedPayload);
   return normalizedPayload;
 }
 
@@ -285,6 +289,16 @@ export function projectOutboundPayloadPlanForOutbound(
       ...(payload.location ? { location: payload.location } : {}),
       ...(payload.isStatusNotice === true ? { isStatusNotice: true } : {}),
     });
+    const normalizedPayload = normalizedPayloads.at(-1);
+    if (normalizedPayload) {
+      copyReplyPublication(payload, normalizedPayload);
+      const metadata = getReplyPayloadMetadata(payload);
+      if (metadata?.pendingFinalDeliveryCompletion)
+        setReplyPayloadMetadata(normalizedPayload, {
+          pendingFinalDeliveryCompletion: metadata.pendingFinalDeliveryCompletion,
+          sessionWriterDeliveryAuthority: metadata.sessionWriterDeliveryAuthority,
+        });
+    }
   }
   return normalizedPayloads;
 }

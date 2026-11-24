@@ -1,5 +1,9 @@
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import { assertConversationAuthority } from "./conversation-authority.js";
+import type {
+  FinalProjectionRelease,
+  FinalProjectionTransition,
+} from "./pending-final-delivery-receipt.js";
 import type { SessionEntryPatchOptions } from "./session-accessor.sqlite-contract.js";
 import { resolveConversationInDatabase } from "./session-accessor.sqlite-conversation-read.js";
 import {
@@ -54,6 +58,8 @@ export function applySessionEntryPatchInDatabase(
     sessionKey: string;
     writeBase: SessionEntry;
     next: SessionEntry | undefined;
+    projectionReleases?: readonly FinalProjectionRelease[];
+    projectionTransition?: FinalProjectionTransition;
     options: Pick<
       SessionEntryPatchOptions,
       "consumePendingReset" | "assertCommitAllowed" | "providerReviewMutation"
@@ -74,7 +80,7 @@ export function writeSessionEntryPatchInDatabase(
   database: OpenClawAgentDatabase,
   params: Pick<
     Parameters<typeof applySessionEntryPatchInDatabase>[1],
-    "sessionKey" | "writeBase" | "next" | "options"
+    "sessionKey" | "writeBase" | "next" | "options" | "projectionReleases" | "projectionTransition"
   > & { fresh: SqliteLifecycleTargetSnapshot },
 ): SessionEntryPatchMutation {
   const { fresh } = params;
@@ -101,6 +107,8 @@ export function writeSessionEntryPatchInDatabase(
   const persisted = writeSessionEntry(database, params.sessionKey, params.next, {
     ...(params.options.consumePendingReset ? { consumePendingReset: true } : {}),
     ...(params.options.providerReviewMutation ? { providerReviewMutation: true } : {}),
+    projectionReleases: params.projectionReleases,
+    projectionTransition: params.projectionTransition,
     previousEntry: selectedPreviousEntry,
     postimages,
     canonicalPreviousEntry: fresh[0]?.sessionKey === params.sessionKey ? fresh[0].entry : null,

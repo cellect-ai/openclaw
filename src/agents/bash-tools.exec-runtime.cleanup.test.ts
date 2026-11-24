@@ -119,6 +119,46 @@ function expectRoutingReleased(session: ProcessSession | undefined) {
   }
 }
 
+it.each([false, true])(
+  "a manual stop reports failed finalization only (failure=%s)",
+  async (fails) => {
+    const exit = createDeferred<RunExit>();
+    enqueueSessionEventMock.mockReturnValue(completedReceipt());
+    queueRun(() => exit.promise, "retained output");
+    const run = await runTestExecProcess({
+      ...notificationRouting,
+      sessionKey: "agent:main:stopped-finalization",
+      originRunId: "stopped-origin",
+      sandbox: {
+        containerName: "fixture",
+        workspaceDir: "/workspace",
+        containerWorkdir: "/workspace",
+        buildExecSpec: async () => ({ argv: ["synthetic"], env: {}, stdinMode: "pipe-closed" }),
+        finalizeExec: async () => {
+          if (fails) throw new Error("artifact finalization failed");
+        },
+      },
+    });
+    markBackgrounded(run.session);
+    exit.resolve(createRunExit({ reason: "manual-cancel", exitCode: null }));
+    await run.promise;
+    if (fails) {
+      expect(run.session.finalizationFailed).toBe(true);
+      expect(enqueueSessionEventMock).toHaveBeenCalledOnce();
+      expect(enqueueSessionEventMock).toHaveBeenCalledWith(
+        expect.stringContaining("artifact finalization failed"),
+        expect.objectContaining({
+          source: "exec",
+          sourceRunId: "stopped-origin",
+          replyExpectation: "optional",
+        }),
+      );
+    } else {
+      expect(enqueueSessionEventMock).not.toHaveBeenCalled();
+    }
+  },
+);
+
 it.each([
   ["manual-cancel", false, false, "none"],
   ["overall-timeout", true, false, "none"],

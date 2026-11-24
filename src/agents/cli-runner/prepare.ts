@@ -799,7 +799,7 @@ async function prepareCliRunContextWithinReadFence(
         defaultMediatedToolNames: hostOwnedTools,
         scope: {
           cfg: runConfig,
-          ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
+          ...mcp.resolveCliMcpSkillAuthoring(params, skillLibraryAuthoring),
           ...(loopbackBundleMcp ? { bundledTools: loopbackBundleMcp.tools } : {}),
           ...(mcpToolAuth ? { authProfileStore: mcpToolAuth.store } : {}),
           ...(mcpToolAuth?.agentDir ? { authProfileStoreAgentDir: mcpToolAuth.agentDir } : {}),
@@ -972,7 +972,7 @@ async function prepareCliRunContextWithinReadFence(
             runtimeOwnerToken: mcpLoopbackRuntime.ownerToken,
             bindQuestionAnswerAuthority: (assertActive) =>
               bindQuestionAnswerAuthorityForSession(mcpGrant.context.sessionKey, assertActive),
-            ...(skillLibraryAuthoring ? { skillLibraryAuthoring } : {}),
+            ...mcp.resolveCliMcpSkillAuthoring(params, skillLibraryAuthoring),
             ...(loopbackBundleMcp ? { bundledTools: loopbackBundleMcp.tools } : {}),
             ...(mcpToolAuth ? { toolAuth: mcpToolAuth } : {}),
           })

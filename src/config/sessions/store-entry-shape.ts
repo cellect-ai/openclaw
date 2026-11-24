@@ -5,7 +5,9 @@ import {
   normalizeSessionColorValue,
   normalizeSessionIconValue,
 } from "../../../packages/gateway-protocol/src/session-agent-status.js";
+import { inspectLegacyRequesterRecovery } from "./legacy-requester-recovery.js";
 import { SessionStoreMigrationRequiredError } from "./migration-required.js";
+import type { CompletedFinalDelivery } from "./pending-final-delivery-types.js";
 import { hasLegacySessionEntryState } from "./session-entry-state-format.js";
 import { assertSupportedSessionStoreEntry } from "./supported-session-store.js";
 import type { PendingTranscriptRepairState, SessionEntry } from "./types.js";
@@ -45,6 +47,10 @@ export function projectCanonicalSessionEntryShape(
   >,
 ): SessionEntry {
   assertSupportedSessionStoreEntry(value);
+  const requesterRecovery = inspectLegacyRequesterRecovery(value);
+  if (requesterRecovery) {
+    throw new SessionStoreMigrationRequiredError(requesterRecovery.warning);
+  }
   if (hasLegacySessionEntryState(value)) {
     throw new SessionStoreMigrationRequiredError(
       "Legacy session entry state requires migration; stop the Gateway and run openclaw doctor --fix.",
@@ -118,6 +124,12 @@ export function projectCanonicalSessionEntryShape(
     "pendingDeliveryNotice",
     normalizePendingDeliveryNotice(canonicalValue.pendingDeliveryNotice),
   );
+  if (canonicalValue.completedFinalDeliveries !== undefined) {
+    const receipts = canonicalValue.completedFinalDeliveries;
+    if (!Array.isArray(receipts) || receipts.length > 64)
+      throw new Error("Invalid native final receipt history");
+    canonicalValue.completedFinalDeliveries = receipts.map(normalizeCompletedFinalDelivery);
+  }
   setOptionalField(
     "pendingTranscriptRepair",
     normalizePendingTranscriptRepair(canonicalValue.pendingTranscriptRepair),
@@ -173,18 +185,92 @@ export function normalizePendingFinalDelivery(
   const intentId = normalizeOptionalString(value.intentId);
   const sourceRunId = normalizeOptionalString(value.sourceRunId);
   const deliveries = normalizePendingFinalDeliveries(value.deliveries);
+  const sourceGeneration = normalizeOptionalString(value.sourceGeneration);
+  if (
+    value.dispatchState !== undefined &&
+    ((value.dispatchState !== "open" && value.dispatchState !== "closed") ||
+      !sourceRunId ||
+      !sourceGeneration ||
+      !Array.isArray(value.deliveries) ||
+      (deliveries?.length ?? 0) !== value.deliveries.length ||
+      new Set(deliveries?.map(({ id }) => id)).size !== (deliveries?.length ?? 0) ||
+      (value.dispatchClosure !== undefined &&
+        value.dispatchClosure !== "completed" &&
+        value.dispatchClosure !== "retired"))
+  ) {
+    throw new Error("Invalid native final dispatch custody");
+  }
   const base = {
     createdAt,
     ...(isRecord(value.context) ? { context: value.context } : {}),
     ...(intentId ? { intentId } : {}),
     ...(sourceRunId ? { sourceRunId } : {}),
     ...(deliveries ? { deliveries } : {}),
+    ...(value.dispatchState
+      ? {
+          dispatchState: value.dispatchState as "open" | "closed",
+          sourceGeneration,
+          ...(value.dispatchClosure === "retired" || value.dispatchClosure === "completed"
+            ? { dispatchClosure: value.dispatchClosure }
+            : {}),
+          deliveries: deliveries ?? [],
+          ...(value.projectionConsumers !== undefined
+            ? { projectionConsumers: normalizeProjectionConsumers(value.projectionConsumers) }
+            : {}),
+        }
+      : {}),
   };
   if (value.kind === "transport-only") {
     return { kind: "transport-only", ...base };
   }
   const text = normalizeOptionalString(value.text);
   return value.kind === "replayable" && text ? { kind: "replayable", text, ...base } : undefined;
+}
+
+function normalizeProjectionConsumers(value: unknown): string[] {
+  if (
+    !Array.isArray(value) ||
+    value.length > 64 ||
+    value.some((id) => typeof id !== "string" || !id || id.length > 256) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error("Invalid native final projection consumers");
+  }
+  return value as string[];
+}
+
+function normalizeCompletedFinalDelivery(value: unknown): CompletedFinalDelivery {
+  if (
+    !isRecord(value) ||
+    !normalizeOptionalString(value.sessionId) ||
+    !normalizeOptionalString(value.intentId) ||
+    !normalizeOptionalString(value.sourceRunId) ||
+    !normalizeOptionalString(value.sourceGeneration) ||
+    !Number.isSafeInteger(value.completedAt) ||
+    Number(value.completedAt) < 0 ||
+    !Array.isArray(value.deliveries) ||
+    (value.closure !== "completed" && value.closure !== "retired")
+  ) {
+    throw new Error("Invalid native final completion receipt");
+  }
+  const deliveries = normalizePendingFinalDeliveries(value.deliveries) ?? [];
+  if (
+    deliveries.length !== value.deliveries.length ||
+    new Set(deliveries.map(({ id }) => id)).size !== deliveries.length ||
+    deliveries.some(({ state }) => state !== "delivered" && state !== "suppressed")
+  )
+    throw new Error("Unsettled native final completion receipt");
+  return {
+    sessionId: value.sessionId as string,
+    intentId: value.intentId as string,
+    sourceRunId: value.sourceRunId as string,
+    sourceGeneration: value.sourceGeneration as string,
+    completedAt: value.completedAt as number,
+    closure: value.closure === "retired" ? "retired" : "completed",
+    ...(isRecord(value.context) ? { context: value.context } : {}),
+    deliveries,
+    projectionConsumers: normalizeProjectionConsumers(value.projectionConsumers),
+  };
 }
 
 function normalizePendingFinalDeliveries(
@@ -215,6 +301,13 @@ function normalizePendingFinalDeliveries(
                     receipt: {
                       platformMessageId,
                       resultCount: Number(resultCount),
+                      ...(normalizeOptionalString(receipt?.finalPlatformMessageId)
+                        ? {
+                            finalPlatformMessageId: normalizeOptionalString(
+                              receipt?.finalPlatformMessageId,
+                            ),
+                          }
+                        : {}),
                     },
                   }
                 : {}),

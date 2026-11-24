@@ -67,11 +67,19 @@ it.for([
   { result: "progress", notification: "other-conversation" },
   { result: "progress", messageTool: true },
   { result: "progress", messageTool: "mirror" },
+  { result: "progress", legacyHeartbeat: "explicit" },
+  { result: "progress", legacyHeartbeat: "explicit", messageTool: true },
+  { result: "missing", legacyHeartbeat: "explicit" },
+  { result: "missing", legacyHeartbeat: "group" },
+  { result: "progress", legacyHeartbeat: "automatic" },
 ] as const)(
   "settles automation $result ($notification/$messageTool/$alias) through its shared session owner",
   async (scenario, { signal }) => {
     const progress = scenario.result === "progress";
     const failed = scenario.result === "failed";
+    const missing = scenario.result === "missing";
+    const legacyHeartbeat = "legacyHeartbeat" in scenario ? scenario.legacyHeartbeat : undefined;
+    const explicitHeartbeat = legacyHeartbeat !== undefined && legacyHeartbeat !== "automatic";
     const notification = "notification" in scenario ? scenario.notification : undefined;
     const nativeOnly = notification === "native-only";
     const otherConversation = notification === "other-conversation";
@@ -81,11 +89,24 @@ it.for([
     const deliveryFails = unavailable || nativeOnly || otherConversation;
     const alias = "alias" in scenario ? scenario.alias : undefined;
     const globalScope = alias === "global-main";
-    const result = progress ? { outcome: "progress", summary } : { outcome: "no_change" };
+    const result = missing
+      ? undefined
+      : progress
+        ? { outcome: "progress", summary }
+        : { outcome: "no_change" };
     await withOpenClawTestState(
       { label: "automation-shared-result", env: { OPENCLAW_TEST_FAST: "0" } },
       async (state) => {
         const cfg = completionConfig(state.workspaceDir);
+        if (legacyHeartbeat) {
+          cfg.messages = {
+            ...cfg.messages,
+            visibleReplies: legacyHeartbeat === "explicit" ? "message_tool" : "automatic",
+            ...(legacyHeartbeat === "group"
+              ? { groupChat: { visibleReplies: "message_tool" } }
+              : {}),
+          };
+        }
         if (globalScope) {
           cfg.session = { scope: "global" };
         } else if (alias === "main-key") {
@@ -148,6 +169,7 @@ it.for([
           sessionId,
           lifecycleRevision: "original",
           permissionMode: "full",
+          ...(legacyHeartbeat === "group" ? { chatType: "group" as const } : {}),
           delivery: normalizeSessionDeliveryState({
             context: conversationOnly ? { channel: "webchat" } : route,
           }),
@@ -196,11 +218,13 @@ it.for([
             },
           }),
           sourceConversation: alias ? undefined : source,
+          ...(legacyHeartbeat ? { legacyHeartbeatReplyPolicy: true as const } : {}),
         };
         let automationRunId: string | undefined;
         model.mockReset().mockImplementation(async (params) => {
           await admitModelTurn(params);
           automationRunId = expectDefined(params.runId, "automation run id");
+          if (explicitHeartbeat) expect(params.sourceReplyDeliveryMode).toBe("message_tool_only");
           await params.onBlockReply?.({
             text: "Unsettled reasoning must stay private.",
             isReasoning: true,
@@ -212,10 +236,11 @@ it.for([
             agentSessionKey: params.sessionKey,
             selfRemoveOnlyJobId: job.id,
           });
-          await tool.execute("result", {
-            action: "record_result",
-            ...result,
-          });
+          if (result)
+            await tool.execute("result", {
+              action: "record_result",
+              ...result,
+            });
           const finalPayload = nativeOnly
             ? {
                 channelData: {
@@ -224,7 +249,7 @@ it.for([
                   },
                 },
               }
-            : { text: summary };
+            : { text: explicitHeartbeat ? "Private unmarked execution prose." : summary };
           if ("messageTool" in scenario && scenario.messageTool === "mirror") {
             setReplyPayloadMetadata(finalPayload, {
               sourceReplyTranscriptMirror: {
@@ -317,11 +342,13 @@ it.for([
               expect(outcome.delivery?.messageToolSentTo).toBeUndefined();
             }
             expect(sendText.mock.calls.map(([sent]) => sent.text)).toEqual(
-              "notification" in scenario || "messageTool" in scenario
-                ? []
-                : ["Reasoning for the report.", summary],
+              explicitHeartbeat && !("messageTool" in scenario)
+                ? [summary]
+                : "notification" in scenario || "messageTool" in scenario
+                  ? []
+                  : ["Reasoning for the report.", summary],
             );
-          } else if (scenario.result === "no_change") {
+          } else if (scenario.result === "no_change" || missing) {
             expect(outcome).toMatchObject({
               delivered: false,
               deliveryAttempted: false,

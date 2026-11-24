@@ -5,13 +5,7 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vite
 import type { DecisionReceiptV1 } from "../../../packages/gateway-protocol/src/index.js";
 import { createExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { configureMessageActionDecisionSink } from "../../audit/message-action-decision.js";
-import { markInboundContextLabel } from "../../auto-reply/reply/inbound-context-marker.js";
-import type { ChannelMessageAdapterShape } from "../../channels/message/types.js";
-import type { ChannelMessageCapability } from "../../channels/plugins/message-capabilities.js";
-import type {
-  ChannelMessageActionName,
-  ChannelPlugin,
-} from "../../channels/plugins/types.public.js";
+import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import {
   mintMessageActionTurnCapability,
   revokeMessageActionTurnCapability,
@@ -27,12 +21,8 @@ import {
   resetGlobalHookRunner,
 } from "../../plugins/hook-runner-global.js";
 import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
-import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
+import { resetPluginRuntimeStateForTest } from "../../plugins/runtime.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  createChannelTestPluginBase,
-  createTestRegistry,
-} from "../../test-utils/channel-plugins.js";
 import { withTempDir } from "../../test-utils/temp-dir.js";
 import {
   consumePreExecutionBlockedToolCall,
@@ -42,21 +32,23 @@ import { createOpenClawTools } from "../openclaw-tools.js";
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import { createMessageTool } from "./message-tool-execution.js";
 import { sanitizeMessageToolVisiblePayload } from "./message-tool-visible-content.js";
-
-type CreateMessageTool = typeof createMessageTool;
+import {
+  createQaChannelSendResult,
+  EMPTY_PREPARED_MESSAGE_TOOL_CATALOG,
+  type CreateMessageTool,
+  makeSendResult,
+  getToolProperties,
+  getActionEnum,
+  secretRef,
+  channelConfig,
+  accountSecrets,
+  inboundMetadata,
+  createChannelPlugin,
+  registerPlugins,
+  registerMessagingPlugin,
+} from "./message-tool.fixtures.test-support.js";
 
 const CRITICAL_THRESHOLD = 20;
-const EMPTY_PREPARED_MESSAGE_TOOL_CATALOG = {
-  version: 0,
-  channels: [],
-  getChannel: () => undefined,
-} as const;
-
-type DescribeMessageTool = NonNullable<
-  NonNullable<ChannelPlugin["actions"]>["describeMessageTool"]
->;
-type MessageToolDiscoveryContext = Parameters<DescribeMessageTool>[0];
-type MessageToolSchema = NonNullable<ReturnType<DescribeMessageTool>>["schema"];
 
 const mocks = vi.hoisted(() => {
   const record = (value: unknown): Record<string, unknown> | undefined =>
@@ -247,32 +239,9 @@ vi.mock("./web-tools.js", () => ({
   createWebSearchTool: () => openClawToolsFactoryMocks.tool("web_search"),
 }));
 
-function makeSendResult(
-  overrides: Partial<Extract<MessageActionResult, { kind: "send" }>> = {},
-): MessageActionResult {
-  return {
-    kind: "send",
-    action: "send",
-    channel: "telegram",
-    to: "telegram:123",
-    handledBy: "plugin",
-    payload: {},
-    dryRun: true,
-    ...overrides,
-  };
-}
-
 function mockSendResult(overrides: { channel?: string; to?: string } = {}) {
   mocks.dispatch.mockClear();
   mocks.dispatch.mockResolvedValue(makeSendResult(overrides));
-}
-
-function getToolProperties(tool: ReturnType<CreateMessageTool>) {
-  return (tool.parameters as { properties?: Record<string, unknown> }).properties ?? {};
-}
-
-function getActionEnum(properties: Record<string, unknown>) {
-  return (properties.action as { enum?: string[] } | undefined)?.enum ?? [];
 }
 
 const { runMessageAction: actualRunMessageAction } = await vi.importActual<
@@ -292,15 +261,6 @@ function admitTurn(input: Parameters<typeof mintMessageActionTurnCapability>[0])
     messageActionTurnCapability,
   };
 }
-
-const secretRef = (id: string) => ({ source: "env", provider: "default", id });
-const channelConfig = (channel: string, config: Record<string, unknown>) => ({
-  channels: { [channel]: config },
-});
-const accountSecrets = (field: string, entries: Record<string, unknown>) =>
-  Object.fromEntries(Object.entries(entries).map(([id, value]) => [id, { [field]: value }]));
-const inboundMetadata = (label: string, value: Record<string, unknown>) =>
-  [markInboundContextLabel(label), "```json", JSON.stringify(value), "```"].join("\n");
 
 beforeEach(() => {
   resetGlobalHookRunner();
@@ -323,54 +283,6 @@ afterEach(() => {
     revokeMessageActionTurnCapability(token);
   }
 });
-
-function createChannelPlugin(params: {
-  id: string;
-  actions?: ChannelMessageActionName[];
-  capabilities?: readonly ChannelMessageCapability[];
-  toolSchema?: MessageToolSchema | ((params: MessageToolDiscoveryContext) => MessageToolSchema);
-  describeMessageTool?: DescribeMessageTool;
-  messageActionTargetAliases?: NonNullable<ChannelPlugin["actions"]>["messageActionTargetAliases"];
-  config?: Partial<ChannelPlugin["config"]>;
-  message?: ChannelMessageAdapterShape;
-  messaging?: ChannelPlugin["messaging"];
-  outbound?: ChannelPlugin["outbound"];
-}): ChannelPlugin {
-  return {
-    ...createChannelTestPluginBase({
-      id: params.id as ChannelPlugin["id"],
-      capabilities: { chatTypes: ["direct", "group"], media: true },
-      config: params.config,
-    }),
-    ...(params.message ? { message: params.message } : {}),
-    ...(params.messaging ? { messaging: params.messaging } : {}),
-    ...(params.outbound ? { outbound: params.outbound } : {}),
-    actions: {
-      describeMessageTool:
-        params.describeMessageTool ??
-        ((ctx) => {
-          const schema =
-            typeof params.toolSchema === "function" ? params.toolSchema(ctx) : params.toolSchema;
-          return {
-            actions: params.actions ?? [],
-            capabilities: params.capabilities,
-            ...(schema ? { schema } : {}),
-          };
-        }),
-      messageActionTargetAliases: params.messageActionTargetAliases,
-    },
-  };
-}
-
-function registerPlugins(...plugins: ChannelPlugin[]) {
-  setActivePluginRegistry(
-    createTestRegistry(plugins.map((plugin) => ({ pluginId: plugin.id, source: "test", plugin }))),
-  );
-}
-
-function registerMessagingPlugin(id: string, messaging: NonNullable<ChannelPlugin["messaging"]>) {
-  registerPlugins(createChannelPlugin({ id, messaging }));
-}
 
 async function executeSend(params: Parameters<typeof sendWithResult>[0]) {
   return (await sendWithResult(params)).call;
@@ -1540,25 +1452,7 @@ describe("message tool explicit target guard", () => {
 function mockQaChannelGatewayActionRunner() {
   mocks.dispatch.mockImplementation(async ({ params }) => {
     const callIndex = mocks.dispatch.mock.calls.length;
-    return {
-      kind: "send",
-      action: "send",
-      channel: "qa-channel",
-      to: typeof params?.target === "string" ? params.target : "channel:loop-room",
-      handledBy: "plugin",
-      payload: {
-        message: {
-          id: `qa-message-${callIndex}`,
-          accountId: "default",
-          direction: "outbound",
-          conversation: { id: "loop-room", chatType: "channel" },
-          senderId: "openclaw",
-          text: "same visible reply",
-          timestamp: 1_800_000_000_000 + callIndex,
-        },
-      },
-      dryRun: false,
-    } satisfies MessageActionResult;
+    return createQaChannelSendResult(params, callIndex);
   });
 }
 
@@ -2372,3 +2266,110 @@ it.each([false, true])(
   },
 );
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+it("carries session-key thread suffixes into inferred channel context", async () => {
+  mockSendResult({ channel: "slack", to: "channel:c1" });
+
+  const input = await executeSend({
+    action: { message: "hi" },
+    toolOptions: {
+      config: {
+        channels: {
+          slack: {
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          },
+        },
+      } as never,
+      sourceReplyDeliveryMode: "message_tool_only",
+      currentChannelProvider: "webchat",
+      agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+    },
+  });
+
+  expect(input?.toolContext?.currentChannelProvider).toBe("slack");
+  expect(input?.toolContext?.currentChannelId).toBe("c1");
+  expect(input?.toolContext?.currentThreadTs).toBe("1710000000.9999");
+  expect(input?.toolContext?.replyToMode).toBe("all");
+});
+
+it("defaults to the session's channel route when the host passes no current channel", async () => {
+  mockSendResult({ channel: "slack", to: "channel:c1" });
+
+  const input = await executeSend({
+    action: { message: "hi" },
+    toolOptions: {
+      config: {
+        channels: {
+          slack: {
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          },
+        },
+      } as never,
+      agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+    },
+  });
+
+  expect(input?.toolContext?.currentChannelProvider).toBe("slack");
+  expect(input?.toolContext?.currentChannelId).toBe("c1");
+  expect(input?.toolContext?.currentThreadTs).toBe("1710000000.9999");
+});
+
+it("keeps an explicit current channel instead of the session route", async () => {
+  mockSendResult({ channel: "slack", to: "channel:c9" });
+
+  const input = await executeSend({
+    action: { message: "hi" },
+    toolOptions: {
+      config: {
+        channels: {
+          slack: {
+            botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          },
+        },
+      } as never,
+      currentChannelProvider: "slack",
+      currentChannelId: "c9",
+      agentSessionKey: "agent:main:slack:channel:c1:thread:1710000000.9999",
+    },
+  });
+
+  expect(input?.toolContext?.currentChannelId).toBe("c9");
+});
+
+it("scopes command-time secret resolution to the selected channel/account", async () => {
+  mockSendResult({ channel: "discord", to: "discord:123" });
+  mocks.getConfig.mockReturnValue({
+    channels: {
+      discord: {
+        token: { source: "env", provider: "default", id: "DISCORD_TOKEN" },
+        accounts: {
+          ops: { token: { source: "env", provider: "default", id: "DISCORD_OPS_TOKEN" } },
+          chat: { token: { source: "env", provider: "default", id: "DISCORD_CHAT_TOKEN" } },
+        },
+      },
+      slack: {
+        botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+      },
+    },
+  });
+
+  const tool = createMessageTool({
+    currentChannelProvider: "discord",
+    agentAccountId: "ops",
+  });
+
+  await tool.execute("1", {
+    action: "send",
+    target: "channel:123",
+    message: "hi",
+  });
+
+  const secretResolveCall = lastSecretCall();
+  expect(secretResolveCall.targetIds).toBeInstanceOf(Set);
+  expect(
+    [...(secretResolveCall.targetIds ?? [])].every((id) => id.startsWith("channels.discord.")),
+  ).toBe(true);
+  expect(secretResolveCall.allowedPaths).toEqual(
+    new Set(["channels.discord.token", "channels.discord.accounts.ops.token"]),
+  );
+});

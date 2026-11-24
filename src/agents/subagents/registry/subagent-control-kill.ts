@@ -9,6 +9,7 @@ import { retireAcceptedSessionSpawnCompletionForRun } from "../../accepted-sessi
 import { getGatewayToolCallerIdentity } from "../../tools/gateway-caller-context.js";
 import { resolveSubagentChildAuthority } from "./subagent-child-owner-match.js";
 import { captureSubagentCommands } from "./subagent-control-commands.js";
+import { collectKillErrors } from "./subagent-control-kill-errors.js";
 import { mutateSubagentRunForKill } from "./subagent-control-kill-runtime.js";
 import {
   withSubagentKillScope,
@@ -109,6 +110,7 @@ async function killLatestSubagentRun(params: {
   suppressTaskDelivery?: boolean;
   beforeSessionKill?: () => boolean | Promise<boolean>;
   requiredSessionId?: string;
+  preservePendingInputs?: true;
   expectedGeneration?: number;
   expectedOwnerKey?: string;
   commands?: ReturnType<typeof captureSubagentCommands>;
@@ -225,30 +227,6 @@ async function killLatestSubagentRun(params: {
   return { entry: tree.entry, session, result };
 }
 
-function collectKillErrors(trees: KillTree[], unlabeledRoot?: KillTree) {
-  let failed = 0;
-  const errors: string[] = [];
-  const collect = (tree: KillTree) => {
-    const diagnostics = [...tree.errors];
-    if (tree.completedCleanupError) {
-      diagnostics.push(tree.completedCleanupError);
-    }
-    if (diagnostics.length > 0) {
-      failed += 1;
-      for (const error of diagnostics) {
-        errors.push(
-          tree === unlabeledRoot ? error : `${resolveSubagentLabel(tree.entry)}: ${error}`,
-        );
-      }
-    }
-    tree.children.forEach(collect);
-  };
-  // No authority checks or I/O here: a later sibling can fault an already-visited node.
-  // Failures count stable selected nodes, independent of later replacements and killed counts.
-  trees.forEach(collect);
-  return { errors, failed };
-}
-
 type KillTraversal = {
   scope: KillScope;
   exactRunSelection?: boolean;
@@ -256,6 +234,7 @@ type KillTraversal = {
   suppressTaskDelivery?: boolean;
   stopRequestCommands?: boolean;
   onCancelled?: (entry: SubagentRunRecord) => void;
+  preservePendingInputs?: true;
 };
 
 async function visitAll(work: Promise<void>[]): Promise<void> {
@@ -419,6 +398,7 @@ async function killSubagentRoot(params: Parameters<typeof killLatestSubagentRun>
       cascade = await killSubagentRunTree({
         exactRunSelection: params.exactRunSelection,
         suppressTaskDelivery: params.suppressTaskDelivery,
+        preservePendingInputs: params.preservePendingInputs,
         suppressCompletedWakes: !stopped.result.error && !stopped.result.completedCleanupError,
         scope: params.scope,
         trees: params.tree.children,
@@ -443,6 +423,7 @@ export async function killAllControlledSubagentRuns(params: {
   suppressTaskDelivery?: boolean;
   /** Reports an accepted kill or retirement of this exact captured owner's wake. */
   onCancelled?: (entry: SubagentRunRecord) => void;
+  preservePendingInputs?: true;
   /** False declines traversal; the scope still releases every reservation hold. */
   beforeKill?: (sealRootSelection: () => void) => boolean | Promise<boolean>;
 }): Promise<
@@ -537,6 +518,7 @@ async function killSelectedSubagentRuns(
     suppressTaskDelivery?: boolean;
     onCancelled?: (entry: SubagentRunRecord) => void;
     beforeKill?: (sealRootSelection: () => void) => boolean | Promise<boolean>;
+    preservePendingInputs?: true;
   },
 ) {
   const result = await withSubagentKillScope(params, async (scope, trees) => {
@@ -551,6 +533,7 @@ async function killSelectedSubagentRuns(
       suppressTaskDelivery: params.suppressTaskDelivery,
       onCancelled: params.onCancelled,
       stopRequestCommands: true,
+      preservePendingInputs: params.preservePendingInputs,
       trees: acceptedTrees,
       scope,
     });
@@ -587,6 +570,7 @@ export async function killSubagentRunAdmin(
     beforeSessionKill?: () => boolean | Promise<boolean>;
     requiredSessionId?: string;
     onSnapshot?: (result: SubagentAdminKillResult) => void;
+    preservePendingInputs?: true;
   },
 ): Promise<SubagentAdminKillResult> {
   const publish = (result: SubagentAdminKillResult): SubagentAdminKillResult => {
@@ -663,6 +647,7 @@ export async function killSubagentRunAdmin(
         exactRunSelection,
         beforeSessionKill: control?.beforeSessionKill,
         requiredSessionId: control?.requiredSessionId,
+        preservePendingInputs: control?.preservePendingInputs,
         expectedGeneration: params.expectedGeneration,
         expectedOwnerKey: params.expectedOwnerKey?.trim() || undefined,
       });

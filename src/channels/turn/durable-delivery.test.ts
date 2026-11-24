@@ -136,9 +136,20 @@ describe("durable inbound reply delivery", () => {
 
   it("uses required durability when a caller explicitly requires unknown-send reconciliation", async () => {
     const requirements = { text: true, reconcileUnknownSend: true };
-    await deliver({ requiredCapabilities: requirements });
+    const completionRetention = {
+      idPrefix: "webchat-completion-outbound:v1:",
+      maxAgeMs: 60_000,
+      maxEntries: 10,
+    } as const;
+    const custody = {
+      deliveryIntentId: "webchat-completion-outbound:v1:delivery-1",
+      reusePendingDeliveryIntent: true,
+      completionRetention,
+    };
+    await deliver({ requiredCapabilities: requirements, ...custody });
     expect(mocks.support.mock.calls[0]?.[0].requirements).toEqual(requirements);
     expect(mocks.send.mock.calls[0]?.[0]).toMatchObject({
+      ...custody,
       durability: "required",
       requireUnknownSendReconciliation: true,
     });

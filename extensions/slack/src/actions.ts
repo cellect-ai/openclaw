@@ -24,7 +24,7 @@ import {
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { buildSlackEditTextPayload } from "./edit-text.js";
 import { normalizeSlackOutboundText } from "./format.js";
-import { SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
+import { assertSlackFileWithinDownloadCap, SLACK_EDIT_TEXT_MAX_BYTES } from "./limits.js";
 import { hasSlackMessageTableBlock, resolveSlackMessageText } from "./monitor/block-text.js";
 import { resolveSlackMedia } from "./monitor/media.js";
 import type { SlackMediaResult } from "./monitor/media.js";
@@ -203,7 +203,7 @@ function normalizeSlackReadTimestamp(
   return formatEpochSeconds(parsed);
 }
 
-async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write" = "read") {
+export async function getClient(opts: SlackActionClientOpts = {}, mode: "read" | "write" = "read") {
   if (opts.client && !opts.assertDirectAdapterHandoff) {
     return opts.client;
   }
@@ -511,6 +511,15 @@ export async function openSlackConversation(userIds: unknown, opts: SlackActionC
   return await openSlackConversationWithClient(client, input);
 }
 
+export async function resolveSlackConversationName(
+  channelId: string,
+  opts: SlackActionClientOpts = {},
+): Promise<string | undefined> {
+  const client = await getClient(opts, "read");
+  const info = await client.conversations.info({ channel: channelId });
+  return info.channel?.name?.trim() || undefined;
+}
+
 export async function readSlackMessages(
   channelId: string,
   opts: SlackActionClientOpts & {
@@ -552,12 +561,32 @@ export async function readSlackMessages(
             : opts.threadId,
       })
     : await client.conversations.history(query);
+  // Preserve the parent message so a thread read without explicit bounds always
+  // contains the instruction that started the conversation. Exact reply lookups
+  // remain exact (inclusive) and do not add unrelated context.
+  // Enforce an explicit after/before window client-side with exclusive
+  // endpoints, mirroring the native contract (only exact message lookup is
+  // inclusive): the server normally applies oldest/latest, but an echoed root
+  // on or outside the requested bounds must not survive a bounded read.
+  const oldestBound =
+    !exactMessageId && exactBounds.oldest !== undefined ? Number(exactBounds.oldest) : undefined;
+  const latestBound =
+    !exactMessageId && exactBounds.latest !== undefined ? Number(exactBounds.latest) : undefined;
   const messages = ((result.messages ?? []) as SlackMessageSummary[])
-    .filter((message) =>
-      exactMessageId
-        ? message.ts === exactMessageId
-        : !opts.threadId || message.ts !== opts.threadId,
-    )
+    .filter((message) => (exactMessageId ? message.ts === exactMessageId : true))
+    .filter((message) => {
+      const ts = Number(message.ts);
+      if (!Number.isFinite(ts)) {
+        return true;
+      }
+      if (oldestBound !== undefined && Number.isFinite(oldestBound) && ts <= oldestBound) {
+        return false;
+      }
+      if (latestBound !== undefined && Number.isFinite(latestBound) && ts >= latestBound) {
+        return false;
+      }
+      return true;
+    })
     .map(renderSlackReadMessageText);
   return {
     messages,
@@ -671,6 +700,7 @@ export async function downloadSlackFile(
   if (!isFileAllowed(file)) {
     return null;
   }
+  assertSlackFileWithinDownloadCap(fileId, (file as { size?: number }).size, opts.maxBytes);
 
   const results = await resolveSlackMedia({
     files: [

@@ -14,12 +14,21 @@ import {
 } from "../../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import type { DispatchGatewayMethodInProcessOptions } from "../../../gateway/server-plugin-in-process-dispatch.types.js";
+import {
+  claimAgentRunDelegatedAuthority,
+  registerAgentRunContext,
+  resetAgentRunRegistryForTest,
+} from "../../../infra/agent-run-registry.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { resolveUserPath } from "../../../utils.js";
 import { resolveSandboxRuntimeStatus } from "../../sandbox/runtime-status.js";
 import { installAcceptedSubagentGatewayMock } from "../../test-helpers/subagent-gateway.js";
 import type { RegisterSubagentRunOptions } from "../registry/subagent-registry.types.js";
 import type { SpawnSubagentContext, SpawnSubagentParams } from "./subagent-spawn-contract.js";
+import {
+  peekSubagentRequesterBindingForTest,
+  peekSubagentRequesterChannelForTest,
+} from "./subagent-spawn-requester-binding.js";
 import { expectSharedPendingSpawnCapacity } from "./subagent-spawn.pending-capacity.test-support.js";
 import {
   createConfigOverride,
@@ -774,6 +783,83 @@ describe("spawnSubagentDirect seam flow", () => {
     const result = await spawn({ task: "inherit requester thinking" });
     expect(result.status).toBe("accepted");
     expect(readStore()[result.childSessionKey!]?.thinkingLevel).toBe("low");
+  });
+
+  describe("requester lineage", () => {
+    afterEach(() => {
+      resetAgentRunRegistryForTest();
+    });
+    const admitParent = () => {
+      registerAgentRunContext("parent-run", { agentId: "main", sessionKey: "agent:main:main" });
+      claimAgentRunDelegatedAuthority({ instanceId: "parent-instance", runId: "parent-run" });
+    };
+    const launch = (reply: (childRunId: string) => unknown) => {
+      const seen: Array<{ childRunId: string; minted: unknown }> = [];
+      hoisted.callGatewayMock.mockImplementation(
+        async (request: { method?: string; params?: unknown }) => {
+          if (request.method === "agent") {
+            const childRunId = String(requireRecord(request.params).idempotencyKey);
+            seen.push({ childRunId, minted: peekSubagentRequesterBindingForTest(childRunId) });
+            return reply(childRunId);
+          }
+          return request.method?.startsWith("sessions.") ? { ok: true } : {};
+        },
+      );
+      return seen;
+    };
+
+    it("is minted for the pre-assigned child run before launch and kept once accepted", async () => {
+      admitParent();
+      const seen = launch((childRunId) => ({ runId: childRunId }));
+      const result = await spawn({ task: "work" }, { requesterRunId: "parent-run" });
+      expect(result).toMatchObject({ status: "accepted" });
+      const { childRunId, minted } = seen[0] ?? { childRunId: "", minted: undefined };
+      expect(minted).toMatchObject({
+        parentRunId: "parent-run",
+        parentAgentId: "main",
+        childRunId,
+        childSessionKey: result.childSessionKey,
+      });
+      expect(peekSubagentRequesterBindingForTest(childRunId)).toBe(minted);
+    });
+
+    it("records the parent's channel, and lineage carries the completion target", async () => {
+      admitParent();
+      hoisted.loadSessionStoreMock.mockReturnValue({
+        "agent:main:main": { sessionId: "controller-incarnation" },
+      });
+      const seen = launch((childRunId) => ({ runId: childRunId }));
+      await spawn(
+        { task: "work", completionTarget: "parent" },
+        { requesterRunId: "parent-run", agentChannel: "matrix" },
+      );
+      const { childRunId, minted } = seen[0] ?? { childRunId: "", minted: undefined };
+      expect(minted).toMatchObject({ completionTarget: "parent" });
+      expect(peekSubagentRequesterChannelForTest(childRunId)).toBe("matrix");
+    });
+
+    it("is never minted without a live parent authority", async () => {
+      const seen = launch((childRunId) => ({ runId: childRunId }));
+      await spawn({ task: "work" }, { requesterRunId: "parent-run" });
+      expect(seen[0]?.minted).toBeUndefined();
+    });
+
+    it("is revoked when the gateway accepts another run id or the launch fails", async () => {
+      admitParent();
+      const drift = launch(() => ({ runId: "gateway-run" }));
+      await spawn({ task: "work" }, { requesterRunId: "parent-run" });
+      expect(drift[0]?.minted).toBeDefined();
+      expect(peekSubagentRequesterBindingForTest(drift[0]?.childRunId ?? "")).toBeUndefined();
+
+      const failed = launch(() => {
+        throw new Error("gateway down");
+      });
+      expect(await spawn({ task: "work" }, { requesterRunId: "parent-run" })).toMatchObject({
+        status: "error",
+      });
+      expect(failed[0]?.minted).toBeDefined();
+      expect(peekSubagentRequesterBindingForTest(failed[0]?.childRunId ?? "")).toBeUndefined();
+    });
   });
 
   it("returns an error when the initial child patch fails", async () => {

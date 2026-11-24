@@ -21,8 +21,8 @@ const SYNC_CACHE_MAX_ENTRIES = 20_000;
 const SYNC_CACHE_MAX_CHUNKS = Math.floor((SYNC_CACHE_MAX_ENTRIES - 1) / 2);
 const SYNC_CACHE_META_KEY = "current:meta";
 const SYNC_CACHE_CHUNK_PREFIX = "current:sync:";
-// PluginState serializes this string inside a row object; 24KB leaves room for JSON escaping.
-const SYNC_CACHE_CHUNK_BYTES = 24_000;
+// JSON is escaped once more in the row; 256KB remains below the 1MiB value limit.
+const SYNC_CACHE_CHUNK_BYTES = 256_000;
 
 // A reader must finish its generation before another local writer retires its chunks.
 const syncCacheOperations = new KeyedAsyncQueue();
@@ -32,7 +32,61 @@ export type PersistedMatrixSyncStore = {
   savedSync: ISyncData | null;
   clientOptions?: IStoredClientOpts;
   cleanShutdown?: boolean;
+  storeId?: string;
+  identity?: MatrixSyncStoreIdentity;
+  checkpoint?: MatrixShutdownCheckpoint;
 };
+
+export type MatrixSyncStoreIdentity = {
+  accountId: string;
+  homeserver: string;
+  userId: string;
+  deviceId: string | null;
+};
+
+export type MatrixShutdownCheckpoint = {
+  requestId: string;
+  suspensionId: string;
+  predecessorProcessInstanceId: string;
+  accountId: string;
+  storeId: string;
+  generation: string;
+};
+
+function normalizeCheckpoint(value: unknown): MatrixShutdownCheckpoint | undefined {
+  if (!isRecord(value)) return undefined;
+  const { requestId, suspensionId, predecessorProcessInstanceId, accountId, storeId, generation } =
+    value;
+  if (
+    typeof requestId !== "string" ||
+    !requestId.trim() ||
+    typeof suspensionId !== "string" ||
+    !suspensionId.trim() ||
+    typeof predecessorProcessInstanceId !== "string" ||
+    !predecessorProcessInstanceId.trim() ||
+    typeof accountId !== "string" ||
+    !accountId.trim() ||
+    typeof storeId !== "string" ||
+    !storeId.trim() ||
+    typeof generation !== "string" ||
+    !generation.trim()
+  )
+    return undefined;
+  return { requestId, suspensionId, predecessorProcessInstanceId, accountId, storeId, generation };
+}
+
+function normalizeIdentity(value: unknown): MatrixSyncStoreIdentity | undefined {
+  if (!isRecord(value)) return undefined;
+  const { accountId, homeserver, userId, deviceId } = value;
+  if (
+    typeof accountId !== "string" ||
+    typeof homeserver !== "string" ||
+    typeof userId !== "string" ||
+    (typeof deviceId !== "string" && deviceId !== null)
+  )
+    return undefined;
+  return { accountId, homeserver, userId, deviceId };
+}
 
 type MatrixSyncCacheMeta = {
   kind: "meta";
@@ -42,6 +96,9 @@ type MatrixSyncCacheMeta = {
   syncDigest?: string;
   clientOptions?: IStoredClientOpts;
   cleanShutdown?: boolean;
+  storeId?: string;
+  identity?: MatrixSyncStoreIdentity;
+  checkpoint?: MatrixShutdownCheckpoint;
 };
 
 type MatrixSyncCacheChunk = {
@@ -49,6 +106,12 @@ type MatrixSyncCacheChunk = {
   index: number;
   data: string;
 };
+
+function uncleanSyncCacheMeta(meta: MatrixSyncCacheMeta): MatrixSyncCacheMeta {
+  const unclean = { ...meta, cleanShutdown: false };
+  delete unclean.checkpoint;
+  return unclean;
+}
 
 export type MatrixSyncCacheRecord = MatrixSyncCacheMeta | MatrixSyncCacheChunk;
 
@@ -105,6 +168,9 @@ function normalizePersistedStore(value: unknown): PersistedMatrixSyncStore | nul
       ? (value.clientOptions as IStoredClientOpts) // SAFETY: SDK options remain opaque after record validation.
       : undefined,
     cleanShutdown: value.cleanShutdown === true,
+    storeId: typeof value.storeId === "string" ? value.storeId : undefined,
+    identity: normalizeIdentity(value.identity),
+    checkpoint: normalizeCheckpoint(value.checkpoint),
   };
 }
 
@@ -126,6 +192,22 @@ export async function readPersistedStoreFromStore(params: {
 }): Promise<PersistedMatrixSyncStore | null> {
   const { storageRootDir, store } = params;
   return syncCacheOperations.enqueue(path.resolve(storageRootDir), () => readPersistedStore(store));
+}
+
+/** Consume clean ownership at startup without republishing an older snapshot. */
+export async function readAndClaimPersistedStoreFromStore(params: {
+  storageRootDir: string;
+  store: Pick<PluginStateKeyedStore<MatrixSyncCacheRecord>, "lookup" | "lookupMany" | "register">;
+}): Promise<PersistedMatrixSyncStore | null> {
+  return syncCacheOperations.enqueue(path.resolve(params.storageRootDir), async () => {
+    const persisted = await readPersistedStore(params.store);
+    const key = SYNC_CACHE_META_KEY;
+    const meta = await params.store.lookup(key);
+    if (isSyncCacheMeta(meta) && meta.cleanShutdown) {
+      await params.store.register(key, uncleanSyncCacheMeta(meta));
+    }
+    return persisted;
+  });
 }
 
 async function readPersistedStore(
@@ -156,6 +238,10 @@ async function readPersistedStore(
     savedSync,
     clientOptions: meta.clientOptions,
     cleanShutdown: intact && meta.cleanShutdown,
+    storeId: meta.storeId,
+    identity: meta.identity,
+    checkpoint:
+      intact && meta.checkpoint?.generation === meta.generation ? meta.checkpoint : undefined,
   });
 }
 
@@ -182,7 +268,7 @@ function buildSyncCacheRows(payload: PersistedMatrixSyncStore): {
   meta: { key: string; value: MatrixSyncCacheMeta };
   chunks: { key: string; value: MatrixSyncCacheChunk }[];
 } {
-  const generation = randomUUID().replaceAll("-", "");
+  const generation = payload.checkpoint?.generation ?? randomUUID().replaceAll("-", "");
   const syncJson = payload.savedSync ? JSON.stringify(payload.savedSync) : "";
   const chunkValues = chunkMatrixStateJson(
     syncJson,
@@ -210,6 +296,9 @@ function buildSyncCacheRows(payload: PersistedMatrixSyncStore): {
         ...(syncJson ? { syncDigest: digestText(syncJson) } : {}),
         ...(payload.clientOptions ? { clientOptions: payload.clientOptions } : {}),
         cleanShutdown: payload.cleanShutdown === true,
+        ...(payload.storeId ? { storeId: payload.storeId } : {}),
+        ...(payload.identity ? { identity: payload.identity } : {}),
+        ...(payload.cleanShutdown && payload.checkpoint ? { checkpoint: payload.checkpoint } : {}),
       },
     },
   };
@@ -249,12 +338,33 @@ export async function writeMatrixSyncCacheStateToStore(params: {
   storageRootDir: string;
   payload: PersistedMatrixSyncStore;
   store: MatrixSyncCacheAsyncStore;
+  beforeCleanPublish?: () => Promise<void>;
 }): Promise<void> {
   const { storageRootDir, store, payload } = params;
   const rows = buildSyncCacheRows(payload);
-  return syncCacheOperations.enqueue(path.resolve(storageRootDir), () =>
-    writeMatrixStateChunks(store, rows, SYNC_CACHE_CHUNK_PREFIX),
-  );
+  return syncCacheOperations.enqueue(path.resolve(storageRootDir), async () => {
+    // Publish the snapshot unclean first. Its chunks and token-storage ownership
+    // must both settle before this same generation can become shutdown evidence.
+    await writeMatrixStateChunks(
+      store,
+      {
+        ...rows,
+        meta: {
+          ...rows.meta,
+          value: uncleanSyncCacheMeta(rows.meta.value),
+        },
+      },
+      SYNC_CACHE_CHUNK_PREFIX,
+    );
+    if (payload.cleanShutdown) {
+      await params.beforeCleanPublish?.();
+      const current = await store.lookup(rows.meta.key);
+      if (!isSyncCacheMeta(current) || current.generation !== rows.meta.value.generation) {
+        throw new Error("Matrix checkpoint generation changed before clean publication");
+      }
+      await store.register(rows.meta.key, rows.meta.value);
+    }
+  });
 }
 
 export function openMatrixSyncCacheStoreOptions(storageRootDir: string) {

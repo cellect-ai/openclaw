@@ -26,6 +26,7 @@ const maintenanceFields = [
   "modelSelectionLocked",
   "resumeAfterRestart",
   "pendingFinalDelivery",
+  "completedFinalDeliveries",
   "chatType",
   "delivery",
 ];

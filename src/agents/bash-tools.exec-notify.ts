@@ -44,6 +44,7 @@ function enqueueExecExitNotification(
     agentId: target.agentId!,
     sessionKey: target.sessionKey!,
     source: "exec",
+    replyExpectation: "optional",
     contextKey: options.contextKey ?? `exec:${id}`,
     sourceTurnId: `exec:${id}`,
     expectedTarget: target,
@@ -209,6 +210,18 @@ export async function maybeNotifyOnExit(
     {
       sessionKey: eventSessionKey,
       contextKey: `exec:${session.id}`,
+      ...(session.originRunId
+        ? {
+            origin: {
+              runId: session.originRunId,
+              sessionKey,
+              outcome:
+                status === "completed" && session.exitCode === 0
+                  ? ("success" as const)
+                  : ("failure" as const),
+            },
+          }
+        : {}),
       deliveryContext: session.notifyDeliveryContext,
     },
     readExecRequestOwners(session),

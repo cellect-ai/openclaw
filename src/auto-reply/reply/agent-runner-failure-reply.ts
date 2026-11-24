@@ -51,6 +51,7 @@ import {
   shouldDeliverMissingReplyNotice,
   type ReplyExpectation,
 } from "../../agents/reply-completion.js";
+import { isSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import {
   collectErrorGraphCandidates,
   formatErrorMessage,
@@ -233,6 +234,16 @@ export function buildExternalRunFailureReply(
       isGenericRunnerFailure: true,
     };
   };
+  // Setup happens before inference. Its nested timeout/auth diagnostics must
+  // not be presented as a provider failure or disclose private container data.
+  if (isSandboxProvisioningError(error)) {
+    return {
+      text: options?.isHeartbeat
+        ? "⚠️ A background follow-up couldn’t start because of a problem on our side, so its result hasn’t been checked yet."
+        : "⚠️ I couldn’t start on this because of a problem on our side, not with your request. Please try again in a few minutes; if it keeps happening, let us know.",
+      isGenericRunnerFailure: false,
+    };
+  }
   const approvalMessage = resolveExecutionApprovalFailureMessage(normalizedMessage);
   if (approvalMessage) {
     return { text: `⚠️ ${approvalMessage}`, isGenericRunnerFailure: false };

@@ -1,0 +1,354 @@
+import type { OpenClawPluginApi } from "openclaw/plugin-sdk/core";
+import {
+  ErrorCodes,
+  errorShape,
+  type GatewayRequestHandlerOptions,
+} from "openclaw/plugin-sdk/gateway-runtime";
+import { deliverWiringReceipt, publishAdminActionCard } from "./admin-action-card.js";
+import { approvedRoomFiling, executeApprovedRoomFiling } from "./admin-action-filing.js";
+import { isSlackOrigin } from "./admin-action-origin.js";
+import { executeApprovedWiringRequest } from "./admin-action-wiring.js";
+import {
+  loadAdminAction,
+  transitionAdminAction,
+  RECORD_TTL_MS,
+  type AdminActionRecord,
+} from "./admin-action.js";
+import {
+  brokerToken,
+  configFromRuntime,
+  matrixConnection,
+  lookupDelegation,
+  FI_ADMIN_DELEGATION_AGENT_ID,
+  type ResolvedPluginConfig,
+} from "./fi-delegation.js";
+
+export type AdminActionTarget = {
+  tenantOrgId: string;
+  requestId: string;
+  revision: number;
+  roomId: string;
+  threadRootEventId: string;
+  agentMxid: string;
+  requesterMatrixUserId: string;
+};
+
+function targetFromParams(params: Record<string, unknown>): AdminActionTarget {
+  const keys = [
+    "tenantOrgId",
+    "requestId",
+    "roomId",
+    "threadRootEventId",
+    "agentMxid",
+    "requesterMatrixUserId",
+  ] as const;
+  for (const key of keys) {
+    if (typeof params[key] !== "string" || !params[key] || (params[key] as string).length > 512) {
+      throw new Error("Invalid approval target.");
+    }
+  }
+  if (
+    !Number.isSafeInteger(params.revision) ||
+    Number(params.revision) < 1 ||
+    !/^[A-Z0-9]{6}$/.test(String(params.requestId)) ||
+    !/^@[^\s:]+:[^\s]+$/.test(String(params.requesterMatrixUserId))
+  ) {
+    throw new Error("Invalid approval revision or identity.");
+  }
+  return {
+    tenantOrgId: String(params.tenantOrgId),
+    requestId: String(params.requestId),
+    revision: Number(params.revision),
+    roomId: String(params.roomId),
+    threadRootEventId: String(params.threadRootEventId),
+    agentMxid: String(params.agentMxid),
+    requesterMatrixUserId: String(params.requesterMatrixUserId),
+  };
+}
+
+function matches(record: AdminActionRecord, target: AdminActionTarget) {
+  return (
+    record.id === target.requestId &&
+    !isSlackOrigin(record.origin) &&
+    record.origin?.orgId === target.tenantOrgId &&
+    record.origin.roomId === target.roomId &&
+    record.origin.threadRootEventId === target.threadRootEventId &&
+    record.origin.agentMxid === target.agentMxid
+  );
+}
+
+export function adminActionView(record: AdminActionRecord) {
+  return {
+    id: record.id,
+    revision: record.revision ?? 1,
+    origin: record.origin,
+    state:
+      ["pending", "held"].includes(record.status) && record.createdAt + RECORD_TTL_MS <= Date.now()
+        ? "expired"
+        : record.execution?.wiringReceipt && !record.execution.wiringDelivered
+          ? "unknown"
+          : (record.execution?.state ?? (record.status === "failed" ? "unknown" : record.status)),
+  };
+}
+
+type Decision = "approve" | "hold" | "decline" | "resume";
+export const isDecision = (value: unknown): value is Decision =>
+  ["approve", "hold", "decline", "resume"].includes(value as string);
+
+/**
+ * The one decision path. The Matrix RPC and the Slack button handler each
+ * authenticate their own reviewer, then both come here, so transition, TTL,
+ * execution and receipt rules exist once. Throws when the card is stale or the
+ * approver cannot be confirmed; resolves `applied: false` for a decision the
+ * record's current state does not allow.
+ */
+export async function applyAdminDecision(
+  api: OpenClawPluginApi,
+  input: {
+    record: AdminActionRecord;
+    revision: number;
+    decision: Decision;
+    /** Who decided: a Matrix user id, or `slack:<id>`. */
+    decidedBy: string;
+    /** The administrator's Fi email as the channel's Fi authorization reported it. */
+    email: string | undefined;
+    config: ResolvedPluginConfig;
+    /** Fi delegation selector naming the reviewer on their own channel. */
+    requester: Record<string, string>;
+    /** Re-runs the channel's Fi authorization; must name the same administrator. */
+    reauthorize: () => Promise<{ email?: string }>;
+    assertCurrent: () => void;
+    signal?: AbortSignal;
+    /** What a refused approver is told to do next; wording differs per channel. */
+    refreshHint?: string;
+  },
+): Promise<{ record: AdminActionRecord; applied: boolean }> {
+  const refresh = input.refreshHint ?? "Refresh the conversation";
+  const { record, revision, decision, decidedBy, email, config, requester, assertCurrent, signal } =
+    input;
+  const reauthorize = input.reauthorize;
+  if (
+    decision === "approve" &&
+    record.execution?.wiringReceipt &&
+    [record.revision, (record.revision ?? 1) - 1].includes(revision)
+  ) {
+    const recovered = await deliverWiringReceipt(api, record, assertCurrent);
+    return { record: recovered, applied: false };
+  }
+  if (revision !== (record.revision ?? 1) || record.createdAt + RECORD_TTL_MS <= Date.now()) {
+    throw new Error(`This approval card changed or expired. ${refresh}.`);
+  }
+  const allowed =
+    record.status === "pending"
+      ? ["approve", "hold", "decline"]
+      : record.status === "held"
+        ? ["resume", "decline"]
+        : [];
+  if (!allowed.includes(decision)) {
+    return { record, applied: false };
+  }
+  const filing = decision === "approve" && email ? approvedRoomFiling(record, email) : undefined;
+  const wiring =
+    decision === "approve" && email && record.task === "company_wiring_share"
+      ? record.preparedWiring
+      : undefined;
+  const delegation =
+    filing || wiring
+      ? await lookupDelegation(config, requester, { agentId: FI_ADMIN_DELEGATION_AGENT_ID, signal })
+      : undefined;
+  if (filing || wiring) {
+    if (
+      !delegation ||
+      !["admin", "owner"].includes(delegation.user.role) ||
+      delegation.user.email !== email
+    ) {
+      throw new Error("The approver's current administrator delegation is unavailable.");
+    }
+    // Refresh tenant membership and the exact session/device binding after
+    // awaiting delegation, before admitting a durable decision or effect.
+    const refreshed = await reauthorize();
+    if (refreshed.email !== email || refreshed.email !== delegation.user.email) {
+      throw new Error(`The current approver identity changed. ${refresh} before deciding.`);
+    }
+  }
+  let next: AdminActionRecord = {
+    ...record,
+    revision: (record.revision ?? 1) + 1,
+    status:
+      decision === "hold"
+        ? "held"
+        : decision === "resume"
+          ? "pending"
+          : decision === "decline"
+            ? "denied"
+            : "approved",
+    ...(decision === "approve" || decision === "decline" ? { decidedBy } : {}),
+    ...(decision === "approve"
+      ? {
+          execution: {
+            state: filing || wiring ? ("unknown" as const) : ("not_executed" as const),
+            operationId: `fi-admin-action-${record.id}`,
+            message:
+              filing || wiring
+                ? "Approval recorded. The requested operation has not yet been authoritatively verified."
+                : "Approval recorded. Not executed: this request requires a supported exact-target operation in Fi.",
+          },
+        }
+      : {}),
+  };
+  if (!(await transitionAdminAction(api, record, next, assertCurrent))) {
+    throw new Error(`Another decision changed this request. ${refresh}.`);
+  }
+  if ((filing || wiring) && delegation) {
+    const execution = wiring
+      ? await executeApprovedWiringRequest(
+          config,
+          delegation,
+          wiring,
+          `fi-admin-action-${record.id}`,
+          assertCurrent,
+        )
+      : await executeApprovedRoomFiling(
+          config,
+          delegation,
+          filing!,
+          `fi-admin-action-${record.id}`,
+          assertCurrent,
+          {
+            expectedRoomVersion: record.preparedFiling!.expectedRoomVersion,
+            sourceSha256: record.preparedFiling!.sourceSha256,
+            sourceUpdatedAt: record.preparedFiling!.sourceUpdatedAt,
+          },
+        );
+    const completed = { ...next, execution };
+    // If receipt persistence becomes uncertain, the committed owner stays
+    // unknown. Neither a repeat decision nor restart repeats the effect.
+    try {
+      if (await transitionAdminAction(api, next, completed, assertCurrent)) {
+        next = completed;
+      }
+    } catch {
+      api.logger.warn(
+        "fi-user: operation receipt could not be recorded; outcome remains unconfirmed",
+      );
+    }
+  }
+  // The durable decision wins even if publication fails. Retrying an old
+  // card cannot repeat a business effect or reset the original expiry.
+  try {
+    if (next.execution?.wiringReceipt) {
+      next = await deliverWiringReceipt(api, next, assertCurrent);
+    } else {
+      next = await publishAdminActionCard(api, next, assertCurrent, { announce: true });
+    }
+  } catch {
+    api.logger.warn("fi-user: approval committed; card publication unavailable");
+  }
+  return { record: next, applied: true };
+}
+
+/** Only the exact authenticated Fi server device may carry its session reviewer. */
+async function authorize(
+  api: OpenClawPluginApi,
+  options: GatewayRequestHandlerOptions,
+  record: AdminActionRecord,
+  target: AdminActionTarget,
+) {
+  const gatewayDeviceId = options.client?.connect.device?.id;
+  const assertCurrent = () => {
+    if (!gatewayDeviceId || !options.hasCurrentClientAuthority?.() || options.signal?.aborted) {
+      throw new Error("The authenticated approval connection is no longer current.");
+    }
+  };
+  assertCurrent();
+  const base = configFromRuntime(api);
+  const connection = matrixConnection(base, record.delivery?.accountId);
+  if (!connection || base.tenantOrgConflict || base.tenantOrgId !== target.tenantOrgId) {
+    throw new Error("Approval environment or tenant mismatch.");
+  }
+  const config = { ...base, ...connection };
+  const token = brokerToken(config);
+  if (!token) {
+    throw new Error("Approval verifier unavailable.");
+  }
+  const response = await fetch(
+    `${config.baseUrl.replace(/\/+$/, "")}/api/threads/admin-action-authorize`,
+    {
+      method: "POST",
+      headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+      body: JSON.stringify({ ...target, gatewayDeviceId }),
+      signal: options.signal
+        ? AbortSignal.any([options.signal, AbortSignal.timeout(10_000)])
+        : AbortSignal.timeout(10_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error("The current Fi administrator and conversation could not be verified.");
+  }
+  const result = (await response.json()) as {
+    ok?: boolean;
+    orgId?: string;
+    matrixUserId?: string;
+    role?: string;
+    email?: string;
+  };
+  assertCurrent();
+  if (
+    result.ok !== true ||
+    result.orgId !== target.tenantOrgId ||
+    result.matrixUserId !== target.requesterMatrixUserId ||
+    !["admin", "owner"].includes(result.role ?? "")
+  ) {
+    throw new Error("Only a current administrator of this organization may decide this request.");
+  }
+  return { assertCurrent, config, email: result.email };
+}
+
+export function registerAdminActionRpc(api: OpenClawPluginApi) {
+  for (const method of ["describe", "decide"] as const) {
+    api.registerGatewayMethod(
+      `fi.adminAction.${method}`,
+      async (options) => {
+        try {
+          const target = targetFromParams(options.params);
+          const record = await loadAdminAction(api, target.requestId);
+          if (!record || !record.publicationEventId || !matches(record, target)) {
+            throw new Error("Approval request is unavailable in this conversation.");
+          }
+          const { assertCurrent, config, email } = await authorize(api, options, record, target);
+          if (method === "describe") {
+            const current = await loadAdminAction(api, target.requestId);
+            assertCurrent();
+            if (!current || !matches(current, target)) {
+              throw new Error("Approval request changed.");
+            }
+            options.respond(true, adminActionView(current));
+            return;
+          }
+          const decision = options.params.decision as Decision;
+          if (!isDecision(decision)) {
+            throw new Error("Invalid decision.");
+          }
+          const outcome = await applyAdminDecision(api, {
+            record,
+            revision: target.revision,
+            decision,
+            decidedBy: target.requesterMatrixUserId,
+            email,
+            config,
+            requester: { requesterMatrixUserId: target.requesterMatrixUserId },
+            reauthorize: async () => await authorize(api, options, record, target),
+            assertCurrent,
+            signal: options.signal,
+          });
+          options.respond(true, { ...adminActionView(outcome.record), applied: outcome.applied });
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : "Approval unavailable; nothing was executed.";
+          options.respond(false, undefined, errorShape(ErrorCodes.UNAVAILABLE, message));
+        }
+      },
+      { scope: "operator.approvals" },
+    );
+  }
+}

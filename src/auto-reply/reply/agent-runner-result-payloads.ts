@@ -21,6 +21,7 @@ import {
   toDiagnosticUsage,
 } from "../../agents/usage.js";
 import { normalizeChatType } from "../../channels/chat-type.js";
+import { selectLegacyHeartbeatReplyPayloads } from "../../cron/legacy-heartbeat-reply-policy.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent, isDiagnosticsEnabled } from "../../infra/diagnostic-events.js";
 import {
@@ -48,7 +49,6 @@ import {
   buildSilentFallbackFailurePayload,
   hasSuccessfulSourceReplyDelivery,
   refreshSessionEntryFromStore,
-  resolveSourceReplyPolicy,
   resolveTerminalReplyDelivery,
 } from "./agent-runner-core.js";
 import { signalTypingIfNeeded } from "./agent-runner-helpers.js";
@@ -60,6 +60,7 @@ import {
 } from "./agent-runner-reminder-guard.js";
 import type { AccountedAgentTurn } from "./agent-runner-result-accounting.js";
 import type { FinalizeReplyAgentRunInput } from "./agent-runner-result.types.js";
+import { buildStrandedRetryDiagnostic } from "./agent-runner-stranded-diagnostic.js";
 import { resolveResponseUsageLine } from "./agent-runner-usage-line.js";
 import {
   resolveAutomationReplyState,
@@ -74,7 +75,6 @@ import {
 import { createReplyToModeFilterForChannel } from "./reply-threading.js";
 import { resolveReplyRunTrigger } from "./reply-turn-kind.js";
 import { resolveSourceReplyExpectation } from "./source-reply-delivery-mode.js";
-import { resolveStrandedReplyRecovery } from "./stranded-reply-recovery.js";
 import { buildWaitingStatusPayload, prepareWaitingStatusContinuation } from "./waiting-status.js";
 export async function prepareReplyAgentPayloads(state: {
   context: FinalizeReplyAgentRunInput;
@@ -96,7 +96,6 @@ export async function prepareReplyAgentPayloads(state: {
     replyToMode,
     returnWithQueuedFollowupDrain,
     runStartedAt,
-    runtimePolicySessionKey,
     sessionCtx,
     sessionKey,
     storePath,
@@ -157,7 +156,12 @@ export async function prepareReplyAgentPayloads(state: {
     pendingContinuation,
     automationNoChange,
     reasoningPayloadsEnabled,
-  } = resolveAutomationReplyState(context.execution, { opts });
+  } = resolveAutomationReplyState(context.execution, {
+    opts,
+    legacyHeartbeatExplicitOnly:
+      followupRun.run.scheduledAutomation?.job.legacyHeartbeatReplyPolicy === true &&
+      followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
+  });
   const strandedFinal =
     successfulTerminal &&
     runResult.meta?.terminalReply?.disposition === "empty" &&
@@ -263,41 +267,16 @@ export async function prepareReplyAgentPayloads(state: {
     completion.outcome !== "missing"
       ? undefined
       : createMissingReplyNotice();
-  const buildStrandedRetryMissingDeliveryDiagnostic = (): ReplyPayload | undefined => {
-    if (
-      !missingReplyNoticeAllowed ||
-      authoredSilence ||
-      automationNoChange ||
-      !sessionKey ||
-      !storePath ||
-      followupRun.strandedReplyRetry !== true ||
-      sessionCtx.InboundEventKind === "room_event" ||
-      completedSourceReplyDelivery
-    ) {
-      return undefined;
-    }
-    const sourceReplyPolicy = resolveSourceReplyPolicy({
-      cfg,
-      sessionCtx,
-      sessionEntry: activeSessionEntry,
-      sessionKey,
-      runtimePolicySessionKey,
-      opts,
+  const buildStrandedRetryMissingDeliveryDiagnostic = () =>
+    buildStrandedRetryDiagnostic({
+      context,
+      activeSessionEntry,
+      missingReplyNoticeAllowed,
+      authoredSilence,
+      automationNoChange,
+      completedSourceReplyDelivery,
+      runResult,
     });
-    // The guard above limits this to a one-shot recovery turn. A second miss
-    // always gets a diagnostic, even when the retry produced no final text.
-    const recovery = resolveStrandedReplyRecovery({
-      base: followupRun,
-      payloads: [],
-      finalText: "",
-      terminalReply: runResult.meta?.terminalReply,
-      sourceReplyDeliveryMode: sourceReplyPolicy.sourceReplyDeliveryMode,
-      sendPolicyDenied: sourceReplyPolicy.sendPolicyDenied,
-      successfulSourceReplyDelivery: completedSourceReplyDelivery,
-      isRoomEvent: false,
-    });
-    return recovery.kind === "diagnostic" ? recovery.payload : undefined;
-  };
   if (sourceReplyDelivery === "delivered") {
     await opts?.onObservedReplyDelivery?.();
   }
@@ -345,6 +324,7 @@ export async function prepareReplyAgentPayloads(state: {
       originatingThreadId: replyRouteThreadId,
       accountId: sessionCtx.AccountId,
       normalizeMediaPaths: replyMediaContext.normalizePayload,
+      runId,
     });
     return result.replyPayloads;
   };
@@ -546,7 +526,15 @@ export async function prepareReplyAgentPayloads(state: {
 
   const quietFinal = authoredSilence || automationNoChange;
   const sourcePayloads = selectAutomationReplyPayloads(
-    payloadArray,
+    selectLegacyHeartbeatReplyPayloads({
+      explicitOnly:
+        followupRun.run.scheduledAutomation?.job.legacyHeartbeatReplyPolicy === true &&
+        followupRun.run.sourceReplyDeliveryMode === "message_tool_only",
+      payloads: payloadArray,
+      result: context.execution.automation?.result,
+      successful: successfulTerminal,
+      pending: pendingContinuation,
+    }),
     automationNoChange,
     quietFinal,
   );
@@ -554,7 +542,7 @@ export async function prepareReplyAgentPayloads(state: {
     (quietFinal && sourcePayloads.length === 0) ||
     (!strandedFinal &&
       completion.outcome !== "delivered" &&
-      payloadArray.length === 0 &&
+      sourcePayloads.length === 0 &&
       fallbackNoticePayloads.length === 0 &&
       !shouldDeliverTerminalFailure &&
       !waitingStatusPayload &&

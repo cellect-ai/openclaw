@@ -1,5 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { formatErrorMessage, readErrorName, toErrorObject } from "../infra/errors.js";
+import { ConversationRunStopReason } from "../infra/run-stop-actor.js";
 import {
   diagnosticLogger as diag,
   logLaneDequeue,
@@ -90,6 +91,7 @@ export function isCommandLaneTaskTimeoutError(err: unknown, lane?: string): bool
 
 function isExpectedNonErrorLaneFailure(err: unknown): boolean {
   return (
+    err instanceof ConversationRunStopReason ||
     (err instanceof Error && err.name === "LiveSessionModelSwitchError") ||
     isExpectedRunCancellation(err)
   );

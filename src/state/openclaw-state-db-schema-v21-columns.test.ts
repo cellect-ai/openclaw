@@ -198,7 +198,7 @@ it("preserves the shipped retention predicate for raw JSON scalar and compound v
   }
 });
 
-describe("schema 20 migration through shared-state owners", () => {
+describe("schema 20 and historical schema 21 migration through shared-state owners", () => {
   const retainedJson = policy('"kept:"', "86400000");
   const directories = useAutoCleanupTempDirTracker((cleanup) => {
     afterAll(async () => {
@@ -246,13 +246,25 @@ describe("schema 20 migration through shared-state owners", () => {
     );
   });
 
-  it.each(["runtime", "doctor"] as const)(
-    "migrates retained rows through captured %s without rewriting canonical JSON",
-    async (owner) => {
-      const stateDir = directories.make(`state-v20-${owner}-`);
+  it.each([
+    { owner: "runtime", previousVersion: 20 },
+    { owner: "doctor", previousVersion: 20 },
+    { owner: "runtime", previousVersion: 21 },
+    { owner: "doctor", previousVersion: 21 },
+  ] as const)(
+    "migrates schema $previousVersion retained rows through captured $owner without rewriting canonical JSON",
+    async ({ owner, previousVersion }) => {
+      const stateDir = directories.make(`state-v${previousVersion}-${owner}-`);
       const pathname = resolveStatePath({ OPENCLAW_STATE_DIR: stateDir });
       fs.mkdirSync(path.dirname(pathname), { recursive: true });
       fs.copyFileSync(template, pathname);
+      if (previousVersion === 21) {
+        // The Cellect fork published schema 21 as a sandbox retention fence,
+        // before upstream 21 added these derived SQL columns. Keep the marker
+        // intact: the supported migration owner must recognize the old shape.
+        using historical = new DatabaseSync(pathname);
+        historical.exec("PRAGMA user_version = 21; UPDATE schema_meta SET schema_version = 21");
+      }
       const options = { env: { OPENCLAW_STATE_DIR: stateDir }, path: pathname };
       const historicalFailures = [
         {

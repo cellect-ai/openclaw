@@ -346,3 +346,87 @@ it.each([
     });
   }
 });
+
+describe("thread continuation caller and route restrictions", () => {
+  const owner = {
+    agentId: "main",
+    sessionKey: "agent:main:slack:channel:c123:thread:123.456",
+    sessionId: "session-1",
+    lifecycleRevision: "revision-1",
+  };
+  const member = {
+    ...owner,
+    fingerprint: "a".repeat(64),
+    status: "failed" as const,
+    recoveryPending: false,
+    updatedAt: 1,
+    endedAt: 1,
+    terminalRunId: "failed-run",
+  };
+  const request = {
+    message: "continue",
+    idempotencyKey: "conditional-resume",
+    agentId: "main",
+    sessionKey: owner.sessionKey,
+    expectedExistingSessionId: owner.sessionId,
+    expectedExistingSessionLifecycleRevision: owner.lifecycleRevision,
+    expectedThreadContinuation: {
+      version: 1 as const,
+      gatewayInstance: "gateway",
+      expiresAt: 100,
+      owner,
+      failedSessionKey: owner.sessionKey,
+      failedRunId: "failed-run",
+      members: [member],
+    },
+    channel: "slack",
+    replyChannel: "slack",
+    replyTo: "C123",
+    threadId: "123.456",
+    deliver: true,
+  };
+  async function prepare(client: object, patch: object = {}) {
+    const respond = vi.fn();
+    const result = await prepareAgentRequestPreflight({
+      request: { ...request, ...patch },
+      context: { getRuntimeConfig: () => ({}), dedupe: new Map() },
+      client,
+      io: createAgentTurnIo(respond),
+    } as never);
+    return { result, respond };
+  }
+  const backend = {
+    connect: {
+      client: { id: "cli", mode: "backend" },
+      role: "operator",
+      scopes: ["operator.write"],
+    },
+  };
+  it.each(["webchat-ui", "openclaw-control-ui", "openclaw-browser-copilot"])(
+    "rejects paired %s advertising backend CLI",
+    async (pairedClientId) => {
+      expectRejected(await prepare({ ...backend, pairedClientId }));
+    },
+  );
+  it.each([
+    { suppressPromptPersistence: true },
+    { inputProvenance: { kind: "inter_session", sourceSessionKey: "agent:main:other" } },
+    { modelRun: true },
+    { sessionEffects: "internal" },
+    { replyTo: "C999" },
+    { threadId: "other-thread" },
+    { agentId: "other" },
+    { sessionKey: "agent:main:main" },
+    { deliver: false },
+  ])("refuses alternate input or delivery ownership %j", async (patch) => {
+    expectRejected(await prepare(backend, patch));
+  });
+  it("does not turn a synthetic system principal into a backend operator", async () => {
+    expectRejected(await prepare({ ...backend, internal: { syntheticClient: true } }));
+  });
+  it("allows the ordinary authenticated backend preflight while retaining the conditional restriction", async () => {
+    const outcome = await prepare(backend);
+    expect(outcome.result).toBeDefined();
+    expect(outcome.respond).not.toHaveBeenCalled();
+  });
+});

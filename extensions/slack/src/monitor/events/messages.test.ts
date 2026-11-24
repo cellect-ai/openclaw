@@ -1,8 +1,10 @@
 import type { App } from "@slack/bolt";
+// Slack tests cover messages plugin behavior.
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SlackMessageHandler } from "../message-handler.js";
 import { createInboundSlackTestContext } from "../message-handler/prepare.test-helpers.js";
 import { createSlackSystemEventRouteResolver } from "../system-event-session.js";
+import { registerSlackEditContextTests } from "./messages.edit-context.test-support.js";
 import {
   createSlackSystemEventTestHarness,
   type SlackSystemEventTestOverrides,

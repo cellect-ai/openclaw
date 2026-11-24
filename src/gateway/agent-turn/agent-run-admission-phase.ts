@@ -17,7 +17,11 @@ import type {
 import { captureRequesterCronAuthorityAdmissionAssertion } from "../../agents/subagents/requester-cron-authority.js";
 import { resolveAgentTimeoutMs } from "../../agents/timeout.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
-import { claimAgentRunContext, getAgentRunContext } from "../../infra/agent-run-registry.js";
+import {
+  awaitAgentRunAdmission,
+  claimAgentRunContext,
+  getAgentRunContext,
+} from "../../infra/agent-run-registry.js";
 import { pluginInvocationContext } from "../../plugins/plugin-instance-scope.js";
 import { isCronSessionKey } from "../../routing/session-key.js";
 import {
@@ -38,16 +42,14 @@ import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
 import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { prepareGatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { assertParentSubagentResumeSuccessorCurrent } from "../session-subagent-resume.js";
+import { getThreadContinuationGuard } from "../thread-continuation.js";
 import { formatForLog } from "../ws-log.js";
 import { createAgentPreacceptRefusal } from "./agent-admission-refusal.js";
-import {
-  isPreRegistrationAbortedAgentDedupeEntryForSession,
-  readGatewayDedupeEntry,
-  setGatewayDedupeEntries,
-} from "./agent-dedupe.js";
+import { setGatewayDedupeEntries } from "./agent-dedupe.js";
 import { canPrepareAgentSessionWorktree } from "./agent-handler-helpers.js";
 import { cleanupRejectedAgentRunAdmission } from "./agent-run-admission-cleanup.js";
 import { resolveAgentRunAdmissionModel } from "./agent-run-admission-model.js";
+import { rejectAgentRunBeforeRegistration } from "./agent-run-admission-preflight.js";
 import {
   createAgentRunAdmissionRevalidator,
   releaseFailedAgentRunAdmission,
@@ -87,34 +89,7 @@ export async function prepareAgentRunDispatch(
     params.privateCompletion || isSubagentCoordinationInputProvenance(params.inputProvenance);
   const controlUiVisible = !params.suppressVisibleSessionEffects && !privateConversationWork;
   const parentResume = readInProcessSubagentResume(params.client?.internal);
-  const preRegistrationAbort = readGatewayDedupeEntry({
-    dedupe: params.context.dedupe,
-    keys: params.agentDedupeKeys,
-  });
-  if (
-    isPreRegistrationAbortedAgentDedupeEntryForSession({
-      entry: preRegistrationAbort,
-      runId: params.runId,
-      sessionKey: params.resolvedSessionKey,
-      alternateSessionKeys: [params.preAcceptedReservedSessionKey, params.requestedSessionKey],
-      agentId: params.activeSessionAgentId,
-    })
-  ) {
-    params.markAgentRunAccepted(true);
-    params.io.emitAcceptance([true, preRegistrationAbort?.payload, undefined], {
-      cached: true,
-      runId: params.runId,
-    });
-    return undefined;
-  }
-  if (params.restoredCronContinuationIdentity && !params.restoredCronContinuation) {
-    params.io.emitAcceptance([
-      false,
-      undefined,
-      errorShape(ErrorCodes.UNAVAILABLE, "cron run continuation could not be restored"),
-    ]);
-    return undefined;
-  }
+  if (rejectAgentRunBeforeRegistration(params)) return undefined;
 
   const { resolvedRuntime, ...modelSelection } = resolveAgentRunAdmissionModel(params);
   const { lifecycleStorePath } = modelSelection;
@@ -141,9 +116,11 @@ export async function prepareAgentRunDispatch(
           agentId: params.activeSessionAgentId,
           admittedSessionId: params.getAdmittedSessionId(),
           admittedSessionEntry,
-        });
+        }) ??
+        admittedSessionEntry?.timeoutSeconds;
       const timeoutMs = resolveAgentTimeoutMs({
         cfg: params.cfgForAgent ?? params.cfg,
+        sessionSeconds: admittedSessionEntry?.timeoutSeconds,
         overrideSeconds: timeoutSeconds,
       });
       const providerFacts = {
@@ -347,6 +324,11 @@ export async function prepareAgentRunDispatch(
   let replyDispatchRuntime: PreparedReplyDispatchRuntime;
   let preparedModelRuntime: PreparedAgentRunModelRuntime;
   try {
+    await awaitAgentRunAdmission(params.runId, admittedRunContext);
+    const persistedAdmission = revalidateAdmission();
+    if (persistedAdmission !== true) {
+      return persistedAdmission;
+    }
     const publishedRuntime = await loadPublishedGatewayReplyDispatchRuntime({
       agentId: params.activeSessionAgentId,
       abortSignal: activeRunAbort.controller.signal,
@@ -483,10 +465,13 @@ export async function prepareAgentRunDispatch(
   };
   try {
     assertInputAdmissionCurrent?.();
+    const threadContinuationGuard = getThreadContinuationGuard(activeRunAbort.entry);
     userTurn = await prepareAgentRunUserTurn({
+      threadContinuationGuard,
       ...params,
       assertCurrent: () => {
         assertInputOwnerCurrent();
+        threadContinuationGuard?.assertCurrent();
         activeRunAbort.controller.signal.throwIfAborted();
       },
       assertCompletionCurrent: () => assertInputOwnerCurrent(true),

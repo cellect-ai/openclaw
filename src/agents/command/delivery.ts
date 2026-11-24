@@ -5,22 +5,23 @@ import {
 import { resolveSessionAgentId } from "../../agents/agent-scope.js";
 import {
   copyReplyPayloadMetadata,
+  getReplyPayloadMetadata,
   type ReplyPayload,
   formatBtwTextForExternalDelivery,
 } from "../../auto-reply/reply-payload.js";
+import { suppressPendingFinalDelivery } from "../../auto-reply/reply/dispatch-from-config.pending-final.js";
 import {
   normalizeReplyPayloadOutcome,
   type NormalizeReplyOutcome,
   type NormalizeReplySkipReason,
 } from "../../auto-reply/reply/normalize-reply.js";
-import { resolvePendingFinalDeliveryCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
+import { resolvePendingFinalDeliveryBatchCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
 import { createReplyMediaPathNormalizer } from "../../auto-reply/reply/reply-media-paths.js";
 import {
   filterMessagingToolMediaDuplicates,
   hasEnabledDeliveryOperation,
   resolveMessagingToolPayloadDedupe,
 } from "../../auto-reply/reply/reply-payloads-dedupe.js";
-import { resolveResponsePrefixTemplate } from "../../auto-reply/reply/response-prefix-template.js";
 import { createChannelReplyTransform } from "../../channels/message/reply-transform.js";
 import { sendDurableMessageBatchCore } from "../../channels/message/runtime.js";
 import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
@@ -97,8 +98,6 @@ type DeliverAgentCommandResultParams = {
   assertDeliveryCurrent?: SessionSourceAssertion;
   onDeliveryResult?: (result: AgentCommandDeliveryResult, payloads: ReplyPayload[]) => void;
 } & FreshSessionDeliveryRefreshParams;
-
-const UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN = /\{[a-zA-Z][a-zA-Z0-9.]*\}/;
 
 export async function deliverAgentCommandResult(
   params: DeliverAgentCommandResultParams,
@@ -353,16 +352,7 @@ export async function deliverAgentCommandResult(
       });
     }
     const responsePrefixContext = replyPrefix.responsePrefixContextProvider();
-    const resolvedResponsePrefix = resolveResponsePrefixTemplate(
-      replyPrefix.responsePrefix,
-      responsePrefixContext,
-    );
-    const responsePrefix =
-      !includeRunModelContext &&
-      resolvedResponsePrefix &&
-      UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(resolvedResponsePrefix)
-        ? undefined
-        : replyPrefix.responsePrefix;
+    const responsePrefix = replyPrefix.responsePrefix;
     const deliveryMessaging = normalizationPlugin?.messaging;
     const transformReplyPayload = createChannelReplyTransform({
       messaging: deliveryMessaging,
@@ -562,6 +552,23 @@ export async function deliverAgentCommandResult(
   }
 
   const deliveryPayloads = projectOutboundPayloadPlanForOutbound(outboundPayloadPlan);
+  const selectedMembers = new Set(
+    (deliver ? deliveryPayloads : []).map(
+      (payload) => getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion?.deliveryId,
+    ),
+  );
+  for (const payload of payloads) {
+    const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
+    if (
+      completion?.sourceRunId &&
+      completion.sourceGeneration &&
+      !selectedMembers.has(completion.deliveryId)
+    ) {
+      params.assertDeliveryCurrent?.();
+      await suppressPendingFinalDelivery(payload);
+      params.assertDeliveryCurrent?.();
+    }
+  }
   if (deliveryPayloads.length === 0) {
     deliveryStatus = deliveryRequested
       ? (deliveryStatus ??
@@ -604,7 +611,7 @@ export async function deliverAgentCommandResult(
     if (deliveryTarget && !deliveryStatus) {
       params.assertDeliveryCurrent?.();
       // The outbound projection contains transport data, not private payload metadata.
-      const completion = resolvePendingFinalDeliveryCompletion(payloads);
+      const completion = resolvePendingFinalDeliveryBatchCompletion(deliveryPayloads);
       const assertPlatformSendCurrent = createAgentCommandDeliveryGuard(params, completion);
       const restartAbort = createRestartOnlyAbortSignal(opts.abortSignal);
       let send: DurableSendResult;

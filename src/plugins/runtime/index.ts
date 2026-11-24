@@ -6,6 +6,7 @@ import { enqueueSessionEventForHost } from "../../auto-reply/reply/session-event
 import { runWithLocalStateOwner } from "../../cli/local-state-owner.js";
 import { captureMemoryExactSessionReader } from "../../config/sessions/session-accessor.memory-exact-read.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
+import { registerConversationLifecycleTransport } from "../../infra/conversation-lifecycle.js";
 import {
   listImageGenerationProviders,
   listMusicGenerationProviders,
@@ -349,7 +350,7 @@ export const createPluginRuntime: PluginRuntimeFactory = (
         ? { dispatchReplyFromConfig: _options.dispatchReplyFromConfig }
         : undefined,
     ),
-    events: { onAgentEvent, onSessionTranscriptUpdate },
+    events: { onAgentEvent, registerConversationLifecycleTransport, onSessionTranscriptUpdate },
     logging: createRuntimeLogging(),
     state: base.state,
 

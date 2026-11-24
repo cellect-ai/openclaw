@@ -19,6 +19,23 @@ const nullableMetadataFields = [
 ] as const;
 
 describe("plugin approval protocol validators", () => {
+  it.each([
+    "approvalOrigin",
+    "origin",
+    "conversation",
+    "approvalConversation",
+    "sessionId",
+    "runId",
+  ])("rejects caller-forged host field %s", (field) => {
+    expect(
+      validatePluginApprovalRequestParams({
+        title: "Review payment",
+        description: "Pay the vendor",
+        [field]: "plugin",
+      }),
+    ).toBe(false);
+  });
+
   it("validates bounded reviewer-only detail independently from the description", () => {
     const request = {
       title: "Apply workspace skill proposal",

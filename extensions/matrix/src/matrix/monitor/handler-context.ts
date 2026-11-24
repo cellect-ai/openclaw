@@ -16,7 +16,11 @@ import { resolveMatrixSharedDmContextNotice } from "./handler-helpers.js";
 import type { MatrixIngressContent } from "./handler-ingress-content.js";
 import { loadMatrixSendModule } from "./handler-runtime.js";
 import type { MatrixHandlerRuntimeConfig } from "./handler-types.js";
+import { readMatrixSharedHistory } from "./shared-history.js";
 import type { MatrixRawEvent, RoomMessageEventContent } from "./types.js";
+
+/** Content key Fi's web and iOS composers set on a "Let me know" message. */
+const MATRIX_LET_ME_KNOW_CONTENT_KEY = "ai.cellect.let_me_know";
 
 export async function resolveMatrixInboundContext(config: {
   handler: MatrixHandlerRuntimeConfig;
@@ -78,6 +82,7 @@ export async function resolveMatrixInboundContext(config: {
     media,
     preflightAudioTranscript,
     hasExplicitSessionBinding,
+    sourceReplyAdmission,
   } = ingress;
   const contextVisibilityMode = resolveChannelContextVisibilityMode({
     cfg,
@@ -111,6 +116,24 @@ export async function resolveMatrixInboundContext(config: {
       kind: "thread",
       senderAllowed: isRoomContextSenderAllowed(contextSenderId),
     }).include;
+  const sharedHistory =
+    isRoom && historyLimit > 0
+      ? await readMatrixSharedHistory({
+          client,
+          roomId,
+          event,
+          threadRootId,
+          limit: historyLimit,
+          includeSender: (sender) => shouldIncludeRoomContextSender("history", sender),
+          logVerboseMessage,
+        })
+      : undefined;
+  // A successful homeserver read is authoritative, including an empty/redacted window.
+  // Pending ingress is a fallback only when history cannot be read, not a second cache
+  // that can resurrect a deleted message or duplicate the shared transcript.
+  const visibleHistory =
+    sharedHistory ??
+    inboundHistory?.filter((entry) => shouldIncludeRoomContextSender("history", entry.sender));
   let threadContext =
     ingress.threadContext ??
     (threadRootId ? await resolveThreadContext({ roomId, eventId: threadRootId }) : undefined);
@@ -132,6 +155,13 @@ export async function resolveMatrixInboundContext(config: {
   }
   const replySenderAllowed =
     !replyContext?.senderId || isRoomContextSenderAllowed(replyContext.senderId);
+  const questionReply =
+    replyContext?.questionReply && replyContext.questionReply.issuer === (await client.getUserId())
+      ? replyContext.questionReply
+      : undefined;
+  if (questionReply && questionReply.threadRootEventId !== threadTarget) {
+    throw new Error("Matrix question reply refused: thread_mismatch");
+  }
   const roomInfo = isRoom ? await getRoomInfo(roomId, { currentName: true }) : undefined;
   const roomName = roomInfo?.name;
   const envelopeFrom = isDirectMessage ? senderName : (roomName ?? roomId);
@@ -163,6 +193,15 @@ export async function resolveMatrixInboundContext(config: {
     body: textWithId,
   });
   const groupSystemPrompt = normalizeOptionalString(roomConfig?.systemPrompt);
+  // A person's "Let me know" send marks their own message; a configured bot cannot ask for it.
+  const letMeKnowFlag = (event.content as Record<string, unknown> | undefined)?.[
+    MATRIX_LET_ME_KNOW_CONTENT_KEY
+  ];
+  const letMeKnow =
+    !ingress.botLoopProtection &&
+    typeof letMeKnowFlag === "object" &&
+    letMeKnowFlag !== null &&
+    (letMeKnowFlag as { version?: unknown }).version === 1;
   const quoteHidden = Boolean(
     replyContext &&
     !evaluateSupplementalContextVisibility({
@@ -219,6 +258,18 @@ export async function resolveMatrixInboundContext(config: {
     ),
     messageId,
     timestamp: eventTs ?? undefined,
+    // Carry the homeserver event through the host-owned hook context, never the prompt.
+    channelContext: {
+      // A configured bot account is a proven sender but not a person; hooks that
+      // act for the sender need to tell the two apart.
+      sender: { id: senderId, ...(ingress.botLoopProtection ? { isBot: true } : {}) },
+      chat: {
+        id: roomId,
+        eventId: messageId,
+        ...(letMeKnow ? { letMeKnow: true } : {}),
+        ...(sourceReplyAdmission ? { sourceReplyAdmission } : {}),
+      },
+    },
     from: isDirectMessage ? `matrix:${senderId}` : `matrix:channel:${roomId}`,
     sender: {
       id: senderId,
@@ -251,7 +302,7 @@ export async function resolveMatrixInboundContext(config: {
       rawBody: bodyText,
       commandBody: commandBodyText,
       bodyForAgent: bodyText,
-      inboundHistory: inboundHistory && inboundHistory.length > 0 ? inboundHistory : undefined,
+      inboundHistory: visibleHistory && visibleHistory.length > 0 ? visibleHistory : undefined,
     },
     sessionTranscript: { historyLimit: isRoom ? historyLimit : 0 },
     access: {
@@ -276,6 +327,9 @@ export async function resolveMatrixInboundContext(config: {
       ...locationPayload?.context,
       CommandSource: isControlCommand ? ("text" as const) : undefined,
       NativeDirectUserId: isDirectMessage ? senderId : undefined,
+      // This path is fed only by the homeserver's own room event; its sender is the homeserver's.
+      SenderAuthentication: "verified" as const,
+      ...(questionReply ? { ExpectedQuestionId: questionReply.questionId } : {}),
     },
   });
   if (quoteHidden) {
@@ -334,5 +388,6 @@ export async function resolveMatrixInboundContext(config: {
     ctxPayload,
     replyTarget,
     sharedDmContextNotice,
+    letMeKnowTriggerEventId: letMeKnow ? messageId : undefined,
   };
 }

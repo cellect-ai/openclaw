@@ -8,6 +8,7 @@ import {
   installQueueRuntimeErrorSilencer,
 } from "../queue.test-helpers.js";
 import { clearSessionQueues } from "./cleanup.js";
+import { requiresIndividualCollectDrain } from "./envelope.js";
 import { getExistingFollowupQueue } from "./state.js";
 import type { FollowupRun, QueueSettings } from "./types.js";
 
@@ -61,4 +62,15 @@ it("retains a stopped drain until its raw return and then executes the surviving
       ),
     );
   }
+});
+
+it("keeps a host-bound Workshop turn out of collected aggregates", () => {
+  const source = createRun({ prompt: "Edit your own procedure" });
+  expect(requiresIndividualCollectDrain(source)).toBe(false);
+  source.run.skillWorkshopWorkspaceAuthoring = {
+    agentId: "agent",
+    bind: () => {},
+    assertCurrent: () => {},
+  };
+  expect(requiresIndividualCollectDrain(source)).toBe(true);
 });

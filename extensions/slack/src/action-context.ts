@@ -28,6 +28,10 @@ export type SlackActionContext = Pick<
   | "hasRepliedRef"
   | "sameChannelThreadRequired"
 > & {
+  /** Host-owned agent whose configured bindings authorize cross-provider reads. */
+  agentId?: string;
+  /** Host-owned session used by cross-provider requester identity adapters. */
+  sessionKey?: string;
   conversationReadOrigin?: ChannelMessageActionContext["conversationReadOrigin"];
   requesterAccountId?: string;
   requesterSenderId?: string;
@@ -41,4 +45,6 @@ export type SlackActionContext = Pick<
   preparedMessages?: readonly SlackReplyDeliveryMessage[];
   /** Slack-private once-rendered bytes; direct action edits still accept Markdown. */
   preparedEditText?: string;
+  /** Trusted agent workspace used to stage downloaded files for sandbox access. */
+  mediaWorkspaceDir?: string;
 };

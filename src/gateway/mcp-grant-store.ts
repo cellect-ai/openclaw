@@ -36,6 +36,7 @@ import type { InputProvenance } from "../sessions/input-provenance.js";
 import type { ReplyTurnParticipants } from "../sessions/session-controller.contracts.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop/workspace-authoring.types.js";
 import type { CronCreatorAuthorityGrant } from "./cron-creator-authority-grant.types.js";
 
 /** Set by MCP authentication; caller-token conversation headers cannot select a binding. */
@@ -186,6 +187,7 @@ type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
   /** Original CLI policy, rebound only to this stored row's exact lifetime. */
   bindQuestionAnswerAuthority?: (assertActive: () => void) => PreparedQuestionAnswerAuthority;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+  skillWorkshopWorkspaceAuthoring?: SkillWorkshopWorkspaceAuthoring;
   /** Configured MCP tools owned by the minting CLI run; disposed with that run. */
   bundledTools?: readonly AnyAgentTool[];
   activeCaptureKey?: string;
@@ -323,6 +325,7 @@ export function mintMcpLoopbackClientGrant(
     assertCurrent: params.assertCurrent,
     bindQuestionAnswerAuthority: params.bindQuestionAnswerAuthority,
     skillLibraryAuthoring: params.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
     ...(params.bundledTools?.length ? { bundledTools: params.bundledTools } : {}),
     ...(params.toolAuth ? { toolAuth: structuredClone(params.toolAuth) } : {}),
   };
@@ -524,6 +527,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       withCronManagementToolConstruction?: <T>(run: () => T) => T;
       questionAnswerAuthority?: PreparedQuestionAnswerAuthority;
       skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+      skillWorkshopWorkspaceAuthoring?: SkillWorkshopWorkspaceAuthoring;
       bundledTools?: readonly AnyAgentTool[];
       isCurrent: () => boolean;
       toolAuth?: McpLoopbackToolAuth;
@@ -587,6 +591,7 @@ export function resolveMcpLoopbackClientGrant(params: {
       : undefined,
     questionAnswerAuthority,
     skillLibraryAuthoring: grant.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: grant.skillWorkshopWorkspaceAuthoring,
     ...(grant.bundledTools ? { bundledTools: grant.bundledTools } : {}),
     isCurrent,
 

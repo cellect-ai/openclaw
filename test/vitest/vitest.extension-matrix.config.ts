@@ -13,6 +13,10 @@ export function createExtensionMatrixVitestConfig(env?: Record<string, string | 
       name: "extension-matrix",
       passWithNoTests: true,
       setupFiles: ["test/setup.extensions.ts"],
+      // Real sqlite persistence (e.g. Matrix credential identity) requires
+      // main-thread opens; worker threads are architecturally refused the host
+      // broker. Same supported forks pattern as the infra shard.
+      pool: "forks",
     },
   );
 }

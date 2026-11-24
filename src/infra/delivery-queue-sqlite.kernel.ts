@@ -148,6 +148,11 @@ export function inspectDeliveryQueueReceiptInDatabase(
         ?.get(input.queueName)?.status;
       return {
         status,
+        completionReceipt:
+          status === "completed"
+            ? (loadDeliveryQueueEntryInDatabase(database, input.queueName, input.id, "all")
+                ?.completionReceipt ?? null)
+            : null,
         pendingEntry:
           input.includePending && status === "pending"
             ? loadDeliveryQueueEntryInDatabase(database, input.queueName, input.id, "pending")
@@ -264,10 +269,18 @@ export function completeDeliveryQueueEntryInDatabase(
   database: OpenClawStateDatabase,
   queueName: string,
   id: string,
+  completionReceipt?: Readonly<{ platformMessageId: string }>,
 ): void {
   const now = Date.now();
   const current = loadDeliveryQueueEntryInDatabase(database, queueName, id, "pending");
-  completeLoadedDeliveryQueueEntryInDatabase(database, queueName, id, current, now);
+  completeLoadedDeliveryQueueEntryInDatabase(
+    database,
+    queueName,
+    id,
+    current,
+    now,
+    completionReceipt,
+  );
 }
 
 function pruneBoundedDeliveryQueueTombstones(
@@ -295,6 +308,7 @@ export function completeLoadedDeliveryQueueEntryInDatabase(
   id: string,
   current: DeliveryQueueEntryState | null,
   now = Date.now(),
+  completionReceipt?: Readonly<{ platformMessageId: string }>,
 ): void {
   const requestedRetention = current?.completionRetention;
   const retention = parseDeliveryQueueCompletionRetention(requestedRetention, id);
@@ -302,7 +316,7 @@ export function completeLoadedDeliveryQueueEntryInDatabase(
     throw new Error(`Invalid bounded delivery completion retention: ${queueName}/${id}`);
   }
   const tombstone = projectDeliveryQueueTerminalEntry(
-    { id, retryCount: 0 },
+    { id, retryCount: 0, completionReceipt },
     now,
     "completed",
     retention,

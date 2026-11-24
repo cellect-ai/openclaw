@@ -337,8 +337,18 @@ function projectCurrentChannelContext(
 ) {
   const currentChannelProvider = options?.currentChannelProvider;
   const currentChannelId = options?.currentChannelId;
+  // Hosts that run a channel-routed session without passing its channel (for
+  // example an app-server harness turn) still own a routable session key; use
+  // it so the message tool defaults to the conversation the turn came from.
+  const missingCurrentChannel =
+    !normalizeOptionalString(currentChannelProvider) &&
+    !normalizeOptionalString(currentChannelId) &&
+    !normalizeOptionalString(options?.currentMessagingTarget);
   const sessionDelivery =
-    normalizeMessageChannel(currentChannelProvider) === INTERNAL_MESSAGE_CHANNEL ? inferred : null;
+    normalizeMessageChannel(currentChannelProvider) === INTERNAL_MESSAGE_CHANNEL ||
+    missingCurrentChannel
+      ? inferred
+      : null;
 
   if (!sessionDelivery?.to) {
     return {

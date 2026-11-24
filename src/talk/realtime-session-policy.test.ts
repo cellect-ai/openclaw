@@ -105,7 +105,19 @@ it("normalizes configured wake names instead of adding defaults", () => {
   });
 
   expect(policy.toolPolicy).toBe("safe-read-only");
-  const tools = ["read", "web_search", "web_fetch", "x_search", "memory_search", "memory_get"];
+  const tools = [
+    "read",
+    "fi_user_api",
+    "sessions_history",
+    "sessions_search",
+    "tavily_search",
+    "tavily_extract",
+    "web_search",
+    "web_fetch",
+    "x_search",
+    "memory_search",
+    "memory_get",
+  ];
   expect(policy.consultToolsAllow).toEqual(tools);
   expect(policy.wakeNames).toStrictEqual(["claw"]);
 });

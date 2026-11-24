@@ -10,6 +10,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/provider-onboard";
 import { createNonExitingRuntime } from "openclaw/plugin-sdk/runtime-env";
 import { createProviderUsageFetch, makeResponse } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resolveInternalRealtimeVoiceGatewayRelayCapabilities } from "../../src/talk/provider-internal.js";
 
 const providerAuthRuntimeMocks = vi.hoisted(() => ({
   resolveApiKeyForProvider: vi.fn(),
@@ -407,6 +408,77 @@ describe("xai provider plugin", () => {
         errorMessage: `${status} ${JSON.stringify({ code, error })}`,
       }),
     ).toBe(expected);
+  });
+
+  it("classifies exhausted Grok credits and subscription requirements as billing", async () => {
+    const provider = await registerSingleProviderPlugin(plugin);
+
+    expect(
+      provider.classifyFailoverReason?.({
+        errorMessage: '403 {"error":"You have run out of credits"}',
+      }),
+    ).toBe("billing");
+    expect(
+      provider.classifyFailoverReason?.({
+        errorMessage: '403 {"error":"You need a Grok subscription"}',
+      }),
+    ).toBe("billing");
+    expect(
+      provider.classifyFailoverReason?.({
+        errorMessage: "403 Forbidden",
+      }),
+    ).toBeUndefined();
+    expect(
+      provider.classifyFailoverReason?.({
+        errorMessage: "429 Too Many Requests",
+      }),
+    ).toBe("rate_limit");
+  });
+
+  it("registers xAI speech providers for batch and streaming STT", async () => {
+    const { mediaProviders, realtimeTranscriptionProviders } = await registerProviderPlugin({
+      plugin,
+      id: "xai",
+      name: "xAI Provider",
+    });
+
+    const mediaProvider = requireEntry(mediaProviders, "xai");
+    expect(mediaProvider.capabilities).toEqual(["audio"]);
+    expect(mediaProvider.defaultModels).toBeUndefined();
+    const realtimeProvider = requireEntry(realtimeTranscriptionProviders, "xai");
+    expect(realtimeProvider.label).toBe("xAI Realtime Transcription");
+    expect(realtimeProvider.aliases).toContain("xai-realtime");
+  });
+
+  it("registers xAI realtime voice for Talk gateway-relay", () => {
+    const captured = createCapturedPluginRegistration({
+      id: "xai",
+      name: "xAI Provider",
+      source: "test",
+    });
+    plugin.register(captured.api);
+    const realtimeVoiceProvider = requireEntry(captured.realtimeVoiceProviders, "xai");
+    expect(realtimeVoiceProvider.label).toBe("xAI Grok Voice");
+    expect(realtimeVoiceProvider.aliases).toContain("grok-voice");
+    expect(realtimeVoiceProvider.capabilities?.transports).toEqual(["gateway-relay"]);
+    const litellmProvider = requireEntry(captured.realtimeVoiceProviders, "litellm");
+    expect(litellmProvider.label).toBe("LiteLLM Realtime (Grok / Google)");
+    expect(litellmProvider.models).toEqual(["grok-voice-think-fast-2.0", "gemini-3.8-live"]);
+    expect(litellmProvider.capabilities?.transports).toEqual(["gateway-relay"]);
+    const voicesByModel = resolveInternalRealtimeVoiceGatewayRelayCapabilities({
+      provider: litellmProvider,
+      providerConfig: { model: "grok-voice-think-fast-2.0" },
+    })?.voicesByModel;
+    expect(voicesByModel?.["grok-voice-think-fast-2.0"]).toEqual([
+      "eve",
+      "ara",
+      "rex",
+      "sal",
+      "leo",
+    ]);
+    expect(voicesByModel?.["gemini-3.8-live"]).toEqual(
+      expect.arrayContaining(["Kore", "Puck", "Sulafat"]),
+    );
   });
 
   it("forwards exact caller cancellation through the registered lazy X search factory", async () => {

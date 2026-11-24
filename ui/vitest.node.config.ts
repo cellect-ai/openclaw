@@ -22,6 +22,7 @@ export default defineConfig({
       "src/**/*.node.test.{ts,tsx}",
       "src/pages/chat/chat-responsive.browser.test.{ts,tsx}",
       "src/pages/chat/chat-footer-layout.browser.test.{ts,tsx}",
+      "src/pages/chat/composer-voice-icon.browser.test.{ts,tsx}",
     ],
     environment: "node",
   },

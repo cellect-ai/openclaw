@@ -213,6 +213,7 @@ export function registerPendingAgentQuestion(params: {
 /** Core ingress claims require the question creator's policy, not an answering-turn owner. */
 export async function claimPendingAgentQuestionAnswerFromCaller(params: {
   sessionKey?: string;
+  expectedQuestionId?: string;
   text: string;
   persist?: () => Promise<void>;
   sourceRecorder?: UserTurnTranscriptRecorder;
@@ -255,6 +256,7 @@ export async function claimPendingAgentQuestionAnswerFromCaller(params: {
   return claimQuestionAnswer(
     {
       sessionKey: params.sessionKey,
+      expectedQuestionId: params.expectedQuestionId,
       text: params.text,
       persist: params.persist,
       sourceRecorder: params.sourceRecorder,
@@ -267,6 +269,7 @@ export async function claimPendingAgentQuestionAnswerFromCaller(params: {
 /** Owns reservation and persistence; absent questions return before checking caller authority. */
 export async function claimPendingAgentQuestionAnswer(params: {
   sessionKey?: string;
+  expectedQuestionId?: string;
   text: string;
   persist?: () => Promise<void>;
   sourceRecorder?: UserTurnTranscriptRecorder;
@@ -290,6 +293,20 @@ async function claimQuestionAnswer(
 ): Promise<boolean> {
   const sessionKey = params.sessionKey?.trim();
   const state = sessionKey ? pendingAgentQuestions.get(sessionKey) : undefined;
+  // This is a narrowing fence, not authorization. The ordinary creator/source
+  // authority and reservation below still own acceptance and final dispatch.
+  if (
+    params.expectedQuestionId &&
+    (!state ||
+      state.kind !== "gateway" ||
+      state.resolving ||
+      state.cancelRequested ||
+      state.questionId !== params.expectedQuestionId)
+  ) {
+    throw new QuestionDispatchRefusedError(
+      "The selected question is no longer current; refresh its controls.",
+    );
+  }
   if (!state || state.resolving || (state.kind === "gateway" && state.cancelRequested)) {
     return false;
   }

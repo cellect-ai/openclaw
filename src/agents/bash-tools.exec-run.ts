@@ -547,6 +547,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           await validateScriptFileForShellBleed({
             command: params.command,
             workdir: scriptPreflightCwd,
+            resolveCompoundCommands: host === "sandbox",
           });
         }
 
@@ -577,6 +578,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           agentId,
           eventRouting: defaults?.eventRouting,
           notifyDeliveryContext,
+          ...requestPreparation.executionCustody(params, toolCallId, hookContext),
           timeoutSec: effectiveTimeout,
           processContinuationAvailable: allowBackground,
           startupSignal: signal,

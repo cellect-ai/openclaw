@@ -200,6 +200,13 @@ export function registerModalLifecycleHandler(params: {
             teamId: eventScope?.teamId,
             channelType,
             ctx: {
+              authority: {
+                assertCurrent: () => {
+                  if (!runtimeCtx.isRuntimePolicyCurrent()) {
+                    throw new Error("Slack interaction policy is no longer current.");
+                  }
+                },
+              },
               accountId: runtimeCtx.accountId,
               interactionId,
               conversationId: sessionRouting.channelId ?? "",

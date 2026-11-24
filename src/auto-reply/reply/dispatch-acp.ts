@@ -231,6 +231,7 @@ export async function tryDispatchAcpReplyCore(
       (await claimPreparedPendingAgentQuestionAnswer(
         {
           sessionKey: acpResolution.sessionKey,
+          expectedQuestionId: params.ctx.ExpectedQuestionId,
           text: pendingAnswerText,
           sourceRecorder: inputRecorder,
           // The released question dispatcher retains its opaque synchronous source guard.

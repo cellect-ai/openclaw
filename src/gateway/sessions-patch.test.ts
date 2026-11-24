@@ -2,7 +2,6 @@
 // aliases, model catalog validation, and rejected invalid patch payloads.
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { prepareSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
-import type { ModelCatalogEntry } from "../agents/model-catalog.js";
 import * as modelSelection from "../agents/model-selection.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -15,6 +14,12 @@ import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../sessions/agent-ha
 import * as auth from "../sessions/auth-profile-preservation.js";
 import { MODEL_SELECTION_LOCKED_MESSAGE } from "../sessions/model-overrides.js";
 import { withAgentSessionModelPatchOrigin } from "./session-model-patch-origin.js";
+import {
+  agentConfig,
+  modelConfig,
+  catalogEntry,
+  loadCatalog,
+} from "./sessions-patch-catalog.test-support.js";
 import {
   type ApplySessionsPatchArgs,
   MAIN_SESSION_KEY,
@@ -106,17 +111,6 @@ async function patchOk(options: PatchFixture) {
   return expectPatchOk(await runPatch(options));
 }
 
-type ModelDefaults = NonNullable<NonNullable<OpenClawConfig["agents"]>["defaults"]>;
-function agentConfig(
-  defaults: ModelDefaults | undefined,
-  entries?: NonNullable<OpenClawConfig["agents"]>["entries"],
-): OpenClawConfig {
-  return { agents: { ...(defaults ? { defaults } : {}), ...(entries ? { entries } : {}) } };
-}
-function modelConfig(primary: string, defaults: ModelDefaults = {}): OpenClawConfig {
-  return agentConfig({ model: { primary }, ...defaults });
-}
-
 function mainAuthOverrideStore(overrides: Partial<SessionEntry>): Record<string, SessionEntry> {
   return mainStoreEntry({
     providerOverride: "anthropic",
@@ -124,24 +118,6 @@ function mainAuthOverrideStore(overrides: Partial<SessionEntry>): Record<string,
     authProfileOverrideSource: "user",
     ...overrides,
   });
-}
-
-function catalogEntry(ref: string, metadata: Partial<ModelCatalogEntry> = {}): ModelCatalogEntry {
-  const separator = ref.indexOf("/");
-  if (separator < 0) {
-    throw new Error(`model ref must include provider: ${ref}`);
-  }
-  const id = ref.slice(separator + 1);
-  return {
-    provider: ref.slice(0, separator),
-    id,
-    name: id,
-    ...metadata,
-  };
-}
-
-function loadCatalog(...refs: string[]): ApplySessionsPatchArgs["loadGatewayModelCatalog"] {
-  return async () => refs.map((ref) => catalogEntry(ref));
 }
 
 function expectModelSelection(
@@ -269,6 +245,18 @@ describe("gateway sessions patch", () => {
     clearPluginMetadataLifecycleCaches();
     resetPluginRuntimeStateForTest();
   });
+
+  test.each([-1, 1.5, Number.MAX_SAFE_INTEGER + 1])(
+    "rejects invalid session timeout %s",
+    async (timeoutSeconds) => {
+      const store = mainStoreEntry({ timeoutSeconds: 1800 });
+      expectPatchError(
+        await runPatch({ store, patch: { key: MAIN_SESSION_KEY, timeoutSeconds } }),
+        "timeoutSeconds",
+      );
+      expect(store[MAIN_SESSION_KEY].timeoutSeconds).toBe(1800);
+    },
+  );
 
   test("keeps a custom SVG icon through store normalization, unrelated patches, and clearing", async () => {
     using defaults = vi.spyOn(modelSelection, "resolveDefaultModelForAgent");

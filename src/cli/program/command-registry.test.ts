@@ -45,6 +45,7 @@ describe("command-registry", () => {
       expect.arrayContaining(["setup", "crestodian", "mcp", "agent", "agents"]),
     );
     expect(names).not.toContain("tasks");
+    expect(names).toContain("thread");
   });
 
   it("exposes Templates without a process opt-in", () => {

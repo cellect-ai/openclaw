@@ -156,6 +156,7 @@ export type CreateSlackMonitorContextParams = ReturnType<typeof resolveSlackMoni
   accountId: string;
   botToken: string;
   lookupToken?: string;
+  abortSignal?: AbortSignal;
   app: App;
   runtime: RuntimeEnv;
   channelRuntime?: ChannelRuntimeSurface;
@@ -726,6 +727,7 @@ type SlackMonitorContextFields = ReturnType<typeof createSlackMonitorContextFiel
 export type SlackMonitorContext = SlackMonitorContextFields & {
   readRuntimeContext: () => Promise<SlackMonitorContext>;
   isRuntimePolicyCurrent: () => boolean;
+  closeRuntimeContext: () => void;
 };
 
 export function createSlackMonitorContext(
@@ -733,12 +735,20 @@ export function createSlackMonitorContext(
 ): SlackMonitorContext {
   const { lookupToken, ...contextParams } = params;
   const built = createSlackMonitorContextFields(contextParams);
+  let closed = false;
   const ctx: SlackMonitorContext = {
     ...built.fields,
     readRuntimeContext: async () => ctx,
     isRuntimePolicyCurrent: () => false,
+    closeRuntimeContext: () => {
+      closed = true;
+    },
   };
   built.bindIdentity(ctx);
-  ctx.readRuntimeContext = createSlackRuntimeContextReader(ctx, lookupToken ?? params.botToken);
+  ctx.readRuntimeContext = createSlackRuntimeContextReader(
+    ctx,
+    lookupToken ?? params.botToken,
+    () => !closed && !params.abortSignal?.aborted,
+  );
   return ctx;
 }

@@ -10,6 +10,10 @@ import {
   type PreparedSessionMetaPatch,
 } from "./metadata-projection.js";
 import { resolveSessionObserverDigestForLifecycle } from "./observer-digest.js";
+import {
+  projectFinalDeliveryCleanup,
+  type FinalProjectionRelease,
+} from "./pending-final-delivery-receipt.js";
 import { preserveSqliteSameKeySessionRolloverLineage } from "./session-entry-lineage.js";
 import { projectCompactionAccountingPatch } from "./session-entry-projection.js";
 import type { buildSessionCreationStamp } from "./session-entry-provenance.js";
@@ -112,6 +116,27 @@ type SessionEntryPatchStep = (
       now: number;
     }
   | {
+      kind: "pending-final-projection";
+      sessionId: string;
+      intentId: string;
+      sourceRunId: string;
+      sourceGeneration: string;
+      consumerId: string;
+      retainDeliveryId?: string;
+      release?: true;
+    }
+  | {
+      kind: "pending-final-dispatch";
+      sessionId: string;
+      intentId: string;
+      sourceRunId: string;
+      sourceGeneration: string;
+      appendDeliveryId?: string;
+      close?: true;
+      retiredConsumer?: string;
+      now: number;
+    }
+  | {
       kind: "compaction-accounting";
       accounting: Parameters<typeof projectCompactionAccountingPatch>[1];
     }
@@ -136,6 +161,17 @@ export function projectCronSessionEntry(
   return current && initial
     ? mergeSessionSnapshotChanges({ initial, next, current })
     : { ...next, ...(!current ? operation.creation : {}) };
+}
+
+/** Derived only from the closed native operation, never from replacement row contents. */
+export function finalProjectionReleasesForOperation(
+  operation: SessionEntryPatchOperation,
+): FinalProjectionRelease[] {
+  if (operation.kind === "compound")
+    return operation.operations.flatMap(finalProjectionReleasesForOperation);
+  if (operation.kind !== "pending-final-projection" || !operation.release) return [];
+  const { sessionId, intentId, sourceRunId, sourceGeneration, consumerId } = operation;
+  return [{ sessionId, intentId, sourceRunId, sourceGeneration, consumerId }];
 }
 
 /** Each reducer observes its predecessor's postimage; callers persist only the result. */
@@ -338,13 +374,102 @@ export function reduceSessionEntryPatch(
     case "compaction-accounting":
       return projectCompactionAccountingPatch(entry, operation.accounting);
     case "pending-final-clear": {
-      const deliveries = entry.pendingFinalDelivery?.deliveries;
-      return entry.sessionId === operation.sessionId &&
-        entry.pendingFinalDelivery?.intentId === operation.intentId &&
-        deliveries?.length &&
-        deliveries.every(({ state }) => state === "delivered" || state === "suppressed")
-        ? { pendingFinalDelivery: undefined }
-        : null;
+      return projectFinalDeliveryCleanup(entry, operation);
+    }
+    case "pending-final-dispatch": {
+      const pending = entry.pendingFinalDelivery;
+      if (
+        entry.sessionId !== operation.sessionId ||
+        pending?.intentId !== operation.intentId ||
+        pending.sourceRunId !== operation.sourceRunId ||
+        pending.sourceGeneration !== operation.sourceGeneration ||
+        pending.dispatchState !== "open" ||
+        !pending.deliveries
+      )
+        return null;
+      if (operation.appendDeliveryId && operation.close)
+        throw new Error("Final intent append cannot close dispatch");
+      if (
+        operation.retiredConsumer &&
+        (!operation.close || !pending.projectionConsumers?.includes(operation.retiredConsumer))
+      )
+        return null;
+      const deliveries =
+        operation.appendDeliveryId &&
+        !pending.deliveries.some(({ id }) => id === operation.appendDeliveryId)
+          ? [...pending.deliveries, { id: operation.appendDeliveryId, state: "prepared" as const }]
+          : pending.deliveries;
+      const next = {
+        ...pending,
+        deliveries,
+        ...(operation.appendDeliveryId ? { kind: "transport-only" as const } : {}),
+        ...(operation.close
+          ? {
+              dispatchState: "closed" as const,
+              dispatchClosure: operation.retiredConsumer
+                ? ("retired" as const)
+                : ("completed" as const),
+            }
+          : {}),
+      };
+      return {
+        pendingFinalDelivery: next,
+        ...(operation.close
+          ? projectFinalDeliveryCleanup({ ...entry, pendingFinalDelivery: next }, operation)
+          : {}),
+      };
+    }
+    case "pending-final-projection": {
+      if (
+        entry.sessionId !== operation.sessionId ||
+        !operation.consumerId ||
+        operation.consumerId.length > 256
+      )
+        return null;
+      const matches = (candidate: {
+        intentId?: string;
+        sourceRunId?: string;
+        sourceGeneration?: string;
+      }) =>
+        candidate.intentId === operation.intentId &&
+        candidate.sourceRunId === operation.sourceRunId &&
+        candidate.sourceGeneration === operation.sourceGeneration;
+      if (operation.release) {
+        const receipts = entry.completedFinalDeliveries;
+        if (
+          !receipts?.some(
+            (receipt) =>
+              matches(receipt) && receipt.projectionConsumers.includes(operation.consumerId),
+          )
+        )
+          return null;
+        return {
+          completedFinalDeliveries: receipts.flatMap((receipt) => {
+            if (!matches(receipt)) return [receipt];
+            const projectionConsumers = receipt.projectionConsumers.filter(
+              (id) => id !== operation.consumerId,
+            );
+            return projectionConsumers.length ? [{ ...receipt, projectionConsumers }] : [];
+          }),
+        };
+      }
+      const pending = entry.pendingFinalDelivery;
+      if (
+        !pending ||
+        !matches(pending) ||
+        !pending.deliveries?.some(({ id }) => id === operation.retainDeliveryId)
+      )
+        return null;
+      const consumers = pending.projectionConsumers ?? [];
+      if (consumers.includes(operation.consumerId)) return null;
+      if (consumers.length >= 64)
+        throw new Error("Native final projection consumer bound exceeded");
+      return {
+        pendingFinalDelivery: {
+          ...pending,
+          projectionConsumers: [...consumers, operation.consumerId],
+        },
+      };
     }
   }
   return operation satisfies never;

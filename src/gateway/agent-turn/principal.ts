@@ -17,6 +17,7 @@ export function captureAgentTurnPrincipal(client: GatewayClient | null): AgentTu
     authenticatedUserProfile: client.authenticatedUserProfile,
     authPolicy: client.authPolicy,
     connId: client.connId,
+    pairedClientId: client.pairedClientId,
     connect: client.connect,
     internal: client.internal,
     isDeviceTokenAuth: client.isDeviceTokenAuth,

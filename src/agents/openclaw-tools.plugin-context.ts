@@ -1,5 +1,15 @@
 import { normalizeConversationReadInvocationOrigin } from "../channels/plugins/conversation-read-origin.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { lookupHookFiEnvironment } from "../infra/hook-fi-environment.js";
+import {
+  lookupHookRequesterAttestation,
+  lookupHookRequesterEnvironment,
+} from "../infra/hook-requester-attestation.js";
+import {
+  lookupMailWakeSourceLock,
+  lookupMailWakeSessionKey,
+  lookupMailWakeEnvironment,
+} from "../infra/mail-wake-source-lock.js";
 import {
   assertMemoryAudienceCurrent,
   assertMemoryAudienceSession,
@@ -23,6 +33,7 @@ export type OpenClawPluginToolOptions = Pick<
   | "agentTo"
   | "currentMessagingTarget"
   | "currentChannelId"
+  | "currentMessageId"
   | "agentThreadId"
   | "approvalReviewerDeviceIds"
   | "nativeChannelId"
@@ -89,6 +100,7 @@ export function resolveOpenClawPluginToolInputs(params: {
       : undefined;
   // Delivery context is normalized once here so plugin tools receive the same
   // channel/account/thread shape as gateway-delivered agent tools.
+  const hookRequesterAttestation = lookupHookRequesterAttestation(options?.runId, sessionKey);
   const deliveryContext = normalizeDeliveryContext({
     channel: options?.agentChannel,
     to: options?.agentTo ?? options?.currentMessagingTarget ?? options?.currentChannelId,
@@ -133,8 +145,19 @@ export function resolveOpenClawPluginToolInputs(params: {
       agentAccountId: options?.agentAccountId,
       deliveryContext,
       nativeChannelId: options?.nativeChannelId,
+      currentMessageId: options?.currentMessageId,
       requesterSenderId: options?.requesterSenderId ?? undefined,
       senderIsOwner: options?.senderIsOwner,
+      hookSourceLockCapability: lookupMailWakeSourceLock(options?.runId, sessionKey),
+      hookMailWakeSessionKey: lookupMailWakeSessionKey(options?.runId, sessionKey),
+      hostMailWakeEnvironment: lookupMailWakeEnvironment(options?.runId, sessionKey),
+      hostHookFiEnvironment: lookupHookFiEnvironment(options?.runId, sessionKey),
+      ...(hookRequesterAttestation
+        ? {
+            hookRequesterAttestation,
+            fiEnvironment: lookupHookRequesterEnvironment(options?.runId, sessionKey),
+          }
+        : {}),
       memoryAudience: options?.memoryAudience,
       memoryFlush: options?.memoryFlush,
       assertMemoryAudienceCurrent: options?.memoryAudience

@@ -24,7 +24,7 @@ import {
   type ReplyPayload,
 } from "../reply-payload.js";
 import { renderPostCompactionModelFailurePayload } from "./agent-runner-failure-reply.js";
-import { recoverBlockReplySources, setBlockReplyDelivery } from "./block-reply-delivery.js";
+import { recoverBlockReplySources } from "./block-reply-delivery.js";
 import { createBlockReplyContentKey } from "./block-reply-pipeline.js";
 import { commandTranscriptMirror } from "./channel-command-user-turn.js";
 import { resolveCommandContextText } from "./context-text.js";
@@ -32,6 +32,10 @@ import {
   DispatchReplyOperationAbortedError,
   runWithDispatchAbortSignal,
 } from "./dispatch-from-config.abort.js";
+import {
+  createBlockFinalOutcomeTracker,
+  type BlockDelivery,
+} from "./dispatch-from-config.block-outcomes.js";
 import { createDispatchCommentaryProgress } from "./dispatch-from-config.commentary.js";
 import {
   acquireAcpDispatchTurn,
@@ -51,6 +55,10 @@ import {
   sendReplyWithTranscriptMirror,
   transcriptMirrorForDeliveredPayload,
 } from "./dispatch-from-config.transcript.js";
+import {
+  appendNativeFinalDelivery,
+  nativeFinalDeliveryReference,
+} from "./native-final-delivery.js";
 import type { NormalizeReplySkipReason } from "./normalize-reply.js";
 import {
   resolveRoutedReplyDeliveryOutcome,
@@ -209,18 +217,7 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
     );
   };
   const cleanDeferredFinalDirectives = shouldCleanTtsDirectiveText(captionedFinalTtsContext);
-  type BlockDelivery = { outcome: ReplyDispatchDeliveryOutcome; pending?: boolean };
-  const blockDeliveryOutcomes = new Map<string, Array<Promise<BlockDelivery>>>();
-  const recordBlockOutcome = (payload: ReplyPayload, outcome: Promise<BlockDelivery>) => {
-    setBlockReplyDelivery(outcome, payload);
-    if (getReplyPayloadMetadata(payload)?.independentDeliveryIntentId !== undefined) {
-      return;
-    }
-    const key = createBlockReplyContentKey(payload);
-    const outcomes = blockDeliveryOutcomes.get(key) ?? [];
-    outcomes.push(outcome);
-    blockDeliveryOutcomes.set(key, outcomes);
-  };
+  const { recordBlockOutcome, getBlockReplyOutcome } = createBlockFinalOutcomeTracker();
   const sendTrackedBlockReply = (operation: ReplyDispatchOperation) => {
     const payload = operation.kind === "prepared" ? operation.plan.payload : operation.payload;
     const delivery = sendReplyWithTranscriptMirror({
@@ -270,21 +267,6 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
       }),
     );
     return outcome;
-  };
-  const getBlockReplyOutcome = async (
-    payload: ReplyPayload,
-    abortSignal?: AbortSignal,
-  ): Promise<BlockDelivery | undefined> => {
-    const outcomes = blockDeliveryOutcomes.get(createBlockReplyContentKey(payload));
-    if (!outcomes || abortSignal?.aborted) {
-      return undefined;
-    }
-    const settled = await runWithDispatchAbortSignal(abortSignal, () => Promise.all(outcomes));
-    return (
-      settled.find(({ outcome }) => outcome === "delivered") ??
-      settled.find(({ outcome, pending }) => pending || !shouldRetryReplyDispatch(outcome)) ??
-      settled[0]
-    );
   };
   const sendFinalPayload = async (
     inputPayload: ReplyPayload,
@@ -435,7 +417,19 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
         await suppressPendingFinalDelivery(payload);
       }
       if (pendingBlock || sourceRecovery) {
+        const sourceFinal = nativeFinalDeliveryReference(payload);
+        const commandOwnerReference =
+          getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion?.commandOwnerReference;
         setReplyPayloadMetadata(normalizedPayload, { pendingFinalDeliveryCompletion: undefined });
+        if (hasOutboundReplyContent(normalizedPayload, { trimText: true }) && sourceFinal) {
+          // The separate media member must be admitted before transport. A retired
+          // producer cannot add audio to a plan whose membership is already sealed.
+          await appendNativeFinalDelivery(
+            { ...sourceFinal, commandOwnerReference },
+            normalizedPayload,
+            throwIfFinalDeliveryAborted,
+          );
+        }
         sourceReplyTranscriptMirror = sourceReplyTranscriptMirror
           ? transcriptMirrorForDeliveredPayload(sourceReplyTranscriptMirror, normalizedPayload)
           : undefined;
@@ -581,6 +575,8 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
               messageId: hookContext.messageId,
               sessionKey: beforeDispatchSessionKey,
               senderId: hookContext.senderId,
+              senderAuthentication: hookContext.senderAuthentication,
+              ...(hookContext.channelContext ? { channelContext: hookContext.channelContext } : {}),
               replyToId: hookContext.replyToId,
               replyToIdFull: hookContext.replyToIdFull,
               replyToBody: hookContext.replyToBody,

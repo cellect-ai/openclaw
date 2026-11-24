@@ -53,6 +53,7 @@ it("executes a migrated heartbeat on its allowed default and rejects an ordinary
     } = await loadCronJobsStoreWithConfigJobsReadOnly(resolveCronJobsStorePathFromConfig(next));
     expect(jobs).toHaveLength(1);
     const job = jobs[0]!;
+    expect(job.legacyHeartbeatReplyPolicy).toBe(true);
     expect(job.payload).not.toHaveProperty("model");
     const params = makeIsolatedAgentParamsFixture({
       cfg: next,

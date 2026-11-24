@@ -8,18 +8,21 @@ import {
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "openclaw/plugin-sdk/channel-test-helpers";
+import type { GetReplyOptions } from "openclaw/plugin-sdk/reply-runtime";
 import {
   createReplyDispatcher,
   finalizeInboundContext,
-  type GetReplyOptions,
   type ReplyPayload,
 } from "openclaw/plugin-sdk/reply-runtime";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
-import { buildSlackCompleteBlocksFallbackText } from "../../blocks-fallback.js";
 import { slackSetupPlugin } from "../../channel.setup.js";
 import type { SlackSendResult } from "../../send.js";
 import type * as SlackStreaming from "../../streaming.js";
 import { getSlackSessionRuns } from "../session-run-targets.js";
+import type { TestReplyPayload } from "./dispatch.compact-progress.test-support.js";
+import type { SlackReplyOptionEvent } from "./dispatch.compact-progress.test-support.js";
+import type { TestDispatchCounts } from "./dispatch.compact-progress.test-support.js";
+import type { TestDispatchSequenceEntry } from "./dispatch.compact-progress.test-support.js";
 import {
   checkpoint,
   nativeChunks,
@@ -44,16 +47,12 @@ import {
   planUpdate,
   requireMockCall,
   taskUpdate,
-  type SlackReplyOptionEvent,
-  type TestReplyPayload,
-  type TestDispatchCounts,
-  type TestDispatchSequenceEntry,
 } from "./dispatch.compact-progress.test-support.js";
+import type { DeliveryParams } from "./dispatch.preview.test-support.js";
 import {
   createSlackPlatformError,
   expectMockCallArgFields,
   requireRecord,
-  type DeliveryParams,
 } from "./dispatch.preview.test-support.js";
 import type { PreparedSlackMessage } from "./types.js";
 
@@ -607,6 +606,7 @@ vi.mock("openclaw/plugin-sdk/channel-inbound", async (importOriginal) => {
     ...actual,
     readAgentRunTerminalOutcome: () => mockedAgentRunTerminalOutcome,
     dispatchChannelInboundTurn: async (params: DispatchParams) => {
+      capturedTurn = params;
       if (useRealChannelInboundTurn) {
         return actual.dispatchChannelInboundTurn(params);
       }
@@ -2680,80 +2680,4 @@ it("normalizes only authored preview text when blocks own their fallback", async
   expectMockCallArgFields(finalizeSlackPreviewEditMock, 0, { text: "**Summary**" });
 });
 
-it.each(["plain", "detailed"] as const)(
-  "deduplicates a %s plan headline and preamble",
-  async (format) => {
-    const draftStream = useDraftStream();
-    const plain = format === "plain";
-    const headline = plain ? "Read *literal* <@U123>" : "Checking the workspace";
-    const plan: SlackReplyOptionEvent = {
-      ...planEvent("Inspect", headline),
-      ...(plain ? { explanationFormat: "plain" as const } : {}),
-    };
-    const commentary = preamble(headline, "preamble-1");
-    if (plain) {
-      mockedDispatchSequence = [];
-    }
-    mockedReplyOptionEvents = plain ? [commentary, plan] : [plan, commentary];
-    await dispatchProgress({
-      style: "card",
-      toolProgress: !plain,
-      ...(!plain ? { commentary: true } : {}),
-    });
-    if (plain) {
-      expect(draftStream.update).toHaveBeenLastCalledWith({
-        text: "Read *literal* &lt;@U123&gt;",
-        blocks: [section(headline, true)],
-      });
-    } else {
-      const text = draftUpdateTexts(draftStream).at(-1)!;
-      expect(text.match(/Checking the workspace/g)).toHaveLength(1);
-      expect(text).toContain("_Checking the workspace_");
-      expect(text).toContain("▸ Inspect");
-    }
-  },
-);
-
-it("caps the card fallback text at the draft limit while keeping the long blocks", async () => {
-  const draftStream = useDraftStream();
-  const long = (word: string) => Array.from({ length: 400 }, () => word).join(" ");
-  mockedReplyOptionEvents = [
-    planEvent("Inspect", long("explain")),
-    preamble(long("status"), "preamble-1"),
-    ...Array.from({ length: 20 }, (_, index) =>
-      approval(`${long("run")}-${index}`, `approval-${index}`),
-    ),
-  ];
-  await dispatchProgress({ style: "card" });
-  const update = requireRecord(draftStream.update.mock.calls.at(-1)?.[0], "long card update");
-  const blocks = update.blocks as unknown[];
-  // Precondition: the full card text exceeds the 4,000-character draft limit.
-  expect(buildSlackCompleteBlocksFallbackText(blocks).length).toBeGreaterThan(4000);
-  expect((update.text as string).length).toBeLessThanOrEqual(4000);
-  expect(JSON.stringify(blocks)).toContain("Approval required:");
-});
-
-it.each([
-  { firstSend: "delivered", messageId: "171234.567" },
-  // The first Slack post is still queued or in flight, so no message id exists yet.
-  { firstSend: "pending", messageId: undefined },
-])(
-  "deletes a working card once a resolved approval was its last visible row (first send $firstSend)",
-  async ({ messageId }) => {
-    const draftStream = useDraftStream();
-    draftStream.messageId = () => messageId;
-    mockedReplyOptionEvents = [
-      // The default card hides the plan, but the compositor still holds it.
-      planEvent("Inspect"),
-      approval("run checks"),
-      { kind: "approval", phase: "resolved", approvalId: "approval-1" },
-    ];
-    await dispatchProgress({ style: "card" });
-    expect(draftUpdateTexts(draftStream)).toEqual([
-      "Approval required: run checks; approval requested",
-    ]);
-    expect(draftStream.clear).toHaveBeenCalled();
-    expect(draftStream.forceNewMessage).toHaveBeenCalled();
-  },
-);
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

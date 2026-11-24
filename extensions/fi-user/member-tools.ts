@@ -1,0 +1,383 @@
+import { createHash } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { stringEnum } from "openclaw/plugin-sdk/channel-actions";
+import type {
+  AnyAgentTool,
+  OpenClawPluginApi,
+  OpenClawPluginToolContext,
+} from "openclaw/plugin-sdk/core";
+import { jsonResult } from "openclaw/plugin-sdk/tool-results";
+import { Type } from "typebox";
+import {
+  delegatedFetch,
+  delegatedJson,
+  exchange,
+  pathSegment,
+  readFiResponse,
+} from "./fi-delegation.js";
+import { downloadDriveFile, driveFilingExportArgs, requireMailbox } from "./gam.js";
+import { generatedFileAction } from "./generated-artifacts.js";
+import {
+  downloadSlackFile,
+  MAX_SLACK_FILE_BYTES,
+  resolveRequesterSlackFile,
+  slackBotToken,
+  slackConversation,
+} from "./slack-files.js";
+
+const DIRECT_SLACK_SESSION = /^agent:[^:]+:slack:direct:/i;
+
+function orgRoot(orgSlug: string) {
+  return `/api/${encodeURIComponent(orgSlug)}`;
+}
+
+// ── fi_user_deliver_file ─────────────────────────────────────────────
+
+const DeliverSchema = Type.Object(
+  {
+    action: Type.Optional(
+      stringEnum(["prepare", "register", "inspect", "deliver", "reconcile"] as const),
+    ),
+    fileName: Type.Optional(Type.String({ minLength: 1, maxLength: 180 })),
+    artifactId: Type.Optional(Type.String({ pattern: "^ga_[0-9a-f-]{36}$" })),
+    documentId: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    project: Type.Optional(
+      Type.String({ minLength: 1, maxLength: 200, description: "Project slug of the document." }),
+    ),
+    driveFileId: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]+$" })),
+    via: Type.Optional(
+      stringEnum(["dm", "link"] as const, {
+        description:
+          "dm: use only when the requester explicitly asks for a DM. link: an authenticated Fi document link with existing access checks. Generated files default to the current Slack channel/thread; existing documents default to link outside a DM. Never switch a collaborative conversation to DM on your own.",
+      }),
+    ),
+    message: Type.Optional(
+      Type.String({
+        maxLength: 1_000,
+        description:
+          "Caption for existing document delivery. Generated artifacts are attached without a caption; describe them in your final reply after the receipt.",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+type DeliverInput = {
+  action?: "prepare" | "register" | "inspect" | "deliver" | "reconcile";
+  fileName?: string;
+  artifactId?: string;
+  documentId?: string;
+  project?: string;
+  driveFileId?: string;
+  via?: "dm" | "link";
+  message?: string;
+};
+
+async function sendSlackDm(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+  requesterSenderId: string,
+  filePath: string,
+  text: string,
+) {
+  const adapter = await api.runtime.channel.outbound.loadAdapter("slack");
+  if (!adapter?.sendMedia) {
+    throw new Error("Slack file delivery is unavailable");
+  }
+  const cfg = context.getRuntimeConfig?.() ?? context.runtimeConfig ?? context.config ?? api.config;
+  return adapter.sendMedia({
+    cfg,
+    to: `user:${requesterSenderId}`,
+    text,
+    mediaUrl: filePath,
+    mediaLocalRoots: [path.dirname(filePath)],
+    mediaReadFile: (candidate: string) => fs.readFile(candidate),
+    forceDocument: true,
+    ...(context.agentAccountId ? { accountId: context.agentAccountId } : {}),
+  });
+}
+
+export function createDeliverFileTool(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+): AnyAgentTool {
+  return {
+    name: "fi_user_deliver_file",
+    label: "Send me a file",
+    description:
+      "Deliver a file in the current conversation. For a new workbook/PDF/CSV: action=prepare returns this session's outputDirectory; generate and validate the file there; action=register with fileName returns artifactId; action=deliver with artifactId attaches it in the current Slack channel/thread and returns a receipt; this works in Slack only — in Matrix, including a Matrix reply in a Slack thread, file it with fi_user_dataroom instead. An existing DM stays in that DM. Use via=dm only after an explicit requester instruction. action=inspect with fileName displays a PNG/JPEG preview generated in that directory. Existing Fi documents use documentId + project and default to an authenticated link outside a DM; own Drive files use driveFileId. via=link requires an existing Fi document. Never silently switch destinations, expose internal paths as downloads, or claim delivery before a successful receipt. Retain artifacts for retry.",
+    parameters: DeliverSchema,
+    async execute(_toolCallId, raw) {
+      const input = raw as DeliverInput;
+      if (input.action || input.artifactId) {
+        if (input.documentId || input.driveFileId) {
+          throw new Error("Generated-artifact actions cannot also select a Fi or Drive document");
+        }
+        return generatedFileAction(api, context, input);
+      }
+      const { delegation, config, identity } = await exchange(api, context);
+      if (Boolean(input.documentId) === Boolean(input.driveFileId)) {
+        throw new Error("Provide exactly one of documentId or driveFileId");
+      }
+      const inDirect = DIRECT_SLACK_SESSION.test(context.sessionKey ?? "");
+      const via = input.via ?? (inDirect ? "dm" : "link");
+      if (via === "dm" && identity.channel !== "slack") {
+        throw new Error("Direct-message delivery is available on Slack; use via=link here");
+      }
+      const text = input.message?.trim() || "Here is the file you asked for.";
+
+      if (input.driveFileId) {
+        if (via !== "dm" || identity.channel !== "slack") {
+          throw new Error("Drive files are delivered by Slack DM; open Drive for a link");
+        }
+        const mailbox = requireMailbox(delegation, "Google Drive");
+        const downloaded = await downloadDriveFile({
+          config,
+          mailbox,
+          fileId: input.driveFileId,
+          exportArgs: driveFilingExportArgs,
+        });
+        try {
+          await sendSlackDm(api, context, identity.requesterSenderId, downloaded.filePath, text);
+          return jsonResult({ delivered: "slack_dm", file: downloaded.metadata.name });
+        } finally {
+          await fs.rm(downloaded.tempDir, { recursive: true, force: true });
+        }
+      }
+
+      const documentId = decodeURIComponent(pathSegment(input.documentId, "documentId"));
+      if (via === "link") {
+        const shared = (await delegatedJson(
+          config,
+          delegation,
+          `${orgRoot(delegation.user.orgSlug)}/documents/share`,
+          {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              documentId,
+              ...(input.project ? { project: input.project } : {}),
+            }),
+          },
+          "Fi document share",
+        )) as { url?: string; libraryUrl?: string; access?: string; document?: unknown };
+        return jsonResult({
+          delivered: "link",
+          url: shared.url,
+          libraryUrl: shared.libraryUrl,
+          access: shared.access,
+          document: shared.document,
+        });
+      }
+
+      if (identity.channel !== "slack") {
+        throw new Error("Direct-message delivery is available on Slack only");
+      }
+      const project = pathSegment(input.project, "project");
+      const response = await delegatedFetch(
+        config,
+        delegation,
+        `${orgRoot(delegation.user.orgSlug)}/${project}/docs/${encodeURIComponent(documentId)}/file?download=1`,
+        { method: "GET" },
+      );
+      if (!response.ok) {
+        const detail = await readFiResponse(response);
+        throw new Error(
+          `Fi document download failed (${response.status}): ${String(detail).slice(0, 300)}`,
+        );
+      }
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > MAX_SLACK_FILE_BYTES) {
+        throw new Error("That document is too large to attach; use via=link");
+      }
+      const disposition = response.headers.get("content-disposition") ?? "";
+      const named = /filename\*?=(?:UTF-8'')?"?([^";]+)"?/i.exec(disposition)?.[1];
+      const fileName = path
+        .basename(decodeURIComponent(named ?? `${documentId}.pdf`))
+        .replace(/[^\w.\- ]+/g, "_");
+      const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-fi-user-deliver-"));
+      try {
+        const filePath = path.join(tempDir, fileName || "document");
+        await fs.writeFile(filePath, bytes);
+        await sendSlackDm(api, context, identity.requesterSenderId, filePath, text);
+        return jsonResult({ delivered: "slack_dm", file: fileName, bytes: bytes.byteLength });
+      } finally {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+    },
+  };
+}
+
+// ── fi_user_budget_import ────────────────────────────────────────────
+
+const BudgetSchema = Type.Object(
+  {
+    project: Type.String({ minLength: 1, maxLength: 200, description: "Project slug." }),
+    mode: Type.Optional(stringEnum(["dry-run", "apply"] as const)),
+    label: Type.String({ minLength: 1, maxLength: 200 }),
+    changeNote: Type.String({ minLength: 1, maxLength: 2_000 }),
+    effectiveFrom: Type.Optional(Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$" })),
+    baseChangeSetId: Type.Optional(Type.String({ maxLength: 200 })),
+    rows: Type.Optional(
+      Type.Array(
+        Type.Object(
+          {
+            costCode: Type.String({ minLength: 1, maxLength: 50 }),
+            description: Type.String({ maxLength: 500 }),
+            amount: Type.Number(),
+          },
+          { additionalProperties: false },
+        ),
+        { minItems: 1, maxItems: 2_000 },
+      ),
+    ),
+    slackFileId: Type.Optional(Type.String({ pattern: "^F[A-Za-z0-9]{6,}$" })),
+    driveFileId: Type.Optional(Type.String({ pattern: "^[A-Za-z0-9_-]+$" })),
+    confirmApply: Type.Optional(Type.Boolean()),
+  },
+  { additionalProperties: false },
+);
+
+type BudgetInput = {
+  project: string;
+  mode?: "dry-run" | "apply";
+  label: string;
+  changeNote: string;
+  effectiveFrom?: string;
+  baseChangeSetId?: string;
+  rows?: Array<{ costCode: string; description: string; amount: number }>;
+  slackFileId?: string;
+  driveFileId?: string;
+  confirmApply?: boolean;
+};
+
+/** Dry runs this session has shown the requester, by source + target. */
+const budgetDryRuns = new Map<string, number>();
+const BUDGET_DRY_RUN_TTL_MS = 2 * 60 * 60 * 1000;
+
+export function createBudgetImportTool(
+  api: OpenClawPluginApi,
+  context: OpenClawPluginToolContext,
+): AnyAgentTool {
+  return {
+    name: "fi_user_budget_import",
+    label: "Budget revision import (as you)",
+    description:
+      "Import a budget revision into Fi as the verified requester, for a project where they hold budget write access (admin or construction grant). Always run mode=dry-run first and show the requester the per-cost-code diff; apply only after they confirm (mode=apply, confirmApply=true) with the exact same source. The source is `rows` or a workbook: a Slack file they posted here (slackFileId) or a file in their own Drive (driveFileId).",
+    parameters: BudgetSchema,
+    async execute(_toolCallId, raw) {
+      const input = raw as BudgetInput;
+      const { delegation, config, identity } = await exchange(api, context);
+      const mode = input.mode ?? "dry-run";
+      const sources = [input.rows, input.slackFileId, input.driveFileId].filter(Boolean);
+      if (sources.length !== 1) {
+        throw new Error("Provide exactly one source: rows, slackFileId or driveFileId");
+      }
+      const fields: Record<string, string> = {
+        label: input.label,
+        changeNote: input.changeNote,
+        mode,
+        ...(input.effectiveFrom ? { effectiveFrom: input.effectiveFrom } : {}),
+        ...(input.baseChangeSetId ? { baseChangeSetId: input.baseChangeSetId } : {}),
+      };
+
+      let body: FormData | string;
+      let sourceHash: string;
+      let cleanup: (() => Promise<void>) | undefined;
+      if (input.rows) {
+        body = JSON.stringify({ ...fields, rows: input.rows });
+        sourceHash = createHash("sha256").update(JSON.stringify(input.rows)).digest("hex");
+      } else {
+        let bytes: Uint8Array;
+        let name: string;
+        if (input.slackFileId) {
+          const conversation = slackConversation(context);
+          const token = slackBotToken(context);
+          if (identity.channel !== "slack" || !conversation || !token) {
+            throw new Error("slackFileId is available in Slack conversations only");
+          }
+          const file = await resolveRequesterSlackFile({
+            token,
+            conversation,
+            requesterSenderId: identity.requesterSenderId,
+            fileId: input.slackFileId,
+          });
+          bytes = await downloadSlackFile(token, file);
+          name = file.name ?? "budget.xlsx";
+        } else {
+          const downloaded = await downloadDriveFile({
+            config,
+            mailbox: requireMailbox(delegation, "Google Drive"),
+            fileId: input.driveFileId!,
+            exportArgs: driveFilingExportArgs,
+          });
+          cleanup = () => fs.rm(downloaded.tempDir, { recursive: true, force: true });
+          bytes = new Uint8Array(await fs.readFile(downloaded.filePath));
+          name = path.basename(downloaded.filePath);
+        }
+        const form = new FormData();
+        for (const [key, value] of Object.entries(fields)) {
+          form.set(key, value);
+        }
+        form.set(
+          "file",
+          new Blob([
+            bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength,
+            ) as ArrayBuffer,
+          ]),
+          name,
+        );
+        body = form;
+        sourceHash = createHash("sha256").update(bytes).digest("hex");
+      }
+
+      try {
+        const key = [
+          context.sessionKey,
+          delegation.user.email,
+          input.project,
+          input.baseChangeSetId ?? "",
+          sourceHash,
+        ].join("|");
+        if (mode === "apply") {
+          const seen = budgetDryRuns.get(key);
+          if (!seen || Date.now() - seen > BUDGET_DRY_RUN_TTL_MS) {
+            throw new Error(
+              "Run mode=dry-run with this exact source first and show the requester the diff",
+            );
+          }
+          if (input.confirmApply !== true) {
+            throw new Error(
+              "confirmApply=true is required after the requester explicitly approves the dry-run diff",
+            );
+          }
+        }
+        const result = await delegatedJson(
+          config,
+          delegation,
+          `${orgRoot(delegation.user.orgSlug)}/${pathSegment(input.project, "project")}/budget/revisions/import`,
+          {
+            method: "POST",
+            ...(typeof body === "string"
+              ? { headers: { "content-type": "application/json" } }
+              : {}),
+            body,
+          },
+          "Fi budget revision import",
+        );
+        if (mode === "dry-run") {
+          budgetDryRuns.set(key, Date.now());
+        } else {
+          budgetDryRuns.delete(key);
+        }
+        return jsonResult(result);
+      } finally {
+        await cleanup?.();
+      }
+    },
+  };
+}

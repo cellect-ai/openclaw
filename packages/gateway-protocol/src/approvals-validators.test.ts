@@ -85,12 +85,15 @@ describe("unified approval protocol", () => {
     presentation.accepts(
       execView,
       pluginView,
+      { ...pluginView, origin: "plugin" },
       systemView,
       { ...external({ decisions: ["allow-once", "allow-always"] }), allowedDecisions: ["deny"] },
       plugin({ detail: "full tool input" }),
       external({ label: rocket.repeat(80) }),
     );
     presentation.rejects(
+      { ...pluginView, origin: "forged" },
+      { ...execView, origin: "plugin" },
       plugin({ detail: "" }),
       plugin({ detail: "x".repeat(16_385) }),
       external({ label: "" }),

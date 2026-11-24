@@ -1,3 +1,4 @@
+import { notifyOutboundDeliveryEnqueued } from "../delivery-queue-cache.js";
 // Settles exact outbound custody before releasing its queue-owned media.
 import {
   captureDeliveryQueueStateContext,
@@ -12,6 +13,10 @@ import type {
 import { releaseSpoolArtifacts } from "./delivery-queue-media-spool.js";
 import { cancelDeliveryQueueMediaRetention } from "./delivery-queue-media-staging.js";
 import { outboundDeliveryQueueName } from "./delivery-queue-namespaces.js";
+import {
+  flushDeliveryPublications,
+  DeliveryPublicationPendingError,
+} from "./delivery-queue-publication.js";
 import type {
   AckDeliveryOptions,
   FailPendingDeliveryResult,
@@ -53,7 +58,21 @@ export async function ackDelivery(
   const capturedOptions: AckDeliveryOptions | undefined = options
     ? {
         retainSpoolArtifacts: options.retainSpoolArtifacts,
+        publicationEvidence: options.publicationEvidence
+          ? structuredClone(options.publicationEvidence)
+          : undefined,
+        publicationEvidenceByPayload: options.publicationEvidenceByPayload
+          ? structuredClone(options.publicationEvidenceByPayload)
+          : undefined,
+        publicationSuppressionsByPayload: options.publicationSuppressionsByPayload
+          ? structuredClone(options.publicationSuppressionsByPayload)
+          : undefined,
         suppressCompletionReceipt: options.suppressCompletionReceipt,
+        ...(options.completionReceipt
+          ? {
+              completionReceipt: { platformMessageId: options.completionReceipt.platformMessageId },
+            }
+          : {}),
         ...("expectedPlatformSendAttemptId" in options
           ? { expectedPlatformSendAttemptId: options.expectedPlatformSendAttemptId }
           : {}),
@@ -65,6 +84,13 @@ export async function ackDelivery(
   });
   if (!capturedOptions?.retainSpoolArtifacts) {
     await releaseSpoolArtifacts(spoolPaths, stateDir);
+  }
+  // The outbox and canonical ACK committed together. Retry only projection from here.
+  notifyOutboundDeliveryEnqueued(stateDir);
+  try {
+    await flushDeliveryPublications({ deliveryId: id, stateDir }, captured);
+  } catch (cause) {
+    throw new DeliveryPublicationPendingError(id, { cause });
   }
 }
 

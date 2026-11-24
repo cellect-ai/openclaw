@@ -2,7 +2,11 @@ import assert from "node:assert/strict";
 import { expect, it, vi } from "vitest";
 import { chunkText } from "../../auto-reply/chunk.js";
 import { resolvePendingFinalDeliveryCompletion } from "../../auto-reply/reply/pending-final-delivery.js";
-import { loadSessionEntry } from "../../config/sessions/session-accessor.js";
+import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
+import {
+  getDeliveryQueueEntryStatus,
+  loadDeliveryQueueEntry,
+} from "../delivery-queue-sqlite.test-support.js";
 import type { OutboundDeliveryResult } from "./deliver-types.js";
 import { matrixOutboundForQueueTest } from "./deliver.queue-integration.test-support.js";
 import {
@@ -11,6 +15,7 @@ import {
   registerMatrix,
   seedDeliverySession,
 } from "./delivery-completion.shard-test-support.js";
+import { OUTBOUND_DELIVERY_QUEUE_NAME } from "./delivery-queue-media-staging.js";
 import { enqueueDeliveryOnce } from "./delivery-queue-storage.js";
 import { loadPendingDeliveries } from "./delivery-queue.test-helpers.js";
 
@@ -93,12 +98,14 @@ it.each(
       queuePolicy: "required" as const,
     };
     if (mode === "live") {
-      await runDelivery(params);
+      if (disposition === "complete") await runDelivery(params);
+      else await expect(runDelivery(params)).rejects.toThrow("incomplete physical result");
     } else {
       await enqueueDeliveryOnce(params, completion.deliveryId, tmpDir);
       await recover();
     }
-    const receipt = loadSessionEntry(scope)?.pendingFinalDelivery?.deliveries?.[0]?.receipt;
+    const receipt = (await readSessionEntryReadOnlyInWorker(scope))?.pendingFinalDelivery
+      ?.deliveries?.[0]?.receipt;
     if (disposition === "complete") {
       expect(receipt).toMatchObject({
         resultCount: 2,
@@ -107,13 +114,36 @@ it.each(
       expect(progress.map((result) => result.messageId)).toEqual(["first-id", "second-id"]);
     } else {
       expect(receipt).toBeUndefined();
+      expect(await loadPendingDeliveries(tmpDir)).toEqual([
+        expect.objectContaining({ recoveryState: "unknown_after_send" }),
+      ]);
       // Receipt refusal must not withhold valid physical progress or retry it.
       expect(progress.map((result) => result.messageId)).toEqual([
         disposition.endsWith("first") ? "second-id" : "first-id",
       ]);
     }
-    await recover();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 60_000);
+    try {
+      await recover();
+    } finally {
+      clock.mockRestore();
+    }
     expect(send).toHaveBeenCalledTimes(2);
     expect(await loadPendingDeliveries(tmpDir)).toEqual([]);
+    if (disposition !== "complete") {
+      // Ordinary native finals have no required source-publication debt. After
+      // failed reconciliation they retain a failed tombstone and unknown native
+      // completion, while required publications retain their pending owner.
+      expect(
+        getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, completion.deliveryId, tmpDir),
+      ).toBe("failed");
+      expect(
+        loadDeliveryQueueEntry(OUTBOUND_DELIVERY_QUEUE_NAME, completion.deliveryId, tmpDir, "all"),
+      ).toMatchObject({ failedAt: expect.any(Number) });
+      const member = (await readSessionEntryReadOnlyInWorker(scope))?.pendingFinalDelivery
+        ?.deliveries?.[0];
+      expect(member?.state).toBe("unknown");
+      expect(member?.receipt).toBeUndefined();
+    }
   },
 );

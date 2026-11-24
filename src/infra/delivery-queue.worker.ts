@@ -5,6 +5,14 @@ import type {
   WorkerOperationContext,
   WorkerOperationHandlers,
 } from "../state/worker-operation-registry.js";
+import {
+  recordConversationLifecycleInWorker,
+  recordConversationLifecycleResultInWorker,
+  type LifecycleRecordInput,
+  type LifecycleResultInput,
+} from "./conversation-lifecycle-record.worker.js";
+import type { LifecycleObligation } from "./conversation-lifecycle.js";
+import { executeConversationLifecycleCommand } from "./conversation-lifecycle.worker.js";
 import { loadDeliveryQueueEntryInDatabase } from "./delivery-queue-sqlite-bound.js";
 import {
   claimDeliveryQueueEntryPlatformSendInDatabase,
@@ -59,6 +67,10 @@ import {
   encodeOutboundDeliverySnapshot,
   projectOutboundDelivery,
 } from "./outbound/delivery-queue-projection.js";
+import {
+  loadDeliveryPublicationsInDatabase,
+  finishDeliveryPublicationInDatabase,
+} from "./outbound/delivery-queue-publication.kernel.js";
 import type { AckDeliveryOptions } from "./outbound/delivery-queue-settlement.types.js";
 import {
   loadOutboundDeliveryInDatabase,
@@ -306,6 +318,15 @@ function readOperation<Input, Output>(
 }
 
 export const deliveryQueueOperations = {
+  "deliveryQueue.loadPublications": readOperation(loadDeliveryPublicationsInDatabase),
+  "deliveryQueue.finishPublication": writeOperation(
+    "settle delivery publication custody",
+    finishDeliveryPublicationInDatabase,
+  ),
+  "deliveryQueue.lifecycleRecord": (input: LifecycleRecordInput, { open, stateOptions }) =>
+    recordConversationLifecycleInWorker(input, { database: open(), ...stateOptions() }),
+  "deliveryQueue.lifecycleNoteResult": (input: LifecycleResultInput, { open, stateOptions }) =>
+    recordConversationLifecycleResultInWorker(input, { database: open(), ...stateOptions() }),
   "deliveryQueue.claimPreparation": writeOperation(
     "deliveryQueue.claimPreparation",
     (database, input: { id: string }) => claimPreparation(database, input.id),
@@ -472,6 +493,14 @@ export const deliveryQueueOperations = {
   ) => executePendingDeliveryFailure(input, { database: open(), ...stateOptions() }),
   "deliveryQueue.findIntentOwners": readOperation(findDeliveryIntentOwnersInDatabase),
   "deliveryQueue.inspectReceipt": readOperation(inspectDeliveryQueueReceiptInDatabase),
+  "deliveryQueue.completedReceipt": readOperation((database, input: { id: string }) => {
+    const queueName = resolveOutboundDeliveryQueueNameInDatabase(database, input.id);
+    return inspectDeliveryQueueReceiptInDatabase(database, {
+      queueName,
+      id: input.id,
+      includePending: false,
+    }).completionReceipt;
+  }),
   "deliveryQueue.countFailed": (_input: undefined, { open }) =>
     countFailedDeliveryQueueEntriesInDatabase(open()),
   "deliveryQueue.countPending": (input: { queueNames: string[] }, { open }) =>
@@ -507,4 +536,28 @@ export const deliveryQueueOperations = {
   "deliveryQueue.mediaRetentionSnapshot": readOperation(
     loadDeliveryQueueMediaRetentionSnapshotInDatabase,
   ),
+  "deliveryQueue.lifecycleRead": (
+    input: { id?: string },
+    { open, stateOptions },
+  ): LifecycleObligation[] =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleRead", input },
+      { database: open(), ...stateOptions() },
+    ) as LifecycleObligation[],
+  "deliveryQueue.lifecycleAck": (
+    input: { id: string; revision: number },
+    { open, stateOptions },
+  ): LifecycleObligation | undefined =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleAck", input },
+      { database: open(), ...stateOptions() },
+    ) as LifecycleObligation | undefined,
+  "deliveryQueue.lifecycleRecover": (
+    input: { id: string; expected: string; replacement: LifecycleObligation },
+    { open, stateOptions },
+  ): void =>
+    executeConversationLifecycleCommand(
+      { type: "deliveryQueue.lifecycleRecover", input },
+      { database: open(), ...stateOptions() },
+    ) as void,
 } satisfies WorkerOperationHandlers;

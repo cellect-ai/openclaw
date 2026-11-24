@@ -3,6 +3,8 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { clearSessionActorProgressCardForReset } from "../../session-cards/session-actor-progress-card-memory.js";
 import { shouldPreserveSessionCleanupEntry } from "./cleanup-service-read.policy.js";
 import type { ConversationRouteContext } from "./conversation-route-context.js";
+import { assertNoPendingFinalProjectionDebt } from "./pending-final-delivery-receipt.js";
+import { finalProjectionTransitionForOperation } from "./pending-final-delivery-transition.js";
 import { syncSessionActorMemoryConversations } from "./session-actor-memory-conversation.js";
 import type {
   SessionActorMemoryEntryCommand,
@@ -15,7 +17,10 @@ import { installSessionActorMemoryEntry } from "./session-actor-memory-entry-ins
 import { createSessionActorMemoryEvents } from "./session-actor-memory-events.js";
 import { planMemoryLifecycleArtifacts } from "./session-actor-memory-lifecycle-artifacts.js";
 import type { SessionActorMemoryStorageContext } from "./session-actor-memory-storage-context.js";
-import { projectSessionEntryPatch } from "./session-entry-patch-operation.js";
+import {
+  projectSessionEntryPatch,
+  finalProjectionReleasesForOperation,
+} from "./session-entry-patch-operation.js";
 import {
   attachSessionEntrySnapshots,
   type SessionEntryProjection,
@@ -169,7 +174,10 @@ export function executeSessionActorMemoryEntryCommand(
         onArchived: ({ key, entry: archived }) => {
           install(key, archived);
         },
-        onRemoved: ({ key }) => context.remove(key),
+        onRemoved: ({ key }) => {
+          assertNoPendingFinalProjectionDebt(context.get(key)?.hot.entry);
+          context.remove(key);
+        },
       });
     }
   };
@@ -183,6 +191,7 @@ export function executeSessionActorMemoryEntryCommand(
       command.type,
     );
     if (!replacement.entry) {
+      assertNoPendingFinalProjectionDebt(context.get(replacement.sessionKey)?.hot.entry);
       context.remove(replacement.sessionKey);
       return undefined;
     }
@@ -273,7 +282,16 @@ export function executeSessionActorMemoryEntryCommand(
         preserveActivity: command.input.preserveActivity,
         replaceEntry: command.input.replaceEntry,
       });
-      const entry = next ? install(sessionKey, next, command.input) : state.hot.entry;
+      const entry = next
+        ? install(sessionKey, next, {
+            ...command.input,
+            projectionReleases: finalProjectionReleasesForOperation(command.input.operation),
+            projectionTransition: finalProjectionTransitionForOperation(
+              state.hot.entry,
+              command.input.operation,
+            ),
+          })
+        : state.hot.entry;
       maintain(command.input.maintenance, sessionKey);
       return entry;
     }
@@ -298,6 +316,7 @@ export function executeSessionActorMemoryEntryCommand(
       const previousEntry = state.hot.entry;
       const input = command.input;
       requireExpectedEntry(previousEntry, input.expected, command.type);
+      assertNoPendingFinalProjectionDebt(previousEntry);
       const writeBoundary = Boolean(
         input.resetBoundary && previousEntry && !isDeepStrictEqual(previousEntry, input.nextEntry),
       );
@@ -351,6 +370,7 @@ export function executeSessionActorMemoryEntryCommand(
       ) {
         return { archivedTranscripts: [], deleted: false, expectedEntryMismatch: true as const };
       }
+      assertNoPendingFinalProjectionDebt(entry);
       context.remove(sessionKey);
       return {
         archivedTranscripts: [],
@@ -389,6 +409,7 @@ export function executeSessionActorMemoryEntryCommand(
             ? eligible.entries.some((entry) => entry.sessionKey === candidate.sessionKey)
             : isDeepStrictEqual(current?.hot.entry, candidate.expected)
         ) {
+          assertNoPendingFinalProjectionDebt(current?.hot.entry);
           context.remove(candidate.sessionKey);
           removedSessionKeys.push(candidate.sessionKey);
         }

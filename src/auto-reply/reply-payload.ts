@@ -13,6 +13,7 @@ import type { AssistantDeliveryTtsFacts } from "../llm/types.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import type { ReplyPayload, ReplyPayloadTtsSupplement } from "../shared/reply-payload.types.js";
 import type { CommandOwnerAssertion } from "./command-owner-authority.js";
+import { copyReplyPublication } from "./reply-publication.js";
 import type { BlockReplySource } from "./reply/block-reply-source.types.js";
 
 export type {
@@ -311,6 +312,8 @@ export type ReplyPayloadMetadata = {
     deliveryId: string;
     intentId: string;
     recoveryRunId?: string;
+    sourceRunId?: string;
+    sourceGeneration?: string;
     sessionId: string;
     sessionKey: string;
     storePath: string;
@@ -511,6 +514,7 @@ export function isReplyPayloadNonTerminalToolErrorWarning(payload: object): bool
 }
 
 export function copyReplyPayloadMetadata<T extends object>(source: object, payload: T): T {
+  copyReplyPublication(source, payload);
   const metadata = getReplyPayloadMetadata(source);
   return metadata ? setReplyPayloadMetadata(payload, metadata) : payload;
 }

@@ -91,3 +91,24 @@ describe("memory session sync state", () => {
     ).toEqual({ dirtyFiles: [], hasStaleIndexedPaths: true });
   });
 });
+
+describe("memory session indexing of Fi shadow turns", () => {
+  const entry = { generatedByDreamingNarrative: false, generatedByCronRun: false } as never;
+
+  it("never indexes a Fi shadow hook transcript, live or archived", () => {
+    const shadow = "agent:cellect-fi-user:hook:fi-shadow:abc";
+    expect(isMemorySessionIndexable({ ...(entry as object), sessionKey: shadow } as never)).toBe(
+      false,
+    );
+    expect(isMemorySessionIndexable(entry, shadow)).toBe(false);
+  });
+
+  it("still indexes an ordinary conversation", () => {
+    expect(
+      isMemorySessionIndexable({
+        ...(entry as object),
+        sessionKey: "agent:cellect-fi-user:main",
+      } as never),
+    ).toBe(true);
+  });
+});

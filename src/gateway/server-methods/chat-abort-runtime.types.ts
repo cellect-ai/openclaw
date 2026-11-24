@@ -1,4 +1,5 @@
 import type { ErrorShape } from "../../../packages/gateway-protocol/src/index.js";
+import type { VerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import type { SessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import type {
@@ -25,6 +26,9 @@ export type ChatSessionAbortParams = {
   defaultAgentId?: string;
   abortOrigin: ChatAbortOrigin;
   stopReason?: string;
+  stopActor?: VerifiedRunStopActor;
+  /** Execution Stop leaves separately queued input with its original owner. */
+  preservePendingInputs?: true;
   stopSource: SessionStopSource;
   hookContext?: SessionStopHookContext;
   controllerTargets?: readonly SessionTarget[];

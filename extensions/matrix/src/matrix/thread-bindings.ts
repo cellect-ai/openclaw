@@ -14,6 +14,7 @@ import {
 import { getMatrixRuntime } from "../runtime.js";
 import { claimCurrentTokenStorageState, resolveMatrixStateFilePath } from "./client/storage.js";
 import type { MatrixAuth } from "./client/types.js";
+import { parseProjectionBindingMetadata } from "./projection-source.js";
 import { assertMatrixSupportedStateFile } from "./retired-state.js";
 import type { MatrixClient } from "./sdk.js";
 import { resolveMatrixSqliteStateEnv, resolveMatrixSqliteStateKey } from "./sqlite-state.js";
@@ -94,6 +95,7 @@ function normalizeBindingRecord(
     agentId: normalizeOptionalString(record.agentId) || undefined,
     label: normalizeOptionalString(record.label) || undefined,
     boundBy: normalizeOptionalString(record.boundBy) || undefined,
+    ...parseProjectionBindingMetadata(record),
     boundAt,
     lastActivityAt: Math.max(lastActivityAt, boundAt),
     idleTimeoutMs: resolveOptionalIntegerOption(record.idleTimeoutMs, { min: 0 }),
@@ -108,8 +110,8 @@ async function loadBindingsFromPluginState(params: {
   env?: NodeJS.ProcessEnv;
   stateDir?: string;
 }): Promise<MatrixThreadBindingRecord[]> {
-  const store = createThreadBindingStore(params);
   const loaded: MatrixThreadBindingRecord[] = [];
+  const store = createThreadBindingStore(params);
   for (const entry of await store.entries()) {
     const record = normalizeBindingRecord(entry.value, params.accountId);
     if (record) {

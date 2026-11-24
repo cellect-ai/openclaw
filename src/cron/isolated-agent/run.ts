@@ -447,6 +447,13 @@ async function runCronIsolatedAgentTurnInTrace(
                 loadThinkingCatalog: prepared.context.thinkingSelection.loadThinkingCatalog,
                 executionIdentity: params.executionIdentity,
                 admissionSource: params.admissionSource,
+                mailRequesterSenderId: params.mailRequesterSenderId,
+                sourceLockCapability: params.sourceLockCapability,
+                mailWakeSessionKey: params.sessionKey.startsWith("hook:fi-mail:")
+                  ? `agent:${prepared.context.agentId}:${params.sessionKey}`
+                  : undefined,
+                hookRequesterAttestation: params.hookRequesterAttestation,
+                hookRequesterEnvironment: params.hookRequesterEnvironment,
               };
               const execution = await prepared.context.sessionPreparationEffect.run(() =>
                 withAgentRunLifecycleGeneration(runLifecycleGeneration, () =>

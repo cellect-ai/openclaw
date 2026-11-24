@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import type { DurableDeliveryCompletion } from "../../infra/outbound/delivery-queue-types.js";
 import { normalizeReplyPayloadsForDelivery } from "../../infra/outbound/payloads.js";
 import { getReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
@@ -80,6 +81,38 @@ export function resolvePendingFinalDeliveryCompletion(
           : {}),
       }
     : undefined;
+}
+
+/** Command delivery retains one exact member per normalized source payload. */
+export function resolvePendingFinalDeliveryBatchCompletion(
+  payloads: readonly ReplyPayload[],
+): Extract<DurableDeliveryCompletion, { kind: "pending-final" }> | undefined {
+  const first = resolvePendingFinalDeliveryCompletion(payloads);
+  if (!first?.sourceRunId || !first.sourceGeneration) return first;
+  const members = payloads.map((payload) => resolvePendingFinalDeliveryCompletion([payload]));
+  if (
+    members.some(
+      (member) =>
+        !member ||
+        member.agentId !== first.agentId ||
+        member.storePath !== first.storePath ||
+        member.sessionKey !== first.sessionKey ||
+        member.sessionId !== first.sessionId ||
+        member.intentId !== first.intentId ||
+        member.sourceRunId !== first.sourceRunId ||
+        member.sourceGeneration !== first.sourceGeneration ||
+        !isDeepStrictEqual(member.commandOwnerReference, first.commandOwnerReference) ||
+        !isDeepStrictEqual(
+          member.sessionWriterDeliveryAuthority,
+          first.sessionWriterDeliveryAuthority,
+        ),
+    )
+  )
+    throw new Error("Native final batch contains unrelated source custody");
+  const memberDeliveryIds = members.map((member) => member!.deliveryId);
+  if (new Set(memberDeliveryIds).size !== memberDeliveryIds.length)
+    throw new Error("Native final batch repeats a source member");
+  return { ...first, memberDeliveryIds };
 }
 
 function hasUnsupportedDurableRecoveryShape(payload: ReplyPayload): boolean {

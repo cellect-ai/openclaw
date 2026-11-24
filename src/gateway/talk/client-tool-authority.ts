@@ -17,6 +17,10 @@ import { resolveChatSendCallerContext } from "../server-methods/gateway-client-i
 export type TalkAgentConsultAuthority = {
   operatorAuthority?: AdmittedRunOperatorAuthority;
   senderIsOwner: boolean;
+  senderId?: string;
+  channelContext?: RunEmbeddedAgentParams["channelContext"];
+  deliveryContext?: import("../../utils/delivery-context.shared.js").DeliveryContext;
+  trigger?: RunEmbeddedAgentParams["trigger"];
   toolsAllow?: string[];
   replyCaller?: ReturnType<typeof resolveChatSendCallerContext>;
 };

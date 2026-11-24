@@ -16,6 +16,8 @@ export const pairingRequest = {
   createdAt: "2026-07-20T10:00:00.000Z",
   lastSeenAt: "2026-07-20T10:05:00.000Z",
   expiresAt: "2026-07-20T11:00:00.000Z",
+  status: "pending" as const,
+  stale: false,
 };
 export function pairingSnapshot(
   overrides: Partial<ChannelsPairingListResult> = {},
@@ -23,8 +25,14 @@ export function pairingSnapshot(
   return {
     accounts: [pairingAccount],
     requests: [pairingRequest],
+    history: [],
     commandOwnerConfigured: false,
-    limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+    limits: {
+      pendingPerAccount: 3,
+      historyPerAccount: 25,
+      ttlMs: 3_600_000,
+      staleAfterMs: 900_000,
+    },
     ...overrides,
   };
 }
@@ -33,7 +41,13 @@ export function emptyPairingSnapshot(): ChannelsPairingListResult {
   return {
     accounts: [],
     requests: [],
+    history: [],
     commandOwnerConfigured: true,
-    limits: { pendingPerAccount: 3, ttlMs: 3_600_000 },
+    limits: {
+      pendingPerAccount: 3,
+      historyPerAccount: 25,
+      ttlMs: 3_600_000,
+      staleAfterMs: 900_000,
+    },
   };
 }

@@ -343,6 +343,8 @@ async function startMcpLoopbackServer(work: GatewayConnectionWork): Promise<() =
                   isGrantCurrent: authorizeToolCall,
                   yieldContextCacheKey: yieldContext?.cacheKey,
                   onYield: yieldContext?.onYield,
+                  skillWorkshopWorkspaceAuthoring:
+                    boundClientGrant?.skillWorkshopWorkspaceAuthoring,
                   ...(boundClientGrant?.skillLibraryAuthoring
                     ? { skillLibraryAuthoring: boundClientGrant.skillLibraryAuthoring }
                     : {}),

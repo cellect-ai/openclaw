@@ -587,3 +587,20 @@ it.each([
     expect(queueMessage).toHaveBeenCalledTimes(themeAvailable ? 1 : 4);
   },
 );
+
+// Native principal custody scopes steering by channel/account/sender, including direct chats.
+it.each(["group", "channel", "direct"] as const)(
+  "keeps another sender out of an admitted %s turn",
+  async (chatType) => {
+    const run = createQueueTestRun({ prompt: "owner request" });
+    run.run.chatType = chatType;
+    run.run.senderIsOwner = true;
+    const { fingerprint, queueMessage, inject } = await admit(run, `sender-${chatType}`);
+    const incoming = { ...run, run: { ...run.run, senderId: "another-person" } };
+    expect(await fingerprintFor(incoming)).not.toBe(fingerprint);
+    await expect(inject(toolAuthorityOverlay(incoming))).resolves.toMatchObject(rejected);
+    expect(queueMessage).not.toHaveBeenCalled();
+    await expect(inject(toolAuthorityOverlay(run))).resolves.toMatchObject({ status: "accepted" });
+    expect(queueMessage).toHaveBeenCalledOnce();
+  },
+);

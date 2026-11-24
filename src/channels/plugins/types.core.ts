@@ -421,6 +421,13 @@ export type ChannelThreadingToolContext = {
 
 /** Channel-owned messaging helpers for target parsing, routing, and payload shaping. */
 export type ChannelMessagingAdapter = {
+  /** Authenticated account scope used while matching agent routing bindings.
+   * Configured team/guild labels alone are not proof of an installation's scope. */
+  resolveAccountBindingScope?: (params: {
+    cfg: OpenClawConfig;
+    accountId: string;
+    target?: string;
+  }) => { groupSpace?: string; memberRoleIds?: string[] } | undefined;
   /**
    * Provider prefixes accepted in explicit targets, including aliases not used
    * as channel-selection aliases. Core uses these to reject cross-channel
@@ -567,6 +574,12 @@ export type ChannelMessagingAdapter = {
     accountId?: string | null;
   }) => ReplyPayload | null;
   hasStructuredReplyPayload?: (params: { payload: ReplyPayload }) => boolean;
+  /**
+   * Channel-native mention of the original requester, for `{sender.mention}`
+   * on replies routed outside the inbound turn. Return "" where the channel's
+   * own inbound replies would not mention the sender (for example a DM).
+   */
+  formatSenderMention?: (params: { senderId: string; to: string }) => string;
   targetResolver?: {
     looksLikeId?: (raw: string, normalized?: string) => boolean;
     hint?: string;

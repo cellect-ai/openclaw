@@ -41,6 +41,26 @@ export type RunCronAgentTurnParams = {
   agentId?: string;
   lane?: string;
   executionIdentity?: import("../service/state.js").CronExecutionIdentityAdmission;
+  /** Host-only root for system-owned turns; never persisted in cron state. */
+  executionRoot?: string;
+  /** Explicit instruction set for a host-owned turn, including an empty review context. */
+  skillsSnapshot?: SkillSnapshot;
+  /**
+   * Host-attested Fi member for a shared-mail hook. The hooks dispatcher sets
+   * this from the authenticated hook body. It is never read from the prompt
+   * or from persisted cron state.
+   */
+  mailRequesterSenderId?: string;
+  /** Host hook field retained only for this exact active run. */
+  sourceLockCapability?: string;
+  /** Original mail-hook source context when execution uses an isolated cron session. */
+  mailWakeSessionKey?: string;
+  /**
+   * Fi shadow-turn attestation for a `hook:fi-shadow:` hook. Held as run
+   * context for plugins only; never a sender, prompt text or cron state.
+   */
+  hookRequesterAttestation?: string;
+  hookRequesterEnvironment?: "dev" | "staging" | "prod";
 };
 
 export type WithRunSession = (

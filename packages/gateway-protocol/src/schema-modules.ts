@@ -56,6 +56,8 @@ export * from "./schema/sessions-catalog.js";
 export * from "./schema/snapshot.js";
 export * from "./schema/storage.js";
 export * from "./schema/backup.js";
+export * from "./schema/fi-shadow-announce.js";
+export * from "./schema/fi-review-announce.js";
 export * from "./schema/system-info.js";
 export * from "./schema/system-event.js";
 export * from "./schema/task-suggestions.js";

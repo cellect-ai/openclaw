@@ -18,6 +18,7 @@ import {
 import { settleDurableDelivery, type ConversationDeliveryTarget } from "./delivery-completion.js";
 import { retireUnsentDelivery } from "./delivery-queue-ack.js";
 import { collectEntrySpoolPaths, releaseSpoolArtifacts } from "./delivery-queue-media-spool.js";
+import { DeliveryPublicationPendingError } from "./delivery-queue-publication.js";
 import {
   ackDelivery,
   failDelivery,
@@ -101,15 +102,22 @@ export function createQueuedDeliveryOwner(
     },
     async ack(options?: Parameters<typeof ackDelivery>[2]): Promise<void> {
       owner.signal?.throwIfAborted();
-      await ackDelivery(
-        owner.queueId,
-        owner.stateDir,
-        {
-          ...options,
-          ...(owner.claimId !== undefined ? { expectedPlatformSendAttemptId: owner.claimId } : {}),
-        },
-        context,
-      );
+      try {
+        await ackDelivery(
+          owner.queueId,
+          owner.stateDir,
+          {
+            ...options,
+            ...(owner.claimId !== undefined
+              ? { expectedPlatformSendAttemptId: owner.claimId }
+              : {}),
+          },
+          context,
+        );
+      } catch (error) {
+        if (error instanceof DeliveryPublicationPendingError) custody = "released";
+        throw error;
+      }
       custody = "released";
     },
     // Staged failure has left send custody; exact row equality now fences compaction.

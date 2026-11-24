@@ -37,6 +37,10 @@ export type DurableDeliveryCompletion =
     }
   | {
       kind: "pending-final";
+      /** Exact ordered source payload membership for an admitted native final plan. */
+      memberDeliveryIds?: string[];
+      sourceRunId?: string;
+      sourceGeneration?: string;
       /** Null means an owner was admitted without recoverable authority; fail closed. */
       commandOwnerReference?: CommandOwnerAssertion["recoveryReference"];
       /** Older queue records retain the canonical locator's original owner selection. */
@@ -81,6 +85,8 @@ export type QueuedDeliveryPayload = {
   retryAmbiguousFinalText?: true;
   /** Current failed attempt had a typed transport error and no accepted message. */
   ambiguousTransportError?: true;
+  /** Persist custody for reconciliation only; a fresh live owner must authorize every new send. */
+  recoveryPolicy?: "reconcile_only";
   requiresProducerClaim?: boolean;
   preparedBatch?: PreparedOutboundBatch;
   payloads?: ReplyPayload[];

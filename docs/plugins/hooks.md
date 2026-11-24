@@ -151,6 +151,16 @@ the second argument carries hook-specific context. Fields such as
 may be absent for the emitting path. A registration is not automatically
 scoped to one agent or session: check the context in your handler when needed.
 
+Agent and tool hooks may receive `ctx.requesterContinuation` for a native task
+continuation or an admitted restart recovery. It retains the original requester,
+source turn, account, and exact run/session incarnation without manufacturing a
+new user message. Call its `assertCurrent()` before a privileged operation and
+after awaited authorization work; recheck current application membership and
+renew short-lived credentials normally. Retained identity fields alone grant
+nothing. Arbitrary operator injections and unrelated session turns receive no
+continuation capability, and additional injected input does not extend the
+original task's authority.
+
 Read your plugin's resolved settings from `api.pluginConfig` inside the
 registration closure. Typed hooks do not receive a universal
 `event.context.pluginConfig` field; that field belongs to the internal

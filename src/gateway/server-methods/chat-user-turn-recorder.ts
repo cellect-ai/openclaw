@@ -87,6 +87,7 @@ export function createGatewayChatUserTurnController(params: {
   onMessagePersisted?: () => void;
 }): GatewayChatUserTurnController {
   const { admission, request, session } = params;
+  const channelRequester = admission.channelRequester;
   const recoveredInput = readQueuedChatInputAdmission(session.clientRunId);
   const entry = session.entry;
   const originProvider = entry?.modelOverrideFallbackOriginProvider;
@@ -106,18 +107,24 @@ export function createGatewayChatUserTurnController(params: {
   const sender =
     request.goalOperation?.action === "resume"
       ? undefined
-      : gatewayClientSenderFields(params.client).sender;
-  const senderProfileId = recoveredInput
-    ? recoveredInput.requesterProfile?.id
-    : params.client?.authenticatedUserProfile?.profileId;
-  const toolCaller = params.client?.internal?.agentToolCaller;
+      : channelRequester
+        ? { id: channelRequester.speakerMxid! }
+        : gatewayClientSenderFields(params.client).sender;
+  const senderProfileId = channelRequester
+    ? undefined
+    : recoveredInput
+      ? recoveredInput.requesterProfile?.id
+      : params.client?.authenticatedUserProfile?.profileId;
+  const toolCaller = channelRequester ? undefined : params.client?.internal?.agentToolCaller;
   const requesterOrigin = captureRequesterOrigin({
     requesterOrigin: toolCaller?.requesterOrigin,
     sessionKey: session.sessionKey,
     operatorProfileId: toolCaller ? undefined : admission.operatorAuthority?.profileId,
-    messageProvider: INTERNAL_MESSAGE_CHANNEL,
+    messageProvider: channelRequester
+      ? admission.originatingRoute.originatingChannel
+      : INTERNAL_MESSAGE_CHANNEL,
     agentAccountId: admission.originatingRoute.accountId,
-    chatType: "direct",
+    chatType: channelRequester ? "group" : "direct",
     messageThreadId: admission.originatingRoute.messageThreadId,
     senderId: toolCaller ? undefined : sender?.id,
     senderName: toolCaller ? undefined : sender?.name,
@@ -143,7 +150,7 @@ export function createGatewayChatUserTurnController(params: {
     ...(request.p.replyToId ? { replyToId: request.p.replyToId } : {}),
     ...(sender ? { sender } : {}),
     ...(sourceClients.length ? { transport: { clients: sourceClients } } : {}),
-    ...(hasGatewayAdminScope(params.client) ? { senderIsOwner: true } : {}),
+    ...(!channelRequester && hasGatewayAdminScope(params.client) ? { senderIsOwner: true } : {}),
     provenance:
       request.systemInputProvenance ??
       (params.client?.internal?.syntheticClient ? undefined : { kind: "external_user" }),

@@ -36,7 +36,7 @@ export function createRunner(
     Parameters<typeof createTalkClientAgentConsultRunner>[0]["registerRun"]
   > = vi.fn(async () => ({ release: vi.fn(), isCurrent: () => true })),
   authority: TalkAgentConsultAuthority = { senderIsOwner: false, toolsAllow: ["read"] },
-  options: { ownerConnId?: string } = {},
+  options: { ownerConnId?: string; sessionCapsule?: string } = {},
 ) {
   return createConsultRunner({ registerRun, authority, ...options });
 }

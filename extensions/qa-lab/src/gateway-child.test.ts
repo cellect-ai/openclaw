@@ -8,7 +8,6 @@ import { inspect } from "node:util";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { toErrorObject } from "openclaw/plugin-sdk/error-runtime";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { runQaGatewayCliCommand } from "./gateway-child-command.js";
 import {
   buildGatewayEnvironmentCaptureScript,
   readJsonLines,
@@ -16,12 +15,11 @@ import {
   writePackagedGatewayFixture,
   writeRepoCliSourceRootCaptureFixture,
 } from "./gateway-child-command.test-support.js";
-import { QaGatewayChildLifecycle } from "./gateway-child-lifecycle.js";
+import { registerGatewayCommandFailureCases } from "./gateway-child-failures.test-support.js";
 import {
   closeQaGatewayLogStream,
   createQaGatewayChildLogAccess,
   createQaGatewayChildLogCollector,
-  formatQaGatewayProcessBoundaryStartupFailure,
   stopQaGatewayChildProcessTree,
 } from "./gateway-child-process.js";
 import {
@@ -79,6 +77,7 @@ afterEach(async () => {
 async function createPackagedFixture(
   runtimeEnvPatch: NodeJS.ProcessEnv,
   mutateConfig?: (cfg: OpenClawConfig) => OpenClawConfig,
+  baseEnv?: NodeJS.ProcessEnv,
 ) {
   const fixtureRoot = await tempDirs.makeTempDir("qa-packaged-");
   const tempParentDir = path.join(fixtureRoot, "gateway-temp");
@@ -101,6 +100,7 @@ async function createPackagedFixture(
         },
         providerMode: "mock-openai",
         transportBaseUrl: "http://127.0.0.1:43123",
+        baseEnv,
         runtimeEnvPatch: { QA_RECORD_PATH: recordPath, ...runtimeEnvPatch },
         mutateConfig,
       }),
@@ -129,61 +129,7 @@ function requireSsrFetchCall(index = 0): SsrFetchCall {
   return call[0] as SsrFetchCall;
 }
 
-describe("runQaGatewayCliCommand", () => {
-  it("retains bounded redacted stdout failures alongside stderr panels", async () => {
-    const lifetime = new QaGatewayChildLifecycle();
-    try {
-      const error = await runQaGatewayCliCommand({
-        lifetime,
-        executablePath: process.execPath,
-        argsPrefix: [
-          "--input-type=module",
-          "--eval",
-          `await new Promise((resolve) => process.stderr.write(
-            "Doctor panel: Authorization: Bearer fixture-panel-secret\\n" + "diagnostic ".repeat(400), resolve));
-          await new Promise((resolve) => process.stdout.write(JSON.stringify({
-            status: "error", reason: "readiness execution failed", apiKey: "fixture-result-secret",
-          }), resolve));
-          process.exit(7);`,
-        ],
-        args: [],
-        cwd: process.cwd(),
-        env: process.env,
-      }).catch((caught: unknown) => caught);
-
-      expect(error).toBeInstanceOf(Error);
-      if (!(error instanceof Error)) {
-        throw new Error("expected CLI failure");
-      }
-      expect(error.message).toContain("OpenClaw CLI exited 7: Doctor panel:");
-      expect(error.message).toContain('"reason":"readiness execution failed"');
-      expect(error.message.length).toBeLessThanOrEqual(2_048);
-      expect(error.message).toContain("Bearer <redacted>");
-      expect(error.message).toContain('"apiKey":"<redacted>"');
-      expect(inspect(error, { depth: null })).not.toMatch(/fixture-(panel|result)-secret/u);
-    } finally {
-      await expect(lifetime.stop()).resolves.toEqual({ process: "confirmed-stopped", errors: [] });
-    }
-  });
-});
-
-describe("formatQaGatewayProcessBoundaryStartupFailure", () => {
-  it("includes only a bounded, redacted launcher log tail", () => {
-    const prefix = "x".repeat(9_000);
-    const longSecret = "s".repeat(9_000);
-    const message = formatQaGatewayProcessBoundaryStartupFailure(
-      new Error("launcher exited before identity"),
-      `${prefix}\nAuthorization: Bearer ${longSecret}\nlauncher stage=mount-proc`,
-    );
-
-    expect(message).toContain("launcher exited before identity");
-    expect(message).toContain("Gateway logs:");
-    expect(message).toContain("Authorization: Bearer <redacted>");
-    expect(message).toContain("launcher stage=mount-proc");
-    expect(message).not.toContain("s".repeat(100));
-    expect(message).not.toContain(prefix);
-  });
-});
+registerGatewayCommandFailureCases();
 
 describe("waitForGatewayReady", () => {
   it("waits for healthy readiness and configured agent admission", async () => {
@@ -1275,3 +1221,28 @@ describe("QA Gateway child preparation", () => {
 });
 
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+it.each([false, true])("uses the public launcher environment override: %s", async (explicit) => {
+  vi.stubEnv("QA_OUTER_CREDENTIAL_SENTINEL", "synthetic");
+  try {
+    const { start, recordPath } = await createPackagedFixture(
+      {},
+      undefined,
+      explicit
+        ? {
+            PATH: process.env.PATH,
+            QA_ALLOWED_SENTINEL: "synthetic",
+          }
+        : undefined,
+    );
+    await expect(start()).rejects.toThrow("fixture gateway exit");
+    const records = await readJsonLines(recordPath);
+    expect(records.at(-1)).toMatchObject({
+      kind: "gateway",
+      outerCredentialPresent: !explicit,
+      allowedSentinelPresent: explicit,
+    });
+  } finally {
+    vi.unstubAllEnvs();
+  }
+});

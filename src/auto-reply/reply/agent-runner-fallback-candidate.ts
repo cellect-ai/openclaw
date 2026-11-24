@@ -12,6 +12,7 @@ import {
   assertCronRuntimeAuthorityCandidate,
   resolveCronSandboxPlacement,
 } from "../../cron/isolated-agent/run-admission.js";
+import { requiresLegacyHeartbeatExplicitReply } from "../../cron/legacy-heartbeat-reply-policy.js";
 import { revokeMessageActionTurnCapability } from "../../gateway/message-action-turn-capability.js";
 import { emitAgentEvent } from "../../infra/agent-events.js";
 import { clearAgentRunTerminalWriteContext } from "../../infra/agent-run-terminal-writes.js";
@@ -279,6 +280,25 @@ export async function runAgentFallbackCandidates(params: AgentFallbackCycleParam
           sessionEntry: runtimeSessionEntry(),
           agentRuntime: runOptions.agentHarnessRuntimeOverride,
         });
+        if (candidateRun.scheduledAutomation?.job.legacyHeartbeatReplyPolicy) {
+          const explicitOnly = requiresLegacyHeartbeatExplicitReply({
+            job: candidateRun.scheduledAutomation.job,
+            config: params.runtimeConfig,
+            chatType: turn.sessionCtx.ChatType,
+            runtime: candidateAgentRuntime,
+          });
+          candidateRun.scheduledAutomation.legacyHeartbeatExplicitOnly = explicitOnly;
+          if (candidateRun.cliSessionBindingFacts) {
+            candidateRun.cliSessionBindingFacts = {
+              ...candidateRun.cliSessionBindingFacts,
+              sourceReplyDeliveryMode: explicitOnly ? "message_tool_only" : "automatic",
+            };
+          }
+          sourceReplyDeliveryRuntime.applyPreparedMode(
+            candidateRun,
+            explicitOnly ? "message_tool_only" : "automatic",
+          );
+        }
         params.scheduledInference?.assertCandidate(
           provider,
           runtime.useCliExecution,

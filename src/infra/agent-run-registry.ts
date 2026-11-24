@@ -10,12 +10,14 @@ import {
 } from "./agent-run-approval-leases.js";
 import type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
 import {
-  areAgentRunModelsEqual,
-  buildAgentRunProjectionIndex,
-  projectedAgentRunInputKey,
-  projectedRunIdentity,
-  resolveAgentRunProjectionProgressState,
-} from "./agent-run-projection.js";
+  captureAgentRunPersistence,
+  type AgentRunPersistenceWork,
+  readAgentRunPersistence,
+  retainAgentRunPersistence,
+  resetRequiredAgentRunPersistenceForTest,
+} from "./agent-run-persistence.js";
+import { areAgentRunModelsEqual, projectedAgentRunInputKey } from "./agent-run-projection.js";
+import { hasAgentRunContextExecutionOwner } from "./agent-run-registry-liveness.js";
 import {
   getAgentRunRegistryState,
   bumpAgentRunIndexVersion,
@@ -29,7 +31,6 @@ import type {
   AgentRunModel,
   AgentRunRegistryState,
   ProjectedAgentRunIndex,
-  ProjectedAgentRunState,
 } from "./agent-run-registry.types.js";
 import { clearAgentRunUsage, resetAgentRunUsageForTest } from "./agent-run-usage.js";
 
@@ -38,6 +39,44 @@ export { getAgentRunContextOwnerStatus } from "./agent-run-registry-state.js";
 export { listAgentRunsForSession } from "./agent-run-registry-state.js";
 export { getAgentRunLifecycleGeneration, readAgentRunIndexVersion };
 export type { ProjectedAgentRunIndex } from "./agent-run-registry.types.js";
+/** Capture projection custody synchronously; admission owners await its durable receipt. */
+export function registerAgentRunAdmissionHandler(
+  handler: (runId: string) => void | Promise<void> | AgentRunPersistenceWork,
+): () => void {
+  const handlers = (getAgentRunRegistryState().admissionHandlers ??= new Set());
+  handlers.add(handler);
+  return () => {
+    handlers.delete(handler);
+  };
+}
+
+function persistAgentRunAdmission(runId: string): void {
+  const owner = getAgentRunContext(runId);
+  if (!owner) return;
+  for (const handler of getAgentRunRegistryState().admissionHandlers ?? []) {
+    const receipt = handler(runId);
+    if (receipt) {
+      if ("run" in receipt) captureAgentRunPersistence(owner, receipt);
+      else retainAgentRunPersistence(owner, receipt);
+    }
+  }
+}
+
+/** Join the captured registration's custody before acknowledging or executing its admission. */
+export async function awaitAgentRunAdmission(
+  runId: string,
+  expectedOwner: AgentRunContext | undefined,
+): Promise<void> {
+  if (!expectedOwner) return;
+  let pending: Promise<void> | undefined;
+  while ((pending = readAgentRunPersistence(expectedOwner))) await pending;
+  if (
+    getAgentRunContext(runId) !== expectedOwner ||
+    expectedOwner.lifecycleGeneration !== getAgentRunLifecycleGeneration()
+  ) {
+    throw new Error("Agent run admission owner changed before persistence settled");
+  }
+}
 
 const delegatedAuthorityFailures = new WeakMap<AgentRunDelegatedAuthority, { cause: unknown }>();
 
@@ -134,6 +173,7 @@ export function registerAgentRunContext(
   if (!existing) {
     storeRunContext(runId, { ...context, lifecycleGeneration });
     bumpAgentRunIndexVersion(context);
+    persistAgentRunAdmission(runId);
     return;
   }
   if (
@@ -185,6 +225,7 @@ export function registerAgentRunContext(
   if (runIndexInputBefore !== projectedAgentRunInputKey(existing)) {
     bumpAgentRunIndexVersion(existing, { sessionKey, sessionId, agentId });
   }
+  persistAgentRunAdmission(runId);
 }
 
 /** Claims a run id for a newly admitted execution, replacing stale ownership. */
@@ -260,6 +301,7 @@ export function claimAgentRunContext(
   state.sequenceResetHandler?.(runId);
   clearAgentRunUsage(runId);
   bumpAgentRunIndexVersion(context, existing);
+  persistAgentRunAdmission(runId);
   return claimId;
 }
 
@@ -524,45 +566,6 @@ export function releaseAgentRunDelegatedAuthority(authority: AgentRunDelegatedAu
   return true;
 }
 
-/** Exact execution claims and scheduler queue leases, excluding UI projection metadata. */
-export function hasAgentRunContextExecutionOwner(runId: string): boolean {
-  const state = getAgentRunRegistryState();
-  const context = state.contexts.get(runId);
-  if (!context || context.lifecycleGeneration !== state.lifecycleGeneration) {
-    return false;
-  }
-  const owners = state.owners.get(runId);
-  return (
-    (owners?.lifecycleGeneration === state.lifecycleGeneration && owners.claimIds.size > 0) ||
-    (state.queuedRunContextLeases?.get(context) ?? 0) > 0
-  );
-}
-
-/** Counts admitted executions, excluding retained display-only context. */
-export function getActiveAgentRunContextCount(): number {
-  let count = 0;
-  for (const runId of getAgentRunRegistryState().contexts.keys()) {
-    if (hasAgentRunContextExecutionOwner(runId)) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-/** Live display projection also includes a producer's active-session marker. */
-export function hasLiveAgentRunContext(runId: string): boolean {
-  const state = getAgentRunRegistryState();
-  const context = state.contexts.get(runId);
-  return (
-    context?.lifecycleGeneration === state.lifecycleGeneration &&
-    (hasAgentRunContextExecutionOwner(runId) || context.projectSessionActive === true)
-  );
-}
-
-export function listLiveAgentRunIds(): string[] {
-  return [...getAgentRunRegistryState().contexts.keys()].filter(hasLiveAgentRunContext);
-}
-
 export function recordAgentRunModel(runId: string, model: AgentRunModel | undefined): void {
   const context = getAgentRunContext(runId);
   if (!context || context.lifecycleGeneration !== getAgentRunLifecycleGeneration()) {
@@ -577,59 +580,6 @@ export function recordAgentRunModel(runId: string, model: AgentRunModel | undefi
     delete context.activeModel;
   }
   bumpAgentRunIndexVersion(context);
-}
-
-export function resolveProjectedAgentRunModel(params: {
-  agentId: string;
-  sessionId?: string;
-  index?: ProjectedAgentRunIndex;
-}): AgentRunModel | null | undefined {
-  return params.sessionId === undefined
-    ? undefined
-    : (params.index ?? buildProjectedAgentRunIndex()).modelsBySessionId.get(
-        projectedRunIdentity(params.agentId, params.sessionId),
-      );
-}
-
-export function buildProjectedAgentRunIndex(): ProjectedAgentRunIndex {
-  const { contexts, lifecycleGeneration } = getAgentRunRegistryState();
-  return buildAgentRunProjectionIndex({ contexts: contexts.values(), lifecycleGeneration });
-}
-
-export function resolveProjectedAgentRunProgressState(
-  params: Parameters<typeof resolveAgentRunProjectionProgressState>[0] & {
-    index?: ProjectedAgentRunIndex;
-  },
-): ProjectedAgentRunState | undefined {
-  return resolveAgentRunProjectionProgressState(
-    params,
-    params.index ?? buildProjectedAgentRunIndex(),
-  );
-}
-
-// Both the snapshot and its prepared queries are weak: cold rows never pin old run indexes.
-const preparedProgressStates = new WeakMap<
-  ProjectedAgentRunIndex,
-  WeakMap<object, ProjectedAgentRunState | null>
->();
-
-/** Bind an immutable query once; each owner-published run index supplies its progress fact. */
-export function prepareProjectedAgentRunProgressState(
-  query: Readonly<Parameters<typeof resolveAgentRunProjectionProgressState>[0]>,
-) {
-  return (index: ProjectedAgentRunIndex): ProjectedAgentRunState | undefined => {
-    let facts = preparedProgressStates.get(index);
-    if (!facts) {
-      facts = new WeakMap();
-      preparedProgressStates.set(index, facts);
-    }
-    let progress = facts.get(query);
-    if (progress === undefined) {
-      progress = resolveAgentRunProjectionProgressState(query, index) ?? null;
-      facts.set(query, progress);
-    }
-    return progress ?? undefined;
-  };
 }
 
 /** Clears context state for a run that has ended or been discarded. */
@@ -766,7 +716,24 @@ export function resetAgentRunRegistryForTest(): void {
   state.contexts.clear();
   state.owners.clear();
   state.queuedRunContextLeases = undefined;
+  state.admissionHandlers?.clear();
+  resetRequiredAgentRunPersistenceForTest();
   if (hadRunContexts) {
     bumpAgentRunIndexVersion();
   }
 }
+
+export {
+  resolveProjectedAgentRunModel,
+  buildProjectedAgentRunIndex,
+  resolveProjectedAgentRunProgressState,
+  prepareProjectedAgentRunProgressState,
+} from "./agent-run-registry-projection.js";
+
+export {
+  hasAgentRunContextExecutionOwner,
+  getActiveAgentRunContextCount,
+  hasLiveAgentRunContext,
+  listLiveAgentRunIds,
+  listCurrentAgentRunIds,
+} from "./agent-run-registry-liveness.js";

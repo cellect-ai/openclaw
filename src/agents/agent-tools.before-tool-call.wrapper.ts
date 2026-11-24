@@ -44,7 +44,10 @@ import {
   summarizeToolParams,
   startToolExecutionLiveness,
 } from "./agent-tools.before-tool-call.diagnostics.js";
-import { runBeforeToolCallHook } from "./agent-tools.before-tool-call.policy.js";
+import {
+  runBeforeToolCallHook,
+  consumeFinalClientVoiceToolConfirmation,
+} from "./agent-tools.before-tool-call.policy.js";
 import {
   buildAdjustedParamsKey,
   clearTrackedToolExecution,
@@ -467,6 +470,22 @@ export function wrapToolWithBeforeToolCallHook(
               signal?.throwIfAborted();
               assertAgentPluginRuntimeCurrent();
               assertGatewayToolPolicy(executeParams);
+              // Spoken intent never replaces the current native authority above.
+              // Consume only the exact final arguments after suppressed calls settle.
+              const confirmation = consumeFinalClientVoiceToolConfirmation({
+                toolCallId,
+                toolName,
+                toolKind: hookMetadata?.toolKind,
+                params: executeParams,
+                ctx,
+              });
+              if (!confirmation.allowed) {
+                return blockToolCall({
+                  reason: confirmation.reason,
+                  deniedReason: "client-voice-confirmation",
+                  toolParams: executeParams,
+                });
+              }
               admitExecution?.();
               onImplementationStart?.();
               recordToolExecutionStarted(toolCallId, ctx?.runId);

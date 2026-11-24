@@ -575,6 +575,9 @@ export function registerSlackBlockActionHandler(params: {
         text,
         responseType,
       }) => {
+        if (!runtimeContext.isRuntimePolicyCurrent()) {
+          throw new Error("Slack interaction policy is no longer current.");
+        }
         if (text) {
           await respond?.({ text, response_type: responseType ?? "ephemeral" });
         }
@@ -585,6 +588,13 @@ export function registerSlackBlockActionHandler(params: {
         teamId: eventScope?.teamId,
         channelType: auth.channelType,
         ctx: {
+          authority: {
+            assertCurrent: () => {
+              if (!runtimeContext.isRuntimePolicyCurrent()) {
+                throw new Error("Slack interaction policy is no longer current.");
+              }
+            },
+          },
           accountId: runtimeContext.accountId,
           interactionId: pluginInteractionId,
           conversationId: parsed.channelId ?? "",
@@ -611,6 +621,9 @@ export function registerSlackBlockActionHandler(params: {
           reply,
           followUp: reply,
           editMessage: async ({ text, blocks }) => {
+            if (!runtimeContext.isRuntimePolicyCurrent()) {
+              throw new Error("Slack interaction policy is no longer current.");
+            }
             await updateSlackInteractionMessage(actionContext, {
               text: text ?? parsed.typedBody.message?.text ?? "",
               blocks: Array.isArray(blocks) ? (blocks as (Block | KnownBlock)[]) : undefined,

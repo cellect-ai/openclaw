@@ -27,7 +27,6 @@ import { testing as cliBackendsTesting } from "../../agents/cli-backends.test-su
 import { acceptCompactionSuccessor } from "../../agents/embedded-agent-runner/compaction-successor.js";
 import { modelDefinition, providerConfig } from "../../agents/model-auth.fixtures.test-support.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
-import { makeAssistantMessageFixture } from "../../agents/test-helpers/assistant-message-fixtures.js";
 import { ZERO_USAGE_FIXTURE } from "../../agents/test-helpers/usage-fixtures.js";
 import {
   clearRuntimeConfigSnapshot,
@@ -46,11 +45,9 @@ import { replaceTranscriptEvents } from "../../config/sessions/session-accessor.
 import { projectCompactionAccountingPatch } from "../../config/sessions/session-entry-projection.js";
 import { resolveSessionStorePathForScope } from "../../config/sessions/session-store-path.js";
 import * as transcriptAccounting from "../../config/sessions/session-transcript-accounting.js";
-import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import { onAgentEventForRun } from "../../infra/agent-events.js";
 import {
   clearMemoryPluginState,
-  registerMemoryCapability,
   type MemoryFlushPlanResolver,
 } from "../../plugins/memory-state.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
@@ -59,6 +56,16 @@ import { getReplyOperationSessionReader } from "../../sessions/session-controlle
 import { waitForReplyRunSuccessorAdmission } from "../../sessions/session-controller.wait.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { refreshSessionEntryFromStore } from "./agent-runner-core.js";
+import {
+  createSessionEntry,
+  createFreshSessionEntry,
+  createFlushSessionEntry,
+  registerMemoryFlushPlanResolverForTest,
+  registerClaudeCliBackend,
+  loadMainSessionEntry,
+  usageEvent,
+  compactionConfig,
+} from "./agent-runner-memory.fixtures.test-support.js";
 import {
   runMemoryFlushIfNeeded as runMemoryFlushIfNeededRaw,
   runSessionCompactionIfNeeded as runSessionCompactionIfNeededRaw,
@@ -153,59 +160,6 @@ async function runSessionCompactionIfNeeded(params: PreflightCompactionTestParam
   const cfg = withTestModelContextTokens({ ...runParams, contextTokens: modelContextTokens });
   setRuntimeConfigSnapshot(cfg);
   return await runSessionCompactionIfNeededRaw({ ...runParams, cfg });
-}
-
-function createSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
-  return { sessionId: "session", updatedAt: Date.now(), ...overrides };
-}
-
-function createFreshSessionEntry(overrides: Partial<SessionEntry>): SessionEntry {
-  return createSessionEntry({ totalTokensFresh: true, totalTokensVersion: 1, ...overrides });
-}
-
-function createFlushSessionEntry(overrides: Partial<SessionEntry> = {}): SessionEntry {
-  return createFreshSessionEntry({ totalTokens: 80_000, compactionCount: 1, ...overrides });
-}
-
-function registerMemoryFlushPlanResolverForTest(resolver: MemoryFlushPlanResolver): void {
-  registerMemoryCapability("memory-core", { flushPlanResolver: resolver });
-}
-
-function registerClaudeCliBackend(ownsNativeCompaction = false): void {
-  cliBackendsTesting.setDepsForTest({
-    resolveRuntimeCliBackends: () => [
-      {
-        id: "claude-cli",
-        modelProvider: "anthropic",
-        pluginId: "anthropic",
-        config: { command: "claude" },
-        ownsNativeCompaction,
-      },
-    ],
-  });
-}
-
-function loadMainSessionEntry(storePath: string): SessionEntry {
-  const entry = loadSessionEntry({ storePath, sessionKey: "main" });
-  if (!entry) {
-    throw new Error("expected persisted main session entry");
-  }
-  return entry;
-}
-
-function usageEvent(
-  content: string,
-  usage: Partial<ReturnType<typeof makeAssistantMessageFixture>["usage"]>,
-  api?: string,
-) {
-  return {
-    type: "message",
-    message: { role: "assistant", content, usage, ...(api ? { api } : {}) },
-  };
-}
-
-function compactionConfig(compaction: AgentDefaultsConfig["compaction"]) {
-  return { agents: { defaults: { compaction } } };
 }
 
 function requireCompactEmbeddedAgentSessionCall(index = 0) {
@@ -690,6 +644,24 @@ describe("runMemoryFlushIfNeeded", () => {
       await expect(fs.stat(path.join(rootDir, "memory/2023-11-14.md"))).rejects.toMatchObject({
         code: "ENOENT",
       });
+    },
+  );
+
+  it.each([
+    ["its own key", "hook:fi-shadow:run-1", undefined],
+    ["its policy key", "agent:main:main", "hook:fi-shadow:run-2"],
+  ])(
+    "skips memory flush for a shadow hook run through %s",
+    async (_label, sessionKey, policyKey) => {
+      const sessionEntry = createFlushSessionEntry({ sessionId: "shadow-session" });
+
+      const result = await runDefaultMemoryFlush(sessionEntry, {
+        sessionKey,
+        ...(policyKey ? { runtimePolicySessionKey: policyKey } : {}),
+      });
+
+      expect(result).toEqual({ sessionEntry, outcome: "skipped" });
+      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
     },
   );
 

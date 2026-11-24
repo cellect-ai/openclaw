@@ -6,7 +6,7 @@ export {
   resolveNodeRuntimeExecutableAsync,
 } from "../infra/node-runtime-executable.js";
 export { resolveLaunchableNodePath } from "../infra/stable-node-path.js";
-export { splitCommandArgs } from "../utils/shell-argv.js";
+export { splitCommandArgs, splitShellArgs } from "../utils/shell-argv.js";
 export {
   type CommandOptions,
   resolveCommandEnv,

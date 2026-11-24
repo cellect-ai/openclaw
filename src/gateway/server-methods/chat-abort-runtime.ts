@@ -220,6 +220,7 @@ export function abortDormantSubagentSession(
         {
           assertCurrent,
           requiredSessionId: params.requiredSessionId,
+          preservePendingInputs: params.preservePendingInputs,
           prepareRead: () => {
             if (prepared || !prepareSession) {
               return undefined;
@@ -320,6 +321,7 @@ export async function abortChatRunsForSessionKeyWithPartials(
   try {
     if (params.cascadeDescendants && plan.canCascade) {
       descendants = await abortControlledSubagents({
+        preservePendingInputs: params.preservePendingInputs,
         cfg: params.session?.ok ? params.session.value.cfg : params.context.getRuntimeConfig(),
         sessionKey: params.sessionKey,
         agentId: params.agentId,

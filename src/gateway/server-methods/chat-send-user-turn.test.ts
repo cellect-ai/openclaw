@@ -7,6 +7,7 @@ import {
 } from "../../../packages/gateway-protocol/src/client-info.js";
 import { createSolidPngBuffer } from "../../../test/helpers/image-fixtures.js";
 import { hydratePromptMediaMessages } from "../../agents/embedded-agent-runner/run/images.js";
+import { getCommandSenderAuthority } from "../../auto-reply/command-sender-authority.js";
 import { normalizeCommandBody } from "../../auto-reply/commands-registry.js";
 import { finalizeInboundContext } from "../../auto-reply/reply/inbound-context.js";
 import { buildInboundUserContextPrefix } from "../../auto-reply/reply/inbound-meta.js";
@@ -77,6 +78,63 @@ function requesterProfile(text: string) {
 }
 
 describe("prepareChatSendUserTurn", () => {
+  it("attributes a Matrix Talk speaker without inheriting the browser operator", async () => {
+    const client = {
+      authenticatedUserId: "operator@example.test",
+      authenticatedUserProfile: clientProfile("browser-operator", "Operator"),
+      connect: {
+        minProtocol: 1,
+        maxProtocol: 1,
+        client: createClientInfo({ id: GATEWAY_CLIENT_IDS.CONTROL_UI }),
+        scopes: ["operator.admin"],
+        caps: ["tool-events"],
+        device: {
+          id: "operator-device",
+          publicKey: "key",
+          signature: "sig",
+          signedAt: 1,
+          nonce: "nonce",
+        },
+      },
+    };
+    const prepared = prepareTurn({
+      client,
+      inputText: "/status",
+      request: { inboundMessage: "/status", clientInfo: uiClientInfo(GATEWAY_CLIENT_MODES.UI) },
+      attachments: { parsedMessage: "/status" },
+      admission: {
+        originatingRoute: {
+          originatingChannel: "matrix",
+          originatingTo: "room:!room:test",
+          accountId: "account",
+          explicitDeliverRoute: true,
+        },
+        channelRequester: {
+          assertCurrent: () => {},
+          speakerMxid: "@speaker:test",
+          channelContext: { sender: { id: "@speaker:test" }, chat: { id: "!room:test" } },
+        },
+      },
+    });
+    expect(prepared.ctx).toMatchObject({
+      SenderId: "@speaker:test",
+      Provider: "matrix",
+      ChatType: "group",
+      GatewayClientScopes: [],
+      GatewayClientCaps: [],
+      CommandAuthorized: false,
+      CommandInterpretationSuppressed: true,
+      SessionCreation: { via: "channel", actor: { id: "@speaker:test", source: "channel" } },
+    });
+    expect(prepared.ctx.ApprovalReviewerDeviceId).toBeUndefined();
+    expect(prepared.ctx.GatewayUiCommandTarget).toBeUndefined();
+    expect(getRequesterProfile(prepared.ctx)).toBeUndefined();
+    expect(getCommandSenderAuthority(prepared.ctx)?.()).toBeUndefined();
+    expect(readSessionInputProfileId(prepared.ctx)).toBeUndefined();
+    expect(prepared.isInternalTextSlashCommandTurn).toBe(false);
+    await prepared.prepareSessionCreation();
+    expect(prepared.ctx.SessionCreation).not.toHaveProperty("skillLibrarySelections");
+  });
   it.each([
     { id: GATEWAY_CLIENT_IDS.CONTROL_UI, mode: GATEWAY_CLIENT_MODES.UI },
     { id: GATEWAY_CLIENT_IDS.WEBCHAT_UI, mode: GATEWAY_CLIENT_MODES.WEBCHAT },

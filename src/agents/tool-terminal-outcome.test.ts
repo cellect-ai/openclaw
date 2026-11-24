@@ -183,8 +183,20 @@ describe("tool terminal outcome observer", () => {
 
   it.each([
     { firstOutcome: "success", error: undefined, warnings: [] },
-    { firstOutcome: "failure", error: "Original tool failure", warnings: ["⚠️ Exec failed"] },
-    { firstOutcome: "blocked", error: "Original admission failure", warnings: ["⚠️ Exec blocked"] },
+    {
+      firstOutcome: "failure",
+      error: "Original tool failure",
+      warnings: [
+        "⚠️ Exec failed. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+      ],
+    },
+    {
+      firstOutcome: "blocked",
+      error: "Original admission failure",
+      warnings: [
+        "⚠️ Exec blocked. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+      ],
+    },
   ])(
     "classifies a steering skip after $firstOutcome through the registered subscription",
     async ({ firstOutcome, error, warnings }) => {
@@ -301,7 +313,11 @@ describe("tool terminal outcome observer", () => {
     expect(terminal.lastToolError).toMatchObject({ error: "Original failure", executionStarted });
     expect(
       buildPayloads({ lastToolError: terminal.lastToolError }).map((payload) => payload.text),
-    ).toEqual([executionStarted ? "⚠️ Exec failed" : "⚠️ Exec blocked"]);
+    ).toEqual([
+      executionStarted
+        ? "⚠️ Exec failed. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route."
+        : "⚠️ Exec blocked. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ]);
   });
 
   it("retains a genuine message failure across suppression until a real send succeeds", () => {
@@ -458,11 +474,36 @@ describe("tool terminal outcome observer", () => {
   });
 
   it.each([
-    [true, 30_000, 2, "⚠️ Memory Search timed out after 30s; 2 partial results are available."],
-    [true, 30_000, 1, "⚠️ Memory Search timed out after 30s; 1 partial result is available."],
-    [true, 30_000, 0, "⚠️ Memory Search timed out after 30s."],
-    [false, 30_000, 0, "⚠️ Memory Search failed"],
-    [true, -1, 0, "⚠️ Memory Search failed"],
+    [
+      true,
+      30_000,
+      2,
+      "⚠️ Memory Search timed out after 30s; 2 partial results are available. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ],
+    [
+      true,
+      30_000,
+      1,
+      "⚠️ Memory Search timed out after 30s; 1 partial result is available. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ],
+    [
+      true,
+      30_000,
+      0,
+      "⚠️ Memory Search timed out after 30s. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ],
+    [
+      false,
+      30_000,
+      0,
+      "⚠️ Memory Search failed. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ],
+    [
+      true,
+      -1,
+      0,
+      "⚠️ Memory Search failed. I stopped there. Check any partial results before asking me to try again, or tell me to take a different route.",
+    ],
   ] as const)(
     "preserves timeout metadata (%s, %s ms, %s results) in the final warning",
     (timedOut, timeoutMs, count, expected) => {

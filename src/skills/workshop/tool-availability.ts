@@ -4,8 +4,9 @@ import type { SkillLibraryAuthoringCapability } from "../library/authoring.js";
 export function resolveSkillWorkshopToolConstructionBlock(context: {
   sandboxed?: boolean;
   libraryAuthoring?: SkillLibraryAuthoringCapability;
+  workspaceAuthoring?: import("./workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
 }): { detail: string; fix: string } | undefined {
-  if (context.sandboxed && !context.libraryAuthoring) {
+  if (context.sandboxed && !context.libraryAuthoring && !context.workspaceAuthoring) {
     return {
       detail:
         '"skill_workshop" is unavailable in a sandboxed run without library-authoring authority.',

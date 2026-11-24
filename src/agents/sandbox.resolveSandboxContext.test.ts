@@ -3,6 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/config.js";
+import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../config/sessions/session-accessor.js";
 import type { AgentSandboxConfig } from "../config/types.agents-shared.js";
 import { createWarnLogCapture } from "../logging/test-helpers/warn-log-capture.js";
@@ -11,6 +12,7 @@ import { registerSandboxBackend, type SandboxBackendHandle } from "./sandbox/bac
 import { createConfig as createCustodyConfig } from "./sandbox/context-custody.test-support.js";
 import { ensureSandboxWorkspaceForSession, resolveSandboxContext } from "./sandbox/context.js";
 import { isSandboxProvisioningError } from "./sandbox/provisioning-error.js";
+import { SANDBOX_DEFAULT_TOOL_ALLOW } from "./sandbox/types.js";
 import { resolveWorkspaceMounts } from "./sandbox/workspace-mounts.js";
 
 const readRegisteredSandboxRuntimeIdsMock = vi.hoisted(() => vi.fn(async () => [] as string[]));
@@ -144,6 +146,61 @@ afterAll(async () => {
 });
 
 describe("resolveSandboxContext", () => {
+  it.each(["unchanged", "resource binding", "tool policy"] as const)(
+    "checks the current rollover configuration with default-allow provenance: %s",
+    async (change) => {
+      const workspaceDir = await createSandboxFixtureDir("rollover-admission-");
+      const cfg = sandboxConfig("docker", {
+        docker: {
+          binds: ["/immutable/new:/runtime:ro"],
+          readOnlyBindRollovers: [
+            { from: ["/immutable/old:/runtime:ro"], to: ["/immutable/new:/runtime:ro"] },
+          ],
+        },
+      });
+      const next = structuredClone(cfg);
+      if (change === "resource binding")
+        next.agents!.defaults!.sandbox!.docker!.binds = ["/immutable/other:/runtime:ro"];
+      if (change === "tool policy")
+        next.tools = { sandbox: { tools: { allow: ["sandbox_exec"] } } };
+      let guardReached = false;
+      const unregister = registerSandboxBackend("docker", async (params) => {
+        guardReached = true;
+        // The real Docker factory performs this assertion before provider
+        // operations. Keep that boundary while omitting an actual daemon.
+        params.assertProvisionCurrent?.();
+        setRuntimeConfigSnapshot(next);
+        params.assertProvisionCurrent?.();
+        return createBackend({
+          id: "docker",
+          runtimeId: "rollover-admission",
+          runtimeLabel: "rollover-admission",
+        });
+      });
+      setRuntimeConfigSnapshot(cfg);
+      try {
+        const preparation = resolveSandboxContext({
+          config: cfg,
+          sessionKey: "agent:main:rollover-admission",
+          workspaceDir,
+        });
+        if (change === "unchanged") {
+          const context = await preparation;
+          expect(context?.enabled).toBe(true);
+          expect(context?.tools[SANDBOX_DEFAULT_TOOL_ALLOW]).toBe(context?.tools.allow);
+        } else {
+          await expect(preparation).rejects.toThrow(
+            "Sandbox configuration changed during generation admission",
+          );
+        }
+        expect(guardReached).toBe(true);
+      } finally {
+        unregister();
+        resetConfigRuntimeState();
+      }
+    },
+  );
+
   it.each(["rw", "none"] as const)(
     "protects initially absent skill roots in a %s workspace",
     async (workspaceAccess) => {

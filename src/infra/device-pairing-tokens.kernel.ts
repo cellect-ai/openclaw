@@ -1,3 +1,4 @@
+import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import { resolveMissingRequestedScope } from "../shared/operator-scope-compat.js";
 import type {
@@ -60,12 +61,16 @@ export function ensureDeviceTokenInWorker(params: {
   deviceId: string;
   role: string;
   scopes: string[];
+  allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
   nowMs: number;
 }): DeviceAuthToken | null {
   return updatePairedDeviceInTransaction<DeviceAuthToken | null>(params.deviceId, (paired) => {
     requestDevicePairingMutationAdmission({ kind: "pairing-token-issuance" });
     const requestedScopes = normalizeDeviceAuthScopes(params.scopes);
+    const requestedAllowedAgentIds = params.allowedAgentIds
+      ? normalizeSortedUniqueTrimmedStringList(params.allowedAgentIds)
+      : undefined;
     const context = resolveDeviceTokenUpdateContext({
       device: paired,
       role: params.role,
@@ -93,6 +98,7 @@ export function ensureDeviceTokenInWorker(params: {
     const next = createDeviceAuthToken({
       role,
       scopes: requestedScopes,
+      ...(requestedAllowedAgentIds ? { allowedAgentIds: requestedAllowedAgentIds } : {}),
       issuer: params.issuer,
       existing,
       now,

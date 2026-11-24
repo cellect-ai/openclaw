@@ -22,6 +22,7 @@ export type StartChatDispatchParams = {
   client: GatewayRequestHandlerOptions["client"];
   context: GatewayRequestHandlerOptions["context"];
   toolsAllow?: string[];
+  sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   skillLibrary: { owner: SkillLibraryRequestOwner; isHumanTurn: boolean; sessionKey: string };
   cronCreatorAuthority: ReturnType<ChatSendExternalAuthorityAdmission["resolve"]>;
@@ -41,3 +42,4 @@ export type StartChatDispatchParams = {
   turn: Awaited<ReturnType<typeof prepareChatSendUserTurn>>;
   userTurn: ReturnType<typeof createGatewayChatUserTurnController>;
 };
+import type { SourceReplyDeliveryMode } from "../../auto-reply/get-reply-options.types.js";

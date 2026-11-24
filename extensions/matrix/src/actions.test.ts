@@ -70,7 +70,10 @@ describe("matrixMessageActions", () => {
     ["reactions", ["emoji"], 'action:"emoji-list"'],
     ["messages", ["before", "after"], "nextBatch/prevBatch, not an event id"],
   ] as const)("gates %s actions and schema hints", (gate, keys, hint) => {
-    const actions = gate === "reactions" ? (["emoji-list", "react"] as const) : (["read"] as const);
+    const actions =
+      gate === "reactions"
+        ? (["emoji-list", "react"] as const)
+        : (["read", "download-file"] as const);
     const enabled = discover();
     const disabled = discover({ actions: { [gate]: false } });
     const property = expect.objectContaining({ description: expect.stringContaining(hint) });

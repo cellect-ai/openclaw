@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../test/helpers/promise.js";
 import { onAgentEvent, type AgentEventPayload } from "../infra/agent-events.js";
 import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import type { PluginApprovalRequestPayload } from "../infra/plugin-approvals.js";
 import { createSqliteWorkerWriteAdmission } from "../infra/sqlite-worker-store.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
@@ -806,59 +807,157 @@ describe("operator approval session events", () => {
     expect(harness.broadcastToConnIds).toHaveBeenCalledOnce();
   });
 
-  it("does not revive attention from stale, unmatched, unavailable, or retired approval observations", () => {
-    const record = createPendingRecord({
-      createdAtMs: Date.now(),
-      expiresAtMs: Date.now() + 60_000,
-    });
-    let current = true;
-    let live: ExecApprovalRecord<OperatorApprovalRecord["source"]> = {
-      id: record.id,
-      request: record.source,
-      createdAtMs: record.createdAtMs,
-      expiresAtMs: record.expiresAtMs,
-    };
-    let managerAvailable = true;
-    const manager = { runtimeEpoch: record.runtimeEpoch, getLiveSnapshot: () => live };
-    const runtime = createRuntime({
-      clients: [],
-      getLiveManager: () => (managerAvailable ? manager : undefined),
-      isCurrent: () => current,
-    }).runtime;
-    const executionEvents: AgentEventPayload[] = [];
+  it("publishes business cards from the durable plugin owner and settles its exact waiter", async () => {
+    vi.useFakeTimers();
+    installTestApprovalClock();
+    vi.setSystemTime(1_000);
+    vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "1");
+    const databaseOptions = createDatabaseOptions();
+    const holder: { current?: ExecApprovalManager<PluginApprovalRequestPayload> } = {};
+    const runtime = createRuntime({ clients: [], getLiveManager: () => holder.current }).runtime;
+    const cards: AgentEventPayload[] = [];
     subscriptions.push(
       onAgentEvent((event) => {
-        if (event.runId === record.source.runId && event.stream === "execution") {
-          executionEvents.push(event);
-        }
+        if (event.runId === "business-owner-run" && event.stream === "approval") cards.push(event);
       }),
     );
-    runtime.publish({ phase: "pending", record });
-    expect(executionEvents).toHaveLength(1);
-    executionEvents.length = 0;
-    live = { ...live, resolvedAtMs: Date.now() };
-    runtime.publish({ phase: "pending", record });
-    live = {
-      ...live,
-      resolvedAtMs: undefined,
-      request: { ...live.request, sessionId: "replacement-session" },
+    const manager = new ExecApprovalManager<PluginApprovalRequestPayload>({
+      scheduler: createTestGatewayScheduler("fake-timers"),
+      approvalKind: "plugin",
+      persistence: { runtimeEpoch: "business-owner", databaseOptions },
+      resolveAllowedDecisions: () => ["allow-once", "deny"],
+      resolveAudienceSessionKeys: () => [SOURCE_SESSION_KEY],
+      onLifecycle: (event) => runtime.publish(event),
+    });
+    holder.current = manager;
+    const conversation = {
+      title: "Publish the document",
+      summary: "Share the selected document with its recipients.",
     };
-    runtime.publish({ phase: "pending", record });
-    live = {
-      ...live,
-      request: { ...live.request, sessionId: record.source.sessionId },
-      expiresAtMs: Date.now() - 1,
-    };
-    runtime.publish({ phase: "pending", record });
-    live = { ...live, expiresAtMs: record.expiresAtMs };
-    manager.runtimeEpoch = "replacement-manager";
-    runtime.publish({ phase: "pending", record });
-    manager.runtimeEpoch = record.runtimeEpoch;
-    managerAvailable = false;
-    runtime.publish({ phase: "pending", record });
-    managerAvailable = true;
-    current = false;
-    runtime.publish({ phase: "pending", record });
-    expect(executionEvents).toEqual([]);
+    const record = manager.create(
+      {
+        title: "Internal tool operation",
+        description: "Reviewer diagnostics",
+        detail: "private execution details",
+        approvalOrigin: "plugin",
+        conversation,
+        sessionKey: SOURCE_SESSION_KEY,
+        sessionId: "business-owner-session",
+        runId: "business-owner-run",
+        agentId: "main",
+      },
+      60_000,
+      "business-owner-approval",
+    );
+    try {
+      const { decision } = await manager.register(record, 60_000);
+      expect(cards).toHaveLength(1);
+      expect(cards[0]).toMatchObject({
+        sessionId: "business-owner-session",
+        sessionKey: SOURCE_SESSION_KEY,
+        data: {
+          approvalId: record.id,
+          phase: "requested",
+          status: "pending",
+          conversation,
+          allowedDecisions: ["allow-once", "deny"],
+          expiresAtMs: record.expiresAtMs,
+        },
+      });
+      expect(JSON.stringify(cards)).not.toContain("private execution details");
+      expect(await manager.resolve(record.id, "deny", "reviewer")).toBe(true);
+      await expect(decision).resolves.toBe("deny");
+      expect(cards.map((event) => event.data.phase)).toEqual(["requested", "resolved"]);
+      expect(cards[1]?.data).toMatchObject({ approvalId: record.id, status: "denied" });
+    } finally {
+      await manager.drain();
+    }
   });
+
+  it.each(["exec", "plugin"] as const)(
+    "does not revive %s attention from stale, unmatched, unavailable, or retired approval observations",
+    (kind) => {
+      const record = createPendingRecord({
+        createdAtMs: Date.now(),
+        expiresAtMs: Date.now() + 60_000,
+      });
+      if (kind === "plugin") {
+        record.kind = "plugin";
+        record.presentation = {
+          kind: "plugin",
+          origin: "plugin",
+          title: "Business action",
+          description: "Review this action",
+          severity: "warning",
+          pluginId: "test-plugin",
+          toolName: "publish",
+          agentId: "main",
+          allowedDecisions: ["allow-once", "deny"],
+        };
+      }
+      let current = true;
+      let live: ExecApprovalRecord<
+        OperatorApprovalRecord["source"] & { conversation?: { title: string; summary: string } }
+      > = {
+        id: record.id,
+        request: {
+          ...record.source,
+          conversation: { title: "Business action", summary: "The exact requested action." },
+        },
+        createdAtMs: record.createdAtMs,
+        expiresAtMs: record.expiresAtMs,
+      };
+      let managerAvailable = true;
+      const manager = { runtimeEpoch: record.runtimeEpoch, getLiveSnapshot: () => live };
+      const runtime = createRuntime({
+        clients: [],
+        getLiveManager: () => (managerAvailable ? manager : undefined),
+        isCurrent: () => current,
+      }).runtime;
+      const executionEvents: AgentEventPayload[] = [];
+      subscriptions.push(
+        onAgentEvent((event) => {
+          if (
+            event.runId === record.source.runId &&
+            (event.stream === "execution" || event.stream === "approval")
+          ) {
+            executionEvents.push(event);
+          }
+        }),
+      );
+      runtime.publish({ phase: "pending", record });
+      expect(executionEvents).toHaveLength(kind === "plugin" ? 2 : 1);
+      executionEvents.length = 0;
+      for (const field of ["sessionKey", "runId"] as const) {
+        const original = live.request[field];
+        live = { ...live, request: { ...live.request, [field]: "replacement-owner" } };
+        runtime.publish({ phase: "pending", record });
+        live = { ...live, request: { ...live.request, [field]: original } };
+      }
+      live = { ...live, resolvedAtMs: Date.now() };
+      runtime.publish({ phase: "pending", record });
+      live = {
+        ...live,
+        resolvedAtMs: undefined,
+        request: { ...live.request, sessionId: "replacement-session" },
+      };
+      runtime.publish({ phase: "pending", record });
+      live = {
+        ...live,
+        request: { ...live.request, sessionId: record.source.sessionId },
+        expiresAtMs: Date.now() - 1,
+      };
+      runtime.publish({ phase: "pending", record });
+      live = { ...live, expiresAtMs: record.expiresAtMs };
+      manager.runtimeEpoch = "replacement-manager";
+      runtime.publish({ phase: "pending", record });
+      manager.runtimeEpoch = record.runtimeEpoch;
+      managerAvailable = false;
+      runtime.publish({ phase: "pending", record });
+      managerAvailable = true;
+      current = false;
+      runtime.publish({ phase: "pending", record });
+      expect(executionEvents).toEqual([]);
+    },
+  );
 });

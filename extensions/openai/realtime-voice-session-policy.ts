@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type {
   PluginCapabilityCatalogContext,
   PluginCapabilityCatalogHostContext,
@@ -17,9 +18,11 @@ import {
   toOpenAICompatibleRealtimeAudioFormat,
 } from "openclaw/plugin-sdk/realtime-voice-provider";
 import {
+  coerceSecretRef,
   normalizeResolvedSecretInputString,
   normalizeSecretInputString,
 } from "openclaw/plugin-sdk/secret-input";
+import { resolveReadOnlyEnvSecretRef } from "openclaw/plugin-sdk/secret-ref-readonly";
 import {
   asFiniteNumber,
   asFiniteNumberInRange,
@@ -53,8 +56,23 @@ import {
 export type OpenAIRealtimeVoice = (typeof OPENAI_REALTIME_VOICES)[number];
 
 export type OpenAIRealtimeUserMessageOptions = {
-  toolChoice?: { type: "function"; name: string };
+  toolChoice?: "none" | { type: "function"; name: string };
 };
+
+/**
+ * One deferred response.create answers every request queued behind it. `"none"`
+ * outranks a forced call or the default so a later plain request cannot release
+ * an announcement to tools; a forced call outranks the default.
+ */
+export function mergeOpenAIRealtimeResponseToolChoice(
+  pending: OpenAIRealtimeUserMessageOptions["toolChoice"],
+  next: OpenAIRealtimeUserMessageOptions["toolChoice"],
+): OpenAIRealtimeUserMessageOptions["toolChoice"] {
+  if (pending === "none" || next === "none") {
+    return "none";
+  }
+  return next ?? pending;
+}
 
 export type OpenAIRealtimeVoiceProviderConfig = Partial<ReturnType<typeof normalizeProviderConfig>>;
 
@@ -74,7 +92,7 @@ export const OPENAI_REALTIME_MODELS = [
   "gpt-realtime-2",
   ...OPENAI_GPT_LIVE_MODELS,
 ] as const;
-export const OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-4o-mini-transcribe";
+export const OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL = "gpt-live-transcribe";
 export const OPENAI_REALTIME_CAPABILITIES: InternalRealtimeVoiceProviderCapabilities & {
   voicesByModel: Record<string, readonly string[]>;
 } = {
@@ -187,7 +205,54 @@ function normalizeRealtimeBaseUrl(value: unknown): string | undefined {
   return url.toString();
 }
 
-export function normalizeProviderConfig(config: RealtimeVoiceProviderConfig) {
+/**
+ * Known realtime env name hydrated into voice-capable gateway runtimes.
+ * This sync catalog path may resolve ONLY this exact env id, and only when
+ * the caller's gateway config policy allows it (explicit provider
+ * allowlist honored, otherwise the builtin-default predicate). Anything
+ * else needs the snapshot machinery, not here.
+ */
+const OPENAI_REALTIME_ENV_VAR = "OPENAI_REALTIME_API_KEY";
+
+/**
+ * Resolve the configured OpenAI Realtime API key without weakening custody.
+ * The native read-only resolver runs first: explicit literals keep
+ * precedence, absence stays absence (downstream auth refuses), and the
+ * exact intended realtime env ref resolves only when gateway config policy
+ * allows. Blocked refs (named providers, other env names, file/exec refs,
+ * allowlist denials, unhydrated values) fail closed via the strict snapshot
+ * read on the coerced structured form — inline template strings
+ * ($NAME/${NAME}) would otherwise be minted as literals by the
+ * literal-first strict read (config-loader substitution normally runs
+ * before it); structured, they throw natively. SecretRefs stay in storage;
+ * nothing here writes back.
+ */
+function normalizeOpenAIRealtimeConfiguredApiKey(
+  value: unknown,
+  path: string,
+  cfg?: OpenClawConfig,
+): string | undefined {
+  // Pre-coerce so string-form refs ($NAME/${NAME}) enter the native helper
+  // as structured refs: the inspect read is literal-first for raw strings
+  // and would otherwise mint template text as bearer values.
+  const resolution = resolveReadOnlyEnvSecretRef({
+    value: coerceSecretRef(value) ?? value,
+    path,
+    cfg,
+    expectedEnvId: OPENAI_REALTIME_ENV_VAR,
+    normalizeValue: normalizeSecretInputString,
+  });
+  if (resolution.status === "available") {
+    return resolution.value;
+  }
+  if (resolution.status === "missing") {
+    return undefined;
+  }
+  const ref = coerceSecretRef(value);
+  return normalizeResolvedSecretInputString({ value: ref ?? value, path });
+}
+
+export function normalizeProviderConfig(config: RealtimeVoiceProviderConfig, cfg?: OpenClawConfig) {
   const raw = resolveOpenAIProviderConfigRecord(config);
   const baseUrl = normalizeRealtimeBaseUrl(raw.baseUrl);
   const azureEndpoint = normalizeOptionalString(raw.azureEndpoint);
@@ -197,11 +262,12 @@ export function normalizeProviderConfig(config: RealtimeVoiceProviderConfig) {
   }
   return {
     baseUrl,
-    apiKey: normalizeResolvedSecretInputString({
-      value: raw.apiKey,
-      path: "plugins.entries.voice-call.config.realtime.providers.openai.apiKey",
-    }),
-    model: normalizeOptionalString(raw.model),
+    apiKey: normalizeOpenAIRealtimeConfiguredApiKey(
+      raw?.apiKey,
+      "plugins.entries.voice-call.config.realtime.providers.openai.apiKey",
+      cfg,
+    ),
+    model: normalizeOptionalString(raw?.model),
     inputTranscriptionModel: normalizeOptionalString(raw.inputTranscriptionModel),
     // Session creation selects the effective model; an earlier family fallback loses overrides.
     voice: normalizeOptionalLowercaseString(raw.speakerVoice ?? raw.voice),
@@ -302,7 +368,7 @@ export function requireOpenAIRealtimeApiKey(
   const resolved =
     configured || hasOpenAIRealtimeConfiguredApiKeyInput(configuredApiKey)
       ? configured
-      : resolveOpenAIRealtimeSecretInput(process.env.OPENAI_API_KEY);
+      : resolveOpenAIRealtimeEnvApiKey();
   if (resolved) {
     return resolved;
   }
@@ -315,11 +381,21 @@ export function hasOpenAIRealtimeConfiguredApiKeyInput(
   return Boolean(normalizeSecretInputString(configuredApiKey));
 }
 
-export function hasOpenAIRealtimeApiKeyInput(configuredApiKey: string | undefined): boolean {
-  return Boolean(
-    normalizeSecretInputString(configuredApiKey) ??
-    normalizeSecretInputString(process.env.OPENAI_API_KEY),
+/**
+ * Role-scoped environment fallback for the OpenAI Realtime API key.
+ * OPENAI_API_KEY is the long-standing name; OPENAI_REALTIME_API_KEY is the
+ * dedicated realtime name hydrated into voice-capable gateway runtimes.
+ * Precedence preserves existing behavior (OPENAI_API_KEY first).
+ */
+export function resolveOpenAIRealtimeEnvApiKey(): string | undefined {
+  return (
+    normalizeSecretInputString(process.env.OPENAI_API_KEY) ??
+    normalizeSecretInputString(process.env.OPENAI_REALTIME_API_KEY)
   );
+}
+
+export function hasOpenAIRealtimeApiKeyInput(configuredApiKey: string | undefined): boolean {
+  return Boolean(normalizeSecretInputString(configuredApiKey) ?? resolveOpenAIRealtimeEnvApiKey());
 }
 
 export function normalizeOpenAIRealtimeTools(
@@ -381,6 +457,19 @@ export function buildOpenAIRealtimeTurnDetectionConfig(params: {
   };
 }
 
+export function buildOpenAIRealtimeInputTranscriptionConfig(
+  language?: string,
+  hints?: RealtimeVoiceBridgeCreateRequest["transcriptionHints"],
+) {
+  return {
+    model: OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
+    delay: "low" as const,
+    ...(language ? { languages: [language] } : {}),
+    ...(hints?.prompt ? { prompt: hints.prompt } : {}),
+    ...(hints?.keywords?.length ? { keywords: hints.keywords } : {}),
+  };
+}
+
 export function buildOpenAIRealtimeGaSessionPolicy(params: {
   audioFormat?: RealtimeVoiceAudioFormat;
   autoRespondToAudio?: boolean;
@@ -389,6 +478,7 @@ export function buildOpenAIRealtimeGaSessionPolicy(params: {
   interruptResponseOnInputAudio?: boolean;
   inputTranscriptionModel?: string;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   model: string;
   noiseReduction: { type: "near_field" } | null;
   prefixPaddingMs?: number;
@@ -410,12 +500,18 @@ export function buildOpenAIRealtimeGaSessionPolicy(params: {
       input: {
         format,
         noise_reduction: params.noiseReduction,
-        transcription: {
-          model:
-            params.inputTranscriptionModel ??
-            (params.azure ? "whisper-1" : OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL),
-          ...(params.language ? { language: params.language } : {}),
-        },
+        transcription:
+          params.azure ||
+          (params.inputTranscriptionModel &&
+            params.inputTranscriptionModel !== OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL)
+            ? {
+                model: params.inputTranscriptionModel ?? "whisper-1",
+                ...(params.language ? { language: params.language } : {}),
+              }
+            : buildOpenAIRealtimeInputTranscriptionConfig(
+                params.language,
+                params.transcriptionHints,
+              ),
         turn_detection: buildOpenAIRealtimeTurnDetectionConfig({
           autoRespondToAudio: params.autoRespondToAudio,
           includeInterruptResponse: !params.azure,
@@ -467,7 +563,7 @@ export async function resolveOpenAIRealtimePlatformAuth(
   const profileApiKey = await resolveProviderAuthProfileApiKey(
     prepareOpenAIPlatformAuthOptions(params, resolveAgentDir),
   );
-  return profileApiKey || resolveOpenAIRealtimeSecretInput(process.env.OPENAI_API_KEY);
+  return profileApiKey || resolveOpenAIRealtimeSecretInput(resolveOpenAIRealtimeEnvApiKey());
 }
 
 export async function requireOpenAIRealtimePlatformAuth(

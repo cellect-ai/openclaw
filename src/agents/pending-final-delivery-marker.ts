@@ -32,6 +32,8 @@ type PersistPendingFinalDeliveryMarkerParams = {
   deliveryContext?: DeliveryContext;
   runOwnedSessionId: string;
   commandOwnerReference?: CommandOwnerAssertion["recoveryReference"];
+  sourceRunId?: string;
+  sourceGeneration?: string;
   assertCurrent?: () => void;
 };
 
@@ -76,6 +78,8 @@ export async function persistPendingFinalDeliveryMarker(
   const expected = params.admittedSource ?? entry;
   const intentId = randomUUID();
   const deliveryId = randomUUID();
+  const nativePlan = Boolean(params.sourceRunId && params.sourceGeneration);
+  const memberIds = sendablePayloads.map(() => (nativePlan ? randomUUID() : deliveryId));
   const persisted = await applySessionEntryReplacements<SessionEntry | undefined>({
     agentId: params.agentId,
     sessionKeys: [sessionKey],
@@ -97,7 +101,18 @@ export async function persistPendingFinalDeliveryMarker(
         pendingFinalDelivery: {
           kind: "transport-only",
           intentId,
-          deliveries: [{ id: deliveryId, state: "prepared" as const }],
+          deliveries: (nativePlan ? memberIds : [deliveryId]).map((id) => ({
+            id,
+            state: "prepared" as const,
+          })),
+          ...(nativePlan
+            ? {
+                dispatchState: "closed" as const,
+                dispatchClosure: "completed" as const,
+                sourceRunId: params.sourceRunId,
+                sourceGeneration: params.sourceGeneration,
+              }
+            : {}),
           createdAt: now,
           context: params.deliveryContext,
         },
@@ -114,12 +129,15 @@ export async function persistPendingFinalDeliveryMarker(
   const markerPersisted = persisted?.pendingFinalDelivery?.intentId === intentId;
 
   if (markerPersisted) {
-    for (const payload of sendablePayloads) {
+    for (const [index, payload] of sendablePayloads.entries()) {
       setReplyPayloadMetadata(payload, {
         pendingFinalDeliveryCompletion: {
           commandOwnerReference: params.commandOwnerReference,
           agentId: params.agentId,
-          deliveryId,
+          deliveryId: memberIds[index]!,
+          ...(nativePlan
+            ? { sourceRunId: params.sourceRunId, sourceGeneration: params.sourceGeneration }
+            : {}),
           intentId,
           sessionId: params.runOwnedSessionId,
           sessionKey: params.sessionKey,

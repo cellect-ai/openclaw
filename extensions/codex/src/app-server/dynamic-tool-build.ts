@@ -30,6 +30,7 @@ import type { CodexComputerContextEpoch } from "./computer-context.js";
 import { isCodexRemoteExecPlacementSandbox, type CodexPluginConfig } from "./config.js";
 import {
   createCodexHostToolSurface,
+  resolveWorkshopAuthoring,
   resolveCodexToolConstructionPlan,
 } from "./dynamic-tool-construction-plan.js";
 import {
@@ -240,9 +241,7 @@ export async function buildDynamicTools(
             }),
       config: params.config,
       skillsSnapshot: params.skillsSnapshot,
-      ...(params.skillLibraryAuthoring
-        ? { skillWorkshop: { libraryAuthoring: params.skillLibraryAuthoring } }
-        : {}),
+      skillWorkshop: resolveWorkshopAuthoring(params),
       authProfileStore: params.toolAuthProfileStore ?? params.authProfileStore,
       abortSignal: input.runAbortController.signal,
       emitBeforeToolCallDiagnostics: false,

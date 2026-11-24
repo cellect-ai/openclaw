@@ -55,6 +55,7 @@ const slackDefaultActions = [
   "send",
   "channel-create",
   "conversation-open",
+  "thread-reply",
   "react",
   "reactions",
   "read",

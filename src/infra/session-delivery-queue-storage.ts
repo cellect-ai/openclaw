@@ -133,6 +133,8 @@ export async function withSessionDeliveryEnqueueAdmission<T>(
   }
 }
 
+export { resolveSessionDeliveryId } from "./session-delivery-queue.records.js";
+
 function executeSessionDelivery<Key extends keyof SessionDeliveryWorkerOperations>(
   context: OpenClawStateWorkerContext,
   command: { type: Key; input: SessionDeliveryWorkerOperations[Key]["input"] },
@@ -258,9 +260,24 @@ export async function markSessionDeliverySettlement(
 export async function completeSessionDelivery(
   id: string,
   context: OpenClawStateWorkerContext,
+  assertCurrent?: () => void,
 ): Promise<void> {
   try {
-    await executeSessionDelivery(context, { type: "sessionDelivery.complete", input: { id } });
+    const command = { type: "sessionDelivery.complete" as const, input: { id } };
+    if (assertCurrent) {
+      const assertWriteCurrent = () => {
+        context.admission.assertCurrent();
+        assertCurrent();
+      };
+      await runOpenClawStateWorkerOperation(context, (scope) => scope.execute(command), {
+        assertCurrent: assertWriteCurrent,
+        createAdmission: createSqliteWorkerWriteAdmission(assertWriteCurrent, [
+          context.admission.databasePath,
+        ]),
+      });
+    } else {
+      await executeSessionDelivery(context, command);
+    }
   } catch (error) {
     throw new SessionDeliveryAcknowledgementFinalizeError(id, { cause: error });
   }

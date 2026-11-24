@@ -18,6 +18,8 @@ import type { SlackMonitorContext } from "../context.js";
 import { resolveSlackMonitorEventScope, type SlackEventScope } from "../event-scope.js";
 import { resolveSlackIngressTurnLifecycle, resolveSlackSenderAuthentication } from "../ingress.js";
 import type { SlackMessageHandler } from "../message-handler.js";
+import { maybeWarnSlackPaymentDetails } from "../payment-detail-warning.js";
+import { invalidateSlackThreadStarter } from "../thread.js";
 import type { SlackMessageChangedEvent } from "../types.js";
 import { resolveSlackMessageSubtypeHandler } from "./message-subtype-handlers.js";
 import { authorizeAndResolveSlackSystemEventContext } from "./system-event-context.js";
@@ -200,6 +202,15 @@ export function registerSlackMessageEvents(params: {
               if (!ingressContext) {
                 return;
               }
+              const messageTs = subtypeHandler.messageTs;
+              const teamId = eventScope?.teamId ?? ctx.teamId;
+              if (messageTs && teamId && message.channel) {
+                invalidateSlackThreadStarter({
+                  channelId: message.channel,
+                  messageTs,
+                  workspaceScope: { accountId: ctx.accountId, teamId },
+                });
+              }
               enqueueRoutedSystemEvent(
                 subtypeHandler.describe(ingressContext.channelLabel),
                 ingressContext.route,
@@ -270,6 +281,9 @@ export function registerSlackMessageEvents(params: {
           }
           const inbound = assistantChangedInbound ?? message;
           noteConversationMessage(inbound, eventScope);
+          if (source === "message") {
+            void maybeWarnSlackPaymentDetails({ ctx, message: inbound, eventScope });
+          }
           await handleSlackMessage(inbound, {
             source,
             // Assistant metadata identifies an asserted sender, not Slack's event actor.

@@ -620,6 +620,7 @@ export async function prepareAndDispatchEmbeddedRunAttempt(
     disableTrajectory: params.disableTrajectory,
     skillWorkshopReviewOf: params.skillWorkshopReviewOf,
     skillLibraryAuthoring: params.skillLibraryAuthoring,
+    skillWorkshopWorkspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
     promptMode: params.promptMode,
     ownerNumbers: params.ownerNumbers,
     enforceFinalTag: params.enforceFinalTag,

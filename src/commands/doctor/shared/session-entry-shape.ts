@@ -5,6 +5,8 @@ import {
 } from "@openclaw/normalization-core/number-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { inspectLegacyRequesterRecovery } from "../../../config/sessions/legacy-requester-recovery.js";
+import { SessionStoreMigrationRequiredError } from "../../../config/sessions/migration-required.js";
 import { validateSessionId } from "../../../config/sessions/paths.js";
 import { admitCanonicalSessionEntry } from "../../../config/sessions/session-entry-json.js";
 import {
@@ -147,6 +149,8 @@ export function migrateLegacySessionRunOutcome(
   value: Record<string, unknown>,
   updatedAt: unknown = value.updatedAt,
 ): Record<string, unknown> {
+  const requesterRecovery = inspectLegacyRequesterRecovery(value);
+  if (requesterRecovery) throw new SessionStoreMigrationRequiredError(requesterRecovery.warning);
   const tombstone = inspectLegacyRestartTombstone(value);
   if (tombstone && !tombstone.retire) {
     return value;
@@ -218,6 +222,8 @@ export function migrateLegacySessionEntryState(
   value: Record<string, unknown>,
   updatedAt: unknown = value.updatedAt,
 ): SessionEntryStateRepair {
+  const requesterRecovery = inspectLegacyRequesterRecovery(value);
+  if (requesterRecovery) throw new SessionStoreMigrationRequiredError(requesterRecovery.warning);
   const next = { ...value };
   const numericChanges: SessionEntryNumericSnapshot = {};
   if (hasLegacySessionProviderState(value)) {

@@ -1,5 +1,10 @@
 import type { ActiveEmbeddedRunOwner } from "../../agents/embedded-agent-runner/runs.js";
 import { assertAgentRunLifecycleGenerationCurrent } from "../../infra/agent-events.js";
+import {
+  isPersonRunStopReason,
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../../infra/run-stop-actor.js";
 import { persistGatewaySessionLifecycleEvent } from "../session-lifecycle-state.js";
 
 /** Capture the session writer and lifecycle generation before cancellation can yield. */
@@ -10,6 +15,7 @@ export function createSessionAbortPersistence(params: {
   startedAt?: number;
   lifecycleGeneration: string;
   stopReason?: string;
+  stopActor?: VerifiedRunStopActor;
   assertCurrent?: () => void;
 }) {
   return async (
@@ -39,6 +45,10 @@ export function createSessionAbortPersistence(params: {
           status: "cancelled",
           aborted: true,
           stopReason: params.stopReason ?? "rpc",
+          ...(isPersonRunStopReason(params.stopReason ?? "rpc") &&
+          matchesVerifiedRunStopActor(params.stopActor, params)
+            ? { stopActor: params.stopActor }
+            : {}),
           startedAt: owner.startedAtMs ?? params.startedAt,
           endedAt: Date.now(),
         },

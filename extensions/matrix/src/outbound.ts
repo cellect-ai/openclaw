@@ -20,17 +20,32 @@ import {
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
-import { sendMessageMatrix, sendPollMatrix } from "./matrix/send.js";
+import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
+import {
+  editMessageMatrix,
+  redactMessageMatrix,
+  sendMessageMatrix,
+  sendPollMatrix,
+} from "./matrix/send.js";
 import type { MatrixExtraContentFields } from "./matrix/send/types.js";
 import { matrixPresentationCapabilities } from "./presentation-capabilities.js";
 
 const MATRIX_OPENCLAW_PRESENTATION_KEY = "com.openclaw.presentation" as const;
 const MATRIX_OPENCLAW_PRESENTATION_TYPE = "message.presentation" as const;
+const MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY = "com.openclaw.voice_transcript" as const;
 const MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT = "---";
 
 type MatrixChannelData = {
+  editEventId?: string;
+  /** Previous voice transcript to redact after this threaded replacement lands. */
+  supersedeEventId?: string;
   extraContent?: MatrixExtraContentFields;
 };
+
+function resolveMatrixEditEventId(payload: ReplyPayload): string | undefined {
+  const editEventId = resolveMatrixChannelData(payload).editEventId?.trim();
+  return editEventId || undefined;
+}
 
 function toMatrixOutboundResult<T extends { roomId: string }>(result: T) {
   const { roomId, ...delivery } = result;
@@ -60,13 +75,18 @@ function resolveMatrixPresentationContent(
 function renderMatrixPresentationPayload(params: {
   payload: ReplyPayload;
   presentation: MessagePresentation;
+  fallbackText?: string;
 }): ReplyPayload {
   const matrixData = resolveMatrixChannelData(params.payload);
-  const fallbackText = renderMessagePresentationFallbackText({
-    text: params.payload.text,
-    presentation: params.presentation,
-    emptyFallback: MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT,
-  });
+  // Matrix clients consume the same structured event with different native UI.
+  // Keep the producer's complete readable body instead of flattening its controls twice.
+  const fallbackText = params.fallbackText?.trim()
+    ? params.fallbackText
+    : renderMessagePresentationFallbackText({
+        text: params.payload.text,
+        presentation: params.presentation,
+        emptyFallback: MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT,
+      });
   return {
     ...params.payload,
     text: fallbackText,
@@ -90,8 +110,12 @@ export function prepareMatrixReplyPayload(payload: ReplyPayload): Promise<ReplyP
   return renderPresentationForDelivery(
     {
       presentationCapabilities: matrixPresentationCapabilities,
-      renderPresentation: (prepared) =>
-        renderMatrixPresentationPayload({ payload: prepared, presentation: prepared.presentation }),
+      renderPresentation: (prepared, _sourcePresentation, fallbackText) =>
+        renderMatrixPresentationPayload({
+          payload: prepared,
+          presentation: prepared.presentation,
+          fallbackText,
+        }),
     },
     payload,
   );
@@ -110,7 +134,68 @@ export function resolveMatrixExtraContent(
   payload: ReplyPayload,
 ): MatrixExtraContentFields | undefined {
   const presentation = resolveMatrixPresentationContent(payload);
-  return presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : undefined;
+  const raw = asOptionalRecord(resolveMatrixChannelData(payload).extraContent);
+  const voice = asOptionalRecord(raw?.[MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]);
+  const trustedVoice =
+    voice?.version === 1 &&
+    voice.type === "voice.transcript" &&
+    (voice.role === "user" || voice.role === "assistant") &&
+    typeof voice.id === "string"
+      ? voice
+      : undefined;
+  // Decision transport only. The application/business owner verifies the
+  // authenticated reviewer and immutable target before accepting any action.
+  const decision = asOptionalRecord(raw?.["ai.cellect.card"]);
+  const trustedDecision =
+    decision?.type === "m.cellect.decision" &&
+    decision.version === 1 &&
+    decision.kind === "workflowApproval" &&
+    typeof decision.id === "string" &&
+    /^[A-Z0-9]{6}$/.test(decision.id) &&
+    decision.workflowRef === `admin-action:${decision.id}` &&
+    Number.isSafeInteger(decision.revision) &&
+    Number(decision.revision) > 0 &&
+    typeof decision.title === "string" &&
+    decision.title.length > 0 &&
+    decision.title.length <= 80 &&
+    !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(decision.title) &&
+    typeof decision.summary === "string" &&
+    decision.summary.trim().length > 0 &&
+    decision.summary.length <= 280 &&
+    !/[\p{Cc}\p{Cf}\u2028\u2029]/u.test(decision.summary) &&
+    Number.isSafeInteger(decision.expiresAtMs) &&
+    typeof decision.status === "string" &&
+    ["pending", "held", "approved", "declined", "expired", "cancelled"].includes(decision.status) &&
+    Array.isArray(decision.decisions) &&
+    decision.decisions.length > 0 &&
+    decision.decisions.length <= 3 &&
+    decision.decisions.every((item) => ["approve", "hold", "decline", "resume"].includes(item))
+      ? {
+          type: decision.type,
+          version: decision.version,
+          kind: decision.kind,
+          id: decision.id,
+          revision: decision.revision,
+          status: decision.status,
+          title: decision.title,
+          summary: decision.summary,
+          decisions: decision.decisions,
+          expiresAtMs: decision.expiresAtMs,
+          workflowRef: decision.workflowRef,
+          ...(typeof decision.decidedByUserId === "string" &&
+          /^@[^\s:]+:[^\s]+$/.test(decision.decidedByUserId)
+            ? { decidedByUserId: decision.decidedByUserId }
+            : {}),
+        }
+      : undefined;
+  if (!presentation && !trustedVoice && !trustedDecision) {
+    return undefined;
+  }
+  return {
+    ...(presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : {}),
+    ...(trustedVoice ? { [MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]: trustedVoice } : {}),
+    ...(trustedDecision ? { "ai.cellect.card": trustedDecision } : {}),
+  };
 }
 
 function resolveMatrixDeliveryProgress(
@@ -123,6 +208,40 @@ function resolveMatrixDeliveryProgress(
         await onDeliveryResult(attachChannelToResult("matrix", toMatrixOutboundResult(result)));
       }
     : undefined;
+}
+
+async function redactSupersededVoiceTranscript(params: {
+  to: string;
+  payload: ReplyPayload;
+  sentMessageId: string | undefined;
+  cfg: Parameters<NonNullable<ChannelOutboundAdapter["sendText"]>>[0]["cfg"];
+  accountId?: string;
+}): Promise<void> {
+  const supersedeEventId = resolveMatrixChannelData(params.payload).supersedeEventId?.trim();
+  if (
+    !supersedeEventId ||
+    !params.sentMessageId ||
+    params.sentMessageId === "unknown" ||
+    params.sentMessageId === supersedeEventId
+  ) {
+    return;
+  }
+  try {
+    await redactMessageMatrix(params.to, supersedeEventId, {
+      cfg: params.cfg,
+      accountId: params.accountId,
+      reason: "Revised voice transcript",
+    });
+  } catch {
+    // The replacement is already in the thread. A failed redaction must not
+    // hide that revision or fail the send.
+    console.warn(
+      JSON.stringify({
+        evt: "matrix.voice_transcript_redact",
+        outcome: "failed",
+      }),
+    );
+  }
 }
 
 async function sendMatrixOutbound(
@@ -204,6 +323,32 @@ export const matrixOutbound: ChannelOutboundAdapter = {
       audioAsVoice: payload.audioAsVoice ?? audioAsVoice,
       onDeliveryResult: resolveMatrixDeliveryProgress(onDeliveryResult),
     };
+    const editEventId = resolveMatrixEditEventId(payload);
+    if (editEventId && urls.length === 0) {
+      const eventId = await editMessageMatrix(to, editEventId, payloadText, {
+        cfg,
+        threadId: resolvedThreadId,
+        accountId: accountId ?? undefined,
+        extraContent: resolveMatrixExtraContent(payload),
+        signal,
+        assertDirectAdapterHandoff,
+      });
+      const roomId = to.replace(/^room:/i, "");
+      return attachChannelToResult(
+        "matrix",
+        toMatrixOutboundResult({
+          messageId: eventId,
+          roomId,
+          primaryMessageId: editEventId,
+          content: payloadText,
+          receipt: createMessageReceiptFromOutboundResults({
+            kind: "text",
+            ...(resolvedThreadId ? { threadId: resolvedThreadId } : {}),
+            results: [{ channel: "matrix", messageId: editEventId, roomId }],
+          }),
+        }),
+      );
+    }
     const sendPart = (text: string, index: number, mediaUrl?: string) =>
       send(to, text, {
         ...sendOptions,
@@ -211,6 +356,14 @@ export const matrixOutbound: ChannelOutboundAdapter = {
         replyToId: resolveReplyToId(),
         deliveryPartIndex: index,
         deliveryPartCount: urls.length || 1,
+        publication: resolveMatrixReplyPublication(
+          payload,
+          accountId ?? undefined,
+          undefined,
+          resolvedThreadId,
+          index,
+          index === (urls.length || 1) - 1,
+        ),
         extraContent: index === 0 ? resolveMatrixExtraContent(payload) : undefined,
       });
     if (urls.length > 0) {
@@ -239,6 +392,13 @@ export const matrixOutbound: ChannelOutboundAdapter = {
       );
     }
     const result = await sendPart(payloadText, 0);
+    await redactSupersededVoiceTranscript({
+      to,
+      payload,
+      sentMessageId: result.messageId,
+      cfg,
+      accountId: accountId ?? undefined,
+    });
     return attachChannelToResult("matrix", toMatrixOutboundResult(result));
   },
   sendText: (ctx) => sendMatrixOutbound(ctx),

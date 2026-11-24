@@ -214,6 +214,7 @@ describe("plugin session extension SessionEntry projection", () => {
     const reservedSlots = {
       workflow: "updatedAt",
       "restart-resume": "resumeAfterRestart",
+      "run-timeout": "timeoutSeconds",
       "main-recovery": "mainRestartRecovery",
       "requester-source": "restartRecoveryRequesterSource",
       recovery: "subagentRecovery",

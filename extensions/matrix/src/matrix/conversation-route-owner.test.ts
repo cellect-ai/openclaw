@@ -22,6 +22,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { matrixPlugin } from "../channel.js";
 import { installMatrixTestRuntime } from "../test-runtime.js";
 import { loadMatrixCredentials, saveMatrixCredentials } from "./credentials.js";
+import { removeBindingRecord, setBindingRecord } from "./thread-bindings-shared.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(async () => {
@@ -282,6 +283,48 @@ describe("inactive Matrix account scopes", () => {
       installMatrixTestRuntime({ cfg });
 
       expect(await resolveOwner(cfg, accountId, channel("!room:example.org"))).toEqual(expected);
+    },
+  );
+});
+
+describe("resolveMatrixConversationRouteOwner read-only projections", () => {
+  it.each(["session-projection-read-only", "session-projection-slack-direct"])(
+    "applies native Matrix continuation permission for %s",
+    async (boundBy) => {
+      const binding = {
+        accountId: "default",
+        conversationId: "$projection",
+        parentConversationId: "!projected:example.org",
+        targetKind: "acp" as const,
+        targetSessionKey: "agent:finance:slack:channel:c123:thread:1.000001",
+        boundBy,
+        boundAt: 1,
+        lastActivityAt: 1,
+      };
+      setBindingRecord(binding);
+      try {
+        for (const threadId of [undefined, "$projection"]) {
+          expect(
+            await resolveOwner(
+              {
+                channels: {
+                  matrix: { homeserver: "https://matrix.example.org", accessToken: "token" },
+                },
+              },
+              "default",
+              { kind: "channel", peerId: "!projected:example.org", threadId },
+            ),
+          ).toMatchObject(
+            // A read-only projection blocks native continuation; a Slack direct
+            // projection leaves ordinary Matrix routing in charge.
+            boundBy === "session-projection-read-only"
+              ? { kind: "unavailable" }
+              : { kind: "agent" },
+          );
+        }
+      } finally {
+        removeBindingRecord(binding);
+      }
     },
   );
 });

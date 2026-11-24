@@ -401,7 +401,7 @@ export function handleToolExecutionStart(
         name: toolName,
         toolCallId,
         ...(evt.parentToolCallId ? { parentToolCallId: evt.parentToolCallId } : {}),
-        args: asOptionalObjectRecord(args),
+        args: asOptionalObjectRecord(projectToolArgumentEnvironment(args)),
         ...(hideFromChannelProgress ? { hideFromChannelProgress: true } : {}),
       },
     });
@@ -463,3 +463,4 @@ export function handleToolExecutionStart(
       ),
   );
 }
+import { projectToolArgumentEnvironment } from "../logging/tool-argument-environment.js";

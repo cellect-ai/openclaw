@@ -3,6 +3,7 @@ import path from "node:path";
 import { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
 import type { SessionSourceAssertion } from "../config/sessions/session-source-authority.js";
+import { emitAgentEvent } from "../infra/agent-events.js";
 import { recordDiagnosticToolExecutionDeadline } from "../infra/diagnostic-tool-execution-liveness.js";
 import type { EventSessionRoutingPolicy } from "../infra/event-session-routing.js";
 import {
@@ -234,6 +235,17 @@ export async function runExecProcess({
   /** Start-time routing policy for detached exec system events. */
   eventRouting?: EventSessionRoutingPolicy;
   notifyDeliveryContext?: DeliveryContext;
+  /** Agent run that started this command; binds its completion to that run. */
+  originRunId?: string;
+  /** Exact tool execution owner, distinct from completion-notification routing. */
+  executionOwner?: {
+    agentId?: string;
+    sessionKey?: string;
+    runId?: string;
+    toolCallId: string;
+  };
+  /** Restrict this sandbox command's descendants to its native process lifetime. */
+  closeProcessTree?: boolean;
   timeoutSec: number | null;
   /** Whether exec may return a supervised session for later continuation. */
   processContinuationAvailable?: boolean;
@@ -249,6 +261,11 @@ export async function runExecProcess({
   initiateSpawn?: SpawnInitiation;
   releaseSpawn?: (reason?: "retry") => void;
 }): Promise<ExecProcessHandle> {
+  if (opts.closeProcessTree && (!opts.sandbox?.prepareProcessCleanup || opts.usePty)) {
+    throw registerTrustedToolNoStartError(
+      new Error("Sandbox process-tree cleanup is unavailable for this command."),
+    );
+  }
   const requestSignal = execRequestAbortSignal(opts.requestOwners);
   const startupSignal =
     requestSignal && initialStartupSignal
@@ -284,6 +301,7 @@ export async function runExecProcess({
         sandboxContainerName: opts.sandbox?.containerName,
         cleanupMs: resolveProcessCleanupMs(opts.cleanupMs),
         agentId: opts.agentId,
+        originRunId: opts.originRunId,
         eventRouting: opts.eventRouting,
         notifyDeliveryContext: normalizeDeliveryContext(opts.notifyDeliveryContext),
         notifyOnExit: opts.notifyOnExit,
@@ -432,7 +450,7 @@ export async function runExecProcess({
           throw new Error("Command descendant cleanup could not be confirmed");
         }
       }
-      if (outcome.exitReason !== "exit") {
+      if (outcome.exitReason !== "exit" || opts.closeProcessTree) {
         beginSandboxTermination();
       }
       await sandboxTermination;
@@ -453,6 +471,27 @@ export async function runExecProcess({
         const message = errors.map((error) => formatErrorMessage(error)).join("\n");
         throw new AggregateError(errors, message);
       }
+      const owner = opts.executionOwner;
+      if (
+        opts.closeProcessTree &&
+        sandboxTermination !== undefined &&
+        owner?.runId &&
+        owner.sessionKey &&
+        owner.agentId
+      ) {
+        // Native cleanup proof, not a model-visible tool result or a turn-end guess.
+        // Emit before releasing this process's owner; background exits use this same path.
+        emitAgentEvent({
+          runId: owner.runId,
+          stream: "sandbox_process",
+          data: {
+            phase: "cleanup-complete",
+            toolCallId: owner.toolCallId,
+            sessionKey: owner.sessionKey,
+            agentId: owner.agentId,
+          },
+        });
+      }
     } catch (error) {
       session.finalizationFailed = true;
       recordAgentCleanupFailure();
@@ -472,14 +511,19 @@ export async function runExecProcess({
       appendOutput(session, "stderr", `\n${detail}\n`);
       finalOutcome.aggregated = session.aggregated.trim();
     } finally {
-      finalOutcome = await settleExecProcessExit({
-        session,
-        outcome: finalOutcome,
-        onSettledBeforeNotify,
-        notifyOnExit: (settledSession, status) =>
-          maybeNotifyOnExit(settledSession, status, opts.subagentSession === true),
-        failureOutcome: runtimeErrorOutcome,
-      });
+      try {
+        finalOutcome = await settleExecProcessExit({
+          session,
+          outcome: finalOutcome,
+          onSettledBeforeNotify,
+          notifyOnExit: (settledSession, status) =>
+            maybeNotifyOnExit(settledSession, status, opts.subagentSession === true),
+          failureOutcome: runtimeErrorOutcome,
+        });
+      } finally {
+        session.finalizing = false;
+        delete session.originRunId;
+      }
     }
     return finalOutcome;
   };

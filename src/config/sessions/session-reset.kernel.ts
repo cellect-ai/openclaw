@@ -1,4 +1,5 @@
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import { assertNoPendingFinalProjectionDebt } from "./pending-final-delivery-receipt.js";
 import {
   assertLifecycleTargetSnapshotUnchanged,
   sqliteSessionEntriesEqual,
@@ -19,6 +20,7 @@ export function applySessionResetInDatabase(
   const snapshot = readLifecycleTargetSnapshot(database, input.target);
   assertLifecycleTargetSnapshotUnchanged(input.prepared, snapshot, "reset");
   const current = snapshot[0];
+  assertNoPendingFinalProjectionDebt(current?.entry);
   const progressCardReset = Boolean(
     input.resetBoundary &&
     current?.entry.sessionId &&

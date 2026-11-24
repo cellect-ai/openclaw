@@ -6,6 +6,7 @@ import { FailoverError } from "../../agents/failover-error.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
 import { LiveSessionModelSwitchError } from "../../agents/live-model-switch-error.js";
 import { ProviderAuthError } from "../../agents/model-auth.js";
+import { toSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { getReplyPayloadMetadata } from "../reply-payload.js";
 import type { TemplateContext } from "../templating.js";
 import { SILENT_REPLY_TOKEN } from "../tokens.js";
@@ -117,6 +118,47 @@ function createOpenAiServiceUnavailableError() {
 }
 
 describe("executeAgentTurn: provider failures", () => {
+  it.each([false, true])(
+    "reports sandbox preparation separately from inference (control UI=%s)",
+    async (controlUi) => {
+      const error = toSandboxProvisioningError(
+        new Error("Docker sandbox exec timed out; private-container-canary"),
+        "docker",
+      );
+      state.isInternalMessageChannelMock.mockReturnValue(controlUi);
+      state.runEmbeddedAgentMock.mockRejectedValueOnce(error);
+      const result = await executeTestTurn({ sessionCtx: createDirectFailureSessionCtx() });
+      expect(result.kind).toBe("final");
+      if (result.kind === "final") {
+        expect(result.payload.isError).toBe(true);
+        expect(result.payload.text).toContain("a problem on our side");
+        expect(result.payload.text).not.toMatch(/workspace|runtime|administrator/u);
+        expect(result.payload.text).not.toContain("LLM request failed");
+        expect(result.payload.text).not.toContain("private-container-canary");
+      }
+    },
+  );
+
+  it("attributes a sandbox failure to the background follow-up", async () => {
+    state.runEmbeddedAgentMock.mockRejectedValueOnce(
+      toSandboxProvisioningError(
+        new Error("Sandbox mounts changed; private-container-canary"),
+        "docker",
+      ),
+    );
+    const result = await executeTestTurn(
+      { sessionCtx: createDirectFailureSessionCtx() },
+      { isHeartbeat: true, opts: { useHeartbeatFailureCopy: false } },
+    );
+    expect(result.kind).toBe("final");
+    if (result.kind === "final") {
+      expect(result.payload.isError).toBe(true);
+      expect(result.payload.text).toContain("background follow-up");
+      expect(result.payload.text).not.toContain("Please try again");
+      expect(result.payload.text).not.toContain("private-container-canary");
+    }
+  });
+
   it("preserves item-conflict recovery in the Control UI reply and saved notice", async () => {
     const expected =
       "⚠️ The AI service could not recover saved conversation state (item_conflict). Retry this turn. If it still fails, run /compact or choose another model, and share the Gateway logs with the operator.";

@@ -5,6 +5,7 @@ import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transc
 import { steerActiveSessionWithOptionalDeliveryWait } from "../embedded-agent-runner/run/attempt-queue-message.js";
 import * as questionDispatch from "../harness/gateway-question-dispatch.js";
 import type { AgentHarnessQuestionGatewayCall as GatewayCall } from "../harness/gateway-question-dispatch.js";
+import { isToolResultError } from "../tool-result-error.js";
 import {
   cancelAskUserPromptDelivery,
   createAskUserTool,
@@ -414,6 +415,9 @@ describe("ask_user", () => {
 
     expect(result.details).toEqual({ status: "no_answer" });
     expect(result.content[0]).toMatchObject({ text: expect.stringContaining(text) });
+    expect(result.content[0]).toMatchObject({
+      text: expect.stringContaining("Consequential unresolved facts and consent remain unanswered"),
+    });
     if (status === "pending") {
       expect(gateway.mock).toHaveBeenCalledWith(
         "question.resolve",
@@ -565,10 +569,18 @@ describe("ask_user", () => {
     expect(deliveryError).not.toBeInstanceOf(ReplyDispatchDeliveryError);
     settleAskUserPromptDelivery(reservation.questionId, deliveryError);
 
-    await expect(pending).resolves.toMatchObject({
+    const failedResult = await pending;
+    expect(isToolResultError(failedResult)).toBe(true);
+    expect(failedResult).toMatchObject({
       terminate: true,
-      details: { status: "delivery_failed" },
-      content: [expect.objectContaining({ text: expect.stringMatching(/no retry\/fallback/i) })],
+      details: { status: "delivery_failed", ok: false },
+      content: [
+        expect.objectContaining({
+          text: expect.stringContaining(
+            "Question delivery could not be confirmed. The question was cancelled; do not send a duplicate prompt automatically.",
+          ),
+        }),
+      ],
     });
     expectCancelled(gateway, reservation.questionId, "prompt-delivery-failed");
     expect(gateway.mock.mock.calls.some((call) => call[0] === "question.waitAnswer")).toBe(true);

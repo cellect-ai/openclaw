@@ -266,6 +266,7 @@ export function createGatewayRequestContext(
     }
   }
   const context: GatewayRequestContext = {
+    lifecycleScheduler: runtime.scheduler,
     trackExecution: (run) => connectionWork.track(run),
     deps: runtime.deps,
     configRevisionProjector: params.configRevisionProjector,

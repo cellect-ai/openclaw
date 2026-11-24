@@ -140,6 +140,7 @@ export type RunCliAgentParams = Pick<
   onBeforeFreshCliSessionRetry?: (params: CliSessionRetryParams) => boolean | Promise<boolean>;
   /** Effective turn-local exec policy resolved before entering the CLI runtime. */
   execOverrides?: ExecPolicyOverrides;
+  skillWorkshopWorkspaceAuthoring?: import("../../skills/workshop/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
   /** Server-authored origin for fresh automation mutations from this CLI run. */
   cronCreatorCallerOrigin?: CronScheduledToolCallerOrigin;
   /** Exact native plus canonical OpenClaw surface for a selectable CLI backend. */

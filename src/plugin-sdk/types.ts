@@ -1,5 +1,6 @@
 export type {
   PluginHookAgentTrigger,
+  PluginHookRequesterContinuation,
   PluginHookBeforeToolCallEvent,
   PluginHookBeforeToolCallResult,
   PluginHookSkillArtifact,

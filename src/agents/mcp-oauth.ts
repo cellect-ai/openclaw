@@ -16,6 +16,7 @@ import {
 } from "./mcp-oauth-identity.js";
 import {
   createMcpOAuthClientProvider,
+  hasUnboundMcpOAuthCredentials,
   type McpOAuthConfig,
   type McpOAuthLoginLifecycle,
   withMcpOAuthLeaseSignal,
@@ -147,6 +148,11 @@ export async function resolveMcpOAuthAccessToken(
       admitted = true;
       const store = await readMcpOAuthStore(storeKey, context);
       await lease.assertOwned();
+      if (hasUnboundMcpOAuthCredentials(store)) {
+        throw new Error(
+          `MCP server "${params.identity.serverName}" has OAuth credentials without a trustworthy issuer. Run openclaw mcp login ${params.identity.serverName} to sign in again.`,
+        );
+      }
       const tokens = store.tokens;
       const rejectedCurrentToken = params.rejectedAccessToken === tokens?.access_token;
       const challengeAppliesToCurrentState = !tokens?.access_token || rejectedCurrentToken;
@@ -412,6 +418,8 @@ export async function startMcpOAuthAuthorization(
       // A fenced refresh claim blocks every token use, so only a new sign-in can clear it.
       if (
         opts.login &&
+        !hasUnboundMcpOAuthCredentials(store) &&
+        store.lastAuthorizationUrl === undefined &&
         store.tokens?.access_token &&
         !store.refreshClaim &&
         store.pendingAuthorizationChallenge?.requiresAuthorization !== true &&

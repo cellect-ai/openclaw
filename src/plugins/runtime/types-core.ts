@@ -362,6 +362,10 @@ export type PluginRuntimeCore = {
           captureSource?: (assertCurrent: () => void) => void;
         },
       ) => RuntimeSessionStoreEntrySummary[];
+      /** Lists durable keys without parsing per-session entry JSON. */
+      listSessionKeys: (
+        params?: Partial<Omit<RuntimeSessionStoreReadParams, "sessionKey">>,
+      ) => Promise<string[]>;
       /** Read-only metadata listing; saved prompts and other detached snapshots are omitted. */
       listSessionEntriesAsync: typeof import("../../plugin-sdk/session-store-runtime.js").listSessionEntriesAsync;
       /** Exact selected entries retained through a synchronous disclosure callback. */
@@ -505,6 +509,7 @@ export type PluginRuntimeCore = {
     ) => Promise<import("../../web-search/runtime-types.js").RunWebSearchResult>;
   };
   events: {
+    registerConversationLifecycleTransport: typeof import("../../infra/conversation-lifecycle.js").registerConversationLifecycleTransport;
     onAgentEvent: typeof import("../../infra/agent-events.js").onAgentEvent;
     onSessionTranscriptUpdate: typeof import("../../sessions/transcript-events.js").onSessionTranscriptUpdate;
   };

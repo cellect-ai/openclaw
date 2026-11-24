@@ -10,6 +10,10 @@ import {
   hasReplyPayloadSpeechContent,
   setReplyPayloadMetadata,
 } from "../reply-payload.js";
+import {
+  isReplyPublicationPrefixWithheld,
+  recordReplyPublicationPrefix,
+} from "../reply-publication.js";
 import { HEARTBEAT_TOKEN, isInternalFormattingArtifact } from "../tokens.js";
 import type { ReplyPayload } from "../types.js";
 import type {
@@ -19,6 +23,7 @@ import type {
 import {
   resolveResponsePrefixTemplate,
   type ResponsePrefixContext,
+  UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN,
 } from "./response-prefix-template.js";
 
 export type { NormalizeReplySkipReason } from "./normalize-reply-skip-reason.js";
@@ -153,22 +158,35 @@ export function normalizeReplyPayloadOutcome(
     text = enrichedPayload.text;
   }
 
-  const effectivePrefix = opts.responsePrefixContext
-    ? resolveResponsePrefixTemplate(opts.responsePrefix, opts.responsePrefixContext)
-    : opts.responsePrefix;
+  // A prefix whose variables cannot all be resolved on this path (for example
+  // {sender.mention} on a routed continuation) is omitted, never sent literally.
+  const resolvedPrefix = resolveResponsePrefixTemplate(
+    opts.responsePrefix,
+    opts.responsePrefixContext ?? {},
+  );
+  const effectivePrefix =
+    resolvedPrefix && UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(resolvedPrefix)
+      ? undefined
+      : resolvedPrefix;
 
+  let synthesizedPrefix: string | undefined;
   if (
     effectivePrefix &&
     text &&
     text.trim() !== HEARTBEAT_TOKEN &&
-    !text.startsWith(effectivePrefix)
+    !text.startsWith(effectivePrefix) &&
+    !isReplyPublicationPrefixWithheld(enrichedPayload, effectivePrefix)
   ) {
     const prefix = `${effectivePrefix} `;
     text = `${prefix}${text}`;
     setReplyPayloadMetadata(enrichedPayload, { responsePrefix: prefix });
+    synthesizedPrefix = effectivePrefix;
   }
 
   enrichedPayload = copyReplyPayloadMetadata(enrichedPayload, { ...enrichedPayload, text });
+  if (synthesizedPrefix !== undefined) {
+    recordReplyPublicationPrefix(enrichedPayload, synthesizedPrefix);
+  }
   return { kind: "deliver", payload: enrichedPayload };
 }
 

@@ -1,5 +1,4 @@
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
-import { isExecutionIdentityCollectionEnabled } from "../../../audit/audit-config.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
 import { resolveRunProjectRequester } from "../../../gateway/project-access.js";
 import * as execOwners from "../../../infra/exec-request-context.js";
@@ -16,8 +15,7 @@ import {
 import { withGatewayToolOperatorContinuation } from "../../tools/gateway-caller-context.js";
 import { cleanupMaterializedSubagentAttachments } from "../subagent-attachment-cleanup.js";
 import { activateSwarmRun } from "../swarm/swarm-scheduler.js";
-import { readParentExecutionIdentity } from "./execution-identity-spawn-context.js";
-import { materializeSubagentAttachments } from "./subagent-attachments.js";
+import { materializeSubagentSpawnAttachments } from "./subagent-parent-attachments.js";
 import { resolveSubagentChildPlan } from "./subagent-spawn-child-plan.js";
 import {
   bindSubagentSpawnCleanup,
@@ -42,15 +40,8 @@ import type {
   SpawnSubagentParams,
   SpawnSubagentResult,
 } from "./subagent-spawn-contract.js";
-import {
-  buildSubagentExecutionSessionSpawnContext,
-  withSubagentGatewayExecutionIdentity,
-} from "./subagent-spawn-execution-identity.js";
-import {
-  callNativeSubagentGateway,
-  captureSubagentSpawnGatewayContext,
-  readGatewayRunId,
-} from "./subagent-spawn-gateway.js";
+import { dispatchPreparedSubagentChild } from "./subagent-spawn-dispatch.js";
+import { captureSubagentSpawnGatewayContext, readGatewayRunId } from "./subagent-spawn-gateway.js";
 import { buildSubagentLaunchRequest } from "./subagent-spawn-launch-request.js";
 import {
   createSubagentSpawnLifecycleEmitter,
@@ -58,6 +49,10 @@ import {
 } from "./subagent-spawn-lifecycle.js";
 import { applySubagentProfile } from "./subagent-spawn-profile.js";
 import { resolveSubagentSpawnRequest } from "./subagent-spawn-request.js";
+import {
+  mintSubagentRequesterBinding,
+  type SubagentRequesterBindingHandle,
+} from "./subagent-spawn-requester-binding.js";
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
@@ -313,12 +308,30 @@ export async function spawnSubagentDirect(
         : expectsCompletionMessage
           ? "announce"
           : "quiet";
+    const materializedAttachments = await runWithAgentToolSourceExecutionScope(assertActive, () =>
+      materializeSubagentSpawnAttachments({
+        assertActive,
+        config: cfg,
+        childSessionKey,
+        targetAgentId,
+        sandboxed: childRuntimeSandboxed,
+        attachments: params.attachments,
+        mountPathHint: params.attachMountPath,
+        parentTurnMedia: ctx.parentTurnMedia,
+      }),
+    );
+    if (materializedAttachments && materializedAttachments.status !== "ok") {
+      return materializedAttachments;
+    }
+    const attachmentId = materializedAttachments?.attachmentId;
     const envelope = prompt.buildSubagentSpawnEnvelope({
       completionMode,
       completionTarget: params.completionTarget,
       soleCollectorChild: soleImplicitMember,
       spawnMode,
-      task: params.task,
+      task: materializedAttachments?.taskSuffix
+        ? `${params.task}\n\n${materializedAttachments.taskSuffix}`
+        : params.task,
       requesterSessionKey: ctx.agentSessionKey,
       requesterOrigin: childSessionOrigin,
       childSessionKey,
@@ -334,22 +347,7 @@ export async function spawnSubagentDirect(
       params.outputSchema,
     );
 
-    const materializedAttachments = await runWithAgentToolSourceExecutionScope(assertActive, () =>
-      materializeSubagentAttachments({
-        assertActive,
-        config: cfg,
-        childSessionKey,
-        targetAgentId,
-        sandboxed: childRuntimeSandboxed,
-        attachments: params.attachments,
-        mountPathHint: params.attachMountPath,
-      }),
-    );
-    if (materializedAttachments && materializedAttachments.status !== "ok") {
-      return materializedAttachments;
-    }
-    const attachmentId = materializedAttachments?.attachmentId;
-    if (materializedAttachments) {
+    if (materializedAttachments?.systemPromptSuffix) {
       childSystemPrompt = `${childSystemPrompt}\n\n${materializedAttachments.systemPromptSuffix}`;
     }
 
@@ -378,7 +376,7 @@ export async function spawnSubagentDirect(
       swarmSchedulerGroupKey,
       swarmMaxConcurrent: swarmConfig.maxConcurrent,
     });
-    const { childLaunch, progressOrigin, spawnedMetadata } = launchContext;
+    const { progressOrigin, spawnedMetadata } = launchContext;
     const recordRequesterParticipation = await recordSubagentSessionSetup({
       cfg,
       childEntry,
@@ -390,42 +388,39 @@ export async function spawnSubagentDirect(
       promptedAt,
     });
     let acceptedChildRunId: string | undefined;
+    let requesterBinding: SubagentRequesterBindingHandle | undefined;
     const launchChildRun = async (assertDispatchCurrent?: () => void) => {
-      const launch = await runWithAgentToolSourceExecutionScope(assertDispatchCurrent, () =>
-        callNativeSubagentGateway(
-          withSubagentGatewayExecutionIdentity(
-            {
-              method: "agent",
-              assertDispatchCurrent,
-              params: childLaunch.request,
-              timeoutMs: childLaunch.timeoutMs,
-            },
-            {
-              sessionSpawnContext: buildSubagentExecutionSessionSpawnContext({
-                enabled: isExecutionIdentityCollectionEnabled(cfg),
-                backend: "subagent",
-                parentAgentId: requesterAgentId,
-                requesterRef: requesterInternalKey,
-                controllerRef: ownership.controllerSessionKey,
-                depth: childDepth,
-                maxDepth: maxSpawnDepth,
-                targetAgentId,
-                sandbox: sandboxMode,
-                inheritedToolAllowlist: ctx.inheritedToolAllowlist,
-                inheritedToolDenylist: ctx.inheritedToolDenylist,
-              }),
-              parentExecutionIdentityToken: readParentExecutionIdentity(ctx),
-            },
-          ),
-          {
-            authorization: childLaunch.authorization,
-            gatewayContextResolver,
-            requester,
-            preparedLaunch: launchContext.preparedLaunch,
-          },
-        ),
-      );
+      requesterBinding?.revoke();
+      requesterBinding = mintSubagentRequesterBinding({
+        parentRunId: params.collect ? undefined : ctx.requesterRunId,
+        requesterChannel: ctx.agentChannel,
+        completionTarget: params.completionTarget,
+        childRunId: childIdem,
+        childAgentId: targetAgentId,
+        childSessionKey,
+        childSessionId: childEntry?.sessionId,
+        runTimeoutSeconds,
+      });
+      const launch = await dispatchPreparedSubagentChild({
+        launchContext,
+        assertDispatchCurrent,
+        cfg,
+        ctx,
+        requesterAgentId,
+        requesterInternalKey,
+        childDepth,
+        maxSpawnDepth,
+        targetAgentId,
+        sandboxMode,
+        gatewayContextResolver,
+        requester,
+        controllerSessionKey: ownership.controllerSessionKey,
+      });
       acceptedChildRunId = readGatewayRunId(launch.response) ?? childIdem;
+      if (acceptedChildRunId !== childIdem) {
+        // The lineage names the run it was minted for; another run keeps only provenance.
+        requesterBinding?.rekey(acceptedChildRunId);
+      }
       cleanupOwner?.bindAcceptedRun(acceptedChildRunId);
       return launch;
     };
@@ -585,11 +580,12 @@ export async function spawnSubagentDirect(
           queued: params.collect === true,
           ...(gatewayContextResolver ? { gatewayContextResolver } : {}),
           attachmentId,
-          retainAttachmentsOnKeep: materializedAttachments?.retainOnSessionKeep ?? false,
+          retainAttachmentsOnKeep: retainOnSessionKeep,
         };
       },
     });
     if (!pipelineResult.ok) {
+      requesterBinding?.revoke();
       const { phase, error } = pipelineResult;
       const spawnStatus =
         error && typeof error === "object" && "spawnStatus" in error

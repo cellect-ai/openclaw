@@ -88,6 +88,66 @@ describe("session-delivery queue storage", () => {
     });
   });
 
+  it("persists a delayed completion fallback with its original session binding", async () => {
+    await withSessionDeliveryQueue(async (_stateDir, queueContext) => {
+      const queued = await enqueueClaimed(
+        {
+          kind: "completionFallback",
+          sessionKey: "agent:cellect-fi-admin:device:abc",
+          sessionId: "session-1",
+          runId: "run-1",
+          agentId: "cellect-fi-admin",
+          route: { channel: "slack", to: "user:U123", accountId: "fi-admin" },
+          text: "The answer",
+          ownerDeviceId: "device-abc",
+          idempotencyKey: "webchat-completion:agent:cellect-fi-admin:device:abc:run-1",
+        },
+        60_000,
+        queueContext,
+      );
+
+      expect(await loadPending(queued.id, queueContext)).toMatchObject({
+        kind: "completionFallback",
+        sessionKey: "agent:cellect-fi-admin:device:abc",
+        runId: "run-1",
+        route: { channel: "slack", to: "user:U123", accountId: "fi-admin" },
+        availableAt: expect.any(Number),
+      });
+    });
+  });
+
+  it("keeps completion pending when the viewing authority is revoked during worker admission", async () => {
+    await withSessionDeliveryQueue(async (_stateDir, queueContext) => {
+      const queued = await enqueueClaimed(
+        {
+          kind: "completionFallback",
+          sessionKey: "agent:main:browser",
+          sessionId: "browser",
+          runId: "view-run",
+          agentId: "main",
+          route: { channel: "slack", to: "user:owner" },
+          text: "answer",
+          ownerDeviceId: "owner-device",
+          idempotencyKey: "view-revoked",
+        },
+        60_000,
+        queueContext,
+      );
+      let current = true;
+      const pending = complete(queued.id, queueContext, () => {
+        if (!current) throw new Error("viewer revoked");
+      });
+      current = false;
+      await expect(pending).rejects.toThrow();
+      expect(await loadPending(queued.id, queueContext)).toMatchObject({
+        id: queued.id,
+        kind: "completionFallback",
+      });
+      await complete(queued.id, queueContext, () => {});
+      expect(await loadPending(queued.id, queueContext)).toBeNull();
+    });
+  });
+
   it("reports a dead-letter conflict instead of claiming it as pending", async () => {
     await withSessionDeliveryQueue(async (_stateDir, queueContext) => {
       const payload = agentTurn("image:task-dead-letter:agent-loop", {

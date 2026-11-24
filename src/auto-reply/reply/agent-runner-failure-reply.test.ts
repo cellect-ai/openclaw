@@ -4,6 +4,7 @@ import { AUTH_PROFILE_COOLDOWN_ERROR_CODE } from "../../agents/failover/error.js
 import { ContextPreparationTimeoutError } from "../../agents/failover/local-preparation-error.js";
 import { GENERIC_EXTERNAL_RUN_FAILURE_TEXT } from "../../agents/failover/user-copy.js";
 import { AgentHarnessPreflightError } from "../../agents/harness/errors.js";
+import { toSandboxProvisioningError } from "../../agents/sandbox/provisioning-error.js";
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import { SkillResourceDeliveryLimitError } from "../../skills/runtime/resource-delivery-error.js";
 import { SkillLibraryError } from "../../skills/skill-library-error.js";
@@ -255,3 +256,35 @@ it("preserves local capacity guidance through provider-looking wrappers without 
   expect(knownReply(provider)?.text).not.toContain("local workers");
   expect(knownReply(provider)).toBeDefined();
 });
+
+it.each(["Docker sandbox exec timed out", "401 unauthorized", "529 overloaded"])(
+  "attributes sandbox %s to workspace setup rather than the model",
+  (detail) => {
+    const error = toSandboxProvisioningError(
+      new Error(`${detail}; private-container-canary`),
+      "docker",
+    );
+    const reply = buildExternalRunFailureReply({ message: error.message, error });
+    expect(reply.isGenericRunnerFailure).toBe(false);
+    expect(reply.text).toContain("a problem on our side");
+    expect(reply.text).not.toMatch(/workspace|runtime|administrator/u);
+    expect(reply.text).not.toContain("LLM request failed");
+    expect(reply.text).not.toContain("private-container-canary");
+    expect(reply.text).not.toContain("/new");
+  },
+);
+
+it.each([
+  { options: { isHeartbeat: true }, background: true },
+  { options: { isHeartbeat: false, useHeartbeatFailureCopy: true }, background: false },
+  { options: { isHeartbeat: true, useHeartbeatFailureCopy: false }, background: true },
+])(
+  "attributes workspace failures to the actual turn source: $options",
+  ({ options, background }) => {
+    const error = toSandboxProvisioningError(new Error("private-diagnostic-canary"), "docker");
+    const reply = buildExternalRunFailureReply({ message: error.message, error }, options);
+    expect(reply.text.includes("background follow-up")).toBe(background);
+    expect(reply.text.includes("Please try again")).toBe(!background);
+    expect(reply.text).not.toContain("private-diagnostic-canary");
+  },
+);

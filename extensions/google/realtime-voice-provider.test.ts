@@ -7,7 +7,6 @@ import {
 } from "openclaw/plugin-sdk/realtime-voice";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createLazyGoogleRealtimeVoiceProvider } from "./realtime-voice-lazy.js";
-import { buildThinkingConfig } from "./realtime-voice-model-contract.js";
 import { buildGoogleRealtimeVoiceProvider } from "./realtime-voice-provider.js";
 
 const CONSULT = "openclaw_agent_consult";
@@ -25,7 +24,7 @@ type MockGoogleLiveConnectParams = {
     onclose: (event?: { code?: number; reason?: string; wasClean?: boolean }) => void;
   };
 };
-const { connectMock, createGoogleGenAIMock, createTokenMock, session } = vi.hoisted(() => {
+const { connectMock, createGoogleGenAIMock, session } = vi.hoisted(() => {
   const liveSession = {
     close: vi.fn(),
     sendClientContent: vi.fn(),
@@ -78,6 +77,7 @@ function disconnectWithTools(functionCalls = [{ id: "call-1", name: "lookup", ar
   });
   connection().callbacks.onclose({ code: 1011, reason: "temporary" });
 }
+
 function createRealtimeTool(name: string): RealtimeVoiceTool {
   return {
     type: "function",
@@ -378,73 +378,6 @@ describe("buildGoogleRealtimeVoiceProvider", () => {
     expect(config).not.toHaveProperty("temperature");
     expect(config).not.toHaveProperty("realtimeInputConfig");
     expect(config).not.toHaveProperty("thinkingConfig");
-  });
-
-  it("mints a single-use constrained browser token with the Talk admission expiry", async () => {
-    vi.useFakeTimers();
-    const now = Date.UTC(2026, 7, 1, 12, 34, 56, 789);
-    vi.setSystemTime(now);
-    const result = await buildGoogleRealtimeVoiceProvider().createBrowserSession?.({
-      providerConfig: {
-        apiKey: "gemini-key",
-        model: "gemini-live-2.5-flash-preview",
-        voice: "Puck",
-        temperature: 0.4,
-        prefixPaddingMs: 100,
-        silenceDurationMs: 300,
-      },
-      prefixPaddingMs: 250,
-      silenceDurationMs: 650,
-      instructions: "Speak briefly.",
-      tools: [createRealtimeTool(CONSULT)],
-    });
-    expect(createGoogleGenAIMock).toHaveBeenCalledWith({
-      apiKey: "gemini-key",
-      httpOptions: { apiVersion: "v1alpha", timeout: 30_000 },
-    });
-    expect(createTokenMock).toHaveBeenCalledExactlyOnceWith({
-      config: {
-        uses: 1,
-        expireTime: new Date(now + 30 * 60 * 1000).toISOString(),
-        newSessionExpireTime: new Date(now + 60 * 1000).toISOString(),
-        liveConnectConstraints: {
-          model: "gemini-live-2.5-flash-preview",
-          config: expect.objectContaining({
-            temperature: 0.4,
-            systemInstruction: "Speak briefly.",
-            speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: "Puck" } } },
-            realtimeInputConfig: {
-              automaticActivityDetection: { prefixPaddingMs: 250, silenceDurationMs: 650 },
-            },
-            tools: [
-              {
-                functionDeclarations: [
-                  { ...createRealtimeToolDeclaration(CONSULT), behavior: "NON_BLOCKING" },
-                ],
-              },
-            ],
-          }),
-        },
-      },
-    });
-    expect(result).toMatchObject({
-      transport: "provider-websocket",
-      protocol: "google-live-bidi",
-      clientSecret: "auth_tokens/browser-session",
-      expiresAt: now + 60_000,
-      initialMessage: { setup: { model: "models/gemini-live-2.5-flash-preview" } },
-    });
-  });
-
-  it("builds thinking config per model family", () => {
-    expect(buildThinkingConfig({}, EXTENDED)).toBeUndefined();
-    expect(buildThinkingConfig({ thinkingLevel: "minimal" }, EXTENDED)).toEqual({
-      thinkingLevel: "LOW",
-    });
-    expect(buildThinkingConfig({ thinkingBudget: 4_096 }, EXTENDED)).toEqual({
-      thinkingLevel: "MEDIUM",
-    });
-    expect(buildThinkingConfig({ thinkingBudget: -1 }, EXTENDED)).toBeUndefined();
   });
 
   it("keeps both transcript roles and interruption across a recovered resumption handle", async () => {

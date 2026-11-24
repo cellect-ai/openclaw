@@ -264,7 +264,49 @@ RUN --mount=type=cache,id=openclaw-trixie-apt-cache,target=/var/cache/apt,sharin
     DEBIAN_FRONTEND=noninteractive apt-get dist-upgrade -y && \
     DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
       acl ca-certificates curl e2fsprogs git hostname libgomp1 lsof openssh-client openssl procps psmisc python3 tini && \
-    update-ca-certificates
+    update-ca-certificates && \
+    dpkg --compare-versions "$(dpkg-query -W -f='${Version}' ca-certificates)" ge 20250419~deb12u2
+
+# eMudhra distrust (2026-10-21): Node and OpenSSL clients read the patched OS
+# store explicitly, and every Chromium the gateway can launch distrusts the 16
+# compromised intermediates plus emSign ECC Root CA - G3 by managed policy.
+# The policy ships here, outside /home/node, so it also covers an older
+# Chromium left on a retained home volume.
+# Chrome for Testing reads /etc/opt/chrome_for_testing; the other two cover
+# Google Chrome and Debian Chromium.
+ENV SSL_CERT_FILE=/etc/ssl/certs/ca-certificates.crt \
+    SSL_CERT_DIR=/etc/ssl/certs
+# Create the policy directories first: COPY --chmod would otherwise create
+# them 0644, and a non-root Chromium could not read the policy (fail-open).
+RUN install -d -m 0755 /etc/opt/chrome_for_testing/policies/managed \
+      /etc/opt/chrome/policies/managed /etc/chromium/policies/managed
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome_for_testing/policies/managed/cellect-emudhra-distrust.json
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/opt/chrome/policies/managed/cellect-emudhra-distrust.json
+COPY --chmod=0644 scripts/docker/chromium-policies/cellect-emudhra-distrust.json /etc/chromium/policies/managed/cellect-emudhra-distrust.json
+# chrome-headless-shell (Playwright's default for headless launches) has no
+# managed-policy loader, so the same 17 certificates are also distrusted in
+# the user's NSS DB: here for root and (below) node, and again at container
+# start for the runtime HOME, because /home/node is a retained volume in
+# Compose deployments and the image layer never reaches it.
+RUN --mount=type=cache,id=openclaw-trixie-apt-cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,id=openclaw-trixie-apt-lists,target=/var/lib/apt,sharing=locked \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends libnss3-tools
+COPY --chmod=0755 scripts/docker/cellect-nss-distrust.sh /usr/local/bin/cellect-nss-distrust
+RUN install -d -m 0755 /etc/cellect /etc/cellect/emudhra-distrust && \
+    node -e 'const fs = require("node:fs"); const { X509Certificate } = require("node:crypto"); JSON.parse(fs.readFileSync(process.argv[1], "utf8")).CADistrustedCertificates.forEach((der, i) => fs.writeFileSync(`/etc/cellect/emudhra-distrust/${String(i).padStart(2, "0")}.pem`, new X509Certificate(Buffer.from(der, "base64")).toString(), { mode: 0o644 }))' \
+      /etc/chromium/policies/managed/cellect-emudhra-distrust.json && \
+    HOME=/root cellect-nss-distrust
+ENV OPENCLAW_NSS_DISTRUST_SEED=/usr/local/bin/cellect-nss-distrust
+
+# The Cellect runtime entrypoint hydrates role-scoped secrets through Infisical
+# before starting OpenClaw. Keep this operator/runtime dependency in the image;
+# it is not supplied by the host or Compose overlay.
+ARG INFISICAL_CLI_VERSION=0.43.58
+RUN curl -1sLf 'https://artifacts-cli.infisical.com/setup.deb.sh' | bash && \
+    apt-get install -y --no-install-recommends "infisical=${INFISICAL_CLI_VERSION}" && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/*
 
 # Keep npm as an operator-facing capability while replacing the base image's
 # bundled CLI dependency tree with the current release. The published package
@@ -371,7 +413,12 @@ RUN --mount=type=cache,id=openclaw-trixie-apt-cache,target=/var/cache/apt,sharin
 # explicit executablePath on a separate headless browser profile.
 # Must run after node_modules COPY so playwright-core is available.
 ARG OPENCLAW_INSTALL_BROWSER=""
-ENV PLAYWRIGHT_BROWSERS_PATH=/home/node/.cache/ms-playwright
+# The browsers stay in the image, outside /home/node: Compose retains /home/node
+# as a named volume, which Docker seeds only once, so a browser installed there
+# never updates on later deploys (gateways kept Chrome 145 and 153 across
+# Playwright bumps). Root-owned so the runtime cannot replace a binary it launches.
+# The symlink keeps the old path for volume-less runs and newly created volumes.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN --mount=type=cache,id=openclaw-trixie-apt-cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,id=openclaw-trixie-apt-lists,target=/var/lib/apt,sharing=locked \
     set -eu; \
@@ -382,10 +429,13 @@ RUN --mount=type=cache,id=openclaw-trixie-apt-cache,target=/var/cache/apt,sharin
       headless-shell) set -- --only-shell ;; \
       *) echo 'OPENCLAW_INSTALL_BROWSER must be empty, 0, 1, chromium, or headless-shell' >&2; exit 1 ;; \
     esac; \
-    install -d -m 0755 -o node -g node "$(dirname "$PLAYWRIGHT_BROWSERS_PATH")" && \
+    apt-get update && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends xvfb && \
     mkdir -p "$PLAYWRIGHT_BROWSERS_PATH" && \
     node /app/node_modules/playwright-core/cli.js install --with-deps "$@" chromium && \
-    chown -R node:node "$PLAYWRIGHT_BROWSERS_PATH"
+    chmod -R a+rX,go-w "$PLAYWRIGHT_BROWSERS_PATH" && \
+    install -d -m 0755 -o node -g node /home/node/.cache && \
+    ln -s "$PLAYWRIGHT_BROWSERS_PATH" /home/node/.cache/ms-playwright
 
 # Optionally install Docker CLI for sandbox container management.
 # Build with: docker build --build-arg OPENCLAW_INSTALL_DOCKER_CLI=1 ...
@@ -455,6 +505,11 @@ USER node
 
 # Verify the shipped toolchain needs no privileged writes or first-run downloads.
 RUN COREPACK_ENABLE_NETWORK=0 PNPM_CONFIG_OFFLINE=true pnpm --version
+# The Chromium distrust policy must be readable by the unprivileged user too.
+RUN for d in /etc/opt/chrome_for_testing /etc/opt/chrome /etc/chromium; do \
+      test -r "$d/policies/managed/cellect-emudhra-distrust.json" || exit 1; \
+    done && \
+    cellect-nss-distrust
 
 # Start gateway server with default config.
 # In a detected container, an unset gateway.bind defaults to auto (0.0.0.0)

@@ -15,6 +15,10 @@ import {
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
 import {
+  resolveBusinessApprovalConversation,
+  type BusinessApprovalConversation,
+} from "../infra/business-approval-conversation.js";
+import {
   ensureExecApprovalsSocket,
   readExecApprovalsSocket,
 } from "../infra/exec-approvals-socket.js";
@@ -49,6 +53,8 @@ export type AgentRuntimeIdentity = {
   operationalRunInstance: OperationalRunInstanceRef;
   delegatedAuthority: AgentRuntimeDelegatedAuthority;
   approvalOwnerPluginId?: string;
+  approvalOrigin?: "plugin";
+  approvalConversation?: BusinessApprovalConversation;
   executionIdentity?: ExecutionIdentityAdmissionToken;
   turnSourceChannel?: string;
   /** Explicit admission fact; omission is unknown, never inferred from session routing. */
@@ -232,6 +238,8 @@ const agentRuntimeIdentityTokenPayloadSchema = z.object({
   operationalRunInstance: operationalRunInstanceSchema,
   delegatedAuthority: delegatedAuthoritySchema,
   approvalOwnerPluginId: z.string().optional().catch(undefined),
+  approvalOrigin: z.literal("plugin").optional(),
+  approvalConversation: z.object({ title: z.string(), summary: z.string() }).strict().optional(),
   executionIdentity: z.unknown().optional(),
   turnSourceChannel: z.string().optional().catch(undefined),
   turnSourceLocal: z.literal(true).optional(),
@@ -353,6 +361,12 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
     const agentId = normalizeAgentId(raw.agentId);
     const sessionKey = raw.sessionKey.trim();
     const approvalOwnerPluginId = normalizeOptionalString(raw.approvalOwnerPluginId);
+    const approvalConversation = resolveBusinessApprovalConversation({
+      conversation: raw.approvalConversation,
+    });
+    if (raw.approvalConversation && !approvalConversation) {
+      return undefined;
+    }
     const operationalInstanceId = raw.operationalRunInstance.instanceId;
     const operationalRunId = raw.operationalRunInstance.runId;
     const turnSourceAccountId = normalizeOptionalAccountId(raw.turnSourceAccountId);
@@ -412,6 +426,12 @@ function parsePayload(value: unknown, nowMs: number): AgentRuntimeIdentityTokenP
       operationalRunInstance,
       delegatedAuthority,
       ...(approvalOwnerPluginId ? { approvalOwnerPluginId } : {}),
+      ...(approvalOwnerPluginId && raw.approvalOrigin === "plugin"
+        ? { approvalOrigin: "plugin" as const }
+        : {}),
+      ...(approvalConversation && approvalOwnerPluginId && raw.approvalOrigin === "plugin"
+        ? { approvalConversation }
+        : {}),
       ...(turnSourceChannel ? { turnSourceChannel } : {}),
       ...(turnSourceLocal ? { turnSourceLocal } : {}),
       ...(turnSourceTo ? { turnSourceTo } : {}),
@@ -439,6 +459,8 @@ export type AgentRuntimeIdentityTokenParams = Omit<
   AgentRuntimeIdentity,
   "kind" | "delegatedAuthority" | "executionIdentity" | "cronSelfManagementContext"
 > & {
+  approvalOrigin?: "plugin";
+  approvalConversation?: BusinessApprovalConversation;
   executionIdentityToken?: ExecutionIdentityAdmissionToken;
   cronSelfManagementJobId?: string;
   executionLineageHandoffId?: string;
@@ -543,6 +565,18 @@ function prepareAgentRuntimeIdentityTokenPayload(
     delegatedAuthority,
     ...(normalizeOptionalString(params.approvalOwnerPluginId)
       ? { approvalOwnerPluginId: normalizeOptionalString(params.approvalOwnerPluginId) }
+      : {}),
+    ...(params.approvalOwnerPluginId?.trim() && params.approvalOrigin === "plugin"
+      ? { approvalOrigin: "plugin" as const }
+      : {}),
+    ...(params.approvalConversation &&
+    params.approvalOwnerPluginId?.trim() &&
+    params.approvalOrigin === "plugin"
+      ? {
+          approvalConversation: resolveBusinessApprovalConversation({
+            conversation: params.approvalConversation,
+          }),
+        }
       : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(params.turnSourceLocal === true ? { turnSourceLocal: true } : {}),

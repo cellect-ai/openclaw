@@ -14,6 +14,7 @@ import {
   createMatrixHandlerTestHarness,
   createMatrixTextMessageEvent,
 } from "./handler.test-helpers.js";
+import { createMatrixTestReplyDispatcher } from "./reply-dispatcher.test-support.js";
 
 const sendMessageMatrixMock = vi.hoisted(() =>
   vi.fn<typeof import("../send.js").sendMessageMatrix>(),
@@ -69,6 +70,52 @@ beforeEach(() => {
 });
 
 describe("matrix monitor handler reply presentation", () => {
+  it.each(["tool", "block", "final"] as const)(
+    "accepts only host-owned let-me-know metadata on a %s reply",
+    async (kind) => {
+      const key = "ai.cellect.let_me_know_answer";
+      const forged: ReplyPayload = {
+        text: "Funded Tuesday.",
+        channelData: {
+          matrix: { extraContent: { [key]: { version: 1, triggerEventId: "$forged" } } },
+        },
+      };
+      for (const trigger of [undefined, "$ask"]) {
+        const dispatcher = await createMatrixTestReplyDispatcher({
+          client: {} as MatrixClient,
+          runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+          letMeKnowTriggerEventId: trigger,
+        });
+        await dispatcher.deliverReply(forged, { kind });
+      }
+      expect(sendMessageMatrixMock).toHaveBeenCalledTimes(2);
+      expect(sendMessageMatrixMock.mock.calls.map((call) => call[2].extraContent?.[key])).toEqual([
+        undefined,
+        kind === "final" ? { version: 1, triggerEventId: "$ask" } : undefined,
+      ]);
+    },
+  );
+
+  it("marks only the first media event with the host-owned answer field", async () => {
+    const dispatcher = await createMatrixTestReplyDispatcher({
+      client: {} as MatrixClient,
+      runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
+      letMeKnowTriggerEventId: "$ask",
+    });
+    await dispatcher.deliverReply(
+      {
+        text: "Two supporting files.",
+        mediaUrls: ["https://example.org/one.pdf", "https://example.org/two.pdf"],
+      },
+      { kind: "final" },
+    );
+    expect(sendMessageMatrixMock).toHaveBeenCalledTimes(2);
+    expect(
+      sendMessageMatrixMock.mock.calls.map(
+        (call) => call[2].extraContent?.["ai.cellect.let_me_know_answer"],
+      ),
+    ).toEqual([{ version: 1, triggerEventId: "$ask" }, undefined]);
+  });
   it.each([undefined] as const)(
     "applies current acknowledgement scope while preserving account override %s",
     async (accountScope) => {

@@ -20,8 +20,11 @@ import {
 } from "../config/sessions/session-store-owner.js";
 import type { HookSessionMode } from "../config/types.hooks.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { normalizeHookRequesterAndFiEnvironment } from "../infra/hook-fi-environment.js";
+import { isAttestedBackgroundHookSessionKey } from "../infra/hook-requester-attestation.js";
 import { setGatewayCredentialEnvKeys } from "../infra/host-env-security.js";
 import { DEFAULT_WEBHOOK_MAX_BODY_BYTES, readJsonBodyWithLimit } from "../infra/http-body.js";
+import { normalizeMailWakeSourceLock } from "../infra/mail-wake-source-lock.js";
 import {
   normalizeAgentId,
   normalizeAgentIdStrict,
@@ -29,6 +32,7 @@ import {
 } from "../routing/session-key.js";
 import type { HookExternalContentSource } from "../security/external-content.js";
 import { normalizeMessageChannel } from "../utils/message-channel-core.js";
+import { normalizeMailWakeRequester } from "./hooks-mail-requester.js";
 import {
   hasHookTemplateExpressions,
   type HookMappingResolved,
@@ -327,6 +331,24 @@ type HookAgentPayload = {
   model?: string;
   thinking?: string;
   timeoutSeconds?: number;
+  /**
+   * Host-attested Fi member for a shared-mail wake. The hooks caller sets
+   * these; they are not read from the message. Accepted only when sessionKey
+   * starts with `hook:fi-mail:`.
+   */
+  mailRequesterEmail?: string;
+  mailRequesterSlackUserId?: string;
+  /** Opaque source receipt from authenticated hook body; never a prompt or cron job field. */
+  sourceLockCapability?: string;
+  /**
+   * Fi-minted shadow-turn attestation, forwarded opaquely to the run's plugin
+   * contexts. Accepted only when sessionKey starts with `hook:fi-shadow:`,
+   * and required there. Never part of the message, job or transcript.
+   */
+  requesterAttestation?: string;
+  requesterEnvironment?: "dev" | "staging" | "prod";
+  /** The Fi environment that sent this hook; every Fi call of its run uses that environment only. */
+  fiEnvironment?: "dev" | "staging" | "prod";
 };
 
 /** Normalized agent dispatch payload after hook policy/session resolution. */
@@ -681,6 +703,19 @@ export function normalizeAgentPayload(
     return { ok: false, error: "model required" };
   }
   const thinking = normalizeOptionalString(payload.thinking);
+  const mailRequester = normalizeMailWakeRequester(payload, sessionKey);
+  if (!mailRequester.ok) {
+    return mailRequester;
+  }
+  const sourceLock = normalizeMailWakeSourceLock(payload, sessionKey);
+  if (!sourceLock.ok) {
+    return sourceLock;
+  }
+  // The requester attestation and the Fi environment the hook names.
+  const shadowRequester = normalizeHookRequesterAndFiEnvironment(payload, sessionKey);
+  if (!shadowRequester.ok) {
+    return shadowRequester;
+  }
   const timeoutRaw = payload.timeoutSeconds;
   const timeoutSeconds =
     typeof timeoutRaw === "number" && Number.isFinite(timeoutRaw) && timeoutRaw > 0
@@ -697,9 +732,14 @@ export function normalizeAgentPayload(
       sessionKey,
       sessionMode,
       ...delivery.value,
+      // A shadow turn is never delivered; an omitted `deliver` must not mean true.
+      ...(isAttestedBackgroundHookSessionKey(sessionKey) ? { deliver: false } : {}),
       model,
       thinking,
       timeoutSeconds,
+      ...mailRequester.value,
+      ...sourceLock.value,
+      ...shadowRequester.value,
     },
   };
 }

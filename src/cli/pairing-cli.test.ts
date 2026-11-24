@@ -39,6 +39,7 @@ const pairingRequest = {
   code: "ABCDEFGH",
   createdAt: "2026-01-08T00:00:00Z",
   lastSeenAt: "2026-01-08T00:00:00Z",
+  status: "pending" as const,
 };
 
 function configSnapshot(ownerAllowFrom?: string[]) {

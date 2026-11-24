@@ -3,10 +3,7 @@ import {
   normalizeStringifiedOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
 import type { Command } from "commander";
-import type {
-  ChannelsPairingCliListResult,
-  ChannelsPairingCodeApproveResult,
-} from "../../packages/gateway-protocol/src/schema/channel-pairing.js";
+import type { ChannelsPairingCodeApproveResult } from "../../packages/gateway-protocol/src/schema/channel-pairing.js";
 import { GATEWAY_SERVER_CAPS } from "../../packages/gateway-protocol/src/server-capabilities.js";
 import { terminalText } from "../../packages/terminal-core/src/safe-text.js";
 import {
@@ -19,7 +16,12 @@ import { listPairingChannels, notifyPairingApproved } from "../channels/plugins/
 import { captureRuntimeConfigAsyncReader } from "../config/config.js";
 import { bootstrapCommandOwnerFromPairing } from "../pairing/command-owner.js";
 import { resolvePairingIdLabel } from "../pairing/pairing-labels.js";
+import {
+  isPairingRequestStale,
+  resolvePairingRequestStatus,
+} from "../pairing/pairing-store-model.js";
 import { approveChannelPairingCode, listChannelPairingRequests } from "../pairing/pairing-store.js";
+import type { PairingRequest } from "../pairing/pairing-store.js";
 import type { PairingChannel } from "../pairing/pairing-store.types.js";
 import { defaultRuntime } from "../runtime.js";
 import { formatCliCommand } from "./command-format.js";
@@ -75,7 +77,7 @@ export function registerPairingCli(program: Command) {
 
   pairing
     .command("list")
-    .description("List pending pairing requests")
+    .description("List pairing requests, including expired and resolved history")
     .option("--channel <channel>", `Channel (${channelHint})`)
     .option("--account <accountId>", "Account id (for multi-account channels)")
     .argument("[channel]", `Channel (${channelHint})`)
@@ -103,7 +105,9 @@ export function registerPairingCli(program: Command) {
         }
       }
       const accountId = resolveAccountId(opts.account);
-      const requests = await runWithLocalStateOwner<ChannelsPairingCliListResult>({
+      // The local-owner path reads full store records (status included), not the
+      // status-stripped remote wire shape.
+      const requests = await runWithLocalStateOwner<PairingRequest[]>({
         method: "channels.pairing.list",
         params: { channel, format: "cli", ...(accountId ? { accountId } : {}) },
         target: `${channel} pairing requests`,
@@ -116,29 +120,43 @@ export function registerPairingCli(program: Command) {
         return;
       }
       if (requests.length === 0) {
-        defaultRuntime.log(theme.muted(terminalText`No pending ${channel} pairing requests.`));
+        defaultRuntime.log(theme.muted(terminalText`No ${channel} pairing requests.`));
         return;
       }
+      const nowMs = Date.now();
       const idLabel = resolvePairingIdLabel(channel);
       const tableWidth = getTerminalTableWidth();
+      const pendingCount = requests.filter(
+        (r) => resolvePairingRequestStatus(r, nowMs) === "pending",
+      ).length;
       defaultRuntime.log(
-        `${theme.heading("Pairing requests")} ${theme.muted(`(${requests.length})`)}`,
+        `${theme.heading("Pairing requests")} ${theme.muted(
+          `(${pendingCount} pending, ${requests.length - pendingCount} resolved or expired)`,
+        )}`,
       );
       defaultRuntime.log(
         renderTerminalSafeTable({
           width: tableWidth,
           columns: [
+            { key: "Status", header: "Status", minWidth: 9 },
             { key: "Code", header: "Code", minWidth: 10 },
             { key: "ID", header: terminalText`${idLabel}`, minWidth: 12, flex: true },
             { key: "Meta", header: "Meta", minWidth: 8, flex: true },
             { key: "Requested", header: "Requested", minWidth: 12 },
           ],
-          rows: requests.map((r) => ({
-            Code: r.code,
-            ID: r.meta?.senderId ?? r.id,
-            Meta: r.meta ? JSON.stringify(r.meta) : "",
-            Requested: r.createdAt,
-          })),
+          rows: requests.map((r) => {
+            const status = resolvePairingRequestStatus(r, nowMs);
+            return {
+              // A request nobody answered must not read like a routine one.
+              Status: isPairingRequestStale(r, nowMs) ? `${status} (stale)` : status,
+              // Only a pending code can be approved; showing a dead one invites
+              // an operator to type a command that cannot work.
+              Code: status === "pending" ? r.code : "-",
+              ID: r.meta?.senderId ?? r.id,
+              Meta: r.meta ? JSON.stringify(r.meta) : "",
+              Requested: r.createdAt,
+            };
+          }),
         }).trimEnd(),
       );
     });
@@ -180,7 +198,9 @@ export function registerPairingCli(program: Command) {
       });
       if (!approved) {
         throw new Error(
-          `No pending pairing request found for code "${String(resolvedCode)}". Run ${formatCliCommand(`openclaw pairing list --channel ${channel}`)} to list pending requests.`,
+          `No pending pairing request found for code "${String(resolvedCode)}". An expired ` +
+            `request keeps its history but cannot be approved; ask the sender to message again ` +
+            `for a fresh code. Run ${formatCliCommand(`openclaw pairing list --channel ${channel}`)} to see every request and its status.`,
         );
       }
 

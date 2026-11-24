@@ -8,6 +8,7 @@ import type {
   ApprovalPresentation,
 } from "../../packages/gateway-protocol/src/index.js";
 import { sanitizeApprovalScope } from "./approval-scope.js";
+import { decisionCardsEnabled } from "./business-approval-conversation.js";
 import { resolveExecApprovalCommandDisplay } from "./exec-approval-command-display.js";
 import {
   exceedsApprovalTextLimit,
@@ -129,6 +130,9 @@ function buildApprovalPresentation(
     }
     return {
       kind: "plugin",
+      ...(decisionCardsEnabled() && request.approvalOrigin === "plugin"
+        ? { origin: "plugin" as const }
+        : {}),
       title,
       description,
       ...(detail ? { detail } : {}),

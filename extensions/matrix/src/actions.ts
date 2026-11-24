@@ -23,6 +23,7 @@ const MATRIX_PLUGIN_HANDLED_ACTIONS = new Set<ChannelMessageActionName>([
   "reactions",
   "emoji-list",
   "read",
+  "download-file",
   "edit",
   "delete",
   "pin",
@@ -92,7 +93,7 @@ function describeMatrixMessageTool(
       }
     }
   };
-  addGatedActions("messages", "send", "read", "edit", "delete");
+  addGatedActions("messages", "send", "read", "download-file", "edit", "delete");
   addGatedActions("reactions", "react", "reactions", "emoji-list");
   addGatedActions("pins", "pin", "unpin", "list-pins");
   if (gate("profile") && senderIsOwner === true) {
@@ -118,6 +119,24 @@ function describeMatrixMessageTool(
         ),
         after: Type.Optional(
           Type.String({ description: `${cursor} pages toward newer messages.` }),
+        ),
+      },
+    });
+  }
+  if (actions.has("download-file")) {
+    schema.push({
+      actions: ["download-file"],
+      properties: {
+        messageId: Type.Optional(
+          Type.String({
+            description:
+              "Matrix event ID ($...) of an attachment in the authorized target room. Read it with action=read, then use action=download-file to reopen an earlier image or file.",
+          }),
+        ),
+        original: Type.Optional(
+          Type.Boolean({
+            description: "Stage the original file without an inline image preview.",
+          }),
         ),
       },
     });
@@ -166,6 +185,7 @@ export const matrixMessageActions: ChannelMessageActionAdapter = {
   providerOwnedReadGates: true,
   readAuthorityActions: [
     "read",
+    "download-file",
     "reactions",
     "list-pins",
     "emoji-list",

@@ -1,17 +1,15 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
-import {
-  Filter,
-  createClient as createMatrixJsClient,
-  type IFilterDefinition,
-  type MatrixClient as MatrixJsClient,
-} from "matrix-js-sdk/lib/matrix.js";
+import type { IFilterDefinition } from "matrix-js-sdk/lib/matrix.js";
+import type { MatrixClient as MatrixJsClient } from "matrix-js-sdk/lib/matrix.js";
+import { Filter, createClient as createMatrixJsClient } from "matrix-js-sdk/lib/matrix.js";
 import { VerificationMethod } from "matrix-js-sdk/lib/types.js";
 import {
   captureChannelReadAuthority,
   withEffectAuthority,
 } from "openclaw/plugin-sdk/fetch-runtime";
+import { getGatewaySuspendLifecycleIdentity } from "openclaw/plugin-sdk/gateway-runtime";
 import { KeyedAsyncQueue } from "openclaw/plugin-sdk/keyed-async-queue";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import type { PinnedDispatcherPolicy } from "openclaw/plugin-sdk/ssrf-dispatcher";
@@ -22,11 +20,10 @@ import type { MatrixSnapshotStateRuntime } from "../crypto-state-store.js";
 import { awaitMatrixStartupWithAbort, throwIfMatrixStartupAborted } from "../startup-abort.js";
 import type { MatrixSyncState } from "../sync-state.js";
 import { bootstrapMatrixClientCrypto } from "./client-crypto-bootstrap.js";
-import {
-  resolveMatrixLocalTimeoutMs,
-  type MatrixOwnDeviceInfo,
-  type MatrixOwnDeviceVerificationStatus,
-} from "./client-support.js";
+import { disableHeadlessMatrixRtc } from "./client-headless-rtc.js";
+import type { MatrixOwnDeviceVerificationStatus } from "./client-support.js";
+import type { MatrixOwnDeviceInfo } from "./client-support.js";
+import { resolveMatrixLocalTimeoutMs } from "./client-support.js";
 import { quiesceMatrixClientSync } from "./client-sync-quiesce.js";
 import { waitForMatrixInitialSyncReady } from "./client-sync-ready.js";
 import type { MatrixCryptoFacade } from "./crypto-facade.js";
@@ -37,10 +34,8 @@ import {
   persistMatrixFinalState,
   runMatrixClientShutdown,
 } from "./crypto-store-lifecycle.js";
-import {
-  acquireMatrixCryptoStoreOwnership,
-  type MatrixCryptoStoreOwnership,
-} from "./crypto-store-ownership.js";
+import type { MatrixCryptoStoreOwnership } from "./crypto-store-ownership.js";
+import { acquireMatrixCryptoStoreOwnership } from "./crypto-store-ownership.js";
 import type { MatrixDecryptBridge } from "./decrypt-bridge.js";
 import { matrixEventToRaw } from "./event-helpers.js";
 import { MatrixAuthedHttpClient } from "./http-client.js";
@@ -53,7 +48,8 @@ import { MatrixRecoveryKeyStore } from "./recovery-key-store.js";
 import { captureMatrixSendCurrentness, withoutMatrixSendCurrentness } from "./send-currentness.js";
 import { MatrixSendScheduler } from "./send-scheduler.js";
 import { createMatrixGuardedFetch } from "./transport.js";
-import type { MatrixClientEventMap, MatrixCryptoBootstrapApi, MatrixRawEvent } from "./types.js";
+import type { MatrixRawEvent } from "./types.js";
+import type { MatrixClientEventMap, MatrixCryptoBootstrapApi } from "./types.js";
 
 type MatrixCryptoRuntime = typeof import("./crypto-runtime.js");
 
@@ -257,6 +253,7 @@ export abstract class MatrixClientBase {
         VerificationMethod.Reciprocate,
       ],
     });
+    disableHeadlessMatrixRtc(this.client);
     // SDK mappers and relations also call this method. Crypto retries belong to
     // the client generation, while their callers retain their own read authority.
     const decryptEventIfNeeded = this.client.decryptEventIfNeeded.bind(this.client);
@@ -512,6 +509,20 @@ export abstract class MatrixClientBase {
     });
   }
 
+  hasPersistedSyncState(): boolean {
+    // Only trust restart replay when the previous process completed a final
+    // sync-store persist. A stale cursor can make Matrix re-surface old events.
+    return this.syncStore?.hasSavedSyncFromCleanShutdown() === true;
+  }
+
+  getSyncCheckpointStatus() {
+    return this.syncStore?.getCheckpointStatus() ?? null;
+  }
+
+  setSyncPersistenceBarrier(barrier: () => Promise<void>): void {
+    this.syncStore?.setPersistenceBarrier(barrier);
+  }
+
   protected async ensureStartedForCryptoControlPlane(): Promise<void> {
     if (this.started) {
       return;
@@ -612,6 +623,7 @@ export abstract class MatrixClientBase {
               });
             },
             syncStore: this.syncStore,
+            shutdownOperation: getGatewaySuspendLifecycleIdentity(),
           });
         }
       },

@@ -1,11 +1,17 @@
 import { beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { MISSING_REPLY_NOTICE_TEXT } from "../../agents/reply-completion.js";
 import type { SessionEntry } from "../../config/sessions/types.js";
+import { ConversationRunStopReason } from "../../infra/run-stop-actor.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import type { TemplateContext } from "../templating.js";
 import { createDispatcher, emptyConfig } from "./dispatch-from-config.shared.test-harness.js";
 import * as dispatch from "./dispatch-from-config.test-support.js";
 import { clearInlineDirectives } from "./get-reply-directives-utils.js";
 import { handleInlineActions } from "./get-reply-inline-actions.js";
+import {
+  recordReplyOperationAgentTurn,
+  resolveReplyOperationRunState,
+} from "./reply-operation-run-state.js";
 import { buildTestCtx } from "./test-ctx.js";
 import { createMockTypingController } from "./test-helpers.js";
 
@@ -13,6 +19,155 @@ beforeAll(dispatch.globalBeforeAll0);
 beforeEach(() => {
   dispatch.describe0BeforeEach0();
   dispatch.setNoAbort();
+});
+
+it.each(
+  ["discord", "matrix"].flatMap((provider) =>
+    (["aborted", "live", "absent"] as const).map((signalState) => ({ provider, signalState })),
+  ),
+)(
+  "settles a typed conversation Stop on $provider without a failure reply (dispatch signal=$signalState)",
+  async ({ provider, signalState }) => {
+    const controller = new AbortController();
+    const dispatcher = createDispatcher();
+    const reason = new ConversationRunStopReason({
+      userId: "@reader:matrix.test",
+      roomId: "!room:matrix.test",
+      threadRootEventId: "$root",
+      agentId: "main",
+      sessionKey: "agent:main:conversation-stop",
+    });
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: provider,
+        Surface: provider,
+        ChatType: "direct",
+        SessionKey: reason.actor.sessionKey,
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyOptions: { abortSignal: signalState === "absent" ? undefined : controller.signal },
+      replyResolver: async () => {
+        if (signalState === "aborted") {
+          controller.abort(reason);
+        }
+        throw reason;
+      },
+    });
+    expect(result.queuedFinal).toBe(false);
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+    expect(result.noVisibleReplyFallbackDelivered).toBeUndefined();
+  },
+);
+
+it.each(["genuine failure", "ConversationRunStopReason"])(
+  "preserves %s as a dispatch error",
+  async (name) => {
+    const controller = new AbortController();
+    const error = Object.assign(new Error("dispatch failure"), { name });
+    const dispatcher = createDispatcher();
+    await expect(
+      dispatchReplyFromConfig({
+        ctx: buildTestCtx({
+          Provider: "matrix",
+          Surface: "matrix",
+          ChatType: "direct",
+          SessionKey: "agent:main:dispatch-failure",
+        }),
+        cfg: emptyConfig,
+        dispatcher,
+        replyOptions: { abortSignal: controller.signal },
+        replyResolver: async () => {
+          throw error;
+        },
+      }),
+    ).rejects.toBe(error);
+    expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+  },
+);
+
+// A Stop can reach only the run's own operation, or only the native run,
+// leaving dispatch's signal live. The runner records the cancelled turn and
+// returns nothing; for a user Stop that is not a missing reply.
+it.each([
+  {
+    name: "native run stopped during the first model call",
+    owner: { result: null },
+    outcome: { kind: "aborted", reason: "user" },
+    fallback: false,
+  },
+  {
+    name: "reply operation aborted by the user",
+    owner: { result: { kind: "aborted", code: "aborted_by_user" } },
+    outcome: undefined,
+    fallback: false,
+  },
+  {
+    name: "native run aborted for restart",
+    owner: { result: null },
+    outcome: { kind: "aborted", reason: "restart" },
+    fallback: true,
+  },
+  {
+    name: "reply operation aborted for restart",
+    owner: { result: { kind: "aborted", code: "aborted_for_restart" } },
+    outcome: undefined,
+    fallback: true,
+  },
+] as const)(
+  "$name with no reply posts fallback=$fallback",
+  async ({ owner, outcome, fallback }) => {
+    const dispatcher = createDispatcher();
+    const result = await dispatchReplyFromConfig({
+      ctx: buildTestCtx({
+        Provider: "matrix",
+        Surface: "matrix",
+        ChatType: "direct",
+        SessionKey: "agent:main:inner-stop",
+      }),
+      cfg: emptyConfig,
+      dispatcher,
+      replyOptions: { abortSignal: new AbortController().signal },
+      replyResolver: async (_inbound, opts) => {
+        recordReplyOperationAgentTurn(
+          [resolveReplyOperationRunState(opts)!],
+          owner as unknown as ReplyOperation,
+          outcome,
+        );
+        return undefined;
+      },
+    });
+    if (fallback) {
+      expect(dispatcher.sendFinalReply).toHaveBeenCalledOnce();
+    } else {
+      expect(dispatcher.sendFinalReply).not.toHaveBeenCalled();
+      expect(result.noVisibleReplyFallbackDelivered).toBeUndefined();
+    }
+  },
+);
+
+it("still posts the fallback after a failed agent turn with no reply", async () => {
+  const dispatcher = createDispatcher();
+  const result = await dispatchReplyFromConfig({
+    ctx: buildTestCtx({
+      Provider: "matrix",
+      Surface: "matrix",
+      ChatType: "direct",
+      SessionKey: "agent:main:inner-failure",
+    }),
+    cfg: emptyConfig,
+    dispatcher,
+    replyOptions: { abortSignal: new AbortController().signal },
+    replyResolver: async (_inbound, opts) => {
+      const owner = { result: { kind: "failed", code: "run_failed" } } as unknown as ReplyOperation;
+      recordReplyOperationAgentTurn([resolveReplyOperationRunState(opts)!], owner);
+      return undefined;
+    },
+  });
+  expect(dispatcher.sendFinalReply).toHaveBeenCalledExactlyOnceWith({
+    text: buildNoVisibleReplyFallbackText(),
+  });
+  expect(result.noVisibleReplyFallbackDelivered).toBe(true);
 });
 
 it.each([

@@ -1,5 +1,6 @@
 import type { WebClient } from "@slack/web-api";
 import { assert, beforeEach, expect, it, vi } from "vitest";
+import { resolveSlackConversationName } from "./actions.js";
 import { downloadSlackFile, readSlackMessages } from "./actions.js";
 
 const createSlackLookupClientMock = vi.hoisted(() => vi.fn());
@@ -190,4 +191,114 @@ it("rejects invalid history bounds before Slack API work", async () => {
     'Invalid Slack read before timestamp "2024-02-30T00:00:00.000Z": expected a Slack timestamp or ISO-8601 date string',
   );
   expect(client.conversations.history).not.toHaveBeenCalled();
+});
+
+it("renders attachment tables in thread reads", async () => {
+  const client = createClient();
+  client.conversations.replies.mockResolvedValueOnce({
+    messages: [
+      { ts: "1.000", text: "parent" },
+      {
+        ts: "1.001",
+        text: "Thread data",
+        attachments: [
+          {
+            blocks: [
+              {
+                type: "table",
+                rows: [
+                  [{ type: "raw_text", text: "Name" }],
+                  [{ type: "raw_text", text: "Example A" }],
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+    has_more: false,
+  });
+
+  const result = await readSlackMessages("C1", {
+    client,
+    threadId: "1.000",
+    token: "xoxb-test",
+  });
+
+  expect(result.messages.map((message) => message.text)).toEqual([
+    "parent",
+    "Thread data\nName\nExample A",
+  ]);
+});
+
+it("drops messages exactly on explicit reply bounds (exclusive endpoints)", async () => {
+  const client = createClient();
+  client.conversations.replies.mockResolvedValueOnce({
+    messages: [
+      { ts: "1.000001", text: "on-after" },
+      { ts: "1.001", text: "reply" },
+      { ts: "2.000001", text: "on-before" },
+    ],
+    has_more: false,
+  });
+  await expect(
+    readSlackMessages("C1", {
+      client,
+      threadId: "1.000",
+      before: "2.000001",
+      after: "1.000001",
+    }),
+  ).resolves.toEqual({ messages: [{ ts: "1.001", text: "reply" }], hasMore: false });
+});
+
+it("uses conversations.replies and preserves the parent message", async () => {
+  const client = createClient();
+  client.conversations.replies.mockResolvedValueOnce({
+    messages: [{ ts: "171234.567" }, { ts: "171234.890" }, { ts: "171235.000" }],
+    has_more: true,
+  });
+
+  const result = await readSlackMessages("C1", {
+    client,
+    threadId: "171234.567",
+    token: "xoxb-test",
+  });
+
+  expect(client.conversations.replies).toHaveBeenCalledWith({
+    channel: "C1",
+    ts: "171234.567",
+    limit: undefined,
+    latest: undefined,
+    oldest: "171234.567",
+  });
+  expect(client.conversations.history).not.toHaveBeenCalled();
+  expect(result.messages.map((message) => message.ts)).toEqual([
+    "171234.567",
+    "171234.890",
+    "171235.000",
+  ]);
+});
+
+it("resolves the current Slack conversation name without caching failures", async () => {
+  const client = createClient();
+  client.conversations.info
+    .mockRejectedValueOnce(new Error("temporary_failure"))
+    .mockResolvedValueOnce({ channel: { name: "  allowed-channel  " } });
+
+  await expect(
+    resolveSlackConversationName("C1", { client, token: "xoxp-reader" }),
+  ).rejects.toThrow("temporary_failure");
+  await expect(resolveSlackConversationName("C1", { client, token: "xoxp-reader" })).resolves.toBe(
+    "allowed-channel",
+  );
+  expect(client.conversations.info).toHaveBeenNthCalledWith(1, { channel: "C1" });
+  expect(client.conversations.info).toHaveBeenNthCalledWith(2, { channel: "C1" });
+});
+
+it("names the size cap instead of silently failing an oversized file", async () => {
+  const client = createFileClient({ name: "phase-i.pdf", size: 41_082_339 });
+  await expect(download(client, { maxBytes: 20 * 1024 * 1024 })).rejects.toThrow(
+    "Slack file F123 is 39.2 MB, above the 20.0 MB download cap for this Slack account",
+  );
+  expect(resolveSlackMedia).not.toHaveBeenCalled();
 });

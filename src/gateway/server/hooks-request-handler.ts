@@ -481,6 +481,29 @@ export function createHooksRequestHandler(
           model: normalized.value.model ?? null,
           thinking: normalized.value.thinking ?? null,
           timeoutSeconds: normalized.value.timeoutSeconds ?? null,
+          ...(normalized.value.mailRequesterEmail
+            ? { mailRequesterEmail: normalized.value.mailRequesterEmail }
+            : {}),
+          ...(normalized.value.mailRequesterSlackUserId
+            ? { mailRequesterSlackUserId: normalized.value.mailRequesterSlackUserId }
+            : {}),
+          // The scope is hashed; a different attestation is a different dispatch.
+          ...(normalized.value.sourceLockCapability
+            ? { sourceLockCapability: normalized.value.sourceLockCapability }
+            : {}),
+          ...(!normalized.value.requesterAttestation && normalized.value.requesterEnvironment
+            ? { requesterEnvironment: normalized.value.requesterEnvironment }
+            : {}),
+          ...(normalized.value.requesterAttestation
+            ? {
+                requesterAttestation: normalized.value.requesterAttestation,
+                requesterEnvironment: normalized.value.requesterEnvironment,
+              }
+            : {}),
+          // A different Fi environment is a different dispatch.
+          ...(normalized.value.fiEnvironment
+            ? { fiEnvironment: normalized.value.fiEnvironment }
+            : {}),
         },
       });
       const replay = resolveHookReplay(replayKey);

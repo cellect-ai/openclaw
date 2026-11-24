@@ -170,7 +170,13 @@ function pruneEmptyConfigValue(value: unknown, originalValue: unknown): unknown 
     Object.entries(value).flatMap(([key, item]) => {
       const existed = original !== null && Object.hasOwn(original, key);
       const pruned = pruneEmptyConfigValue(item, existed ? original[key] : undefined);
-      if (!existed && isRecord(pruned) && Object.keys(pruned).length === 0) {
+      if (
+        !existed &&
+        isRecord(item) &&
+        Object.keys(item).length > 0 &&
+        isRecord(pruned) &&
+        Object.keys(pruned).length === 0
+      ) {
         return [];
       }
       return [[key, pruned]];

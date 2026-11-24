@@ -19,6 +19,7 @@ import {
 } from "../../sessions/session-row-changes.js";
 import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
+import type { FinalProjectionTransition } from "./pending-final-delivery-receipt.js";
 import {
   prepareSessionActorEntryWrite,
   writeSessionEntry,
@@ -52,7 +53,7 @@ export function applySessionActorPhase(
   command: SessionActorMutation,
   state: SessionActorStoredState,
   context: AgentWorkerOperationContext,
-  prepareEntry?: (next: SessionEntry) => void,
+  prepareEntry?: (next: SessionEntry, projectionTransition?: FinalProjectionTransition) => void,
 ) {
   const database = context.open();
   const hot = state.hot;
@@ -61,9 +62,9 @@ export function applySessionActorPhase(
     hot.target.database.kind !== "file" ? hot.target.database.incarnation : undefined;
   return applySessionActorPhaseWithBackend(command, hot, {
     agentId: database.agentId,
-    writeEntry(next) {
+    writeEntry(next, projectionTransition) {
       if (prepareEntry) {
-        prepareEntry(next);
+        prepareEntry(next, projectionTransition);
         return;
       }
       const previous = hot.entry;
@@ -71,6 +72,7 @@ export function applySessionActorPhase(
         throw new Error("Session actor requires an existing session");
       }
       writeSessionEntry(database, sessionKey, next, {
+        projectionTransition,
         canonicalPreviousEntry: previous,
         previousEntry: previous,
       });
@@ -144,12 +146,14 @@ export function applyPreparedSessionActorAdoption({
   // This branch only borrows already resident facts for no-turn adoption.
   // The phase/reducers run once; entry ownership decides whether their effect is atomic.
   let next: SessionEntry | undefined;
-  const applied = applySessionActorPhase(command, working, context, (entry) => {
+  let projectionTransition: FinalProjectionTransition | undefined;
+  const applied = applySessionActorPhase(command, working, context, (entry, transition) => {
     next = entry;
+    projectionTransition = transition;
   });
   recordApplied();
   const prepared = next
-    ? prepareSessionActorEntryWrite(database, working, next)
+    ? prepareSessionActorEntryWrite(database, working, next, { projectionTransition })
     : { kind: "unchanged" as const };
   if (prepared.kind === "single-node") {
     let result: { kind: "committed" } | undefined;
@@ -193,6 +197,7 @@ export function applyPreparedSessionActorAdoption({
         captureSessionRowChanges(database.db, () => {
           if (next) {
             writeSessionEntry(database, before.hot.target.sessionKey, next, {
+              projectionTransition,
               canonicalPreviousEntry: before.hot.entry,
               previousEntry: before.hot.entry,
             });

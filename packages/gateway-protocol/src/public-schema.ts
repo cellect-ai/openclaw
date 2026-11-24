@@ -1,3 +1,4 @@
+export * from "./public-schema-suspension.js";
 // Explicit schema exports keep public protocol changes reviewable.
 export * from "./schema/sessions-goal.js";
 export * from "./schema/session-processes.js";
@@ -13,21 +14,6 @@ export * from "./public-schema-environments.js";
 export {
   isCloudWorkerPlacementState,
   ConnectParamsSchema,
-  GatewaySuspendBlockerSchema,
-  GatewaySuspendPrepareBusyResultSchema,
-  GatewaySuspendPrepareDrainingResultSchema,
-  GatewaySuspendPrepareParamsSchema,
-  GatewaySuspendPrepareReadyResultSchema,
-  GatewaySuspendPrepareResultSchema,
-  GatewaySuspendStatusDrainingResultSchema,
-  GatewaySuspendStatusReadyResultSchema,
-  GatewaySuspendStatusRunningResultSchema,
-  GatewaySuspendStatusParamsSchema,
-  GatewaySuspendStatusResultSchema,
-  GatewaySuspendResumeParamsSchema,
-  GatewaySuspendResumeResultSchema,
-  GatewaySuspendHandoffParamsSchema,
-  GatewaySuspendHandoffResultSchema,
   HooksStatusParamsSchema,
   GATEWAY_SERVER_CAPS,
   HelloOkSchema,
@@ -395,6 +381,8 @@ export {
   WizardStatusResultSchema,
   TalkEventSchema,
   TalkVoiceGetParamsSchema,
+  TalkVoicePreviewParamsSchema,
+  TalkVoicePreviewResultSchema,
   TalkVoiceSetParamsSchema,
   TalkVoiceSelectionSchema,
   TalkVoiceSetResultSchema,
@@ -422,6 +410,7 @@ export {
   TalkSessionCreateResultSchema,
   TalkSessionSteerParamsSchema,
   TalkSessionSubmitToolResultParamsSchema,
+  TalkSessionAnnounceParamsSchema,
   TalkSessionCloseParamsSchema,
   TalkSessionOkResultSchema,
   TalkSpeakParamsSchema,
@@ -635,6 +624,9 @@ export {
   ChatStartupParamsSchema,
   ChatMetadataParamsSchema,
   ChatSendParamsSchema,
+  ChatHandoffArmParamsSchema,
+  ConversationContinueParamsSchema,
+  ChatHandoffSeenParamsSchema,
   ChatInjectParamsSchema,
   ChatToolTitlesParamsSchema,
   ChatToolTitlesResultSchema,

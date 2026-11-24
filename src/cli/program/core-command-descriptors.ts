@@ -71,6 +71,7 @@ export const CORE_CLI_COMMAND_DESCRIPTORS: readonly NamedCommandDescriptor[] = [
   command("transcripts", "Inspect stored transcripts", true),
   command("agent", "Run an agent turn via the Gateway (use --local for embedded)", true),
   command("agents", "Manage isolated agents (workspaces + auth + routing)", true),
+  command("thread", "Inspect or resume one Slack thread by permalink", true),
   command("status", "Show channel health and recent session recipients", false),
   command("health", "Fetch health from the running gateway", false),
   command("audit", "Inspect activity records and exact-run identity context", false),

@@ -56,7 +56,11 @@ it("uses the legacy default and only ignores ports for HTTP loopback registratio
       ["invalid-url", "another-invalid-url", false],
     ];
     for (const [registered, redirectUrl, matches] of cases) {
-      const clientInformation = { client_id: "fixture-client", redirect_uris: [registered] };
+      const clientInformation = {
+        client_id: "fixture-client",
+        issuer: "https://issuer.example.test",
+        redirect_uris: [registered],
+      };
       seedMcpOAuthStoreForTest(identity.storeKey, { clientInformation });
       await withMcpOAuthProviderForTest(
         { identity, config: { redirectUrl, scope: "documents.read" } },
@@ -85,7 +89,12 @@ it("reopens persisted reads without parent SQL", async () => {
     const outside = requester("first", "other-server");
     const prefix = requesterMcpOAuthStoreKeyPrefix(operator.serverName, operator.serverUrl);
     const store: McpOAuthStore = {
-      tokens: { access_token: "access", refresh_token: "refresh", token_type: "Bearer" },
+      tokens: {
+        issuer: "https://issuer.example.test",
+        access_token: "access",
+        refresh_token: "refresh",
+        token_type: "Bearer",
+      },
     };
     for (const identity of [first, second, outside]) {
       seedMcpOAuthStoreForTest(

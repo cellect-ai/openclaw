@@ -67,3 +67,19 @@ export type {
 export type { CommandTurnContext } from "../auto-reply/command-turn-context.js";
 export { generateConversationLabel } from "../auto-reply/reply/conversation-label-generator.js";
 export type { ConversationLabelParams } from "../auto-reply/reply/conversation-label-generator.js";
+export {
+  resolveReplyPublication,
+  emitReplyPublicationAccepted,
+  registerReplyPublicationReceiptListener,
+  requireReplyPublicationReceipt,
+} from "../auto-reply/reply-publication.js";
+export type { ReplyPublication } from "../auto-reply/reply-publication.js";
+export {
+  readNativeFinalDeliveryReceipt,
+  retainNativeFinalDeliveryReceipt,
+  releaseNativeFinalDeliveryReceipt,
+  registerNativeFinalDeliveryListener,
+  settleNativeFinalDeliveryPayload,
+  retireNativeFinalDelivery,
+} from "../auto-reply/reply/native-final-delivery.js";
+export type { NativeFinalDeliveryReference } from "../config/sessions/pending-final-delivery-types.js";

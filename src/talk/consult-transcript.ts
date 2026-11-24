@@ -1,3 +1,5 @@
+import { isNoiseOnlyVoiceTranscript } from "./voice-transcript.js";
+
 /**
  * ASR often emits partial fragments or polite closings that should not trigger
  * an OpenClaw consult. This classifier names those skip reasons for callers.
@@ -50,7 +52,7 @@ export function classifySkippableRealtimeVoiceConsultTranscript(
   text: string,
 ): SkippableRealtimeVoiceConsultTranscriptReason | undefined {
   const normalized = text.replace(/\s+/g, " ").trim().toLowerCase();
-  if (!normalized) {
+  if (!normalized || isNoiseOnlyVoiceTranscript(normalized)) {
     return "empty";
   }
   if (/(\.\.\.|…)\s*$/.test(normalized)) {

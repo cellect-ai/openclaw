@@ -1,5 +1,6 @@
 import { uniqueValues } from "@openclaw/normalization-core/string-normalization";
 import { resolveSpawnThreadBindingPlacement } from "../../channels/conversation-resolution.js";
+import { wrapCurrentPluginInstance } from "../../plugins/plugin-instance-scope.js";
 import { warnPluginSdkDeprecation } from "../../plugins/sdk-deprecation.js";
 import { resolveGlobalMap } from "../../shared/global-singleton.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
@@ -128,6 +129,7 @@ type NativeCapableSessionBindingAdapter = (SessionBindingAdapter | SessionBindin
   NativeSessionBindingReads;
 
 type SessionBindingAdapterRegistration = {
+  original: SessionBindingAdapter | SessionBindingAdapterV2;
   adapter: NativeCapableSessionBindingAdapter;
 };
 
@@ -151,7 +153,7 @@ function registerAdapter(adapter: SessionBindingAdapter | SessionBindingAdapterV
   // Registrations are stacked so duplicate module graphs can temporarily
   // coexist and unregister without tearing down the active replacement.
   const registrations = ADAPTERS_BY_CHANNEL_ACCOUNT.get(key) ?? [];
-  registrations.push({ adapter });
+  registrations.push({ original: adapter, adapter: wrapCurrentPluginInstance(adapter) });
   ADAPTERS_BY_CHANNEL_ACCOUNT.set(key, registrations);
 }
 
@@ -171,7 +173,7 @@ export function unregisterSessionBindingAdapter(params: {
   }
   // Remove the matching owner so a surviving duplicate graph can stay active.
   const registrationIndex = params.adapter
-    ? registrations.findLastIndex((registration) => registration.adapter === params.adapter)
+    ? registrations.findLastIndex((registration) => registration.original === params.adapter)
     : registrations.length - 1;
   if (registrationIndex < 0) {
     return;
@@ -191,7 +193,7 @@ function resolveAdapterForChannelAccount(
 /** Revalidates the exact registration, including its original adapter's retained callbacks. */
 export function isSessionBindingAdapterCurrent(adapter: SessionBindingAdapter): boolean {
   const registration = ADAPTERS_BY_CHANNEL_ACCOUNT.get(buildChannelAccountKey(adapter))?.at(-1);
-  return registration?.adapter === adapter;
+  return registration?.adapter === adapter || registration?.original === adapter;
 }
 
 function assertAdapterSelectionCurrent(

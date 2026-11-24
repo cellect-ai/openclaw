@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+vi.mock("../cron/workshop-collection-review.js", () => ({
+  reconcileWorkshopCollectionReviews: vi.fn(async () => {}),
+}));
 import { createGatewayCronReconciliation } from "./server-cron-reconciled.js";
 
 type RunHook = Parameters<typeof createGatewayCronReconciliation>[0]["runHook"];

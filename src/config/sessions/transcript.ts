@@ -299,6 +299,9 @@ export async function appendAssistantMessageToSessionTranscript(
   if (!sessionKey) {
     return { ok: false, reason: "missing sessionKey" };
   }
+  if ((params.deliveryMirror?.kind as string | undefined) === "channel-final-suppressed") {
+    return { ok: false, reason: "internal delivery state" };
+  }
 
   const mirrorText = params.content
     ? null

@@ -26,6 +26,7 @@ export function projectQueuedDeliveryOptions(params: QueuedDeliveryPayload) {
     transcriptProvenance: params.transcriptProvenance,
     gatewayClientScopes: params.gatewayClientScopes,
     preparedMessageId: params.preparedMessageId,
+    recoveryPolicy: params.recoveryPolicy,
   };
 }
 

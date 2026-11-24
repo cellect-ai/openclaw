@@ -440,6 +440,12 @@ function shouldPreserveNonArchivedMaintenanceEntry(params: SessionMaintenanceEnt
   return (
     params.entry?.resumeAfterRestart !== undefined ||
     params.entry?.pendingFinalDelivery?.kind === "transport-only" ||
+    Boolean(params.entry?.pendingFinalDelivery?.projectionConsumers?.length) ||
+    Boolean(
+      params.entry?.completedFinalDeliveries?.some(
+        (receipt) => receipt.projectionConsumers.length > 0,
+      ),
+    ) ||
     params.entry?.modelSelectionLocked === true ||
     params.preserveKeys?.has(params.key) === true ||
     isRecentSessionMaintenanceEntry(params) ||

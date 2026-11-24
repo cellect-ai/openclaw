@@ -7,7 +7,10 @@ import { createUserTurnTranscriptRecorder } from "../../../sessions/user-turn-tr
 import { createTestUserTurnTranscriptTarget } from "../../../sessions/user-turn-transcript.test-support.js";
 import { createDeferredCore as deferred } from "../../../shared/deferred.js";
 import type { AgentHarnessQuestionGatewayCall } from "../../harness/gateway-question-dispatch.js";
-import { runAgentHarnessGatewayQuestion } from "../../harness/gateway-question.js";
+import {
+  registerPendingAgentQuestion,
+  runAgentHarnessGatewayQuestion,
+} from "../../harness/gateway-question.js";
 import {
   createAssistant,
   createAssistantResultStream,
@@ -614,4 +617,47 @@ it("keeps a steer through a long tool and delivers it at the next model boundary
   expect(requests).toHaveLength(2);
   expect(requests[1]).toContain("Pending correction");
   expect(session.getSteeringMessages()).toEqual([]);
+});
+
+it("refuses old native question controls without steering or consuming a successor question", async () => {
+  const sessionKey = "agent:main:question-fence";
+  const gatewayCall = vi.fn(async () => ({ status: "answered" }));
+  const reservation = registerPendingAgentQuestion({
+    sessionKey,
+    questionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    questions: [{ id: "mode", header: "Mode", question: "Continue?", options: [] }],
+    gatewayCall,
+    answer: Promise.resolve({ status: "pending" }),
+  });
+  reservation.attachRegistration(Promise.resolve());
+  const steer = vi.fn(async () => undefined);
+  const session = { steer, subscribe: () => () => {} };
+  try {
+    await expect(
+      steerActiveSessionWithOptionalDeliveryWait(
+        session,
+        "Continue",
+        {
+          isInboundUserMessage: true,
+          expectedQuestionId: "ask_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        },
+        sessionKey,
+      ),
+    ).rejects.toThrow("selected question is no longer current");
+    expect(gatewayCall).not.toHaveBeenCalled();
+    expect(steer).not.toHaveBeenCalled();
+    await steerActiveSessionWithOptionalDeliveryWait(
+      session,
+      "Continue",
+      {
+        isInboundUserMessage: true,
+        expectedQuestionId: "ask_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      },
+      sessionKey,
+    );
+    expect(gatewayCall).toHaveBeenCalledOnce();
+    expect(steer).not.toHaveBeenCalled();
+  } finally {
+    reservation.dispose();
+  }
 });

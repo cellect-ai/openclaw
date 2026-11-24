@@ -32,19 +32,19 @@ import { withCurrentUserTurnInput } from "../../sessions/user-turn-transcript-ru
 import { createDeferredCore } from "../../shared/deferred.js";
 import { captureAgentJobSession, setGatewayDedupeEntry } from "../agent-turn/agent-job.js";
 import { updateChatRunProvider } from "../chat-abort.js";
-import { discardPreparedInboundMedia } from "../chat-attachments.js";
 import { recordSessionOperatorSource } from "../session-operator-sources.js";
 import { prepareGatewaySkillLibraryTurn } from "../skill-library-authoring.js";
-import { formatForLog } from "../ws-log.js";
 import { buildAbortedChatSendPayload } from "./chat-abort-authorization.js";
 import { broadcastChatDelta } from "./chat-broadcast.js";
 import type { StartChatDispatchParams } from "./chat-send-agent-dispatch.types.js";
 import { scheduleChatDashboardSessionTitle } from "./chat-send-background.js";
 import { readChatSendReplyPayload } from "./chat-send-command-replies.js";
+import { createChatCompletionFallback } from "./chat-send-completion-fallback.js";
 import {
   createChatSendDispatchErrorLifecycle,
   resolveChatSendReturnedOutcome,
 } from "./chat-send-dispatch-errors.js";
+import { settleChatDispatch } from "./chat-send-dispatch-settlement.js";
 import {
   createChatSendInjectionDisposition,
   finalizeAcceptedChatSendMessageInjection,
@@ -74,6 +74,7 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
     client,
     context,
     toolsAllow,
+    sourceReplyDeliveryMode,
     skillLibrary,
     cronCreatorAuthority,
     assertDashboardReadCurrent,
@@ -94,8 +95,16 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
     messageInjectionTarget,
     retainGatewayWorkAdmission,
   } = admission;
-  const { agentId, cfg, clientRunId, expectedLeafEntryId, storePath, selectedAgent, sessionKey } =
-    session;
+  const {
+    agentId,
+    cfg,
+    clientRunId,
+    expectedLeafEntryId,
+    storePath,
+    selectedAgent,
+    sessionKey,
+    timeoutMs,
+  } = session;
   let { entry } = session;
   const { p, supportsTaskSuggestions } = request;
   const {
@@ -147,6 +156,11 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
     session,
     userTurnRecorder,
   });
+  const scheduleCompletionFallback = createChatCompletionFallback(
+    params,
+    replyDispatch,
+    () => replyDispatchRun,
+  );
   const queuedFollowup = createChatSendTurnAdoptionLifecycle({
     requesterContext: ctx,
     accountId,
@@ -369,6 +383,7 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
                   providerReviewAcknowledgment: request.providerReviewAcknowledgment,
                   dashboardReadAdmission,
                   skillLibraryAuthoring,
+                  ...(sourceReplyDeliveryMode ? { sourceReplyDeliveryMode } : {}),
                   ...(cronCreatorAuthority
                     ? { cronCreatorAuthorityCapability: cronCreatorAuthority }
                     : {}),
@@ -400,6 +415,7 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
                   assertProviderLoginAuthority: () => {
                     client?.connectionSignal?.throwIfAborted();
                     if (
+                      admission.channelRequester ||
                       client?.invalidated ||
                       !client?.connect.scopes?.includes("operator.admin")
                     ) {
@@ -413,7 +429,7 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
                   images: replyOptionImages,
                   imageOrder: imageOrder.length > 0 ? imageOrder : undefined,
                   media: replyOptionMedia,
-                  ...(p.timeoutMs !== undefined ? { timeoutOverrideMs: p.timeoutMs } : {}),
+                  timeoutOverrideMs: timeoutMs,
                   thinkingLevelOverride: p.thinking,
                   normalizeThinkingLevelOverride: request.normalizeThinkingLevelOverride,
                   fastModeOverride: p.fastMode,
@@ -606,6 +622,9 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
             dispatchResult.collaborativeSteeringRefused ||
             (hasReturnedAgentError && (runtimeFailed || !finalizedSourceReply));
           await dispatchErrorLifecycle.settleTerminalPersistence();
+          await scheduleCompletionFallback(
+            hasTerminalAgentError ? returnedAgentErrorMessage : undefined,
+          );
           if (!context.chatRunState.hasAbortMarker(clientRunId)) {
             if (hasTerminalAgentError && !dispatchResult.collaborativeSteeringRefused) {
               dispatchErrorLifecycle.broadcastError({
@@ -672,38 +691,13 @@ export function startChatDispatch(params: StartChatDispatchParams): Promise<void
         dispatchStartedAtMs,
       );
     })
-    .catch((error: unknown) => {
+    .catch(async (error: unknown) => {
       diagnostics.finish(dispatchDisposition);
-      return dispatchErrorLifecycle.handleError(error);
+      await dispatchErrorLifecycle.handleError(error);
+      await scheduleCompletionFallback(String(error));
     });
   // Runtime completion must not retire the source before media and reply persistence settle.
   // Keep terminal cleanup outside this receipt because it can join source settlement.
   trackSessionControllerSourceWork(admission.sourceRef.input, dispatch);
-  const completion = (async () => {
-    try {
-      await dispatch;
-    } finally {
-      // A failed overlapping label may retry after any terminal turn outcome.
-      titleTurn.resolve();
-      await dispatchErrorLifecycle.finalize();
-      // Terminal lifecycle can precede owner release; publish exact liveness after cleanup.
-      emitSessionsChanged(
-        context,
-        { sessionKey, agentId, reason: "agent.input.settled" },
-        { accessChanged: false, rowScope: "runtime" },
-      );
-      if (userTurnRecorder.isBlocked() && attachments.offloadedRefs.length > 0) {
-        // A blocked turn persists only the redacted block reason — no media
-        // markers — so the prepared inbound media stays unreferenced forever
-        // (sweep is off by default). Same custody rule as the pre-ACK owner
-        // in chat-send-admission.ts: unreferenced staged media is discarded.
-        void discardPreparedInboundMedia(attachments.offloadedRefs);
-      }
-    }
-  })();
-  // Ordinary chat.send detaches completion; Goal acknowledgments still consume its rejection.
-  void completion.catch((error: unknown) => {
-    context.logGateway.warn(`webchat dispatch settlement failed: ${formatForLog(error)}`);
-  });
-  return completion;
+  return settleChatDispatch(params, dispatch, titleTurn, dispatchErrorLifecycle);
 }

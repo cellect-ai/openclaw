@@ -2,7 +2,7 @@ import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
 import type { createChannelInteractiveDispatcher } from "openclaw/plugin-sdk/plugin-runtime";
 import { beforeAll, beforeEach, vi } from "vitest";
-import type { SlackInteractiveHandlerContext } from "../../interactive-dispatch.js";
+import type { SlackInteractiveHandlerContextV2 } from "../../interactive-dispatch.js";
 import { createContext } from "./interactions.test-support.js";
 
 const enqueueSessionEventMock = vi.hoisted(() =>
@@ -33,7 +33,7 @@ type PluginDispatchParams = Parameters<
     typeof createChannelInteractiveDispatcher<
       "slack",
       "interaction",
-      SlackInteractiveHandlerContext
+      SlackInteractiveHandlerContextV2
     >
   >
 >[0];

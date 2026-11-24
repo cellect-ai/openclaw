@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import { ConversationRunStopReason } from "../infra/run-stop-actor.js";
 import { resolveRuntimeWorkerArgv, resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { getLaneState, getQueueState } from "./command-queue.state.js";
 import { resetCommandQueueStateForTest } from "./command-queue.test-support.js";
@@ -233,6 +234,29 @@ describe("command queue", () => {
         message.includes("lane task interrupted: lane=nested"),
       ),
     ).toBe(true);
+  });
+
+  it.each([true, false])("only demotes an owner-typed conversation Stop: %s", async (typed) => {
+    const error = typed
+      ? new ConversationRunStopReason({
+          userId: "@reader:matrix.test",
+          roomId: "!room:matrix.test",
+          threadRootEventId: "$root",
+          agentId: "main",
+          sessionKey: "agent:main:room",
+        })
+      : Object.assign(new Error("Conversation run stopped"), { name: "ConversationRunStopReason" });
+    await expect(
+      queue.enqueueCommandInLane("nested", async () => {
+        throw error;
+      }),
+    ).rejects.toBe(error);
+    expect(diagnosticMocks.diag.error).toHaveBeenCalledTimes(typed ? 0 : 1);
+    expect(
+      diagnosticDebugMessages().some((message) =>
+        message.includes("lane task interrupted: lane=nested"),
+      ),
+    ).toBe(typed);
   });
 
   it.each([

@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
-import "./dynamic-tool-build.test-support.js";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
+import "./dynamic-tool-build.test-support.js";
 import { createOpenClawCodingTools, type AnyAgentTool } from "openclaw/plugin-sdk/agent-harness";
 import {
   embeddedAgentLog,
@@ -24,12 +24,27 @@ import { setRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-sna
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { registerCodexCompletionCommandTest } from "./dynamic-tool-build.completion.test-support.js";
 import {
+  nativeSurface,
+  toolNamed,
+  call,
+  shellTestToolNames,
+  namespaceSpec,
+  textContent,
+} from "./dynamic-tool-build.fixtures.test-support.js";
+import {
   disableCodexPluginThreadConfig,
   resolveCodexAppServerExecutionCwd,
   resolveCodexExternalSandboxPolicyForOpenClawSandbox,
   resolveCodexSandboxEnvironmentSelection,
   shouldEnableCodexAppServerNativeToolSurface,
 } from "./dynamic-tool-build.js";
+import {
+  retainedOwnerConfig,
+  policyDeny,
+  policyCase,
+  fullNodeExec,
+  globalNodeConfig,
+} from "./dynamic-tool-build.policy-fixtures.test-support.js";
 import { resolveCodexDynamicToolsLoadingForRuntime } from "./dynamic-tool-profile.js";
 import { createBridge } from "./dynamic-tools.test-support.js";
 import {
@@ -40,7 +55,6 @@ import { prepareTestNativeExecutionPolicy } from "./native-execution-policy.test
 import {
   CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
   flattenCodexDynamicToolFunctions,
-  type JsonObject,
 } from "./protocol.js";
 import { resolveCodexDynamicToolDirectNames } from "./run-attempt-tools.js";
 import { createCodexTestModel } from "./test-support.js";
@@ -51,7 +65,7 @@ const {
   cleanupDynamicToolBuildFixture,
   setupDynamicToolBuildFixture,
   createCodexRuntimePlanFixture,
-  createParams: createBaseParams,
+  createEnabledToolsParams: createParams,
   createRuntimeDynamicTool,
   hoisted,
 } = await import("./dynamic-tool-build.test-support.js");
@@ -62,40 +76,6 @@ let params: EmbeddedRunAttemptParams;
 const hostCapabilityClosers: Array<() => void> = [];
 
 type ToolOptions = Parameters<typeof createOpenClawCodingTools>[0];
-const retainedOwnerConfig = {
-  agents: {
-    entries: {
-      main: { tools: { exec: { host: "gateway" as const } } },
-      policy: { tools: { exec: { host: "node" as const, node: "worker-1" } } },
-    },
-  },
-};
-
-function createParams(
-  sessionFile: string,
-  workspace: string,
-  overrides: Partial<EmbeddedRunAttemptParams> = {},
-): EmbeddedRunAttemptParams {
-  return createBaseParams(sessionFile, workspace, {
-    disableTools: false,
-    runtimePlan: createCodexRuntimePlanFixture(),
-    ...overrides,
-  });
-}
-
-async function nativeSurface(
-  attempt: EmbeddedRunAttemptParams,
-  sandbox?: Parameters<typeof shouldEnableCodexAppServerNativeToolSurface>[1],
-  options: Omit<
-    Parameters<typeof shouldEnableCodexAppServerNativeToolSurface>[2],
-    "nativeExecutionPolicy"
-  > = {},
-) {
-  return shouldEnableCodexAppServerNativeToolSurface(attempt, sandbox, {
-    ...options,
-    nativeExecutionPolicy: await prepareTestNativeExecutionPolicy(attempt, { sandbox, ...options }),
-  });
-}
 
 function buildTools(options: Parameters<typeof buildDynamicToolsForTest>[2] = {}) {
   return buildDynamicToolsForTest(params, workspaceDir, options);
@@ -114,38 +94,6 @@ function realTools(...names: string[]) {
   setCodexTestToolFactory(params, (options) =>
     createOpenClawCodingTools(options).filter((tool) => names.includes(tool.name)),
   );
-}
-
-function toolNamed(tools: AnyAgentTool[], name: string) {
-  const found = tools.find((tool) => tool.name === name);
-  return expectDefined(found, `Codex ${name} tool`);
-}
-
-function call(
-  bridge: ReturnType<typeof createBridge>,
-  tool: string,
-  args: JsonObject,
-  callId = tool,
-) {
-  return bridge.handleToolCall({
-    threadId: "thread-1",
-    turnId: "turn-1",
-    callId,
-    tool,
-    arguments: args,
-  });
-}
-
-function shellTestToolNames(tools: readonly { name: string }[]): string[] {
-  return tools
-    .map((tool) => tool.name)
-    .filter((name) => ["message", "gateway_exec", "gateway_process", "node_exec"].includes(name));
-}
-function namespaceSpec(name: string, tools: unknown) {
-  return { type: "namespace", name, description: "", tools };
-}
-function textContent<T extends "text" | "inputText">(text: string, type: T) {
-  return [{ type, text }];
 }
 
 it.each<[string, string | undefined, string | undefined, string | undefined, boolean]>([
@@ -241,10 +189,39 @@ it.each([true, false])("requires native paired-node execution: %s", async (nativ
   );
 });
 
-const policyDeny = ["exec", "process", "write", "edit"];
-function policyCase(source: string, overrides: Partial<EmbeddedRunAttemptParams>, denied = true) {
-  return { source, ...overrides, denied };
-}
+it.each(["direct", "searchable"] as const)(
+  "keeps production human-question tools outside native Code Mode with %s loading",
+  async (loading) => {
+    const workspaceDir = path.join(tempDir, "human-question-workspace");
+    const params = createParams(path.join(tempDir, "human-question.jsonl"), workspaceDir);
+    params.sessionKey = "agent:main:main";
+    params.disableTools = false;
+    params.runtimePlan = createCodexRuntimePlanFixture();
+    await bindProductionCodexHostCapabilities(params, hostCapabilityClosers);
+    const tools = await buildDynamicToolsForTest(params, workspaceDir, {});
+    const questionTools = tools.filter((tool) => ["ask_user", "secrets"].includes(tool.name));
+    expect(questionTools.map((tool) => tool.name).toSorted()).toEqual(["ask_user", "secrets"]);
+    const bridge = createBridge(questionTools, {
+      signal: new AbortController().signal,
+      loading,
+    });
+    expect(bridge.specs).toEqual([
+      {
+        type: "namespace",
+        name: CODEX_OPENCLAW_DIRECT_DYNAMIC_TOOL_NAMESPACE,
+        description: "",
+        tools: expect.arrayContaining([
+          expect.objectContaining({ name: "ask_user" }),
+          expect.objectContaining({ name: "secrets" }),
+        ]),
+      },
+    ]);
+    for (const tool of flattenCodexDynamicToolFunctions(bridge.specs)) {
+      expect(tool).not.toHaveProperty("deferLoading");
+    }
+  },
+);
+
 it.each([
   policyCase("allowed", { sandboxAgentId: "policy" }, false),
   policyCase("conversation", { conversationToolPolicy: { deny: policyDeny } }),
@@ -1149,8 +1126,6 @@ it.each([
   }
 });
 
-const fullNodeExec = { host: "node", node: "mac-mini", security: "full", ask: "off" } as const;
-const globalNodeConfig = { tools: { exec: { host: "node" as const } } };
 it.each([
   policyCase("disabled tools", { disableTools: true }),
   policyCase("session", { execOverrides: fullNodeExec }),
@@ -1283,3 +1258,17 @@ it.each([
   },
 );
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+it("retains the host-private Workshop capability at the actual dynamic tool factory", async () => {
+  params.skillWorkshopWorkspaceAuthoring = Object.freeze({
+    agentId: "main",
+    bind: () => {},
+    assertCurrent: () => {},
+  });
+  const factory = mockTools();
+  await buildTools();
+  expect(factory).toHaveBeenCalledOnce();
+  expect(factory.mock.calls[0]?.[0]?.skillWorkshop?.workspaceAuthoring).toBe(
+    params.skillWorkshopWorkspaceAuthoring,
+  );
+});

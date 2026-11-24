@@ -19,6 +19,7 @@ import {
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 import type { AgentWorkerOperationContext } from "../../state/openclaw-agent-operation-context.js";
 import { captureTrajectoryRuntimeRetentionMetadataMutation } from "../../trajectory/runtime-retention.sqlite.js";
+import { finalProjectionTransitionForOperation } from "./pending-final-delivery-transition.js";
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import {
   applySessionEntryPatchInDatabase,
@@ -36,7 +37,10 @@ import {
 import { prepareSessionActorEntryPatch } from "./session-actor-entry-publication.worker.js";
 import { assertCanonicalSqliteSessionKeysCurrent } from "./session-canonical-key.js";
 import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
-import { projectSessionEntryPatch } from "./session-entry-patch-operation.js";
+import {
+  projectSessionEntryPatch,
+  finalProjectionReleasesForOperation,
+} from "./session-entry-patch-operation.js";
 import type {
   SessionEntryPatchCommit,
   SessionEntryPatchCommitted,
@@ -268,6 +272,8 @@ export function commitSessionEntryPatch(
           fresh,
           writeBase,
           next,
+          projectionReleases: finalProjectionReleasesForOperation(input.operation),
+          projectionTransition: finalProjectionTransitionForOperation(existing, input.operation),
           options,
         });
       } else {

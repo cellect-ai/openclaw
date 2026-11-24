@@ -37,7 +37,10 @@ export type RealtimeVoiceBridgeSession = Pick<
 > & {
   bridge: RealtimeVoiceBridge;
   readonly capabilities?: InternalRealtimeVoiceProviderCapabilities;
-  sendUserMessage(text: string): void;
+  sendUserMessage(
+    text: string,
+    options?: Parameters<NonNullable<RealtimeVoiceBridge["sendUserMessage"]>>[1],
+  ): void;
   handleBargeIn(options?: RealtimeVoiceBargeInOptions): void;
   triggerGreeting(instructions?: string): void;
 };
@@ -146,10 +149,14 @@ export function createRealtimeVoiceBridgeSession(
         requireBridge().sendAudio(audio);
       }
     },
-    sendUserMessage: (text) => {
+    sendUserMessage: (text, options) => {
       if (text.trim()) {
         const bridge = requireBridge();
-        requestResponse(bridge.sendUserMessage?.bind(bridge, text));
+        requestResponse(
+          options
+            ? bridge.sendUserMessage?.bind(bridge, text, options)
+            : bridge.sendUserMessage?.bind(bridge, text),
+        );
       }
     },
     handleBargeIn: (options) => {

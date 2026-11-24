@@ -78,6 +78,19 @@ async function stageManifests(body: string, fixture: string, stage: string) {
 }
 
 describe("Dockerfile", () => {
+  it("seeds NSS distrust for root, node, and the retained runtime HOME", async () => {
+    const dockerfile = await readDockerfile("Dockerfile", true);
+    expectInOrder(
+      dockerfile,
+      "HOME=/root cellect-nss-distrust",
+      "\nUSER node",
+      "    cellect-nss-distrust",
+    );
+    expect(dockerfile).toContain(
+      "ENV OPENCLAW_NSS_DISTRUST_SEED=/usr/local/bin/cellect-nss-distrust",
+    );
+  });
+
   it.runIf(process.platform !== "win32").each(["", "matrix"])(
     "stages locked manifests and optional plugin selection: %j",
     async (selection) => {

@@ -83,6 +83,7 @@ function buildLegacyPreparationParams(entry: LegacyQueuedDelivery, cfg: OpenClaw
     ...projectQueuedDeliveryOptions(entry),
     queuePolicy: entry.queuePolicy,
     requireUnknownSendReconciliation: entry.requireUnknownSendReconciliation,
+    recoveryPolicy: entry.recoveryPolicy,
     payloads: entry.payloads,
     reply,
     replyPayloadSendingHook: entry.replyPayloadSendingHook,

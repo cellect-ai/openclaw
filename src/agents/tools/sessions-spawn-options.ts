@@ -1,5 +1,6 @@
 import type { ReplyToMode } from "../../config/types.base.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { MediaFact } from "../../media/media-facts.js";
 import type { SpawnedToolContext } from "../spawned-context.js";
 import type {
   countActiveRunsForSession,
@@ -36,5 +37,6 @@ export type SessionsSpawnToolOptions = {
   swarmCollector?: boolean;
   /** Backend-derived parent incarnation; never sourced from model arguments. */
   expectedParentSessionId?: string;
+  parentTurnMedia?: readonly MediaFact[];
   signal?: AbortSignal;
 } & SpawnedToolContext;

@@ -1,0 +1,206 @@
+import { readFileSync } from "node:fs";
+import type { OpenClawPluginApi, OpenClawPluginToolContext } from "openclaw/plugin-sdk/core";
+import type { TSchema } from "typebox";
+import { Value } from "typebox/value";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+const { exchange, delegatedFetch } = vi.hoisted(() => ({
+  exchange: vi.fn(),
+  delegatedFetch: vi.fn(),
+}));
+vi.mock("./fi-delegation.js", () => ({
+  exchange,
+  delegatedFetch,
+  readFiResponse: (r: Response) => r.json(),
+}));
+vi.mock("./mail-items-tool.js", () => ({
+  mailItemsPrivateRoomId: (c: { messageChannel?: string }) =>
+    c.messageChannel === "matrix" ? "!main:example.test" : undefined,
+}));
+import { createPersonalAgentTools } from "./personal-agent-tools.js";
+const api = {} as OpenClawPluginApi;
+const review: OpenClawPluginToolContext = {
+  agentId: "cellect-fi-user",
+  runId: "run-1",
+  sessionKey: `hook:fi-review:${"a".repeat(40)}`,
+  hookRequesterAttestation: `pra:job-1:${"B".repeat(43)}`,
+};
+beforeEach(() => {
+  vi.clearAllMocks();
+  exchange.mockResolvedValue({
+    config: {},
+    delegation: { user: { email: "owner@example.test", orgSlug: "shape" } },
+  });
+  delegatedFetch.mockImplementation(async () => Response.json({ ok: true }));
+});
+const tool = (name: string) => createPersonalAgentTools(api, review).find((t) => t.name === name)!;
+describe("personal review tools", () => {
+  it("starts a handoff from the person's Desk with the turn's room, whatever room the model names", async () => {
+    const main = {
+      agentId: "cellect-fi-user",
+      runId: "run-2",
+      messageChannel: "matrix",
+    } as OpenClawPluginToolContext;
+    const handoff = createPersonalAgentTools(api, main).find(
+      (t) => t.name === "fi_user_desk_handoff",
+    )!;
+    await handoff.execute("1", {
+      action: "start",
+      input: {
+        task: "wilson-secondary-booking",
+        title: "Wilson",
+        message: "Book it",
+        fromRoom: "!other:example.test",
+      },
+    });
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/desk/handoff");
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual({
+      input: {
+        task: "wilson-secondary-booking",
+        title: "Wilson",
+        message: "Book it",
+        fromRoom: "!main:example.test",
+        actor: "owner@example.test",
+      },
+    });
+    await expect(
+      handoff.execute("2", { action: "start", input: { actor: "other@example.test" } }),
+    ).rejects.toThrow("bound by Fi");
+  });
+  it("lets a scheduled review list handed-off tasks but never start one", async () => {
+    const handoff = tool("fi_user_desk_handoff");
+    await expect(
+      handoff.execute("1", { action: "start", input: { task: "wilson-secondary-booking" } }),
+    ).rejects.toThrow("requires the person's instruction");
+    expect(delegatedFetch).not.toHaveBeenCalled();
+    await handoff.execute("2", { action: "list" });
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/desk/tasks");
+    const example = [...handoff.description.matchAll(/Example: (\{.*\})/g)].map((m) =>
+      JSON.parse(m[1]!),
+    )[0];
+    expect(Value.Check(handoff.parameters as TSchema, example)).toBe(true);
+  });
+  it("declares every review factory tool for cold discovery and runtime ownership", () => {
+    const manifest = JSON.parse(
+      readFileSync(new URL("./openclaw.plugin.json", import.meta.url), "utf8"),
+    ) as {
+      contracts: { tools: string[] };
+    };
+    const names = createPersonalAgentTools(api, review).map((t) => t.name);
+    expect(names).toHaveLength(5);
+    expect(manifest.contracts.tools).toEqual(expect.arrayContaining(names));
+  });
+  it("documents allowed values and a valid example call for report, review and transition", () => {
+    const tools = createPersonalAgentTools(api, review);
+    const examples = (name: string) =>
+      [...tools.find((t) => t.name === name)!.description.matchAll(/Example: (\{.*\})/g)].map((m) =>
+        JSON.parse(m[1]!),
+      );
+    const report = tools.find((t) => t.name === "fi_user_review_report")!;
+    const [reportExample] = examples("fi_user_review_report");
+    expect(Value.Check(report.parameters as TSchema, reportExample)).toBe(true);
+    expect(report.description).toContain("at most 300 characters");
+    const status = { id: "own-main", status: "partial" as const };
+    expect(
+      Value.Check(report.parameters as TSchema, {
+        ...reportExample,
+        sourceStatus: [{ ...status, reason: "x".repeat(300) }],
+      }),
+    ).toBe(true);
+    expect(
+      Value.Check(report.parameters as TSchema, {
+        ...reportExample,
+        sourceStatus: [{ ...status, reason: "x".repeat(301) }],
+      }),
+    ).toBe(false);
+    const byAction = (name: string, action: string) =>
+      examples(name).find((e) => e.action === action);
+    const items = tools.find((t) => t.name === "fi_user_work_items")!;
+    for (const action of ["list", "review", "transition"]) {
+      expect(Value.Check(items.parameters as TSchema, byAction("fi_user_work_items", action))).toBe(
+        true,
+      );
+    }
+    expect(byAction("fi_user_work_items", "review")).toMatchObject({
+      input: { review: { state: "deferred" } },
+    });
+    expect(byAction("fi_user_work_items", "transition")).toMatchObject({
+      input: { status: "parked" },
+    });
+    expect(byAction("fi_user_work_items", "list")!.input.limit).toBeLessThanOrEqual(100);
+    expect(items.description).toContain("up to 5 of open, working, parked, resolved, dismissed");
+    expect(items.description).toContain("limit? (1-100");
+    expect(items.description).toContain("status is one of open, resolved, dismissed, parked");
+    const profile = tools.find((t) => t.name === "fi_user_agent_profile")!;
+    const checkpoint = byAction("fi_user_agent_profile", "checkpoint")!;
+    expect(Value.Check(profile.parameters as TSchema, checkpoint)).toBe(true);
+    // Every checkpoint field is nested inside `checkpoint`; nothing else sits beside it.
+    expect(Object.keys(checkpoint.input)).toEqual(["checkpoint"]);
+    expect(Object.keys(checkpoint.input.checkpoint)).toEqual(
+      expect.arrayContaining([
+        "sourceId",
+        "profileRevision",
+        "expectedCheckpointRevision",
+        "checkedAt",
+        "status",
+      ]),
+    );
+    expect(profile.description).toContain("status is one of ok, partial, unavailable");
+    expect(profile.description).toContain(
+      "Omit nextCheckAt when no revisit is needed; never send it as null",
+    );
+    expect(items.description).toContain("never send null");
+  });
+  it("fills the current owner and dispatches the actual operation envelope", async () => {
+    await tool("fi_user_work_items").execute("call-1", {
+      action: "list",
+      input: { statuses: ["open"], limit: 20 },
+    });
+    expect(delegatedFetch).toHaveBeenCalledWith(
+      {},
+      expect.anything(),
+      "/api/shape/work-item/list",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          input: { statuses: ["open"], limit: 20, actor: "owner@example.test" },
+        }),
+      }),
+    );
+    await expect(
+      tool("fi_user_work_items").execute("call-2", {
+        action: "capture",
+        input: { actor: "other@example.test" },
+      }),
+    ).rejects.toThrow("actor argument");
+  });
+  it("refuses background enrollment changes and malformed host context", async () => {
+    await expect(
+      tool("fi_user_agent_profile").execute("call-1", { action: "configure", input: {} }),
+    ).rejects.toThrow("interactive");
+    expect(
+      createPersonalAgentTools(api, { ...review, hookRequesterAttestation: undefined }),
+    ).toEqual([]);
+    expect(createPersonalAgentTools(api, { ...review, runId: undefined })).toEqual([]);
+  });
+  it("does not wrap direct report/source contracts as operation envelopes", async () => {
+    const report = { disposition: "silent", text: "", sourceStatus: [] };
+    await tool("fi_user_review_report").execute("call-1", report);
+    expect(delegatedFetch).toHaveBeenCalledTimes(1);
+    expect(delegatedFetch.mock.calls[0]![2]).toBe("/api/shape/personal-agent/report");
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual(report);
+  });
+  it("fills a stable per-turn source request id instead of a model-selected one", async () => {
+    const context = { ...review, runId: "e4e3c1ef-5853-41f5-b9ce-0e302545b7db" };
+    const source = createPersonalAgentTools(api, context).find(
+      (t) => t.name === "fi_user_review_sources",
+    )!;
+    await source.execute("call-1", { sourceId: "agents", requestId: "caller-selected" });
+    await source.execute("call-2", { sourceId: "agents" });
+    expect(delegatedFetch).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(delegatedFetch.mock.calls[0]![3].body)).toEqual({
+      sourceId: "agents",
+      requestId: `${context.runId}:agents`,
+    });
+    expect(delegatedFetch.mock.calls[0]![3].body).toBe(delegatedFetch.mock.calls[1]![3].body);
+  });
+});

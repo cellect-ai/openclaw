@@ -21,10 +21,12 @@ import {
   resolvePairingSetupFromConfig,
 } from "../../pairing/setup-code.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
+import { normalizeAgentIdStrict } from "../../routing/session-key.js";
 import {
   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
   VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+  WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
 } from "../../shared/device-bootstrap-profile.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
 import { VERSION } from "../../version.js";
@@ -104,6 +106,44 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
           return;
         }
         const config = context.getRuntimeConfig();
+        if (params.allowedAgentIds !== undefined && params.bootstrapProfile !== "webchat") {
+          respond(
+            false,
+            undefined,
+            errorShape(
+              ErrorCodes.INVALID_REQUEST,
+              "allowedAgentIds requires bootstrapProfile=webchat.",
+            ),
+          );
+          return;
+        }
+        if (params.bootstrapProfile === "webchat" && !params.allowedAgentIds?.length) {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.INVALID_REQUEST, "webchat bootstrap requires allowedAgentIds."),
+          );
+          return;
+        }
+        const normalizedAgentIds: string[] = [];
+        for (const id of params.allowedAgentIds ?? []) {
+          const normalized = normalizeAgentIdStrict(id);
+          if (!normalized.ok) {
+            respond(
+              false,
+              undefined,
+              errorShape(
+                ErrorCodes.INVALID_REQUEST,
+                "allowedAgentIds contains an unrepresentable agent ID.",
+              ),
+            );
+            return;
+          }
+          normalizedAgentIds.push(normalized.value);
+        }
+        const allowedAgentIds = params.allowedAgentIds
+          ? [...new Set(normalizedAgentIds)].toSorted()
+          : undefined;
         const joinContext =
           params.joinUrl === true ? captureOpenClawStateWorkerContext() : undefined;
         const authority = readGatewayRequestMutationAuthority(options);
@@ -131,7 +171,9 @@ export const devicePairSetupHandlers: GatewayRequestHandlers = {
                     ? NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE
                     : params.bootstrapProfile === "voice-node"
                       ? VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE
-                      : PAIRING_SETUP_BOOTSTRAP_PROFILE,
+                      : params.bootstrapProfile === "webchat"
+                        ? { ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE, allowedAgentIds }
+                        : PAIRING_SETUP_BOOTSTRAP_PROFILE,
               }
             : {}),
           // Lets Tailscale serve/funnel URLs resolve, mirroring the `openclaw qr` CLI.

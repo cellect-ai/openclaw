@@ -138,6 +138,8 @@ type SessionStopRequestBase = {
   capture: SessionControllerStopCapture | (() => SessionControllerStopCapture);
   assertCurrent?: () => void;
   reason?: unknown;
+  /** Execution-only Stop preserves separately admitted pending input. */
+  preservePendingInputs?: true;
   messageIdentity?: unknown;
   recordAbortTarget?: (options: { recordCutoff: boolean }) => Promise<void>;
   hookContext?: SessionStopHookContext;
@@ -476,7 +478,7 @@ function resolveStopOutcome(
 /** Applies the source policy to one captured, caller-authorized stop request. */
 export function stopSession(request: SessionStopRequest): SessionStopExecution {
   const sourcePolicy = SESSION_STOP_POLICY[request.source];
-  const policy =
+  const selectedPolicy =
     request.source === "mutation"
       ? {
           ...sourcePolicy,
@@ -484,6 +486,9 @@ export function stopSession(request: SessionStopRequest): SessionStopExecution {
           stopChildren: request.mutation.stopChildren,
         }
       : sourcePolicy;
+  const policy = request.preservePendingInputs
+    ? { ...selectedPolicy, cancelQueued: false }
+    : selectedPolicy;
   let externalStatus: SessionStopTargetStatus = "unchanged";
   let parentResult: SessionControllerStopResult | undefined;
   let parentFailure: { error: unknown } | undefined;

@@ -33,8 +33,11 @@ import { recordGatewaySessionRunFailure } from "../../sessions/session-run-error
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import type { registerChatAbortController } from "../chat-abort.js";
 import { ExpectedProfileMismatchError } from "../expected-profile.js";
+import { isUnauthorizedRawMatrixBrowserSession } from "../matrix-browser-session-authorization.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import { captureGatewayClientUploadCommitGuard } from "../upload-policy.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
 import { formatForLog } from "../ws-log.js";
 import { readPreRegisteredRun, writePreRegisteredChatAbort } from "./chat-abort-authorization.js";
 import { broadcastChatError } from "./chat-broadcast.js";
@@ -124,6 +127,7 @@ export async function withCurrentChatSendRetry(
   params: ChatSendPreAdmissionParams & {
     session: PreparedChatSendSession;
     withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];
+    talkRelayAdmission?: TalkRelayConsultAdmission;
   },
   ownPendingAttemptId: string,
   consume: (
@@ -138,7 +142,35 @@ export async function withCurrentChatSendRetry(
       includeMembership: Boolean(params.withPreparedCurrent),
       includeActivePath: params.request.p.queueMode !== "steer",
       consume: (latest, membership, assertSourceCurrent) => {
-        const consumeCurrent = () => read(latest);
+        const consumeCurrent = () => {
+          assertSourceCurrent();
+          params.assertCurrent?.();
+          params.talkRelayAdmission?.assertCurrent(
+            latest.canonicalKey,
+            params.client?.connId,
+            params.request.explicitOrigin,
+          );
+          // A same-incarnation row can acquire an external route while preparation
+          // waits. Consume the current worker row, not the detached initial route.
+          if (
+            !isWebchatSessionAllowed({
+              cfg: latest.cfg,
+              client: params.client,
+              sessionKey: latest.canonicalKey,
+            }) ||
+            isUnauthorizedRawMatrixBrowserSession({
+              cfg: latest.cfg,
+              clientInfo: params.request.clientInfo,
+              pairedClientId: params.client?.pairedClientId,
+              sessionKey: latest.canonicalKey,
+              sessionEntry: latest.entry ?? null,
+              authorizedByBinding: params.talkRelayAdmission !== undefined,
+            })
+          ) {
+            throw new Error("Matrix conversations require an authorized conversation binding");
+          }
+          return read(latest);
+        };
         if (params.withPreparedCurrent) {
           return params.withPreparedCurrent(
             {

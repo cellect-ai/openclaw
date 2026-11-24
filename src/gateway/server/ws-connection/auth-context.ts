@@ -62,6 +62,8 @@ export async function resolveConnectAuthState(params: {
   allowRealIpFallback: boolean;
   rateLimiter?: AuthRateLimiter;
   clientIp?: string;
+  /** Verified device limiter key; replaces the attributed client IP when set. */
+  rateLimitSubject?: string;
 }): Promise<ConnectAuthState> {
   const token = normalizeOptionalString(params.connectAuth?.token);
   const password = normalizeOptionalString(params.connectAuth?.password);
@@ -83,6 +85,7 @@ export async function resolveConnectAuthState(params: {
     allowRealIpFallback: params.allowRealIpFallback,
     rateLimiter: sharedConnectAuth ? params.rateLimiter : undefined,
     clientIp: params.clientIp,
+    rateLimitSubject: params.rateLimitSubject,
     rateLimitScope: AUTH_RATE_LIMIT_SCOPE_SHARED_SECRET,
     deferRateLimitFailure,
   });

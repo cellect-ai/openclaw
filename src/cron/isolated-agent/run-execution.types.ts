@@ -53,6 +53,11 @@ export type CronRunExecutionParams = Pick<
     | "admissionSource"
     | "deliveryAttemptFence"
     | "occurrence"
+    | "mailRequesterSenderId"
+    | "sourceLockCapability"
+    | "mailWakeSessionKey"
+    | "hookRequesterAttestation"
+    | "hookRequesterEnvironment"
   > & {
     runId: string;
     operatorAuthority?: AdmittedRunOperatorAuthority;

@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { notifyNativeFinalDeliveryChanged } from "../../auto-reply/reply/native-final-delivery.js";
 import { resolveMessageReceiptPrimaryId } from "../../channels/message/receipt.js";
 import {
   ConversationDeliveryMissingError,
@@ -47,11 +48,18 @@ import {
   type OutboundDeliveryResult,
 } from "./deliver-types.js";
 import {
+  nativeFinalBatchMemberIds,
+  selectNativeFinalMemberEvidence,
+  type NativeFinalMemberEvidence,
+} from "./delivery-completion-members.js";
+import {
   captureDeliveryPlacementEvidence,
   deliveryPlacementMatchesContext,
   type DeliveryPlacementEvidence,
 } from "./delivery-placement-evidence.js";
+import type { DeliveryPublicationEvidence } from "./delivery-queue-publication.types.js";
 import type { DurableDeliveryCompletion } from "./delivery-queue-types.js";
+import { normalizeTargetForProvider } from "./target-normalization.js";
 
 /** In-process locator captured before delivery preparation; never queue payload data. */
 export type ConversationDeliveryTarget = Pick<
@@ -151,11 +159,36 @@ export async function settlePendingFinalDelivery(
     stateContext?: DeliveryQueueStateContext;
     identifiedResult?: OutboundDeliveryResult;
     batch?: DeliveryEvidenceBatch;
+    finalPhysicalReceipt?: DeliveryPublicationEvidence;
+    requireFinalPhysicalReceipt?: true;
     /** Delivery has settled; durable queue owners must retain their receipt until ACK. */
     clearAfterSettled?: true;
   } = {},
 ): Promise<DurableDeliveryCompletionResult> {
+  const memberIds = nativeFinalBatchMemberIds(completion);
+  if (memberIds) {
+    const outcomes = [];
+    for (const deliveryId of memberIds) {
+      outcomes.push(
+        await settlePendingFinalDelivery(
+          { ...completion, memberDeliveryIds: undefined, deliveryId },
+          state === "delivered" ? "unknown" : state,
+          expectedStates,
+          {
+            stateDir: options.stateDir,
+            stateContext: options.stateContext,
+            preserveActivity: options.preserveActivity,
+          },
+        ),
+      );
+    }
+    return (
+      outcomes.find((outcome) => outcome.state === "unknown" || outcome.state === "stale") ??
+      outcomes.at(-1)!
+    );
+  }
   let settled: DurableDeliveryCompletionResult["state"] = "stale";
+  let finalSource: { sourceRunId: string; sourceGeneration: string } | undefined;
   const scope = {
     agentId: completion.agentId,
     sessionKey: completion.sessionKey,
@@ -195,6 +228,15 @@ export async function settlePendingFinalDelivery(
     authorize(_stage, facts) {
       const entry = facts.entry;
       if (
+        (completion.sourceRunId !== undefined &&
+          entry?.pendingFinalDelivery?.sourceRunId !== completion.sourceRunId) ||
+        (completion.sourceGeneration !== undefined &&
+          entry?.pendingFinalDelivery?.sourceGeneration !== completion.sourceGeneration)
+      ) {
+        refused = true;
+        throw new Error("Pending final source identity changed");
+      }
+      if (
         authority &&
         (!entry ||
           authority.sessionKey !== completion.sessionKey ||
@@ -217,13 +259,19 @@ export async function settlePendingFinalDelivery(
         // Only receipt evidence needs a captured route/version. State-only custody
         // changes validate atomically in deliverySettled without a preparatory read.
         const current = snapshot ?? (options.identifiedResult ? await actor.read(live) : undefined);
+        const capturedEvidence = evidence(current?.entry);
         return actor.deliverySettled(
           {
             commandId: randomUUID(),
             phaseId: randomUUID(),
             expected: current?.version,
-            settlement,
-            evidence: evidence(current?.entry),
+            settlement:
+              options.requireFinalPhysicalReceipt &&
+              state === "delivered" &&
+              !capturedEvidence.result?.finalPlatformMessageId
+                ? { ...settlement, state: "unknown" }
+                : settlement,
+            evidence: capturedEvidence,
           },
           live,
         );
@@ -249,22 +297,63 @@ export async function settlePendingFinalDelivery(
       throw new Error("Pending final delivery returned another settlement");
     }
     settled = outcome.value.state;
+    const postimage = outcome.receipt.postimage.entry;
+    const plan =
+      postimage?.pendingFinalDelivery?.intentId === completion.intentId
+        ? postimage.pendingFinalDelivery
+        : postimage?.completedFinalDeliveries?.find(
+            (candidate) => candidate.intentId === completion.intentId,
+          );
+    if (plan?.sourceRunId && plan.sourceGeneration && plan.projectionConsumers?.length)
+      finalSource = { sourceRunId: plan.sourceRunId, sourceGeneration: plan.sourceGeneration };
     if (outcome.failure) {
       throw new Error(outcome.failure.message);
     }
   });
+  if (finalSource) await notifyNativeFinalDeliveryChanged({ ...completion, ...finalSource });
   return { state: settled };
 }
 
 /** Keep contradictions until every physical send has been checked against captured routing. */
 function resolvePendingFinalResultEvidence(
-  options: { identifiedResult?: OutboundDeliveryResult; batch?: DeliveryEvidenceBatch },
+  options: {
+    identifiedResult?: OutboundDeliveryResult;
+    batch?: DeliveryEvidenceBatch;
+    finalPhysicalReceipt?: DeliveryPublicationEvidence;
+  },
   context: DeliveryContext | undefined,
 ): SessionActorDeliveryEvidence["result"] {
   if (!context?.channel || !context.to || !options.identifiedResult) {
     return undefined;
   }
   const destination = { channel: context.channel, to: context.to, threadId: context.threadId };
+  const physical = options.finalPhysicalReceipt;
+  if (physical !== undefined) {
+    if (
+      physical.destination.channel !== context.channel ||
+      normalizeTargetForProvider(context.channel, physical.destination.to) !==
+        normalizeTargetForProvider(context.channel, context.to) ||
+      (physical.destination.accountId ?? "default") !== (context.accountId ?? "default") ||
+      String(physical.destination.threadId ?? "") !== String(context.threadId ?? "") ||
+      !deliveryPlacementMatchesContext(physical.placement, destination) ||
+      !physical.platformMessageIds.length ||
+      physical.platformMessageIds.some((id) => typeof id !== "string" || !id.trim()) ||
+      physical.platformMessageIds.at(-1) !== physical.platformMessageId ||
+      !physical.primaryPlatformMessageId?.trim() ||
+      !Number.isSafeInteger(physical.resultCount) ||
+      Number(physical.resultCount) <= 0
+    )
+      return undefined;
+    // The producer supplied complete immutable source-index evidence before observers.
+    // Never let mutable aggregate objects replace any part of this receipt.
+    return {
+      channel: context.channel,
+      platformMessageId: physical.primaryPlatformMessageId,
+      finalPlatformMessageId: physical.platformMessageId,
+      resultCount: physical.resultCount,
+      verifiedContext: structuredClone(context),
+    };
+  }
   const matchesPlacement = (placement: DeliveryPlacementEvidence | undefined): boolean =>
     deliveryPlacementMatchesContext(placement, destination);
   const matches = (result: OutboundDeliveryResult): boolean =>
@@ -349,10 +438,15 @@ export async function completeDurableDelivery(
   return settleDurableDelivery(completion, { result, batch }, stateDir, stateContext, target);
 }
 
-type DurableDeliveryTerminalEvidence =
-  | { result: OutboundDeliveryResult; batch?: DeliveryEvidenceBatch }
+type DurableDeliveryTerminalEvidence = (
+  | {
+      result: OutboundDeliveryResult;
+      batch?: DeliveryEvidenceBatch;
+      finalPhysicalReceipt?: DeliveryPublicationEvidence;
+    }
   | { rejectionError: string }
-  | { platformSendStarted: boolean };
+  | { platformSendStarted: boolean }
+) & { memberEvidence?: readonly NativeFinalMemberEvidence[] };
 
 /** Settles the completion owner from the final evidence held by its lifecycle owner. */
 export async function settleDurableDelivery(
@@ -362,6 +456,52 @@ export async function settleDurableDelivery(
   stateContext?: DeliveryQueueStateContext,
   target?: ConversationDeliveryTarget,
 ): Promise<DurableDeliveryCompletionResult> {
+  if (completion.kind === "pending-final") {
+    const members = nativeFinalBatchMemberIds(completion);
+    if (members) {
+      const outcomes = [];
+      for (const [index, deliveryId] of members.entries()) {
+        const member = selectNativeFinalMemberEvidence(
+          evidence.memberEvidence,
+          members.length,
+          index,
+        );
+        // A whole-batch pre-send refusal proves no member crossed transport.
+        const noSend =
+          !member &&
+          (("platformSendStarted" in evidence && !evidence.platformSendStarted) ||
+            "rejectionError" in evidence);
+        const memberState = member?.state ?? (noSend ? "suppressed" : "unknown");
+        const captured = member?.state === "delivered" ? member.receipt : undefined;
+        outcomes.push(
+          await settlePendingFinalDelivery(
+            { ...completion, memberDeliveryIds: undefined, deliveryId },
+            memberState,
+            undefined,
+            {
+              stateDir,
+              stateContext,
+              requireFinalPhysicalReceipt: true,
+              ...(index === members.length - 1 ? { clearAfterSettled: true as const } : {}),
+              ...(captured
+                ? {
+                    identifiedResult: {
+                      channel: captured.destination.channel,
+                      messageId: captured.primaryPlatformMessageId ?? "",
+                    },
+                    finalPhysicalReceipt: captured,
+                  }
+                : {}),
+            },
+          ),
+        );
+      }
+      return (
+        outcomes.find((outcome) => outcome.state === "unknown" || outcome.state === "stale") ??
+        outcomes.at(-1)!
+      );
+    }
+  }
   // Proven no-send rejections suppress a pending final without owing an
   // uncertainty notice; conversation delivery retains the explicit rejection.
   const state =
@@ -375,7 +515,11 @@ export async function settleDurableDelivery(
         stateDir,
         stateContext,
         ...("result" in evidence
-          ? { identifiedResult: evidence.result, batch: evidence.batch }
+          ? {
+              identifiedResult: evidence.result,
+              batch: evidence.batch,
+              finalPhysicalReceipt: evidence.finalPhysicalReceipt,
+            }
           : {}),
       })
     : conversationResult(

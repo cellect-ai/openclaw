@@ -4,6 +4,7 @@ import type { ChannelMessagingAdapter } from "openclaw/plugin-sdk/core";
 import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import { findMatrixAccountEntry, hasImplicitMatrixAccountConfig } from "../account-selection.js";
 import { projectMatrixInboundRoute, resolveMatrixBindingRef } from "./monitor/route.js";
+import { isMatrixReadOnlyProjectionRoom } from "./thread-bindings-shared.js";
 
 export async function prepareMatrixConversationRouteOwnersAsync(
   inputs: readonly Parameters<
@@ -43,6 +44,8 @@ export async function prepareMatrixConversationRouteOwnersAsync(
     return {
       conversation: resolveMatrixBindingRef(route),
       resolve(inspection: ConversationBindingInspection) {
+        if (isMatrixReadOnlyProjectionRoom(accountId, roomId))
+          return { kind: "unavailable" as const };
         const result = projectMatrixInboundRoute(route, inspection);
         if (!result.bindingOwnerAvailable) {
           return { kind: "unavailable" as const };

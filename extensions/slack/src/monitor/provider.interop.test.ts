@@ -1,4 +1,5 @@
 import { EventEmitter } from "node:events";
+import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { rawDataToString } from "openclaw/plugin-sdk/webhook-ingress";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { WebSocketServer } from "ws";
@@ -390,6 +391,64 @@ describe("createSlackBoltApp", () => {
       ).resolves.toBe(false);
     },
   );
+
+  it("returns a broken SDK socket to the monitor before starting recovery", async () => {
+    const fixture = await createSocketServer();
+    const { app, receiver, socketServer } = fixture;
+    let connectionAttempts = 0;
+    let peakActiveConnections = 0;
+    socketServer.on("connection", (socket) => {
+      connectionAttempts += 1;
+      peakActiveConnections = Math.max(peakActiveConnections, socketServer.clients.size);
+      socket.send(JSON.stringify({ type: "hello", num_connections: socketServer.clients.size }));
+    });
+
+    Reflect.set(receiver.client, "clientPingTimeoutMS", 20);
+    const appStart = vi.spyOn(app, "start");
+    const onDisconnected = vi.fn();
+    const abortController = new AbortController();
+    let lifecycle: ReturnType<typeof startSlackSocketAndWaitForDisconnect> | undefined;
+    try {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const started = Promise.withResolvers<void>();
+        lifecycle = startSlackSocketAndWaitForDisconnect({
+          app,
+          socketClient: receiver.client,
+          abortSignal: abortController.signal,
+          onStarted: () => started.resolve(),
+          onDisconnected,
+        });
+        await started.promise;
+        expect(connectionAttempts).toBe(attempt + 1);
+        expect(appStart).toHaveBeenCalledTimes(attempt + 1);
+        if (attempt === 0) {
+          const nativeReconnect = Promise.withResolvers<void>();
+          const onNativeReconnect = () => nativeReconnect.resolve();
+          receiver.client.once("connected", onNativeReconnect);
+          try {
+            receiver.client.emit("error", new Error("transient transport error"));
+            for (const socket of socketServer.clients) {
+              socket.terminate();
+            }
+            const outcome = await Promise.race([
+              lifecycle,
+              nativeReconnect.promise.then(() => ({ event: "native-reconnect" })),
+            ]);
+            expect(outcome).toEqual({ event: "disconnect" });
+          } finally {
+            receiver.client.off("connected", onNativeReconnect);
+          }
+          expect(onDisconnected).toHaveBeenCalledTimes(1);
+          await gracefulStopSlackApp(app, receiver.client);
+        }
+      }
+      expect(peakActiveConnections).toBe(1);
+    } finally {
+      abortController.abort();
+      await lifecycle;
+      await stopSocketServer(fixture);
+    }
+  });
 });
 
 describe("slack socket reconnect helpers", () => {
@@ -492,4 +551,30 @@ it("does not treat missing or non-error values as permanent auth failures", () =
   for (const value of [null, undefined, 42, {}]) {
     expect(isNonRecoverableSlackAuthError(value)).toBe(false);
   }
+});
+
+it("reports disconnect while asynchronous startup is still settling", async () => {
+  const client = new EventEmitter();
+  const entered = createDeferred();
+  const release = createDeferred();
+  let startupFinished = false;
+  const disconnected = vi.fn(() => startupFinished);
+  const app = { receiver: { client }, start: async () => {} };
+  const run = startSlackSocketAndWaitForDisconnect({
+    app,
+    socketClient: client,
+    onStarted: async () => {
+      entered.resolve();
+      await release.promise;
+      startupFinished = true;
+    },
+    onDisconnected: disconnected,
+  });
+  await entered.promise;
+  client.emit("disconnected");
+  await Promise.resolve();
+  release.resolve();
+  await expect(run).resolves.toEqual({ event: "disconnect" });
+  expect(disconnected).toHaveBeenCalledOnce();
+  expect(disconnected.mock.results[0]?.value).toBe(false);
 });

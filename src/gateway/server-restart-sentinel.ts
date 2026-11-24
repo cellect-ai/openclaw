@@ -51,6 +51,7 @@ import {
   resolveUpdateRunNoticeTarget,
 } from "./update-run-notice-target.js";
 import { appendUpdateRunFinishedNotice } from "./update-run-notice.runtime.js";
+import { deliverQueuedWebchatCompletionFallback } from "./webchat-completion-delivery-send.js";
 
 const log = createSubsystemLogger("gateway/restart-sentinel");
 const CONTROL_PLANE_UPDATE_PENDING_RETRY_DELAY_MS = 2_000;
@@ -73,6 +74,16 @@ export async function deliverQueuedSessionDelivery(params: {
   resolveGatewayContext?: import("./server-methods/types.js").GatewayContextResolver;
 }) {
   params.queueContext.admission.assertCurrent();
+  if (params.entry.kind === "completionFallback") {
+    await deliverQueuedWebchatCompletionFallback({
+      cfg: getRuntimeConfig(),
+      entry: params.entry,
+      log,
+      queueContext: params.queueContext,
+    });
+    params.queueContext.admission.assertCurrent();
+    return;
+  }
   // Legacy inference rows are intentionally inert. Only already-produced media
   // belongs to the delivery queue; graceful restart resumption has one owner.
   if (params.entry.kind !== "agentTurn" || !params.entry.expectedMediaUrls?.length) {

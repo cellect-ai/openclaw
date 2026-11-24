@@ -52,6 +52,11 @@ export const execSchema = Type.Object({
         "Start an independent service now; survives request Stop. Use yieldMs for ordinary work. timeoutSeconds applies.",
     }),
   ),
+  closeProcessTree: Type.Optional(
+    Type.Boolean({
+      description: "Sandbox only: reap command descendants before reporting final completion.",
+    }),
+  ),
   timeoutSeconds: Type.Optional(
     Type.Number({
       description: "Process lifetime in seconds; 0 disables.",

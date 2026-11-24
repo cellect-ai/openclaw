@@ -53,6 +53,8 @@ export function hasTopLevelShellControlOperator(raw: string): boolean {
 }
 
 type ShellSyntaxOptions = {
+  /** Parse literal POSIX argv for host-owned command contracts. */
+  literalOnly?: boolean;
   rejectShellSyntax?: boolean;
   onUnquotedGlob?: (argvIndex: number) => void;
 };
@@ -81,7 +83,8 @@ function splitQuotedArgs(
   allowUnclosedQuotes = false,
   options?: ShellSyntaxOptions,
 ): string[] | null {
-  const rejectShellSyntax = options?.rejectShellSyntax;
+  const literalOnly = options?.literalOnly === true;
+  const rejectShellSyntax = options?.rejectShellSyntax || literalOnly;
   const backslashEscapes = syntax === "shell";
   const tokens: string[] = [];
   let buf = "";
@@ -99,6 +102,9 @@ function splitQuotedArgs(
 
   for (let i = 0; i < raw.length; i += 1) {
     const ch = raw.charAt(i);
+    if (rejectShellSyntax && ch === "\0") {
+      return null;
+    }
     if (escaped) {
       buf += ch;
       escaped = false;
@@ -145,7 +151,7 @@ function splitQuotedArgs(
       break;
     }
     if (rejectShellSyntax && /[*?[]/u.test(ch)) {
-      if (!options?.onUnquotedGlob) {
+      if (literalOnly || !options?.onUnquotedGlob) {
         return null;
       }
       options.onUnquotedGlob(tokens.length);
@@ -153,7 +159,10 @@ function splitQuotedArgs(
     if (rejectShellSyntax && /[;&|<>$`\r\n(){}~]/u.test(ch)) {
       return null;
     }
-    if (/\s/.test(ch)) {
+    if (literalOnly && ch === "]") {
+      return null;
+    }
+    if (literalOnly ? ch === " " || ch === "\t" : /\s/.test(ch)) {
       // Only space and tab separate POSIX shell words; other whitespace must
       // not create a comment boundary in strict approval parsing.
       if (rejectShellSyntax && ch !== " " && ch !== "\t") {

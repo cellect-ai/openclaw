@@ -386,3 +386,10 @@ it("normalizes provider/date/latest suffixes while preserving other IDs", () => 
     expect(extractShortModelName(input), input).toBe(expected);
   }
 });
+
+it("resolves sender mention response-prefix tokens", () => {
+  expect(resolveResponsePrefixTemplate("{sender.mention}", { senderMention: "<@U123>" })).toBe(
+    "<@U123>",
+  );
+  expect(resolveResponsePrefixTemplate("{sender.mention}", { senderMention: "" })).toBe("");
+});

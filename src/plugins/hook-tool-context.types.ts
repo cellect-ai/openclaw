@@ -1,4 +1,8 @@
 import type { DiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
+import type {
+  PluginHookRequesterContinuation,
+  PluginHookSpawnedRequester,
+} from "./hook-agent-context.types.js";
 import type { PluginJsonValue } from "./host-hook-json.js";
 
 export type PluginHookToolKind = "code_mode_exec";
@@ -19,6 +23,19 @@ export type PluginHookToolRequesterContext = {
 };
 
 export type PluginHookToolContext = {
+  /** Host-bound source receipt; never copied from model/tool arguments. */
+  hookSourceLockCapability?: string;
+  /** Original authenticated mail source target when execution is projected to cron. */
+  hookMailWakeSessionKey?: string;
+  hostMailWakeEnvironment?: "dev" | "staging" | "prod";
+  /** Fi environment named by the authenticated hook; host context only. */
+  hostHookFiEnvironment?: "dev" | "staging" | "prod";
+  /** Live requester custody of a supported native task continuation. */
+  requesterContinuation?: PluginHookRequesterContinuation;
+  /** Host-owned lineage of a spawned child run. */
+  spawnedFrom?: PluginHookSpawnedRequester;
+  /** Parent channel metadata; grants no authority. */
+  spawnedFromChannel?: string;
   agentId?: string;
   sessionKey?: string;
   sessionId?: string;

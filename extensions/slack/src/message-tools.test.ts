@@ -180,6 +180,7 @@ describe("Slack message tools", () => {
 
     expect(Object.keys(discovery).toSorted()).toEqual(["actions", "capabilities", "schema"]);
     // The complete default action inventory is owned by the channel-actions contract suite.
+    expect(discovery.actions).toContain("thread-reply");
     expect(discovery.capabilities).toEqual(["presentation"]);
     expect(Array.isArray(discovery.schema)).toBe(true);
     const schemas = Array.isArray(discovery.schema) ? discovery.schema : [];
@@ -230,6 +231,7 @@ describe("Slack message tools", () => {
       "react",
       "reactions",
       "conversation-open",
+      "thread-reply",
       "read",
       "edit",
       "delete",
@@ -273,6 +275,7 @@ describe("Slack message tools", () => {
       "reactions",
       "channel-create",
       "conversation-open",
+      "thread-reply",
       "read",
       "edit",
       "delete",

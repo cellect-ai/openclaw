@@ -17,6 +17,11 @@ import {
   XAI_REALTIME_DEFAULT_VAD_THRESHOLD,
   XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
   XAI_REALTIME_MAX_PENDING_PLAYBACK_MARKS,
+  mergeXaiRealtimeResponseToolChoice,
+  serializeXaiRealtimeToolResult,
+  type XaiRealtimeResponseToolChoice,
+  type XaiRealtimeUserMessageOptions,
+  type XaiRealtimeEvent,
   type XaiRealtimeSessionUpdate,
   type XaiRealtimeVoiceBridgeConfig,
 } from "./realtime-voice-config.js";
@@ -33,9 +38,17 @@ export abstract class XaiRealtimeVoiceProtocol {
   protected readonly audioFormat: RealtimeVoiceAudioFormat;
   protected markQueue: string[] = [];
   protected responseActive = false;
+  protected outputAudioGeneration = 0;
+  private interruptingPlayback = false;
   protected responseCreateInFlight = false;
   protected responseCancelInFlight = false;
   protected responseCreatePending = false;
+  /** Tool choice the deferred response.create must carry once it is sent. */
+  protected pendingResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
+  /** Tool choice of the response.create sent and not yet acknowledged. */
+  protected inFlightResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
+  /** Tool choice of the live response; a function call in a "none" response is refused. */
+  protected activeResponseToolChoice: XaiRealtimeResponseToolChoice | undefined;
   protected pendingToolCallIds = new Set<string>();
   protected latestMediaTimestamp = 0;
   protected assistantAudioItem: XaiAssistantAudioItem | null = null;
@@ -50,7 +63,7 @@ export abstract class XaiRealtimeVoiceProtocol {
 
   protected abstract sendEvent(event: unknown, detail?: string): void;
 
-  protected sendUserMessageNow(text: string): void {
+  protected sendUserMessageNow(text: string, options?: XaiRealtimeUserMessageOptions): void {
     this.sendEvent({
       type: "conversation.item.create",
       item: {
@@ -59,7 +72,7 @@ export abstract class XaiRealtimeVoiceProtocol {
         content: [{ type: "input_text", text }],
       },
     });
-    this.requestResponseCreate();
+    this.requestResponseCreate(options?.toolChoice);
   }
 
   protected submitToolResultNow(
@@ -118,46 +131,62 @@ export abstract class XaiRealtimeVoiceProtocol {
     reason: "barge-in" | "server-vad-barge-in",
     options?: RealtimeVoiceBargeInOptions,
   ): void {
-    const item = this.assistantAudioItem;
-    const hasLegacyPlayback =
-      this.markQueue.length > 0 ||
-      (reason === "barge-in" && (this.responseActive || options?.audioPlaybackActive === true));
-    // Timestamp/mark-only transports retain their shipped clock contract;
-    // an empty native snapshot means all prior audio was already heard.
-    const playbackState: readonly RealtimeVoicePlaybackItem[] = this.config.getPlaybackState
-      ? this.config.getPlaybackState()
-      : item && hasLegacyPlayback
-        ? [{ itemId: item.itemId, audioEndMs: this.audioEndMs(item) }]
-        : [];
-    const playbackItems = playbackState.map(({ itemId, audioEndMs }) => ({ itemId, audioEndMs }));
-    const cancelResponse =
-      reason === "barge-in" &&
-      (this.responseActive || this.responseCreateInFlight || playbackItems.length > 0) &&
-      !this.responseCancelInFlight;
-    this.markQueue = [];
-    this.assistantAudioItem = null;
-    if (this.responseActive || this.responseCreateInFlight) {
-      this.responseCancelInFlight = true;
+    // Wire observers can synchronously reenter before the sink clears its snapshot.
+    if (this.interruptingPlayback) {
+      return;
     }
-    // xAI requires manual cancellation before truncating even completed playback.
-    // Only active generation has a later response.done; VAD owns its cancellation.
-    if (cancelResponse) {
-      this.sendEvent({ type: "response.cancel" }, `reason=${reason}`);
+    this.interruptingPlayback = true;
+    try {
+      const item = this.assistantAudioItem;
+      const hasLegacyPlayback =
+        this.markQueue.length > 0 ||
+        (reason === "barge-in" && (this.responseActive || options?.audioPlaybackActive === true));
+      // Timestamp/mark-only transports retain their shipped clock contract;
+      // an empty native snapshot means all prior audio was already heard.
+      const playbackState: readonly RealtimeVoicePlaybackItem[] = this.config.getPlaybackState
+        ? this.config.getPlaybackState()
+        : item && hasLegacyPlayback
+          ? [{ itemId: item.itemId, audioEndMs: this.audioEndMs(item) }]
+          : [];
+      const playbackItems = playbackState.map(({ itemId, audioEndMs }) => ({ itemId, audioEndMs }));
+      const cancelResponse =
+        reason === "barge-in" &&
+        (this.responseActive || this.responseCreateInFlight || playbackItems.length > 0) &&
+        !this.responseCancelInFlight;
+      this.outputAudioGeneration += 1;
+      this.markQueue = [];
+      this.assistantAudioItem = null;
+      if (this.responseActive || this.responseCreateInFlight) {
+        this.responseCancelInFlight = true;
+      }
+      // xAI requires manual cancellation before truncating even completed playback.
+      // Only active generation has a later response.done; VAD owns its cancellation.
+      if (cancelResponse) {
+        this.sendEvent({ type: "response.cancel" }, `reason=${reason}`);
+      }
+      // Clear playback on every provider, but trim provider history after server-VAD
+      // barge-in only for protocols that accept OpenAI's truncate event. Gemini Live does not.
+      const truncateHistory =
+        reason !== "server-vad-barge-in" ||
+        this.config.supportsServerVadAssistantAudioTruncation !== false;
+      for (const playbackItem of truncateHistory ? playbackItems : []) {
+        this.sendEvent(
+          {
+            type: "conversation.item.truncate",
+            item_id: playbackItem.itemId,
+            content_index: 0,
+            audio_end_ms: playbackItem.audioEndMs,
+          },
+          `reason=${reason} audioEndMs=${playbackItem.audioEndMs}`,
+        );
+      }
+      // The sink can request replacement generation when cleared; trim its history first.
+      this.config.onClearAudio("barge-in");
+    } finally {
+      this.interruptingPlayback = false;
     }
-    for (const playbackItem of playbackItems) {
-      this.sendEvent(
-        {
-          type: "conversation.item.truncate",
-          item_id: playbackItem.itemId,
-          content_index: 0,
-          audio_end_ms: playbackItem.audioEndMs,
-        },
-        `reason=${reason} audioEndMs=${playbackItem.audioEndMs}`,
-      );
-    }
-    // The sink can request replacement generation when cleared; trim its history first.
-    this.config.onClearAudio("barge-in");
-    // Server VAD owns its next response; only a host interruption drains this gate.
+    // Observer requests wait until history and the sink are cleared. Server VAD
+    // owns its next response; only a host interruption drains this gate.
     if (reason === "barge-in") {
       this.flushPendingResponseCreate();
     }
@@ -166,11 +195,12 @@ export abstract class XaiRealtimeVoiceProtocol {
   protected buildSessionUpdate(): XaiRealtimeSessionUpdate {
     const cfg = this.config;
     const format = toOpenAICompatibleRealtimeAudioFormat(this.audioFormat);
+    const isGeminiLive = cfg.model?.startsWith("gemini-") === true;
     return {
       type: "session.update",
       session: {
         instructions: cfg.instructions,
-        voice: cfg.voice ?? "eve",
+        voice: cfg.voice ?? (isGeminiLive ? "Kore" : "eve"),
         output_modalities: ["audio"],
         turn_detection: {
           type: "server_vad",
@@ -181,12 +211,22 @@ export abstract class XaiRealtimeVoiceProtocol {
         audio: {
           input: {
             format,
-            transcription: { model: XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL },
+            transcription: {
+              model: XAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
+              ...(cfg.language ? { language_hint: cfg.language } : {}),
+            },
           },
-          output: { format },
+          output: {
+            format,
+            ...(isGeminiLive ? { transcription: {} } : {}),
+          },
         },
-        ...(cfg.sessionResumption === true ? { resumption: { enabled: true } } : {}),
-        ...(cfg.reasoningEffort ? { reasoning: { effort: cfg.reasoningEffort } } : {}),
+        ...(!isGeminiLive && cfg.sessionResumption === true
+          ? { resumption: { enabled: true } }
+          : {}),
+        ...(!isGeminiLive && cfg.reasoningEffort
+          ? { reasoning: { effort: cfg.reasoningEffort } }
+          : {}),
         ...(cfg.tools?.length
           ? {
               tools: cfg.tools,
@@ -235,8 +275,35 @@ export abstract class XaiRealtimeVoiceProtocol {
       return;
     }
     this.deliveredToolCallKeys.add(dedupeKey);
+    if (this.activeResponseToolChoice === "none") {
+      this.refuseToolCallInToolFreeResponse({ itemId, callId, name });
+      return;
+    }
     this.pendingToolCallIds.add(callId);
     this.config.onToolCall({ itemId, callId, name, args });
+  }
+
+  private refuseToolCallInToolFreeResponse(params: {
+    itemId: string;
+    callId: string;
+    name: string;
+  }): void {
+    // Grok through LiteLLM accepts tool_choice "none" and still calls tools. The
+    // provider pauses until every call has an output, so answer it here; no new
+    // response.create, or the refusal would start another turn.
+    this.config.onEvent?.({
+      direction: "server",
+      type: "tool_call.refused",
+      detail: `reason=tool_choice_none name=${params.name}`,
+      itemId: params.itemId,
+    });
+    this.submitToolResultNow(
+      params.callId,
+      serializeXaiRealtimeToolResult({
+        error: "Tools are unavailable while announcing an answer.",
+      }),
+      { suppressResponse: true },
+    );
   }
 
   private rejectToolCallArguments(params: {
@@ -257,7 +324,8 @@ export abstract class XaiRealtimeVoiceProtocol {
     this.submitToolResultNow(params.callId, '{"error":"Invalid tool arguments."}');
   }
 
-  protected requestResponseCreate(): void {
+  protected requestResponseCreate(toolChoice?: XaiRealtimeResponseToolChoice): void {
+    const merged = mergeXaiRealtimeResponseToolChoice(this.pendingResponseToolChoice, toolChoice);
     // xAI requires every parallel function output before one response.create, and
     // relay playback must drain before the next response starts.
     if (
@@ -265,22 +333,45 @@ export abstract class XaiRealtimeVoiceProtocol {
       this.responseCreateInFlight ||
       this.responseCancelInFlight ||
       this.markQueue.length > 0 ||
-      this.pendingToolCallIds.size > 0
+      this.pendingToolCallIds.size > 0 ||
+      this.interruptingPlayback
     ) {
       this.responseCreatePending = true;
+      this.pendingResponseToolChoice = merged;
       return;
     }
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
     this.responseCreateInFlight = true;
-    this.sendEvent({ type: "response.create" });
+    this.inFlightResponseToolChoice = merged;
+    // Gemini Live through LiteLLM has no tool_choice on response.create; the
+    // refusal of a call in a "none" response still applies there.
+    const sendToolChoice = merged !== undefined && !this.config.model?.startsWith("gemini-");
+    this.sendEvent(
+      sendToolChoice
+        ? { type: "response.create", response: { tool_choice: merged } }
+        : { type: "response.create" },
+    );
   }
 
   protected flushPendingResponseCreate(): void {
     if (!this.responseCreatePending) {
       return;
     }
+    const toolChoice = this.pendingResponseToolChoice;
     this.responseCreatePending = false;
-    this.requestResponseCreate();
+    this.pendingResponseToolChoice = undefined;
+    this.requestResponseCreate(toolChoice);
+  }
+
+  /** A rejected response.create is owed again with the tool choice it carried. */
+  protected deferRejectedResponseCreate(): void {
+    this.responseCreatePending = true;
+    this.pendingResponseToolChoice = mergeXaiRealtimeResponseToolChoice(
+      this.pendingResponseToolChoice,
+      this.inFlightResponseToolChoice,
+    );
+    this.inFlightResponseToolChoice = undefined;
   }
 
   protected resetRealtimeSessionState(options: { preserveToolCallState?: boolean } = {}): void {
@@ -289,6 +380,9 @@ export abstract class XaiRealtimeVoiceProtocol {
     this.responseCreateInFlight = false;
     this.responseCancelInFlight = false;
     this.responseCreatePending = false;
+    this.pendingResponseToolChoice = undefined;
+    this.inFlightResponseToolChoice = undefined;
+    this.activeResponseToolChoice = undefined;
     this.assistantAudioItem = null;
     this.resetInputTranscripts();
     if (!options.preserveToolCallState) {

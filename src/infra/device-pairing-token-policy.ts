@@ -1,3 +1,4 @@
+import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
 import {
@@ -111,6 +112,7 @@ export function reusablePairedDeviceToken(
   params: {
     role: string;
     scopes: string[];
+    allowedAgentIds?: string[];
     issuer?: DeviceAuthToken["issuer"];
   },
 ): DeviceAuthToken | null {
@@ -123,6 +125,10 @@ export function reusablePairedDeviceToken(
     listApprovedPairedDeviceRoles(device).includes(role) &&
     existing &&
     !existing.revokedAtMs &&
+    (params.allowedAgentIds === undefined ||
+      (existing.allowedAgentIds !== undefined &&
+        JSON.stringify(normalizeSortedUniqueTrimmedStringList(existing.allowedAgentIds)) ===
+          JSON.stringify(normalizeSortedUniqueTrimmedStringList(params.allowedAgentIds)))) &&
     scopesWithinApprovedDeviceBaseline({
       role,
       scopes: requestedScopes,

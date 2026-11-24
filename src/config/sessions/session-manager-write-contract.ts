@@ -34,6 +34,7 @@ import type {
   SessionPendingInputWorkerFacts,
   SessionPendingInputWorkerReceipt,
 } from "./session-pending-input.types.js";
+import type { SessionTranscriptQuestionAnswerWorkerFacts } from "./session-transcript-read-fence.js";
 import type {
   InitialSessionTranscriptWriter,
   SessionTranscriptWriterFence,
@@ -67,6 +68,7 @@ export type InitialSessionEntryCommit = {
 
 export type SessionMetadataMessageControl = {
   pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
+  questionAnswers?: SessionTranscriptQuestionAnswerWorkerFacts;
   freshMessageCheck?: true;
 };
 

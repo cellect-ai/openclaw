@@ -286,6 +286,21 @@ export async function searchInstalledSkills(
   };
 }
 
+const MAX_LISTED_NAMES = 20;
+
+/** A miss names the catalog this session can read, so the model stops retrying a skill outside it. */
+function describeUnknownSkill(skills: readonly InstalledSkill[], name: string): string {
+  const head = `Unknown installed skill ${JSON.stringify(name)}.`;
+  const names = skills.map((skill) => skill.name).toSorted();
+  if (names.length === 0) {
+    return `${head} This session's skill catalog is empty.`;
+  }
+  const shown = names.slice(0, MAX_LISTED_NAMES).join(", ");
+  const more =
+    names.length > MAX_LISTED_NAMES ? `, and ${names.length - MAX_LISTED_NAMES} more` : "";
+  return `${head} Skills readable in this session: ${shown}${more}. A skill outside this list is not enabled in this agent's catalog; do not retry skills_read for it.`;
+}
+
 /** Instructions are delivered whole or rejected, never silently truncated. */
 export async function readInstalledSkill(
   skills: readonly InstalledSkill[],
@@ -295,9 +310,7 @@ export async function readInstalledSkill(
   signal?.throwIfAborted();
   const skill = skills.find((entry) => entry.name === name);
   if (!skill) {
-    throw new ToolInputError(
-      `Skill ${JSON.stringify(name)} is not available to this agent. Search the available skills instead.`,
-    );
+    throw new ToolInputError(describeUnknownSkill(skills, name));
   }
   skill.assertCurrent?.();
   const content =

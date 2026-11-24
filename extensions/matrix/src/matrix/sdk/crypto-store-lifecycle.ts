@@ -30,6 +30,7 @@ export async function persistMatrixFinalState(params: {
   snapshotPath?: string;
   persistSnapshot: () => Promise<void>;
   syncStore?: SqliteBackedMatrixSyncStore;
+  shutdownOperation?: Parameters<SqliteBackedMatrixSyncStore["markCleanShutdown"]>[0];
 }): Promise<void> {
   if (params.cryptoInitialized) {
     if (params.snapshotPath && !params.ownership) {
@@ -40,7 +41,7 @@ export async function persistMatrixFinalState(params: {
   // An uninitialized encrypted diagnostic cannot certify a cursor against
   // crypto state it never owned or exported. Preserve its loaded clean flag.
   if (!params.encryptionEnabled || params.cryptoInitialized) {
-    params.syncStore?.markCleanShutdown();
+    params.syncStore?.markCleanShutdown(params.shutdownOperation);
   }
   await params.syncStore?.flush();
   if (params.cryptoInitialized) {

@@ -1,5 +1,10 @@
 import { isDeepStrictEqual } from "node:util";
 import type { SqliteWorkerCommand } from "../../infra/sqlite-worker-contract.js";
+import {
+  assertFinalProjectionReplacementAllowed,
+  type FinalProjectionTransition,
+} from "./pending-final-delivery-receipt.js";
+import { captureFinalProjectionTransition } from "./pending-final-delivery-transition.js";
 import type {
   SessionActorAppend,
   SessionActorAppendCommitted,
@@ -38,7 +43,7 @@ export type SessionActorMutation = Exclude<
 /** Mutations synchronously update the supplied hot state before returning. */
 export type SessionActorPhaseBackend = {
   agentId: string;
-  writeEntry(next: SessionEntry): void;
+  writeEntry(next: SessionEntry, projectionTransition?: FinalProjectionTransition): void;
   turn(input: SessionTurnPlan): SessionTurnCommitted;
   append(input: SessionActorAppend): SessionActorAppendCommitted;
   appendEvent(
@@ -59,6 +64,11 @@ export function applySessionActorPhaseWithBackend(
 ) {
   const sessionKey = hot.target.sessionKey;
   let entryUpdate: SessionEntry | undefined;
+  let projectionTransition: FinalProjectionTransition | undefined;
+  const writeEntry = (next: SessionEntry, transition?: FinalProjectionTransition) => {
+    assertFinalProjectionReplacementAllowed(hot.entry, next, [], transition);
+    backend.writeEntry(next, transition);
+  };
   const requireEntry = () => {
     const entry = hot.entry;
     if (!entry) {
@@ -97,7 +107,7 @@ export function applySessionActorPhaseWithBackend(
       if (defer) {
         entryUpdate = next;
       } else {
-        backend.writeEntry(next);
+        writeEntry(next);
       }
     }
   };
@@ -287,6 +297,7 @@ export function applySessionActorPhaseWithBackend(
       );
       if (settlement.patch) {
         entryUpdate = { ...entry, ...settlement.patch };
+        projectionTransition = captureFinalProjectionTransition(entry, entryUpdate);
       }
       result = { state: settlement.state };
       break;
@@ -337,7 +348,7 @@ export function applySessionActorPhaseWithBackend(
     }
   }
   if (entryUpdate) {
-    backend.writeEntry(entryUpdate);
+    writeEntry(entryUpdate, projectionTransition);
   }
   const committedTurn =
     result && "kind" in result && result.kind === "session-turn"

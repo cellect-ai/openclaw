@@ -1,0 +1,74 @@
+import { describe, expect, it } from "vitest";
+import { roomPlacementPage, roomReadView } from "./dataroom-placement.js";
+
+describe("bounded requester placement inventory", () => {
+  const snapshot = {
+    roomVersion: 8,
+    room: { name: "Diligence", noticeText: "large private notice" },
+    documents: Array.from({ length: 80 }, (_, i) => ({
+      documentId: `doc-${i}`,
+      displayName: `Document ${i}`,
+      roomCategory: i === 79 ? "Lorenzo KYC" : "Overview",
+      orderKey: `01.${i}`,
+      visibility: "internal",
+      previewPdfPath: "/private/internal.pdf",
+    })),
+  };
+
+  it("reaches late sections and checklist links without dropping items or exposing file paths", () => {
+    let page = roomPlacementPage("room-1", snapshot);
+    const documents = [...page.documents];
+    let pages = 1;
+    while (page.nextCursor) {
+      expect(page.complete).toBe(false);
+      expect(JSON.stringify(page)).not.toContain("/private/");
+      page = roomPlacementPage("room-1", snapshot, page.nextCursor);
+      documents.push(...page.documents);
+      pages++;
+    }
+    expect(pages).toBeGreaterThan(1);
+    expect(page.complete).toBe(true);
+    expect(documents).toHaveLength(80);
+    expect(new Set(documents.map((doc) => doc.documentId)).size).toBe(80);
+    expect(documents.at(-1)).toMatchObject({ roomCategory: "Lorenzo KYC" });
+  });
+
+  it("cannot stitch a cursor into another room, a changed version or altered inventory", () => {
+    const cursor = roomPlacementPage("room-1", snapshot).nextCursor!;
+    for (const [room, value] of [
+      ["other-room", snapshot],
+      ["room-1", { ...snapshot, roomVersion: 9 }],
+      ["room-1", { ...snapshot, documents: snapshot.documents.slice(1) }],
+    ] as const) {
+      expect(() => roomPlacementPage(room, value, cursor)).toThrow(/Restart get/);
+    }
+    expect(() => roomPlacementPage("room-1", snapshot, "rp1_bad")).toThrow(/invalid/);
+  });
+
+  it("marks abbreviated detail explicitly and refuses a falsely complete inventory", () => {
+    const page = roomPlacementPage("room-1", {
+      documents: [{ documentId: "doc", displayName: "x".repeat(500), tags: Array(50).fill("tag") }],
+    });
+    expect(page.documents[0]).toMatchObject({ detailsTruncated: true });
+    expect(page.documents[0]?.displayName).toHaveLength(300);
+    expect(() => roomPlacementPage("room-1", {})).toThrow(/incomplete/);
+  });
+
+  it("preserves full reads and exact detail while limiting cursors to placement", () => {
+    expect(roomReadView("room-1", snapshot, {})).toBe(snapshot);
+    expect(roomReadView("room-1", snapshot, { view: "placement" })).toEqual(
+      roomPlacementPage("room-1", snapshot),
+    );
+    expect(roomReadView("room-1", snapshot, { documentId: "doc-79" })).toEqual({
+      roomVersion: 8,
+      document: snapshot.documents.at(-1),
+    });
+    expect(roomReadView("room-1", snapshot, { documentId: "missing" })).toEqual({
+      roomVersion: 8,
+      document: null,
+    });
+    expect(() => roomReadView("room-1", snapshot, { cursor: "rp1_invalid" })).toThrow(
+      /view=placement/,
+    );
+  });
+});

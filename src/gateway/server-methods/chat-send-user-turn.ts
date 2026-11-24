@@ -163,7 +163,12 @@ export function prepareChatSendUserTurn(params: {
   session: Pick<PreparedChatSendSession, "agentId" | "clientRunId" | "sessionKey"> &
     Partial<Pick<PreparedChatSendSession, "cfg">>;
   admission: Pick<AdmittedChatSend, "originatingRoute"> &
-    Partial<Pick<AdmittedChatSend, "assertWorkAdmissionCurrent" | "assertClientUploadAllowed">>;
+    Partial<
+      Pick<
+        AdmittedChatSend,
+        "assertWorkAdmissionCurrent" | "assertClientUploadAllowed" | "channelRequester"
+      >
+    >;
   attachments: PreparedChatSendAttachments;
   client: GatewayRequestHandlerOptions["client"];
   logGateway: GatewayRequestContext["logGateway"];
@@ -175,6 +180,10 @@ export function prepareChatSendUserTurn(params: {
   };
 }) {
   const { request, session, admission, attachments, client, logGateway, userTurn } = params;
+  const channelRequester = admission.channelRequester;
+  // The browser owns the relay transport, not the Matrix speaker's execution authority.
+  const executionClient = channelRequester ? null : client;
+  const suppressCommandInterpretation = request.suppressCommandInterpretation || !!channelRequester;
   const persistedMediaForTranscriptPromise = (async (): ReturnType<
     typeof persistInboundImagesForTranscript
   > => {
@@ -218,9 +227,7 @@ export function prepareChatSendUserTurn(params: {
   // Generated media hints belong to the prompt and reset payload, not command arguments.
   const commandBody = request.inboundMessage;
   const commandSource =
-    !request.suppressCommandInterpretation && commandBody.trim().startsWith("/")
-      ? "text"
-      : undefined;
+    !suppressCommandInterpretation && commandBody.trim().startsWith("/") ? "text" : undefined;
   const buildTextContext = (text: string) => {
     // The attachment parser appends managed-media hints after the original input.
     const parsedMessage =
@@ -240,7 +247,7 @@ export function prepareChatSendUserTurn(params: {
   };
   const queuedFollowupOwnerDeviceId = normalizeOptionalString(client?.connect?.device?.id);
   const queuedFollowupOwnerConnId = normalizeOptionalString(client?.connId);
-  const gatewayUiCommandTarget = captureGatewayUiCommandTarget(client);
+  const gatewayUiCommandTarget = captureGatewayUiCommandTarget(executionClient);
   const queuedFollowupOwnerKey = queuedFollowupOwnerDeviceId
     ? `device:${queuedFollowupOwnerDeviceId}`
     : queuedFollowupOwnerConnId
@@ -248,7 +255,16 @@ export function prepareChatSendUserTurn(params: {
       : undefined;
   const { originatingChannel, originatingTo, accountId, messageThreadId, explicitDeliverRoute } =
     admission.originatingRoute;
-  const creation = resolveOperatorSessionCreation(client);
+  const creation = channelRequester
+    ? {
+        via: "channel" as const,
+        actor: {
+          type: "human" as const,
+          source: "channel" as const,
+          id: channelRequester.speakerMxid!,
+        },
+      }
+    : resolveOperatorSessionCreation(client);
   admission.assertWorkAdmissionCurrent?.();
   const sandbox = session.cfg ? resolveCreatorSandbox(session.cfg, creation) : undefined;
   // Current and historical turns must reach the single LLM timestamp boundary
@@ -266,7 +282,7 @@ export function prepareChatSendUserTurn(params: {
     AccountId: accountId,
     MessageThreadId: messageThreadId,
     ...(commandSource ? { CommandSource: commandSource } : {}),
-    CommandAuthorized: !request.suppressCommandInterpretation,
+    CommandAuthorized: !suppressCommandInterpretation,
     CommandTurn: commandSource
       ? {
           kind: "text-slash",
@@ -280,15 +296,32 @@ export function prepareChatSendUserTurn(params: {
           authorized: false,
           body: commandBody,
         },
-    ...(request.suppressCommandInterpretation ? { CommandInterpretationSuppressed: true } : {}),
+    ...(suppressCommandInterpretation ? { CommandInterpretationSuppressed: true } : {}),
     MessageSid: session.clientRunId,
     SessionCreation: { ...creation, ...(sandbox ? { sandbox } : {}) },
-    ...resolveChatSendCallerContext(client, request.clientInfo, originatingChannel),
+    ...resolveChatSendCallerContext(
+      executionClient,
+      channelRequester ? undefined : request.clientInfo,
+      originatingChannel,
+    ),
+    ...(channelRequester
+      ? {
+          Provider: originatingChannel,
+          Surface: originatingChannel,
+          ChatType: "group",
+          SenderId: channelRequester.speakerMxid,
+          ChannelContext: channelRequester.channelContext,
+          ChatId: channelRequester.channelContext?.chat?.id,
+          NativeChannelId: channelRequester.channelContext?.chat?.id,
+        }
+      : {}),
     GatewayRunToolBindings: request.toolBindings,
     GatewayUiCommandTarget: gatewayUiCommandTarget,
   };
-  const recoveredRequester = readQueuedChatInputAdmission(session.clientRunId)?.requesterProfile;
-  const requester = client?.authenticatedUserProfile;
+  const recoveredRequester = channelRequester
+    ? undefined
+    : readQueuedChatInputAdmission(session.clientRunId)?.requesterProfile;
+  const requester = executionClient?.authenticatedUserProfile;
   const externalInput =
     !request.systemInputProvenance || request.systemInputProvenance.kind === "external_user";
   if (recoveredRequester && externalInput) {
@@ -333,7 +366,7 @@ export function prepareChatSendUserTurn(params: {
       },
     });
   }
-  if (client) {
+  if (client && !channelRequester) {
     transferGatewayLocalUserIngress(client, ctx);
   }
   if (attachments.mediaPathOffloads.length > 0) {
@@ -388,8 +421,15 @@ export function prepareChatSendUserTurn(params: {
     }),
   );
   // Only this exact replay admission can attribute a synthetic caller to a person.
-  const participant =
-    recoveredRequester && externalInput && recoveredRequester.isCurrent()
+  const participant = channelRequester
+    ? {
+        type: "observation" as const,
+        pluginId: originatingChannel,
+        accountId: accountId ?? null,
+        senderKind: "human" as const,
+        id: channelRequester.speakerMxid!,
+      }
+    : recoveredRequester && externalInput && recoveredRequester.isCurrent()
       ? { type: "profile" as const, id: recoveredRequester.id }
       : resolveGatewayInputParticipant(client, request.systemInputProvenance);
   if (participant) {
@@ -399,7 +439,7 @@ export function prepareChatSendUserTurn(params: {
     prepareSessionCreation: async (library?: PreparedSkillLibrarySession) => {
       if (!request.systemInputProvenance) {
         const prepared = await prepareSkillLibrarySessionCreation(
-          client,
+          executionClient,
           params.getConfig ?? session.cfg ?? {},
           creation,
           library,

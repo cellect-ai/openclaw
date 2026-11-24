@@ -65,6 +65,7 @@ export type GatewaySessionRow = Omit<SessionRow, "archivedBy" | "updatedAt" | "w
   systemSent?: boolean;
   abortedLastRun?: boolean;
   thinkingLevel?: string;
+  timeoutSeconds?: number;
   contextWindow?: string;
   contextWindows?: GatewayContextWindowOption[];
   contextWindowDefault?: string;

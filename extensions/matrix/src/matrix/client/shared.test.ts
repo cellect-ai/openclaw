@@ -3,11 +3,15 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import type { PluginRuntime } from "openclaw/plugin-sdk/plugin-runtime";
 import { createTestPluginApi } from "openclaw/plugin-sdk/plugin-test-api";
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
+import { getSessionBindingService } from "openclaw/plugin-sdk/session-binding-runtime";
+import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import { importFreshModule } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { registerMatrixFullRuntime } from "../../../index.js";
 import { getOptionalMatrixRuntime, setMatrixRuntime } from "../../runtime.js";
+import { installMatrixTestRuntime, resetMatrixTestStores } from "../../test-runtime.js";
 import { createMatrixMonitorTaskRunner } from "../monitor/task-runner.js";
+import { createMatrixThreadBindingManager } from "../thread-bindings.js";
 import { acquireSharedMatrixClient, stopSharedClientForAccount } from "./shared.js";
 import {
   authFor,
@@ -555,10 +559,14 @@ describe("shared Matrix client runtime ownership", () => {
     return { firstOwner, nextOwner, firstClient, nextClient };
   }
 
-  function registerOwner(onDisposeRegistered?: () => void) {
+  function registerOwner(onDisposeRegistered?: () => void, runtime?: PluginRuntime) {
     const controller = new AbortController();
     const disposers = new Set<Disposer>();
-    const api = createTestPluginApi({ id: "matrix", name: "Matrix" });
+    const api = createTestPluginApi({
+      id: "matrix",
+      name: "Matrix",
+      ...(runtime ? { runtime } : {}),
+    });
     api.lifecycle = {
       ...api.lifecycle,
       signal: controller.signal,
@@ -573,9 +581,9 @@ describe("shared Matrix client runtime ownership", () => {
     let disposal: Promise<void> | undefined;
     const owner = {
       runtime: api.runtime,
-      acquire(auth: Auth, abortSignal?: AbortSignal) {
+      acquire(auth: Auth, abortSignal?: AbortSignal, role?: "monitor" | "transient") {
         setMatrixRuntime(api.runtime);
-        const pending = acquireSharedMatrixClient({ auth, abortSignal });
+        const pending = acquireSharedMatrixClient({ auth, abortSignal, role });
         acquisitions.push(pending);
         void pending.catch(() => undefined);
         return pending;
@@ -611,6 +619,62 @@ describe("shared Matrix client runtime ownership", () => {
       setMatrixRuntime(previousRuntime);
     } else {
       clearMatrixRuntime();
+    }
+  });
+
+  const tempDirs = useAutoCleanupTempDirTracker(afterEach);
+
+  it("persists the checkpoint after a V2 binding flush loses ambient runtime scope", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const stateDir = tempDirs.make("matrix-checkpoint-binding-flush-");
+    installMatrixTestRuntime({ stateDir });
+    const runtime = getOptionalMatrixRuntime()!;
+    const owner = registerOwner(undefined, runtime);
+    const client = createMockClient("checkpoint");
+    createMatrixClientMock.mockResolvedValue(client);
+    const auth = authFor("checkpoint-binding-flush");
+    const monitor = await owner.acquire(auth, undefined, "monitor");
+    const manager = await createMatrixThreadBindingManager({
+      cfg: {},
+      accountId: auth.accountId,
+      auth,
+      client: {} as never,
+      stateDir,
+      idleTimeoutMs: 0,
+      maxAgeMs: 0,
+      enableSweeper: false,
+    });
+    try {
+      const binding = await getSessionBindingService().bind({
+        targetSessionKey: "agent:main:subagent:fixture",
+        targetKind: "subagent",
+        conversation: {
+          channel: "matrix",
+          accountId: auth.accountId,
+          conversationId: "$fixture",
+          parentConversationId: "!room:example.org",
+        },
+        placement: "current",
+        metadata: { introText: false },
+      });
+      const touching = manager.touchBindingAsync(binding.bindingId, binding.boundAt + 1000);
+      const cleanup = vi.fn(() => manager.stop());
+      monitor.registerMonitorRetirement({
+        closeTaskAdmission: () => {},
+        detachListeners: () => {},
+        waitForTasks: async () => {},
+        cleanup,
+      });
+      clearMatrixRuntime();
+      await expect(owner.dispose()).resolves.toBeUndefined();
+      await expect(touching).resolves.toBeUndefined();
+      expect(cleanup).toHaveBeenCalledOnce();
+      expectShutdown(client, "persist");
+    } finally {
+      await manager.stop();
+      await monitor.release({ mode: "discard" });
+      await resetMatrixTestStores();
+      vi.useRealTimers();
     }
   });
 

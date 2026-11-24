@@ -3,6 +3,7 @@ import type { TalkClientCreateResult } from "../../../../packages/gateway-protoc
 import type { PrepareAssistantTranscriptMessage } from "../../../config/sessions/transcript-assistant-delivery.js";
 import type { OpenClawConfig } from "../../../config/types.js";
 import type { RealtimeVoiceProviderPlugin } from "../../../plugins/types.js";
+import type { GatewayRootWorkAdmissionContinuationScope } from "../../../process/gateway-work-admission.js";
 import { captureSessionTarget } from "../../../sessions/session-controller.lifecycle.js";
 import { getRpcSourceForGateway } from "../../../sessions/session-controller.rpc-sources.js";
 import type { BoundedSerialQueue } from "../../../shared/bounded-serial-queue.js";
@@ -13,8 +14,8 @@ import type { createClientVoiceTranscriptReadiness } from "../../../talk/client-
 import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import type {
   RealtimeVoiceAudioClearReason,
-  RealtimeVoiceAgentConsultRunner,
   RealtimeVoiceBrowserAudioContract,
+  RealtimeVoiceCloseDisposition,
   RealtimeVoiceProviderConfig,
   RealtimeVoiceTool,
   RealtimeVoiceToolResultOptions,
@@ -27,37 +28,48 @@ import type { GatewayRequestContext } from "../../server-methods/shared-types.js
 import type { TalkClientRunAuthority } from "../client-run-authority.js";
 import type { TalkAgentConsultAuthority } from "../client-tool-authority.js";
 import type { PreparedTalkSessionTarget } from "../session-target.types.js";
+import {
+  noFallbackRelayOutputFlush,
+  TalkRealtimeRelayOutputOwnership,
+} from "./output-ownership.js";
 import type { RelayToolCallLedger } from "./tool-call-ledger.js";
+export {
+  noFallbackRelayOutputFlush,
+  TalkRealtimeRelayOutputOwnership,
+} from "./output-ownership.js";
 
 export const RELAY_SESSION_TTL_MS = 30 * 60 * 1000;
 export const MAX_AUDIO_BASE64_BYTES = 512 * 1024;
 const RELAY_EVENT = "talk.event";
 export const RELAY_TRANSCRIPT_ECHO_LOOKBACK_MS = 12_000;
 
-export const noFallbackRelayOutputFlush = () => {};
-
 type TalkRealtimeRelayEventData =
   | { type: "ready" }
   | { type: "responseStarted"; turnId: string }
   | { type: "inputAudio"; byteLength: number }
+  | { type: "inputAudioStart"; itemId: string }
   | {
+      relaySessionId: string;
       type: "audio";
       audioBase64: string;
       itemId?: string;
       responseId?: string;
     }
-  | { type: "audioDone"; itemId?: string; responseId?: string }
-  | { type: "clear"; reason?: RealtimeVoiceAudioClearReason }
-  | { type: "mark"; markName: string }
+  | { relaySessionId: string; type: "audioDone"; itemId?: string; responseId?: string }
+  | { relaySessionId: string; type: "clear"; reason?: RealtimeVoiceAudioClearReason }
+  | { relaySessionId: string; type: "mark"; markName: string }
   | {
+      relaySessionId: string;
       type: "transcript";
       role: "user" | "assistant";
       text: string;
       final: boolean;
-      textMode?: "snapshot";
+      itemId?: string;
+      textMode?: "delta" | "snapshot";
       transcriptId?: string;
     }
   | {
+      relaySessionId: string;
       type: "toolCall";
       itemId: string;
       callId: string;
@@ -65,10 +77,11 @@ type TalkRealtimeRelayEventData =
       args: unknown;
       forced?: boolean;
     }
-  | { type: "toolCallCancelled"; callId: string }
-  | { type: "toolResult"; callId: string }
-  | { type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
+  | { relaySessionId: string; type: "toolCallCancelled"; callId: string }
+  | { relaySessionId: string; type: "toolResult"; callId: string }
+  | { relaySessionId: string; type: "toolProgress"; result: RealtimeVoiceAgentControlResult }
   | {
+      relaySessionId: string;
       type: "error";
       message: string;
       code?: "realtime_unavailable";
@@ -96,166 +109,6 @@ export type RelayAgentControlProviderSubmission = {
   providerResponseStarted: boolean;
 };
 
-export class TalkRealtimeRelayOutputOwnership {
-  mode: "turn-bound" | "exact-response" = "turn-bound";
-  phase: "unowned" | "owned" | "cancelling" | "discarding" = "unowned";
-  outputGeneration = 0;
-  turnId?: string;
-  responseId?: string;
-  drain?: { promise: Promise<void>; resolve: () => void };
-  private cancelledTerminal?: { responseId?: string };
-
-  constructor(
-    private readonly activeTurnId: () => string | undefined,
-    private readonly ensureTurn: () => string,
-    private readonly fail: (message: string) => void,
-    private readonly continuousOutput: () => boolean,
-  ) {}
-
-  get discarding(): boolean {
-    return this.phase === "discarding";
-  }
-
-  isDiscarding(generation: number): boolean {
-    return this.discarding && this.outputGeneration === generation;
-  }
-
-  get suppressingOutput(): boolean {
-    return this.phase === "cancelling" || this.discarding;
-  }
-
-  responseCreated(responseId: string | undefined): boolean {
-    const normalizedResponseId = responseId?.trim();
-    if (this.discarding) {
-      if (!normalizedResponseId || normalizedResponseId === this.responseId) {
-        return false;
-      }
-      this.finish(this.responseId);
-    }
-    if (this.phase === "unowned") {
-      this.cancelledTerminal = undefined;
-      Object.assign(this, {
-        mode: normalizedResponseId ? ("exact-response" as const) : ("turn-bound" as const),
-        phase: "owned" as const,
-        turnId: this.ensureTurn(),
-        responseId: normalizedResponseId,
-      });
-      return true;
-    }
-    if (
-      this.phase === "owned" &&
-      this.mode === "exact-response" &&
-      normalizedResponseId &&
-      normalizedResponseId === this.responseId
-    ) {
-      return true;
-    }
-    this.fail("Realtime provider output has no live response owner.");
-    return false;
-  }
-
-  resolve(claim: boolean): string | undefined {
-    if (this.discarding) {
-      return undefined;
-    }
-    // Continuous transports never send response.created, so output that arrives
-    // before client input starts its own turn, as an ID-less response does.
-    const activeTurnId =
-      this.activeTurnId() ??
-      (claim && this.phase === "unowned" && this.continuousOutput()
-        ? this.ensureTurn()
-        : undefined);
-    if (activeTurnId && this.mode === "turn-bound" && claim && this.phase === "unowned") {
-      this.cancelledTerminal = undefined;
-      Object.assign(this, { phase: "owned" as const, turnId: activeTurnId });
-    }
-    const turnId =
-      this.phase === "owned" && this.turnId === activeTurnId ? activeTurnId : undefined;
-    if (!turnId && (claim || this.phase === "owned")) {
-      this.fail("Realtime provider output has no live response owner.");
-    }
-    return turnId;
-  }
-
-  finish(responseId: string | undefined, cancellationEvent = false) {
-    const cancelled = this.suppressingOutput;
-    if (
-      (cancellationEvent && !cancelled) ||
-      (this.mode === "exact-response" &&
-        (this.phase === "unowned" || this.responseId !== responseId))
-    ) {
-      return "ignore";
-    }
-    this.drain?.resolve();
-    Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
-    return cancelled ? "cancelled" : "completed";
-  }
-
-  /** Resume input without releasing the unconfirmed provider response's output ownership. */
-  completeCancellationLocally(): number | undefined {
-    if (this.phase !== "cancelling") {
-      return undefined;
-    }
-    this.phase = "discarding";
-    this.drain?.resolve();
-    return ++this.outputGeneration;
-  }
-
-  resetContinuity(): void {
-    this.outputGeneration += 1;
-    this.cancelledTerminal = undefined;
-    this.drain?.resolve();
-    Object.assign(this, { phase: "unowned" as const, turnId: undefined, responseId: undefined });
-  }
-
-  bind(
-    provider: RealtimeVoiceProviderPlugin,
-    runAgentConsult: RealtimeVoiceAgentConsultRunner,
-  ): RealtimeVoiceProviderPlugin {
-    return {
-      ...provider,
-      createBridge: (request) =>
-        provider.createBridge({
-          ...request,
-          onEvent: (event) => {
-            if (event.direction === "server") {
-              if (event.type === "response.done" || event.type === "response.cancelled") {
-                if (
-                  this.cancelledTerminal &&
-                  this.cancelledTerminal.responseId === event.responseId
-                ) {
-                  this.cancelledTerminal = undefined;
-                  return;
-                }
-                if (this.suppressingOutput) {
-                  this.finish(event.responseId, true);
-                  return;
-                }
-              }
-              if (event.type === "response.created" && !this.responseCreated(event.responseId)) {
-                return;
-              }
-            }
-            request.onEvent?.(event);
-          },
-          onResponseDone: (outcome) => {
-            // The Talk turn is already cancelled. Settle its provider owner before the
-            // harness rejects that terminal or mistakes it for a successor input turn.
-            if (this.suppressingOutput) {
-              if (this.finish(outcome.responseId) !== "ignore") {
-                // Typed providers may emit a diagnostic legacy twin in the same dispatch.
-                this.cancelledTerminal = { responseId: outcome.responseId };
-              }
-              return;
-            }
-            request.onResponseDone?.(outcome);
-          },
-          runAgentConsult,
-        }),
-    };
-  }
-}
-
 export type RelayAgentRun = {
   runId: string;
   sessionKey: string;
@@ -273,6 +126,8 @@ export type RelayAgentRunRegistration = {
 };
 
 export type RelaySession = {
+  /** Teardown custody is separate from live call/presentation authority. */
+  cleanupAdmission?: GatewayRootWorkAdmissionContinuationScope;
   getToolAuthorityOverlay?: (
     authority?: TalkAgentConsultAuthority,
     source?: "reply" | "attempt",
@@ -287,6 +142,9 @@ export type RelaySession = {
   capabilities?: InternalRealtimeVoiceProviderCapabilities;
   outputOwnership: TalkRealtimeRelayOutputOwnership;
   sessionTarget: PreparedTalkSessionTarget;
+  speakerMxid?: string;
+  closeDisposition?: RealtimeVoiceCloseDisposition;
+  matrixRoute?: { channel: "matrix"; roomId: string; threadRootEventId: string; accountId: string };
   expiresAtMs: number;
   cleanupTimer: ReturnType<typeof setTimeout>;
   activeAgentRuns: Map<string, RelayAgentRun>;
@@ -294,6 +152,7 @@ export type RelaySession = {
   unspokenAnswers?: Map<string, (writer: ClientVoiceSessionWriter) => Promise<void>>;
   provider: string;
   activeAgentToolCalls: Map<string, RelayAgentRunRegistration>;
+  agentToolCallTerminalSubscriptions?: Map<string, () => void>;
   toolCalls: RelayToolCallLedger;
   providerToolCallIds: Map<string, string>;
   relayToolCallIdsByProviderId: Map<string, string>;
@@ -316,6 +175,14 @@ export type RelaySession = {
   runAuthority?: TalkClientRunAuthority;
   transcriptReadiness: ReturnType<typeof createClientVoiceTranscriptReadiness>;
   voiceSessionClose?: Promise<void>;
+  voiceUtterance?: {
+    role: "user" | "assistant";
+    key: string;
+    text: string;
+    eventId?: string;
+    /** When this line's final arrived; a revision must follow within a short window. */
+    at: number;
+  };
   closing?: {
     reason: "completed" | "error";
     completion?: Promise<void>;
@@ -344,7 +211,11 @@ export type CreateTalkRealtimeRelaySessionParams = {
   sessionTarget: PreparedTalkSessionTarget;
   voice?: string;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
+  sessionCapsule?: string;
   forceAgentConsultOnFinalTranscript?: boolean;
+  speakerMxid?: string;
+  matrixRoute?: { channel: "matrix"; roomId: string; threadRootEventId: string; accountId: string };
 };
 
 export type TalkRealtimeRelaySessionResult = Omit<
@@ -358,6 +229,15 @@ export type TalkRealtimeRelaySessionResult = Omit<
 export const relaySessions = new Map<string, RelaySession>();
 // Closing relays reject new work but retain bounded final transcripts until
 // provider finalization and durable close settle. Session limits count both sets.
+
+/** Resolve browser capabilities only against their live connection-owned relay. */
+export function resolveOwnedTalkRealtimeRelaySession(
+  relaySessionId: string,
+  connId: string | undefined,
+): RelaySession | undefined {
+  const relay = relaySessions.get(relaySessionId);
+  return connId && relay?.connId === connId && relay.expiresAtMs >= Date.now() ? relay : undefined;
+}
 export const drainingRelaySessions = new Set<RelaySession>();
 
 export function adoptRelayProviderToolCallId(

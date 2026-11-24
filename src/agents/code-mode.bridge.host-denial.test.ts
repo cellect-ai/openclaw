@@ -11,6 +11,9 @@ import {
 import { createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
 import type { PluginHookBeforeToolCallEvent } from "../plugins/types.js";
 import { getProcessSupervisor } from "../process/supervisor/index.js";
+import { checkClientVoiceToolConfirmationPolicy } from "../talk/client-voice-confirmation.js";
+import { resetClientVoiceConfirmationStateForTest } from "../talk/client-voice-confirmation.test-support.js";
+import * as clientVoiceSession from "../talk/client-voice-session.js";
 import { copyAgentToolMetadata } from "./agent-tool-metadata.js";
 import { wrapToolWithBeforeToolCallHook } from "./agent-tools.before-tool-call.js";
 import { resetAdjustedParamsByToolCallIdForTests } from "./agent-tools.before-tool-call.state.js";
@@ -434,6 +437,30 @@ describe("Code Mode subscribed host denial", () => {
     const harness = createHostHarness({ defaults: { security: "deny" } });
     const details = await harness.runToCompletion(execCode({ host: "gateway" }, "no"));
     expect(details.status).toBe("failed");
+    harness.expectNoStart();
+  });
+  it("does not pause a voice-bound shell command when the exec host rejects it", async () => {
+    const harness = createHostHarness({ name: "voice-denial" });
+    const voiceSessionId = "host-denial-voice";
+    const binding = { agentId: "main", voiceSessionId, sessionKey: harness.sessionKey };
+    vi.spyOn(clientVoiceSession, "resolveClientVoiceRunBinding").mockImplementation((runId) =>
+      runId === harness.runId ? binding : undefined,
+    );
+    vi.spyOn(clientVoiceSession, "isClientVoiceSessionConfirmable").mockReturnValue(true);
+    const args = { command: "printf voice-denied", host: "node", yieldMs: 1000 };
+    expect(
+      checkClientVoiceToolConfirmationPolicy({
+        agentId: "main",
+        voiceSessionId,
+        runId: harness.runId,
+        toolName: "exec",
+        toolParams: args,
+        isConfirmable: () => true,
+      }).allowed,
+    ).toBe(true);
+    const denied = await harness.runToCompletion(`return await exec(${JSON.stringify(args)});`);
+    expect(denied.error).toContain("exec host not allowed");
+    expect(JSON.stringify(denied)).not.toContain("VOICE_CONFIRMATION_REQUIRED");
     harness.expectNoStart();
   });
 });

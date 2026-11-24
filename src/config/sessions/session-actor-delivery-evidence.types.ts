@@ -6,6 +6,7 @@ export type SessionActorDeliveryEvidence = {
     channel: string;
     target?: { id: string };
     platformMessageId?: string;
+    finalPlatformMessageId?: string;
     resultCount?: number;
     /** Host validated every reported physical route against this exact captured context. */
     verifiedContext?: DeliveryContext;

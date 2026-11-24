@@ -518,6 +518,7 @@ export function materializeSessionRow(input: ReturnType<typeof readSessionRowInp
     systemSent: entry?.systemSent,
     abortedLastRun: entry?.abortedLastRun,
     thinkingLevel: input.thinkingProjection.thinkingLevel,
+    timeoutSeconds: entry?.timeoutSeconds,
     contextWindow: input.contextWindowProfile.contextWindow,
     contextWindows: input.contextWindowProfile.contextWindows,
     contextWindowDefault: input.contextWindowProfile.contextWindowDefault,

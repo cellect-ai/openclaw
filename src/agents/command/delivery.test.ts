@@ -174,6 +174,15 @@ function deliverMediaReplyForTest({ opts, ...overrides }: Partial<DeliveryFixtur
 }
 
 describe("deliverAgentCommandResult payload normalization", () => {
+  it("omits unavailable sender context in recovery prefixes", async () => {
+    const delivered = await deliverForTest({
+      cfg: { channels: { slack: { responsePrefix: "{sender.mention}" } } } as OpenClawConfig,
+      payloads: [{ text: "Completed." }],
+    });
+    expect(delivered.payloads).toHaveLength(1);
+    expect(delivered.payloads[0]?.text).toBe("Completed.");
+  });
+
   beforeEach(() => {
     setSlackPlugin({
       threading: {

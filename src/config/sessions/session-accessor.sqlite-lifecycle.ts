@@ -28,6 +28,7 @@ import {
   captureOpenClawAgentDatabaseExecution,
   supportsOpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution.js";
+import { assertNoPendingFinalProjectionDebt } from "./pending-final-delivery-receipt.js";
 import type { ResetSessionEntryLifecycleMutation } from "./session-accessor.lifecycle-types.js";
 import {
   deleteMemorySessionEntryLifecycle,
@@ -122,6 +123,7 @@ export async function resetSessionEntryLifecycle(
   const agentId = params.agentId ?? parseAgentSessionKey(params.target.canonicalKey)?.agentId;
   const scope = { agentId, sessionKey: params.target.canonicalKey, storePath: params.storePath };
   const current = await readSessionEntryReadOnlyInWorker(scope, () => params.commitGuard?.());
+  assertNoPendingFinalProjectionDebt(current);
   if (current?.localWorkspaceHandoff) {
     if (!agentId) {
       throw new Error("Local workspace handoff requires its original agent before reset");

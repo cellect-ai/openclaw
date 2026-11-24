@@ -4,6 +4,7 @@ import { capLiveExecResult, sanitizeToolResult } from "../../agents/embedded-age
 import { normalizeToolPolicyName } from "../../agents/tool-policy.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { projectToolArgumentEnvironment } from "../../logging/tool-argument-environment.js";
 import { createTrajectoryRuntimeRecorder } from "../../trajectory/runtime.js";
 import type { WorkerTurnTranscriptSource } from "./placement-turn-claim-events.js";
 
@@ -19,6 +20,9 @@ export function prepareWorkerLiveEventData(
   }
   const toolName = normalizeToolPolicyName(event.payload.name);
   const payload: Record<string, unknown> = { ...event.payload, name: toolName };
+  if (event.payload.phase === "start") {
+    payload.args = projectToolArgumentEnvironment(event.payload.args);
+  }
   if (event.payload.phase === "update") {
     const partialResult = sanitizeToolResult(event.payload.partialResult);
     payload.partialResult = toolName === "exec" ? capLiveExecResult(partialResult) : partialResult;

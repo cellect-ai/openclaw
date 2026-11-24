@@ -24,6 +24,13 @@ import type { PairingMutation, PairingSelector } from "./pairing-store.worker-co
 export {
   CHANNEL_PAIRING_PENDING_TTL_MS,
   CHANNEL_PAIRING_PENDING_MAX,
+  CHANNEL_PAIRING_STALE_AFTER_MS,
+  CHANNEL_PAIRING_HISTORY_MAX,
+  isPairingRequestPending,
+  isPairingRequestStale,
+  resolvePairingRequestStatus,
+  resolvePairingRequestExpiresAt,
+  resolvePairingRequestAgeMs,
   resolveChannelPairingRequestId,
 } from "./pairing-store-model.js";
 export { readChannelAllowFromStore } from "./pairing-store.read.js";

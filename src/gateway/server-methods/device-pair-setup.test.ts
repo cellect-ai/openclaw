@@ -447,6 +447,69 @@ describe("device.pair.setupCode", () => {
     expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
   });
 
+  it("requests a non-admin webchat bootstrap profile for embedding apps", async () => {
+    mocks.resolvePairingSetupFromConfig.mockResolvedValue(okResolution);
+    mocks.encodePairingSetupCode.mockReturnValue("SETUP-CODE-XYZ");
+
+    const { options } = createOptions({
+      includeQr: false,
+      bootstrapProfile: "webchat",
+      allowedAgentIds: ["fi-user", " FI-ADMIN ", " FI-USER "],
+    });
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.setupCode"],
+      'devicePairSetupHandlers["device.pair.setupCode"] test invariant',
+    )(options);
+
+    expect(mocks.resolvePairingSetupFromConfig).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({
+        bootstrapProfile: {
+          roles: ["operator"],
+          scopes: ["operator.questions", "operator.read", "operator.talk", "operator.write"],
+          purpose: "webchat",
+          allowedAgentIds: ["fi-admin", "fi-user"],
+        },
+      }),
+    );
+  });
+
+  it.each(["   ", "!!!", "---"])(
+    "rejects an unrepresentable explicit agent ID %j without granting main",
+    async (invalidId) => {
+      const respond = await runSetupCode({
+        includeQr: false,
+        bootstrapProfile: "webchat",
+        allowedAgentIds: ["fi-user", invalidId],
+      });
+      expect(respond).toHaveBeenCalledWith(
+        false,
+        undefined,
+        expect.objectContaining({
+          message: "allowedAgentIds contains an unrepresentable agent ID.",
+        }),
+      );
+      expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
+      expect(mocks.encodePairingSetupCode).not.toHaveBeenCalled();
+      expect(mocks.renderQrPngDataUrl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects an unscoped webchat bootstrap", async () => {
+    const { options, respond } = createOptions({ includeQr: false, bootstrapProfile: "webchat" });
+    await expectDefined(
+      devicePairSetupHandlers["device.pair.setupCode"],
+      'devicePairSetupHandlers["device.pair.setupCode"] test invariant',
+    )(options);
+
+    expect(respond).toHaveBeenCalledWith(
+      false,
+      undefined,
+      expect.objectContaining({ message: "webchat bootstrap requires allowedAgentIds." }),
+    );
+    expect(mocks.resolvePairingSetupFromConfig).not.toHaveBeenCalled();
+  });
+
   it("omits an oversized QR but still returns the setup code", async () => {
     mocks.resolvePairingSetupFromConfig.mockResolvedValue(okResolution);
     mocks.encodePairingSetupCode.mockReturnValue("SETUP-CODE-XYZ");

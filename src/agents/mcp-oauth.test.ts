@@ -165,7 +165,13 @@ vi.mock("@modelcontextprotocol/client", async (importOriginal) => ({
 }));
 
 function makeTokens(access_token: string, refresh_token: string, expires_in = 3600) {
-  return { access_token, refresh_token, token_type: "Bearer", expires_in };
+  return {
+    issuer: "https://auth.example.com",
+    access_token,
+    refresh_token,
+    token_type: "Bearer",
+    expires_in,
+  };
 }
 
 async function authorize(provider: OAuthClientProvider) {
@@ -393,7 +399,11 @@ describe("MCP OAuth provider", () => {
 
   itWithHome("stores tokens only in permission-restricted SQLite", async (home) => {
     await withProvider(async (provider) => {
-      await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+      await provider.saveTokens({
+        issuer: "https://auth.example.com",
+        access_token: "access",
+        token_type: "Bearer",
+      });
 
       expect(await provider.tokens()).toEqual({ access_token: "access", token_type: "Bearer" });
     });
@@ -430,7 +440,11 @@ describe("MCP OAuth provider", () => {
 
   itWithHome("fails closed when canonical token expiry has no token state", async () => {
     await withProvider(async (provider) => {
-      await provider.saveTokens({ access_token: "access", token_type: "Bearer" });
+      await provider.saveTokens({
+        issuer: "https://auth.example.com",
+        access_token: "access",
+        token_type: "Bearer",
+      });
       const storeKey = REMOTE_IDENTITY.storeKey;
       openOpenClawStateDatabase()
         .db.prepare("UPDATE mcp_oauth_stores SET store_json = ? WHERE store_key = ?")

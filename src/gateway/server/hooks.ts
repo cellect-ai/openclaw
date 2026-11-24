@@ -10,25 +10,28 @@ import {
   captureSessionEventTargetForHost,
   enqueueSessionEventForHost,
 } from "../../auto-reply/reply/session-event-handoff.js";
-import { resolveChannelDefaultAccountId } from "../../channels/plugins/helpers.js";
 import type { CliDeps } from "../../cli/deps.types.js";
 import { getRuntimeConfig } from "../../config/io.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { admitEventOccurrence } from "../../cron/event-occurrence-admission.js";
-import type {
-  CronAgentAdmissionDisposition,
-  RunCronAgentTurnResult,
-} from "../../cron/isolated-agent/run.types.js";
+import type { RunCronAgentTurnResult } from "../../cron/isolated-agent/run.types.js";
 import { resolveCronAgentSessionKey } from "../../cron/isolated-agent/session-key.js";
 import type { CronExecutionIdentityAdmission } from "../../cron/service/state.js";
 import type { CronJob } from "../../cron/types.js";
 import type { DeferredHookWake } from "../../cron/wake-contract.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import type { GatewayScheduler } from "../../infra/gateway-scheduler.js";
+import { notifyGuestTurnCompletion } from "../../infra/guest-turn-completion.js";
+import { hasHookFiRoute, normalizeHookFiEnvironment } from "../../infra/hook-fi-environment.js";
+import {
+  hookRequesterScopeAllowed,
+  isAttestedBackgroundHookSessionKey,
+  isGuestHookSessionKey,
+  parseHookRequesterAttestation,
+  normalizeHookRequesterAttestation,
+} from "../../infra/hook-requester-attestation.js";
+import { normalizeMailWakeSourceLock } from "../../infra/mail-wake-source-lock.js";
 import { pruneMapToMaxSize } from "../../infra/map-size.js";
-import { resolveOutboundChannelPlugin } from "../../infra/outbound/channel-resolution.js";
-import { validateExplicitMessageAccountSelection } from "../../infra/outbound/message-account-selection.js";
-import { redactToolPayloadText } from "../../logging/redact.js";
 import type { createSubsystemLogger } from "../../logging/subsystem.js";
 import type { PluginRuntime } from "../../plugins/runtime/types.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
@@ -47,6 +50,15 @@ import {
 } from "../scheduled-run-gateway-context.js";
 import { DEDUPE_MAX, DEDUPE_TTL_MS } from "../server-constants.js";
 import type { GatewayRequestContext } from "../server-methods/types.js";
+import { validateHookAgentDeliveryAccount } from "./hook-delivery-account.js";
+import { createSessionKeyedHookDispatchQueue } from "./hook-dispatch-queue.js";
+import {
+  HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR,
+  resolveHookRunSummary,
+  sanitizeHookConsoleValue,
+  sanitizeHookLogMetadata,
+  createHookAdmissionFailure,
+} from "./hook-result-presentation.js";
 import {
   createHookWakeDispatcher,
   deferHookEvent,
@@ -58,130 +70,6 @@ import { createHooksRequestHandler, type HookClientIpConfig } from "./hooks-requ
 type SubsystemLogger = ReturnType<typeof createSubsystemLogger>;
 
 const HOOK_AGENT_START_ADMISSION_TIMEOUT_MS = 15_000;
-const HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR =
-  "hook agent run did not start before admission timeout";
-const HOOK_AGENT_SESSION_CONFLICT_ERROR =
-  "hook agent run was rejected because the target session changed";
-const HOOK_AGENT_PREPARATION_ERROR = "hook agent run failed before entering the agent runner";
-
-function resolveHookRunSummary(result: RunCronAgentTurnResult): string {
-  const diagnosticsSummary =
-    result.status !== "ok" ? normalizeOptionalString(result.diagnostics?.summary) : undefined;
-  return (
-    diagnosticsSummary ||
-    normalizeOptionalString(result.summary) ||
-    normalizeOptionalString(result.error) ||
-    result.status
-  );
-}
-
-function sanitizeHookConsoleValue(value: string | undefined): string | undefined {
-  const normalized = normalizeOptionalString(value);
-  if (!normalized) {
-    return undefined;
-  }
-  const withoutControlChars = Array.from(normalized, (char) => {
-    const code = char.charCodeAt(0);
-    return code < 32 || code === 127 ? " " : char;
-  }).join("");
-  return truncateUtf16Safe(withoutControlChars.replace(/\s+/gu, " ").trim(), 500);
-}
-
-type HookLogMetadata = Record<string, string | boolean | undefined>;
-
-function sanitizeHookLogMetadata(meta: HookLogMetadata): HookLogMetadata {
-  return Object.fromEntries(
-    Object.entries(meta)
-      .filter(([, value]) => value !== undefined)
-      .map(([key, value]) => [
-        key,
-        // Redact the raw field first: truncation or folding a multiline secret can defeat masking.
-        typeof value === "string"
-          ? sanitizeHookConsoleValue(redactToolPayloadText(value).replace(/\p{Cc}/gu, " "))
-          : value,
-      ]),
-  );
-}
-
-function createHookAdmissionFailure(params: {
-  runId: string;
-  disposition?: CronAgentAdmissionDisposition;
-  statusCode?: 409 | 502 | 503;
-}): HookAgentDispatchResult {
-  const statusCode = params.statusCode ?? (params.disposition === "session-conflict" ? 409 : 502);
-  return {
-    ok: false,
-    statusCode,
-    error:
-      statusCode === 409
-        ? HOOK_AGENT_SESSION_CONFLICT_ERROR
-        : statusCode === 503
-          ? HOOK_AGENT_START_ADMISSION_TIMEOUT_ERROR
-          : HOOK_AGENT_PREPARATION_ERROR,
-    runId: params.runId,
-  };
-}
-
-function createSessionKeyedHookDispatchQueue() {
-  const hookAgentDispatchTails = new Map<string, Promise<void>>();
-
-  return (sessionKey: string, operation: () => Promise<void>) => {
-    const previousTail = hookAgentDispatchTails.get(sessionKey);
-    const run = previousTail ? previousTail.catch(() => undefined).then(operation) : operation();
-    const tail = run.then(
-      () => undefined,
-      () => undefined,
-    );
-    hookAgentDispatchTails.set(sessionKey, tail);
-    // Same-session hook agent runs append to one agent session. Serializing avoids
-    // optimistic lifecycle-claim races while preserving parallelism across sessions.
-    void tail.finally(() => {
-      if (hookAgentDispatchTails.get(sessionKey) === tail) {
-        hookAgentDispatchTails.delete(sessionKey);
-      }
-    });
-    return run;
-  };
-}
-
-async function validateHookAgentDeliveryAccount(params: {
-  cfg: OpenClawConfig;
-  value: HookAgentDispatchPayload;
-}): Promise<HookAgentDispatchPayload> {
-  // Mapped hooks can defer partial/last targets to cron and cannot select an account.
-  // Bind only direct hook announces whose destination is already complete.
-  if (
-    params.value.delivery.mode !== "announce" ||
-    params.value.delivery.channel === "last" ||
-    !params.value.delivery.to
-  ) {
-    return params.value;
-  }
-  const accountId = params.value.delivery.accountId
-    ? await validateExplicitMessageAccountSelection({
-        cfg: params.cfg,
-        channel: params.value.delivery.channel,
-        accountId: params.value.delivery.accountId,
-      })
-    : (() => {
-        const plugin = resolveOutboundChannelPlugin({
-          channel: params.value.delivery.channel,
-          cfg: params.cfg,
-        });
-        if (!plugin) {
-          throw new Error(`Channel ${params.value.delivery.channel} is unavailable.`);
-        }
-        return resolveChannelDefaultAccountId({ plugin, cfg: params.cfg });
-      })();
-  if (!accountId) {
-    throw new Error(`Channel ${params.value.delivery.channel} did not resolve an account.`);
-  }
-  return {
-    ...params.value,
-    accountId,
-    delivery: { ...params.value.delivery, accountId },
-  };
-}
 
 type PluginHookDispatch = PluginRuntime["hooks"]["dispatchHookAgentTurn"];
 type PluginHookDispatchParams = Parameters<PluginHookDispatch>[0];
@@ -253,6 +141,69 @@ export function createGatewayHookDispatcher(params: {
     const jobId = randomUUID();
     const runId = randomUUID();
     const completion = createDeferredCore<HookAgentCompletion>();
+    // A Fi shadow session and its attestation come together or not at all,
+    // whichever ingress (request, mapping, plugin) produced the dispatch.
+    const normalizedRequester = normalizeHookRequesterAttestation(
+      // Raw hooks must omit channel entirely. Normalized silent dispatches
+      // carry the internal `last` sentinel; it is not a delivery request.
+      { ...value, channel: value.channel === "last" ? undefined : value.channel },
+      sessionKey,
+    );
+    if (!normalizedRequester.ok) {
+      return { ok: false, statusCode: 400, error: normalizedRequester.error, runId };
+    }
+    const normalizedSourceLock = normalizeMailWakeSourceLock(
+      value as unknown as Record<string, unknown>,
+      sessionKey,
+    );
+    if (!normalizedSourceLock.ok) {
+      return { ok: false, statusCode: 400, error: normalizedSourceLock.error, runId };
+    }
+    const normalizedFiEnvironment = normalizeHookFiEnvironment(
+      value as unknown as Record<string, unknown>,
+    );
+    if (!normalizedFiEnvironment.ok) {
+      return { ok: false, statusCode: 400, error: normalizedFiEnvironment.error, runId };
+    }
+    // The Fi this hook came from. Every Fi call of the run uses that
+    // environment's own route; a named environment without one is refused here
+    // rather than answered by the default (production) Fi.
+    const hookFiEnvironment =
+      normalizedRequester.value.requesterEnvironment ?? normalizedFiEnvironment.value.fiEnvironment;
+    if (hookFiEnvironment && !hasHookFiRoute(getRuntimeConfig(), hookFiEnvironment)) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: `No Fi route is configured for the ${hookFiEnvironment} environment this hook names`,
+        runId,
+      };
+    }
+    const hookRequesterAttestation = parseHookRequesterAttestation(value.requesterAttestation);
+    if (!hookRequesterScopeAllowed(value, sessionKey)) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "hook:fi-shadow: sessions require exactly one well-formed requesterAttestation",
+        runId,
+      };
+    }
+    // Whatever the ingress (request, mapping, plugin), a shadow turn is never
+    // delivered, routed or run with unsafe external content.
+    if (
+      isAttestedBackgroundHookSessionKey(sessionKey) &&
+      (value.deliver ||
+        value.delivery.mode !== "none" ||
+        value.to !== undefined ||
+        value.allowUnsafeExternalContent === true ||
+        (value.channel !== undefined && value.channel !== "last"))
+    ) {
+      return {
+        ok: false,
+        statusCode: 400,
+        error: "hook:fi-shadow: sessions do not accept delivery or unsafe-content options",
+        runId,
+      };
+    }
     const logContext = sanitizeHookLogMetadata({
       runId,
       jobId,
@@ -274,7 +225,11 @@ export function createGatewayHookDispatcher(params: {
           deliveryError: result.deliveryError,
           deliverySuppressionReason: result.deliverySuppressionReason,
           model: result.model ?? value.model,
-          summary: result.status !== "ok" ? resolveHookRunSummary(result) : undefined,
+          // A shadow summary can be the run text. Log the status, not that text.
+          summary:
+            result.status !== "ok" && !isAttestedBackgroundHookSessionKey(sessionKey)
+              ? resolveHookRunSummary(result)
+              : undefined,
         }),
       };
       const details = ["runId", "status", "deliveryError", "summary", "model"].flatMap((key) =>
@@ -341,6 +296,11 @@ export function createGatewayHookDispatcher(params: {
       text: string,
       status: string,
     ) => {
+      // Shadow runs are traces. Failure and terminal summaries stay out of the
+      // owning agent's main session, whatever the hook mode.
+      if (isAttestedBackgroundHookSessionKey(sessionKey)) {
+        return;
+      }
       if (status !== "ok" && !claimFailureNotice(value.replayKey)) {
         return;
       }
@@ -539,6 +499,9 @@ export function createGatewayHookDispatcher(params: {
               return;
             }
             const ingressBoundary = pluginId ? "gateway.hooks.plugin" : "gateway.hooks.agent";
+            const mailRequesterSenderId = sessionKey.startsWith("hook:fi-mail:")
+              ? (acceptedValue.mailRequesterSlackUserId ?? acceptedValue.mailRequesterEmail)
+              : undefined;
             const runHookIsolatedTurn = async () =>
               await runCronIsolatedAgentTurn({
                 occurrence: await admitEventOccurrence({ cfg, job, agentId, ingressBoundary }),
@@ -549,6 +512,13 @@ export function createGatewayHookDispatcher(params: {
                 deliveryAttemptFence: null,
                 message: acceptedValue.message,
                 sessionKey,
+                ...(mailRequesterSenderId ? { mailRequesterSenderId } : {}),
+                ...(acceptedValue.sourceLockCapability
+                  ? { sourceLockCapability: acceptedValue.sourceLockCapability }
+                  : {}),
+                ...(hookFiEnvironment ? { hookRequesterEnvironment: hookFiEnvironment } : {}),
+                // Run context only: never the message, the job payload or a sender.
+                ...(hookRequesterAttestation ? { hookRequesterAttestation } : {}),
                 // Isolated runs derive their lifecycle key from random jobId (or an
                 // already-stable cron: key), so accepted agentId closes reload drift.
                 agentId,
@@ -603,6 +573,23 @@ export function createGatewayHookDispatcher(params: {
               result.status !== "ok" ||
               (value.deliver && result.delivered !== true && result.deliveryAttempted !== true);
             completion.resolve(logHookRunTerminal(result));
+            if (hookRequesterAttestation && isGuestHookSessionKey(sessionKey)) {
+              await notifyGuestTurnCompletion(
+                {
+                  runId,
+                  sessionKey,
+                  attestation: hookRequesterAttestation,
+                  environment: normalizedRequester.value.requesterEnvironment,
+                  status: result.status,
+                  outputText: result.outputText,
+                },
+                (error) =>
+                  logHooks.warn("guest turn report failed", {
+                    ...logContext,
+                    ...sanitizeHookLogMetadata({ error: formatErrorMessage(error) }),
+                  }),
+              );
+            }
             if (shouldAnnounce) {
               await announceHookEvent(eventTarget, `${prefix}: ${summary}`.trim(), result.status);
             }

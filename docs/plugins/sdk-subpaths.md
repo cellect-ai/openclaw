@@ -204,6 +204,11 @@ The private official-plugin runtime `node-crypto-runtime` exposes `sha256Hex`
 for hashing strings or bytes without loading memory indexing helpers. It is a
 JavaScript-only host runtime export, not a typed public Plugin SDK entrypoint.
 
+The `session-key-runtime` facade exposes asynchronous registration and lookup
+of the member identity Fi resolved for a shadow session. The bounded core plugin
+state store retains that identity for up to 30 minutes, with at most 512 entries;
+it does not persist the delegated attestation token.
+
 ### Bundled plugin helper subpaths
 
 Bundled-only helper modules are private-local after the July 2026 sweep.

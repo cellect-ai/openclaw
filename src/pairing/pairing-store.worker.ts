@@ -12,8 +12,8 @@ import { resolveAllowFromAccountId, resolvePairingRequestAccountId } from "./pai
 import {
   CHANNEL_PAIRING_PENDING_MAX,
   generateUniqueCode,
-  pruneExcessRequestsByAccount,
-  pruneExpiredRequests,
+  pruneRequests,
+  isPairingRequestPending,
   requestMatchesAccountId,
   resolveChannelPairingRequestId,
 } from "./pairing-store-model.js";
@@ -40,6 +40,7 @@ function selectedRequest(
 ) {
   return requests.find(
     (request) =>
+      isPairingRequestPending(request, Date.now()) &&
       requestMatchesAccountId(request, accountId) &&
       ("code" in selector
         ? request.code.toUpperCase() === selector.code
@@ -61,6 +62,8 @@ function writeChanges(database: OpenClawStateDatabase, channel: string, snapshot
             code: request.code,
             created_at: request.createdAt,
             last_seen_at: request.lastSeenAt,
+            status: request.status,
+            resolved_at: request.resolvedAt ?? null,
             meta_json: request.meta ? JSON.stringify(request.meta) : null,
           },
         ]
@@ -108,6 +111,8 @@ function writeChanges(database: OpenClawStateDatabase, channel: string, snapshot
             code: eb.ref("excluded.code"),
             created_at: eb.ref("excluded.created_at"),
             last_seen_at: eb.ref("excluded.last_seen_at"),
+            status: eb.ref("excluded.status"),
+            resolved_at: eb.ref("excluded.resolved_at"),
             meta_json: eb.ref("excluded.meta_json"),
           })),
         ),
@@ -210,7 +215,7 @@ export const channelPairingOperations = {
       let prepared: PairingRequestRecord | undefined;
       let normalizedApproval = "";
       if (mutation.action === "resolve" && mutation.approval === "host") {
-        const pruned = pruneExpiredRequests(
+        const pruned = pruneRequests(
           withExistingOpenClawStateDatabaseReadOnly(
             ({ db }) => readChannelPairingRequests(db, channel),
             context.stateOptions(),
@@ -256,11 +261,11 @@ export const channelPairingOperations = {
             result = { action: "allow", changed, allowFrom: changed ? next : current };
           } else {
             const nowMs = Date.now();
-            const expired = pruneExpiredRequests(state.requests, nowMs);
+            const expired = pruneRequests(state.requests, nowMs);
             state.requests = expired.requests;
             changed = expired.removed;
             if (mutation.action === "list") {
-              const capped = pruneExcessRequestsByAccount(state.requests);
+              const capped = pruneRequests(state.requests, nowMs);
               state.requests = capped.requests;
               changed ||= capped.removed;
               result = {
@@ -286,37 +291,51 @@ export const channelPairingOperations = {
                   requestMatchesAccountId(request, mutation.accountId),
               );
               const now = new Date(nowMs).toISOString();
-              if (existing >= 0) {
+              if (existing >= 0 && isPairingRequestPending(state.requests[existing]!, nowMs)) {
                 const previous = state.requests[existing]!;
                 state.requests[existing] = {
                   id: mutation.id,
                   code: previous.code,
                   createdAt: previous.createdAt,
                   lastSeenAt: now,
+                  status: "pending",
                   meta: mutation.meta,
                 };
-                state.requests = pruneExcessRequestsByAccount(state.requests).requests;
+                state.requests = pruneRequests(state.requests, nowMs).requests;
                 changed = true;
                 result = { action: "upsert", code: previous.code, created: false };
               } else {
-                const capped = pruneExcessRequestsByAccount(state.requests);
+                const capped = pruneRequests(state.requests, nowMs);
                 state.requests = capped.requests;
                 changed ||= capped.removed;
                 if (
-                  state.requests.filter((request) =>
-                    requestMatchesAccountId(request, mutation.accountId),
+                  state.requests.filter(
+                    (request) =>
+                      isPairingRequestPending(request, nowMs) &&
+                      requestMatchesAccountId(request, mutation.accountId),
                   ).length >= CHANNEL_PAIRING_PENDING_MAX
                 ) {
                   result = { action: "upsert", code: "", created: false };
                 } else {
                   const code = generateUniqueCode(existingCodes);
-                  state.requests.push({
+                  const created: PairingRequestRecord = {
                     id: mutation.id,
                     code,
                     createdAt: now,
                     lastSeenAt: now,
+                    status: "pending",
                     meta: mutation.meta,
-                  });
+                  };
+                  const retainedIndex = state.requests.findIndex(
+                    (request) =>
+                      request.id === mutation.id &&
+                      requestMatchesAccountId(request, mutation.accountId),
+                  );
+                  if (retainedIndex >= 0) {
+                    state.requests[retainedIndex] = created;
+                  } else {
+                    state.requests.push(created);
+                  }
                   changed = true;
                   result = { action: "upsert", code, created: true };
                 }
@@ -331,7 +350,9 @@ export const channelPairingOperations = {
                 return undefined;
               }
               if (entry) {
-                state.requests = state.requests.filter((request) => request !== entry);
+                entry.status = mutation.approval === "dismiss" ? "dismissed" : "approved";
+                entry.resolvedAt = new Date(nowMs).toISOString();
+                state.requests = pruneRequests(state.requests, nowMs).requests;
                 changed = true;
                 if (mutation.approval === "sender") {
                   normalizedApproval = normalizeOptionalString(entry.id) ?? "";

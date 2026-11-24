@@ -337,6 +337,29 @@ describe("prepareTerminalWithSettledTurnFinalization", () => {
     expect(transcriptMocks.append).not.toHaveBeenCalled();
   });
 
+  it("preserves failed question delivery when the finalizer is unavailable", async () => {
+    const failure = "Question delivery could not be confirmed. The question was cancelled.";
+    const batch = settledBatch(["tool-question", "ask_user", true]);
+    const attempt = makeAttempt({
+      ...batch,
+      terminal: { kind: "ok" },
+      sessionIdUsed: "session-settled",
+      toolMetas: [
+        { toolName: "ask_user", toolCallId: "tool-question", isError: true, replaySafe: false },
+      ],
+      lastToolError: { toolName: "ask_user", error: failure },
+      settledTurnFinalizationContext: { source: "unavailable" },
+      replayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+      currentAttemptReplayMetadata: { hadPotentialSideEffects: true, replaySafe: false },
+    });
+    backendMocks.finalize.mockRejectedValue(new Error("finalizer unavailable"));
+    const result = await finalize(finalizationInput(attempt, { trigger: "user" }));
+    expect(result.attempt).toBe(attempt);
+    expect(result.attempt.lastToolError).toEqual({ toolName: "ask_user", error: failure });
+    expectPayload(result, { text: expect.stringContaining("failed"), isError: true });
+    expect(transcriptMocks.append).not.toHaveBeenCalled();
+  });
+
   it("preserves runtime context and model selection through isolated finalization", async () => {
     const runtimeModelSelection = { provider: "openai", model: "native-selected-model" };
     const runtimeContext = {

@@ -90,6 +90,7 @@ export function createChatSendTurnAdoptionLifecycle(params: {
                   runId: params.runId,
                   endedAt: now,
                   stopReason: completion.stopReason,
+                  stopActor: params.sourceRef.adapter.stopActor,
                 })
               : {
                   runId: params.runId,
@@ -179,8 +180,8 @@ export function createChatSendTurnAdoptionLifecycle(params: {
     },
   });
   const priorCancel = params.sourceRef.adapter.cancel?.bind(params.sourceRef.adapter);
-  params.sourceRef.adapter.cancel = (reason) => {
-    priorCancel?.(reason);
+  params.sourceRef.adapter.cancel = (reason, actor) => {
+    priorCancel?.(reason, actor);
     // Active execution publishes its own terminal outcome; only queued, unadopted
     // input is settled here when the controller cancels it.
     if (params.sourceRef.input.custody.enqueued && !params.sourceRef.input.custody.adopted) {

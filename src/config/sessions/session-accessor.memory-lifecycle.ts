@@ -1,6 +1,7 @@
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { MODEL_SELECTION_LOCK_REMOVAL_MESSAGE } from "../../sessions/agent-harness-session-key.js";
 import { assertModelSelectionUnlocked } from "../../sessions/model-overrides.js";
+import { assertNoPendingFinalProjectionDebt } from "./pending-final-delivery-receipt.js";
 import type {
   DeleteSessionEntryLifecycleParams,
   DeleteSessionEntryLifecycleResult,
@@ -40,6 +41,7 @@ export function resetMemorySessionEntryLifecycle(
         currentEntry: expected && structuredClone(expected),
         primaryKey: scope.sessionKey,
       });
+      assertNoPendingFinalProjectionDebt(expected);
       const { progressCardReset: _progressCardReset, ...mutation } = readSessionActorStorageResult(
         await memory.actor.storage.mutate(
           {

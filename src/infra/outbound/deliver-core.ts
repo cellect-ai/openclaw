@@ -77,6 +77,7 @@ export async function deliverOutboundPayloadsCore(
   const observeDeliveryResult = (delivery: OutboundDeliveryResult): boolean => {
     payloadEvidence.placement.observe(delivery);
     if (resolveReceiptSourceId(delivery) !== undefined) {
+      params.onCanonicalDeliveryResult?.(delivery);
       return true;
     }
     // One ambiguous completion prevents the payload from claiming that every

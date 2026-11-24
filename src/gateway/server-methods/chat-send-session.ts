@@ -8,17 +8,7 @@ import {
   readAgentRuntimeRestrictionErrorDetails,
   type ErrorShape,
 } from "../../../packages/gateway-protocol/src/index.js";
-import { resolveAgentEntry } from "../../agents/agent-scope-config.js";
 import { getRegisteredAgentHarness } from "../../agents/harness/registry.js";
-import {
-  modelFallbackOverrideFromAvailability,
-  resolveModelFallbackAvailability,
-} from "../../agents/model-selection-config.js";
-import {
-  findNormalizedProviderValue,
-  parseModelRef,
-} from "../../agents/model-selection-normalize.js";
-import { resolveConfiguredModelPolicyAllow } from "../../agents/model-selection-shared.js";
 import { resolveProviderIdForAuth } from "../../agents/provider-auth-aliases.js";
 import {
   prepareSessionCapabilityRead,
@@ -43,7 +33,7 @@ import { measureDiagnosticsTimelineSpan } from "../../infra/diagnostics-timeline
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import { resolveMissingAgentHarnessSessionError } from "../../sessions/agent-harness-session-key.js";
 import { assertPreparedSkillLibrarySelection } from "../../skills/library/selection.js";
-import { sessionDeliveryChannel } from "../../utils/delivery-context.read.js";
+import { prepareRawMatrixBrowserSessionAuthorization } from "../matrix-browser-session-authorization.js";
 import { authorizeGatewaySessionCreation, resolveCreatorSandbox } from "../operator-role-policy.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
 import { pendingChatSendDedupeKey } from "../server-shared.js";
@@ -63,119 +53,14 @@ import {
   resolveSessionModelRef,
 } from "../session-utils.js";
 import { prepareSkillLibrarySessionCreation } from "../skill-library-session.js";
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
+import { isWebchatSessionAllowed } from "../webchat-agent-authorization.js";
+import { chatSendPreparationConfig } from "./chat-send-preparation-config.js";
 import type { NormalizedChatSendRequest } from "./chat-send-request.js";
 import { roundedChatSendTimingMs } from "./chat-server-timing.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import { resolveSessionNativeRuntimeRestriction } from "./sessions-patch-model-selection.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
-
-// These inputs prepare model/runtime selection, native restrictions, command/retry
-// semantics, and creator defaults. Sharing authorization rechecks live policy;
-// unrelated logging and UI publications do not invalidate a prepared send.
-// Plugin-owned settings belong to the admitted runtime generation; core plugin
-// admission policy still affects preparation and must remain current.
-function chatSendPreparationConfig(
-  cfg: OpenClawConfig,
-  agentId: string,
-  entry?: SessionEntry,
-  request?: Pick<NormalizedChatSendRequest, "explicitOrigin">,
-  sessionKey?: string,
-) {
-  const defaults = cfg.agents?.defaults;
-  const agent = resolveAgentEntry(cfg, agentId);
-  const selected = resolveSessionModelRef(cfg, entry, agentId);
-  const modelPolicy = resolveConfiguredModelPolicyAllow({ cfg, agentId });
-  const fallbacks =
-    modelFallbackOverrideFromAvailability(
-      resolveModelFallbackAvailability({
-        cfg,
-        agentId,
-        sessionKey,
-        selectedModel: selected,
-        hasSessionModelOverride: Boolean(entry?.modelOverride),
-        modelOverrideSource:
-          entry?.modelOverrideSource === "default" ? undefined : entry?.modelOverrideSource,
-        modelSelectionLocked: entry?.modelSelectionLocked,
-      }),
-    ) ?? [];
-  const modelRefs = [
-    selected,
-    ...fallbacks.flatMap((model) => {
-      const parsed = parseModelRef(model, selected.provider);
-      return parsed ? [parsed] : [];
-    }),
-  ];
-  const providers = Object.fromEntries(
-    [...new Set(modelRefs.map(({ provider }) => provider))].map((id) => {
-      const provider = findNormalizedProviderValue(cfg.models?.providers, id);
-      return [
-        id,
-        provider
-          ? {
-              ...provider,
-              models: provider.models?.filter(({ id: model }) =>
-                modelRefs.some((ref) => ref.provider === id && ref.model === model),
-              ),
-            }
-          : undefined,
-      ];
-    }),
-  );
-  const channels = [
-    ...new Set(
-      [
-        "webchat",
-        request?.explicitOrigin?.originatingChannel,
-        sessionDeliveryChannel(entry),
-      ].filter((channel): channel is string => Boolean(channel)),
-    ),
-  ];
-  return {
-    defaultModel: defaults?.model,
-    agentModel: agent?.model,
-    defaultModels: defaults?.models,
-    agentModels: agent?.models,
-    // The canonical repair path normalizes legacy/default policy without losing
-    // the agent/default alias owner. Empty allowlists are unrestricted in either scope.
-    modelPolicy: {
-      refs: modelPolicy.refs,
-      owner: modelPolicy.refs.length > 0 ? modelPolicy.repairConfigPath : null,
-    },
-    runtime: agent?.runtime,
-    models: { mode: cfg.models?.mode, providers },
-    auth: cfg.auth,
-    workspace: agent?.workspace ?? defaults?.workspace,
-    agentDir: agent?.agentDir,
-    timeoutSeconds: defaults?.timeoutSeconds,
-    defaultSandbox: defaults?.sandbox,
-    agentSandbox: agent?.sandbox,
-    tools: cfg.tools,
-    agentTools: agent?.tools,
-    plugins: {
-      enabled: cfg.plugins?.enabled,
-      allow: cfg.plugins?.allow,
-      deny: cfg.plugins?.deny,
-      load: cfg.plugins?.load,
-      slots: cfg.plugins?.slots,
-      entries: Object.fromEntries(
-        Object.entries(cfg.plugins?.entries ?? {}).map(
-          ([id, { enabled, hooks, subagent, llm }]) => [id, { enabled, hooks, subagent, llm }],
-        ),
-      ),
-    },
-    channels: {
-      defaults: cfg.channels?.defaults,
-      selected: Object.fromEntries(channels.map((channel) => [channel, cfg.channels?.[channel]])),
-    },
-    roles: cfg.gateway?.roles,
-    nodeCommands: cfg.gateway?.nodes?.commands,
-    commands: cfg.commands,
-    sendPolicy: cfg.session?.sendPolicy,
-    reset: cfg.session?.reset,
-    resetByType: cfg.session?.resetByType,
-    resetByChannel: cfg.session?.resetByChannel,
-  };
-}
 
 // Preparing the canonical creator defaults does not itself persist a session.
 export async function prepareChatSendSessionEntry(params: {
@@ -329,6 +214,7 @@ async function loadChatSendSessionContext(params: {
 
 /** Load and validate the session/model facts shared by later admission and dispatch phases. */
 export async function prepareChatSendSession(params: {
+  talkRelayAdmission?: TalkRelayConsultAdmission;
   request: NormalizedChatSendRequest;
   context: GatewayRequestHandlerOptions["context"];
   client: GatewayRequestHandlerOptions["client"];
@@ -342,6 +228,27 @@ export async function prepareChatSendSession(params: {
   const { request, client } = params;
   const { p } = request;
   const { cfg, agentId, sessionKey, entry, legacyKey } = loadedValue;
+  params.assertCurrent?.();
+  params.talkRelayAdmission?.assertCurrent(sessionKey, client?.connId, request.explicitOrigin);
+  const unauthorizedMatrix = await prepareRawMatrixBrowserSessionAuthorization({
+    cfg,
+    clientInfo: request.clientInfo,
+    pairedClientId: client?.pairedClientId,
+    sessionKey,
+    sessionEntry: entry ?? null,
+    authorizedByBinding: params.talkRelayAdmission !== undefined,
+  });
+  params.assertCurrent?.();
+  params.talkRelayAdmission?.assertCurrent(sessionKey, client?.connId, request.explicitOrigin);
+  if (!isWebchatSessionAllowed({ cfg, client, sessionKey }) || unauthorizedMatrix) {
+    return {
+      ok: false as const,
+      error: "Matrix conversations require an authorized conversation binding",
+    };
+  }
+  if (params.talkRelayAdmission && !entry) {
+    return { ok: false as const, error: "Matrix Talk requires its existing bound session" };
+  }
   if (isIncognitoSessionKey(sessionKey) && !entry) {
     return { ok: false as const, error: `Incognito session "${sessionKey}" was not found.` };
   }
@@ -384,7 +291,11 @@ export async function prepareChatSendSession(params: {
   const resolvedSessionAuthProvider = resolveProviderIdForAuth(resolvedSessionModel.provider, {
     config: cfg,
   });
-  const timeoutMs = resolveAgentTimeoutMs({ cfg, overrideMs: p.timeoutMs });
+  const timeoutMs = resolveAgentTimeoutMs({
+    cfg,
+    sessionSeconds: entry?.timeoutSeconds,
+    overrideMs: p.timeoutMs,
+  });
   const now = Date.now();
 
   return {

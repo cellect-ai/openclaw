@@ -302,6 +302,7 @@ describe("mcp-grant-store", () => {
         throw new Error("unused");
       },
     };
+    const skillWorkshopWorkspaceAuthoring = { agentId: "main", bind() {}, assertCurrent() {} };
     const stable = mintClient({
       context: { runId: "run-first-turn" },
       admittedRunContext: firstAdmission,
@@ -312,6 +313,7 @@ describe("mcp-grant-store", () => {
       admittedRunContext: nextAdmission,
       abortSignal: nextController.signal,
       skillLibraryAuthoring,
+      skillWorkshopWorkspaceAuthoring,
       toolAuth,
     });
     expect(activateCapture(grantParams(stable.token, "stale-capture"))).toBeTruthy();
@@ -350,9 +352,13 @@ describe("mcp-grant-store", () => {
       },
       admittedRunContext: nextAdmission,
       skillLibraryAuthoring,
+      skillWorkshopWorkspaceAuthoring,
       toolAuth,
     });
     expect(transferred?.skillLibraryAuthoring).toBe(skillLibraryAuthoring);
+    expect(transferred?.skillWorkshopWorkspaceAuthoring).toBe(skillWorkshopWorkspaceAuthoring);
+    expect(transferred?.context).not.toHaveProperty("skillWorkshop.workspaceAuthoring");
+    expect(next).not.toHaveProperty("skillWorkshopWorkspaceAuthoring");
     expect(transferred?.isCurrent()).toBe(true);
     expect(first?.isCurrent()).toBe(false);
     expect(activateCapture(grantParams(next.token, "forged-source-capture"))).toBe(false);

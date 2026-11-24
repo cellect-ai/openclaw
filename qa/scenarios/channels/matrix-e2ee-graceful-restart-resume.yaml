@@ -1,0 +1,22 @@
+title: Matrix encrypted suspension and offline arrivals survive graceful gateway replacement
+scenario:
+  id: matrix-e2ee-graceful-restart-resume
+  surface: channels
+  coverage:
+    primary:
+      - matrix.legacy-state
+  execution:
+    kind: flow
+    channel: matrix
+    timeoutMs: 240000
+    retryCount: 0
+    suiteIsolation: isolated
+    config:
+      matrixConfigOverrides:
+        encryption: true
+        startupVerification: off
+flow:
+  module: ./live-transports/matrix/scenarios/scenario-runtime-e2ee-graceful-restart.js
+  call: runMatrixQaE2eeGracefulRestartResumeScenario
+  args:
+    - expr: "scenarioContext"

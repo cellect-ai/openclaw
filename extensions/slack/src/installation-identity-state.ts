@@ -55,6 +55,14 @@ export function getSlackInstallationTeamId(accountId: string): string | undefine
   return state?.kind === "workspace" ? state.teamId : undefined;
 }
 
+/** Routing bindings consume the monitor's authenticated workspace identity. */
+export function resolveSlackAccountBindingScope(params: {
+  accountId: string;
+}): { groupSpace: string } | undefined {
+  const teamId = getSlackInstallationTeamId(params.accountId);
+  return teamId ? { groupSpace: teamId } : undefined;
+}
+
 export function isSlackWorkspaceInstallation(accountId: string): boolean {
   return getSlackInstallationKind(accountId) === "workspace";
 }

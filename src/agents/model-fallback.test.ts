@@ -37,19 +37,29 @@ import { abortable } from "./embedded-agent-runner/run/abortable.js";
 import type { EmbeddedAgentRunResult } from "./embedded-agent-runner/types.js";
 import { FailoverError } from "./failover-error.js";
 import { resetFallbackSkipCacheForTest } from "./fallback-skip-cache.test-support.js";
-import {
-  AgentHarnessPreflightError,
-  AgentHarnessSessionSupersededError,
-  MissingAgentHarnessError,
-  recordAgentHarnessPreflightOwner,
-} from "./harness/errors.js";
-import { clearAgentHarnesses, registerAgentHarness } from "./harness/registry.js";
-import type { AgentHarness } from "./harness/types.js";
+import { AgentHarnessSessionSupersededError, MissingAgentHarnessError } from "./harness/errors.js";
+import { clearAgentHarnesses } from "./harness/registry.js";
 import { LiveSessionModelSwitchError } from "./live-model-switch-error.js";
-import { isFallbackSummaryError } from "./model-fallback-attempt.js";
 import { resolveModelCandidateChain } from "./model-fallback-candidates.js";
+import {
+  registerFallbackHarness,
+  createHarnessScopedPreflightError,
+} from "./model-fallback-harness.fixtures.test-support.js";
 import { runWithImageModelFallback } from "./model-fallback-image.js";
 import { runWithModelFallback as runWithModelFallbackBase } from "./model-fallback-runner.js";
+import {
+  makeProviderFallbackCfg,
+  configuredFallback,
+  recoverAfter,
+  failInOrder,
+  namedError,
+  cooldown,
+  apiKeyStore,
+  oauthCredential,
+  makeProviderOrderFallbackCfg,
+  expectFallbackSummary,
+  createFallbackOnlyRun,
+} from "./model-fallback.fixtures.test-support.js";
 import { resolveEffectiveModelFallbacks } from "./model-selection-config.js";
 import {
   createAgentRunRestartAbortError,
@@ -146,28 +156,6 @@ vi.mock("./auth-profiles.runtime.js", () => authRuntimeMock.runtime);
 const makeCfg = makeModelFallbackCfg;
 let authTempCounter = 0;
 
-function registerFallbackHarness(id: string): void {
-  registerAgentHarness(
-    {
-      id,
-      label: id,
-      supports: () => ({ supported: true }),
-      runAttempt: vi.fn<AgentHarness["runAttempt"]>(async () => {
-        throw new Error("fallback test should not invoke the registered harness directly");
-      }),
-    },
-    { ownerPluginId: `${id}-test` },
-  );
-}
-
-function createHarnessScopedPreflightError(harnessId: string): AgentHarnessPreflightError {
-  const error = new AgentHarnessPreflightError("Codex approvals denied execution", {
-    scope: "harness",
-  });
-  recordAgentHarnessPreflightOwner(error, harnessId);
-  return error;
-}
-
 type FallbackParams<T> = Parameters<typeof runWithModelFallbackBase<T>>[0];
 function runWithModelFallback<T>(
   params: Omit<FallbackParams<T>, "cfg" | "provider" | "model"> &
@@ -203,85 +191,6 @@ beforeEach(() => {
   setLoggerOverride({ level: "silent", consoleLevel: "silent" });
 });
 
-function makeProviderFallbackCfg(provider: string): OpenClawConfig {
-  return createModelFallbackConfig(`${provider}/m1`, ["fallback/ok-model"]);
-}
-
-function configuredFallback(primary: string, fallbacks: string[]) {
-  const separator = primary.indexOf("/");
-  return {
-    cfg: createModelFallbackConfig(primary, fallbacks),
-    provider: primary.slice(0, separator),
-    model: primary.slice(separator + 1),
-  };
-}
-
-function recoverAfter(error: unknown, result = "ok") {
-  return failInOrder(error).mockResolvedValueOnce(result);
-}
-
-function failInOrder(...errors: unknown[]) {
-  const run = vi.fn();
-  for (const error of errors) {
-    run.mockRejectedValueOnce(error);
-  }
-  return run;
-}
-
-function namedError(name: string, message: string, cause?: unknown) {
-  return Object.assign(new Error(message, cause === undefined ? undefined : { cause }), { name });
-}
-
-function cooldown(cooldownUntil: number, cooldownModel: string) {
-  return {
-    cooldownUntil,
-    cooldownModel,
-    cooldownReason: "rate_limit" as const,
-    lastRateLimitAt: 1,
-  };
-}
-
-function apiKeyStore(
-  providers: string[],
-  usageStats?: AuthProfileStore["usageStats"],
-): AuthProfileStore {
-  return {
-    version: AUTH_STORE_VERSION,
-    profiles: Object.fromEntries(
-      providers.map((provider) => [
-        `${provider}:default`,
-        createApiKeyCredential(provider, "test-key"),
-      ]),
-    ),
-    usageStats,
-  };
-}
-
-function oauthCredential(provider: string) {
-  return {
-    type: "oauth" as const,
-    provider,
-    access: "expired-access",
-    refresh: "refresh-token",
-    expires: 1,
-  };
-}
-
-function makeProviderOrderFallbackCfg(
-  entries: Array<[provider: string, model: string]>,
-): OpenClawConfig {
-  return {
-    models: {
-      providers: Object.fromEntries(
-        entries.map(([provider, model]) => [
-          provider,
-          { baseUrl: `https://${provider}.example.test`, models: [{ id: model }] },
-        ]),
-      ),
-    },
-  } as unknown as OpenClawConfig;
-}
-
 function installAuthStore(store: AuthProfileStore): string {
   const dir = `/tmp/openclaw-auth-suite-mock/case-${++authTempCounter}`;
   setAuthRuntimeStore(dir, store);
@@ -308,25 +217,6 @@ async function runWithStoredAuth(params: {
 function setAuthRuntimeStore(agentDir: string | undefined, store: AuthProfileStore): void {
   authSourceCheckMock.hasAnyAuthProfileStoreSourceAsync.mockReturnValue(true);
   authRuntimeMock.setStore(agentDir, store);
-}
-
-async function expectFallbackSummary(promise: Promise<unknown>) {
-  try {
-    await promise;
-  } catch (error) {
-    assert(isFallbackSummaryError(error));
-    return error;
-  }
-  throw new Error("expected fallback summary");
-}
-
-function createFallbackOnlyRun() {
-  return vi.fn().mockImplementation(async (providerId, modelId) => {
-    if (providerId === "fallback") {
-      return "ok";
-    }
-    throw new Error(`unexpected provider: ${providerId}/${modelId}`);
-  });
 }
 
 // Issue-backed Anthropic/OpenAI-compatible insufficient_quota payload under HTTP 400:
@@ -728,6 +618,97 @@ describe("runWithModelFallback", () => {
       );
     },
   );
+
+  it("uses configured fallbacks after a format failure when a user pin emptied the ladder", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const preparedModels: string[][] = [];
+    const prepared = vi.fn((chain: ReadonlyArray<{ model: string }>) => {
+      preparedModels.push(chain.map((candidate) => candidate.model));
+    });
+    const run = vi
+      .fn()
+      .mockRejectedValueOnce(
+        new FailoverError("openai/gpt-6.1-sol ended without a visible assistant reply", {
+          reason: "format",
+          provider: "openai",
+          model: "gpt-6.1-sol",
+        }),
+      )
+      .mockResolvedValueOnce("fallback answer");
+
+    const result = await runWithModelFallback({
+      cfg,
+      provider: "openai",
+      model: "gpt-6.1-sol",
+      fallbacksOverride: [],
+      formatFailureFallbacks: ["anthropic/claude-opus-5-5"],
+      skipAuthProfileRuntime: true,
+      prepareCandidateChain: prepared,
+      run,
+    });
+
+    expect(result.result).toBe("fallback answer");
+    expect(result.provider).toBe("anthropic");
+    expect(result.model).toBe("claude-opus-5-5");
+    expect(run.mock.calls.map((call) => [call[0], call[1]])).toEqual([
+      ["openai", "gpt-6.1-sol"],
+      ["anthropic", "claude-opus-5-5"],
+    ]);
+    expect(preparedModels).toEqual([["gpt-6.1-sol"], ["claude-opus-5-5"]]);
+  });
+
+  it("keeps a user pin on rate limit when format fallbacks are held back", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const prepared = vi.fn<(chain: ReadonlyArray<{ model: string }>) => void>();
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("rate limited", {
+        reason: "rate_limit",
+        provider: "openai",
+        model: "gpt-6.1-sol",
+      }),
+    );
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-6.1-sol",
+        fallbacksOverride: [],
+        formatFailureFallbacks: ["anthropic/claude-opus-5-5"],
+        skipAuthProfileRuntime: true,
+        prepareCandidateChain: prepared,
+        run,
+      }),
+    ).rejects.toMatchObject({ reason: "rate_limit" });
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(run.mock.calls[0]?.[0]).toBe("openai");
+    expect(prepared.mock.calls.map((call) => call[0].map((candidate) => candidate.model))).toEqual([
+      ["gpt-6.1-sol"],
+    ]);
+  });
+
+  it("does not invent format fallbacks for an explicit empty ladder", async () => {
+    const cfg = createModelFallbackConfig("openai/gpt-6.1-sol", ["anthropic/claude-opus-5-5"]);
+    const run = vi.fn().mockRejectedValue(
+      new FailoverError("empty reply", {
+        reason: "format",
+        provider: "openai",
+        model: "gpt-6.1-sol",
+      }),
+    );
+
+    await expect(
+      runWithModelFallback({
+        cfg,
+        provider: "openai",
+        model: "gpt-6.1-sol",
+        fallbacksOverride: [],
+        skipAuthProfileRuntime: true,
+        run,
+      }),
+    ).rejects.toMatchObject({ reason: "format" });
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 
   it("keeps raw provider schema errors in fallback summaries", async () => {
     const rawError =

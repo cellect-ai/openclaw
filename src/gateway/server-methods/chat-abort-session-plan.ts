@@ -1,6 +1,7 @@
 import { captureExecRequestCancellation } from "../../agents/bash-process-control.js";
 import type { SubagentRequestSessionOrigin } from "../../agents/subagents/registry/subagent-exec-request-ownership.js";
 import { getAgentEventLifecycleGeneration } from "../../infra/agent-events.js";
+import { matchesVerifiedRunStopActor } from "../../infra/run-stop-actor.js";
 import { isCurrentSessionControllerTurnInput } from "../../sessions/session-controller.context.js";
 import type { ReplyOperation } from "../../sessions/session-controller.contracts.js";
 import { getSessionControllerSourceIdentity } from "../../sessions/session-controller.identity.js";
@@ -114,6 +115,7 @@ export function prepareChatSessionAbort(
   };
   const queuedPlan = resolveAuthorizedQueuedTurnsForSession({
     ...ownerScope,
+    preservePendingInputs: params.preservePendingInputs,
     sessionId: params.sessionId,
   });
   const {
@@ -147,7 +149,9 @@ export function prepareChatSessionAbort(
   const canRunLifecycleCleanup = !hasUnauthorizedOwner && !hasProtectedLifecycleRuns;
   // Keep ordinary chat.abort's admin worker behavior; only the injected broad
   // lifecycle path must preserve hidden or explicitly preserved Gateway runs.
-  const canCancelWorkerSession = !isLifecycleAbort || !hasProtectedLifecycleRuns;
+  const canCancelWorkerSession =
+    (!isLifecycleAbort || !hasProtectedLifecycleRuns) &&
+    (!params.preservePendingInputs || hasControllerRepresentedWorkerRun);
   const snapshots: AbortedPartialSnapshot[] = [];
   const capturedTargets = [...queuedPlan.authorized, ...authorizedRuns];
   const targetByInput = new Map(capturedTargets.map((target) => [target.entry.input, target]));
@@ -202,6 +206,7 @@ export function prepareChatSessionAbort(
     lifecycleGeneration: getAgentEventLifecycleGeneration(),
     startedAt: session?.entry?.startedAt,
     stopReason: params.stopReason,
+    stopActor: params.stopActor,
     assertCurrent: params.assertCurrent,
   });
   const controllerRuns = new Map<
@@ -326,6 +331,7 @@ export function prepareChatSessionAbort(
         cancel,
         assertCurrent: params.assertCurrent,
         stopReason: params.stopReason,
+        stopActor: params.stopActor,
         onAbortPrepared: () => {
           if (!authorizedRuns.some((candidate) => candidate.entry === entry)) {
             return undefined;
@@ -360,7 +366,7 @@ export function prepareChatSessionAbort(
         ) {
           cancelWorker();
         }
-        if (commands.cancel()) {
+        if ((!params.preservePendingInputs || result.aborted) && commands.cancel()) {
           result.aborted = true;
         }
       }
@@ -374,7 +380,11 @@ export function prepareChatSessionAbort(
     const stopRequest = {
       capture: stopCapture,
       assertCurrent: params.assertCurrent,
-      reason: createChatAbortSignalReason(params.stopReason),
+      reason: createChatAbortSignalReason(
+        params.stopReason,
+        matchesVerifiedRunStopActor(params.stopActor, params) ? params.stopActor : undefined,
+      ),
+      preservePendingInputs: params.preservePendingInputs,
       hookContext: params.hookContext,
       onCancelled,
       onEffectCancelled: (effect) => {

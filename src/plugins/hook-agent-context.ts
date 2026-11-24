@@ -1,5 +1,10 @@
-/** Builds plugin hook agent context snapshots from active session and model state. */
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+/** Builds plugin hook agent context snapshots from active session and model state. */
+import { resolveAdmittedRunRequesterContinuation } from "../agents/admitted-run-context.js";
+import {
+  resolveSubagentRequesterChannel,
+  resolveSubagentSpawnedFrom,
+} from "../agents/subagents/spawn/subagent-spawn-requester-binding.js";
 import { parseRawSessionConversationRef } from "../sessions/session-key-utils.js";
 import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { PluginHookAgentContext } from "./hook-types.js";
@@ -40,6 +45,9 @@ function stripConversationPrefix(
 
 /** Builds channel/provider fields for plugin agent hook context. */
 export function buildAgentHookContextChannelFields(params: {
+  inputProvenance?: PluginHookAgentContext["inputProvenance"];
+  runId?: string;
+  sessionId?: string;
   sessionKey?: string | null;
   messageChannel?: string | null;
   messageProvider?: string | null;
@@ -49,7 +57,16 @@ export function buildAgentHookContextChannelFields(params: {
   agentAccountId?: string | null;
 }): Pick<
   PluginHookAgentContext,
-  "accountId" | "channel" | "channelId" | "chatId" | "messageProvider" | "senderId"
+  | "accountId"
+  | "channel"
+  | "channelId"
+  | "chatId"
+  | "messageProvider"
+  | "senderId"
+  | "inputProvenance"
+  | "requesterContinuation"
+  | "spawnedFrom"
+  | "spawnedFromChannel"
 > {
   function resolveAgentHookChannel(): string | undefined {
     const messageChannel = normalizeOptionalString(params.messageChannel);
@@ -103,9 +120,27 @@ export function buildAgentHookContextChannelFields(params: {
 
   const channel = resolveAgentHookChannel();
   const channelId = resolveAgentHookChannelId();
+
+  const requesterContinuation = resolveAdmittedRunRequesterContinuation({
+    ...params,
+    sessionKey: params.sessionKey ?? undefined,
+  });
+  const spawnedFrom = resolveSubagentSpawnedFrom({
+    runId: params.runId,
+    sessionKey: params.sessionKey ?? undefined,
+    sessionId: params.sessionId,
+  });
+  const spawnedFromChannel = resolveSubagentRequesterChannel({
+    runId: params.runId,
+    sessionKey: params.sessionKey ?? undefined,
+  });
   const accountId = normalizeOptionalString(params.agentAccountId);
   return {
     channel,
+    ...(requesterContinuation ? { requesterContinuation } : {}),
+    ...(spawnedFrom ? { spawnedFrom } : {}),
+    ...(spawnedFromChannel ? { spawnedFromChannel } : {}),
+    ...(params.inputProvenance ? { inputProvenance: params.inputProvenance } : {}),
     ...(accountId ? { accountId } : {}),
     messageProvider: normalizeOptionalString(params.messageProvider),
     channelId,

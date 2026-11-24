@@ -1,6 +1,7 @@
 import { ErrorCodes, errorShape } from "../../../packages/gateway-protocol/src/index.js";
 import type { SessionGoalOperation } from "../../config/sessions/goals-operations.js";
 import type { ProviderReviewAcknowledgment } from "../../sessions/provider-review.js";
+import type { TalkRelayConsultAdmission } from "../talk-relay-consult-admission.js";
 import { respondChatSendAdmissionError } from "./chat-send-admission-errors.js";
 import { admitChatSend } from "./chat-send-admission.js";
 import type { ChatSendDiagnostics } from "./chat-send-diagnostics.js";
@@ -34,6 +35,7 @@ export async function prepareAndAdmitChatSend(
   >,
   onAdmissionOwned?: () => Promise<boolean>,
   options?: {
+    talkRelayAdmission?: TalkRelayConsultAdmission;
     trustedSystemInput?: boolean;
     isDirectExternalUser?: boolean;
     goalResume?: SessionGoalOperation & { action: "resume" };
@@ -90,6 +92,7 @@ export async function prepareAndAdmitChatSend(
     context,
     client,
     assertCurrent,
+    talkRelayAdmission: options?.talkRelayAdmission,
   });
   if (!loadedSession.ok) {
     respond(
@@ -161,6 +164,15 @@ export async function prepareAndAdmitChatSend(
     withPreparedCurrent: sessionMutationAuthorization?.withPreparedCurrent,
     followRegistration: sessionMutationAuthorization?.followRegistration,
     diagnostics,
+    talkRelayAdmission: options?.talkRelayAdmission,
+    assertDelegatedAdmission: options?.talkRelayAdmission
+      ? () =>
+          options.talkRelayAdmission!.assertCurrent(
+            session.sessionKey,
+            client?.connId,
+            normalizedRequest.value.explicitOrigin,
+          )
+      : undefined,
   });
   if (!admitted.ok) {
     return undefined;

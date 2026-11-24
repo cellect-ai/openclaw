@@ -56,6 +56,10 @@ export type MatrixQaScenarioContext = {
   ) => Promise<unknown>;
   outputDir: string;
   registrationToken?: string;
+  restartGatewayAfterOwnedExit?: (
+    commit: () => Promise<void>,
+    whileOffline: () => Promise<void>,
+  ) => Promise<{ pid: number; exitCode: 0; signalCode: null }>;
   restartGateway: () => Promise<void>;
   restartGatewayAfterStateMutation: (
     mutateState: (context: { stateDir: string }) => Promise<void>,

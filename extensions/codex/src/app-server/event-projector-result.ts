@@ -127,9 +127,23 @@ export abstract class CodexTurnProjection {
       }
     }
     this.nativeToolLifecycleProjector.finalizeActive(undefined, retainedCommands);
-    const rawAssistantTexts = toolTelemetry.finalSourceReplyDelivered
+    let rawAssistantTexts = toolTelemetry.finalSourceReplyDelivered
       ? []
       : this.assistantProjection.collectAssistantTexts();
+    const unresolvedQuestion =
+      !toolTelemetry.finalSourceReplyDelivered &&
+      !this.aborted &&
+      !this.providerRefusal &&
+      this.completedTurn?.status === "completed" &&
+      !rawAssistantTexts.some(
+        (rawText) =>
+          prepareAgentRunTerminalReply({ rawText }).terminalReply.disposition === "visible",
+      )
+        ? this.toolTranscriptProjection.unresolvedQuestionText()
+        : undefined;
+    if (unresolvedQuestion) {
+      rawAssistantTexts = [unresolvedQuestion];
+    }
     const hasDeliverableAssistantOnCompletedTurn =
       this.completedTurn?.status === "completed" &&
       rawAssistantTexts.some(
@@ -268,9 +282,23 @@ export abstract class CodexTurnProjection {
     const completedItemCount = this.completedItemIds.size;
     const guardianReviewCount = this.eventProjection.guardianReviewCount;
     const yieldDetected = options?.yieldDetected;
-    const rawAssistantTexts = toolTelemetry.finalSourceReplyDelivered
+    let rawAssistantTexts = toolTelemetry.finalSourceReplyDelivered
       ? []
       : this.assistantProjection.collectAssistantTexts();
+    const unresolvedQuestion =
+      !toolTelemetry.finalSourceReplyDelivered &&
+      !this.aborted &&
+      !this.providerRefusal &&
+      this.completedTurn?.status === "completed" &&
+      !rawAssistantTexts.some(
+        (rawText) =>
+          prepareAgentRunTerminalReply({ rawText }).terminalReply.disposition === "visible",
+      )
+        ? this.toolTranscriptProjection.unresolvedQuestionText()
+        : undefined;
+    if (unresolvedQuestion) {
+      rawAssistantTexts = [unresolvedQuestion];
+    }
     const preparedReplies = rawAssistantTexts.map((rawText) =>
       prepareAgentRunTerminalReply({ rawText }),
     );
@@ -331,7 +359,7 @@ export abstract class CodexTurnProjection {
         : undefined;
     let currentAttemptAssistant = toolTelemetry.finalSourceReplyDelivered
       ? undefined
-      : providerRefusal
+      : providerRefusal || unresolvedQuestion
         ? lastAssistant
         : this.assistantProjection.createCurrentAttemptAssistantMessage(assistantMessageOptions);
     // Tool-authored completion belongs to this native turn, not another input's

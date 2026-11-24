@@ -17,10 +17,15 @@ import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
 import { prepareMatrixReplyPayload } from "../../outbound.js";
 import { isPollEventType } from "../poll-types.js";
+import {
+  admitMatrixProjectionExecution,
+  isMatrixThreadNotCanonicalError,
+} from "../projection-execution.js";
 import type { LocationMessageEventContent } from "../sdk.js";
 import { RelationType } from "../send/types.js";
 import { normalizeMatrixUserId } from "./allowlist.js";
 import { createMatrixEventContextResolver } from "./event-context.js";
+import { isMatrixApplicationEventType } from "./event-types.js";
 import { resolveMatrixInboundContext } from "./handler-context.js";
 import { createMatrixDraftController } from "./handler-draft-controller.js";
 import {
@@ -49,6 +54,8 @@ import { isMatrixVerificationRoomMessage } from "./verification-utils.js";
 const SESSION_RESTART_RECOVERY_TOMBSTONE_ERROR_CODE = "SESSION_RESTART_RECOVERY_TOMBSTONE";
 const RESTART_RECOVERY_TOMBSTONE_NOTICE =
   "This session ended during gateway restart recovery and cannot accept more messages. Send /new or /reset to start a replacement session.";
+const THREAD_NOT_CANONICAL_NOTICE =
+  "I can only answer in the main conversation thread. Please ask there.";
 
 export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParams) {
   const {
@@ -98,6 +105,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
   const roomHistoryTracker = createRoomHistoryTracker();
   const roomIngressQueue = new KeyedAsyncQueue();
   const sharedDmContextNoticeRooms = new Set<string>();
+  const threadNotCanonicalNotices = new Set<string>();
 
   return async (
     roomId: string,
@@ -115,22 +123,23 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
 
       const isPollEvent = isPollEventType(eventType);
       const isReactionEvent = eventType === EventType.Reaction;
-      const locationContent = event.content as LocationMessageEventContent;
-      const isLocationEvent =
-        eventType === EventType.Location ||
-        (eventType === EventType.RoomMessage && locationContent.msgtype === EventType.Location);
-      if (
-        eventType !== EventType.RoomMessage &&
-        !isPollEvent &&
-        !isLocationEvent &&
-        !isReactionEvent
-      ) {
+      if (!isMatrixApplicationEventType(eventType)) {
         return;
       }
       logVerboseMessage(
         `matrix: inbound event room=${roomId} type=${eventType} id=${event.event_id ?? "unknown"}`,
       );
       if (event.unsigned?.redacted_because) {
+        return;
+      }
+      // Invitation publications are control-plane data, never a human prompt.
+      if (
+        eventType === EventType.RoomMessage &&
+        event.content &&
+        typeof event.content === "object" &&
+        Object.hasOwn(event.content, "ai.cellect.invitation")
+      ) {
+        logVerboseMessage(`matrix: skip invitation publication room=${roomId}`);
         return;
       }
       const senderId = event.sender;
@@ -143,7 +152,7 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         if (senderId === selfUserId) {
           return undefined;
         }
-        const content = resolveMatrixCurrentContent(locationContent);
+        const content = resolveMatrixCurrentContent(event.content as LocationMessageEventContent);
 
         if (
           eventType === EventType.RoomMessage &&
@@ -281,6 +290,8 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         ctxPayload,
         replyTarget,
         sharedDmContextNotice,
+        letMeKnowTriggerEventId,
+        sourceReplyAdmission,
       } = inboundContext;
       const mediaLocalRoots = getAgentScopedMediaLocalRoots(cfg, _route.agentId);
       const { onModelSelected, ...prefixOptions } = createReplyPrefixOptions({
@@ -344,6 +355,10 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         replyToMode,
         threadTarget,
         replyToEventId: replyToEventId ?? undefined,
+        letMeKnowTriggerEventId,
+        sourceReply: sourceReplyAdmission
+          ? { sessionKey: sourceReplyAdmission.sessionKey, eventId: messageId }
+          : undefined,
         accountId: _route.accountId,
         mediaLocalRoots,
         logVerboseMessage,
@@ -361,6 +376,48 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         route: _route,
         sessionKey: _route.sessionKey,
       });
+      try {
+        await admitMatrixProjectionExecution({
+          core,
+          cfg,
+          client,
+          roomId,
+          threadRootEventId: threadTarget,
+          accountId,
+          agentId: _route.agentId,
+          sessionKey: _route.sessionKey,
+        });
+      } catch (err) {
+        if (!isMatrixThreadNotCanonicalError(err)) {
+          throw err;
+        }
+        // Deterministic refusal: tell the sender once, in their own thread, then
+        // fail the event without retry. The durable delivery id keeps a replay
+        // after restart from posting a second notice.
+        const noticeKey = `${_route.accountId}:${roomId}:${eventId}`;
+        if (eventId && markTrackedRoomIfFirst(threadNotCanonicalNotices, noticeKey)) {
+          try {
+            const { sendMessageMatrix } = await loadMatrixSendModule();
+            await sendMessageMatrix(roomId, THREAD_NOT_CANONICAL_NOTICE, {
+              cfg,
+              client,
+              accountId: _route.accountId,
+              replyToId: threadTarget || replyToMode === "off" ? undefined : messageId,
+              fallbackReplyToId: threadTarget,
+              threadId: threadTarget,
+              deliveryQueueId: `matrix:thread-not-canonical:${noticeKey}`,
+              deliveryPartIndex: 0,
+              deliveryPartCount: 1,
+              extraContent: { msgtype: "m.notice" },
+            });
+          } catch (noticeError) {
+            runtime.error?.(
+              `matrix: failed sending non-canonical thread notice room=${roomId} id=${eventId}: ${String(noticeError)}`,
+            );
+          }
+        }
+        throw err;
+      }
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",
         accountId: _route.accountId,

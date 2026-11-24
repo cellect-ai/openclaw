@@ -65,3 +65,15 @@ export function resolveCodexToolConstructionPlan(
     includePluginTools: true,
   };
 }
+
+/** Host-only authoring closures reach the actual tool factory without entering child parameters. */
+export function resolveWorkshopAuthoring(
+  params: EmbeddedRunAttemptParamsV2,
+): OpenClawCodingToolsOptions["skillWorkshop"] {
+  return params.skillLibraryAuthoring || params.skillWorkshopWorkspaceAuthoring
+    ? {
+        libraryAuthoring: params.skillLibraryAuthoring,
+        workspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
+      }
+    : undefined;
+}

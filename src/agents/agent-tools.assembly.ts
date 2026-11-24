@@ -21,6 +21,7 @@ import { appendRuntimePluginToolGrant } from "../plugins/tool-grant-allowlist.js
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import type { SkillSnapshot } from "../skills/types.js";
 import { resolveGatewayMessageChannel } from "../utils/message-channel.js";
+import { resolveAdmittedRunRequesterContinuation } from "./admitted-run-context.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import {
   bindAssembledAgentToolActionDescriptor,
@@ -76,6 +77,10 @@ import { createEmbeddedMessageInvocationPolicy } from "./scheduled-message-invoc
 import { resolveScheduledToolCallerContext } from "./scheduled-tool-policy.js";
 import { projectEffectiveExecPolicy } from "./session-permission-exec-mode.js";
 import { resolveSessionPlacementComputer } from "./session-placement-computer.js";
+import {
+  resolveSubagentRequesterChannel,
+  resolveSubagentSpawnedFrom,
+} from "./subagents/spawn/subagent-spawn-requester-binding.js";
 import { subagentAttachmentRootForRun } from "./subagents/subagent-attachment-paths.js";
 import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
 import { buildDeclaredToolAllowlistContext } from "./tool-policy-declared-context.js";
@@ -469,6 +474,8 @@ export function* assembleOpenClawCodingTools(
             sandboxContainerWorkdir: sandbox?.containerWorkdir,
             sandboxFsBridge,
             sandboxReadOnlyResourceMounts: sandbox?.readOnlyResourceMounts,
+            stagedMediaPaths: options?.stagedMediaPaths,
+            currentTurnMedia: options?.currentTurnMedia,
             sandboxWorkspaceMediaReadAllowed,
             spawnWorkspaceDir: capabilityProfile.workspace.spawnWorkspaceRoot,
             // Sandboxes execute against copied roots, but accepted suggestions create host
@@ -609,6 +616,20 @@ export function* assembleOpenClawCodingTools(
   const turnSourceChannel = options?.messageChannel ?? options?.messageProvider;
   const turnSourceTo = options?.currentMessagingTarget ?? options?.currentChannelId;
   const requester = buildHarnessHostRequester(options ?? {});
+  const requesterContinuation = resolveAdmittedRunRequesterContinuation({
+    runId: options?.runId,
+    sessionKey: executionSessionKey,
+    sessionId: options?.sessionId,
+  });
+  const spawnedFrom = resolveSubagentSpawnedFrom({
+    runId: options?.runId,
+    sessionKey: executionSessionKey,
+    sessionId: options?.sessionId,
+  });
+  const spawnedFromChannel = resolveSubagentRequesterChannel({
+    runId: options?.runId,
+    sessionKey: executionSessionKey,
+  });
   const hookContext = {
     awaitSessionDiffBaseline: options?.awaitSessionDiffBaseline,
     getRunAbortDeadlineAtMs: options?.getRunAbortDeadlineAtMs,
@@ -628,6 +649,9 @@ export function* assembleOpenClawCodingTools(
     approvalReviewerDeviceId: options?.approvalReviewerDeviceId,
     channelId: options?.hookChannelId ?? options?.currentChannelId,
     ...(Object.keys(requester).length > 0 ? { requester } : {}),
+    ...(requesterContinuation ? { requesterContinuation } : {}),
+    ...(spawnedFrom ? { spawnedFrom } : {}),
+    ...(spawnedFromChannel ? { spawnedFromChannel } : {}),
     ...(turnSourceChannel ? { turnSourceChannel } : {}),
     ...(turnSourceTo ? { turnSourceTo } : {}),
     ...(options?.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),

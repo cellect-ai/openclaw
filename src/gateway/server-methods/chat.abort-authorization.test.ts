@@ -177,6 +177,26 @@ describe("chat.abort authorization", () => {
     });
   });
 
+  it.each([undefined, "worker-run"])(
+    "execution-only Stop preserves an unrepresented worker with runId=%s",
+    async (runId) => {
+      const cancel = vi.fn(() => ["worker-run"]);
+      const context = workerContext(cancel);
+      const respond = await invokeLifecycle(
+        context,
+        { sessionKey: "main", runId },
+        {
+          handler: (options) =>
+            handleChatAbortRequestWithLifecycle(options, {
+              preservePendingInputs: true,
+            }),
+        },
+      );
+      expectResult(respond, [], false);
+      expect(cancel).not.toHaveBeenCalled();
+    },
+  );
+
   it("does not let a local run owner cancel worker inference", async () => {
     for (const runId of [undefined, "run-1"]) {
       const cancelInferenceForSession = vi.fn(() => ["run-1"]);

@@ -72,6 +72,7 @@ import {
 } from "./harness/lifecycle-hook-helpers.js";
 import { isRequiredReplyExpectation, resolveReplyExpectation } from "./reply-completion.js";
 import { isAgentRunDirectAbortReason } from "./run-termination.js";
+import { isRestrictedBackgroundHookRun, SHADOW_CLI_REFUSAL } from "./shadow-hook-tool-policy.js";
 import {
   createAdmittedGatewayToolCallerIdentity,
   withGatewayToolCallerIdentity,
@@ -109,6 +110,17 @@ export async function isCliBindingFlushed(
 }
 
 export function runCliAgent(paramsInput: RunCliAgentParams): Promise<EmbeddedAgentRunResult> {
+  // Single choke point: a Fi shadow run never reaches a CLI backend, whose native
+  // tools sit outside the shadow tool cap, however the run was routed here.
+  if (
+    isRestrictedBackgroundHookRun(
+      paramsInput.sessionKey,
+      paramsInput.runtimePolicySessionKey,
+      paramsInput.sessionTarget?.sessionKey,
+    )
+  ) {
+    return Promise.reject(new Error(SHADOW_CLI_REFUSAL));
+  }
   return runWithCliTurn(paramsInput, runCliAgentInternal);
 }
 

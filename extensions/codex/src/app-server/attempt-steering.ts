@@ -65,6 +65,7 @@ export function createCodexQuestionInputHandlers(sessionKey: string, assertActiv
     assertActive();
     return await claimPendingAgentQuestionAnswer({
       sessionKey,
+      expectedQuestionId: optionsLocal.expectedQuestionId,
       text,
       authority: questionAuthority(authorityKind, assertCurrent, toolAuthorityPreparation),
       sourceRecorder: optionsLocal.userTurnTranscriptRecorder,
@@ -101,6 +102,7 @@ export type CodexSteeringQueueOptions = Pick<
   | "isInboundUserMessage"
   | "isInboundUserReply"
   | "allowPendingUserInputAnswer"
+  | "expectedQuestionId"
   | "onQueueAccepted"
   | "onQueueSettled"
   | "userTurnTranscriptRecorder"

@@ -1,6 +1,7 @@
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { resolveControlUiLinkLocation } from "../../../config/control-ui-link-base.js";
 import { observeDiagnosticsTimelinePhases } from "../../../infra/diagnostics-timeline.js";
+import { isAttestedBackgroundHookSessionKey } from "../../../infra/hook-requester-attestation.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import {
   resolveProviderSystemPromptContribution,
@@ -306,7 +307,10 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
       : undefined;
     const preparedMemoryPrompt = await prepareAgentMemoryPrompt({
       ...toolContext,
-      enabled: effectivePromptMode === "full" && includeMemorySection,
+      enabled:
+        effectivePromptMode === "full" &&
+        includeMemorySection &&
+        !isAttestedBackgroundHookSessionKey(attempt.sessionKey),
       citationsMode: attempt.config?.memory?.citations,
       agentId: runtimePrompt.runtimeInfo.agentId,
       agentSessionKey: runtimePrompt.runtimeInfo.sessionKey,
@@ -334,7 +338,9 @@ export async function prepareEmbeddedAttemptSystemPrompt(params: {
   const activeProjectKeys = attempt.preparedModelRuntime?.activeProjectKeys ?? [];
   // Budgeted recall retains the live turn authority and owns late provider cleanup.
   const projectMemoryBootstrap =
-    effectivePromptMode === "full" && activeProjectKeys.length > 0
+    effectivePromptMode === "full" &&
+    activeProjectKeys.length > 0 &&
+    !isAttestedBackgroundHookSessionKey(attempt.sessionKey)
       ? await prepareProjectMemoryBootstrap({
           cfg: attempt.config ?? {},
           agentId: params.setup.sessionAgentId,

@@ -3,7 +3,14 @@ import type {
   PluginHookReplyPayloadSendingContext,
   PluginHookReplyUsageState,
 } from "../../plugins/hook-types.js";
-import { copyReplyPayloadMetadata, type ReplyPayload } from "../reply-payload.js";
+import { copyReplyPayloadMetadata } from "../reply-payload.js";
+import type { ReplyPayload } from "../reply-payload.js";
+import {
+  bindReplyPublication,
+  detachReplyPublicationPrefix,
+  finishReplyPublicationPrefix,
+} from "../reply-publication.js";
+import { nativeFinalDeliveryReference } from "./native-final-delivery.js";
 import type { ReplyDispatchKind } from "./reply-dispatcher.types.js";
 
 export async function runReplyPayloadSendingHook(
@@ -22,21 +29,32 @@ export async function runReplyPayloadSendingHook(
     return params.payload;
   }
 
-  const result = await hookRunner.runReplyPayloadSending(
-    {
-      payload: params.payload,
-      kind: params.kind,
-      channel: params.channel,
-      sessionKey: params.sessionKey,
-      runId: params.runId,
-      usageState: params.usageState,
-    },
-    params.context,
-  );
+  const event = {
+    payload: params.payload,
+    kind: params.kind,
+    channel: params.channel,
+    sessionKey: params.sessionKey,
+    runId: params.runId,
+    usageState: params.usageState,
+  };
+  const publication = bindReplyPublication(event, {
+    ...params,
+    nativeFinal: nativeFinalDeliveryReference(params.payload),
+  });
+  const detached = detachReplyPublicationPrefix(params.payload);
+  event.payload = copyReplyPayloadMetadata(params.payload, detached);
+  const publishedEvent = Object.assign(event, {
+    publicationId: publication.publicationId,
+    publishedAtMs: publication.publishedAtMs,
+  });
+  const result = await hookRunner.runReplyPayloadSending(publishedEvent, params.context);
 
   if (result?.cancel) {
     return null;
   }
-  const payload = result?.payload ?? params.payload;
-  return copyReplyPayloadMetadata(params.payload, payload);
+  const payload = (result?.payload as ReplyPayload | undefined) ?? event.payload;
+  const ownedPayload = copyReplyPayloadMetadata(params.payload, payload);
+  return detached === params.payload
+    ? ownedPayload
+    : copyReplyPayloadMetadata(ownedPayload, finishReplyPublicationPrefix(ownedPayload));
 }

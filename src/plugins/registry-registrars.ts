@@ -25,7 +25,7 @@ import { PLUGIN_HOOK_METADATA } from "./hook-types.js";
 import { registerPluginInteractiveHandlerInRegistry } from "./interactive-registry.js";
 import { recordPluginLoadDiagnostic } from "./load-diagnostics.js";
 import type { PluginDiagnostic } from "./manifest-types.js";
-import { getPluginInstance } from "./plugin-instance-scope.js";
+import { getPluginInstance, wrapCurrentPluginInstance } from "./plugin-instance-scope.js";
 import { createHostRegistrars } from "./registry-registrars-host.js";
 import { createNetworkRegistrars } from "./registry-registrars-network.js";
 import { createOperationRegistrars } from "./registry-registrars-operations.js";
@@ -675,7 +675,8 @@ export function createPluginRegistrars(state: PluginRegistryState) {
       pluginId: record.id,
       ...(opts?.registrationId ? { registrationId: opts.registrationId } : {}),
       hookName,
-      handler,
+      // Deferred hooks retain their registering instance and its retirement boundary.
+      handler: wrapCurrentPluginInstance(handler),
       ...(matcher ? { matcher } : {}),
       priority: opts?.priority,
       ...(timeoutMs !== undefined ? { timeoutMs } : {}),

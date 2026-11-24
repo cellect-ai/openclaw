@@ -6,6 +6,14 @@ import { stringLiteralUnion } from "./string-literal-union.js";
 
 const SuspensionTokenSchema = Type.String({ minLength: 1, maxLength: 128, pattern: "\\S" });
 const CountSchema = Type.Integer({ minimum: 0 });
+const GatewaySuspendTargetSchema = closedObject({
+  pid: Type.Integer({ minimum: 1 }),
+  processInstanceId: SuspensionTokenSchema,
+});
+const GatewaySuspendProcessIdentity = {
+  pid: Type.Optional(Type.Integer({ minimum: 1 })),
+  processInstanceId: Type.Optional(SuspensionTokenSchema),
+};
 
 /** Recorded lifecycle sections; absence on older residents means unknown custody. */
 const GatewayWriteCustodySchema = Type.Array(
@@ -48,6 +56,7 @@ export const GatewaySuspendPrepareParamsSchema = closedObject({
   requestId: SuspensionTokenSchema,
   terminalPolicy: Type.Optional(stringLiteralUnion(["preserve", "terminate"])),
   drain: Type.Optional(Type.Boolean()),
+  target: Type.Optional(GatewaySuspendTargetSchema),
 });
 
 export const GatewaySuspendPrepareBusyResultSchema = closedObject({
@@ -91,10 +100,12 @@ export const GatewaySuspendStatusParamsSchema = closedObject({
 
 export const GatewaySuspendStatusRunningResultSchema = closedObject({
   status: Type.Literal("running"),
+  ...GatewaySuspendProcessIdentity,
 });
 
 export const GatewaySuspendStatusDrainingResultSchema = closedObject({
   status: Type.Literal("draining"),
+  ...GatewaySuspendProcessIdentity,
   ownerId: Type.Optional(SuspensionTokenSchema),
   phase: Type.Optional(stringLiteralUnion(["draining", "interrupting", "exiting"])),
   expiresAtMs: CountSchema,
@@ -106,6 +117,7 @@ export const GatewaySuspendStatusDrainingResultSchema = closedObject({
 
 export const GatewaySuspendStatusReadyResultSchema = closedObject({
   status: Type.Literal("ready"),
+  ...GatewaySuspendProcessIdentity,
   ownerId: Type.Optional(SuspensionTokenSchema),
   expiresAtMs: CountSchema,
   writeCustody: Type.Optional(GatewayWriteCustodySchema),
@@ -131,17 +143,25 @@ export const GatewaySuspendResumeResultSchema = closedObject({
 export const GatewaySuspendHandoffParamsSchema = closedObject({
   suspensionId: SuspensionTokenSchema,
   commit: Type.Optional(Type.Literal(true)),
-  target: closedObject({
-    pid: Type.Integer({ minimum: 1 }),
-    processInstanceId: SuspensionTokenSchema,
-  }),
+  /** Refuse interruption if any native work appeared after the last READY observation. */
+  requireIdle: Type.Optional(Type.Literal(true)),
+  target: GatewaySuspendTargetSchema,
 });
 
-export const GatewaySuspendHandoffResultSchema = closedObject({
-  status: stringLiteralUnion(["armed", "committed"]),
-  suspensionId: SuspensionTokenSchema,
-  expiresAtMs: CountSchema,
-});
+export const GatewaySuspendHandoffResultSchema = Type.Union([
+  closedObject({
+    status: stringLiteralUnion(["armed", "committed"]),
+    suspensionId: SuspensionTokenSchema,
+    expiresAtMs: CountSchema,
+  }),
+  /** Definite noncommit, unlike an RPC transport failure with an unknown outcome. */
+  closedObject({
+    status: Type.Literal("busy"),
+    suspensionId: SuspensionTokenSchema,
+    expiresAtMs: CountSchema,
+    reason: stringLiteralUnion(["active-work", "write-custody"]),
+  }),
+]);
 
 // Wire types derive directly from local schema consts so public d.ts graphs never
 // pull in the ProtocolSchemas registry.

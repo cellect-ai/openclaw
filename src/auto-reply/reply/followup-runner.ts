@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   buildAgentRunTerminalOutcomeFromLifecycleEvent,
   classifyAgentRunTerminalOutcome,
@@ -9,6 +10,7 @@ import type { ProgressContinuationCapability } from "../../channels/progress-con
 import { withoutSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import type { SessionActivitySummaryCompletion } from "../../gateway/session-activity-summary-completion.js";
 import { clearAgentRunContext } from "../../infra/agent-run-registry.js";
+import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
   getPluginRuntimeGatewayRequestScope,
@@ -18,7 +20,8 @@ import { defaultRuntime } from "../../runtime.js";
 import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { deferSessionControllerClaimBeforeExecution } from "../../sessions/session-controller.mailbox-claim.js";
 import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
-import { getReplyPayloadMetadata } from "../reply-payload.js";
+import { getCommandOwnerAuthority } from "../command-owner-authority.js";
+import { getReplyPayloadMetadata, setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import { withAgentTurnCompletion } from "./agent-runner-completion.js";
 import type { AgentTurnExecutionResult } from "./agent-runner-execution.types.js";
@@ -29,6 +32,11 @@ import { deliverFollowupDecision, resolveFollowupDeliveryDecision } from "./foll
 import { settleQueuedFollowupPresentation } from "./followup-presentation.js";
 import { executeFollowupTurn } from "./followup-turn-execution.js";
 import { enqueueGoalContinuation, createGoalContinuationReturn } from "./goal-continuation.js";
+import {
+  bindNativeFinalDeliveryPlan,
+  closeNativeFinalDelivery,
+  resolveNativeFinalDeliveryPlan,
+} from "./native-final-delivery.js";
 import { completeFollowupRunLifecycle, type FollowupRun } from "./queue.js";
 import { resolveQueueSettings } from "./queue/settings-runtime.js";
 import {
@@ -336,7 +344,60 @@ export function createFollowupRunner(
               accounting,
               opts: deliveryOpts,
             });
-            await turnCompletion?.complete();
+            if (
+              turnCompletion &&
+              turn.session.kind === "session" &&
+              turn.session.storePath &&
+              resolved.kind !== "suppress"
+            ) {
+              const commandOwner = getCommandOwnerAuthority(turn.queued.run);
+              const reference = {
+                agentId: turn.queued.run.agentId,
+                storePath: turn.session.storePath,
+                sessionKey: turn.session.key,
+                sessionId: turn.operation.sessionId,
+                intentId: randomUUID(),
+                sourceRunId: execution.execution.runId,
+                sourceGeneration:
+                  turn.operation.lifecycleGeneration ?? getAgentRunLifecycleGeneration(),
+                commandOwnerReference: commandOwner
+                  ? (commandOwner.recoveryReference ?? null)
+                  : undefined,
+              };
+              const deliveries = (resolved.kind === "deliver" ? resolved.payloads : []).map(
+                (payload) => {
+                  const deliveryId = randomUUID();
+                  setReplyPayloadMetadata(payload, {
+                    pendingFinalDeliveryCompletion: { ...reference, deliveryId },
+                    pendingFinalDeliveryCleanup: {},
+                  });
+                  return { id: deliveryId, state: "prepared" as const };
+                },
+              );
+              const committed = await turnCompletion.complete({
+                kind: "transport-only",
+                createdAt: Date.now(),
+                intentId: reference.intentId,
+                sourceRunId: reference.sourceRunId,
+                sourceGeneration: reference.sourceGeneration,
+                dispatchState: "open",
+                deliveries,
+                context: {
+                  channel: turn.queued.originatingChannel,
+                  to: turn.queued.originatingTo,
+                  accountId: turn.queued.originatingAccountId,
+                  threadId: turn.queued.originatingThreadId,
+                },
+              });
+              if (
+                committed.sessionId !== reference.sessionId ||
+                committed.pendingFinalDelivery?.intentId !== reference.intentId
+              )
+                throw new Error("Followup final intent admission changed");
+              bindNativeFinalDeliveryPlan(turn.operation, reference);
+            } else {
+              await turnCompletion?.complete();
+            }
             return { decision: resolved, accounting };
           },
         ),
@@ -364,6 +425,7 @@ export function createFollowupRunner(
         runFollowup,
         onObservedReplyDelivery,
       });
+      await closeNativeFinalDelivery(resolveNativeFinalDeliveryPlan(turn.operation));
       // Source recovery has its own queued callback; this execution still closes once.
       terminalPayloads = delivery.kind === "source-retry" ? [] : delivery.payloads;
       deliveryPending ||= delivery.kind === "pending";

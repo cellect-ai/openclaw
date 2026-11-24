@@ -221,7 +221,10 @@ export function prepareWorkspacePluginRegistries(
             ...(preferBuiltPluginArtifacts ? { preferBuiltPluginArtifacts: true } : {}),
             selections: input.runtimePluginSelections,
             configuredHarnessRuntimes: getConfiguredHarnessRuntimes?.(),
-            borrowRegistry: resolveLendingGatewayRegistry(input),
+            borrowRegistry:
+              input.runtimePluginPurpose === "model-catalog"
+                ? undefined
+                : (baseRegistry ?? resolveLendingGatewayRegistry(input)),
           },
           (source) => {
             loadedPrimaryRegistry =

@@ -10,6 +10,7 @@ export type SkillWorkshopRunOptions = {
   /** Originating session of a background review; turns on the review guard. */
   reviewOf?: string;
   libraryAuthoring?: SkillLibraryAuthoringCapability;
+  workspaceAuthoring?: import("../../skills/workshop/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
 };
 
 export function createConfiguredSkillWorkshopTool(params: {
@@ -25,6 +26,7 @@ export function createConfiguredSkillWorkshopTool(params: {
   const createWorkshop = () =>
     createSkillWorkshopTool({
       config: params.config,
+      workspaceAuthoring: params.run?.workspaceAuthoring,
       agentId: params.agentId,
       ...(sessionKey ? { sessionKey } : {}),
       ...(runId ? { runId } : {}),

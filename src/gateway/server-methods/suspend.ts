@@ -81,6 +81,7 @@ export const suspendHandlers: GatewayRequestHandlers = {
       owner,
       commit: params.commit,
       assertCurrent: readGatewayRequestMutationAuthority(options).assertCurrent,
+      requireIdle: params.requireIdle,
     });
     if (!result.ok) {
       context.logGateway.warn(`gateway.suspend.handoff refused: ${result.error.message}`);
@@ -97,6 +98,18 @@ export const suspendHandlers: GatewayRequestHandlers = {
   "gateway.suspend.prepare": async ({ respond, params, context, client }) => {
     if (!validateGatewaySuspendPrepareParams(params)) {
       respond(false, undefined, invalidParams("gateway.suspend.prepare"));
+      return;
+    }
+    if (
+      params.target &&
+      (params.target.pid !== process.pid ||
+        params.target.processInstanceId !== getGatewayProcessInstanceId())
+    ) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.UNAVAILABLE, "gateway process changed after preflight"),
+      );
       return;
     }
     const requestId = params.requestId.trim();
@@ -125,7 +138,14 @@ export const suspendHandlers: GatewayRequestHandlers = {
     const suspensionId = params.suspensionId.trim();
     // Polling reports custody; only the handoff owner decides whether it can stop.
     const result = getGatewaySuspendStatus(suspensionId, params.includeLifecycle === true);
-    respondSuspendStatus(result, context, respond, "a different gateway suspension is prepared");
+    respondSuspendStatus(
+      result.status !== "conflict" && params.includeLifecycle === true
+        ? { ...result, pid: process.pid, processInstanceId: getGatewayProcessInstanceId() }
+        : result,
+      context,
+      respond,
+      "a different gateway suspension is prepared",
+    );
   },
   "gateway.suspend.resume": async ({ respond, params, client }) => {
     if (!validateGatewaySuspendResumeParams(params)) {

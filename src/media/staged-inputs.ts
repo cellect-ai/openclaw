@@ -4,8 +4,11 @@ import { compileFunction } from "node:vm";
 import { root as fsRoot, sanitizeUntrustedFileName, type Root } from "../infra/fs-safe.js";
 import type { MediaFact } from "./media-facts.js";
 
-/** Existing per-file allowance for staging task inputs. */
-export const STAGED_INPUT_MAX_BYTES = 50 * 1024 * 1024;
+/**
+ * Per-file allowance for copying one inbound file into an agent workspace.
+ * Kept equal to the Slack download default so a file Slack accepts is staged.
+ */
+export const STAGED_INPUT_MAX_BYTES = 200 * 1024 * 1024;
 
 const STAGED_INPUT_DIRECTORY_PREFIX = "media/inbound/openclaw-staged-";
 export const STAGED_INPUT_GIT_PATHSPEC = `:(glob)${STAGED_INPUT_DIRECTORY_PREFIX}*/**`;

@@ -1,3 +1,4 @@
+import type { ChannelIngressQueue } from "openclaw/plugin-sdk/channel-outbound";
 import { vi } from "vitest";
 import type { MatrixRoomInfo } from "./room-info.js";
 
@@ -39,7 +40,15 @@ const hoisted = await vi.hoisted(async () => {
   );
   const client = Object.assign(new EventEmitter(), {
     id: "matrix-client",
-    bindSyncIngress: vi.fn(async () => () => {}),
+    bindSyncIngress: vi.fn(
+      async (_handler: import("../client/file-sync-store.js").MatrixSyncIngressHandler) => () => {},
+    ),
+    hydrateEvents: vi.fn(
+      async (_roomId: string, events: import("../sdk.js").MatrixRawEvent[]) => events,
+    ),
+    hasPersistedSyncState: vi.fn(() => false),
+    getSyncCheckpointStatus: vi.fn(() => null),
+    setSyncPersistenceBarrier: vi.fn(),
     drainPendingDecryptions: vi.fn(async () => undefined),
   });
   const createMatrixRoomMessageHandler = vi.fn(() => vi.fn());
@@ -143,6 +152,7 @@ const hoisted = await vi.hoisted(async () => {
   >(async () => undefined);
   const setStatus = vi.fn();
   return {
+    ingressQueue: null as ChannelIngressQueue<{ version: 1; rawEvent: string }> | null,
     accountConfig,
     acquireSharedMatrixClient,
     acquireSharedMatrixClientImpl,
@@ -175,6 +185,20 @@ const hoisted = await vi.hoisted(async () => {
     setStatus,
     state,
     stopThreadBindingManager,
+  };
+});
+
+vi.mock("./ingress.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./ingress.js")>();
+  return {
+    ...actual,
+    createMatrixIngressMonitor: (
+      options: Parameters<typeof actual.createMatrixIngressMonitor>[0],
+    ) => {
+      if (hoisted.ingressQueue)
+        return actual.createMatrixIngressMonitor({ ...options, queue: hoisted.ingressQueue });
+      return hoisted.createMatrixIngressMonitor(options);
+    },
   };
 });
 
@@ -304,11 +328,6 @@ vi.mock("./events.js", () => ({
 
 vi.mock("./handler.js", () => ({
   createMatrixRoomMessageHandler: hoisted.createMatrixRoomMessageHandler,
-}));
-
-// mock-isolation: Lifecycle tests use in-memory ingress without opening SQLite.
-vi.mock("./ingress.js", () => ({
-  createMatrixIngressMonitor: hoisted.createMatrixIngressMonitor,
 }));
 
 vi.mock("./room-info.js", () => ({

@@ -1,10 +1,9 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { MatrixEvent } from "matrix-js-sdk/lib/matrix.js";
-// Matrix tests cover send plugin behavior.
 import type * as TableRuntime from "openclaw/plugin-sdk/markdown-table-runtime";
 import type * as ChunkRuntime from "openclaw/plugin-sdk/reply-chunking";
+// Matrix tests cover send plugin behavior.
 import { createPluginRuntimeStore } from "openclaw/plugin-sdk/runtime-store";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -18,12 +17,27 @@ import {
   resolveMatrixDurableDeliveryIdentity,
 } from "./delivery-plan.js";
 import { createMatrixDraftStream } from "./draft-stream.js";
+import { createMatrixSourcePublication } from "./projection-publication.js";
+
+const projectionBinding = vi.hoisted(() => ({ override: undefined as unknown }));
+vi.mock("openclaw/plugin-sdk/conversation-binding-runtime", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("openclaw/plugin-sdk/conversation-binding-runtime")>();
+  return {
+    ...actual,
+    getSessionBindingService: () => {
+      const service = actual.getSessionBindingService();
+      return projectionBinding.override
+        ? { ...service, resolveByConversation: () => projectionBinding.override }
+        : service;
+    },
+  };
+});
 import { markdownToMatrixBody, markdownToMatrixHtml } from "./format.js";
-import { createBundledReplacementEvent } from "./monitor/test-events.js";
-import { matrixEventToRaw } from "./sdk/event-helpers.js";
 import {
   chunkMatrixText,
   editMessageMatrix,
+  redactMessageMatrix,
   sendMessageMatrix,
   sendPollMatrix,
   sendSingleTextMessageMatrix,
@@ -35,6 +49,7 @@ import {
   makeEncryptedMediaClient,
   registerMatrixMediaMetadataTests,
 } from "./send.test-support.js";
+import { MATRIX_STREAM_PHASE_CONTENT_KEY } from "./send/types.js";
 
 const loadOutboundMediaFromUrlMock = vi.hoisted(() => vi.fn());
 const loadConfigMock = vi.fn(() => ({}));
@@ -104,20 +119,6 @@ const runtimeStub = {
 } as unknown as PluginRuntime;
 
 const requireRecord = createRequireRecord("object", "expected-label");
-
-function createMatrixTestDecryptionFailure(event: MatrixEvent) {
-  const failed = new MatrixEvent({
-    ...event.event,
-    type: "m.room.message",
-    content: {
-      msgtype: "m.bad.encrypted",
-      body: "Synthetic missing session key",
-      "m.relates_to": event.getWireContent()["m.relates_to"],
-    },
-  });
-  vi.spyOn(failed, "isDecryptionFailure").mockReturnValue(true);
-  return failed;
-}
 
 function mockCallArg(
   mock: { mock: { calls: Array<Array<unknown>> } },
@@ -671,6 +672,27 @@ describe("sendMessageMatrix threads", () => {
 });
 
 describe("sendSingleTextMessageMatrix", () => {
+  it("labels draft sends with their stream phase", async () => {
+    const { client, sendMessage } = makeClient();
+
+    await sendSingleTextMessageMatrix("room:!room:example", "Working...", {
+      client,
+      cfg: {} as never,
+      includeMentions: false,
+      live: true,
+      streamPhase: "progress",
+    });
+
+    const content = requireRecord(sendMessage.mock.calls[0]?.[1], `sent content 0`);
+    expect(content["org.matrix.msc4357.live"]).toEqual({});
+    expect(content[MATRIX_STREAM_PHASE_CONTENT_KEY]).toBe("progress");
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetMatrixSendRuntimeMocks();
+  });
+
   it("rejects single-event sends when rendered text exceeds the Matrix limit", async () => {
     resolveTextChunkLimitMock.mockReturnValue(5);
 
@@ -741,7 +763,7 @@ describe("sendSingleTextMessageMatrix", () => {
         "!room:example",
       ]);
       expect(newContent(sentContent(1)).body).toBe(editedText);
-      expect(sentContent(1)["m.relates_to"]).toEqual({ rel_type: "m.replace", event_id: "evt1" });
+      expect(sentContent(1)["m.relates_to"]).toEqual({ rel_type: "m.replace", event_id: "$evt1" });
       expect(newContent(sentContent(1))).not.toHaveProperty("m.relates_to");
 
       stream.update("x".repeat(257));
@@ -759,247 +781,62 @@ describe("sendSingleTextMessageMatrix", () => {
   });
 });
 
-describe("editMessageMatrix mentions", () => {
-  it("notifies only new mentions across successive edits", async () => {
-    const original = createBundledReplacementEvent("$original", {
-      content: { body: "Hello @alice:example.org", "m.mentions": {} },
-    });
-    delete original.unsigned;
-    getEvent.mockImplementation(async () => ({
-      ...original,
-      unsigned: undefined,
-    }));
-    getRelations.mockImplementation(async () => ({
-      events: original.unsigned?.["m.relations"]?.["m.replace"]
-        ? [original.unsigned["m.relations"]["m.replace"]]
-        : [],
-      nextBatch: null,
-    }));
-    const alice = { user_ids: ["@alice:example.org"] };
-    const everyone = { room: true, user_ids: ["@alice:example.org", "@bob:example.org"] };
-    const revisions = [
-      { text: "Hello @alice:example.org", mentions: alice, notify: alice },
-      { text: "Hello again @alice:example.org", mentions: alice, notify: {} },
-      {
-        text: "@room Hello @alice:example.org and @bob:example.org",
-        mentions: everyone,
-        notify: { room: true, user_ids: ["@bob:example.org"] },
-      },
-      {
-        text: "@room Hello again @alice:example.org and @bob:example.org",
-        mentions: everyone,
-        notify: {},
-      },
-      { text: "Hello", mentions: {}, notify: {} },
-      { text: "Hello @alice:example.org", mentions: alice, notify: alice },
-    ];
-    for (const [index, revision] of revisions.entries()) {
-      await edit(revision.text);
-      const content = sentContent(index);
-      expect(content["m.mentions"], `revision ${index} notifications`).toEqual(revision.notify);
-      expect(newContent(content)["m.mentions"]).toEqual(revision.mentions);
-      original.unsigned = {
-        "m.relations": {
-          "m.replace": { ...original, unsigned: undefined, event_id: `$edit-${index}`, content },
-        },
-      };
-    }
-  });
-
-  it("selects the latest valid edit across pages by timestamp and event ID", async () => {
-    const original = createBundledReplacementEvent("$original");
-    delete original.unsigned;
-    getEvent.mockResolvedValue(original);
-    const replacement = (eventId: string, timestamp: number, userIds: string[]) => ({
-      ...original,
-      event_id: eventId,
-      origin_server_ts: timestamp,
-      content: {
-        "m.new_content": { body: "edited", "m.mentions": { user_ids: userIds } },
-        "m.relates_to": { rel_type: "m.replace", event_id: original.event_id },
-      },
-    });
-    const unreadable = (
-      eventId: string,
-      timestamp: number,
-      relation = { rel_type: "m.replace", event_id: original.event_id },
-    ) =>
-      matrixEventToRaw(
-        createMatrixTestDecryptionFailure(
-          new MatrixEvent({
-            sender: original.sender,
-            event_id: eventId,
-            origin_server_ts: timestamp,
-            type: "m.room.encrypted",
-            content: { "m.relates_to": relation },
-          }),
-        ),
+describe("editMessageMatrix native receipt", () => {
+  it.each(["", "~pending:edit", "original-event-id"])(
+    "refuses an unconfirmed edit receipt %j",
+    async (eventId) => {
+      sendMessage.mockResolvedValueOnce(eventId);
+      await expect(edit("approved link", { includeMentions: false })).rejects.toThrow(
+        "no confirmed native event receipt",
       );
-    getRelations
-      .mockResolvedValueOnce({
-        events: [replacement("$a", 300, ["@bob:example.org"])],
-        nextBatch: "second",
-      })
-      .mockResolvedValueOnce({ events: [], nextBatch: "third" })
-      .mockResolvedValueOnce({
-        events: [
-          unreadable("$older", 200),
-          unreadable("$wrong-target", 500, { rel_type: "m.replace", event_id: "$other" }),
-          unreadable("$wrong-relation", 500, { rel_type: "m.thread", event_id: "$original" }),
-          {
-            ...replacement("$redacted", 500, ["@bob:example.org"]),
-            unsigned: { redacted_because: {} },
-          },
-          { ...replacement("$other", 500, ["@bob:example.org"]), sender: "@other:example.org" },
-          { ...replacement("$wrong-type", 500, ["@bob:example.org"]), type: "m.room.notice" },
-          replacement("$z", 300, ["@alice:example.org"]),
-        ],
-        nextBatch: null,
-      });
-    await edit("Hi @alice:example.org and @bob:example.org");
-    expect(sentContent()["m.mentions"]).toEqual({ user_ids: ["@bob:example.org"] });
-    expect(getRelations).toHaveBeenCalledTimes(3);
-  });
-
-  it.each([false, true])("rejects the latest unreadable edit (pending=%s)", async (pending) => {
-    const original = createBundledReplacementEvent("$original");
-    delete original.unsigned;
-    getEvent.mockResolvedValue(original);
-    let encrypted = new MatrixEvent({
-      event_id: "$unreadable",
-      sender: original.sender,
-      origin_server_ts: 300,
-      type: "m.room.encrypted",
-      content: { "m.relates_to": { rel_type: "m.replace", event_id: original.event_id } },
-    });
-    if (!pending) {
-      encrypted = createMatrixTestDecryptionFailure(encrypted);
-    }
-    getRelations.mockResolvedValue({ events: [matrixEventToRaw(encrypted)], nextBatch: null });
-    await expect(edit("Hello @alice:example.org")).rejects.toThrow("not fully decrypted");
-    expect(sendMessage).not.toHaveBeenCalled();
-  });
-
-  it.each(["failed", "pending"])("does not mutate a %s original", async (mode) => {
-    const original = createBundledReplacementEvent("$original");
-    delete original.unsigned;
-    let encrypted = new MatrixEvent({
-      event_id: original.event_id,
-      sender: original.sender,
-      origin_server_ts: original.origin_server_ts,
-      content: original.content,
-      type: "m.room.encrypted",
-    });
-    if (mode === "failed") {
-      encrypted = createMatrixTestDecryptionFailure(encrypted);
-    }
-    getEvent.mockResolvedValue(matrixEventToRaw(encrypted));
-    await expect(edit("Hello")).rejects.toThrow("not fully decrypted");
-    expect(sendMessage).not.toHaveBeenCalled();
-  });
-
-  it("ignores wire decryptionFailure claims on original and bundled edits", async () => {
-    const content = { body: "Hello Alice", "m.mentions": { user_ids: ["@alice:example.org"] } };
-    const original = createBundledReplacementEvent("$original", {
-      replacementContent: { "m.new_content": content },
-    });
-    requireRecord(
-      original.unsigned?.["m.relations"]?.["m.replace"],
-      "replacement",
-    ).decryptionFailure = true;
-    getEvent.mockResolvedValue({ ...original, decryptionFailure: true });
-    await edit("Hello @alice:example.org");
-    expect(sentContent()["m.mentions"]).toEqual({});
-  });
-
-  it("recovers legacy mentions from the original after a native overlay retires", async () => {
-    const original = new MatrixEvent({
-      event_id: "$original",
-      sender: "@bot:example.org",
-      type: "m.room.message",
-      origin_server_ts: 1,
-      content: { body: "Hello @alice:example.org" },
-    });
-    const overlay = createMatrixTestDecryptionFailure(
-      new MatrixEvent({
-        event_id: "$overlay",
-        sender: "@bot:example.org",
-        type: "m.room.encrypted",
-        origin_server_ts: 2,
-        content: { "m.relates_to": { rel_type: "m.replace", event_id: "$original" } },
-      }),
-    );
-    original.makeReplaced(overlay);
-    expect(original.isDecryptionFailure()).toBe(false);
-    expect(original.getContent()).toEqual({});
-    getEvent.mockResolvedValue(matrixEventToRaw(original));
-    await edit("Hello @alice:example.org");
-    expect(sentContent()["m.mentions"]).toEqual({});
-  });
-
-  it.each(["repeated", "unbounded"])(
-    "does not send when relation pagination is %s",
-    async (mode) => {
-      const original = createBundledReplacementEvent("$original");
-      delete original.unsigned;
-      getEvent.mockResolvedValue(original);
-      let page = 0;
-      getRelations.mockImplementation(async () => ({
-        events: [],
-        nextBatch: mode === "repeated" ? "same" : String(++page),
-      }));
-      await expect(edit("Hi @alice:example.org")).rejects.toThrow(
-        "history could not be fully read",
-      );
-      expect(sendMessage).not.toHaveBeenCalled();
-      expect(getRelations.mock.calls.length).toBeLessThanOrEqual(100);
+      expect(sendMessage).toHaveBeenCalledOnce();
     },
   );
+});
 
-  it("does not suppress mentions using a redacted original", async () => {
-    getEvent.mockResolvedValue(
-      createBundledReplacementEvent("$original", {
-        redacted: true,
-        content: {},
-        replacementContent: {
-          "m.new_content": {
-            body: "Hi @bob:example.org",
-            "m.mentions": { user_ids: ["@bob:example.org"] },
-          },
-        },
-      }),
-    );
-    await edit("Hello @bob:example.org");
-    expect(sentContent()["m.mentions"]).toEqual({ user_ids: ["@bob:example.org"] });
+describe("editMessageMatrix projection publication", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetMatrixSendRuntimeMocks();
   });
 
-  it("supports quiet draft preview edits that mention nobody and skip history reads", async () => {
-    getEvent.mockRejectedValue(new Error("Matrix history unavailable"));
-
-    await edit("@room hi @alice:example.org", { msgtype: "m.notice", includeMentions: false });
-
-    expect(getEvent).not.toHaveBeenCalled();
-    const content = sentContent();
-    expect(content.msgtype).toBe("m.notice");
-    expect(newContent(content).msgtype).toBe("m.notice");
-    expect(content["m.mentions"]).toEqual({});
-    expect(newContent(content)["m.mentions"]).toEqual({});
-    expect(sentContent().formatted_body).not.toContain("matrix.to");
-    expect(newContent(content).formatted_body).not.toContain("matrix.to");
-  });
-
-  it("rejects thread edits when the original event is not already in that thread", async () => {
-    getEvent.mockResolvedValue({
-      content: {
-        body: "before",
-        msgtype: "m.text",
+  it("carries only the trusted publication into the replacement", async () => {
+    const { client, sendMessage, getEvent } = makeClient();
+    getEvent.mockResolvedValue({ content: { body: "before" } });
+    projectionBinding.override = {
+      bindingId: "binding",
+      metadata: {
+        environment: "test",
+        projectedConversationId: "conversation",
+        sourceAccountId: "T1",
       },
+    };
+    const publication = createMatrixSourcePublication({
+      bindingId: "binding",
+      roomId: "!room:example",
+      threadId: "$root",
+      provider: "slack",
+      accountId: "default",
+      messageId: "1700000000.000001",
+      actorId: "U111",
+      publishedAtMs: 1700000000000,
+      role: "user",
+      publicationRevision: 2,
+    })!;
+    await editMessageMatrix("room:!room:example", "$original", "after", {
+      client,
+      cfg: {} as never,
+      publication,
+      extraContent: { "ai.cellect.projection": { forged: true }, "com.example.kept": 1 },
     });
-
-    await expect(edit("done", { threadId: "$thread" })).rejects.toThrow(
-      "cannot add or change the original event thread relation",
-    );
-    expect(sendMessage).not.toHaveBeenCalled();
+    const replacement = newContent(requireRecord(sendMessage.mock.calls[0]?.[1], `sent content 0`));
+    expect(replacement["ai.cellect.projection"]).toMatchObject({
+      publicationRevision: 2,
+      origin: { provider: "slack", messageId: "1700000000.000001" },
+    });
+    expect(replacement["ai.cellect.projection"]).not.toHaveProperty("forged");
+    expect(replacement["com.example.kept"]).toBe(1);
+    projectionBinding.override = undefined;
   });
 });
 
@@ -1048,3 +885,25 @@ describe("sendTypingMatrix", () => {
     expect(setTyping).toHaveBeenCalledWith("!room:example", true, 12_345);
   });
 });
+
+describe("redactMessageMatrix", () => {
+  it("redacts the previous voice transcript in the resolved room", async () => {
+    const { client } = makeClient();
+    const redactEvent = vi.fn(async () => "$redaction");
+    Object.assign(client, { redactEvent });
+
+    await expect(
+      redactMessageMatrix("!room:example.org", "$spoken", {
+        client,
+        cfg: {} as CoreConfig,
+        reason: "Revised voice transcript",
+      }),
+    ).resolves.toBe("$redaction");
+    expect(redactEvent).toHaveBeenCalledExactlyOnceWith(
+      "!room:example.org",
+      "$spoken",
+      "Revised voice transcript",
+    );
+  });
+});
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

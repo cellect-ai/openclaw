@@ -43,6 +43,8 @@ export type RealtimeVoiceAgentConsultResult = { text: string; yielded?: true };
 const REALTIME_VOICE_YIELD_ACK_MAX_CHARS = 500;
 const REALTIME_VOICE_YIELD_ACK_FALLBACK =
   "I started that work and will share the result when it is ready.";
+const REALTIME_VOICE_TIMEOUT_FALLBACK =
+  'That check timed out before I got a result. Say "retry" and I will resume the request.';
 
 /**
  * Sender-auth contract revision for official realtime voice plugins.
@@ -179,24 +181,26 @@ export function buildRealtimeVoiceAgentToolAuthorityOverlay(params: {
   };
 }
 
-function assertRealtimeVoiceConsultNotInterrupted(
-  abortSignal: AbortSignal,
-  meta?: EmbeddedAgentRunMeta,
-): void {
+function resolveRealtimeVoiceConsultInterruption(params: {
+  abortSignal: AbortSignal;
+  fallbackText?: string;
+  logger: Pick<RuntimeLogger, "warn">;
+  meta?: EmbeddedAgentRunMeta;
+}): RealtimeVoiceAgentConsultResult | undefined {
   const outcome = buildAgentRunTerminalOutcomeFromLifecycleEvent({
     phase: "end",
-    data: meta,
-    abortSignal,
+    data: params.meta,
+    abortSignal: params.abortSignal,
   });
   const classification = classifyAgentRunTerminalOutcome(outcome);
-  // Preserve the run owner's interruption before projecting partial or empty text
-  // into speech. A timeout must remain a failure, not a silent cancellation.
   if (classification === "cancellation") {
     throw new DOMException("Realtime voice agent consult cancelled", "AbortError");
   }
   if (classification === "timeout") {
-    throw new DOMException("Realtime voice agent consult timed out", "TimeoutError");
+    params.logger.warn("[talk] agent consult timed out before producing a speakable result");
+    return { text: params.fallbackText ?? REALTIME_VOICE_TIMEOUT_FALLBACK };
   }
+  return undefined;
 }
 
 export async function consultRealtimeVoiceAgent(params: {
@@ -221,6 +225,12 @@ export async function consultRealtimeVoiceAgent(params: {
   senderId?: string | null;
   /** Trusted owner bit established by the caller's ingress authorization boundary. */
   senderIsOwner?: boolean;
+  /** Host-attested channel identity; never supplied by model tool arguments. */
+  channelContext?: RunEmbeddedAgentParams["channelContext"];
+  /** Routing attested by the host binding, independent of historical metadata. */
+  deliveryContext?: DeliveryContext;
+  /** Ingress-owned trigger; bound human voice uses the normal user hook path. */
+  trigger?: RunEmbeddedAgentParams["trigger"];
   contextMode?: RealtimeVoiceAgentConsultContextMode;
   provider?: RunEmbeddedAgentParams["provider"];
   model?: RunEmbeddedAgentParams["model"];
@@ -279,6 +289,9 @@ export async function consultRealtimeVoiceAgent(params: {
     readConsistency: "latest",
   });
   const resolvedDeliveryContext =
+    (hasDeliveryTargetFields(params.deliveryContext)
+      ? normalizeDeliveryContext(params.deliveryContext)
+      : undefined) ??
     (await (async () => {
       const { cfg, agentRuntime, sessionKey, spawnedBy } = params;
       const requesterSessionKey = spawnedBy?.trim();
@@ -325,7 +338,8 @@ export async function consultRealtimeVoiceAgent(params: {
         // Best-effort routing enrichment only; consults should still work without it.
       }
       return undefined;
-    })()) ?? deliveryContextFromSession(initialSessionEntry);
+    })()) ??
+    deliveryContextFromSession(initialSessionEntry);
   const agentDir = params.agentRuntime.resolveAgentDir(params.cfg, agentId);
   const workspaceDir =
     resolveIngressWorkspaceOverrideForSessionRun({
@@ -541,6 +555,8 @@ export async function consultRealtimeVoiceAgent(params: {
           sandboxSessionKey: resolveRealtimeVoiceAgentSandboxSessionKey(agentId, params.sessionKey),
           agentId,
           ...toolAuthorityOverlay,
+          channelContext: params.channelContext,
+          trigger: params.trigger,
           // ASR voice ingress has no trace/client-tool or privileged handoff capability.
           messageProvider: toolAuthorityOverlay.messageProvider,
           messageTo: consultDeliveryContext?.to,
@@ -553,7 +569,7 @@ export async function consultRealtimeVoiceAgent(params: {
           workspaceDir,
           cwd,
           config: params.cfg,
-          prompt: buildRealtimeVoiceAgentConsultPrompt(params),
+          prompt: buildRealtimeVoiceAgentConsultPrompt({ ...params, agentId }),
           provider: params.provider,
           model: params.model,
           thinkLevel: params.thinkLevel ?? "high",
@@ -583,13 +599,36 @@ export async function consultRealtimeVoiceAgent(params: {
         }
         throw error;
       }
-      const result = await runPromise
-        .catch((error: unknown) => {
-          assertRealtimeVoiceConsultNotInterrupted(abortSignal);
-          throw error;
-        })
-        .finally(() => runRegistration?.cleanup?.());
-      assertRealtimeVoiceConsultNotInterrupted(abortSignal, result.meta);
+      let result: Awaited<typeof runPromise>;
+      try {
+        result = await runPromise;
+      } catch {
+        const interruption = resolveRealtimeVoiceConsultInterruption({
+          abortSignal,
+          fallbackText: params.fallbackText,
+          logger: params.logger,
+        });
+        if (interruption) {
+          return interruption;
+        }
+        params.logger.warn("[talk] agent consult failed before producing a speakable result");
+        return {
+          text:
+            params.fallbackText ??
+            "I couldn't complete that check just now. Please ask me to try again.",
+        };
+      } finally {
+        runRegistration?.cleanup?.();
+      }
+      const interruption = resolveRealtimeVoiceConsultInterruption({
+        abortSignal,
+        fallbackText: params.fallbackText,
+        logger: params.logger,
+        meta: result.meta,
+      });
+      if (interruption) {
+        return interruption;
+      }
 
       if (result.meta?.yielded === true) {
         const acknowledgment =
@@ -613,7 +652,11 @@ export async function consultRealtimeVoiceAgent(params: {
         params.logger.warn(
           "[talk] agent consult produced no answer: agent returned no speakable text",
         );
-        return { text: params.fallbackText ?? "I need a moment to verify that before answering." };
+        return {
+          text:
+            params.fallbackText ??
+            "I couldn't complete that check just now. Please ask me to try again.",
+        };
       }
       return { text };
     });

@@ -11,6 +11,8 @@ import {
   resolveAgentIdFromSessionKey,
 } from "openclaw/plugin-sdk/routing";
 import type { CoreConfig } from "../../types.js";
+import { getSourceAuthorizedProjection } from "../projection-reply-authorization.js";
+import { toSessionBindingRecord } from "../thread-bindings-shared.js";
 import { resolveMatrixThreadSessionKeys } from "./threads.js";
 
 type MatrixResolvedRoute = ReturnType<PluginRuntime["channel"]["routing"]["resolveAgentRoute"]>;
@@ -71,6 +73,14 @@ export function projectMatrixInboundRoute(
   });
   const bindingConversationId = params.threadId ?? params.roomId;
   const bindingParentConversationId = params.threadId ? params.roomId : undefined;
+  // Source-authorized replies retain their canonical source session.
+  const sourceProjection = getSourceAuthorizedProjection(params.accountId, params.roomId);
+  if (sourceProjection) {
+    inspection = {
+      status: "available",
+      binding: toSessionBindingRecord(sourceProjection, { idleTimeoutMs: 0, maxAgeMs: 0 }),
+    };
+  }
   const runtimeRoute = inspectRuntimeConversationBindingRoute({ route: baseRoute, inspection });
   const runtimeBinding = runtimeRoute.bindingRecord;
 

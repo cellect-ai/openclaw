@@ -27,6 +27,7 @@ import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import { INTERNAL_MESSAGE_CHANNEL } from "../../utils/message-channel.js";
 import { bindCommandOwnerAuthority } from "../command-owner-authority.js";
 import type { MsgContext } from "../templating.js";
+import { prepareAsyncCompletionPrompt } from "./session-event-completion.js";
 import type { SessionEventOptions, SessionEventTarget } from "./session-event-contract.js";
 import {
   getSessionEventRuntimeConfig,
@@ -122,6 +123,7 @@ export function claimSessionEventOccurrenceInput(params: {
               sessionKey,
               contextKey: options.contextKey,
               deliveryContext: route,
+              origin: options.origin,
             },
             agentId,
           ),
@@ -179,7 +181,7 @@ export function buildSessionEventContext(params: {
   text: string;
   options: Pick<
     SessionEventOptions,
-    "source" | "sourceTurnId" | "sourceRunId" | "scheduledAutomation"
+    "source" | "sourceTurnId" | "sourceRunId" | "scheduledAutomation" | "origin"
   >;
   readmissionAttempt?: number;
   occurrenceId: string;
@@ -193,7 +195,14 @@ export function buildSessionEventContext(params: {
     AgentId: agentId,
     SessionKey: sessionKey,
     Body: text,
-    BodyForAgent: text,
+    BodyForAgent:
+      options.source === "exec"
+        ? prepareAsyncCompletionPrompt(text, {
+            runId: options.origin?.runId ?? options.sourceRunId,
+            sessionKey: options.origin?.sessionKey ?? sessionKey,
+            generation: target.generation,
+          })
+        : text,
     InternalTurnSource: "event",
     BodyForCommands: "",
     CommandBody: "",

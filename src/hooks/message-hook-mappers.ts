@@ -152,6 +152,7 @@ function deriveInboundMessageHookContextBase(
       normalizeOptionalString(ctx.MessageSidFirst) ??
       normalizeOptionalString(ctx.MessageSidLast),
     senderId: ctx.SenderId,
+    senderAuthentication: ctx.SenderAuthentication,
     senderName: ctx.SenderName,
     senderUsername: ctx.SenderUsername,
     senderE164: ctx.SenderE164,
@@ -173,6 +174,8 @@ function deriveInboundMessageHookContextBase(
     mediaTypes,
     originatingChannel: ctx.OriginatingChannel,
     originatingTo: ctx.OriginatingTo,
+    // Host-owned identity (channel monitors, the Talk relay); never wire input.
+    ...(ctx.ChannelContext ? { channelContext: ctx.ChannelContext } : {}),
     guildId: ctx.GroupSpace,
     channelName: ctx.GroupChannel,
     isGroup,
@@ -354,6 +357,9 @@ export function toPluginMessageContext(
   }
   if ("senderId" in canonical && canonical.senderId) {
     context.senderId = canonical.senderId;
+  }
+  if ("channelContext" in canonical && canonical.channelContext) {
+    context.channelContext = canonical.channelContext;
   }
   Object.assign(context, projectHookReplyFields(canonical));
   assignTraceFields(context, canonical.trace);

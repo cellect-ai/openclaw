@@ -483,6 +483,44 @@ it.each(policyCases)(
   },
 );
 
+it.each([false, true])(
+  "execution Stop preserves pending input with finishing=%s",
+  async (finishing) => {
+    const f = fixture();
+    const active = f.reserve("active");
+    const { release, execution } = await f.start(active);
+    if (finishing) {
+      active.claim?.operation?.freezeAbort();
+    }
+    const queued = f.reserve("queued");
+    const hook = stopHook();
+    const stopChildren = vi.fn(async (applyParentStop: () => Promise<boolean>) => {
+      await applyParentStop();
+      return { stopped: 0, failed: 0 };
+    });
+    const outcome = await stopSession({
+      source: "client-session",
+      preservePendingInputs: true,
+      capture: captureSessionControllerStop({ inputs: [active, queued] }),
+      hookContext: { sessionKey: f.sessionKey },
+      stopChildren,
+    }).completed;
+    expect(outcome).toMatchObject({
+      activeCancelled: finishing ? 0 : 1,
+      queuedCancelled: 0,
+      alreadyFinalizing: finishing,
+    });
+    expect(active.abortSignal.aborted).toBe(!finishing);
+    expect(queued.abortSignal.aborted).toBe(false);
+    expect(queued.retirementRequested).toBeFalsy();
+    expect(queued.custody.cancellationRetired).toBeFalsy();
+    expect(stopChildren).toHaveBeenCalledOnce();
+    expect(hook).toHaveBeenCalledOnce();
+    release.resolve();
+    await (finishing ? execution : execution.catch(() => undefined));
+  },
+);
+
 it("withdraws queued sources before signaling the active producer without stopping a successor", async () => {
   const f = fixture();
   const active = f.reserve("active");

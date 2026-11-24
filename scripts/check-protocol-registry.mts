@@ -144,9 +144,13 @@ const schemaModulesSource = withoutComments(
 const ownerModules = [
   ...schemaModulesSource.matchAll(/^export \* from "\.\/schema\/([^"]+)\.js";$/gmu),
 ].map(([, moduleName = ""]) => moduleName);
+// The fork preserves these two shipped Fi RPC owners alongside the 75 upstream owners.
+const carriedOwners = ["fi-shadow-announce", "fi-review-announce"];
 check(
-  ownerModules.length === 75 && new Set(ownerModules).size === ownerModules.length,
-  "schema-modules.ts must contain one unique 75-module owner list",
+  ownerModules.length === 75 + carriedOwners.length &&
+    carriedOwners.every((owner) => ownerModules.includes(owner)) &&
+    new Set(ownerModules).size === ownerModules.length,
+  "schema-modules.ts must contain 75 upstream owners and the two named Fi owners, without duplicates",
 );
 check(
   schemaModulesSource.split("\n").filter(Boolean).length === ownerModules.length,

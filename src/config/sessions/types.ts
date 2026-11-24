@@ -30,6 +30,7 @@ import type { SessionBoardFace } from "../../shared/session-types.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
 import type { TtsAutoMode } from "../types.tts.js";
 import type {
+  CompletedFinalDelivery,
   PendingDeliveryNoticeState,
   PendingFinalDeliveryState,
 } from "./pending-final-delivery-types.js";
@@ -448,6 +449,8 @@ type SessionEntryCore = SessionEntryProvenance &
     chatType?: SessionChatType;
     contextWindow?: string;
     thinkingLevel?: string;
+    /** Execution allowance for subsequent runs; explicit per-run overrides take precedence. */
+    timeoutSeconds?: number;
     /**
      * Exact isolated-cron continuation policy. Only hidden `:run:` session rows
      * carry this while detached generated-media work may still wake the run.
@@ -547,6 +550,8 @@ type SessionEntryCore = SessionEntryProvenance &
     usageReport?: { state: "available" | "unavailable" };
     totalTokens?: number;
     pendingFinalDelivery?: PendingFinalDeliveryState;
+    /** Bounded descriptive receipts; cannot grant a run, writer, or publication. */
+    completedFinalDeliveries?: CompletedFinalDelivery[];
     pendingDeliveryNotice?: PendingDeliveryNoticeState;
     /**
      * Ordered durable backlog of delivered assistant finals that failed to

@@ -1,6 +1,8 @@
 import type { OperationalRunInstanceRef } from "../agents/admitted-run-context.js";
 import type { ChatAbortDiagnosticReason } from "../gateway/chat-abort-diagnostics.js";
+import type { WebchatCompletionDeliveryState } from "../gateway/webchat-completion-delivery.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
+import type { VerifiedRunStopActor } from "../infra/run-stop-actor.js";
 import type {
   SessionControllerInput,
   SessionControllerSourceAdapter,
@@ -36,6 +38,8 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   providerId?: string;
   authProviderId?: string;
   abortStopReason?: string;
+  stopActor?: VerifiedRunStopActor;
+  webchatCompletionDelivery?: WebchatCompletionDeliveryState;
   /** Owner-recorded diagnostic cause; does not change terminal lifecycle semantics. */
   abortDiagnosticReason?: ChatAbortDiagnosticReason;
   /** Latest argument-free validation diagnostic for operator-initiated aborts. */

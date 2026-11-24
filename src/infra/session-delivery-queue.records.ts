@@ -76,6 +76,19 @@ export type QueuedSessionDeliveryPayload =
       suppressTextDelivery?: true;
       idempotencyKey?: string;
       owner?: SessionDeliveryOwnerReference;
+    } & SessionDeliveryRetryPolicy)
+  | ({
+      kind: "completionFallback";
+      sessionKey: string;
+      sessionId: string;
+      runId: string;
+      agentId: string;
+      route: { channel: string; to: string; accountId?: string };
+      text: string;
+      isError?: true;
+      ownerConnId?: string;
+      ownerDeviceId?: string;
+      idempotencyKey: string;
     } & SessionDeliveryRetryPolicy);
 
 export type QueuedSessionDelivery = QueuedSessionDeliveryPayload & {
@@ -106,7 +119,7 @@ export function prepareClaimedSessionDelivery(
   return {
     ...params,
     retainOnFailure: true,
-    id: buildEntryId(params.idempotencyKey),
+    id: resolveSessionDeliveryId(params.idempotencyKey),
     enqueuedAt: now,
     retryCount: 0,
     availableAt: now + Math.max(0, initialAttemptLeaseMs),
@@ -137,7 +150,7 @@ export class SessionDeliveryDeadLetteredError extends Error {
   override name = "SessionDeliveryDeadLetteredError";
 }
 
-function buildEntryId(idempotencyKey?: string): string {
+export function resolveSessionDeliveryId(idempotencyKey?: string): string {
   if (!idempotencyKey) {
     return generateSecureUuid();
   }

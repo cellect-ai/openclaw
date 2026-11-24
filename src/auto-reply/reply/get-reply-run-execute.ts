@@ -58,6 +58,7 @@ import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { resolveReplySteeringIntent } from "./reply-steering-intent.js";
 import { resolveReplyToMode } from "./reply-threading.js";
 import { resolveInboundReplyToolAuthorityOverlay } from "./reply-tool-authority-inbound.js";
+import { prepareReplyWorkshopAuthoring } from "./reply-workshop-authoring.js";
 import { resolveRoutedDeliveryThreadId } from "./routed-delivery-thread.js";
 import {
   bindSourceReplyDeliveryRuntime,
@@ -405,6 +406,9 @@ export async function executePreparedReplyRun(
           channel: messageProvider,
           senderId: sessionCtx.SenderId,
           accountId: ctx.AccountId ?? sessionCtx.AccountId,
+          sourceTurnId,
+          chatId: normalizeOptionalString(sessionCtx.ChannelContext?.chat?.id),
+          eventId: normalizeOptionalString(sessionCtx.ChannelContext?.chat?.eventId),
         })
       : undefined;
   const followupRun = {
@@ -422,6 +426,7 @@ export async function executePreparedReplyRun(
     transcriptPrompt: transcriptCommandBody,
     ...(userTurnTranscriptRecorder ? { userTurnTranscriptRecorder } : {}),
     currentInboundEventKind: inboundEventKind,
+    expectedQuestionId: sessionCtx.ExpectedQuestionId,
     currentInboundAudio: hasInboundAudio(sessionCtx),
     gatewayLocalUserIngress: getGatewayLocalUserIngress(ctx),
     channelAdmissionEvidence:
@@ -595,7 +600,9 @@ export async function executePreparedReplyRun(
       },
       timeoutMs,
       runTimeoutOverrideMs:
-        opts?.timeoutOverrideMs !== undefined || opts?.timeoutOverrideSeconds !== undefined
+        opts?.timeoutOverrideMs !== undefined ||
+        opts?.timeoutOverrideSeconds !== undefined ||
+        preparedSessionState.sessionEntry?.timeoutSeconds !== undefined
           ? timeoutMs
           : undefined,
       blockReplyBreak: resolvedBlockStreamingBreak,
@@ -620,6 +627,13 @@ export async function executePreparedReplyRun(
       terminalReplyExpectation,
       suppressTranscriptOnlyAssistantPersistence: isRoomEvent,
       ...(opts?.skillLibraryAuthoring ? { skillLibraryAuthoring: opts.skillLibraryAuthoring } : {}),
+      skillWorkshopWorkspaceAuthoring: prepareReplyWorkshopAuthoring(ctx, {
+        agentId,
+        sessionKey,
+        provider,
+        model,
+        freshHuman: freshChannelCronAuthorityTurn,
+      }),
       ...(!useFastReplyRuntime &&
       isReasoningTagProvider(provider, { config: cfg, workspaceDir, modelId: model })
         ? { enforceFinalTag: true }

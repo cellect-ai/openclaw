@@ -1,3 +1,8 @@
+import {
+  assertFinalProjectionReplacementAllowed,
+  type FinalProjectionRelease,
+  type FinalProjectionTransition,
+} from "./pending-final-delivery-receipt.js";
 import { createSessionActorMemoryCollaborationState } from "./session-actor-memory-collaboration-state.js";
 import {
   selectSessionActorMemoryWindow,
@@ -16,12 +21,20 @@ export function installSessionActorMemoryEntry(
   state: SessionActorMemoryState,
   entry: SessionEntry,
   options: {
+    projectionReleases?: readonly FinalProjectionRelease[];
+    projectionTransition?: FinalProjectionTransition;
     providerReviewMutation?: boolean;
     consumePendingReset?: boolean;
     preserveVisibility?: boolean;
   } = {},
 ): SessionEntry {
   const previous = state.hot.entry;
+  assertFinalProjectionReplacementAllowed(
+    previous,
+    entry,
+    options.projectionReleases,
+    options.projectionTransition,
+  );
   let next: SessionEntry = normalizeSessionEntryTimestamp({ ...entry, incognito: true });
   if (!hasValidSessionEntryIdentity(next)) {
     throw new Error("Refusing invalid memory session entry identity");

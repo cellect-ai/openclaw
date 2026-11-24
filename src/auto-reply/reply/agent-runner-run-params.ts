@@ -5,6 +5,7 @@ import { findModelInCatalog, modelSupportsInput } from "../../agents/model-catal
 import { modelTransportRoutesMatch } from "../../agents/model-compat-catalog.js";
 import {
   modelFallbackOverrideFromAvailability,
+  resolveFormatFailureFallbackModels,
   resolveModelFallbackAvailability,
 } from "../../agents/model-selection-config.js";
 import { resolveScheduledToolPolicyContext } from "../../agents/scheduled-tool-policy.js";
@@ -50,7 +51,7 @@ export function resolveModelFallbackOptions(
   // Only agent-turn jobs pick a model; system-event turns keep the session's fallback policy.
   const automation =
     run.scheduledAutomation?.job.payload.kind === "agentTurn" ? run.scheduledAutomation : undefined;
-  const modelFallbackAvailability = resolveModelFallbackAvailability({
+  const availabilityParams = {
     cfg: config,
     agentId: run.agentId,
     sessionKey: run.sessionKey,
@@ -73,7 +74,9 @@ export function resolveModelFallbackOptions(
           hasAutoFallbackProvenance: run.hasAutoFallbackProvenance === true,
           subagentSpawnLineage: run.subagentSpawnLineage,
         }),
-  });
+  };
+  const modelFallbackAvailability = resolveModelFallbackAvailability(availabilityParams);
+  const formatFailureFallbacks = resolveFormatFailureFallbackModels(availabilityParams);
   return {
     cfg: config,
     provider: run.provider,
@@ -84,6 +87,9 @@ export function resolveModelFallbackOptions(
     sessionKey: run.runtimePolicySessionKey ?? run.sessionKey,
     modelFallbackAvailability,
     fallbacksOverride: modelFallbackOverrideFromAvailability(modelFallbackAvailability),
+    ...(formatFailureFallbacks && formatFailureFallbacks.length > 0
+      ? { formatFailureFallbacks }
+      : {}),
   };
 }
 
@@ -98,6 +104,7 @@ export function buildRunEntrySelection(
     requestedRouteResolution: selection.requestedRouteResolution,
     agentDir: selection.agentDir,
     fallbacksOverride: selection.fallbacksOverride,
+    formatFailureFallbacks: selection.formatFailureFallbacks,
     cyberAccessProgram: run.cyberAccessProgram,
     userLockedAuthProfileId: run.scheduledAutomation
       ? run.scheduledAutomation.job.inferenceBinding?.source === "user"
@@ -229,5 +236,6 @@ export function buildReplyRunStateParams(run: FollowupRun["run"]) {
     bootstrapUserProfileId: run.bootstrapUserProfileId,
     gatewayUiCommandTarget: run.gatewayUiCommandTarget,
     taskSuggestionDeliveryMode: run.taskSuggestionDeliveryMode,
+    skillWorkshopWorkspaceAuthoring: run.skillWorkshopWorkspaceAuthoring,
   };
 }

@@ -10,6 +10,7 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { prepareSessionMetaPatch } from "./metadata.js";
+import { finalProjectionTransitionForOperation } from "./pending-final-delivery-transition.js";
 import type {
   RecordInboundSessionMetaParams,
   UpdateSessionLastRouteParams,
@@ -46,6 +47,7 @@ import { readSessionEntryPatchPredicate } from "./session-entry-patch-guard.js";
 import {
   mergeSessionEntryPatch,
   projectSessionEntryPatch,
+  finalProjectionReleasesForOperation,
   type SessionEntryPatchOperation,
 } from "./session-entry-patch-operation.js";
 import { captureSessionEntryPatchSource } from "./session-entry-patch-source.js";
@@ -388,6 +390,14 @@ async function patchSqliteSessionEntrySnapshot(
       sessionKey,
       writeBase,
       next,
+      projectionTransition:
+        typeof params.update === "function"
+          ? undefined
+          : finalProjectionTransitionForOperation(existing, params.update),
+      projectionReleases:
+        typeof params.update === "function"
+          ? undefined
+          : finalProjectionReleasesForOperation(params.update),
       operationLabel: params.operationLabel,
       validateCanonicalKeys: params.validateCanonicalKeys,
       consumePendingReset: options.consumePendingReset,
@@ -526,6 +536,8 @@ async function patchSqliteSessionEntrySnapshot(
                   sessionKey,
                   writeBase,
                   next,
+                  projectionReleases: input.projectionReleases,
+                  projectionTransition: input.projectionTransition,
                   options: {
                     ...options,
                     assertCommitAllowed: () => {

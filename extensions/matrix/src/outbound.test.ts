@@ -1,9 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { chunkTextForOutbound, type OpenClawConfig } from "../runtime-api.js";
+import { prepareMatrixReplyPayload } from "./outbound.js";
+import { resolveMatrixExtraContent } from "./outbound.js";
 
 const mocks = vi.hoisted(() => ({
   sendMessageMatrix: vi.fn(),
   sendPollMatrix: vi.fn(),
+  editMessageMatrix: vi.fn(),
+  redactMessageMatrix: vi.fn(),
 }));
 
 // mock-isolation: Verify outbound translation without opening a Matrix SDK client or network connection.
@@ -77,6 +81,8 @@ describe("matrixOutbound cfg threading", () => {
   beforeEach(() => {
     mocks.sendMessageMatrix.mockReset();
     mocks.sendPollMatrix.mockReset();
+    mocks.editMessageMatrix.mockReset().mockResolvedValue("$replacement");
+    mocks.redactMessageMatrix.mockReset().mockResolvedValue(undefined);
     mocks.sendMessageMatrix.mockResolvedValue({ messageId: "evt-1", roomId: "!room:example" });
     mocks.sendPollMatrix.mockResolvedValue({ eventId: "$poll", roomId: "!room:example" });
   });
@@ -347,5 +353,177 @@ describe("matrixOutbound cfg threading", () => {
       },
       2,
     );
+  });
+
+  it("keeps a revised voice transcript when redaction fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    mocks.redactMessageMatrix.mockRejectedValue(new Error("homeserver rejected the redaction"));
+
+    const result = await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "revised",
+      payload: {
+        text: "revised",
+        channelData: { matrix: { supersedeEventId: "$spoken" } },
+      },
+      accountId: "default",
+    });
+
+    expect(result.messageId).toBe("evt-1");
+    expect(warn).toHaveBeenCalledOnce();
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain("revised");
+    warn.mockRestore();
+  });
+
+  it("redacts the previous voice transcript after a threaded replacement is accepted", async () => {
+    mocks.sendMessageMatrix.mockResolvedValue({ messageId: "$revised", roomId: "!room:example" });
+
+    await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "How long is a typical",
+      payload: {
+        text: "How long is a typical",
+        channelData: {
+          matrix: {
+            supersedeEventId: "$spoken",
+            extraContent: {
+              "com.openclaw.voice_transcript": {
+                version: 1,
+                type: "voice.transcript",
+                role: "user",
+                id: "voice:1",
+              },
+            },
+          },
+        },
+      },
+      accountId: "default",
+      threadId: "$thread",
+    });
+
+    expect(mocks.sendMessageMatrix).toHaveBeenCalledOnce();
+    expect(mocks.redactMessageMatrix).toHaveBeenCalledExactlyOnceWith(
+      "room:!room:example",
+      "$spoken",
+      expect.objectContaining({
+        cfg,
+        accountId: "default",
+        reason: "Revised voice transcript",
+      }),
+    );
+  });
+
+  it("keeps an authored question body once while preserving structured answer controls", async () => {
+    const text = [
+      "Agent needs input:",
+      "",
+      "Next step",
+      "What should happen next?",
+      "1. Prepare and hold - Nothing is sent.",
+      "2. Leave open",
+      "Other: reply with your own answer.",
+    ].join("\n");
+    const presentation = {
+      blocks: [
+        { type: "text" as const, text: "What should happen next?" },
+        { type: "text" as const, text: "- Prepare and hold: Nothing is sent.\n- Leave open" },
+        {
+          type: "buttons" as const,
+          buttons: [
+            {
+              label: "Prepare and hold",
+              action: { type: "question" as const, questionId: "ask_next", optionValue: "prepare" },
+            },
+            {
+              label: "Leave open",
+              action: { type: "question" as const, questionId: "ask_next", optionValue: "leave" },
+            },
+          ],
+        },
+      ],
+    };
+    const prepared = await prepareMatrixReplyPayload({
+      text,
+      presentation,
+      presentationTextMode: "fallback",
+    });
+
+    expect(prepared.text).toBe(text);
+    expect(resolveMatrixExtraContent(prepared)).toEqual({
+      "com.openclaw.presentation": { ...presentation, version: 1, type: "message.presentation" },
+    });
+    expect(prepared.presentation).toBeUndefined();
+  });
+
+  it("carries the caller's exact authority and cancellation through native edits", async () => {
+    const caller = new AbortController();
+    const assertCurrent = vi.fn();
+    const result = await matrixOutbound.sendPayload!({
+      cfg,
+      to: "room:!room:example",
+      text: "approved link",
+      accountId: "default",
+      threadId: "$thread",
+      signal: caller.signal,
+      assertDirectAdapterHandoff: assertCurrent,
+      payload: { text: "approved link", channelData: { matrix: { editEventId: "$original" } } },
+    });
+    expect(mocks.editMessageMatrix).toHaveBeenCalledExactlyOnceWith(
+      "room:!room:example",
+      "$original",
+      "approved link",
+      expect.objectContaining({
+        signal: caller.signal,
+        assertDirectAdapterHandoff: assertCurrent,
+        threadId: "$thread",
+        accountId: "default",
+      }),
+    );
+    expect(result.messageId).toBe("$replacement");
+    expect(mocks.sendMessageMatrix).not.toHaveBeenCalled();
+  });
+});
+
+describe("native business decision-card transport", () => {
+  const card = {
+    type: "m.cellect.decision",
+    version: 1,
+    kind: "workflowApproval",
+    id: "ABC234",
+    revision: 1,
+    status: "pending",
+    title: "File document",
+    summary: "Review the exact destination.",
+    decisions: ["approve", "hold", "decline"],
+    expiresAtMs: 1_900_000_000_000,
+    workflowRef: "admin-action:ABC234",
+  };
+  it("preserves the existing Fi card envelope and strips unrelated event content", () => {
+    expect(
+      resolveMatrixExtraContent({
+        channelData: {
+          matrix: {
+            extraContent: {
+              "ai.cellect.card": { ...card, untrusted: "drop" },
+              "m.room.power_levels": { users_default: 100 },
+            },
+          },
+        },
+      }),
+    ).toEqual({ "ai.cellect.card": card });
+  });
+  it("rejects mismatched workflows, malformed controls and the obsolete content key", () => {
+    for (const extraContent of [
+      { "m.cellect.decision": card },
+      { "ai.cellect.card": { ...card, workflowRef: "admin-action:OTHER1" } },
+      { "ai.cellect.card": { ...card, decisions: ["run-shell"] } },
+      { "ai.cellect.card": { ...card, title: "Invisible\u200btitle" } },
+    ]) {
+      expect(
+        resolveMatrixExtraContent({ channelData: { matrix: { extraContent } } }),
+      ).toBeUndefined();
+    }
   });
 });

@@ -1,6 +1,7 @@
 import type { PluginRuntime } from "openclaw/plugin-sdk/channel-core";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { describe, expect, it } from "vitest";
+import { createMonitorTestContext } from "../monitor-context.test-support.js";
 import {
   getSlackInteractionMocks,
   setupInteractions,
@@ -34,6 +35,34 @@ function pauseDispatch() {
 }
 
 describe("Slack interaction lifecycle", () => {
+  it.each(["abort", "close"] as const)(
+    "refuses resumed callbacks after native monitor %s",
+    async (kind) => {
+      const abort = new AbortController();
+      const monitor = createMonitorTestContext({ abortSignal: abort.signal });
+      const policy = await monitor.readRuntimeContext();
+      const { started, dispatch } = pauseDispatch();
+      const { ctx, app, getHandler } = setupInteractions();
+      Object.assign(ctx, { isRuntimePolicyCurrent: policy.isRuntimePolicyCurrent });
+      const handling = getHandler()(interaction());
+      await started.promise;
+      const admitted = dispatchPluginInteractiveHandlerMock.mock.calls[0]![0];
+      expect(() => admitted.ctx.authority.assertCurrent()).not.toThrow();
+      if (kind === "abort") abort.abort();
+      else monitor.closeRuntimeContext();
+      expect(() => admitted.ctx.authority.assertCurrent()).toThrow("no longer current");
+      await expect(admitted.respond.reply({ text: "private" })).rejects.toThrow(
+        "no longer current",
+      );
+      await expect(admitted.respond.editMessage({ text: "private" })).rejects.toThrow(
+        "no longer current",
+      );
+      dispatch.resolve({ matched: false, handled: false, duplicate: false });
+      await handling;
+      expect(enqueueSessionEventMock).not.toHaveBeenCalled();
+      expect(app.client.chat.update).not.toHaveBeenCalled();
+    },
+  );
   it.each(["accepted", "refused", "duplicate"] as const)(
     "keeps the captured destination through plugin dispatch and confirms only when %s",
     async (admission) => {
@@ -96,7 +125,15 @@ describe("Slack interaction lifecycle", () => {
     const { ctx, app, getHandler } = setupInteractions();
     const handling = getHandler()(interaction());
     await started.promise;
+    const admitted = dispatchPluginInteractiveHandlerMock.mock.calls[0]?.[0];
+    expect(admitted).toBeDefined();
+    expect(() => admitted!.ctx.authority.assertCurrent()).not.toThrow();
     Object.assign(ctx, { isRuntimePolicyCurrent: () => false });
+    expect(() => admitted!.ctx.authority.assertCurrent()).toThrow("no longer current");
+    await expect(admitted!.respond.reply({ text: "private" })).rejects.toThrow("no longer current");
+    await expect(admitted!.respond.editMessage({ text: "private" })).rejects.toThrow(
+      "no longer current",
+    );
     dispatch.resolve({ matched: false, handled: false, duplicate: false });
     await handling;
     expect(enqueueSessionEventMock).not.toHaveBeenCalled();

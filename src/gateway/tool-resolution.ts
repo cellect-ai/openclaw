@@ -423,6 +423,7 @@ export async function resolveGatewayScopedTools(
     questionInputMode: resolveConversationQuestionInputMode({
       messageProvider: params.messageProvider,
     }),
+    agentAccountId: params.accountId,
     gatewayCallerAccountId: gatewayCaller.accountId,
     gatewayCallerChannel: gatewayCaller.channel,
     gatewayCallerLocal: gatewayCaller.local,

@@ -1,5 +1,6 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { z } from "zod";
+import { validateReadOnlyBindRollover } from "../agents/sandbox/bind-rollover.js";
 import { splitSandboxBindSpec } from "../agents/sandbox/bind-spec.js";
 import { isSandboxHostPathAbsolute } from "../agents/sandbox/host-paths.js";
 import { getBlockedNetworkModeReason } from "../agents/sandbox/network-mode.js";
@@ -74,12 +75,33 @@ export const SandboxDockerSchema = z
     dns: z.array(z.string()).optional(),
     extraHosts: z.array(z.string()).optional(),
     binds: z.array(z.string()).optional(),
+    // Exact host-approved resource replacements; ordinary binds never opt in implicitly.
+    readOnlyBindRollovers: z
+      .array(
+        z.strictObject({
+          from: z.array(z.string().min(1)).min(1).max(16),
+          to: z.array(z.string().min(1)).min(1).max(16),
+        }),
+      )
+      .max(32)
+      .optional(),
     dangerouslyAllowReservedContainerTargets: z.boolean().optional(),
     dangerouslyAllowExternalBindSources: z.boolean().optional(),
     dangerouslyAllowContainerNamespaceJoin: z.boolean().optional(),
   })
   .superRefine((data, ctx) => {
     validateSandboxBindEntries(data.binds, ctx);
+    for (const [index, rollover] of (data.readOnlyBindRollovers ?? []).entries()) {
+      try {
+        validateReadOnlyBindRollover(rollover);
+      } catch (error) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["readOnlyBindRollovers", index],
+          message: error instanceof Error ? error.message : "Invalid sandbox rollover",
+        });
+      }
+    }
     const blockedNetworkReason = getBlockedNetworkModeReason({
       network: data.network,
       allowContainerNamespaceJoin: data.dangerouslyAllowContainerNamespaceJoin === true,

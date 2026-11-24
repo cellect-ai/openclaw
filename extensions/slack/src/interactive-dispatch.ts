@@ -85,10 +85,22 @@ export type SlackInteractiveHandlerRegistration = PluginInteractiveRegistration<
   SlackInteractiveHandlerResult
 >;
 
+/** The admitted Slack policy snapshot remains authoritative across awaited handler work. */
+export type SlackInteractiveHandlerContextV2 = SlackInteractiveHandlerContext & {
+  authority: { assertCurrent: () => void };
+  teamId?: string;
+};
+
+export type SlackInteractiveHandlerRegistrationV2 = PluginInteractiveRegistration<
+  SlackInteractiveHandlerContextV2,
+  "slack",
+  SlackInteractiveHandlerResult
+>;
+
 const dispatchSlackInteractive = createChannelInteractiveDispatcher<
   "slack",
   "interaction",
-  SlackInteractiveHandlerContext,
+  SlackInteractiveHandlerContextV2,
   SlackInteractiveHandlerResult
 >({
   channel: "slack",
@@ -121,6 +133,7 @@ export async function dispatchSlackPluginInteractiveHandler(params: {
 
   return await dispatchSlackInteractive({
     ...params,
+    ctx: { ...params.ctx, teamId: params.teamId },
     dedupeId: qualify(params.interactionId),
     conversation: {
       channel: "slack",

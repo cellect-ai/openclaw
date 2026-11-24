@@ -70,6 +70,29 @@ function deliveryHarness(params: Omit<Params, "session" | "runId"> = {}) {
 }
 
 describe("tool result ordering", () => {
+  it("keeps execution environment credentials out of tool-call trajectory capture", async () => {
+    const recordEvent = vi.fn();
+    const token = "synthetic-delegated-trajectory-secret";
+    const args = {
+      command: "cellect commands list",
+      env: { FI_DELEGATED_USER_TOKEN: token, KEEP: "visible" },
+    };
+    const h = harness({ trajectoryRecorder: { recordEvent, flush: async () => {} } });
+    h.start("exec", "env-observation", args);
+    h.end("exec", "env-observation", { content: [{ type: "text", text: "done" }] });
+    await h.finish("done");
+    expect(recordEvent).toHaveBeenCalledWith(
+      "tool.call",
+      expect.objectContaining({
+        args: {
+          ...args,
+          env: { FI_DELEGATED_USER_TOKEN: "[redacted]", KEEP: "visible" },
+        },
+      }),
+    );
+    expect(JSON.stringify(recordEvent.mock.calls)).not.toContain(token);
+    expect(args.env.FI_DELEGATED_USER_TOKEN).toBe(token);
+  });
   it.each(["discarded", "rejected"] as const)(
     "settles nested lifecycle accounting when terminal presentation is %s",
     async (outcome) => {

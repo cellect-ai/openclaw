@@ -118,6 +118,50 @@ function resolveMatrixUserLocalpart(userId: string): string | null {
   return trimmed.slice(1, colonIndex).trim() || null;
 }
 
+/**
+ * The name a Cellect client puts on a pill when the room has not stored one.
+ *
+ * Derived only from this account's localpart: the three built-in agents, a
+ * tenant bot `bot_<org>_<agent>`, and `<env>.bot_<org>_<agent>`. A custom
+ * agent has no canonical name here, so a tenant-chosen label still has to be
+ * the room or profile display name. The visible text must equal this name;
+ * the href still has to be this exact account.
+ */
+function canonicalBuiltinMentionLabel(userId: string): string | null {
+  const localpart = resolveMatrixUserLocalpart(userId);
+  if (!localpart) {
+    return null;
+  }
+  let bare = localpart.toLowerCase();
+  const environmentBot = bare.match(/^[a-z0-9]+\.(bot_.+)$/);
+  if (environmentBot?.[1]) {
+    bare = environmentBot[1];
+  }
+  if (bare.startsWith("bot_")) {
+    if (bare.endsWith("_cellect-fi-admin")) {
+      return "Cellect Fi Admin";
+    }
+    if (bare.endsWith("_cellect-main")) {
+      return "Cellect Superadmin";
+    }
+    if (bare.endsWith("_cellect-fi-user") || bare.endsWith("_cellect-fi")) {
+      return "Cellect Fi";
+    }
+    return null;
+  }
+  switch (bare) {
+    case "cellect-fi":
+    case "cellect-fi-user":
+      return "Cellect Fi";
+    case "cellect-fi-admin":
+      return "Cellect Fi Admin";
+    case "cellect-main":
+      return "Cellect Superadmin";
+    default:
+      return null;
+  }
+}
+
 function hasVisibleNativeMatrixUserMention(text: string | undefined, userId: string): boolean {
   const localpart = resolveMatrixUserLocalpart(userId);
   if (!text || !localpart) {
@@ -157,12 +201,16 @@ export function stripMatrixMentionPrefix(params: {
   const seen = new Set<string>();
 
   const localpart = params.userId ? resolveMatrixUserLocalpart(params.userId) : null;
+  const builtin = params.userId ? canonicalBuiltinMentionLabel(params.userId) : null;
   for (const candidate of [
     params.userId,
     localpart ? `@${localpart}` : null,
     params.displayName,
     params.displayName ? `@${params.displayName}` : null,
     params.displayName ? `@[${params.displayName}]` : null,
+    builtin,
+    builtin ? `@${builtin}` : null,
+    builtin ? `@[${builtin}]` : null,
   ]) {
     const trimmed = candidate?.trim();
     if (!trimmed) {
@@ -246,6 +294,7 @@ export function resolveMentions(params: {
           return true;
         }
         const localpart = resolveMatrixUserLocalpart(userId);
+        const builtin = canonicalBuiltinMentionLabel(userId);
         const candidates = [
           extractVisibleMentionText(userId),
           localpart ? extractVisibleMentionText(localpart) : null,
@@ -253,6 +302,9 @@ export function resolveMentions(params: {
           displayName ? extractVisibleMentionText(displayName) : null,
           displayName ? extractVisibleMentionText(`@${displayName}`) : null,
           displayName ? extractVisibleMentionText(`@[${displayName}]`) : null,
+          builtin ? extractVisibleMentionText(builtin) : null,
+          builtin ? extractVisibleMentionText(`@${builtin}`) : null,
+          builtin ? extractVisibleMentionText(`@[${builtin}]`) : null,
         ].filter((value): value is string => Boolean(value));
         if (candidates.includes(cleaned)) {
           return true;

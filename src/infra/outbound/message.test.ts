@@ -88,6 +88,14 @@ describe("sendMessage", () => {
     fields: Record<string, unknown>,
   ) => expectFields(result, { channel: "forum", to: "123456", via: "direct", ...fields });
 
+  it.each([undefined, "reconcile_only"] as const)(
+    "forwards producer recovery policy through the native durable send: %s",
+    async (recoveryPolicy) => {
+      await send({ recoveryPolicy });
+      expectDeliveryCallFields({ recoveryPolicy });
+    },
+  );
+
   beforeEach(() => {
     setActivePluginRegistry(createTestRegistry([]));
     for (const mock of Object.values(mocks)) {

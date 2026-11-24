@@ -18,6 +18,8 @@ type SlackFailurePolicyParams = {
   failureNoticeThreadTs?: string;
   failureNoticeTeamId?: string;
   statusThreadTs?: string;
+  /** Each admitted Cellect turn owns its own failure notice. */
+  dedupePassiveFailures?: boolean;
 };
 
 /** One outage policy for immediate replies and later origin-routed queue drains. */
@@ -91,7 +93,11 @@ export function createSlackFailureNoticePolicy(
       return null;
     }
 
-    if (!explicitlyAddressed && hasSlackThreadFailureNotice(notice)) {
+    if (
+      params.dedupePassiveFailures !== false &&
+      !explicitlyAddressed &&
+      hasSlackThreadFailureNotice(notice)
+    ) {
       logVerbose("slack: suppressed repeated passive channel or thread failure");
       return null;
     }

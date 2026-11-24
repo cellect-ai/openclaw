@@ -11,7 +11,9 @@ import {
   emitAgentEventForOwner,
   getAgentEventLifecycleGeneration,
 } from "../../infra/agent-events.js";
+import { readAgentRunPersistence } from "../../infra/agent-run-persistence.js";
 import {
+  awaitAgentRunAdmission,
   claimAgentRunContext,
   getAgentRunContext,
   getAgentRunContextOwnership,
@@ -331,6 +333,12 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
     if ("ok" in owned) {
       return owned;
     }
+    const persistenceOwner = getAgentRunContext(request.runId);
+    await awaitAgentRunAdmission(request.runId, persistenceOwner);
+    source.receiptAuthority();
+    if (window.activeRuns.get(request.runId) !== owned) {
+      return invalidEvent();
+    }
     const definitiveTerminal = isDefinitiveWorkerTerminalEvent(request.event);
     if (definitiveTerminal) {
       // Emission runs synchronous listeners that can clear this claim reentrantly.
@@ -403,6 +411,11 @@ export function createWorkerLiveEventReceiver(options: WorkerLiveEventReceiverOp
       } else {
         emitAgentEventForOwner(emission, owned.claimId);
       }
+    }
+    // A terminal listener can release its run claim. The captured owner still
+    // owns the durable receipt required before advancing this worker's ACK.
+    if (persistenceOwner) {
+      await readAgentRunPersistence(persistenceOwner);
     }
     if (activity && !ownsPublication()) {
       return invalidEvent();

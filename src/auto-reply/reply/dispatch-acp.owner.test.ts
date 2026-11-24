@@ -228,6 +228,9 @@ it.each(scenarios)(
             AgentId: sourceOwner,
             SessionKey: `agent:${sourceOwner}:main`,
             BodyForAgent: "hello",
+            ...(pendingQuestion
+              ? { ExpectedQuestionId: "ask_77777777777777777777777777777777" }
+              : {}),
             Provider: "webchat",
             Surface: "webchat",
             ...(bound

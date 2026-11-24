@@ -85,3 +85,18 @@ it("does not mistake a delivered supplement for an undelivered failure notice", 
   expect(queued.shouldSuppressReply?.(failure)).toBe(true);
   finalEnd?.({ visibleReplySent: false, failed: true });
 });
+
+it("keeps each admitted turn's identical failure visible through immediate and queued delivery", () => {
+  const admitted = { ...params, dedupePassiveFailures: false };
+  for (let run = 0; run < 3; run += 1) {
+    const direct = createSlackFailureNoticePolicy(admitted, () => false);
+    expect(direct.filter(failure)).toBe(failure);
+    direct.recordDelivered(failure);
+    direct.complete();
+    const queued = createSlackQueuedFailureNoticePolicy(admitted, beginRun);
+    const end = queued.begin();
+    expect(queued.shouldSuppressReply?.(failure)).toBe(false);
+    queued.onReplyDelivered?.(failure);
+    end?.({ visibleReplySent: true, failed: true });
+  }
+});

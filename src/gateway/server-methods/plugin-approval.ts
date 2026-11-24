@@ -9,6 +9,7 @@ import {
   validatePluginApprovalRequestParams,
   validatePluginApprovalResolveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { getAgentRunContext } from "../../infra/agent-run-registry.js";
 import { sanitizeApprovalScope } from "../../infra/approval-scope.js";
 import type { ExecApprovalForwarder } from "../../infra/exec-approval-forwarder.js";
 import {
@@ -156,11 +157,28 @@ export function createPluginApprovalHandlers(
         // pluginId/toolName/agentId are interpolated into channel approval text.
         // Host-minted runtime identity values stay authoritative and unescaped.
         const sanitizeMeta = (value?: string | null): string | null => {
-          const normalized = normalizeNullableString(value);
+          const normalized = normalizeOptionalString(value) || null;
           return normalized === null ? null : sanitizeExecApprovalDisplayText(normalized);
         };
+        const localRunContext =
+          trustedAgentRuntime?.delegatedAuthority.kind === "local"
+            ? getAgentRunContext(trustedAgentRuntime.operationalRunInstance.runId)
+            : undefined;
+        const sourceSessionId =
+          trustedAgentRuntime?.delegatedAuthority.kind === "worker"
+            ? trustedAgentRuntime.delegatedAuthority.turnClaim.sessionId
+            : localRunContext?.sessionKey === trustedAgentRuntime?.sessionKey &&
+                localRunContext?.agentId === trustedAgentRuntime?.agentId
+              ? localRunContext?.sessionId
+              : undefined;
         const turnSource = trustedAgentRuntime ?? p;
         const request: PluginApprovalRequestPayload = {
+          ...(trustedAgentRuntime?.approvalOrigin === "plugin" ? { approvalOrigin: "plugin" } : {}),
+          ...(trustedAgentRuntime?.approvalOrigin === "plugin" &&
+          trustedAgentRuntime.approvalConversation
+            ? { conversation: { ...trustedAgentRuntime.approvalConversation } }
+            : {}),
+          sessionId: sourceSessionId ?? null,
           pluginId:
             trustedAgentRuntime?.approvalOwnerPluginId ??
             hostApprovalOwnerId ??

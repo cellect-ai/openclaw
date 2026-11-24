@@ -1,11 +1,16 @@
 // Verifies optional plugin tool registration and absence handling.
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getEventListeners } from "node:events";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { finalizeAgentTools } from "../agents/agent-tools.finalize.js";
+import {
+  capBackgroundHookToolsAllow,
+  REVIEW_HOOK_TOOL_ALLOWLIST,
+} from "../agents/shadow-hook-tool-policy.js";
 import { DEFAULT_PLUGIN_TOOLS_ALLOWLIST_ENTRY } from "../agents/tool-policy.js";
 import { createInvalidConfigError, throwInvalidConfig } from "../config/io.invalid-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
@@ -23,7 +28,14 @@ import { createEmptyPluginRegistry } from "./registry-empty.js";
 import { markPluginRegistryRetired } from "./registry-lifecycle.js";
 import type { PluginRegistry } from "./registry-types.js";
 import { createPluginRecord } from "./status.test-helpers.js";
-import { appendRuntimePluginToolGrant } from "./tool-grant-allowlist.js";
+import { expectSingleDiagnosticMessage } from "./tools.optional-diagnostics.test-support.js";
+import {
+  createResolveToolsParams,
+  createMalformedTool,
+  installConsoleMethodSpy,
+  requireConsoleMessage,
+} from "./tools.optional-fixtures.test-support.js";
+import { expectResolvedToolNames } from "./tools.optional-results.test-support.js";
 import {
   createNamedToolEntry,
   createOptionalToolManifest as createToolManifest,
@@ -109,33 +121,6 @@ let setCurrentPluginMetadataSnapshot: typeof import("./current-plugin-metadata.t
 let getPluginRuntimeGatewayRequestScope: typeof import("./runtime/gateway-request-scope.js").getPluginRuntimeGatewayRequestScope;
 let withPluginRuntimeGatewayRequestScope: typeof import("./runtime/gateway-request-scope.js").withPluginRuntimeGatewayRequestScope;
 
-function createResolveToolsParams(params?: {
-  context?: ReturnType<typeof createContext> & Record<string, unknown>;
-  clientCaps?: string[];
-  toolAllowlist?: readonly string[];
-  toolDenylist?: readonly string[];
-  existingToolNames?: Set<string>;
-  env?: NodeJS.ProcessEnv;
-  suppressNameConflicts?: boolean;
-  allowGatewaySubagentBinding?: boolean;
-  runtimePluginToolGrant?: { pluginId: string; toolNames: readonly string[] };
-}) {
-  const toolAllowlist = appendRuntimePluginToolGrant(
-    [...(params?.toolAllowlist ?? [])],
-    params?.runtimePluginToolGrant,
-  );
-  return {
-    context: (params?.context ?? createContext()) as never,
-    ...(params?.clientCaps ? { clientCaps: params.clientCaps } : {}),
-    ...(toolAllowlist.length > 0 ? { toolAllowlist } : {}),
-    ...(params?.toolDenylist ? { toolDenylist: [...params.toolDenylist] } : {}),
-    ...(params?.existingToolNames ? { existingToolNames: params.existingToolNames } : {}),
-    ...(params?.env ? { env: params.env } : {}),
-    ...(params?.suppressNameConflicts ? { suppressNameConflicts: true } : {}),
-    ...(params?.allowGatewaySubagentBinding ? { allowGatewaySubagentBinding: true } : {}),
-  };
-}
-
 function setRegistry(
   entries: MockRegistryToolEntry[],
   config: ReturnType<typeof createContext>["config"] = createContext().config,
@@ -190,40 +175,6 @@ function setFeishuConversationToolRegistry(params: {
 
 function createOptionalDemoEntry(): MockRegistryToolEntry {
   return createNamedToolEntry("optional-demo", "optional_tool", { optional: true });
-}
-
-function createMalformedTool(name: string) {
-  return {
-    name,
-    description: `${name} tool`,
-    inputSchema: { type: "object", properties: {} },
-    async execute() {
-      return { content: [{ type: "text", text: "bad" }] };
-    },
-  };
-}
-
-function installConsoleMethodSpy(method: "log" | "warn") {
-  const spy = vi.fn();
-  loggingState.rawConsole = {
-    log: method === "log" ? spy : vi.fn(),
-    info: vi.fn(),
-    warn: method === "warn" ? spy : vi.fn(),
-    error: vi.fn(),
-  };
-  return spy;
-}
-
-function requireConsoleMessage(spy: { mock: { calls: unknown[][] } }, index = 0): string {
-  const call = spy.mock.calls[index];
-  if (!call) {
-    throw new Error(`expected console call ${index}`);
-  }
-  expect(typeof call[0]).toBe("string");
-  if (typeof call[0] !== "string") {
-    throw new Error(`expected console call ${index} to contain a string message`);
-  }
-  return call[0];
 }
 
 function resolveOptionalDemoTools(toolAllowlist?: readonly string[]) {
@@ -305,26 +256,11 @@ function installToolManifestSnapshots(params: {
   return snapshot;
 }
 
-function expectResolvedToolNames(
-  tools: ReturnType<typeof resolvePluginTools>,
-  expectedToolNames: readonly string[],
-) {
-  expect(tools.map((tool) => tool.name)).toEqual(expectedToolNames);
-}
-
 function expectLoaderSelectedOnlyPluginIds(expectedPluginIds: readonly string[]) {
   const selectedPluginIds = loadOpenClawPluginsMock.mock.calls.map(
     ([params]) => (params as { onlyPluginIds?: string[] }).onlyPluginIds,
   );
   expect(selectedPluginIds).toStrictEqual([expectedPluginIds]);
-}
-
-function expectSingleDiagnosticMessage(
-  diagnostics: Array<{ message: string }>,
-  messageFragment: string,
-) {
-  expect(diagnostics).toHaveLength(1);
-  expect(diagnostics[0]?.message).toContain(messageFragment);
 }
 
 describe("resolvePluginTools optional tools", () => {
@@ -1298,6 +1234,67 @@ describe("resolvePluginTools optional tools", () => {
       ),
     ).toHaveLength(0);
   });
+
+  it.each(["current manifest", "original omission"] as const)(
+    "cold-selects Fi review tools only through manifest ownership (%s)",
+    (scenario) => {
+      // Exercise native metadata selection and returned-tool admission without
+      // importing the heavy bundled extension or booting a Gateway.
+      const manifest = JSON.parse(
+        readFileSync(
+          new URL("../../extensions/fi-user/openclaw.plugin.json", import.meta.url),
+          "utf8",
+        ),
+      ) as { id: string; contracts: { tools: string[] } };
+      const reviewNames = REVIEW_HOOK_TOOL_ALLOWLIST.filter((name) => name.startsWith("fi_user_"));
+      expect(reviewNames).toHaveLength(4);
+      const declaredNames =
+        scenario === "original omission"
+          ? manifest.contracts.tools.filter((name) => !reviewNames.includes(name))
+          : manifest.contracts.tools;
+      const context = {
+        ...createContext(),
+        agentId: "cellect-fi-user",
+        runId: "fixture-review-run",
+        sessionKey: `hook:fi-review:${"a".repeat(40)}`,
+        hookRequesterAttestation: `pra:fixture-review-job:${"A".repeat(43)}`,
+      };
+      context.config.plugins = {
+        ...context.config.plugins,
+        allow: [manifest.id],
+        entries: { [manifest.id]: { enabled: true } },
+      };
+      const admitted = capBackgroundHookToolsAllow(
+        [context.sessionKey],
+        [...reviewNames, "fi_user_api"],
+      );
+      expect(admitted).toEqual(reviewNames);
+      const factory = vi.fn(() => admitted.map(makeTool));
+      loadOpenClawPluginsMock.mockReturnValue(
+        createToolRegistry([createNamedToolEntry(manifest.id, [], { declaredNames, factory })]),
+      );
+      installToolManifestSnapshot({
+        config: context.config,
+        plugin: createToolManifest(manifest.id, declaredNames),
+      });
+
+      const tools = resolvePluginTools(
+        createResolveToolsParams({
+          context,
+          toolAllowlist: REVIEW_HOOK_TOOL_ALLOWLIST,
+        }),
+      );
+
+      expectResolvedToolNames(tools, scenario === "original omission" ? [] : reviewNames);
+      if (scenario === "original omission") {
+        expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();
+        expect(factory).not.toHaveBeenCalled();
+      } else {
+        expectLoaderSelectedOnlyPluginIds([manifest.id]);
+        expect(factory).toHaveBeenCalledOnce();
+      }
+    },
+  );
 
   it("does not materialize manifest-unavailable optional sibling tools under alsoAllow", () => {
     const config = createContext().config;

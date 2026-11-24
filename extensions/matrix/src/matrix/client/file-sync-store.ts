@@ -16,13 +16,19 @@ import {
   MATRIX_SYNC_CACHE_VERSION,
   deleteMatrixSyncCacheStateFromStore,
   openMatrixSyncCacheStoreOptions,
-  readPersistedStoreFromStore,
+  readAndClaimPersistedStoreFromStore,
   writeMatrixSyncCacheStateToStore,
   type MatrixSyncCacheRecord,
   type PersistedMatrixSyncStore,
+  type MatrixSyncStoreIdentity,
+  type MatrixShutdownCheckpoint,
 } from "./sync-cache-state.js";
 
-const PERSIST_DEBOUNCE_MS = 250;
+// A /sync response can retain tens of megabytes of joined-room state. Persist a
+// restart checkpoint periodically instead of rewriting that full snapshot on
+// every long-poll response. Explicit flushes (including shutdown) remain
+// immediate.
+const PERSIST_DEBOUNCE_MS = 60_000;
 
 export type MatrixSyncIngressHandler = (
   sync: ISyncResponse,
@@ -78,7 +84,15 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
   private syncIngressHandler: MatrixSyncIngressHandler | undefined;
   private syncIngressAdmission: Promise<void> | null = null;
 
-  static async create(storageRootDir: string): Promise<SqliteBackedMatrixSyncStore> {
+  private readonly storeId: string;
+  private readonly restoredCheckpoint: MatrixShutdownCheckpoint | null;
+  private checkpoint: MatrixShutdownCheckpoint | undefined;
+  private persistenceBarrier?: () => Promise<void>;
+
+  static async create(
+    storageRootDir: string,
+    identity?: MatrixSyncStoreIdentity,
+  ): Promise<SqliteBackedMatrixSyncStore> {
     let store: PluginStateKeyedStore<MatrixSyncCacheRecord, 2> | undefined;
     let persisted: PersistedMatrixSyncStore | null = null;
     let unavailableError: unknown;
@@ -86,13 +100,19 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
       store = getMatrixRuntime().state.openKeyedStoreV2<MatrixSyncCacheRecord>(
         openMatrixSyncCacheStoreOptions(storageRootDir),
       );
-      persisted = await readPersistedStoreFromStore({ storageRootDir, store });
+      persisted = await readAndClaimPersistedStoreFromStore({ storageRootDir, store });
     } catch (error) {
       materializeErrorStack(error);
       unavailableError = error;
       LogService.warn("MatrixSyncCacheStore", "Failed to load Matrix sync cache:", error);
     }
-    return new SqliteBackedMatrixSyncStore(storageRootDir, store, persisted, unavailableError);
+    return new SqliteBackedMatrixSyncStore(
+      storageRootDir,
+      store,
+      persisted,
+      unavailableError,
+      identity,
+    );
   }
 
   private constructor(
@@ -100,6 +120,7 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     private readonly store: PluginStateKeyedStore<MatrixSyncCacheRecord, 2> | undefined,
     persisted: PersistedMatrixSyncStore | null,
     private readonly storeUnavailableError: unknown,
+    private readonly identity?: MatrixSyncStoreIdentity,
   ) {
     super();
     const restoredSavedSync = persisted?.savedSync ?? null;
@@ -111,6 +132,23 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     this.hadSavedSyncOnLoad = restoredSavedSync !== null;
     this.hadCleanShutdownOnLoad = this.hadSavedSyncOnLoad && restoredCleanShutdown;
     this.cleanShutdown = this.hadCleanShutdownOnLoad;
+    this.storeId = persisted?.storeId || randomUUID();
+    const prior = persisted?.checkpoint;
+    const sameIdentity =
+      identity &&
+      persisted?.identity &&
+      identity.accountId === persisted.identity.accountId &&
+      identity.homeserver === persisted.identity.homeserver &&
+      identity.userId === persisted.identity.userId &&
+      identity.deviceId === persisted.identity.deviceId;
+    this.restoredCheckpoint =
+      this.hadCleanShutdownOnLoad &&
+      sameIdentity &&
+      prior &&
+      prior.accountId === identity.accountId &&
+      prior.storeId === this.storeId
+        ? Object.freeze({ ...prior })
+        : null;
 
     if (this.savedSync) {
       this.accumulator.accumulate(syncDataToSyncResponse(this.savedSync), true);
@@ -159,6 +197,19 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     if (!this.frozen && !this.syncIngressHandler) {
       super.setSyncToken(token);
     }
+  }
+
+  getCheckpointStatus() {
+    return {
+      version: 1 as const,
+      accountId: this.identity?.accountId,
+      storeId: this.storeId,
+      restored: this.restoredCheckpoint ? { ...this.restoredCheckpoint } : null,
+    };
+  }
+
+  setPersistenceBarrier(barrier: () => Promise<void>): void {
+    this.persistenceBarrier = barrier;
   }
 
   override getSavedSync(): Promise<ISyncData | null> {
@@ -267,8 +318,23 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     });
   }
 
-  markCleanShutdown(): void {
+  markCleanShutdown(operation?: {
+    requestId: string;
+    suspensionId: string;
+    processInstanceId: string;
+  }): void {
     this.cleanShutdown = true;
+    this.checkpoint =
+      operation && this.identity && this.savedSync
+        ? {
+            requestId: operation.requestId,
+            suspensionId: operation.suspensionId,
+            predecessorProcessInstanceId: operation.processInstanceId,
+            accountId: this.identity.accountId,
+            storeId: this.storeId,
+            generation: randomUUID(),
+          }
+        : undefined;
     this.dirty = true;
   }
 
@@ -325,20 +391,37 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
 
   private async persist(): Promise<void> {
     const store = this.requireStore();
+    // Freeze the prefix before joining its async appends. Later SDK batches must
+    // retain dirty ownership for their own barrier, never slip into this snapshot.
     this.dirty = false;
     const payload: PersistedMatrixSyncStore = {
       version: MATRIX_SYNC_CACHE_VERSION,
       savedSync: this.savedSync,
       cleanShutdown: this.cleanShutdown,
-      ...(this.savedClientOptions ? { clientOptions: this.savedClientOptions } : {}),
+      storeId: this.storeId,
+      identity: this.identity,
+      checkpoint: this.checkpoint,
+      ...(this.savedClientOptions
+        ? { clientOptions: structuredClone(this.savedClientOptions) }
+        : {}),
     };
     try {
+      await this.persistenceBarrier?.();
       await writeMatrixSyncCacheStateToStore({
         storageRootDir: this.storageRootDir,
         payload,
         store,
+        ...(payload.cleanShutdown
+          ? {
+              beforeCleanPublish: async () => {
+                await claimCurrentTokenStorageState({ rootDir: this.storageRootDir });
+              },
+            }
+          : {}),
       });
-      await claimCurrentTokenStorageState({ rootDir: this.storageRootDir });
+      if (!payload.cleanShutdown) {
+        await claimCurrentTokenStorageState({ rootDir: this.storageRootDir });
+      }
     } catch (err) {
       this.dirty = true;
       throw err;

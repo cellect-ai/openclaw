@@ -2,6 +2,10 @@ import { setImmediate as nextEventLoopTurn } from "node:timers/promises";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
+  checkClientVoiceToolConfirmationPolicy,
+  deactivateClientVoiceConfirmationSession,
+} from "../../talk/client-voice-confirmation.js";
+import {
   activate,
   controlOptions,
   createControlFixture,
@@ -44,6 +48,125 @@ function responseEvent(owner: ControlOwner, type: string, responseId: string) {
 }
 
 describe("Talk client Gateway control owner", () => {
+  it("settles pending confirmation readiness on a noise final without granting or executing a write", async () => {
+    const voiceSessionId = "voice-noise-confirmation";
+    const runAgentConsult = vi.fn(async () => ({
+      text: checkClientVoiceToolConfirmationPolicy(policy).allowed ? "unexpected grant" : "blocked",
+    }));
+    const appendTranscript = vi.fn(async () => undefined);
+    const owner = createTalkClientGatewayControlOwner({
+      voiceSessionId,
+      sessionTarget,
+      connId: "conn-gateway",
+      context: controlContext(),
+      runToolAgentConsult: runAgentConsult,
+      runAgentConsult,
+      appendTranscript,
+      flushTranscript: vi.fn(async () => undefined),
+      closeLogicalSession: vi.fn(async () => undefined),
+    });
+    await owner.adoptProvider(vi.fn(async () => undefined));
+    owner.activate();
+    const policy = {
+      agentId: "main",
+      voiceSessionId,
+      runId: "original",
+      toolName: "message",
+      toolParams: { action: "send", message: "hello" },
+    };
+    expect(checkClientVoiceToolConfirmationPolicy(policy).allowed).toBe(false);
+    owner.control.onTranscript?.("user", "yes", false);
+    const pending = owner.runAgentConsult({ prompt: "check readiness" });
+    await nextEventLoopTurn();
+    owner.control.onTranscript?.("user", "[noise] ...", true);
+    await expect(pending).resolves.toEqual({ text: "blocked" });
+    expect(runAgentConsult).toHaveBeenCalledOnce();
+    expect(appendTranscript).not.toHaveBeenCalled();
+    expect(checkClientVoiceToolConfirmationPolicy(policy).allowed).toBe(false);
+    await owner.close();
+    deactivateClientVoiceConfirmationSession("main", voiceSessionId);
+  });
+  it("ignores noise-only ASR before creating a turn, transcript or spoken control", async () => {
+    const appendTranscript = vi.fn(async () => undefined);
+    const talkEvents: Array<{ type: string; payload: unknown }> = [];
+    const runAgentConsult = vi.fn(async () => ({ text: "done" }));
+    const owner = createTalkClientGatewayControlOwner({
+      voiceSessionId: "voice-noise",
+      sessionTarget,
+      connId: "conn-gateway",
+      context: controlContext(vi.fn(), (event) => talkEvents.push(event)),
+      runToolAgentConsult: runAgentConsult,
+      runAgentConsult,
+      appendTranscript,
+      flushTranscript: vi.fn(async () => undefined),
+      closeLogicalSession: vi.fn(async () => undefined),
+    });
+    await owner.adoptProvider(vi.fn(async () => undefined));
+    owner.activate();
+    const before = talkEvents.length;
+    owner.control.onTranscript?.("user", "[noise] ...", false);
+    owner.control.onTranscript?.("user", "[noise] ...", true);
+    expect(talkEvents).toHaveLength(before);
+    expect(appendTranscript).not.toHaveBeenCalled();
+    expect(runAgentConsult).not.toHaveBeenCalled();
+    owner.control.onTranscript?.("user", "check the email", true);
+    expect(appendTranscript).toHaveBeenCalledWith(
+      expect.objectContaining({ text: "check the email" }),
+    );
+    await owner.close();
+  });
+  it.each([
+    ["Status?", false, false, "delegation", true],
+    ["use the release branch instead", false, false, "delegation", false],
+    ["use the release branch instead", true, false, "delegation", true],
+    ["cancel my meeting tomorrow", true, false, "delegation", false],
+    ["cancel", true, true, "transcript", true],
+    ["Status?", false, true, "transcript", false],
+    ["Status?", false, undefined, "transcript", false],
+    ["Status?", false, false, "transcript", true],
+  ] as const)(
+    "admits %s (active=%s, tools=%s, source=%s)",
+    async (text, active, supportsToolCalls, controlSource, handled) => {
+      const execute = vi.fn(async () => ({
+        ok: true,
+        mode: "status" as const,
+        sessionKey: sessionTarget.canonicalKey,
+        active,
+        message: "Visible control outcome.",
+        speak: true,
+        show: true,
+        suppress: false,
+      }));
+      const speak = vi.fn();
+      const respond = vi.fn();
+      const owner = createTalkRealtimeRunControlOwner({
+        controlSource,
+        supportsToolCalls,
+        hasActiveRun: () => active,
+        prepare: () => execute,
+        speak,
+        warn: vi.fn(),
+      });
+      try {
+        if (controlSource === "delegation") {
+          expect(owner.handleSpoken(text)).toBe(false);
+          expect(owner.handleDelegationInput?.(text, respond)).toBe(
+            handled ? "control" : "consult",
+          );
+        } else {
+          expect(owner.handleDelegationInput).toBeUndefined();
+          expect(owner.handleSpoken(text)).toBe(handled);
+        }
+        await owner.close();
+        expect(execute).toHaveBeenCalledTimes(handled ? 1 : 0);
+        expect(respond).toHaveBeenCalledTimes(controlSource === "delegation" && handled ? 1 : 0);
+        expect(speak).toHaveBeenCalledTimes(controlSource === "transcript" && handled ? 1 : 0);
+      } finally {
+        await owner.close();
+      }
+    },
+  );
+
   it.each(["failed", "incomplete"] as const)(
     "keeps Gateway-controlled browser Talk reusable after a %s response",
     async (status) => {

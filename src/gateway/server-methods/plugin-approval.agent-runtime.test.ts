@@ -99,9 +99,35 @@ function requestHandler(
 
 afterEach(() => {
   vi.restoreAllMocks();
+  vi.unstubAllEnvs();
 });
 
 describe("plugin approval signed agent runtime", () => {
+  it.for([
+    { approvalOrigin: "plugin" },
+    { conversation: { title: "Forged business action", summary: "Forged request" } },
+    { sessionId: "forged-session" },
+    { runId: "forged-run" },
+  ])(
+    "rejects public business provenance before creating an approval: %j",
+    async (forged, testContext) => {
+      const fixture = await approvalFixture(testContext, undefined, true);
+      await fixture.run(async () => {
+        const opts = requestOptions({
+          request: { title: "Sensitive action", description: "Review action", ...forged },
+          identity: { ...identityWithoutExecution(), approvalOwnerPluginId: "fi" },
+        });
+        await requestHandler(fixture.manager)(opts);
+        expect(opts.respond).toHaveBeenCalledWith(
+          false,
+          undefined,
+          expect.objectContaining({ code: "INVALID_REQUEST" }),
+        );
+        expect(await fixture.manager.listPendingRecords()).toEqual([]);
+        expect(opts.context.broadcast).not.toHaveBeenCalled();
+      });
+    },
+  );
   it.for(["withdrawal", "expiry"] as const)(
     "closes the captured worker wait on plugin approval %s",
     async (outcome, testContext) => {
@@ -345,4 +371,101 @@ describe("plugin approval signed agent runtime", () => {
       await pending;
     });
   });
+
+  it.for(["business", "native", "mismatched", "worker"] as const)(
+    "binds %s requests to the live host session and preserves the verdict",
+    async (kind, testContext) => {
+      vi.stubEnv("OPENCLAW_CONVERSATION_DECISION_CARDS", "true");
+      const fixture = await createPreparedTestApprovalManager<PluginApprovalRequestPayload>(
+        testContext,
+        {
+          approvalKind: "plugin",
+          validateAgentRuntimeDelegatedAuthority: () => true,
+        },
+      );
+      await fixture.run(async () => {
+        const localContext = vi.spyOn(
+          await import("../../infra/agent-run-registry.js"),
+          "getAgentRunContext",
+        );
+        if (kind === "worker") {
+          vi.spyOn(workerRunOwner, "captureWorkerTurnLiveEventOwner").mockReturnValue({
+            beginApprovalWait: () => ({ close: vi.fn(), updateDeadline: vi.fn() }),
+            record: vi.fn(),
+            isCancelled: () => false,
+            isCancelledFinishing: () => false,
+          });
+        }
+        localContext.mockReturnValue({
+          agentId: "main",
+          sessionKey: kind === "mismatched" ? "agent:main:other" : "agent:main:session-1",
+          sessionId: "host-session",
+        });
+        const opts = requestOptions({
+          request: { title: "Review payment", description: "Pay vendor", twoPhase: true },
+          identity: {
+            ...identityWithoutExecution(),
+            ...(kind === "worker"
+              ? {
+                  delegatedAuthority: {
+                    ...identityWithoutExecution().delegatedAuthority,
+                    kind: "worker" as const,
+                    turnClaim: {
+                      sessionId: "worker-session",
+                      claimId: "worker-claim",
+                      runId: "run-1",
+                      placementGeneration: 1,
+                      owner: {
+                        kind: "worker" as const,
+                        environmentId: "worker-env",
+                        ownerEpoch: 1,
+                      },
+                    },
+                  },
+                }
+              : {}),
+            approvalOwnerPluginId: "fi",
+            ...(kind === "business"
+              ? {
+                  approvalOrigin: "plugin" as const,
+                  approvalConversation: { title: "Review payment", summary: "Pay vendor" },
+                }
+              : {}),
+          },
+        });
+        const { pending } = await waitForApprovalRequested(
+          opts.context,
+          "plugin.approval.requested",
+          () => fixture.track(Promise.resolve(requestHandler(fixture.manager)(opts))),
+        );
+        const record = (await fixture.manager.listPendingRecords())[0]!;
+        const canonical = await fixture.manager.getSnapshot(record.id);
+        expect(canonical?.request).toMatchObject({
+          sessionId:
+            kind === "worker" ? "worker-session" : kind === "mismatched" ? null : "host-session",
+          runId: "run-1",
+        });
+        expect(canonical?.request.conversation).toEqual(
+          kind === "business" ? { title: "Review payment", summary: "Pay vendor" } : undefined,
+        );
+        const stored = openOpenClawStateDatabase(fixture.databaseOptions)
+          .db.prepare(
+            "SELECT presentation_json, source_session_id FROM operator_approvals WHERE approval_id = ?",
+          )
+          .get(record.id) as { presentation_json: string; source_session_id: string | null };
+        expect(stored.source_session_id).toBe(
+          kind === "worker" ? "worker-session" : kind === "mismatched" ? null : "host-session",
+        );
+        expect(JSON.parse(stored.presentation_json).origin).toBe(
+          kind === "business" ? "plugin" : undefined,
+        );
+        if (kind !== "worker") {
+          expect(localContext).toHaveBeenCalledWith("run-1");
+        }
+        await fixture.manager.resolve(record.id, "allow-once", "test");
+        await pending;
+        expect((await fixture.manager.getSnapshot(record.id))?.decision).toBe("allow-once");
+      });
+    },
+  );
 });

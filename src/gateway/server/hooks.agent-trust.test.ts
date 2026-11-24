@@ -699,4 +699,70 @@ describe("dispatchAgentHook trust handling", () => {
       meta,
     );
   });
+
+  it("admits channel last on a shadow session only with delivery none and deliver false", async () => {
+    const result = await dispatchAgentHook({
+      ...buildAgentPayload("Shadow"),
+      sessionKey: "agent:cellect-fi-user:hook:fi-shadow:abc",
+      requesterAttestation: `fsa:job-1:${"A".repeat(43)}`,
+      channel: "last",
+      delivery: { mode: "none" },
+      deliver: false,
+    });
+    expect(result).not.toMatchObject({ statusCode: 400 });
+    expect(runCronIsolatedAgentTurnMock).toHaveBeenCalledTimes(1);
+    runCronIsolatedAgentTurnMock.mockClear();
+    const refused = await dispatchAgentHook({
+      ...buildAgentPayload("Shadow"),
+      sessionKey: "hook:fi-shadow:abc",
+      requesterAttestation: `fsa:job-1:${"A".repeat(43)}`,
+      channel: "last",
+      delivery: { mode: "announce", channel: "last" },
+    });
+    expect(refused).toMatchObject({ ok: false, statusCode: 400 });
+    expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+  });
+
+  describe("Fi shadow sessions", () => {
+    const attestation = `fsa:job-1:${"A".repeat(43)}`;
+    const shadowKey = "hook:fi-shadow:abc";
+
+    it.each([
+      ["a shadow session without an attestation", { sessionKey: shadowKey }],
+      [
+        "an attestation on another session",
+        { sessionKey: "hook:fi-mail:abc", requesterAttestation: attestation },
+      ],
+      [
+        "a malformed attestation on a shadow session",
+        { sessionKey: shadowKey, requesterAttestation: "fsa:x:short" },
+      ],
+    ])("refuses %s before any run", async (_name, extra) => {
+      const result = await dispatchAgentHook({ ...buildAgentPayload("Shadow"), ...extra });
+      expect(result).toMatchObject({ ok: false, statusCode: 400 });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["deliver", { deliver: true }],
+      ["an announce delivery", { delivery: { mode: "announce", channel: "slack", to: "u1" } }],
+      ["a destination", { to: "u1" }],
+      ["a channel", { channel: "slack" }],
+      ["an account", { accountId: "other-account" }],
+      ["unsafe external content", { allowUnsafeExternalContent: true }],
+    ])("refuses %s on a shadow session whatever the ingress", async (_name, extra) => {
+      const result = await dispatchAgentHook({
+        ...buildAgentPayload("Shadow"),
+        sessionKey: shadowKey,
+        requesterAttestation: attestation,
+        ...extra,
+      });
+      expect(result).toMatchObject({
+        ok: false,
+        statusCode: 400,
+        error: expect.stringMatching(/not accepted|do not accept/),
+      });
+      expect(runCronIsolatedAgentTurnMock).not.toHaveBeenCalled();
+    });
+  });
 });

@@ -1,6 +1,4 @@
-import fs from "node:fs/promises";
 import { expect, it } from "vitest";
-import { runDoctorConfigPreflight } from "../commands/doctor-config-preflight.js";
 import { prepareCronOwnerWriteRefusal } from "../config/io.cron-owner-refusal.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
 import { saveCronJobsStore } from "./store.js";
@@ -24,7 +22,7 @@ it.each([
   ["column-only", "skillCollectionReview", job("retired"), null],
   ["curator", "agentTurn", curator, "skill-collection-review:main"],
 ] as const)(
-  "retires %s legacy rows on an already-current database through mutable load",
+  "quarantines unrecognized %s legacy rows without deleting data",
   (_shape, kind, definition, declaration) =>
     withCronStore("retired-workshop-cron", async (state) => {
       const { storePath } = state;
@@ -52,52 +50,35 @@ it.each([
         );
 
       const readOnly = await state.read();
-      expect(readOnly.invalidConfigRows).toEqual([]);
+      expect(readOnly.invalidConfigRows).toHaveLength(1);
       expect(readOnly.store.jobs.map((entry) => entry.id)).toEqual(["keep"]);
       expect(readOnly.configJobs.map((entry) => entry.id)).toEqual(["keep"]);
-      const guard = await prepareCronOwnerWriteRefusal({}, { storePath, env: state.env });
-      await guard.recheck();
+      await expect(prepareCronOwnerWriteRefusal({}, { storePath, env: state.env })).rejects.toThrow(
+        "ownership cannot be verified",
+      );
       expect(counts(storePath)).toEqual([{ count: 1 }, { count: 1 }]);
       expect((await state.load()).store.jobs.map((entry) => entry.id)).toEqual(["keep"]);
-      expect(counts(storePath)).toEqual([{ count: 0 }, { count: 0 }]);
+      expect(counts(storePath)).toEqual([{ count: 1 }, { count: 1 }]);
       expect(counts(otherStorePath)).toEqual([{ count: 1 }, { count: 1 }]);
       expect(db.prepare("PRAGMA user_version").get()).toEqual(version);
     }),
 );
 
-it("allows writable-update Doctor to persist config repair while the retired row remains on disk", () =>
-  withCronStore(
-    "retired-workshop-doctor",
-    async (state) => {
-      await state.writeConfig({
-        gateway: { mode: "local" },
-        agents: { list: [{ id: "main", default: true }] },
-      });
-      await state.save({ version: 1, jobs: [job("retired")] });
-      const db = openOpenClawStateDatabase().db;
-      db.prepare("UPDATE cron_jobs SET payload_kind = ?, job_json = ? WHERE job_id = ?").run(
-        "skillCollectionReview",
-        JSON.stringify(legacyReview),
-        "retired",
-      );
-
-      const result = await runDoctorConfigPreflight({
-        migrateState: false,
-        migrateLegacyConfig: false,
-        repairPrefixedConfig: true,
-        invalidConfigNote: false,
-      });
-
-      expect(result.snapshot.valid).toBe(true);
-      const persisted = JSON.parse(await fs.readFile(state.configPath, "utf8"));
-      expect(persisted.agents.entries).toHaveProperty("main");
-      expect(persisted.agents).not.toHaveProperty("list");
-      expect(db.prepare("SELECT job_json FROM cron_jobs WHERE job_id = ?").get("retired")).toEqual({
-        job_json: JSON.stringify(legacyReview),
-      });
-    },
-    {
-      OPENCLAW_UPDATE_IN_PROGRESS: "1",
-      OPENCLAW_UPDATE_PARENT_SUPPORTS_DOCTOR_CONFIG_WRITE: "1",
-    },
-  ));
+it("requires explicit repair of an unknown older payload before ownership-sensitive config writes", () =>
+  withCronStore("unknown-workshop-doctor", async (state) => {
+    await state.save({ version: 1, jobs: [job("retired")] });
+    const db = openOpenClawStateDatabase().db;
+    const json = JSON.stringify(legacyReview);
+    db.prepare("UPDATE cron_jobs SET payload_kind = ?, job_json = ? WHERE job_id = ?").run(
+      "skillCollectionReview",
+      json,
+      "retired",
+    );
+    await expect(
+      prepareCronOwnerWriteRefusal({}, { storePath: state.storePath, env: state.env }),
+    ).rejects.toThrow("ownership cannot be verified");
+    await state.load();
+    expect(db.prepare("SELECT job_json FROM cron_jobs WHERE job_id = ?").get("retired")).toEqual({
+      job_json: json,
+    });
+  }));

@@ -2,7 +2,10 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ } from "openclaw/plugin-sdk/realtime-voice";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { XAI_REALTIME_MAX_PENDING_PLAYBACK_MARKS } from "./realtime-voice-config.js";
-import { buildXaiRealtimeVoiceProvider } from "./realtime-voice-provider.js";
+import {
+  buildLiteLlmRealtimeVoiceProvider,
+  buildXaiRealtimeVoiceProvider,
+} from "./realtime-voice-provider.js";
 
 const { FakeWebSocket, isProviderAuthProfileConfiguredAsyncMock, resolveApiKeyForProviderMock } =
   await vi.hoisted(() => import("./realtime-voice-socket.test-support.js"));
@@ -23,13 +26,13 @@ vi.mock("openclaw/plugin-sdk/provider-auth-runtime", () => ({
 
 import {
   createTestBridge as buildTestBridge,
-  type FakeWebSocketInstance,
-  type TestBridgeOptions,
   openRealtimeBridge,
   parseSent,
   requireSession,
   requireSocket,
   waitForRealtimeState,
+  type FakeWebSocketInstance,
+  type TestBridgeOptions,
 } from "./realtime-voice-provider.test-support.js";
 
 const bridges: ReturnType<typeof buildTestBridge>[] = [];
@@ -56,18 +59,6 @@ function responseCreated(socket: FakeWebSocketInstance, id?: string) {
 function ready(socket: FakeWebSocketInstance) {
   socket.open();
   server(socket, "session.updated");
-}
-
-function transcript(socket: FakeWebSocketInstance, event: string, data: object) {
-  server(socket, `conversation.item.input_audio_transcription.${event}`, data);
-}
-
-function finalTranscripts(onTranscript: ReturnType<typeof vi.fn>) {
-  return onTranscript.mock.calls.filter((call) => call[2]);
-}
-
-function snapshot(text: string) {
-  return ["user", text, true, { textMode: "snapshot" }];
 }
 
 function observers() {
@@ -134,13 +125,6 @@ function audio(
   delta = Buffer.alloc(8000).toString("base64"),
 ) {
   server(socket, "response.output_audio.delta", { item_id: itemId, delta });
-}
-
-function inputTranscript(socket: FakeWebSocketInstance, text: string, itemId?: string) {
-  server(socket, "conversation.item.input_audio_transcription.completed", {
-    item_id: itemId,
-    transcript: text,
-  });
 }
 
 function responseDone(socket: FakeWebSocketInstance, id?: string, status = "completed") {
@@ -491,34 +475,77 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     expect(FakeWebSocket.instances).toHaveLength(0);
   });
 
-  it("forwards standard incremental input-transcription events", async () => {
-    const { socket, onTranscript } = await observe("onTranscript");
-    transcript(socket, "delta", { item_id: "item_speech", delta: "open claw" });
-    expect(onTranscript).toHaveBeenCalledWith("user", "open claw", false);
+  it("sends nested xAI session.update audio formats for g711 bridges", async () => {
+    vi.stubEnv("XAI_API_KEY", "xai-env"); // pragma: allowlist secret
+    const bridge = createTestBridge({
+      audioFormat: { encoding: "g711_ulaw", sampleRateHz: 8000, channels: 1 },
+      language: "en",
+    });
+
+    const { socket } = await startRealtimeBridge(bridge);
+    await bridge.close();
+
+    const session = requireSession(socket);
+    expect(session.audio).toEqual({
+      input: {
+        format: { type: "audio/pcmu" },
+        transcription: { model: "grok-transcribe", language_hint: "en" },
+      },
+      output: { format: { type: "audio/pcmu" } },
+    });
   });
 
-  it("surfaces input transcription failures and discards their stale replacement text", async () => {
-    const { socket, onTranscript, onError, onEvent } = await observe(
-      "onTranscript",
-      "onError",
-      "onEvent",
-    );
-    transcript(socket, "updated", { item_id: "item_speech", transcript: "stale speech" });
-    transcript(socket, "failed", {
-      item_id: "item_speech",
-      error: { code: "decoder_failure", message: "speech decoder exploded" },
+  it("only forwards xAI VAD values accepted by the realtime API", async () => {
+    const cases = [
+      {
+        options: { vadThreshold: 1, silenceDurationMs: 10_001, prefixPaddingMs: -1 },
+        expected: { threshold: 0.85, silence_duration_ms: 500, prefix_padding_ms: 333 },
+      },
+      {
+        options: { vadThreshold: 0.9, silenceDurationMs: 10_000, prefixPaddingMs: 0 },
+        expected: { threshold: 0.9, silence_duration_ms: 10_000, prefix_padding_ms: 0 },
+      },
+    ];
+
+    for (const [index, { options, expected }] of cases.entries()) {
+      const bridge = createTestBridge({
+        providerConfig: {
+          apiKey: "xai-test", // pragma: allowlist secret
+          ...options,
+        },
+      });
+      const { socket } = await startRealtimeBridge(bridge, index);
+      await bridge.close();
+      expect(requireSession(socket).turn_detection).toEqual(expect.objectContaining(expected));
+    }
+  });
+
+  it("only forwards reasoning efforts accepted by the xAI Voice Agent API", async () => {
+    const provider = buildXaiRealtimeVoiceProvider();
+    const callbacks = { onAudio: vi.fn(), onClearAudio: vi.fn() };
+    resolveApiKeyForProviderMock.mockResolvedValue({ apiKey: "test" });
+
+    expect(() =>
+      provider.createBridge({
+        providerConfig: {
+          reasoningEffort: "low",
+        },
+        ...callbacks,
+      }),
+    ).toThrow('reasoningEffort must be "high" or "none"');
+    expect(FakeWebSocket.instances).toHaveLength(0);
+
+    const bridge = provider.createBridge({
+      providerConfig: {
+        reasoningEffort: "none",
+      },
+      ...callbacks,
     });
-    transcript(socket, "completed", { item_id: "item_speech" });
-    expect(onError).toHaveBeenCalledWith(
-      expect.objectContaining({ message: "speech decoder exploded" }),
-    );
-    expect(onTranscript).not.toHaveBeenCalled();
-    expect(onEvent).toHaveBeenCalledWith({
-      direction: "server",
-      type: "conversation.item.input_audio_transcription.failed",
-      itemId: "item_speech",
-      detail: "speech decoder exploded",
-    });
+
+    const { socket } = await startRealtimeBridge(bridge);
+    await bridge.close();
+
+    expect(requireSession(socket).reasoning).toEqual({ effort: "none" });
   });
 
   it.each([false, true])(
@@ -619,6 +646,8 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     for (const index of [0, 1, 0] as const) {
       toolArguments(socket, `item_${index}`, `call_${index}`, invalid[index], "lookup");
     }
+
+    socket.emitServer(invalidEvents[0]);
     responseDone(socket);
     expect(onToolCall).not.toHaveBeenCalled();
     expect(
@@ -641,6 +670,89 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     server(socket, "response.done");
     bridge.sendUserMessage?.("Continue.");
     expectTail(socket, userMessageEvent("Continue."), { type: "response.create" });
+  });
+
+  it("clears Gemini barge-in playback without sending unsupported truncate events", async () => {
+    const onAudio = vi.fn();
+    const onClearAudio = vi.fn();
+    const provider = buildLiteLlmRealtimeVoiceProvider();
+    const bridge = provider.createBridge({
+      providerConfig: {
+        apiKey: "litellm-fi-test-key", // pragma: allowlist secret
+        baseUrl: "http://192.168.5.139:4000/v1",
+        model: "gemini-3.8-live",
+      },
+      onAudio,
+      onClearAudio,
+    });
+    const connecting = bridge.connect();
+    await waitForRealtimeState(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    const socket = requireSocket();
+    socket.open();
+    socket.emitServer({ type: "session.updated" });
+    await connecting;
+
+    bridge.setMediaTimestamp(1000);
+    socket.emitServer({ type: "response.created", response: { id: "gemini-response" } });
+    socket.emitServer({
+      type: "response.output_audio.delta",
+      item_id: "gemini-audio-item",
+      delta: Buffer.alloc(1200).toString("base64"),
+    });
+    socket.emitServer({ type: "input_audio_buffer.speech_started" });
+
+    expect(onAudio).toHaveBeenCalledTimes(1);
+    expect(onClearAudio).toHaveBeenCalledWith("barge-in");
+    expect(parseSent(socket).some((event) => event.type === "conversation.item.truncate")).toBe(
+      false,
+    );
+    bridge.close();
+  });
+
+  it("preserves valid realtime tool results with one canonical serialization", async () => {
+    const bridge = createTestBridge({ onToolCall: vi.fn() });
+    const socket = await openRealtimeBridge(bridge);
+    const customSerialization = vi.fn((key: string) => ({ key }));
+    const values: unknown[] = [
+      null,
+      false,
+      0,
+      "",
+      "text",
+      [1],
+      { ok: true },
+      {
+        toJSON: customSerialization,
+      },
+    ];
+
+    for (const [index, result] of values.entries()) {
+      const callId = `call_${index}`;
+      socket.emitServer({
+        type: "response.function_call_arguments.done",
+        item_id: `item_${callId}`,
+        name: "openclaw_agent_consult",
+        call_id: callId,
+        arguments: "{}",
+      });
+      await bridge.submitToolResult(callId, result, { suppressResponse: true });
+    }
+
+    const outputs = parseSent(socket)
+      .filter((event) => event.type === "conversation.item.create")
+      .map((event) => (event.item as { output: string }).output);
+    expect(outputs).toEqual([
+      "null",
+      "false",
+      "0",
+      '""',
+      '"text"',
+      "[1]",
+      '{"ok":true}',
+      '{"key":""}',
+    ]);
+    expect(customSerialization).toHaveBeenCalledExactlyOnceWith("");
+    await bridge.close();
   });
 
   it("rejects an undefined tool result before transport ownership changes", async () => {
@@ -966,67 +1078,6 @@ describe("buildXaiRealtimeVoiceProvider", () => {
     ]);
     expect(onResponseDone).toHaveBeenCalledTimes(2);
   });
-
-  it("previews snapshots immediately and retains corrections after audio starts", async () => {
-    const { socket, onTranscript } = await observe("onTranscript");
-    server(socket, "input_audio_buffer.speech_started");
-    responseCreated(socket, "response-1");
-    inputTranscript(socket, "How");
-    expect(onTranscript).toHaveBeenLastCalledWith("user", "How", false, { textMode: "snapshot" });
-    audio(socket, undefined, "AAA=");
-    inputTranscript(socket, "How big is Earth?");
-    responseDone(socket, "response-1");
-    inputTranscript(socket, "How big is Earth?");
-    expect(finalTranscripts(onTranscript)).toEqual([snapshot("How big is Earth?")]);
-  });
-
-  it("preserves distinct late input items and repeated words in separate utterances", async () => {
-    const { socket, onTranscript } = await observe("onTranscript");
-    server(socket, "input_audio_buffer.speech_started");
-    inputTranscript(socket, "Again", "late-A");
-    inputTranscript(socket, "Again", "B");
-    responseCreated(socket, "response-B");
-    responseDone(socket, "response-B");
-    expect(finalTranscripts(onTranscript)).toEqual([snapshot("Again"), snapshot("Again")]);
-  });
-
-  it("preserves pending spoken input when the response fails without duplicating it on close", async () => {
-    const { bridge, socket, onTranscript } = await observe("onTranscript");
-    inputTranscript(socket, "Check the sensor");
-    responseCreated(socket, "response-1");
-    responseDone(socket, "response-1", "failed");
-    expect(finalTranscripts(onTranscript)).toEqual([snapshot("Check the sensor")]);
-    await bridge.close();
-    expect(finalTranscripts(onTranscript)).toHaveLength(1);
-  });
-
-  it("keeps a pending snapshot when a different input item fails transcription", async () => {
-    const { socket, onError, onTranscript } = await observe("onError", "onTranscript");
-    server(socket, "input_audio_buffer.speech_started");
-    responseCreated(socket, "one");
-    inputTranscript(socket, "Read the gauge", "b");
-    transcript(socket, "failed", {
-      item_id: "a",
-      error: { message: "recognition failed" },
-    });
-    expect(onError).toHaveBeenCalledOnce();
-    responseDone(socket, "one");
-    expect(finalTranscripts(onTranscript)).toEqual([snapshot("Read the gauge")]);
-  });
-
-  it("settles input recognized after the response finished once it stops changing", async () => {
-    const { socket, onTranscript } = await observe("onTranscript");
-    server(socket, "input_audio_buffer.speech_started");
-    responseCreated(socket, "one");
-    responseDone(socket, "one");
-    vi.useFakeTimers();
-    inputTranscript(socket, "Check the", "u1");
-    vi.advanceTimersByTime(1_000);
-    inputTranscript(socket, "Check the sensor", "u1");
-    vi.advanceTimersByTime(1_000);
-    expect(finalTranscripts(onTranscript)).toEqual([]);
-    vi.advanceTimersByTime(500);
-    expect(finalTranscripts(onTranscript)).toEqual([snapshot("Check the sensor")]);
-    vi.useRealTimers();
-  });
 });
+
+/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

@@ -110,7 +110,13 @@ function projectPendingFinalDeliveryState(
   const receipt = terminal
     ? deliveries[index]!.receipt
     : settled === "delivered" && validResult
-      ? { platformMessageId, resultCount: result.resultCount ?? 1 }
+      ? {
+          platformMessageId,
+          resultCount: result.resultCount ?? 1,
+          ...(result.finalPlatformMessageId?.trim()
+            ? { finalPlatformMessageId: result.finalPlatformMessageId.trim() }
+            : {}),
+        }
       : undefined;
   const updatedDeliveries = deliveries.with(index, {
     id: input.deliveryId,

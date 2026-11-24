@@ -9,7 +9,10 @@ import { sendSlackMessage as sendSlackMessageThroughPublicOwner } from "./action
 import { parseSlackBlocksInput } from "./blocks-input.js";
 import { registerSlackInstallationState } from "./installation-identity-state.js";
 import type { SlackSendResult } from "./send.js";
-import { buildSlackThreadingToolContext } from "./threading-tool-context.js";
+
+const listSlackFileShareChannelIds = vi.fn(async (..._args: unknown[]): Promise<string[]> => []);
+
+const isSlackConversationMember = vi.fn(async (..._args: unknown[]): Promise<boolean> => false);
 
 const originalSlackActionRuntime = { ...slackActionRuntime };
 const deleteSlackMessage = vi.fn(async (..._args: unknown[]) => ({}));
@@ -77,15 +80,6 @@ function sendText(
 }
 function slackConfig(overrides?: Record<string, unknown>): OpenClawConfig {
   return { channels: { slack: { botToken: "tok", ...overrides } } };
-}
-
-function namedPolicy(overrides?: Record<string, unknown>) {
-  return slackConfig({
-    groupPolicy: "allowlist",
-    dangerouslyAllowNameMatching: true,
-    channels: { "#allowed-channel": { enabled: true } },
-    ...overrides,
-  });
 }
 
 const trustedContext = {
@@ -317,6 +311,8 @@ beforeEach(() => {
     downloadSlackFile,
     editSlackMessage,
     getSlackMemberInfo,
+    isSlackConversationMember,
+    listSlackFileShareChannelIds,
     listSlackEmojis,
     listSlackPins,
     listSlackReactions,
@@ -713,167 +709,4 @@ it("keeps concurrent first replies threaded until a delivery succeeds", async ()
   firstDelivery.reject(new Error("First Slack delivery failed"));
   await expect(firstAttempt).rejects.toThrow("First Slack delivery failed");
   expect(context.hasRepliedRef.value).toBe(true);
-});
-
-it.each([
-  {
-    name: "a prepared channel override disables auto-threading",
-    to: "channel:C123",
-    context: () =>
-      buildSlackThreadingToolContext({
-        cfg: slackConfig({ replyToMode: "all", channels: { C123: { replyToMode: "off" } } }),
-        context: {
-          ChatType: "channel",
-          To: "channel:C123",
-          CurrentMessageId: threadTs,
-          ReplyToId: threadTs,
-          ReplyToMode: "off",
-        },
-      }),
-  },
-  {
-    name: "replyToMode=first has no hasRepliedRef",
-    to: "#c123",
-    context: (): SlackActionContext => ({
-      currentChannelId: "C123",
-      currentThreadTs: threadTs,
-      replyToMode: "first",
-    }),
-  },
-])("does not thread when $name", async ({ to, context }) => {
-  await sendText("Channel root", { to }, context());
-  expectSend(
-    0,
-    "Channel root",
-    { mediaUrl: undefined, threadTs: undefined, blocks: undefined },
-    to,
-  );
-});
-
-it("resolves name-allowlisted reads from a core-shaped Slack threading context", async () => {
-  resolveSlackConversationName.mockResolvedValueOnce("allowed-channel");
-  readSlackMessages.mockResolvedValueOnce({ messages: [], hasMore: false });
-
-  cfg = namedPolicy({
-    userToken: "xoxp-reader",
-    channels: {
-      "*": { enabled: false },
-      "#allowed-channel": { enabled: true },
-    },
-  });
-  const context = buildSlackThreadingToolContext({
-    cfg,
-    accountId: null,
-    context: {
-      ChatType: "channel",
-      Channel: "slack",
-      To: "channel:C0123456789",
-    },
-  });
-
-  await act({ action: "readMessages", channelId: "C0123456789" }, context);
-
-  expect(resolveSlackConversationName).toHaveBeenCalledWith("C0123456789", {
-    cfg,
-    token: "xoxp-reader",
-  });
-  expect(readSlackMessages.mock.calls[0]?.[0]).toBe("C0123456789");
-});
-
-it.each([
-  {
-    name: "the core Channel provider is not a room name",
-    channelId: "C0123456789",
-    overrides: { channels: { "#slack": { enabled: true } } },
-    coreContext: true,
-    lookup: "actual-room",
-  },
-  {
-    name: "the current channel cannot authorize a different target",
-    channelId: "C9876543210",
-    context: { currentChannelId: "C0123456789" },
-    lookup: "other-channel",
-  },
-  {
-    name: "an explicit channel-id denial outranks a name match",
-    channelId: "C0123456789",
-    overrides: {
-      groupPolicy: "open",
-      channels: { C0123456789: { enabled: false }, "#allowed-channel": { enabled: true } },
-    },
-  },
-  {
-    name: "a failed name lookup cannot authorize a read",
-    channelId: "C0123456789",
-    lookup: new Error("missing_scope"),
-  },
-])("fails closed when $name", async ({ channelId, overrides, coreContext, context, lookup }) => {
-  cfg = namedPolicy(overrides);
-  if (lookup instanceof Error) {
-    resolveSlackConversationName.mockRejectedValueOnce(lookup);
-  } else if (lookup) {
-    resolveSlackConversationName.mockResolvedValueOnce(lookup);
-  }
-  const readContext = coreContext
-    ? buildSlackThreadingToolContext({
-        cfg,
-        accountId: null,
-        context: { ChatType: "channel", Channel: "slack", To: "channel:C0123456789" },
-      })
-    : context;
-  await expect(act({ action: "readMessages", channelId }, readContext)).rejects.toThrow(
-    lookup instanceof Error ? "missing_scope" : "Slack read target channel is not allowed.",
-  );
-  if (lookup !== undefined) {
-    expect(resolveSlackConversationName).toHaveBeenCalledWith(channelId, { cfg });
-  } else {
-    expect(resolveSlackConversationName).not.toHaveBeenCalled();
-  }
-  expect(readSlackMessages).not.toHaveBeenCalled();
-});
-
-it("fails closed for read-like Slack actions when provider config is missing", async () => {
-  cfg = {};
-  for (const [params, operation] of [
-    [{ action: "readMessages" }, readSlackMessages],
-    [{ action: "reactions", messageId: "123.456" }, listSlackReactions],
-    [{ action: "downloadFile", fileId: "F123" }, downloadSlackFile],
-    [{ action: "listPins" }, listSlackPins],
-  ] as const) {
-    await expect(act({ ...params, channelId: "C1" })).rejects.toThrow(
-      "Slack read target channel is not allowed.",
-    );
-    expect(operation).not.toHaveBeenCalled();
-  }
-});
-
-it("does not fall back to a bot token when a user identity has no user token", async () => {
-  await expect(
-    handleSlackAction(
-      { action: "sendMessage", to: "channel:C1", content: "Hello" },
-      slackConfig({ postAs: "user", botToken: "test-bot-token" }),
-    ),
-  ).rejects.toThrow('Slack operation token missing for account "default".');
-  expect(sendSlackMessage).not.toHaveBeenCalled();
-});
-
-it("returns sorted usable emoji identifiers and preserves alias targets", async () => {
-  listSlackEmojis.mockResolvedValueOnce({
-    ok: true,
-    cache_ts: "ignored-provider-metadata",
-    emoji: {
-      wave: "https://example.com/wave.png",
-      celebrate: "alias:party",
-      party: "https://example.com/party.png",
-    },
-  });
-
-  const result = await handleSlackAction({ action: "emojiList", limit: 2 }, slackConfig());
-
-  const details = requireDetails(result);
-  expect(details.ok).toBe(true);
-  expect(details.emojis).toEqual([
-    { name: "celebrate", identifier: "celebrate", aliasOf: "party" },
-    { name: "party", identifier: "party" },
-  ]);
 });

@@ -22,6 +22,7 @@ import type { SessionEntryCohortReader } from "../config/sessions/session-entry-
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-authority.types.js";
 import type { DiagnosticEmbeddedRunOwner } from "../infra/diagnostic-model-request-provenance.js";
+import type { VerifiedRunStopActor } from "../infra/run-stop-actor.js";
 import type { Context, Model } from "../llm/types.js";
 import type { Deferred, createDeferredCore } from "../shared/deferred.js";
 import type { OpenClawAgentDatabaseIdentity } from "../state/openclaw-agent-db-identity.js";
@@ -285,7 +286,7 @@ export type ReplyOperation = {
     cause?: unknown,
   ): void;
   abort(reason?: unknown): boolean;
-  abortByUser(): boolean;
+  abortByUser(stopActor?: VerifiedRunStopActor): boolean;
   abortForRestart(): boolean;
   /** Watchdog-only terminal attribution; committed outcomes require cleanup, not Stop. */
   abortForStall(): boolean;
@@ -293,38 +294,6 @@ export type ReplyOperation = {
 };
 
 export const REPLY_RUN_IDLE_SETTLE_TIMEOUT_MS = 15_000;
-
-export class ReplyRunAlreadyActiveError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply run already active for ${sessionKey}`);
-    this.name = "ReplyRunAlreadyActiveError";
-  }
-}
-
-/** A mutation or finishing owner fences admission without owning an active run. */
-export class ReplyRunLifecycleAdmissionBlockedError extends Error {
-  constructor(
-    sessionKey: string,
-    readonly databaseIncarnation?: string,
-  ) {
-    super(`Session "${sessionKey}" changed during turn admission. Retry.`);
-    this.name = "ReplyRunLifecycleAdmissionBlockedError";
-  }
-}
-
-export class ReplyRunFollowupAdmissionBlockedError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply follow-up admission is blocked for ${sessionKey}`);
-    this.name = "ReplyRunFollowupAdmissionBlockedError";
-  }
-}
-
-export class ReplyRunSuccessorAdmissionBlockedError extends Error {
-  constructor(sessionKey: string) {
-    super(`Reply successor admission is blocked for ${sessionKey}`);
-    this.name = "ReplyRunSuccessorAdmissionBlockedError";
-  }
-}
 
 export const sessionControllerOperationState = Symbol.for(
   "openclaw.sessionController.operationState",
@@ -720,6 +689,7 @@ export type ReplyOperationRunState = {
   questionInputHandled?: true;
   messageInjectionAborted?: true;
   agentTurn?: ReturnType<typeof resolveAgentTurnExecutionStatus>;
+  agentTurnAbortReason?: "user" | "restart" | "superseded";
   agentTurnOwner?: ReplyOperation;
   messagingToolSentTargets?: MessagingToolSend[];
   backgroundWorkStarted?: boolean;
@@ -790,8 +760,11 @@ export type EmbeddedAgentQueueHandle = {
   supportsQueueMessageImages?: boolean;
   /** False keeps inbound steering with the turn owner's profile; omission permits other profiles. */
   readonly supportsCrossProfileSteering?: boolean;
-  cancel?: (reason?: "user_abort" | "restart" | "superseded") => void;
-  abort: (reason?: "restart") => void;
+  cancel?: (
+    reason?: "user_abort" | "restart" | "superseded",
+    stopActor?: VerifiedRunStopActor,
+  ) => void;
+  abort: (reason?: "restart", stopActor?: VerifiedRunStopActor) => void;
   sourceReplyDeliveryMode?: ReplyBackendHandle["sourceReplyDeliveryMode"];
   terminalReplyExpectation?: ReplyExpectation;
   supportsUserReplyPromotion?: boolean;
@@ -875,3 +848,10 @@ export type CapturedSessionControllerEffect = Readonly<{
   released: Promise<void>;
   interrupt(reason: Error): Readonly<{ interrupted: true; run?: SessionWorkRun }> | undefined;
 }>;
+
+export {
+  ReplyRunAlreadyActiveError,
+  ReplyRunLifecycleAdmissionBlockedError,
+  ReplyRunFollowupAdmissionBlockedError,
+  ReplyRunSuccessorAdmissionBlockedError,
+} from "./session-controller.errors.js";

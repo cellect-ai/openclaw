@@ -19,7 +19,7 @@ export function recordEmbeddedToolTrajectoryEvent(
       recorder.recordEvent("tool.call", {
         toolCallId: event.toolCallId,
         name: normalizeToolPolicyName(event.toolName),
-        args: event.args,
+        args: projectToolArgumentEnvironment(event.args),
       });
     } else if (event.type === "tool_execution_end") {
       const name = normalizeToolPolicyName(event.toolName);
@@ -36,3 +36,4 @@ export function recordEmbeddedToolTrajectoryEvent(
     ctx.log.debug(`tool trajectory capture failed: ${String(error)}`);
   }
 }
+import { projectToolArgumentEnvironment } from "../logging/tool-argument-environment.js";

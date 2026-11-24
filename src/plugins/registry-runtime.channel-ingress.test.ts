@@ -9,7 +9,11 @@ import {
   type ChannelAdmissionAudit,
 } from "../channels/message-access/admission-evidence.js";
 import type { ResolvedChannelMessageIngress } from "../channels/message-access/runtime-types.js";
-import type { GatewayRequestContext } from "../gateway/server-methods/types.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
+import type {
+  GatewayContextResolver,
+  GatewayRequestContext,
+} from "../gateway/server-methods/types.js";
 import {
   createChannelIngressResolver,
   defineStableChannelIngressIdentity,
@@ -19,6 +23,11 @@ import {
 import { recordAcceptedSessionParticipantInput } from "../sessions/session-participant-input-recording.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { createChannelTestPluginBase } from "../test-utils/channel-plugins.js";
+import {
+  bindLegacyPluginSdkResourceHost,
+  getBoundLegacyPluginSdkResourceHost,
+  LegacyPluginSdkResourceHost,
+} from "./legacy-sdk-resource-host.js";
 import { createLazyPluginRuntime } from "./loader-module-runtime.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
@@ -39,6 +48,7 @@ import {
   getPluginRuntimeGatewayRequestScope,
   hasGatewayContextOwner,
   withPluginRuntimeRegistryScope,
+  withPluginRuntimeGatewayContextResolver,
 } from "./runtime/gateway-request-scope.js";
 import { createPluginRuntime } from "./runtime/index.js";
 import type { PluginRuntime } from "./runtime/types.js";
@@ -239,6 +249,7 @@ type LegacyIngressMethod = "direct" | "stable" | "factory";
 function createLegacyReceiver(
   params: {
     audit?: ChannelAdmissionAudit;
+    gatewayContextResolver?: GatewayContextResolver;
     trusted?: boolean;
     readStoreAllowFrom?: () => Promise<string[]>;
   } = {},
@@ -268,6 +279,7 @@ function createLegacyReceiver(
     origin: "global",
     trustedOfficialInstall: params.trusted !== false,
     audit,
+    gatewayContextResolver: params.gatewayContextResolver,
     prepare: (api) => {
       const descriptor = defineStableChannelIngressIdentity(identity);
       // The released factory is created before registerChannel publishes its owner.
@@ -312,6 +324,66 @@ function createLegacyReceiver(
 }
 
 describe("bundled channel ingress runtime ownership", () => {
+  it.each(["direct", "stable", "factory"] as const)(
+    "preserves the released %s helper through a trusted external channel callback",
+    async (method) => {
+      const audit = createChannelAdmissionAudit({ enabled: true });
+      const gateway = { channelAdmissionAudit: audit } as GatewayRequestContext;
+      const resolveGatewayContext = () => gateway;
+      const host = new LegacyPluginSdkResourceHost();
+      const foreignHost = new LegacyPluginSdkResourceHost();
+      bindLegacyPluginSdkResourceHost(resolveGatewayContext, host);
+      const channel = createLegacyReceiver({
+        audit,
+        gatewayContextResolver: resolveGatewayContext,
+      });
+      try {
+        recordParticipant.mockClear();
+        const context = await channel.receive(channel.resolvers[method]);
+        expect(inspect(context)).toMatchObject({
+          ingressState: "present",
+          invoker: { state: "present", kind: "person" },
+          decisionCoverage: "enforced",
+        });
+        expect(readChannelContextGatewayContextResolver(context)?.()?.channelAdmissionAudit).toBe(
+          audit,
+        );
+        const resolver = readChannelContextGatewayContextResolver(context);
+        expect(resolver).toBeDefined();
+        expect(
+          foreignHost.run(() =>
+            withPluginRuntimeGatewayContextResolver(resolver, () =>
+              getBoundLegacyPluginSdkResourceHost(),
+            ),
+          ),
+        ).toBe(host);
+        recordAcceptedSessionParticipantInput(context, {
+          agentId: "main",
+          sessionKey: "agent:main:channel-owner:dm:dm-1",
+          storePath: "/unused",
+        });
+        expect(recordParticipant).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            identity: {
+              type: "remote",
+              pluginId: "channel-owner",
+              domain: "workspace-one",
+              idKind: "user-id",
+              id: "person-a",
+            },
+          }),
+        );
+        await channel.dispose();
+        expect(resolver?.()).toBeUndefined();
+      } finally {
+        await channel.dispose();
+        await host.close();
+        await foreignHost.close();
+        audit.close();
+      }
+    },
+  );
+
   it("never binds a registration-time factory to another live instance of the same channel", async () => {
     const first = createLegacyReceiver();
     const second = createLegacyReceiver();

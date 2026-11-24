@@ -1,5 +1,6 @@
 import { resolveIntegerOption } from "@openclaw/normalization-core/number-coercion";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { GATEWAY_CLIENT_MODES } from "../../../packages/gateway-protocol/src/client-info.js";
 import {
   ErrorCodes,
   errorShape,
@@ -9,6 +10,8 @@ import type { NativeSubagentsSnapshot } from "../../../packages/gateway-protocol
 import { validateNativeSubagentsSnapshot } from "../../../packages/gateway-protocol/src/session-result-validators.js";
 import { captureAgentHarnessLifecycleHooks } from "../../agents/harness/registry-lifecycle.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
+import { isBrowserOperatorUiClient, isWebchatClient } from "../../utils/message-channel.js";
+import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
 import { projectOperatorModelRead } from "../operator-model-presentation.js";
 import { hasOperatorBoundary } from "../operator-role-policy.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
@@ -20,6 +23,7 @@ import {
   createSessionListEntryFilter,
 } from "../session-sharing.js";
 import { readRecentSessionMessagesWithStatsAsync } from "../session-transcript-readers.js";
+import { describeThreadContinuation } from "../thread-continuation.js";
 import { createVisibleActiveSessionRunProjector } from "./session-active-runs.js";
 import { requireSessionKey } from "./sessions-shared.js";
 import type { GatewayRequestHandlers } from "./types.js";
@@ -42,6 +46,107 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       return;
     }
     const projection = requireSessionRowProjection(context);
+    if (params.includeThreadContinuation) {
+      const approvedClientInfo = client?.pairedClientId
+        ? { ...client.connect.client, id: client.pairedClientId }
+        : client?.connect.client;
+      if (
+        isBrowserOperatorUiClient(approvedClientInfo) ||
+        isWebchatClient(approvedClientInfo) ||
+        client?.connect.client.mode !== GATEWAY_CLIENT_MODES.BACKEND ||
+        client.connect.role !== "operator" ||
+        client.internal?.syntheticClient
+      ) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.FORBIDDEN,
+            "Thread continuation observations require an authenticated backend operator.",
+          ),
+        );
+        return;
+      }
+      const selectedAgent = resolveRequestedSessionAgentId(
+        context.getRuntimeConfig(),
+        key,
+        params.agentId,
+        "read",
+      );
+      if (!selectedAgent.ok) {
+        respond(false, undefined, selectedAgent.error);
+        return;
+      }
+      const assertCurrent = () => {
+        signal?.throwIfAborted();
+        sessionMutationAuthorization?.assertCurrent();
+        client.connectionSignal?.throwIfAborted();
+        if (client.invalidated) throw new Error("Thread observation caller changed");
+      };
+      try {
+        const threadContinuation = await describeThreadContinuation({
+          context,
+          owner: { agentId: selectedAgent.agentId, sessionKey: key },
+          assertCurrent,
+          assertVisible: async (rows) => {
+            await withReadySessionRows(
+              projection,
+              () =>
+                rows.map((row) => ({
+                  key: row.key,
+                  agentId: row.agentId,
+                  storePath: row.storeTarget.storePath,
+                })),
+              (read) => {
+                assertCurrent();
+                const presentation = prepareSessionRowPublication(
+                  projection,
+                  Date.now(),
+                  read,
+                )(
+                  client,
+                  createVisibleActiveSessionRunProjector(
+                    read.state.rowContext.projectedAgentRuns,
+                    undefined,
+                    context.resolveGatewayContext,
+                    read.physicalPaths,
+                  ),
+                ).getPresentation();
+                for (const row of rows) {
+                  const query = {
+                    key: row.key,
+                    agentId: row.agentId,
+                    storePath: row.storeTarget.storePath,
+                  };
+                  const denied = presentation.authorizeDescription(query);
+                  const current = read.describe(query, row);
+                  if (
+                    denied ||
+                    !current ||
+                    !presentation.sharing.canReadTarget(presentation.target(query)!)
+                  ) {
+                    throw new Error("Complete thread membership is not available to this caller.");
+                  }
+                }
+              },
+            );
+          },
+        });
+        assertCurrent();
+        respond(true, { threadContinuation });
+      } catch (error) {
+        respond(
+          false,
+          undefined,
+          errorShape(
+            ErrorCodes.UNAVAILABLE,
+            error instanceof Error ? error.message : "Thread observation unavailable",
+          ),
+        );
+      }
+      return;
+    }
+
     const queries = (cfg: Parameters<typeof resolveRequestedSessionAgentId>[0]) => {
       const agent = resolveRequestedSessionAgentId(cfg, key, params.agentId, "read");
       const denied = authorizeIncognitoSessionTarget({
@@ -85,6 +190,12 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
       const record = read.describe(query);
       if (
         !record ||
+        !isBrowserSessionReadAllowed({
+          cfg: read.state.policyConfig,
+          client,
+          sessionKey: record.key,
+          sessionEntry: record.entry,
+        }) ||
         (hasOperatorBoundary(client, read.state.policyConfig) &&
           !presentation.sharing.canReadTarget(presentation.target(query)!))
       ) {
@@ -181,6 +292,12 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
           const current = read.describe(query, selected);
           if (
             !current ||
+            !isBrowserSessionReadAllowed({
+              cfg: read.state.policyConfig,
+              client,
+              sessionKey: current.key,
+              sessionEntry: current.entry,
+            }) ||
             current.entry.sessionId !== selected.entry.sessionId ||
             current.entry.lifecycleRevision !== selected.entry.lifecycleRevision ||
             (hasOperatorBoundary(client, read.state.policyConfig) &&
@@ -249,7 +366,16 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
             membership: record?.membership,
           })
         : undefined;
-      if (!record?.entry.sessionId || boundaryFilter?.(record.key, record.entry) === false) {
+      if (
+        !record?.entry.sessionId ||
+        !isBrowserSessionReadAllowed({
+          cfg: policyConfig,
+          client,
+          sessionKey: record.key,
+          sessionEntry: record.entry,
+        }) ||
+        boundaryFilter?.(record.key, record.entry) === false
+      ) {
         respond(true, { messages: [] }, undefined);
         return undefined;
       }
@@ -295,6 +421,12 @@ export const sessionByKeyReadHandlers: GatewayRequestHandlers = {
         : undefined;
       if (
         !current ||
+        !isBrowserSessionReadAllowed({
+          cfg: policyConfig,
+          client,
+          sessionKey: current.key,
+          sessionEntry: current.entry,
+        }) ||
         current.agentId !== selected.agentId ||
         current.key !== selected.key ||
         current.storeTarget.storePath !== selected.storeTarget.storePath ||

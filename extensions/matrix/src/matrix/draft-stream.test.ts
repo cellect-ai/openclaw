@@ -320,4 +320,114 @@ describe("createMatrixDraftStream", () => {
     expect(stream.eventId()).toBeUndefined();
     expectLogContaining(log, "preview exceeded single-event limit");
   });
+
+  it("falls back to normal delivery when preview text exceeds one Matrix event", async () => {
+    const log = vi.fn();
+    sendModuleMocks.prepareMatrixSingleText.mockReturnValue({
+      trimmedText: "123456",
+      convertedText: "123456",
+      singleEventLimit: 5,
+      fitsInSingleEvent: false,
+    });
+    const stream = createMatrixDraftStream({
+      roomId: "!room:test",
+      client,
+      cfg: {} as import("../types.js").CoreConfig,
+      log,
+    });
+
+    stream.update("123456", "answer");
+    await stream.flush();
+
+    expect(sendMessageMock).not.toHaveBeenCalled();
+    expect(stream.eventId()).toBeUndefined();
+    expectLogContaining(log, "preview exceeded single-event limit");
+  });
+
+  it("bypasses newline chunking for the draft preview message", async () => {
+    const stream = createMatrixDraftStream({
+      roomId: "!room:test",
+      client,
+      cfg: {} as import("../types.js").CoreConfig,
+    });
+
+    stream.update("line 1\nline 2", "answer");
+    await stream.flush();
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendModuleMocks.sendSingleTextMessageMatrix.mock.calls[0]?.[1]).toBe("line 1\nline 2");
+  });
+
+  it("labels progress and answer frames independently of the live marker", async () => {
+    const stream = createMatrixDraftStream({
+      roomId: "!room:test",
+      client,
+      cfg: {} as import("../types.js").CoreConfig,
+    });
+
+    stream.update("Reading the ledger", "progress");
+    await stream.flush();
+    vi.advanceTimersByTime(1000);
+    stream.update("The loan covers approved soft costs", "answer");
+    await stream.flush();
+    await stream.stop();
+    await stream.finalizeLive();
+
+    expect(sendModuleMocks.sendSingleTextMessageMatrix.mock.calls[0]?.[2]).toMatchObject({
+      streamPhase: "progress",
+    });
+    expect(sendModuleMocks.editMessageMatrix.mock.calls[0]?.[3]).toMatchObject({
+      streamPhase: "answer",
+      live: true,
+    });
+    expect(sendModuleMocks.editMessageMatrix.mock.calls[1]?.[3]).toMatchObject({
+      streamPhase: "answer",
+      live: false,
+    });
+  });
+
+  it("edits the message on subsequent quiet updates", async () => {
+    const stream = createMatrixDraftStream({
+      roomId: "!room:test",
+      client,
+      cfg: {} as import("../types.js").CoreConfig,
+      mode: "quiet",
+    });
+
+    stream.update("Hello", "progress");
+    await stream.flush();
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+
+    // Advance past throttle window so the next update fires immediately.
+    vi.advanceTimersByTime(1000);
+
+    stream.update("Hello world", "progress");
+    await stream.flush();
+
+    // First call = initial send, second call = edit (both go through sendMessage)
+    expect(sendMessageMock).toHaveBeenCalledTimes(2);
+    expect(sendModuleMocks.editMessageMatrix.mock.calls[0]?.[2]).toBe("Hello world");
+    expect(sendModuleMocks.editMessageMatrix.mock.calls[0]?.[3]).toMatchObject({
+      msgtype: "m.notice",
+      streamPhase: "progress",
+    });
+  });
+
+  it("sends quiet preview notices when quiet mode is enabled", async () => {
+    const stream = createMatrixDraftStream({
+      roomId: "!room:test",
+      client,
+      cfg: {} as import("../types.js").CoreConfig,
+      mode: "quiet",
+    });
+
+    stream.update("Hello", "progress");
+    await stream.flush();
+
+    expect(sendMessageMock).toHaveBeenCalledTimes(1);
+    expect(sendModuleMocks.sendSingleTextMessageMatrix.mock.calls[0]?.[2]).toMatchObject({
+      msgtype: "m.notice",
+      includeMentions: false,
+    });
+  });
 });

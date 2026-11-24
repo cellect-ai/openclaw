@@ -1,6 +1,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "../config/io.js";
+import { onAgentEvent } from "../infra/agent-events.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import {
   type CapturedEnvironment,
@@ -357,3 +358,64 @@ it.each([undefined, "/remote/node/workspace"])(
     }
   },
 );
+
+it("carries hook-required cleanup and the actual caller through native execution", async () => {
+  const terminate = vi.fn(async () => {});
+  const finalizeExec = vi.fn(async () => {});
+  installWrappedHooks(
+    vi.fn(async (event: { params: Record<string, unknown> }) => ({
+      params: { ...event.params, closeProcessTree: true },
+    })),
+  );
+  const tool = createTestExecTool({
+    host: "sandbox",
+    agentId: "actual-agent",
+    sessionKey: "agent:actual-agent:execution",
+    notifySessionKey: "agent:actual-agent:parent-notifications",
+    runId: "actual-run",
+    sandbox: environmentSandbox({
+      workdirValidation: "backend",
+      validateWorkdir: async (workdir) => workdir,
+      prepareProcessCleanup: (env) => ({ env, terminate, interrupt: async () => false }),
+      buildExecSpec: async () => ({ argv: ["fixture"], env: {}, stdinMode: "pipe-closed" }),
+      finalizeExec,
+    }),
+  });
+  const completed = vi.fn();
+  const unsubscribe = onAgentEvent((event) => {
+    if (event.stream === "sandbox_process") {
+      completed(event);
+    }
+  });
+  try {
+    const result = await executeWrapped(
+      tool,
+      {
+        command: "echo ok",
+        workdir: "/remote/workspace",
+        closeProcessTree: false,
+      },
+      {
+        agentId: "actual-agent",
+        sessionKey: "agent:actual-agent:execution",
+        runId: "actual-run",
+      },
+    );
+    expect(result.details).toMatchObject({ status: "completed" });
+    expect(terminate).toHaveBeenCalledOnce();
+    expect(finalizeExec).toHaveBeenCalledOnce();
+    expect(completed).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: "actual-run",
+        data: {
+          phase: "cleanup-complete",
+          toolCallId: "wrapped-call",
+          agentId: "actual-agent",
+          sessionKey: "agent:actual-agent:execution",
+        },
+      }),
+    );
+  } finally {
+    unsubscribe();
+  }
+});

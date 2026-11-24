@@ -31,6 +31,7 @@ import {
   readAgentDatabaseAdmissionRefusal,
 } from "../../state/agent-database-admission.js";
 import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-preparation-context.js";
+import { isBrowserOperatorUiClient, isWebchatClient } from "../../utils/message-channel.js";
 import { hasGatewayAdminScope } from "../operator-scopes.js";
 import { resolveExpectedExistingSessionConstraint } from "../server-methods/agent-expected-session.js";
 import type { AgentRunRequest } from "../server-methods/agent-request-types.js";
@@ -179,11 +180,53 @@ export async function prepareAgentRequestPreflight(params: {
   const expectedSessionResult = resolveExpectedExistingSessionConstraint({
     canUseInternalRuntimeHandoff,
     expectedExistingSessionId: request.expectedExistingSessionId,
+    expectedThreadContinuation: request.expectedThreadContinuation,
     expectedExistingSessionLifecycleRevision: request.expectedExistingSessionLifecycleRevision,
     internalRuntimeHandoffId: request.internalRuntimeHandoffId,
   });
   if (!expectedSessionResult.ok) {
     return rejectInvalidRequest(expectedSessionResult.error);
+  }
+  const approvedClientInfo = params.client?.pairedClientId
+    ? { ...params.client.connect.client, id: params.client.pairedClientId }
+    : params.client?.connect.client;
+  if (
+    request.expectedThreadContinuation &&
+    (isBrowserOperatorUiClient(approvedClientInfo) ||
+      isWebchatClient(approvedClientInfo) ||
+      !canUseInternalRuntimeHandoff ||
+      params.client?.connect.role !== "operator" ||
+      params.client.internal?.syntheticClient ||
+      request.suppressPromptPersistence ||
+      request.sessionEffects === "internal" ||
+      request.modelRun ||
+      request.promptMode === "none" ||
+      request.internalEvents?.length ||
+      request.inputProvenance ||
+      request.attachments?.length ||
+      request.createSessionIfMissing ||
+      request.channel !== "slack" ||
+      request.replyChannel !== "slack" ||
+      request.deliver !== true)
+  )
+    return rejectInvalidRequest(
+      "Thread continuation requires an ordinary authenticated backend thread request with native prompt persistence.",
+    );
+  if (request.expectedThreadContinuation) {
+    const owner = request.expectedThreadContinuation.owner;
+    const route = /^agent:([^:]+):slack:channel:([^:]+):thread:(\d+\.\d+)$/.exec(owner.sessionKey);
+    if (
+      !route ||
+      route[1] !== owner.agentId ||
+      (request.agentId && request.agentId !== owner.agentId) ||
+      request.sessionKey !== owner.sessionKey ||
+      request.replyTo?.toLowerCase() !== route[2] ||
+      request.threadId !== route[3]
+    ) {
+      return rejectInvalidRequest(
+        "Thread continuation must deliver to its exact owning Slack thread.",
+      );
+    }
   }
   const requestedPromptPersistenceSuppression = request.suppressPromptPersistence === true;
   const requestedInternalSessionEffects = request.sessionEffects === "internal";

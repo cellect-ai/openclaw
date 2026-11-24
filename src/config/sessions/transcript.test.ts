@@ -527,6 +527,23 @@ describe("appendAssistantMessageToSessionTranscript", () => {
     });
   });
 
+  it("never writes an internal suppressed-final delivery state as an assistant message", async () => {
+    await writeTranscriptStore();
+    const result = await appendMirror(
+      "Channel final suppressed before delivery: stale foreground",
+      {
+        idempotencyKey: "channel-final-suppressed:message-1:0",
+        deliveryMirror: {
+          kind: "channel-final-suppressed",
+          reason: "stale-foreground",
+          sourceMessageId: "message-1",
+        },
+      },
+    );
+    expect(result).toEqual({ ok: false, reason: "internal delivery state" });
+    expect((await storedMessages()).some((message) => message.role === "assistant")).toBe(false);
+  });
+
   it("does not dedupe delivery mirrors against an older assistant after a user turn", async () => {
     await writeTranscriptStore();
     const exactResult = await appendText("Hello before the large user entry");

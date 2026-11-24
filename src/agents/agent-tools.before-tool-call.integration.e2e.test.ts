@@ -20,7 +20,7 @@ import {
   initializeGlobalHookRunner,
   resetGlobalHookRunner,
 } from "../plugins/hook-runner-global.js";
-import { addTestHook, createMockPluginRegistry } from "../plugins/hooks.test-fixtures.js";
+import { addTestHook } from "../plugins/hooks.test-fixtures.js";
 import { patchPluginSessionExtension } from "../plugins/host-hook-state.js";
 import { createEmptyPluginRegistry } from "../plugins/registry.js";
 import { setActivePluginRegistry } from "../plugins/runtime.js";
@@ -30,6 +30,14 @@ import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js"
 import { toClientToolDefinitions, toToolDefinitions } from "./agent-tool-definition-adapter.js";
 import { bindAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
 import { wrapToolWithAbortSignal } from "./agent-tools.abort.js";
+import {
+  type BeforeToolCallHandlerMock,
+  asAgentTool,
+  collectMatching,
+  installBeforeToolCallHook,
+  installBeforeToolCallHooks,
+  clientToolDefinition,
+} from "./agent-tools.before-tool-call.integration.fixtures.test-support.js";
 import {
   consumeAdjustedParamsForToolCall,
   consumePreExecutionBlockedToolCall,
@@ -45,7 +53,6 @@ import {
 } from "./agent-tools.before-tool-call.state.js";
 import { runWithToolExecutionValidation } from "./agent-tools.execution-validation.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
-import type { AnyAgentTool } from "./agent-tools.types.js";
 import { CODE_MODE_EXEC_TOOL_NAME, createCodeModeTools } from "./code-mode.js";
 import type { ExtensionContext } from "./sessions/index.js";
 import { wrapToolDefinition } from "./sessions/tools/tool-definition-wrapper.js";
@@ -53,79 +60,7 @@ import { hashToolCall, recordToolCall } from "./tool-loop-detection.js";
 import { createToolSearchCatalogRef, registerHeadlessToolSearchCatalog } from "./tool-search.js";
 import { setToolTerminalPresentation } from "./tool-terminal-presentation.js";
 
-type BeforeToolCallHandlerMock = ReturnType<typeof vi.fn>;
 const sessionDirs = useSessionStoreTempDirs(afterAll, "openclaw-client-tool-policy-");
-
-function asAgentTool(tool: {
-  description?: string;
-  execute: ReturnType<typeof vi.fn>;
-  name: string;
-  parameters?: object;
-  resultContentSource?: AnyAgentTool["resultContentSource"];
-}): AnyAgentTool {
-  return tool as unknown as AnyAgentTool;
-}
-
-type BeforeToolCallHookInstall = {
-  pluginId: string;
-  priority?: number;
-  handler: BeforeToolCallHandlerMock;
-};
-
-function collectMatching<T, U>(
-  items: readonly T[],
-  predicate: (item: T) => boolean,
-  map: (item: T) => U,
-): U[] {
-  const matches: U[] = [];
-  for (const item of items) {
-    if (predicate(item)) {
-      matches.push(map(item));
-    }
-  }
-  return matches;
-}
-
-function installBeforeToolCallHook(params?: {
-  enabled?: boolean;
-  runBeforeToolCallImpl?: (...args: unknown[]) => unknown;
-}): BeforeToolCallHandlerMock {
-  resetGlobalHookRunner();
-  const handler = params?.runBeforeToolCallImpl
-    ? vi.fn(params.runBeforeToolCallImpl)
-    : vi.fn(async () => undefined);
-  if (params?.enabled === false) {
-    return handler;
-  }
-  initializeGlobalHookRunner(createMockPluginRegistry([{ hookName: "before_tool_call", handler }]));
-  return handler;
-}
-
-function installBeforeToolCallHooks(hooks: BeforeToolCallHookInstall[]): void {
-  resetGlobalHookRunner();
-  const registry = createEmptyPluginRegistry();
-  for (const hook of hooks) {
-    addTestHook({
-      registry,
-      pluginId: hook.pluginId,
-      hookName: "before_tool_call",
-      handler: hook.handler as PluginHookRegistration["handler"],
-      priority: hook.priority,
-    });
-  }
-  initializeGlobalHookRunner(registry);
-}
-
-function clientToolDefinition(
-  name: string,
-  description: string,
-  properties: Record<string, unknown>,
-): Parameters<typeof toClientToolDefinitions>[0][number] {
-  return {
-    type: "function",
-    function: { name, description, parameters: { type: "object", properties } },
-  };
-}
 
 describe("before_tool_call hook integration", () => {
   let beforeToolCallHook: BeforeToolCallHandlerMock;
@@ -341,6 +276,34 @@ describe("before_tool_call hook integration", () => {
       marker: "B",
     });
     expect(consumeAdjustedParamsForToolCall(sharedToolCallId, "run-a")).toBeUndefined();
+  });
+
+  it("carries the native requester capability across the tool hook boundary", async () => {
+    const requesterContinuation = Object.freeze({
+      runId: "native-run",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session",
+      sourceTurnId: "channel-user:v1:original",
+      channel: "slack",
+      senderId: "U0ADMIN001",
+      assertCurrent: vi.fn(),
+    });
+    const execute = vi.fn().mockResolvedValue({ content: [], details: { ok: true } });
+    const tool = wrapToolWithBeforeToolCallHook(asAgentTool({ name: "exec", execute }), {
+      runId: "native-run",
+      agentId: "main",
+      sessionKey: "agent:main:main",
+      sessionId: "session",
+      requesterContinuation,
+    });
+    await tool.execute("native-call", { command: "true" });
+    expect(beforeToolCallHook).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ requesterContinuation }),
+    );
+    expect(beforeToolCallHook.mock.calls[0]?.[1].requesterContinuation).toBe(requesterContinuation);
+    expect(execute).toHaveBeenCalledOnce();
   });
 });
 

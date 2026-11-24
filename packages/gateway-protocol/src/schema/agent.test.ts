@@ -98,3 +98,51 @@ describe("Conversation schemas", () => {
     accepts(S.ConversationTurnCancelResultSchema, { cancelled: true });
   });
 });
+
+describe("conditional thread continuation schema", () => {
+  const owner = {
+    agentId: "main",
+    sessionKey: "agent:main:slack:channel:c123:thread:123.456",
+    sessionId: "s",
+    lifecycleRevision: null,
+  };
+  const member = {
+    ...owner,
+    fingerprint: "a".repeat(64),
+    status: "failed",
+    recoveryPending: false,
+    updatedAt: 1,
+    endedAt: 1,
+    terminalRunId: "failed-run",
+  };
+  const snapshot = {
+    version: 1,
+    gatewayInstance: "g",
+    expiresAt: 100,
+    owner,
+    failedSessionKey: owner.sessionKey,
+    failedRunId: "failed-run",
+    members: [member],
+  };
+  const request = (expectedThreadContinuation: object) => ({
+    message: "continue",
+    idempotencyKey: "same-failure",
+    expectedThreadContinuation,
+  });
+  it("accepts one shared typed snapshot and bounds complete membership", () => {
+    accepts(S.AgentParamsSchema, request(snapshot));
+    rejects(S.AgentParamsSchema, request({ ...snapshot, members: [] }));
+    rejects(
+      S.AgentParamsSchema,
+      request({ ...snapshot, members: Array.from({ length: 129 }, () => member) }),
+    );
+  });
+  it.each([
+    { ...snapshot, grant: "operator" },
+    { ...snapshot, owner: { ...owner, authority: true } },
+    { ...snapshot, members: [{ ...member, fingerprint: "unbound" }] },
+    { ...snapshot, members: [{ ...member, status: "observer-running" }] },
+  ])("rejects extra authority or malformed condition", (value) => {
+    rejects(S.AgentParamsSchema, request(value));
+  });
+});

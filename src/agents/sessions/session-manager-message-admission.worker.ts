@@ -4,6 +4,7 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import type { SessionMetadataMessageControl } from "../../config/sessions/session-manager-write-contract.js";
 import { readSessionPendingInputAuthorityFacts } from "../../config/sessions/session-pending-input-authority.kernel.js";
+import { runWithSessionTranscriptQuestionAnswerWorkerCustody } from "../../config/sessions/session-transcript-read-fence.js";
 import type { EngineConnection } from "../../infra/sql-connection.js";
 import type { AgentDatabaseAdmissionRestriction } from "../../state/openclaw-agent-execution-domain.js";
 
@@ -38,7 +39,7 @@ export function runWithMetadataMessageAdmission<T>(
         )
       : undefined;
   };
-  const requestMessageCheck = (check: "pending" | "fresh") => {
+  const requestMessageCheck = (check: "pending" | "fresh" | "question") => {
     context.checkMessage({
       kind: "session-message",
       domainFacts: transactionFacts,
@@ -62,7 +63,15 @@ export function runWithMetadataMessageAdmission<T>(
         },
       });
     });
-  const write = () => run(admit, () => requestMessageCheck("fresh"));
+  const append = () => run(admit, () => requestMessageCheck("fresh"));
+  const write = () =>
+    controls?.questionAnswers
+      ? runWithSessionTranscriptQuestionAnswerWorkerCustody(
+          controls.questionAnswers,
+          () => requestMessageCheck("question"),
+          append,
+        )
+      : append();
   const pending = controls?.pendingInput;
   if (!pending) {
     return { value: write() };

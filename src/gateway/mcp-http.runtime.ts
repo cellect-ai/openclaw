@@ -27,6 +27,7 @@ import { DirectoryCache } from "../infra/outbound/directory-cache.js";
 import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop/workspace-authoring.types.js";
 import type { McpLoopbackRequestContext } from "./mcp-grant-store.js";
 import {
   buildMcpToolSchema,
@@ -69,6 +70,7 @@ type McpLoopbackScopeParams = {
   authProfileStore?: AuthProfileStore;
   authProfileStoreAgentDir?: string;
   skillLibraryAuthoring?: SkillLibraryAuthoringCapability;
+  skillWorkshopWorkspaceAuthoring?: SkillWorkshopWorkspaceAuthoring;
   /** Run-owned configured MCP tools; only an exclusive CLI run supplies them. */
   bundledTools?: readonly AnyAgentTool[];
   /** Host-selected coding owners for pre-grant projection only. */
@@ -336,9 +338,13 @@ async function constructMcpLoopbackTools(
   if (includeNodeExecTool) {
     excludeToolNames.delete("exec");
   }
-  const skillWorkshop = params.skillLibraryAuthoring
-    ? { libraryAuthoring: params.skillLibraryAuthoring }
-    : undefined;
+  const skillWorkshop =
+    params.skillLibraryAuthoring || params.skillWorkshopWorkspaceAuthoring
+      ? {
+          libraryAuthoring: params.skillLibraryAuthoring,
+          workspaceAuthoring: params.skillWorkshopWorkspaceAuthoring,
+        }
+      : undefined;
   const scopeOptions: Parameters<typeof resolveGatewayScopedTools>[0] = {
     ...context,
     messageActionTurnCapability: params.messageActionTurnCapability,

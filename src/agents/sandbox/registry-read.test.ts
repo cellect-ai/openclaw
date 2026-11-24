@@ -2,9 +2,11 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { isMainThread } from "node:worker_threads";
 import { describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../test/helpers/promise.js";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import { sandboxListCommand } from "../../commands/sandbox.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
+import * as fileLocks from "../../infra/file-lock.js";
 import {
   executeSqliteQuerySync as execute,
   getNodeSqliteKysely as query,
@@ -518,9 +520,42 @@ async function seed() {
   await updateBrowserRegistry(readerBrowser);
 }
 
-it.each(["cached", "fresh"])(
-  "reads all four sandbox projections off the parent thread with a %s source and unrelated data",
-  async (mode) => {
+function watchNativeSql() {
+  const { DatabaseSync, StatementSync } = requireNodeSqlite();
+  return [
+    vi.spyOn(DatabaseSync.prototype, "prepare"),
+    vi.spyOn(DatabaseSync.prototype, "exec"),
+    ...(["get", "all", "run", "iterate"] as const).map((method) =>
+      vi.spyOn(StatementSync.prototype, method),
+    ),
+  ];
+}
+
+it("updates and removes both sandbox registries without blocking the gateway thread on SQLite", async () => {
+  fixture();
+  await seed();
+  const calls = watchNativeSql();
+  await updateRegistry({ ...container, lastUsedAtMs: 99 });
+  await updateBrowserRegistry({ ...browser, lastUsedAtMs: 99 });
+  expect(await readRegistryEntry(container.containerName)).toMatchObject({ lastUsedAtMs: 99 });
+  expect((await readBrowserRegistry()).entries).toEqual([
+    expect.objectContaining({ lastUsedAtMs: 99 }),
+  ]);
+  await removeRegistryEntry(container.containerName);
+  await removeBrowserRegistryEntry(browser.containerName);
+  expect(await readRegistry()).toEqual({ entries: [] });
+  expect(await readBrowserRegistry()).toEqual({ entries: [] });
+  expect(calls.reduce((total, call) => total + call.mock.calls.length, 0)).toBe(0);
+});
+
+it.each([
+  { mode: "cached", otherRows: 0 },
+  { mode: "fresh", otherRows: 0 },
+  { mode: "cached", otherRows: 512 },
+  { mode: "fresh", otherRows: 512 },
+] as const)(
+  "reads all four sandbox projections off the parent thread with a $mode source and $otherRows unrelated rows",
+  async ({ mode, otherRows }) => {
     expect(isMainThread).toBe(true);
     await seed();
     runOpenClawStateWriteTransaction(({ db }) =>
@@ -597,4 +632,44 @@ it.each(["absent", "malformed"])("reads %s registry state without mutating it", 
       .where("container_name", "=", readerContainer.containerName);
     expect(execute(db, row).rows).toEqual([{ entry_json: "not-json" }]);
   }
+});
+
+it("rechecks immutable retention under the native retirement lock", async () => {
+  const entry = containerEntry({ backendId: "docker", runtimeState: "ready" });
+  await updateRegistry(entry);
+  const entered = createDeferred();
+  const release = createDeferred();
+  const lock = fileLocks.withFileLock;
+  const intercepted = vi
+    .spyOn(fileLocks, "withFileLock")
+    .mockImplementation(async (path, options, operation) => {
+      if (!String(path).includes(".sandbox-")) return lock(path, options, operation);
+      entered.resolve();
+      await release.promise;
+      return operation();
+    });
+  const remove = vi.fn(async () => {});
+  const removal = removeRuntime(entry, remove, {
+    prune: { now: 10_000_000, idleHours: 1, maxAgeDays: 0 },
+  });
+  try {
+    await awaitGateBeforeSettlement(entered.promise, removal, "retirement lock was not reached");
+    const current = await readRegistryEntry(entry.containerName);
+    if (!current) throw new Error("Expected native removal intent");
+    await updateRegistry({ ...current, rolloverRetained: true });
+    release.resolve();
+    await removal;
+    expect(remove).not.toHaveBeenCalled();
+    await expectEntry(entry.containerName, { rolloverRetained: true });
+  } finally {
+    release.resolve();
+    await removal;
+    intercepted.mockRestore();
+  }
+});
+
+it("keeps immutable retention across stale usage publications", async () => {
+  await updateRegistry(containerEntry({ rolloverRetained: true }));
+  await updateRegistry(containerEntry({ lastUsedAtMs: 2 }));
+  await expectEntry("container-a", { rolloverRetained: true, lastUsedAtMs: 2 });
 });

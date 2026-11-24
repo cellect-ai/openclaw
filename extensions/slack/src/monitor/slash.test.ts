@@ -143,6 +143,33 @@ describe("slack slash commands channel policy", () => {
     });
     expectBlockedResponse(respond, "This channel is not allowed.");
   });
+
+  it("denies a slash command from an admitted context-only collaborator", async () => {
+    const harness = createPolicyHarness({
+      groupPolicy: "allowlist",
+      allowFrom: ["U_OWNER"],
+      channelId: "C12345678",
+      channelName: "shared",
+      channelsConfig: {
+        C12345678: {
+          enabled: true,
+          users: ["U_OWNER", "U_CONTEXT"],
+          requestUsers: ["U_OWNER"],
+        },
+      },
+    });
+    (harness.ctx as { channelsConfigKeys?: string[] }).channelsConfigKeys = ["C12345678"];
+    const { respond } = await registerAndRunPolicySlash({
+      harness,
+      command: { user_id: "U_CONTEXT", user_name: "Nicholas" },
+    });
+
+    expect(dispatchMock).not.toHaveBeenCalled();
+    expect(respond).toHaveBeenCalledWith({
+      text: "You may contribute context here, but only an authorized requester can start or administer agent work.",
+      response_type: "ephemeral",
+    });
+  });
 });
 
 describe("slack slash commands access groups", () => {

@@ -39,6 +39,7 @@ import {
   OPENAI_REALTIME_PLATFORM_AUTH_REQUIRED,
   OPENAI_REALTIME_VOICES,
   buildOpenAIRealtimeGaSessionPolicy,
+  buildOpenAIRealtimeInputTranscriptionConfig,
   hasOpenAIChatGptSubscriptionAuthInput,
   hasOpenAIChatGptSubscriptionAuthInputAsync,
   hasOpenAIRealtimeApiKeyInput,
@@ -61,12 +62,13 @@ const CUSTOM_ENDPOINT_CAPABILITIES: RealtimeVoiceProviderCapabilities = {
 };
 
 function prepareOpenAIRealtimeVoiceConfig({
+  cfg,
   rawConfig,
   surface,
   autoRespondToAudio,
   requiredCapabilities,
 }: RealtimeVoiceProviderResolveConfigContext): OpenAIRealtimeVoiceProviderConfig {
-  const config = normalizeProviderConfig(rawConfig);
+  const config = normalizeProviderConfig(rawConfig, cfg);
   // Live delegates natively; GA still owns manually triggered replies and video.
   if (
     !config.model &&
@@ -133,7 +135,7 @@ export function buildOpenAIRealtimeVoiceProvider(
 ): RealtimeVoiceProviderPlugin {
   const prepareBrowserSessionAuth = (params: RealtimeVoiceProviderConfiguredContext) => {
     const { cfg, providerConfig, agentId } = params;
-    const config = normalizeProviderConfig(providerConfig);
+    const config = normalizeProviderConfig(providerConfig, cfg);
     if (config.baseUrl || config.azureEndpoint || config.azureDeployment) {
       return false;
     }
@@ -161,7 +163,7 @@ export function buildOpenAIRealtimeVoiceProvider(
     resolveConfig: (params) => resolveOpenAIRealtimeVoiceConfig(params, context),
     resolveConfigAsync: (params) => resolveOpenAIRealtimeVoiceConfigAsync(params, context),
     isConfigured: ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.azureEndpoint || config.azureDeployment) {
         return hasOpenAIRealtimeApiKeyInput(config.apiKey);
       }
@@ -175,7 +177,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       );
     },
     isConfiguredAsync: async ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.azureEndpoint || config.azureDeployment) {
         return hasOpenAIRealtimeApiKeyInput(config.apiKey);
       }
@@ -189,7 +191,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       );
     },
     createBridge: (req) => {
-      const config = normalizeProviderConfig(req.providerConfig);
+      const config = normalizeProviderConfig(req.providerConfig, req.cfg);
       const model = config.model;
       if (model && isOpenAIGptLiveModel(model)) {
         if (config.baseUrl) {
@@ -254,7 +256,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       const quicksilverBroker = options?.quicksilverBrowserSessionBroker;
       const logger = options?.logger ?? { warn: () => undefined };
       const { resolveAgentDir } = context;
-      const config = normalizeProviderConfig(req.providerConfig);
+      const config = normalizeProviderConfig(req.providerConfig, req.cfg);
       const authParams = {
         configuredApiKey: config.apiKey,
         cfg: req.cfg,
@@ -297,6 +299,8 @@ export function buildOpenAIRealtimeVoiceProvider(
           instructions: req.instructions,
           interruptResponseOnInputAudio: config.interruptResponseOnInputAudio,
           inputTranscriptionModel: config.inputTranscriptionModel,
+          language: req.language,
+          transcriptionHints: req.transcriptionHints,
           model,
           noiseReduction: { type: "near_field" },
           prefixPaddingMs: req.prefixPaddingMs ?? config.prefixPaddingMs,
@@ -381,9 +385,14 @@ export function buildOpenAIRealtimeVoiceProvider(
               prefix_padding_ms: req.prefixPaddingMs ?? config.prefixPaddingMs,
               silence_duration_ms: req.silenceDurationMs ?? config.silenceDurationMs,
             },
-            transcription: {
-              model: config.inputTranscriptionModel ?? OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL,
-            },
+            transcription:
+              config.inputTranscriptionModel &&
+              config.inputTranscriptionModel !== OPENAI_REALTIME_INPUT_TRANSCRIPTION_MODEL
+                ? {
+                    model: config.inputTranscriptionModel,
+                    ...(req.language ? { language: req.language } : {}),
+                  }
+                : buildOpenAIRealtimeInputTranscriptionConfig(req.language, req.transcriptionHints),
           },
           output: { voice },
         },
@@ -490,7 +499,7 @@ export function buildOpenAIRealtimeVoiceProvider(
     },
     isBrowserSessionConfiguredAsync,
     resolveBrowserSessionCapabilities: ({ cfg, providerConfig, agentId, model, clientControl }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.baseUrl) {
         return CUSTOM_ENDPOINT_CAPABILITIES;
       }
@@ -524,7 +533,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       model,
       clientControl,
     }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.baseUrl) {
         return CUSTOM_ENDPOINT_CAPABILITIES;
       }
@@ -552,7 +561,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       };
     },
     isGatewayRelayConfigured: ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (!isOpenAIGptLiveModel(config.model)) {
         return undefined;
       }
@@ -569,7 +578,7 @@ export function buildOpenAIRealtimeVoiceProvider(
       );
     },
     isGatewayRelayConfiguredAsync: async ({ cfg, providerConfig, agentId }) => {
-      const config = normalizeProviderConfig(providerConfig);
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (!isOpenAIGptLiveModel(config.model)) {
         return undefined;
       }
@@ -585,8 +594,8 @@ export function buildOpenAIRealtimeVoiceProvider(
           (await hasOpenAIChatGptSubscriptionAuthInputAsync({ cfg, agentId }, context)))
       );
     },
-    resolveGatewayRelayCapabilities: ({ providerConfig, model }) => {
-      const config = normalizeProviderConfig(providerConfig);
+    resolveGatewayRelayCapabilities: ({ cfg, providerConfig, model }) => {
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.baseUrl) {
         return CUSTOM_ENDPOINT_CAPABILITIES;
       }
@@ -596,8 +605,8 @@ export function buildOpenAIRealtimeVoiceProvider(
       return OPENAI_REALTIME_CAPABILITIES;
     },
     projectPublicProjection: projectRealtimeVoicePublicProjection,
-    validateGatewayRelayLaunch: ({ providerConfig, model, autoRespondToAudio }) => {
-      const config = normalizeProviderConfig(providerConfig);
+    validateGatewayRelayLaunch: ({ cfg, providerConfig, model, autoRespondToAudio }) => {
+      const config = normalizeProviderConfig(providerConfig, cfg);
       if (config.baseUrl && isOpenAIGptLiveModel(model ?? config.model)) {
         return "OpenAI realtime baseUrl does not support GPT-Live; select a Realtime-compatible model";
       }

@@ -30,12 +30,19 @@ describe("gateway suspension protocol", () => {
     const target = { pid: 1, processInstanceId: "gateway-process" };
     const params = { suspensionId: "held-lease", target };
     const handoff = validation(validateGatewaySuspendHandoffParams);
-    handoff.accepts(params, { ...params, commit: true });
+    handoff.accepts(
+      params,
+      { ...params, commit: true },
+      { ...params, commit: true, requireIdle: true },
+    );
     handoff.rejects(
       { ...params, target: undefined },
       { ...params, force: true },
       { ...params, waitMs: 0 },
       { ...params, commit: false },
+      { ...params, requireIdle: false },
+      { ...params, requireIdle: "true" },
+      { ...params, commit: "true" },
       { ...params, target: { ...target, processInstanceId: " " } },
       { ...params, target: { ...target, pid: 0 } },
       { ...params, target: { ...target, port: 18789 } },
@@ -44,8 +51,14 @@ describe("gateway suspension protocol", () => {
     schemaValidation(HandoffResult).accepts(
       { ...receipt, status: "armed" },
       { ...receipt, status: "committed" },
+      { ...receipt, status: "busy", reason: "active-work" },
+      { ...receipt, status: "busy", reason: "write-custody" },
     );
-    schemaValidation(HandoffResult).rejects({ ...receipt, status: "scheduled" });
+    schemaValidation(HandoffResult).rejects(
+      { ...receipt, status: "scheduled" },
+      { ...receipt, status: "busy" },
+      { ...receipt, status: "busy", reason: "unknown" },
+    );
   });
   it("keeps prepare params closed and bounded", () => {
     expect(validateGatewaySuspendPrepareParams({ requestId: "host-request" })).toBe(true);

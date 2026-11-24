@@ -10,6 +10,11 @@ export type RealtimeVoiceProviderId = string;
 
 export type RealtimeVoiceRole = "user" | "assistant";
 
+export type RealtimeVoiceTranscriptUpdate = {
+  itemId?: string;
+  textMode: "delta" | "snapshot";
+};
+
 export type RealtimeVoiceCloseReason = "completed" | "error";
 
 export type RealtimeVoiceAudioFormat =
@@ -196,7 +201,7 @@ export type RealtimeVoiceBridgeCallbacks = {
     role: RealtimeVoiceRole,
     text: string,
     isFinal: boolean,
-    metadata?: { textMode: "snapshot" },
+    update?: RealtimeVoiceTranscriptUpdate,
   ) => void;
   /** Synchronously admits native control; only consult permits task fallthrough. Respond is call-bound. */
   handleDelegationInput?: (
@@ -262,6 +267,7 @@ export type RealtimeVoiceBridgeCreateRequest = RealtimeVoiceBridgeCallbacks & {
   audioFormat?: RealtimeVoiceAudioFormat;
   instructions?: string;
   language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   autoRespondToAudio?: boolean;
   interruptResponseOnInputAudio?: boolean;
   tools?: RealtimeVoiceTool[];
@@ -279,6 +285,8 @@ export type RealtimeVoiceBrowserSessionCreateRequest = {
   vadThreshold?: number;
   silenceDurationMs?: number;
   prefixPaddingMs?: number;
+  language?: string;
+  transcriptionHints?: { prompt?: string; keywords?: string[] };
   reasoningEffort?: string;
   /** Host-injected agent delegation runner for provider-owned realtime control channels. */
   runAgentConsult?: RealtimeVoiceAgentConsultRunner;
@@ -339,7 +347,8 @@ export type RealtimeVoiceBridge = {
   setMediaTimestamp(ts: number): void;
   sendUserMessage?(
     text: string,
-    options?: { toolChoice?: { type: "function"; name: string } },
+    /** `"none"` keeps the response from calling tools where the provider supports it. */
+    options?: { toolChoice?: "none" | { type: "function"; name: string } },
   ): void;
   triggerGreeting?(instructions?: string): void;
   handleBargeIn?(options?: RealtimeVoiceBargeInOptions): void;

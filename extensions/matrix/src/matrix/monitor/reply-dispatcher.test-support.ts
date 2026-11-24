@@ -14,6 +14,7 @@ export type MatrixTestReplyOptions = Pick<DispatcherConfig, "client" | "runtime"
       | "threadTarget"
       | "replyToEventId"
       | "mediaLocalRoots"
+      | "letMeKnowTriggerEventId"
     >
   >;
 

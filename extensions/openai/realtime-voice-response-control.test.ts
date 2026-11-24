@@ -130,6 +130,84 @@ describe("OpenAI realtime voice response control", () => {
     });
   });
 
+  it("asks for a response without tools when the host disables them", async () => {
+    const bridge = createNativeBridge();
+    const socket = await connectReadyBridge(bridge);
+
+    bridge.sendUserMessage?.("Summarise the answer aloud.", { toolChoice: "none" });
+
+    expect(parseSent(socket).at(-1)).toEqual({
+      type: "response.create",
+      event_id: expect.stringMatching(/^openclaw-response-create-/),
+      response: { output_modalities: ["audio"], tool_choice: "none" },
+    });
+  });
+
+  it("defers manual response.create while a realtime response is active", async () => {
+    const bridge = createNativeBridge();
+    const socket = await connectReadyBridge(bridge);
+    emitServerEvent(socket, { type: "response.created", response: { id: "resp_1" } });
+
+    bridge.sendUserMessage?.("queued manual response");
+
+    expect(parseSent(socket).slice(-1)).toEqual([
+      {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: "queued manual response" }],
+        },
+      },
+    ]);
+
+    emitServerEvent(socket, { type: "response.done" });
+
+    expect(parseSent(socket).slice(-1)).toEqual([expectedResponseCreateEvent()]);
+  });
+
+  it("restores automatic audio responses when a manual response is rejected", async () => {
+    const onError = vi.fn();
+    const bridge = createNativeBridge({ onError });
+    const socket = await connectReadyBridge(bridge);
+
+    bridge.triggerGreeting?.("Say exactly: hello from explicit speech.");
+
+    const responseCreateEvent = parseSent(socket).findLast(
+      (event) => event.type === "response.create",
+    );
+    if (!responseCreateEvent?.event_id) {
+      throw new Error("expected response.create event id");
+    }
+
+    expectRecordFields(
+      requireNestedRecord(parseSent(socket).at(-2)?.session, ["audio", "input", "turn_detection"]),
+      "suppressed turn detection",
+      {
+        create_response: false,
+        interrupt_response: true,
+      },
+    );
+
+    emitServerEvent(socket, {
+      type: "error",
+      error: {
+        event_id: responseCreateEvent.event_id,
+        message: "bad response request",
+      },
+    });
+
+    expect(onError).toHaveBeenCalledWith(new Error("bad response request"));
+    expectRecordFields(
+      requireNestedRecord(parseSent(socket).at(-1)?.session, ["audio", "input", "turn_detection"]),
+      "restored turn detection",
+      {
+        create_response: true,
+        interrupt_response: true,
+      },
+    );
+  });
+
   it.each([
     { mode: "manual", hasEventId: false },
     { mode: "standalone", hasEventId: false },

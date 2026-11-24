@@ -7,6 +7,7 @@ import {
   resolveLivePluginConfigObject,
 } from "openclaw/plugin-sdk/plugin-config-runtime";
 import { definePluginEntry, type OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
+import { isShadowHookSessionKey } from "openclaw/plugin-sdk/session-key-runtime";
 import { rethrowIncognitoSessionError } from "openclaw/plugin-sdk/session-store-runtime";
 import {
   applyCliRuntimeRecallTimeoutDefault,
@@ -211,6 +212,12 @@ export default definePluginEntry({
     api.on(
       "before_prompt_build",
       async (event, ctx) => {
+        // A Fi shadow hook turn reads untrusted mail: no recall of the
+        // member's (or anyone else's) stored memory may enter its prompt.
+        if (isShadowHookSessionKey(ctx.sessionKey)) {
+          logRecallSkipped("fi_shadow_session");
+          return undefined;
+        }
         const toolAuthority = ctx.toolAuthority;
         if (!toolAuthority) {
           // Defensive only: the host filters authority-required registrations

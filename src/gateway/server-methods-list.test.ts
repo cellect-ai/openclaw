@@ -11,6 +11,9 @@ const descriptors = createCoreGatewayMethodDescriptors(coreGatewayHandlers);
 const descriptor = (name: string) => descriptors.find((entry) => entry.name === name);
 
 it.each([
+  ["talk.voice.preview", "operator.write", { since: "<=2026.9" }],
+  ["talk.session.announce", "operator.talk", { since: "<=2026.10" }],
+  ["fi.shadow.announce fi.review.announce", "operator.admin", { since: "2026.11" }],
   ["agents.avatar.generate", "operator.admin", { since: "2026.10", controlPlaneWrite: true }],
   [
     "models.authSetApiKey plugins.reload plugins.refresh cron.add cron.update cron.remove cron.run",

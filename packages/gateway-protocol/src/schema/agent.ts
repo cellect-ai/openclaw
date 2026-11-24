@@ -3,6 +3,7 @@ import { Type } from "typebox";
 import { closedObject } from "./closed-object.js";
 import { InputProvenanceSchema, NonEmptyString, SessionLabelString } from "./primitives.js";
 import { stringLiteralUnion } from "./string-literal-union.js";
+import { ThreadContinuationSnapshotSchema } from "./thread-continuation.js";
 
 /**
  * Agent and channel-action gateway schemas.
@@ -294,6 +295,7 @@ export const AgentParamsSchema = closedObject({
   createSessionIfMissing: Type.Optional(Type.Boolean()),
   // Backend-owned continuations can bind work to an already-admitted transcript.
   expectedExistingSessionId: Type.Optional(NonEmptyString),
+  expectedThreadContinuation: Type.Optional(ThreadContinuationSnapshotSchema),
   // Null binds the original generation before a lifecycle revision was assigned.
   expectedExistingSessionLifecycleRevision: Type.Optional(
     Type.Union([NonEmptyString, Type.Null()]),

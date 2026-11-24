@@ -30,6 +30,10 @@ import {
   parseAgentSessionKey,
 } from "../../routing/session-key.js";
 import { errorShapeFromError } from "../error-shape.js";
+import {
+  isBrowserSessionReadAllowed,
+  requiresBrowserSessionReadBoundary,
+} from "../matrix-browser-session-authorization.js";
 import { hasOperatorBoundary, operatorSessionCap } from "../operator-role-policy.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveRequestedSessionAgentId as resolveRequestedGlobalAgentId } from "../session-request-agent.js";
@@ -139,7 +143,9 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         await membershipProjection.prepareSelection();
         await membershipProjection.prepareMembership();
       }
-      const restrictVisibility = restrictIncognito || restrictRoleVisibility;
+      const restrictBrowserBoundary = requiresBrowserSessionReadBoundary(client);
+      const restrictVisibility =
+        restrictBrowserBoundary || restrictIncognito || restrictRoleVisibility;
       if (requestedAgentId && !params.sessionKeys && configured) {
         respond(
           false,
@@ -195,7 +201,7 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
         const entries = new Map<string, SessionEntry>();
         // Role checks need one canonical metadata row. Unrestricted retired-store
         // searches retain copied-transcript deduplication below.
-        if (roleVisibilityFilter) {
+        if (roleVisibilityFilter || restrictBrowserBoundary) {
           for (const rows of entriesByTarget ?? []) {
             for (const { sessionKey, entry } of rows) {
               const parsed = parseAgentSessionKey(sessionKey);
@@ -227,6 +233,16 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
               sessionKey,
               target: null,
             }) !== null
+          ) {
+            return false;
+          }
+          if (
+            !isBrowserSessionReadAllowed({
+              cfg: currentPolicyConfig,
+              client,
+              sessionKey,
+              sessionEntry: entry,
+            })
           ) {
             return false;
           }
@@ -468,6 +484,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
                 })
               : undefined;
             return current?.entry.sessionId &&
+              isBrowserSessionReadAllowed({
+                cfg: policyConfig,
+                client,
+                sessionKey: current.key,
+                sessionEntry: current.entry,
+              }) &&
               visibilityFilter?.(current.key, current.entry) !== false
               ? current
               : undefined;
@@ -531,6 +553,12 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
               : undefined;
             if (
               !current ||
+              !isBrowserSessionReadAllowed({
+                cfg: policyConfig,
+                client,
+                sessionKey: current.key,
+                sessionEntry: current.entry,
+              }) ||
               current.agentId !== previous.record.agentId ||
               current.key !== previous.record.key ||
               current.storeTarget.storePath !== previous.record.storeTarget.storePath ||

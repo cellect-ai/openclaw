@@ -1,0 +1,129 @@
+import { describe, expect, it } from "vitest";
+import { resolveConversationCapabilityProfile } from "./conversation-capability-profile.js";
+import { applyEmbeddedAttemptToolsAllow } from "./embedded-agent-runner/run/attempt-tool-construction-plan.js";
+import {
+  SHADOW_HOOK_TOOL_ALLOWLIST,
+  REVIEW_HOOK_TOOL_ALLOWLIST,
+  capBackgroundHookToolsAllow,
+  capShadowHookToolsAllow,
+  shadowHookRunParams,
+} from "./shadow-hook-tool-policy.js";
+
+const SHADOW = "agent:cellect-fi-user:hook:fi-shadow:abc";
+const EVERYTHING = [
+  "fi_user_api",
+  "m365_shadow_mail",
+  "exec",
+  "bash",
+  "process",
+  "browser",
+  "web_search",
+  "web_fetch",
+  "write",
+  "edit",
+  "apply_patch",
+  "read",
+  "message",
+  "sessions_send",
+  "sessions_spawn",
+  "subagents",
+  "cron",
+  "memory_store",
+  "memory_search",
+].map((name) => ({ name }));
+
+describe("Fi shadow hook tool cap", () => {
+  it("caps review hooks to their separate read/review/report surface", () => {
+    const session = `agent:cellect-fi-user:hook:fi-review:${"a".repeat(40)}`;
+    expect(capBackgroundHookToolsAllow([session], ["*"])).toEqual([...REVIEW_HOOK_TOOL_ALLOWLIST]);
+    expect(
+      shadowHookRunParams(session, {
+        toolsAllow: ["*"],
+        toolExecutionAllow: ["exec", "message", "m365_shadow_mail"],
+      }),
+    ).toMatchObject({
+      toolsAllow: [...REVIEW_HOOK_TOOL_ALLOWLIST],
+      toolExecutionAllow: [],
+      disableMessageTool: true,
+    });
+    expect(
+      resolveConversationCapabilityProfile({
+        sessionKey: session,
+        agentId: "cellect-fi-user",
+        runtimeToolAllowlist: ["*"],
+        inheritRuntimeToolAllowlist: true,
+      }).policy.runtimeToolPolicyForInheritance,
+    ).toEqual({ allow: [...REVIEW_HOOK_TOOL_ALLOWLIST] });
+  });
+  it("cuts any request to the two shadow tools", () => {
+    expect(capShadowHookToolsAllow(undefined)).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);
+    expect(capShadowHookToolsAllow(["*"])).toEqual([...SHADOW_HOOK_TOOL_ALLOWLIST]);
+    expect(capShadowHookToolsAllow(["exec", "fi_user_api", "group:fs"])).toEqual(["fi_user_api"]);
+    expect(capShadowHookToolsAllow(["exec", "browser"])).toEqual([]);
+    expect(capShadowHookToolsAllow([])).toEqual([]);
+  });
+
+  it("overrides the run parameters of a shadow session only", () => {
+    const params = shadowHookRunParams(SHADOW, {
+      toolsAllow: ["*"],
+      toolExecutionAllow: ["exec", "fi_user_api"],
+    });
+    expect(params).toEqual({
+      toolsAllow: ["fi_user_api", "m365_shadow_mail"],
+      toolExecutionAllow: ["fi_user_api"],
+      disableMessageTool: true,
+      disableToolSearch: true,
+      forceMessageTool: false,
+      forceCodeModeTools: false,
+      codeModeOverride: false,
+    });
+    expect(shadowHookRunParams("agent:cellect-fi-user:hook:fi-mail:abc", {})).toEqual({});
+    expect(shadowHookRunParams(undefined, { toolsAllow: ["*"] })).toEqual({});
+  });
+
+  it.each([undefined, ["*"], ["exec", "fi_user_api", "message"]])(
+    "leaves exactly the two tools after the runtime allowlist is applied (%j)",
+    (requested) => {
+      const { toolsAllow } = shadowHookRunParams(SHADOW, { toolsAllow: requested }) as {
+        toolsAllow: string[];
+      };
+      const names = applyEmbeddedAttemptToolsAllow(EVERYTHING, toolsAllow).map((t) => t.name);
+      expect(names.every((name) => SHADOW_HOOK_TOOL_ALLOWLIST.includes(name))).toBe(true);
+      expect(names).toContain("fi_user_api");
+    },
+  );
+
+  it("caps the capability profile of a shadow session, whatever was asked", () => {
+    const profile = resolveConversationCapabilityProfile({
+      sessionKey: SHADOW,
+      agentId: "cellect-fi-user",
+      runtimeToolAllowlist: ["*"],
+      inheritRuntimeToolAllowlist: true,
+    });
+    expect(profile.policy.runtimeToolPolicyForInheritance).toEqual({
+      allow: ["fi_user_api", "m365_shadow_mail"],
+    });
+    const none = resolveConversationCapabilityProfile({
+      sessionKey: SHADOW,
+      agentId: "cellect-fi-user",
+      inheritRuntimeToolAllowlist: true,
+    });
+    expect(none.policy.runtimeToolPolicyForInheritance).toEqual({
+      allow: ["fi_user_api", "m365_shadow_mail"],
+    });
+    const other = resolveConversationCapabilityProfile({
+      sessionKey: "agent:cellect-fi-user:main",
+      agentId: "cellect-fi-user",
+      runtimeToolAllowlist: ["*"],
+      inheritRuntimeToolAllowlist: true,
+    });
+    expect(other.policy.runtimeToolPolicyForInheritance).toEqual({ allow: ["*"] });
+  });
+
+  it("caps a guest session to the guest tool, whatever was asked", () => {
+    const guest = `agent:cellect-fi-guest:hook:fi-guest:${"a".repeat(40)}`;
+    expect(capBackgroundHookToolsAllow([guest], ["*"])).toEqual(["guest_api"]);
+    expect(capBackgroundHookToolsAllow([guest], ["fi_user_api", "exec"])).toEqual([]);
+    expect(capBackgroundHookToolsAllow([guest, SHADOW])).toEqual([]);
+  });
+});

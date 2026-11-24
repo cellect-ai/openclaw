@@ -43,6 +43,7 @@ const IDLE_STOP_MS = 15 * 60 * 1000;
 const MAX_IDLE_STOPS_PER_PASS = 32;
 function shouldStopIdleContainer(entry: SandboxRegistryEntry, now: number): boolean {
   return (
+    !entry.rolloverRetained &&
     (entry.backendId === undefined ||
       entry.backendId === "docker" ||
       entry.backendId === "podman") &&
@@ -108,6 +109,7 @@ async function pruneSandboxRegistryEntries<TEntry extends SandboxRegistryEntry>(
     : 0;
   for (let offset = 0; offset < registry.entries.length; offset++) {
     const entry = registry.entries[(start + offset) % registry.entries.length]!;
+    if (entry.rolloverRetained) continue;
     const prune = { ...resolveEntryPruneConfig(params.config, entry), now };
     const retire = shouldPruneSandboxRegistryEntry(entry, prune)
       ? params.remove

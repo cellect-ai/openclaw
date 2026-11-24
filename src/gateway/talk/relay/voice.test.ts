@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import { SqliteWorkerError } from "../../../infra/sqlite-worker-contract.js";
 import {
@@ -12,6 +12,7 @@ import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.j
 import type { RelaySession } from "./state.js";
 import {
   closeRelayVoiceSession as closeVoice,
+  drainRelayVoiceTranscriptForClose,
   enqueueRelayVoiceTranscript as enqueue,
   ensureRelayVoiceSession as ensureVoice,
 } from "./voice.js";
@@ -22,6 +23,10 @@ const voiceSessionMocks = vi.hoisted(() => ({
   createOrResumeClientVoiceSession: vi.fn(),
   captureClientVoiceSessionWriter: vi.fn(),
   captureClientVoiceSessionSource: vi.fn(),
+}));
+const projectionMocks = vi.hoisted(() => ({
+  extractDeliveryInfo: vi.fn(),
+  deliverOutboundPayloads: vi.fn(),
 }));
 
 // mock-isolation: The queue policy is exercised without durable voice state.
@@ -45,6 +50,12 @@ vi.mock("../../../talk/client-voice-session-source.js", () => ({
 }));
 // mock-isolation: Exercise retry decisions without wall-clock backoff.
 vi.mock("../../../utils/sleep.js", () => ({ sleep: async () => {} }));
+vi.mock("../../../config/sessions/delivery-info.js", () => ({
+  extractDeliveryInfo: projectionMocks.extractDeliveryInfo,
+}));
+vi.mock("../../../infra/outbound/deliver.js", () => ({
+  deliverOutboundPayloads: projectionMocks.deliverOutboundPayloads,
+}));
 
 const {
   appendRelayVoiceTranscript: appendTranscript,
@@ -116,12 +127,18 @@ function expectWarning(session: RelaySession, message: string) {
 
 beforeEach(() => {
   vi.mocked(withClientVoiceSessionSettlement).mockImplementation((run) => run());
+  projectionMocks.extractDeliveryInfo
+    .mockReset()
+    .mockResolvedValue({ deliveryContext: undefined, threadId: undefined });
+  projectionMocks.deliverOutboundPayloads.mockReset().mockResolvedValue([]);
   appendTranscript.mockReset();
   closeRecord.mockReset().mockResolvedValue(undefined);
   createVoice.mockReset().mockResolvedValue("voice");
   const source = { assertCurrent: () => {} };
   captureSource.mockReset().mockReturnValue(source);
-  captureWriter.mockReset().mockImplementation(() => ({ source, release: async () => {} }));
+  captureWriter
+    .mockReset()
+    .mockImplementation(() => ({ source, assertCurrent: () => {}, release: async () => {} }));
 });
 
 it.each([
@@ -228,6 +245,33 @@ it("joins its accepted prefix after close settlement admission is lost", async (
   });
 });
 
+it("propagates failed accepted Matrix final writes instead of certifying a clean close", async () => {
+  const { session } = createRelaySession();
+  session.matrixRoute = {
+    channel: "matrix",
+    roomId: "!owned:synthetic",
+    accountId: "primary",
+    threadRootEventId: "$root",
+  };
+  const failure = new Error("final append failed");
+  const admitted = session.voiceTranscriptQueue.enqueue(async () => {
+    throw failure;
+  });
+  if (!admitted.accepted) {
+    throw new Error("Expected final write acceptance");
+  }
+  await admitted.completion.catch(() => undefined);
+  await expect(closeVoice(session)).rejects.toBe(failure);
+  expect(voiceSessionMocks.closeRelayVoiceSessionRecord).not.toHaveBeenCalled();
+});
+
+it("does not turn failed final record persistence into success", async () => {
+  const { session } = createRelaySession();
+  const failure = new Error("record close failed");
+  voiceSessionMocks.closeRelayVoiceSessionRecord.mockRejectedValueOnce(failure);
+  await expect(closeVoice(session)).rejects.toBe(failure);
+});
+
 it.each([false, true])("retries only a known failed creation (unknown=%s)", async (unknown) => {
   const failure = unknown
     ? new SqliteWorkerError("Creation settlement is unknown", "outcome-unknown")
@@ -249,6 +293,88 @@ it("does not replay an append after an unknown worker outcome", async () => {
   await closeVoice(session);
   expect(appendTranscript).toHaveBeenCalledOnce();
   expectWarning(session, "Transcript settlement is unknown");
+});
+
+it.each(["bound projection", "resolved projection", "bound append"] as const)(
+  "retains required %s failure through close after later work succeeds",
+  async (mode) => {
+    const { session } = createRelaySession();
+    const failure = new Error("Required Matrix transcript debt remains unsettled");
+    const route = {
+      channel: "matrix" as const,
+      roomId: "!owned:synthetic",
+      accountId: "primary",
+      threadRootEventId: "$root",
+    };
+    if (mode === "resolved projection") {
+      projectionMocks.extractDeliveryInfo.mockResolvedValue({
+        deliveryContext: {
+          channel: "matrix",
+          to: `room:${route.roomId}`,
+          accountId: route.accountId,
+          threadId: route.threadRootEventId,
+        },
+      });
+    } else {
+      session.matrixRoute = route;
+    }
+    if (mode === "bound append") {
+      appendTranscript.mockImplementation(async ({ entryId }: { entryId: string }) => {
+        if (entryId === "1") throw failure;
+      });
+    } else {
+      projectionMocks.deliverOutboundPayloads
+        .mockRejectedValueOnce(failure)
+        .mockResolvedValue([{ channel: "matrix", messageId: "$second" }]);
+    }
+    expect(enqueue(session, "user", "First accepted speech", { itemId: "first" })).toBe(true);
+    expect(enqueue(session, "user", "Unrelated later speech", { itemId: "second" })).toBe(true);
+    const close = closeVoice(session);
+    await expect(close).rejects.toBe(failure);
+    expect(session.voiceTranscriptQueue.isIdle).toBe(true);
+    expect(appendTranscript.mock.calls.some(([input]) => input.entryId === "2")).toBe(true);
+    expect(closeRecord).not.toHaveBeenCalled();
+    // A repeated close cannot erase the debt or manufacture another external send.
+    const sends = projectionMocks.deliverOutboundPayloads.mock.calls.length;
+    await expect(closeVoice(session)).rejects.toBe(failure);
+    expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledTimes(sends);
+  },
+);
+
+it("the admission-refused close drain joins and propagates accepted Matrix projection failure", async () => {
+  const { session } = createRelaySession();
+  session.matrixRoute = {
+    channel: "matrix",
+    roomId: "!owned:synthetic",
+    accountId: "primary",
+    threadRootEventId: "$root",
+  };
+  const projected = createDeferred();
+  const entered = createDeferred();
+  const failure = new Error("Projection did not commit");
+  projectionMocks.deliverOutboundPayloads.mockImplementation(async () => {
+    entered.resolve();
+    await projected.promise;
+    throw failure;
+  });
+  expect(enqueue(session, "user", "Accepted before close lost admission")).toBe(true);
+  await entered.promise;
+  let completed = false;
+  const closing = drainRelayVoiceTranscriptForClose(session);
+  void closing.then(
+    () => {
+      completed = true;
+    },
+    () => {
+      completed = true;
+    },
+  );
+  await Promise.resolve();
+  expect(completed).toBe(false);
+  expect(enqueue(session, "user", "Late input")).toBe(false);
+  projected.resolve();
+  await expect(closing).rejects.toBe(failure);
+  expect(closeRecord).not.toHaveBeenCalled();
 });
 
 it("closes a voice created by a later accepted transcript after the first creation fails", async () => {
@@ -303,4 +429,199 @@ it("drains bounded finals even when the closing source is refused", async () => 
   expect(closeRecord).not.toHaveBeenCalled();
   expectWarning(session, "Voice source was replaced before close");
   expect(enqueue(session, "user", "too late")).toBe(false);
+});
+
+describe("realtime relay voice transcript persistence", () => {
+  beforeEach(() => {
+    voiceSessionMocks.appendRelayVoiceTranscript.mockReset();
+    voiceSessionMocks.closeRelayVoiceSessionRecord.mockReset().mockResolvedValue(undefined);
+    voiceSessionMocks.createOrResumeClientVoiceSession.mockReset();
+    projectionMocks.extractDeliveryInfo
+      .mockReset()
+      .mockReturnValue({ deliveryContext: undefined, threadId: undefined });
+    projectionMocks.deliverOutboundPayloads.mockReset().mockResolvedValue([]);
+  });
+
+  it("projects a final once through the session-owned Matrix bot route", async () => {
+    projectionMocks.extractDeliveryInfo.mockReturnValue({
+      deliveryContext: { channel: "slack", to: "channel:C123", accountId: "shape" },
+      threadId: "123.456",
+    });
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+    expect(enqueue(session, "user", "Run the report")).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledOnce();
+    expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({
+        channel: "matrix",
+        to: "room:!owned:example.org",
+        accountId: "shape",
+        threadId: "$root",
+        deliveryIntentId: "voice:relay-voice-bounded:1",
+        payloads: [expect.objectContaining({ text: "Run the report" })],
+      }),
+    );
+  });
+
+  it("persists assistant speech without duplicating it into the Matrix conversation", async () => {
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+
+    expect(enqueue(session, "assistant", "The next number is 5.")).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ role: "assistant", text: "The next number is 5." }),
+    );
+    expect(projectionMocks.deliverOutboundPayloads).not.toHaveBeenCalled();
+  });
+
+  it("sends a new threaded message when a later final revises the same utterance", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$spoken" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$revised" }]);
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+
+    expect(
+      enqueue(session, "user", "How long is it", {
+        itemId: "item-1",
+        textMode: "snapshot",
+      }),
+    ).toBe(true);
+    expect(
+      enqueue(session, "user", "How long is a typical", {
+        itemId: "item-2",
+        textMode: "snapshot",
+      }),
+    ).toBe(true);
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectionMocks.deliverOutboundPayloads).toHaveBeenCalledTimes(2);
+    const first = projectionMocks.deliverOutboundPayloads.mock.calls[0]?.[0] as {
+      deliveryIntentId?: string;
+      payloads: Array<{
+        channelData?: { matrix?: { editEventId?: string; supersedeEventId?: string } };
+      }>;
+    };
+    const second = projectionMocks.deliverOutboundPayloads.mock.calls[1]?.[0] as {
+      deliveryIntentId?: string;
+      payloads: Array<{
+        channelData?: { matrix?: { editEventId?: string; supersedeEventId?: string } };
+        text?: string;
+      }>;
+    };
+    expect(first.payloads[0]?.channelData?.matrix?.editEventId).toBeUndefined();
+    expect(first.payloads[0]?.channelData?.matrix?.supersedeEventId).toBeUndefined();
+    expect(first.deliveryIntentId).toBe("voice:relay-voice-bounded:item:item-1");
+    expect(second.payloads[0]?.channelData?.matrix?.editEventId).toBeUndefined();
+    expect(second.payloads[0]?.channelData?.matrix?.supersedeEventId).toBe("$spoken");
+    expect(second.payloads[0]?.text).toBe("How long is a typical");
+    expect(second.deliveryIntentId).toBe("voice:relay-voice-bounded:item:item-1:2");
+  });
+
+  // Recorded LiteLLM / grok-voice-think-fast-2.0 finals (2026-10-30): the user
+  // paused after "And", Grok started a new item and carried "And" into its
+  // cumulative transcript. The first bubble must be replaced, not duplicated.
+  const carriedPrefixFinals = [
+    { itemId: "4574f7a0", text: "And" },
+    {
+      itemId: "db8361a2",
+      text: "And how much is did we invoice Shape Management? No, wait, stop. I meant for the month of September only.",
+    },
+  ];
+
+  function matrixSession() {
+    const { session } = createRelaySession();
+    session.matrixRoute = {
+      channel: "matrix",
+      roomId: "!owned:example.org",
+      accountId: "shape",
+      threadRootEventId: "$root",
+    };
+    return session;
+  }
+
+  function projectedSupersedes() {
+    return projectionMocks.deliverOutboundPayloads.mock.calls.map(
+      ([params]) =>
+        (
+          params as {
+            payloads: Array<{ channelData?: { matrix?: { supersedeEventId?: string } } }>;
+          }
+        ).payloads[0]?.channelData?.matrix?.supersedeEventId,
+    );
+  }
+
+  it("replaces a saved line when Grok carries it into the next item", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$and" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$full" }]);
+    const session = matrixSession();
+    for (const final of carriedPrefixFinals) {
+      enqueue(session, "user", final.text, {
+        itemId: final.itemId,
+        textMode: "snapshot",
+      });
+    }
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectedSupersedes()).toEqual([undefined, "$and"]);
+    expect(session.voiceUtterance).toMatchObject({
+      key: "item:4574f7a0",
+      text: carriedPrefixFinals[1]?.text,
+      eventId: "$full",
+    });
+  });
+
+  it("keeps a carried prefix as its own line after the revision window", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      projectionMocks.deliverOutboundPayloads
+        .mockResolvedValueOnce([{ channel: "matrix", messageId: "$and" }])
+        .mockResolvedValueOnce([{ channel: "matrix", messageId: "$later" }]);
+      const session = matrixSession();
+      const [first, second] = carriedPrefixFinals;
+      enqueue(session, "user", first!.text, { itemId: first!.itemId });
+      await session.voiceTranscriptQueue.flush();
+      vi.setSystemTime(Date.now() + 30_001);
+      enqueue(session, "user", second!.text, { itemId: second!.itemId });
+      await session.voiceTranscriptQueue.flush();
+
+      expect(projectedSupersedes()).toEqual([undefined, undefined]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not replace a short line that only shares letters with the next one", async () => {
+    projectionMocks.deliverOutboundPayloads
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$no" }])
+      .mockResolvedValueOnce([{ channel: "matrix", messageId: "$now" }]);
+    const session = matrixSession();
+    enqueue(session, "user", "No", { itemId: "a" });
+    enqueue(session, "user", "Now tell me the September total", {
+      itemId: "b",
+    });
+    await session.voiceTranscriptQueue.flush();
+
+    expect(projectedSupersedes()).toEqual([undefined, undefined]);
+  });
 });

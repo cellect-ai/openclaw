@@ -15,6 +15,15 @@ import type { MsgContext } from "../templating.js";
 import type { GetReplyOptions, ReplyPayload } from "../types.js";
 import { registerFastAutoProgressCases } from "./dispatch-from-config.fast-progress.cases.js";
 import { registerQueuedFollowupNoticeCases } from "./dispatch-from-config.queue-notices.test-support.js";
+import {
+  createThreadedSlackContext,
+  createArchivedDiscordContext,
+  groupSilenceConfig,
+  createMentionedGroupContext,
+  mockTelegramTopicPluginBinding,
+  createTelegramTopicContext,
+  crossChannelGroupContext,
+} from "./dispatch-from-config.route-fixtures.test-support.js";
 import { sendPolicySessionEntry } from "./dispatch-from-config.session-fixtures.test-support.js";
 import {
   createDispatcher,
@@ -51,103 +60,6 @@ import { resolveReplyOperationRunState } from "./reply-operation-run-state.js";
 import { buildTestCtx } from "./test-ctx.js";
 
 const NO_VISIBLE_REPLY_FALLBACK_TEXT = MISSING_REPLY_NOTICE_TEXT;
-
-function createThreadedSlackContext(
-  sessionKey: string,
-  body: string,
-  overrides: Partial<MsgContext> = {},
-) {
-  return buildTestCtx({
-    Provider: "slack",
-    Surface: "slack",
-    SessionKey: sessionKey,
-    ParentSessionKey: "agent:main:slack:channel:c1",
-    Body: body,
-    CommandBody: body,
-    RawBody: body,
-    InboundAccessAuthorized: true,
-    InboundEventKind: "user_request",
-    InputProvenance: { kind: "external_user", sourceChannel: "slack" },
-    ...overrides,
-  });
-}
-
-function createArchivedDiscordContext(to: string, sessionKey: string) {
-  return buildTestCtx({
-    Provider: "discord",
-    Surface: "discord",
-    OriginatingChannel: "discord",
-    OriginatingTo: to,
-    ChatType: "channel",
-    From: "discord:user:12345",
-    To: to,
-    AccountId: "default",
-    SessionKey: sessionKey,
-    Body: "start work",
-    CommandBody: "start work",
-    RawBody: "start work",
-    CommandSource: undefined,
-    InboundAccessAuthorized: true,
-    InboundEventKind: "user_request",
-    InputProvenance: { kind: "external_user", sourceChannel: "discord" },
-  });
-}
-
-function groupSilenceConfig(group: "allow" | "disallow"): OpenClawConfig {
-  return { agents: { defaults: { silentReply: { group } } } };
-}
-
-function createMentionedGroupContext(channel: "telegram" | "feishu" = "telegram") {
-  return buildTestCtx({
-    ChatType: "group",
-    Surface: channel,
-    Provider: channel,
-    SessionKey: `agent:main:${channel}:group:oc_group`,
-    WasMentioned: true,
-  });
-}
-
-function mockTelegramTopicPluginBinding(bindingId: string) {
-  mockPluginBinding({
-    bindingId,
-    targetSessionKey: "plugin-binding:codex:abc123",
-    conversation: {
-      channel: "telegram",
-      accountId: "default",
-      conversationId: "-1001234567890:topic:11",
-      parentConversationId: "-1001234567890",
-    },
-    pluginRoot: "/tmp/plugin",
-  });
-}
-
-function createTelegramTopicContext(overrides: Partial<MsgContext>) {
-  return buildTestCtx({
-    Provider: "telegram",
-    Surface: "telegram",
-    OriginatingChannel: "telegram",
-    OriginatingTo: "telegram:-1001234567890",
-    To: "telegram:-1001234567890",
-    AccountId: "default",
-    MessageThreadId: 11,
-    ChatType: "group",
-    GroupSubject: "Dev",
-    WasMentioned: false,
-    ...overrides,
-  });
-}
-
-function crossChannelGroupContext() {
-  return buildTestCtx({
-    ChatType: "group",
-    Surface: "slack",
-    Provider: "slack",
-    OriginatingChannel: "telegram",
-    OriginatingTo: "telegram:999",
-    SessionKey: "agent:main:slack:group:oc_group",
-    WasMentioned: true,
-  });
-}
 
 beforeAll(globalBeforeAll0);
 
@@ -319,6 +231,42 @@ describe("before_dispatch hook", () => {
         threadId: 42,
       },
     });
+  });
+
+  it.each(["verified", "asserted", undefined] as const)(
+    "tells before_dispatch whether the channel proved the sender: %s",
+    async (authentication) => {
+      hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
+      await dispatchReplyFromConfig({
+        ctx: createHookCtx({ SenderId: "sender-1", SenderAuthentication: authentication }),
+        cfg: emptyConfig,
+        dispatcher: createDispatcher(),
+      });
+      const event = firstMockCall(
+        hookMocks.runner.runBeforeDispatch,
+        "before dispatch hook",
+      )[0] as { senderId?: unknown; senderAuthentication?: unknown };
+      expect(event.senderId).toBe("sender-1");
+      expect(event.senderAuthentication).toBe(authentication);
+    },
+  );
+
+  it("gives before_dispatch the host-owned channel context", async () => {
+    hookMocks.runner.runBeforeDispatch.mockResolvedValue({ handled: true });
+    const channelContext = {
+      sender: { id: "@alex:matrix.example" },
+      chat: { id: "!room:matrix.example", talkThreadRootEventId: "$root" },
+    };
+    await dispatchReplyFromConfig({
+      ctx: createHookCtx({ SenderId: "@alex:matrix.example", ChannelContext: channelContext }),
+      cfg: emptyConfig,
+      dispatcher: createDispatcher(),
+    });
+    const context = firstMockCall(
+      hookMocks.runner.runBeforeDispatch,
+      "before dispatch hook",
+    )[1] as { channelContext?: unknown };
+    expect(context.channelContext).toEqual(channelContext);
   });
 
   it("passes inbound reply metadata to before_dispatch event and context", async () => {

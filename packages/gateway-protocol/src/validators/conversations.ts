@@ -270,3 +270,16 @@ export const validateTranscriptsStatusParams = createProtocolValidator(
   S.TranscriptsStatusParamsSchema,
   Checks.isTranscriptsStatusParams,
 );
+
+export const validateChatHandoffArmParams = createProtocolValidator(
+  S.ChatHandoffArmParamsSchema,
+  Checks.isChatHandoffArmParams,
+);
+export const validateChatHandoffSeenParams = createProtocolValidator(
+  S.ChatHandoffSeenParamsSchema,
+  Checks.isChatHandoffSeenParams,
+);
+export const validateConversationContinueParams = createProtocolValidator(
+  S.ConversationContinueParamsSchema,
+  Checks.isConversationContinueParams,
+);

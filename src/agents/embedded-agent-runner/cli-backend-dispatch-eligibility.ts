@@ -10,11 +10,14 @@ import {
   resolveModelAuthMode,
 } from "../model-auth.js";
 import { resolveCliRuntimeExecutionProvider } from "../model-runtime-aliases.js";
+import { isRestrictedBackgroundHookRun } from "../shadow-hook-tool-policy.js";
 
 type EmbeddedCliBackendDispatchEligibilityParams = {
   provider?: string;
   model?: string;
   agentId?: string;
+  sessionKey?: string;
+  runtimePolicySessionKey?: string;
   /** Explicitly pinned auth profile for the run; decisive when it resolves. */
   authProfileId?: string;
   config?: OpenClawConfig;
@@ -26,6 +29,11 @@ type EmbeddedCliBackendDispatchEligibilityParams = {
 function resolveDispatchProvider(
   params: EmbeddedCliBackendDispatchEligibilityParams,
 ): string | undefined {
+  // Shadow sessions stay on the capped embedded path, whatever auth profile is pinned.
+  if (isRestrictedBackgroundHookRun(params.sessionKey, params.runtimePolicySessionKey)) {
+    return undefined;
+  }
+  // Canonical refs must dispatch like explicit CLI-provider refs.
   const backends = new Map(
     resolveRuntimeCliBackends("metadata").map((backend) => [
       normalizeProviderId(backend.id),

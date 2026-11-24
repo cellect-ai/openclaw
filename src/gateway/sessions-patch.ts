@@ -8,7 +8,6 @@ import {
 } from "../../packages/gateway-protocol/src/index.js";
 import { SESSION_COMMUNICATION_MODES } from "../../packages/gateway-protocol/src/session-communication.js";
 import { readAcpSessionMetaForEntryAsync } from "../acp/runtime/session-meta-readonly.js";
-import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import {
   resolveAgentDir,
   resolveAgentWorkspaceDir,
@@ -49,15 +48,11 @@ import {
   resolveThinkingProfile,
 } from "../auto-reply/thinking.js";
 import type { InternalSessionEntry as SessionEntry } from "../config/sessions.js";
-import {
-  buildSessionCreationStamp,
-  type SessionCreatedVia,
-} from "../config/sessions/session-entry-provenance.js";
+import { buildSessionCreationStamp } from "../config/sessions/session-entry-provenance.js";
 import { createAgentPatchedSessionModelFallback } from "../config/sessions/session-model-fallback.js";
 import { normalizeSessionToolOverrides } from "../config/sessions/session-tool-overrides.js";
 import { projectCanonicalSessionEntryShape } from "../config/sessions/store-entry-shape.js";
 import type { SessionAcpMeta } from "../config/sessions/types.js";
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { normalizeExecTarget } from "../infra/exec-approvals.js";
 import {
   isSubagentSessionKey,
@@ -74,7 +69,6 @@ import {
   SESSION_AGENT_STATUS_MAX_TTL_MINUTES,
 } from "../sessions/session-agent-status.js";
 import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
-import type { UserModelAccountSelection } from "./model-account-authority.js";
 import { isSessionUnreadAckOnlyPatch } from "./server-methods/session-unread-ack.js";
 import {
   createSessionAccessProgramValidation,
@@ -96,38 +90,11 @@ import {
 } from "./sessions-patch-display-metadata.js";
 import { applySessionPatchLifecycleFlags } from "./sessions-patch-lifecycle-flags.js";
 import { applySessionsPatchSubagentPolicy } from "./sessions-patch-subagent-policy.js";
-
-type SessionPatchProjectionParams = {
-  cfg: OpenClawConfig;
-  creation?: { via: SessionCreatedVia; actor?: SessionEntry["createdActor"] };
-  existingEntry?: SessionEntry;
-  isLabelInUse: (label: string) => boolean;
-  storeKey: string;
-  agentId?: string;
-  patch: SessionsPatchParams;
-  /** Canonical root prepared by the trusted create path; never accepted from public patches. */
-  preparedSessionRoot?: string;
-  /** Trusted catalog runtime must own selection checks before the new row is persisted. */
-  preparedAgentRuntime?: string;
-  archivedBy?: SessionEntry["archivedBy"];
-  /** Exact harness owner authorized to project its new reserved session row. */
-  authorizedAgentHarnessId?: string;
-  personalModelSelection?: UserModelAccountSelection;
-  operatorAuthority?: AdmittedRunOperatorAuthority;
-  /** Resolved spawn identity supplied only by the trusted creation owner. */
-  preparedModelSelection?: ModelRef;
-};
-
-type SessionPatchProjectionResult =
-  | { ok: true; entry: SessionEntry; validateModelSelection?: () => ErrorShape | undefined }
-  | { ok: false; error: ErrorShape };
-
-type SessionPatchPreparation =
-  | { kind: "complete"; result: SessionPatchProjectionResult }
-  | {
-      kind: "model-catalog";
-      finish: (catalog: ModelCatalogSnapshot | undefined) => SessionPatchProjectionResult;
-    };
+import {
+  type SessionPatchProjectionParams,
+  type SessionPatchProjectionResult,
+  type SessionPatchPreparation,
+} from "./sessions-patch.types.js";
 
 /** Stop at the first actual catalog use without committing or acquiring runtime effects. */
 export async function prepareSessionsPatchEntry(
@@ -386,6 +353,15 @@ function* projectSessionPatchSteps(
   });
   if (lifecycleFlagsError) {
     return { ok: false, error: lifecycleFlagsError };
+  }
+
+  if (patch.timeoutSeconds === null) {
+    delete next.timeoutSeconds;
+  } else if (patch.timeoutSeconds !== undefined) {
+    if (!Number.isSafeInteger(patch.timeoutSeconds) || patch.timeoutSeconds < 0) {
+      return invalid("timeoutSeconds must be a nonnegative integer or null");
+    }
+    next.timeoutSeconds = patch.timeoutSeconds;
   }
 
   const rawThinking = patch.thinkingLevel;

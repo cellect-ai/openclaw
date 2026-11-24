@@ -7,12 +7,14 @@ import {
   NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   PAIRING_SETUP_BOOTSTRAP_PROFILE,
   VOICE_NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+  WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   isMobilePairingSetupBootstrapProfile,
   isNodePairingSetupBootstrapProfile,
   isVoiceNodePairingSetupBootstrapProfile,
   normalizeDeviceBootstrapHandoffProfile,
   normalizeDeviceBootstrapProfile,
   type DeviceBootstrapProfileInput,
+  resolveBootstrapProfileScopesForRole,
 } from "./device-bootstrap-profile.js";
 
 const scopes = (...names: string[]) => names.map((name) => `operator.${name}`);
@@ -58,6 +60,18 @@ describe("device bootstrap profile", () => {
       profile(scopes("admin", "pairing", "read"), "mobile-full"),
       profile(scopes("admin", "read", "write"), "mobile-full"),
     );
+  });
+
+  test("allows Talk only for the closed webchat bootstrap purpose", () => {
+    expect(
+      normalizeDeviceBootstrapHandoffProfile({
+        ...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE,
+        scopes: [...WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE.scopes, "operator.admin"],
+      }),
+    ).toEqual(WEBCHAT_PAIRING_SETUP_BOOTSTRAP_PROFILE);
+    expect(
+      resolveBootstrapProfileScopesForRole("operator", ["operator.read", "operator.talk"]),
+    ).toEqual(["operator.read"]);
   });
 
   test("drops unknown bootstrap purpose codes", () => {

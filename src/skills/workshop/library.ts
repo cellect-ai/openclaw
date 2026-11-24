@@ -363,7 +363,16 @@ export async function mutateSkill(
       ...(ctx.runId ? { runId: ctx.runId } : {}),
       createdAtMs: Date.now(),
     };
-    await recordWorkshopChange(change);
+    try {
+      await recordWorkshopChange(change);
+    } catch (error) {
+      // File effects have already completed. A lost journal acknowledgement does
+      // not mean they rolled back, and retrying the mutation may duplicate them.
+      throw new Error(
+        `Skill "${name}" files changed, but recording the change could not be confirmed. View the skill and change history before retrying.`,
+        { cause: error },
+      );
+    }
     if (before || after) {
       await dispatchCommittedSkillChangeBestEffort({
         action: !before ? "created" : after ? "updated" : "removed",

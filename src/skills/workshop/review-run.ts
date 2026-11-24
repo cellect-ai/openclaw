@@ -2,13 +2,8 @@ import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
 import type { RunEmbeddedAgentParams } from "../../agents/embedded-agent-runner/run/params.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
-import { onGatewayWorkMetricsChanged } from "../../infra/gateway-work-metrics-events.js";
 import { getSkillWorkshopReviewLane } from "../../process/background-work.js";
-import { getGatewayRestartDrainSignal } from "../../process/gateway-work-admission.js";
-import {
-  getActiveSessionRunCount,
-  isSessionRunActive,
-} from "../../sessions/session-controller.queries.js";
+import { captureSkillReviewBackground } from "./review-background.js";
 
 /**
  * The background Workshop review run: the openclaw harness on a locked model, crediting
@@ -22,19 +17,8 @@ export async function runSkillWorkshopReview(
     skillWorkshopReviewOf: string;
   },
 ) {
-  const foreground = new AbortController();
-  const yieldToForeground = () => {
-    const ownRun = isSessionRunActive(params.sessionId) ? 1 : 0;
-    if (getActiveSessionRunCount() > ownRun) {
-      foreground.abort(new DOMException("Skill review yielded to foreground work", "AbortError"));
-    }
-  };
-  const unsubscribe = onGatewayWorkMetricsChanged(yieldToForeground);
-  const abortSignal = AbortSignal.any([
-    getGatewayRestartDrainSignal(),
-    foreground.signal,
-    ...(params.abortSignal ? [params.abortSignal] : []),
-  ]);
+  using background = captureSkillReviewBackground(params.sessionId, params.abortSignal);
+  const abortSignal = background.signal;
   // Background runs stay out of the Control UI and never project into a user session.
   registerAgentRunContext(params.runId, {
     agentId: params.agentId,
@@ -46,8 +30,7 @@ export async function runSkillWorkshopReview(
     projectSessionMessages: false,
   });
   try {
-    yieldToForeground();
-    abortSignal.throwIfAborted();
+    background.assertCurrent();
     const { runEmbeddedAgent } = await import("../../agents/embedded-agent.js");
     const result = await runEmbeddedAgent({
       ...params,
@@ -88,10 +71,9 @@ export async function runSkillWorkshopReview(
       cleanupBundleMcpOnRunEnd: true,
       verboseLevel: "off",
     });
-    foreground.signal.throwIfAborted();
+    background.assertCurrent();
     return result;
   } finally {
-    unsubscribe();
     params.preparedRunAdmission.close();
     clearAgentRunContext(params.runId);
     cleanupSessionResources(params.sessionId);

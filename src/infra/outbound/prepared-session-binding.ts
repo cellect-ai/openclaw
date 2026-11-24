@@ -71,6 +71,7 @@ export async function prepareSessionBindingSelection(
   const records: Array<SessionBindingRecord | null> = conversations.map(() => null);
   const native: Array<{ index: number; conversation: ConversationRef }> = [];
   const groups = new Map<SessionBindingAdapter, number[]>();
+  let hasLegacyAdapter = false;
   try {
     for (const [index, conversation] of conversations.entries()) {
       const adapter = owner.resolveAdapterForChannelAccount(conversation);
@@ -116,6 +117,7 @@ export async function prepareSessionBindingSelection(
           records[index] = snapshot.bindings[position] ?? null;
         });
       } else {
+        hasLegacyAdapter = true;
         // Released third-party adapters retain their owner-held synchronous effect reader.
         checks.push(() => {
           const inspect = adapter.inspectByConversation ?? adapter.resolveByConversation;
@@ -130,7 +132,9 @@ export async function prepareSessionBindingSelection(
         if (!active) {
           throw new Error("Conversation binding inspection is no longer active");
         }
-        if (changed || pendingOperations.size > 0) {
+        // V2-only selections retain their exact adapter snapshots. An unrelated
+        // generic binding write cannot invalidate a different storage owner.
+        if ((native.length > 0 || hasLegacyAdapter) && (changed || pendingOperations.size > 0)) {
           throw new Error("Conversation binding ownership changed. Retry the request.");
         }
         for (const check of checks) {

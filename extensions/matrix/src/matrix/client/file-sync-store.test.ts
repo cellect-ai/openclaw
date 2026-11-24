@@ -15,6 +15,7 @@ import { describe, expect, it, vi } from "vitest";
 import { getMatrixRuntime } from "../../runtime.js";
 import { MatrixClient } from "../sdk.js";
 import { SqliteBackedMatrixSyncStore } from "./file-sync-store.js";
+import * as matrixStorage from "./storage.js";
 import {
   hasMatrixSyncCacheStateInStore,
   readPersistedStoreFromStore,
@@ -252,7 +253,7 @@ describe("SqliteBackedMatrixSyncStore", () => {
     await store.setSyncData(createSyncResponse("s222"));
     await store.storeClientOptions({ lazyLoadMembers: true });
     expect((await openStore()).hasSavedSync()).toBe(false);
-    await vi.advanceTimersByTimeAsync(249);
+    await vi.advanceTimersByTimeAsync(59_999);
     expect((await openStore()).hasSavedSync()).toBe(false);
     await vi.advanceTimersByTimeAsync(1);
     await Promise.resolve();
@@ -262,6 +263,268 @@ describe("SqliteBackedMatrixSyncStore", () => {
     await expect(persisted.getSavedSyncToken()).resolves.toBe("s222");
     await expect(persisted.getClientOptions()).resolves.toEqual({ lazyLoadMembers: true });
   });
+
+  it("rejects corrupt cursor chunks even when metadata carries clean operation proof", async () => {
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    await store.setSyncData(createSyncResponse("private-cursor"));
+    await store.freezeSyncCursorPersistence();
+    store.markCleanShutdown(operation);
+    await store.flush();
+    const state = createPluginStateSyncKeyedStoreForTests<MatrixSyncCacheRecord>(
+      "matrix",
+      openMatrixSyncCacheStoreOptions(storage.root),
+    );
+    const chunk = state.entries().find((row) => row.value.kind === "sync-chunk");
+    if (!chunk || chunk.value.kind !== "sync-chunk") throw new Error("Missing chunk fixture");
+    state.register(chunk.key, { ...chunk.value, data: "corrupt cursor snapshot" });
+    const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(successor.hasSavedSync()).toBe(false);
+    expect(successor.getCheckpointStatus().restored).toBeNull();
+  });
+
+  it("publishes no clean evidence when token-storage ownership settlement fails", async () => {
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    await store.setSyncData(createSyncResponse("private-cursor"));
+    await store.freezeSyncCursorPersistence();
+    store.markCleanShutdown(operation);
+    vi.spyOn(matrixStorage, "claimCurrentTokenStorageState").mockRejectedValue(
+      new Error("claim failed"),
+    );
+    await expect(store.flush()).rejects.toThrow("claim failed");
+    const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(successor.hasSavedSync()).toBe(true);
+    expect(successor.hasSavedSyncFromCleanShutdown()).toBe(false);
+    expect(successor.getCheckpointStatus().restored).toBeNull();
+  });
+
+  it("does not expose clean proof when the final checkpoint write fails", async () => {
+    const runtime = getMatrixRuntime();
+    const open = runtime.state.openKeyedStoreV2.bind(runtime.state);
+    vi.spyOn(runtime.state, "openKeyedStoreV2").mockImplementation((options) => {
+      const state = open(options);
+      return {
+        ...state,
+        register: async (...args) => {
+          const [key, value] = args;
+          if (
+            key === "current:meta" &&
+            value &&
+            typeof value === "object" &&
+            "cleanShutdown" in value &&
+            value.cleanShutdown
+          ) {
+            throw new Error("checkpoint write failed");
+          }
+          return state.register(...args);
+        },
+      };
+    });
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    await store.setSyncData(createSyncResponse("private-cursor"));
+    await store.freezeSyncCursorPersistence();
+    store.markCleanShutdown(operation);
+    await expect(store.flush()).rejects.toThrow("checkpoint write failed");
+    const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(successor.getCheckpointStatus().restored).toBeNull();
+  });
+
+  it.each(["generation", "storeId", "accountId"] as const)(
+    "refuses restored checkpoint with corrupt %s binding",
+    async (field) => {
+      const previous = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+      await previous.setSyncData(createSyncResponse("private-cursor"));
+      await previous.freezeSyncCursorPersistence();
+      previous.markCleanShutdown(operation);
+      await previous.flush();
+      const state = createPluginStateSyncKeyedStoreForTests<MatrixSyncCacheRecord>(
+        "matrix",
+        openMatrixSyncCacheStoreOptions(storage.root),
+      );
+      const meta = state.lookup("current:meta");
+      if (!meta || meta.kind !== "meta" || !meta.checkpoint)
+        throw new Error("Missing checkpoint fixture");
+      state.register("current:meta", {
+        ...meta,
+        checkpoint: { ...meta.checkpoint, [field]: "wrong-binding" },
+      });
+      const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+      expect(successor.getCheckpointStatus().restored).toBeNull();
+    },
+  );
+
+  it("freezes each cursor prefix before awaiting durable ingress appends", async () => {
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    const firstBarrier = createDeferred<void>();
+    const firstBarrierStarted = createDeferred<void>();
+    const secondBarrier = createDeferred<void>();
+    const secondBarrierStarted = createDeferred<void>();
+    const firstPersisted = createDeferred<string | null>();
+    let barriers = 0;
+    store.setPersistenceBarrier(() => {
+      if (++barriers === 1) {
+        firstBarrierStarted.resolve();
+        return firstBarrier.promise;
+      }
+      secondBarrierStarted.resolve();
+      return secondBarrier.promise;
+    });
+    const reader = createPluginStateKeyedStoreForTests<MatrixSyncCacheRecord>(
+      "matrix",
+      openMatrixSyncCacheStoreOptions(storage.root),
+    );
+    vi.spyOn(matrixStorage, "claimCurrentTokenStorageState").mockImplementation(async () => {
+      const persisted = await readPersistedStoreFromStore({
+        storageRootDir: storage.root,
+        store: reader,
+      });
+      firstPersisted.resolve(persisted?.savedSync?.nextBatch ?? null);
+      return true;
+    });
+    await store.setSyncData(createSyncResponse("first-durable-prefix"));
+    const flushing = store.flush();
+    try {
+      await firstBarrierStarted.promise;
+      await store.setSyncData(createSyncResponse("newer-unsettled-prefix"));
+      firstBarrier.resolve();
+      const firstCursor = await Promise.race([
+        firstPersisted.promise,
+        flushing.then(() => {
+          throw new Error("Flush completed without publishing its first prefix");
+        }),
+      ]);
+      expect(firstCursor).toBe("first-durable-prefix");
+      await secondBarrierStarted.promise;
+      const first = await readPersistedStoreFromStore({
+        storageRootDir: storage.root,
+        store: reader,
+      });
+      expect(first?.savedSync?.nextBatch).toBe("first-durable-prefix");
+      secondBarrier.resolve();
+      await flushing;
+      const latest = await readPersistedStoreFromStore({
+        storageRootDir: storage.root,
+        store: reader,
+      });
+      expect(latest?.savedSync?.nextBatch).toBe("newer-unsettled-prefix");
+      expect(barriers).toBe(2);
+    } finally {
+      firstBarrier.resolve();
+      secondBarrier.resolve();
+      await flushing;
+      await store.freezeSyncCursorPersistence();
+    }
+  });
+
+  it("never certifies a cursor whose durable ingress append failed", async () => {
+    const store = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    await store.setSyncData(createSyncResponse("unretained"));
+    const append = createDeferred<void>();
+    store.setPersistenceBarrier(() => append.promise);
+    const flushing = store.flush();
+    append.reject(new Error("ingress append failed"));
+    await expect(flushing).rejects.toThrow("ingress append failed");
+    await store.freezeSyncCursorPersistence();
+    const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(successor.hasSavedSync()).toBe(false);
+    expect(successor.getCheckpointStatus().restored).toBeNull();
+  });
+
+  it.each(["accountId", "homeserver", "userId", "deviceId"] as const)(
+    "refuses restored proof for changed %s",
+    async (field) => {
+      const previous = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+      await previous.setSyncData(createSyncResponse("private-cursor"));
+      await previous.freezeSyncCursorPersistence();
+      previous.markCleanShutdown(operation);
+      await previous.flush();
+      const successor = await SqliteBackedMatrixSyncStore.create(storage.root, {
+        ...identity,
+        [field]: "other",
+      });
+      expect(successor.getCheckpointStatus().restored).toBeNull();
+    },
+  );
+
+  it("restores exact operation proof once and never recycles it after a crash before debounce", async () => {
+    const previous = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    const baseline = previous.getCheckpointStatus();
+    await previous.setSyncData(createSyncResponse("private-cursor"));
+    await previous.freezeSyncCursorPersistence();
+    previous.markCleanShutdown(operation);
+    await previous.flush();
+    const successor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(successor.getCheckpointStatus()).toMatchObject({
+      storeId: baseline.storeId,
+      restored: {
+        requestId: operation.requestId,
+        suspensionId: operation.suspensionId,
+        predecessorProcessInstanceId: operation.processInstanceId,
+        accountId: identity.accountId,
+        storeId: baseline.storeId,
+        generation: expect.any(String),
+      },
+    });
+    const immutable = successor.getCheckpointStatus();
+    await successor.setSyncData(createSyncResponse("later-cursor"));
+    expect(successor.getCheckpointStatus()).toEqual(immutable);
+    // No flush: simulate a crash while the 60s cursor debounce is still pending.
+    const crashedSuccessor = await SqliteBackedMatrixSyncStore.create(storage.root, identity);
+    expect(crashedSuccessor.getCheckpointStatus().restored).toBeNull();
+    expect(crashedSuccessor.hasSavedSyncFromCleanShutdown()).toBe(false);
+    await successor.freezeSyncCursorPersistence();
+    await crashedSuccessor.freezeSyncCursorPersistence();
+    expect(JSON.stringify(immutable)).not.toContain("private-cursor");
+  });
+
+  it("persists a large unicode sync snapshot in bounded chunks without retaining old generations", async () => {
+    const syncResponse = createSyncResponse("large-unicode-token");
+    const body = 'Matrix says "hello" 🟢 '.repeat(30_000);
+    syncResponse.rooms.join!["!room:example.org"]!.timeline!.events[0]!.content = {
+      body,
+      msgtype: "m.text",
+    };
+
+    const firstStore = await SqliteBackedMatrixSyncStore.create(storage.root);
+    await firstStore.setSyncData(syncResponse);
+    await firstStore.flush();
+
+    const rows = createPluginStateSyncKeyedStoreForTests<MatrixSyncCacheRecord>(
+      "matrix",
+      openMatrixSyncCacheStoreOptions(storage.root),
+    ).entries();
+    const meta = rows.find((row) => row.key === "current:meta")?.value;
+    expect(meta).toMatchObject({ kind: "meta" });
+    expect(rows).toHaveLength((meta as { chunkCount: number }).chunkCount + 1);
+    expect(rows.length).toBeLessThan(10);
+
+    const restored = await SqliteBackedMatrixSyncStore.create(storage.root);
+    const saved = await restored.getSavedSync();
+    expect(saved?.roomsData.join?.["!room:example.org"]?.timeline?.events[0]?.content.body).toBe(
+      body,
+    );
+
+    await firstStore.setSyncData(createSyncResponse("replacement-token"));
+    await firstStore.flush();
+    const replacedRows = createPluginStateSyncKeyedStoreForTests<MatrixSyncCacheRecord>(
+      "matrix",
+      openMatrixSyncCacheStoreOptions(storage.root),
+    ).entries();
+    const replacedMeta = replacedRows.find((row) => row.key === "current:meta")?.value;
+    expect(replacedRows).toHaveLength((replacedMeta as { chunkCount: number }).chunkCount + 1);
+  });
+
+  const operation = {
+    requestId: "release-1",
+    suspensionId: "suspend-1",
+    processInstanceId: "process-before",
+  };
+
+  const identity = {
+    accountId: "admin",
+    homeserver: "https://matrix.example.org",
+    userId: "@admin:example.org",
+    deviceId: "device",
+  };
 });
 const userId = "@recipient:example.org";
 const roomId = "!verification:example.org";

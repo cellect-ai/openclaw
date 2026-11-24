@@ -327,6 +327,67 @@ describe("OpenAI realtime voice bridge events", () => {
     await bridge.close();
   });
 
+  it("treats a later named mark as cumulative playback progress", async () => {
+    const onMark = vi.fn();
+    const bridge = createNativeBridge({ onMark });
+    const socket = await connectReadyBridge(bridge);
+
+    bridge.setMediaTimestamp(1000);
+    for (let index = 0; index < 3; index += 1) {
+      emitServerEvent(socket, {
+        type: "response.audio.delta",
+        item_id: "item_1",
+        delta: Buffer.from("assistant audio").toString("base64"),
+      });
+    }
+    const marks = onMark.mock.calls.map(([markName]) => String(markName));
+    expect(marks).toHaveLength(3);
+
+    bridge.acknowledgeMark(marks[2]);
+    bridge.acknowledgeMark(marks[0]);
+    bridge.acknowledgeMark(marks[1]);
+    bridge.setMediaTimestamp(1300);
+    bridge.handleBargeIn?.();
+
+    expect(
+      parseSent(socket).filter((event) => event.type === "conversation.item.truncate"),
+    ).toHaveLength(0);
+    await bridge.close();
+  });
+
+  it("forwards current realtime output audio events", async () => {
+    const onAudio = vi.fn();
+    const onTranscript = vi.fn();
+    const bridge = createNativeBridge({
+      onAudio,
+      onTranscript,
+    });
+    const socket = await connectReadyBridge(bridge);
+
+    const audio = Buffer.from("assistant audio");
+    emitServerEvent(socket, {
+      type: "response.output_audio.delta",
+      item_id: "item_1",
+      delta: audio.toString("base64"),
+    });
+    emitServerEvent(socket, {
+      type: "response.output_audio_transcript.done",
+      item_id: "item_1",
+      transcript: "hello from current realtime events",
+    });
+
+    expect(onAudio).toHaveBeenCalledWith(audio, { itemId: "item_1" });
+    expect(onTranscript).toHaveBeenCalledWith(
+      "assistant",
+      "hello from current realtime events",
+      true,
+      {
+        itemId: "item_1",
+        textMode: "snapshot",
+      },
+    );
+  });
+
   it("surfaces input transcription failures with their provider error details", async () => {
     const { socket, onError, onEvent } = await connectBridge({
       onError: vi.fn(),
@@ -354,11 +415,43 @@ describe("OpenAI realtime voice bridge events", () => {
     const { socket, onTranscript } = await connectBridge({ onTranscript: vi.fn() });
 
     emitServerEvent(socket, { type: "response.text.delta", delta: "draft assistant" });
-    emitServerEvent(socket, { type: "response.text.done", text: "corrected assistant" });
+    emitServerEvent(socket, {
+      type: "response.text.done",
+      item_id: "item_assistant",
+      text: "corrected assistant",
+    });
 
     expect(onTranscript.mock.calls).toEqual([
       ["assistant", "draft assistant", false],
-      ["assistant", "corrected assistant", true],
+      [
+        "assistant",
+        "corrected assistant",
+        true,
+        { itemId: "item_assistant", textMode: "snapshot" },
+      ],
+    ]);
+  });
+
+  it("preserves input item identity and exact live transcription delta semantics", async () => {
+    const onTranscript = vi.fn();
+    const socket = await connectReadyBridge(createNativeBridge({ onTranscript }));
+    for (const delta of ["trans", "cription", " works"]) {
+      emitServerEvent(socket, {
+        type: "conversation.item.input_audio_transcription.delta",
+        item_id: "input-1",
+        delta,
+      });
+    }
+    emitServerEvent(socket, {
+      type: "conversation.item.input_audio_transcription.completed",
+      item_id: "input-1",
+      transcript: "Transcription works.",
+    });
+    expect(onTranscript.mock.calls).toEqual([
+      ["user", "trans", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", "cription", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", " works", false, { itemId: "input-1", textMode: "delta" }],
+      ["user", "Transcription works.", true, { itemId: "input-1", textMode: "snapshot" }],
     ]);
   });
 
@@ -380,12 +473,21 @@ describe("OpenAI realtime voice bridge events", () => {
       type: "conversation.output_transcript.delta",
       delta: "partial assistant",
     });
-    emitServerEvent(socket, { type: "response.output_text.done", text: "final assistant text" });
+    emitServerEvent(socket, {
+      type: "response.output_text.done",
+      item_id: "item_final",
+      text: "final assistant text",
+    });
 
     expect(onAudio).toHaveBeenCalledWith(audio, undefined);
-    expect(onTranscript).toHaveBeenCalledWith("user", "partial user", false);
+    expect(onTranscript).toHaveBeenCalledWith("user", "partial user", false, {
+      textMode: "delta",
+    });
     expect(onTranscript).toHaveBeenCalledWith("assistant", "partial assistant", false);
-    expect(onTranscript).toHaveBeenCalledWith("assistant", "final assistant text", true);
+    expect(onTranscript).toHaveBeenCalledWith("assistant", "final assistant text", true, {
+      itemId: "item_final",
+      textMode: "snapshot",
+    });
   });
 
   it.each([false, true])("handles zero-length playback with force=%s", async (force) => {
@@ -393,6 +495,48 @@ describe("OpenAI realtime voice bridge events", () => {
       onClearAudio: vi.fn(),
       onEvent: vi.fn(),
     });
+    bridge.setMediaTimestamp(1300);
+
+    bridge.handleBargeIn?.({ audioPlaybackActive: true });
+    bridge.handleBargeIn?.({ audioPlaybackActive: true });
+
+    expect(parseSent(socket).filter((event) => event.type === "response.cancel")).toHaveLength(1);
+    expect(onEvent).toHaveBeenCalledWith({
+      direction: "client",
+      type: "response.cancel",
+      detail: "reason=barge-in",
+    });
+    expect(onEvent).toHaveBeenCalledWith({
+      direction: "client",
+      type: "conversation.item.truncate",
+      detail: "reason=barge-in audioEndMs=300",
+    });
+  });
+
+  it("forwards provider-originated response.cancelled with its response owner", async () => {
+    const onEvent = vi.fn();
+    const bridge = createNativeBridge({ onEvent });
+    const socket = await connectReadyBridge(bridge);
+
+    emitServerEvent(socket, { type: "response.created", response: { id: "resp_1" } });
+    emitServerEvent(socket, { type: "response.cancelled", response_id: "resp_1" });
+
+    expect(onEvent).toHaveBeenCalledWith({
+      direction: "server",
+      type: "response.cancelled",
+      detail: "cancelled",
+      responseId: "resp_1",
+    });
+  });
+
+  it("ignores zero-length playback barge-in without clearing audio", async () => {
+    const onClearAudio = vi.fn();
+    const onEvent = vi.fn();
+    const bridge = createNativeBridge({
+      onClearAudio,
+      onEvent,
+    });
+    const socket = await connectReadyBridge(bridge);
     bridge.setMediaTimestamp(1000);
     emitAssistantPlayback(socket);
 

@@ -92,6 +92,8 @@ export type QaGatewayChildParams = {
   mockAuthAgentIds?: readonly string[];
   onListening?: (context: QaGatewayChildListeningContext) => Promise<void> | void;
   mutateConfig?: (cfg: OpenClawConfig) => OpenClawConfig;
+  /** Explicit child environment; omission retains the caller environment. */
+  baseEnv?: NodeJS.ProcessEnv;
   runtimeEnvPatch?: NodeJS.ProcessEnv;
   runtimePreloads?: readonly string[];
 };
@@ -158,6 +160,7 @@ export async function prepareQaGatewayChild(
   params: QaGatewayChildParams,
   lifetime: QaGatewayChildLifecycle,
 ) {
+  const baseEnv = params.baseEnv ?? process.env;
   const tempParentDir = params.command?.tempParentDir ?? resolvePreferredOpenClawTmpDir();
   lifetime.tempRoot = await fs.mkdtemp(path.join(tempParentDir, "openclaw-qa-suite-"));
   // Store discovery returns physical paths; macOS /tmp aliases must not split
@@ -411,7 +414,7 @@ export async function prepareQaGatewayChild(
             forcedRuntimeEnvPatch.OPENCLAW_CODEX_APP_SERVER_ARGS = buildQaCodexAppServerArgs({
               existingArgs:
                 params.runtimeEnvPatch?.OPENCLAW_CODEX_APP_SERVER_ARGS ??
-                process.env.OPENCLAW_CODEX_APP_SERVER_ARGS,
+                baseEnv.OPENCLAW_CODEX_APP_SERVER_ARGS,
             });
           } else {
             const providerBaseUrl = params.providerBaseUrl?.trim().replace(/\/+$/u, "");
@@ -425,7 +428,6 @@ export async function prepareQaGatewayChild(
           }
         }
       }
-      const baseEnv = process.env;
       const forwardedHostHome = params.forwardHostHome
         ? baseEnv.HOME?.trim() || os.homedir()
         : undefined;

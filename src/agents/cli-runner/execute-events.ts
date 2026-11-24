@@ -5,6 +5,7 @@ import { projectAgentToolActivity } from "../../infra/agent-activity-events.js";
 import { emitAgentEvent, type AgentEventStream } from "../../infra/agent-events.js";
 import { emitTrustedDiagnosticEvent } from "../../infra/diagnostic-events.js";
 import { markToolExecutionLivenessDiagnosticEvent } from "../../infra/diagnostic-tool-execution-liveness.js";
+import { projectToolArgumentEnvironment } from "../../logging/tool-argument-environment.js";
 import { projectProgressCardChannelUpdate } from "../../session-cards/progress-card-channel-summary.js";
 import { isAgentPlanProgressToolName } from "../../session-cards/progress-card-input.js";
 import { projectAgentActivityItem } from "../agent-activity-presentation.js";
@@ -117,7 +118,11 @@ export function createCliEventHandlers(params: {
     emitAgentEvent({
       runId: runParams.runId,
       stream: "tool",
-      data: { ...data, name: stripOpenClawMcpToolPrefix(data.name) },
+      data: {
+        ...data,
+        name: stripOpenClawMcpToolPrefix(data.name),
+        ...(data.args !== undefined ? { args: projectToolArgumentEnvironment(data.args) } : {}),
+      },
     });
     if (data.phase !== "start") {
       emitAgentEvent(activity);

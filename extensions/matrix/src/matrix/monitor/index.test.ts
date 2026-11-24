@@ -1,4 +1,9 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { setImmediate } from "node:timers/promises";
+import { createChannelIngressQueueForTests } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
+import { closeOpenClawStateDatabaseForTest } from "openclaw/plugin-sdk/channel-ingress-test-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -691,4 +696,101 @@ describe("monitorMatrixProvider", () => {
     hoisted.getRoomInfo.mockResolvedValueOnce(roomInfo(info));
     await expect(callback("!room:example.org")).resolves.toBe(expected);
   });
+
+  it("contains room-message handler rejection and retains the durable event for retry", async () => {
+    const abortController = new AbortController();
+    const stateDir = await fs.mkdtemp(path.join(os.tmpdir(), "matrix-rejected-ingress-"));
+    const queue = createChannelIngressQueueForTests<{ version: 1; rawEvent: string }>({
+      channelId: "matrix",
+      accountId: "default",
+      stateDir,
+    });
+    hoisted.ingressQueue = queue;
+    const released = createDeferred<void>();
+    const release = queue.release.bind(queue);
+    vi.spyOn(queue, "release").mockImplementation(async (...args) => {
+      const result = await release(...args);
+      released.resolve();
+      return result;
+    });
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+
+    hoisted.createMatrixRoomMessageHandler.mockReturnValue(
+      vi.fn(async () => {
+        throw new Error("room handler exploded");
+      }),
+    );
+
+    process.on("unhandledRejection", onUnhandled);
+    let monitorPromise: Promise<void> | undefined;
+    try {
+      monitorPromise = monitorMatrixProvider({ abortSignal: abortController.signal });
+      await waitForCallOrderEntry("start-client");
+
+      const admit = hoisted.client.bindSyncIngress.mock.calls.at(-1)?.[0];
+      if (!admit) {
+        throw new Error("Missing native sync ingress binding");
+      }
+      await admit(
+        {
+          next_batch: "test",
+          rooms: {
+            join: {
+              "!room:example.org": {
+                timeline: {
+                  events: [
+                    {
+                      event_id: "$event",
+                      sender: "@person:example.org",
+                      type: "m.room.message",
+                      origin_server_ts: Date.now(),
+                      content: { body: "retry me", msgtype: "m.text" },
+                    },
+                  ],
+                },
+              },
+            },
+          },
+        } as never,
+        { hasSavedSync: true },
+      );
+      await released.promise;
+
+      expect(unhandled).toHaveLength(0);
+      const pending = await queue.listPending();
+      expect(pending).toHaveLength(1);
+      expect(pending[0]).toMatchObject({
+        attempts: 1,
+        lastError: expect.stringContaining("room handler exploded"),
+      });
+
+      abortController.abort();
+      await monitorPromise;
+    } finally {
+      abortController.abort();
+      await monitorPromise;
+      process.off("unhandledRejection", onUnhandled);
+      hoisted.ingressQueue = null;
+      closeOpenClawStateDatabaseForTest();
+      await fs.rm(stateDir, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    [undefined, 20],
+    [0, 0],
+    [3, 3],
+  ])(
+    "passes configured historyLimit=%s to the actual handler as %s",
+    async (historyLimit, expectedLimit) => {
+      (hoisted.accountConfig as { historyLimit?: number }).historyLimit = historyLimit;
+      await startMonitorAndAbortAfterStartup();
+      expect(mockCallArg(hoisted.createMatrixRoomMessageHandler)).toEqual(
+        expect.objectContaining({ historyLimit: expectedLimit }),
+      );
+    },
+  );
 });

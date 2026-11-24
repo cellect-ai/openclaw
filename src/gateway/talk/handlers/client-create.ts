@@ -25,8 +25,8 @@ import {
   type ClientVoiceSessionSource,
 } from "../../../talk/client-voice-session-source.js";
 import {
-  ensureClientVoiceAgentSessionEntry,
   captureClientVoiceSessionWriter,
+  ensureClientVoiceAgentSessionEntry,
   type ClientVoiceSessionWriter,
 } from "../../../talk/client-voice-session-write.js";
 import {
@@ -43,11 +43,13 @@ import {
   type InternalRealtimeVoiceBrowserSessionCreateRequest,
 } from "../../../talk/provider-internal.js";
 import { resolveConfiguredRealtimeVoiceProviderAsync } from "../../../talk/provider-resolver.js";
+import { prepareRawMatrixBrowserSessionAuthorization } from "../../matrix-browser-session-authorization.js";
 import { resolveSandboxedSessionCreation } from "../../operator-session-run.js";
 import { readGatewayRequestMutationAuthority } from "../../server-methods/session-mutation-guards.js";
 import type { GatewayRequestHandler } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
 import { resolveOperatorSessionCreation } from "../../session-creation-provenance.js";
+import { isWebchatSessionAllowed } from "../../webchat-agent-authorization.js";
 import { formatForLog } from "../../ws-log.js";
 import { createTalkClientAgentConsultRunner } from "../client-agent-consult.js";
 import { createTalkClientGatewayControlOwner } from "../client-gateway-control.js";
@@ -63,7 +65,6 @@ import {
   buildRealtimeVoiceLaunchOptions,
   buildTalkRealtimeConfig,
   resolveTalkRealtimeProviderInstructions,
-  resolveTalkClientLaunchError,
 } from "../session-config.js";
 import { readTalkRealtimeInitialItems } from "../session-history.js";
 import { restoreTalkSessionTarget } from "../session-start.js";
@@ -73,6 +74,7 @@ import {
   prepareTalkVoiceReplacement,
   registerTalkVoiceSession,
 } from "../voice-selection.js";
+import { resolveTalkClientLaunch } from "./client-launch.js";
 import {
   forgetLegacyVoiceBinding,
   rememberLegacyVoiceBinding,
@@ -117,19 +119,8 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       requested.provider,
       requested.model,
     );
-    const mode = params.mode ?? realtimeConfig.mode ?? "realtime";
-    const brain = params.brain ?? realtimeConfig.brain ?? "agent-consult";
-    const transport = params.transport ?? realtimeConfig.transport;
-    const wantsCameraFrames = params.capabilities?.includes("camera-frame") === true;
-    const wantsGatewayControl = params.capabilities?.includes("gateway-control-v1") === true;
-    const clientControl = wantsGatewayControl ? { owner: "gateway" as const } : undefined;
-    const transportError = resolveTalkClientLaunchError({
-      mode,
-      brain,
-      transport,
-      wantsGatewayControl,
-      wantsCameraFrames,
-    });
+    const { transport, wantsCameraFrames, wantsGatewayControl, clientControl, transportError } =
+      resolveTalkClientLaunch(params, realtimeConfig);
     if (transportError) {
       return rejectRequest(transportError.code, transportError.message);
     }
@@ -150,6 +141,25 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       },
     );
     const sessionTarget = { agentId, sessionKey: target.canonicalKey, storePath: target.storePath };
+    const rawMatrixSessionKey = normalizeOptionalString(params.sessionKey);
+    if (
+      rawMatrixSessionKey &&
+      (!isWebchatSessionAllowed({ cfg: runtimeConfig, client, sessionKey: rawMatrixSessionKey }) ||
+        (await prepareRawMatrixBrowserSessionAuthorization({
+          cfg: runtimeConfig,
+          clientInfo: client?.connect?.client,
+          pairedClientId: client?.pairedClientId,
+          sessionKey: rawMatrixSessionKey,
+          authorizedByBinding: false,
+        })))
+    ) {
+      rejectRequest(
+        ErrorCodes.INVALID_REQUEST,
+        "Matrix Talk sessions require an authorized binding",
+      );
+      return;
+    }
+    assertTargetCurrent();
     assertSecretOwnerAvailable("capability", "talk:realtime");
     const resolution = await resolveConfiguredRealtimeVoiceProviderAsync({
       configuredProviderId: realtimeConfig.provider,
@@ -196,10 +206,9 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
       if (wantsCameraFrames && tools.length > 0) {
         tools.push(REALTIME_VOICE_DESCRIBE_VIEW_TOOL);
       }
-      const instructions =
-        controlSource === "delegation"
-          ? normalizeOptionalString(providerInstructions)
-          : buildRealtimeInstructions(providerInstructions);
+      const instructions = buildRealtimeInstructions(providerInstructions, params.sessionCapsule, {
+        providerHandlesAgentConsult: controlSource === "delegation",
+      });
       const requestedVoiceSessionId = normalizeOptionalString(params.voiceSessionId);
       const ownsProvider =
         wantsGatewayControl || providerCapabilities?.handlesAgentConsult === true;
@@ -310,6 +319,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
         getVoiceSessionId: () => activeVoiceSessionId,
         getVoiceSessionSource: () => (logicalSessionCreated ? voiceSessionSource : undefined),
         initialItems,
+        sessionCapsule: params.sessionCapsule,
       });
       const gatewayControlOwner = createTalkClientGatewayControlOwner({
         voiceSessionId: activeVoiceSessionId,
@@ -438,6 +448,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
         ...controlRequest,
         ...(tools.length > 0 ? { tools } : {}),
         ...launchOptions,
+        transcriptionHints: params.transcriptionHints,
       };
       const assertCommitAllowed = composeSessionSourceAssertion(
         [sessionMutationCommitGuard, assertTargetCurrent],

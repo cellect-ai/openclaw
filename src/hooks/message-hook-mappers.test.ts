@@ -417,3 +417,17 @@ it("projects normalized location and stable provider update identity", () => {
     providerUpdate: event.providerUpdate,
   });
 });
+
+it("gives inbound message hooks the host-owned channel context", () => {
+  const channelContext = Object.freeze({
+    sender: Object.freeze({ id: "@alex:matrix.example" }),
+    chat: Object.freeze({ id: "!room:matrix.example", talkThreadRootEventId: "$root" }),
+  });
+  const withContext = deriveInboundMessageHookContext(
+    makeInboundCtx({ ChannelContext: channelContext }),
+  );
+  expect(toPluginMessageContext(withContext).channelContext).toBe(channelContext);
+  expect(
+    toPluginMessageContext(deriveInboundMessageHookContext(makeInboundCtx())),
+  ).not.toHaveProperty("channelContext");
+});

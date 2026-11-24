@@ -162,6 +162,7 @@ describe("source completion", () => {
     priorBracket?: boolean;
     finalMedia?: boolean;
     prepared?: boolean;
+    nativePlan?: "open" | "closed";
     fenced?: boolean;
   };
   it.each<[string, Scenario, string[], number]>([
@@ -176,6 +177,24 @@ describe("source completion", () => {
     [
       "ambiguous prefix with final-only media",
       { prefix: "ambiguous", prepared: true, finalMedia: true },
+      ["See "],
+      0,
+    ],
+    [
+      "native pending text with separate final media",
+      { prefix: "pending", prepared: true, finalMedia: true, nativePlan: "open" },
+      [],
+      0,
+    ],
+    [
+      "native unknown text with separate final media",
+      { prefix: "ambiguous", prepared: true, finalMedia: true, nativePlan: "open" },
+      ["See "],
+      0,
+    ],
+    [
+      "retired native plan refuses late media",
+      { prefix: "ambiguous", prepared: true, finalMedia: true, nativePlan: "closed" },
       ["See "],
       0,
     ],
@@ -270,7 +289,7 @@ describe("source completion", () => {
         text: "See [",
         ...(scenario.media ? { mediaUrl: "https://example.com/image.png" } : {}),
       };
-      const result = await dispatchReplyFromConfig({
+      const dispatch = dispatchReplyFromConfig({
         ctx: buildTestCtx({ Provider: "qa-channel", Surface: "qa-channel" }),
         cfg: emptyConfig,
         dispatcher,
@@ -334,19 +353,28 @@ describe("source completion", () => {
                   sessionId: "source-session",
                   intentId: "source-intent",
                   deliveryId: "source-delivery",
+                  ...(scenario.nativePlan
+                    ? { sourceRunId: "source-run", sourceGeneration: "source-generation" }
+                    : {}),
                 },
               });
-              await actualSessions.replaceSessionEntry(
-                preparedScope,
-                pendingFinalSessionEntry(
-                  {
-                    sessionId: "source-session",
-                    intentId: "source-intent",
-                    deliveryId: "source-delivery",
-                  },
-                  "See [",
-                ),
+              const entry = pendingFinalSessionEntry(
+                {
+                  sessionId: "source-session",
+                  intentId: "source-intent",
+                  deliveryId: "source-delivery",
+                },
+                "See [",
               );
+              if (scenario.nativePlan && entry.pendingFinalDelivery) {
+                Object.assign(entry.pendingFinalDelivery, {
+                  dispatchState: scenario.nativePlan,
+                  dispatchClosure: scenario.nativePlan === "closed" ? "retired" : undefined,
+                  sourceRunId: "source-run",
+                  sourceGeneration: "source-generation",
+                });
+              }
+              await actualSessions.replaceSessionEntry(preparedScope, entry);
               expect(
                 actualSessions.loadSessionEntry(preparedScope)?.pendingFinalDelivery?.deliveries,
               ).toEqual([{ id: "source-delivery", state: "prepared" }]);
@@ -358,11 +386,32 @@ describe("source completion", () => {
           }
         },
       });
+      if (scenario.nativePlan === "closed") {
+        await expect(dispatch).rejects.toThrow("Native final intent changed before append");
+        dispatcher.markComplete();
+        await dispatcher.waitForIdle();
+        expect(
+          delivered.some((payload) => payload.mediaUrl === "https://example.com/final.opus"),
+        ).toBe(false);
+        expect(
+          actualSessions?.loadSessionEntry(preparedScope!)?.pendingFinalDelivery?.deliveries,
+        ).toEqual([{ id: "source-delivery", state: "unknown" }]);
+        return;
+      }
+      const result = await dispatch;
       dispatcher.markComplete();
       await dispatcher.waitForIdle();
       if (actualSessions && preparedScope) {
         const pending = actualSessions.loadSessionEntry(preparedScope)?.pendingFinalDelivery;
-        if (scenario.prefix === "ambiguous") {
+        if (scenario.nativePlan) {
+          expect(pending?.dispatchState).toBe("closed");
+          expect(pending?.deliveries?.[0]).toEqual({
+            id: "source-delivery",
+            state: scenario.prefix === "ambiguous" ? "unknown" : "suppressed",
+          });
+          expect(pending?.deliveries).toHaveLength(2);
+          expect(pending?.deliveries?.[1]?.id).not.toBe("source-delivery");
+        } else if (scenario.prefix === "ambiguous") {
           expect(pending?.deliveries).toEqual([{ id: "source-delivery", state: "unknown" }]);
         } else {
           expect(pending).toBeUndefined();
@@ -380,10 +429,20 @@ describe("source completion", () => {
         );
         expect(media).toHaveLength(1);
         expect(result.queuedFinal).toBe(true);
-        expect(
-          getReplyPayloadMetadata(expectDefined(media[0], "final media"))
-            ?.pendingFinalDeliveryCompletion,
-        ).toBeUndefined();
+        const mediaCompletion = getReplyPayloadMetadata(
+          expectDefined(media[0], "final media"),
+        )?.pendingFinalDeliveryCompletion;
+        if (scenario.nativePlan) {
+          expect(mediaCompletion).toMatchObject({
+            intentId: "source-intent",
+            sessionId: "source-session",
+            sourceRunId: "source-run",
+            sourceGeneration: "source-generation",
+          });
+          expect(mediaCompletion?.deliveryId).not.toBe("source-delivery");
+        } else {
+          expect(mediaCompletion).toBeUndefined();
+        }
       }
     },
   );

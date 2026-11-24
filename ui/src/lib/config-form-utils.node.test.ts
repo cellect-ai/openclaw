@@ -74,6 +74,13 @@ describe("hintForPath", () => {
 });
 
 describe("pruneEmptyConfigForm", () => {
+  it("preserves newly authored empty entries alongside existing provider configuration", () => {
+    const original = { talk: { realtime: { providers: { litellm: { model: "test-model" } } } } };
+    const form = {
+      talk: { realtime: { providers: { ...original.talk.realtime.providers, xai: {} } } },
+    };
+    expect(pruneEmptyConfigForm(form, original)).toEqual(form);
+  });
   it("preserves loaded redacted placeholders from the authored original", () => {
     const form = {
       gateway: {
@@ -105,7 +112,7 @@ describe("pruneEmptyConfigForm", () => {
     expect(pruneEmptyConfigForm(form, originalForm)).toEqual(form);
   });
 
-  it("prunes newly empty objects while retaining authored empties and array positions", () => {
+  it("preserves newly authored empty objects and array positions", () => {
     const form = {
       gateway: { remote: { nested: {} } },
       authored: {},
@@ -114,11 +121,7 @@ describe("pruneEmptyConfigForm", () => {
     };
     const original = { authored: {}, ui: { theme: "dark" } };
 
-    expect(pruneEmptyConfigForm(form, original)).toEqual({
-      authored: {},
-      items: [{}, "second"],
-      ui: { theme: "dark" },
-    });
+    expect(pruneEmptyConfigForm(form, original)).toEqual(form);
   });
 
   it("does not reindex arrays containing redacted sentinels", () => {

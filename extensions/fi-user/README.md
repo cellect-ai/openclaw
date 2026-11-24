@@ -1,0 +1,293 @@
+# Fi User Delegation (`fi-user`)
+
+Requester-bound Fi, Gmail, Drive, data-room and e-sign tools for the Fi user
+agent, the Matrix admission gate, admin-action approvals, and requester
+attribution for the admin agent's shell work.
+
+## Dedicated operator admission
+
+Tenant runtimes configure `tenantOrgId`; every Matrix admission and tool recheck
+must return that organization. A dedicated Superadmin runtime instead configures
+`operatorAgentId: "cellect-main"` and omits both `tenantOrgId` and
+`matrixTenantOrgId`. Combining operator and tenant settings fails closed.
+
+Only that exact agent can consume cross-tenant Matrix authorization. Fi must
+attest `credentialClass: "operator"`, the matching agent, and a nonempty
+conversation `orgId` after checking the native requester's current internal
+operator access. Each admitted turn retains that conversation organization;
+subsequent tool/requester checks cannot switch it. Other agents remain denied
+on this runtime. This setting does not grant user-delegation tokens or widen
+Slack access. Deploy the matching Fi authorization response before enabling it.
+
+## Generated files stay in the conversation
+
+`fi_user_deliver_file` registers validated, requester/session-bound outputs and
+delivers them to the originating Slack channel or thread. An existing DM stays
+in that DM. `via=dm` is reserved for an explicit requester instruction; missing
+source routing never falls back to a new DM. Existing Fi documents use an
+authenticated link outside DMs, preserving their access checks.
+
+Delivery receipts identify their destination. Recovery checks the matching bot
+attachment and bytes in that destination, including later thread reply pages.
+Reconciling an old DM from a collaborative thread is recovery only; completion
+still requires delivery to the requested destination. Uncertain sends stay
+blocked until reconciled, and retain the registered file for recovery.
+
+## The admin agent's delegated user token
+
+For a shell command of this runtime's admin agent (`adminAgentId`, default
+`cellect-fi-admin`) or Cellect Superadmin (`cellect-main`), the plugin asks Fi for the requester's own short-lived token
+(`POST {baseUrl}/api/openclaw-user-delegation`, `agentId: "cellect-fi-admin"`)
+and sets it on that one call as `FI_DELEGATED_USER_TOKEN`, paired with the
+issuing connection's `FI_APP_URL`. For Matrix this is the environment selected
+by the host-proven inbound account, even when the sandbox inherits another
+environment's default URL. Fi's CLI prefers it
+to `FI_SERVICE_TOKEN` + `FI_ON_BEHALF_OF`. For calls that proceed,
+`FI_ON_BEHALF_OF` is injected as before, whether or not a token is issued.
+
+### When a token is issued
+
+The runtime and call conditions below must hold to issue a token, with one of
+the requester proofs described below. Same-environment calls retain their
+existing assertion-only operator fallback. An eligible, proven Matrix turn
+that selects another environment is blocked if its token cannot be issued:
+request failure, invalid reply, exhausted hook budget, expired run/speaker
+proof, or an explicitly different `FI_APP_URL` cannot fall back to the
+sandbox's default Fi.
+
+The runtime's configuration, read the way the host reads it (the admin agent's
+own setting, then the default):
+
+Runtime ownership and Fi's protocol command class are separate. Both tiers use
+the `cellect-fi-admin` delegation command class, but each retains its own host
+agent/session identity, sandbox posture, and token custody. A Superadmin command
+cannot borrow Fi Admin's sandbox or admitted run. The token still carries only
+the verified person's current grants in the broker credential's tenant.
+
+- `sandbox.mode` is `all`.
+- `sandbox.scope` is `session` or `agent`, not `shared`.
+- `tools.exec.host` is unset, `auto` or `sandbox`.
+- `tools.elevated.enabled` is `false`, globally or for the admin agent. Left
+  unset it counts as on, and nothing is issued.
+- `talk.agentId` is not the admin agent.
+- The plugin has a `tenantOrgId`.
+
+For fresh text ingress, the message and the run:
+
+- The message that started the run is one the channel itself proved the sender
+  of (`senderAuthentication: "verified"`), in one of these sessions:
+  - Slack: the sender's own direct session, `agent:<adminAgentId>:slack:direct:<peer>`.
+  - Matrix, direct message or room or thread: `agent:<adminAgentId>:matrix:…`,
+    classified by the Matrix monitor as one or the other, and the run is the
+    one the host started for that very homeserver event and sender (the
+    dispatched `messageId` and sender equal the run's
+    `channelContext.chat.eventId` and `channelContext.sender.id`). A room
+    thread is how Fi web chat reaches the admin agent.
+  - Slack channels and threads require the same exact native sender, channel,
+    and dispatched message event as the admitted run.
+  - Discord, webchat and every other session kind get no token.
+- Every input observed for the session since a message run last took it up
+  came from that one person, within the last six hours.
+- The run is a `user` turn by that same sender. Unbound cron, heartbeat,
+  system-event, webhook, sub-agent, inter-session, tool-injected and resumed
+  input does not prove a requester. This Gateway's own Matrix bot accounts
+  cannot receive a person's token.
+- Nobody else wrote into the session while the run was active.
+- A Matrix-bound voice consultation instead uses the entitlement owner's
+  admitted speaker/run proof, rechecked when the command executes. A synthetic
+  voice prompt or a remembered session sender is not that proof.
+- The session is not an approved admin action; those execute only through their
+  exact typed operation owner, and generic agent tools are blocked.
+
+Supported native yields and restart/deployment recovery can instead retain the
+original task's host-issued `requesterContinuation`. Its current owner must match
+the exact agent, run, session incarnation, account and source task. The plugin
+checks that live custody before and after authorization work and renews the
+short-lived credential through Fi's current requester grants. Matrix recovery
+also rechecks access to the original room and event, including replies linked
+to a Slack source session. No new human message is needed while that native task
+remains owned. Additional injected instructions, a stored last sender, or an
+already-settled historical thread cannot extend that authority. Missing original
+Matrix evidence stays unproven.
+
+The call:
+
+- It is OpenClaw's own `exec` (`sandbox_exec` included) with no `host` other
+  than `sandbox`, no `node`, not `elevated`, not `pty` and not `background`.
+- It invokes the installed `cellect` CLI or the maintained shared-mail state
+  writer, with no shell composition or caller-supplied environment. Both
+  `/usr/local/bin/cellect` and `/repos/fi-runtime` must be immutable read-only
+  mounts. Quoted literal punctuation is preserved; executable shell syntax is
+  refused. The exact `node /workspace/skills/shared-shape-mail/scripts/mail-state.mjs`
+  spelling dispatches to the interpreter and script under `/repos/fi-runtime`;
+  workspace code, PATH interpreters and Node flags never receive the credential.
+  This writer uses the existing private source-lock API and persists only its
+  private lease receipts, never the requester credential. It adds no public CLI
+  noun or business permission.
+- Its native run and tool-call identity uniquely identify the command whose
+  process-tree cleanup releases the credential custody.
+- Its own `FI_APP_URL`, if it passes one, equals the selected connection's
+  `baseUrl` (the host-proven Matrix account selects that connection).
+- At least half a second is left of the time the host gives the tool hook.
+  Fi is given what remains of 13 seconds after the Matrix grant check, and
+  never more than 8.
+- Fi answers 200 for this runtime's organization with a token that has at
+  least 60 seconds left. Fi decides who is an admin; a refusal is no token,
+  and blocks an eligible turn selecting a different environment.
+
+A call that gets a token is returned with `host: "sandbox"` and
+`elevated: false`. Because of the configuration checks above that is what the
+command would have got anyway. Only an actually issued token rewrites
+`FI_APP_URL`; model-supplied case variants are removed and the normalized
+issuing URL is set with that token. An assertion alone never retargets Fi.
+
+### Rooms and threads: one message, one run
+
+In a Matrix room or thread the token belongs to one message. When a person the
+homeserver proved writes to the admin agent, the run that message starts may
+ask Fi for that person's token. Nothing is kept for the thread: the next
+message is a new run that stands on its own sender. If someone else writes into
+the thread while the run is still working, the rest of that run gets no token.
+
+Which organization a room belongs to is not something the plugin can read from
+the message. The Matrix admission gate asks Fi about the room and event before
+the run and before every tool call, and blocks the call unless Fi names this
+runtime's organization (or the dedicated operator turn's pinned conversation organization); a token is only ever asked for after that.
+
+### After a token: exact command cleanup
+
+Only the immutable installed CLI receives a requester token; raw shell work
+does not. The CLI must not print or persist the credential. Its native process
+owner reaps descendants before releasing custody of that exact command. Until
+cleanup is proven, the admin agent's
+`exec`, `sandbox_exec`, `process`, `sandbox_process`, `read`, `ls`, `write`,
+`edit`, `apply_patch` and `view_image` calls from another requester cannot reach
+that sandbox. Token expiry is a fallback for failed or missing cleanup, never
+a minimum waiting period after a completed command. A turn ending or a tool
+result arriving alone is not cleanup proof.
+
+Which sandbox that is follows `sandbox.scope` for the admin agent:
+
+- `session`: only that session (that thread) is held.
+- `agent` (the default, and what tenant runtimes are generated with): the
+  admin agent has one sandbox, so one person's token holds every other person's
+  admin-agent commands, in every conversation, until cleanup. The same
+  person on Slack and on Matrix counts as two people.
+- `shared`: other agents use the same sandbox and cannot be held, so no token
+  is issued at all.
+
+If two people's commands ask Fi at the same moment, the first answer takes the
+sandbox and the other command is blocked with the same message. A token that
+claims to live longer than fifteen minutes is refused, and nothing is held for
+a token that was not handed to a command.
+
+The hold is in memory. A plugin reload or Gateway restart forgets it.
+
+`crossChannelCustody: true` (default off; turned on per tenant with an owner
+sign-off) lets the same person continue on another channel. A proven run in a
+session the holder's own commands ran in may ask Fi for a token for an
+`exec`/`sandbox_exec` call. The call runs only if that token's subject (email
+and org) equals the holder's; a token minted for anyone else is dropped and
+the call is held, so Fi logs one minted token that was never used. A holder
+created without a readable subject matches nobody. The run's other sandbox
+tools, other sessions and unproven runs stay held. With the flag on, a person's
+input written into a run in the session that cannot act for them is never
+re-run. The first such person per run is asked, in the place the host would
+reply, to send it again, but only 30 seconds after that run settled and only
+if no message run started in the session meanwhile (the host may have queued
+the input rather than steered it in). A re-sent message needs its own proof.
+
+### Output is not scrubbed
+
+The plugin does not redact tool output. The immutable installed CLI owns the
+no-credential-output/persistence contract. Arbitrary commands that could print
+or save the environment receive no requester token.
+
+The host does mask the `FI_DELEGATED_USER_TOKEN` value where it records a
+call's arguments (tool-start events, trajectory, CLI and worker events).
+
+Follow-up: redaction in a separate plugin with a sandbox-tools matcher. It is
+not done here because a plugin that declares tool-result middleware changes
+how the host handles every agent's tool results on the Gateway.
+
+### Deploy preconditions
+
+Checked by the plugin; where one fails, no token is issued and nothing changes:
+
+| Setting                                                        | Enforced how                                |
+| -------------------------------------------------------------- | ------------------------------------------- |
+| Admin agent `sandbox.mode: "all"`                              | No token otherwise.                         |
+| Admin agent `sandbox.scope` is not `shared`                    | No token otherwise.                         |
+| Admin agent `tools.exec.host` unset, `auto` or `sandbox`       | No token otherwise.                         |
+| `tools.elevated.enabled: false`, global or for the admin agent | No token otherwise. Must be set explicitly. |
+| `talk.agentId` is not the admin agent                          | No token otherwise.                         |
+| Plugin `tenantOrgId` (or `matrixTenantOrgId`)                  | No token otherwise.                         |
+
+Not visible to the plugin; infra must assert these for a runtime that issues tokens:
+
+| Setting                                                              | Why                                                                                                                                                                                                                 |
+| -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| No per-session `sandboxMode` or exec host override on admin sessions | The plugin reads configuration, not a session's stored override. With one, the pinned call is refused or the command was not in the sandbox to begin with.                                                          |
+| Assertion-only operator fallback has the intended sandbox Fi origin  | Issued tokens bind their own `FI_APP_URL`; calls without an issued token retain the sandbox default. Eligible cross-environment mint failures block instead of using that default.                                  |
+| Sandbox egress limited to the Fi origin                              | The model writes the command. Nothing in the Gateway stops it sending the token elsewhere.                                                                                                                          |
+| Codex exec-server off for the admin agent                            | It takes its environment from Codex and drops `*_TOKEN` keys; the token would not arrive and the call is not this plugin's to pin.                                                                                  |
+| Admin agent not on a CLI backend; Codex native shell not relied on   | A native shell is seen as `exec` but takes no `env`. The host refuses any rewrite of a Codex native shell call, so such a call is blocked whenever an assertion or token is set; the token never reaches the model. |
+| No Talk binding to an admin-agent session                            | A binding is made at run time for a session, not in configuration. The plugin sees only `talk.agentId` and, afterwards, the first consult.                                                                          |
+| `sandbox.scope` chosen knowingly                                     | See "After a token: exact command cleanup". `agent` scope serialises credential-bearing commands across the runtime; `session` scope holds one thread only until its commands are cleaned up.                       |
+
+Config keys used: `baseUrl`, `brokerTokenEnv`, `tenantOrgId` (or
+`matrixTenantOrgId`), `adminAgentId`; for Matrix also `matrixEnvironments` and
+the `FI_THREADS_ENV_BY_ACCOUNT` environment variable. No key was added.
+
+### What remains exposed
+
+- The token is in the command's environment for up to ten minutes. The
+  rewritten call, token included, also reaches other plugins' `after_tool_call`
+  hooks and tool-result middleware, and the exec approval request. Tool output
+  is not redacted; see "Output is not scrubbed".
+- A command that outlives its call (the host moves a long command to the
+  background on its own) keeps the token in its environment. The hold above is
+  what keeps other people's runs away from it.
+- In a room the agent also reads messages that were never dispatched to it, so
+  other people's words can steer what an admin's run does with the token.
+- The plugin cannot tell a person from a bridged or other automated Matrix
+  account the Gateway does not own; Fi's answer for that account is the only
+  check.
+- A Talk binding that has not yet produced a consult is invisible here.
+- After someone else's message is steered into a turn, the owner's next turn
+  gets no token; the one after does.
+- At most 5,000 sessions with unanswered messages are remembered; past that
+  the oldest is forgotten, and a run for a forgotten message gets no token.
+
+### Reading Slack from Matrix and voice
+
+Native Slack message and file reads can resolve an admitted Matrix requester,
+including a Matrix-bound voice speaker, through Fi's existing private admin
+requester mapping. The `matrix/requester-slack-identity` runtime capability
+revalidates the exact admitted turn using its configured Matrix environment and
+returns Fi's unique active tenant member's linked Slack actor only when the
+authenticated Slack read workspace matches Fi's canonical tenant workspace.
+Enterprise installations use the explicitly qualified target workspace; multiple
+Slack bot accounts in the same workspace remain supported. This existing
+mapping requires a private admin or Superadmin conversation without a mixed
+audience. Other conversations receive no fallback identity.
+
+This lookup requests `googleRequester: true` with `slackRequesterWorkspace: true`
+from Fi, which adds `googleRequester.workspaceId` only for this path. Deploy the
+Fi response support before this OpenClaw consumer. Missing or mismatched workspace
+scope refuses the membership fallback; ordinary admission and existing Google
+requester responses remain unchanged.
+
+Slack still checks conversation membership and platform visibility. The mapping
+is read-only and uncached; it does not change the source provider, allow writes,
+or override explicit disables. Existing configured conversation access remains
+governed by Slack's read policy.
+
+## "Let me know" turns
+
+The Matrix monitor marks a person's message sent with Fi's "Let me know" action
+(`channelContext.chat.letMeKnow`). For that turn only, fi-user appends an
+instruction to open the final reply with a short answer that reads well aloud,
+and, when `letMeKnowModel` (`"provider/model"`) is configured, runs the turn on
+that model. Unset or malformed (logged once), the turn keeps the agent's own model. Nothing is stored on
+the session.

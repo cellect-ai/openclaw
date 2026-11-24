@@ -360,3 +360,21 @@ describe("MCP loopback Computer Use schema", () => {
     expect(listNodes).toHaveBeenCalledTimes(2);
   });
 });
+
+it("passes only host-held Workshop workspace authoring to the native tool owner", async () => {
+  const authoring = { agentId: "main", bind: vi.fn(), assertCurrent: vi.fn() };
+  const params = scopeParams();
+  await resolveExact({ ...params, skillWorkshopWorkspaceAuthoring: authoring });
+  const native = resolveGatewayScopedTools.mock.calls.at(-1)?.[0];
+  expect(native.skillWorkshop.workspaceAuthoring).toBe(authoring);
+  expect(native.context).toBeUndefined();
+
+  await resolveExact({
+    ...params,
+    context: {
+      ...params.context,
+      skillWorkshop: { workspaceAuthoring: authoring },
+    } as ScopeParams["context"],
+  });
+  expect(resolveGatewayScopedTools.mock.calls.at(-1)?.[0].skillWorkshop).toBeUndefined();
+});

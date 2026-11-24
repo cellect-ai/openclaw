@@ -72,6 +72,11 @@ export async function authorizeSlackDirectMessage(params: {
           `slack pairing request sender=${params.senderId} name=${senderName ?? "unknown"} (${allowMatchMeta})`,
         );
       },
+      onReminded: () => {
+        params.log(
+          `slack pairing reminder sender=${params.senderId} name=${senderName ?? "unknown"} (${allowMatchMeta})`,
+        );
+      },
       onReplyError: (err) => {
         params.log(`slack pairing reply failed for ${params.senderId}: ${formatErrorMessage(err)}`);
       },

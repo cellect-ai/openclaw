@@ -15,7 +15,7 @@ import {
 import { vi } from "vitest";
 import { buildDynamicTools } from "./dynamic-tool-build.js";
 import { createCodexTestHostCapabilities } from "./host-capability.test-support.js";
-import { createCodexTestModel } from "./test-support.js";
+import { createCodexTestModel, createCodexRuntimePlanFixture } from "./test-support.js";
 
 export { createCodexRuntimePlanFixture } from "./test-support.js";
 
@@ -133,4 +133,16 @@ export async function cleanupDynamicToolBuildFixture(
   } finally {
     clearRuntimeConfigSnapshot();
   }
+}
+
+export function createEnabledToolsParams(
+  sessionFile: string,
+  workspace: string,
+  overrides: Partial<EmbeddedRunAttemptParams> = {},
+): EmbeddedRunAttemptParams {
+  return createParams(sessionFile, workspace, {
+    disableTools: false,
+    runtimePlan: createCodexRuntimePlanFixture(),
+    ...overrides,
+  });
 }

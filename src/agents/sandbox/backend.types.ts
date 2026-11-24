@@ -31,6 +31,8 @@ export type CreateSandboxBackendParams = {
   runtimeId?: string;
   /** Synchronously recheck this generation immediately before runtime side effects. */
   assertRuntimeCurrent?: () => void;
+  /** Preparation-only configuration fence; existing tool handles keep their admitted generation. */
+  assertProvisionCurrent?: () => void;
   workspaceDir: string;
   /** Prepared managed projection; retain its exact mount owner before allocation. */
   workspaceSource?: "managed-worktree";

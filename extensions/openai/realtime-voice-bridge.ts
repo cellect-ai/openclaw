@@ -145,7 +145,10 @@ export class OpenAIRealtimeBridge extends OpenAIRealtimeProtocol implements Real
   }
 
   sendUserMessage(text: string, options?: OpenAIRealtimeUserMessageOptions): void {
-    if (options?.toolChoice && (this.responseBusy || this.pendingToolCallIds.size > 0)) {
+    if (
+      typeof options?.toolChoice === "object" &&
+      (this.responseBusy || this.pendingToolCallIds.size > 0)
+    ) {
       throw new Error("Forced realtime tool choice requires an idle response state");
     }
     if (this.pendingToolCallIds.size > 0) {
@@ -479,7 +482,12 @@ export class OpenAIRealtimeBridge extends OpenAIRealtimeProtocol implements Real
         {
           const transcript = event.transcript ?? event.text;
           if (transcript) {
-            this.config.onTranscript?.("assistant", transcript, true);
+            this.config.onTranscript?.(
+              "assistant",
+              transcript,
+              true,
+              ...(event.item_id ? [{ itemId: event.item_id, textMode: "snapshot" as const }] : []),
+            );
           }
         }
         return;
@@ -487,13 +495,19 @@ export class OpenAIRealtimeBridge extends OpenAIRealtimeProtocol implements Real
       case "conversation.input_transcript.delta":
       case "conversation.item.input_audio_transcription.delta":
         if (event.delta) {
-          this.config.onTranscript?.("user", event.delta, false);
+          this.config.onTranscript?.("user", event.delta, false, {
+            ...(event.item_id ? { itemId: event.item_id } : {}),
+            textMode: "delta",
+          });
         }
         return;
 
       case "conversation.item.input_audio_transcription.completed":
         if (event.transcript) {
-          this.config.onTranscript?.("user", event.transcript, true);
+          this.config.onTranscript?.("user", event.transcript, true, {
+            ...(event.item_id ? { itemId: event.item_id } : {}),
+            textMode: "snapshot",
+          });
         }
         return;
 
@@ -537,7 +551,7 @@ export class OpenAIRealtimeBridge extends OpenAIRealtimeProtocol implements Real
           this.responseActive = true;
           this.responseCreateState = "idle";
           this.manualResponseCreateEventId = null;
-          this.responseCreatePending = true;
+          this.deferRejectedResponseCreate();
           return;
         }
         const rejectsManualResponseCancel =

@@ -8,6 +8,12 @@
 import { isDeepStrictEqual } from "node:util";
 import type { ToolLoopWarning } from "@openclaw/agent-core";
 import { freezeDiagnosticTraceContext } from "../infra/diagnostic-trace-context.js";
+import { lookupHookFiEnvironment } from "../infra/hook-fi-environment.js";
+import {
+  lookupMailWakeSourceLock,
+  lookupMailWakeSessionKey,
+  lookupMailWakeEnvironment,
+} from "../infra/mail-wake-source-lock.js";
 import { cloneHookIsolationValue } from "../plugins/hook-isolation.js";
 import { getGlobalHookRunnerRegistry } from "../plugins/hook-runner-global-state.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
@@ -22,6 +28,11 @@ import type {
   PluginHookToolInputKind,
   PluginHookToolKind,
 } from "../plugins/types.js";
+import { consumeClientVoiceToolConfirmationPolicy } from "../talk/client-voice-confirmation.js";
+import {
+  isClientVoiceSessionConfirmable,
+  resolveClientVoiceRunBinding,
+} from "../talk/client-voice-session.js";
 import { isPlainObject } from "../utils.js";
 import {
   mergeParamsWithApprovalOverrides,
@@ -41,10 +52,12 @@ import type {
 } from "./agent-tools.before-tool-call.types.js";
 import {
   getCodeModeExecBeforeHookMetadataForToolKind,
+  isCodeModeExecToolKind,
   reconcileCodeModeExecBeforeHookParams,
 } from "./code-mode-control-tools.js";
 import { admitSingleToolCallLoop } from "./tool-loop-admission.js";
 import { normalizeToolPolicyName } from "./tool-policy.js";
+import { isCurrentSourcePlainMessageReply } from "./tools/current-source-message-reply.js";
 import { getGatewayToolCallerIdentity } from "./tools/gateway-caller-context.js";
 
 const BEFORE_TOOL_CALL_HOOK_FAILURE_REASON =
@@ -73,6 +86,49 @@ export function hasBeforeToolCallPolicy(): boolean {
   );
 }
 
+/** Consume voice approval only after tool-owned finalization produces execution params. */
+export function consumeFinalClientVoiceToolConfirmation(args: {
+  toolName: string;
+  toolKind?: PluginHookToolKind;
+  toolCallId?: string;
+  params: unknown;
+  ctx?: HookContext;
+}) {
+  // Nested catalog calls are gated individually; the script wrapper is not itself an action.
+  if (isCodeModeExecToolKind(args.toolKind)) {
+    return { allowed: true as const };
+  }
+  const voiceRun = resolveClientVoiceRunBinding(args.ctx?.runId);
+  return consumeClientVoiceToolConfirmationPolicy({
+    agentId: voiceRun?.agentId,
+    voiceSessionId: voiceRun?.voiceSessionId,
+    runId: args.ctx?.runId,
+    toolCallId: args.toolCallId,
+    toolName: normalizeToolPolicyName(args.toolName || "tool"),
+    toolParams: args.params,
+    isCurrentSourceMessageSend: isCurrentSourceMessageSendForTurn(
+      args.toolName,
+      args.params,
+      args.ctx,
+    ),
+    ...(voiceRun ? { isConfirmable: () => isClientVoiceSessionConfirmable(voiceRun) } : {}),
+  });
+}
+
+/** Only exempt a plain message reply routed to the exact conversation that initiated the voice turn. */
+function isCurrentSourceMessageSendForTurn(
+  toolName: string,
+  toolParams: unknown,
+  ctx: HookContext | undefined,
+): boolean {
+  return isCurrentSourcePlainMessageReply({
+    toolName: normalizeToolPolicyName(toolName || "tool"),
+    toolParams,
+    currentChannelProvider: ctx?.turnSourceChannel,
+    currentChannelId: ctx?.turnSourceTo,
+  });
+}
+
 export async function runBeforeToolCallHook(args: {
   toolName: string;
   params: unknown;
@@ -85,6 +141,22 @@ export async function runBeforeToolCallHook(args: {
 }): Promise<HookOutcome> {
   const toolName = normalizeToolPolicyName(args.toolName || "tool");
   const params = args.params;
+  // A requester continuation does not yet carry the Fi mail source receipt.
+  // Refuse its creation before any child/session authority is minted. The
+  // exact active host run owns this check; tool parameters cannot clear it.
+  if (
+    ["sessions_spawn", "sessions_send", "subagents", "automations"].includes(toolName) &&
+    lookupMailWakeSessionKey(args.ctx?.runId, args.ctx?.sessionKey)
+  ) {
+    return {
+      blocked: true,
+      kind: "veto",
+      deniedReason: "plugin-before-tool-call",
+      reason:
+        "This mail wake must keep its source custody in the current turn; requester continuations are unavailable for this source.",
+      params,
+    };
+  }
   let loopWarning: ToolLoopWarning | undefined;
   const withLoopWarning = (outcome: HookOutcome): HookOutcome => {
     if (!outcome.blocked && loopWarning) {
@@ -172,6 +244,10 @@ export async function runBeforeToolCallHook(args: {
     const buildToolContext = (identity: typeof toolIdentity) => ({
       toolName,
       ...identity,
+      hookSourceLockCapability: lookupMailWakeSourceLock(args.ctx?.runId, args.ctx?.sessionKey),
+      hookMailWakeSessionKey: lookupMailWakeSessionKey(args.ctx?.runId, args.ctx?.sessionKey),
+      hostMailWakeEnvironment: lookupMailWakeEnvironment(args.ctx?.runId, args.ctx?.sessionKey),
+      hostHookFiEnvironment: lookupHookFiEnvironment(args.ctx?.runId, args.ctx?.sessionKey),
       ...(args.ctx?.agentId && { agentId: args.ctx.agentId }),
       ...(args.ctx?.sessionKey && { sessionKey: args.ctx.sessionKey }),
       ...(args.ctx?.sessionId && { sessionId: args.ctx.sessionId }),
@@ -182,6 +258,11 @@ export async function runBeforeToolCallHook(args: {
       ...(args.ctx?.channelId && { channelId: args.ctx.channelId }),
       ...(args.ctx?.requester ? { requester: args.ctx.requester } : {}),
       ...(args.ctx?.trigger && { trigger: args.ctx.trigger }),
+      ...(args.ctx?.requesterContinuation
+        ? { requesterContinuation: args.ctx.requesterContinuation }
+        : {}),
+      ...(args.ctx?.spawnedFrom ? { spawnedFrom: args.ctx.spawnedFrom } : {}),
+      ...(args.ctx?.spawnedFromChannel ? { spawnedFromChannel: args.ctx.spawnedFromChannel } : {}),
     });
     const toolContext = buildToolContext(toolIdentity);
     // Policies form a mutation chain. Reconcile each decision against the prior

@@ -7,10 +7,12 @@ import {
   validateSessionsViewerPresenceSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
+import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
 import { canReviewOperatorApproval } from "../operator-approval-authorization.js";
 import { APPROVALS_SCOPE } from "../operator-scopes.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { sessionObserverScopeKey } from "../session-observer-model.js";
+import { hasSessionReadAccessChanged } from "../session-sharing-policy.js";
 import { resolveRequestedSessionStoreTarget } from "../session-store-key.js";
 import { resolveSessionSubscriptionKey } from "../session-subscription-keys.js";
 import { prepareApprovalSessionAccess } from "./approval-record-lookup.js";
@@ -131,9 +133,32 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         read = await retainSessionScopedRead(options, canonicalKey, requestedAgentId, {
           // Activity and labels may change while approvals load without revoking access.
           allowMetadataChanges: true,
+          retain: true,
+          entryMatches: (previous, current) =>
+            !hasSessionReadAccessChanged(previous, current) &&
+            isBrowserSessionReadAllowed({
+              cfg: context.getRuntimeConfig(),
+              client,
+              sessionKey: canonicalKey,
+              sessionEntry: current ?? null,
+            }),
           requireMaterialized:
             readGatewayRequestMutationAuthority(options).sessionScope === "operator.sessions.read",
         });
+        const assertBrowserBoundary = () => {
+          read?.assertCurrent();
+          if (
+            !isBrowserSessionReadAllowed({
+              cfg: (context.getCommittedRuntimeConfig ?? context.getRuntimeConfig)(),
+              client,
+              sessionKey: read?.prepared.canonicalKey ?? canonicalKey,
+              sessionEntry: read?.prepared.entry ?? null,
+            })
+          ) {
+            throw new Error("Matrix conversation access requires the owning app");
+          }
+        };
+        assertBrowserBoundary();
         options.sessionMutationCommitGuard?.();
         const includeApprovals = Boolean(connId) && params.includeApprovals === true;
         // Provisional observers deliver events while the snapshot is prepared, then roll back on failure.
@@ -221,6 +246,7 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
               throw new Error("session approval replay authority is no longer active");
             }
           }
+          assertBrowserBoundary();
           mark?.("observerCommit");
           rollback?.commit();
           mark?.("response");

@@ -30,6 +30,7 @@ import {
   handleRealtimeVoiceHarnessBridgeEvent,
 } from "../../talk/realtime-session-harness.js";
 import type { TalkEvent } from "../../talk/talk-events.js";
+import { isNoiseOnlyVoiceTranscript } from "../../talk/voice-transcript.js";
 import type {
   TalkClientGatewayControlOptions,
   ReusableTalkAgentConsult,
@@ -62,6 +63,8 @@ export function createTalkClientGatewayControlOwner(
   let acceptingProviderTranscripts = true;
   let appendTranscript = params.appendTranscript;
   const transcriptReadiness = createClientVoiceTranscriptReadiness({
+    agentId: params.sessionTarget.agentId,
+    voiceSessionId: params.voiceSessionId,
     flushTranscript: params.flushTranscript,
   });
   const entryPrefix = `gateway-${randomUUID()}`;
@@ -382,6 +385,12 @@ export function createTalkClientGatewayControlOwner(
     if (!acceptingProviderTranscripts || (signal.aborted && !final)) {
       return;
     }
+    if (role === "user" && isNoiseOnlyVoiceTranscript(text)) {
+      if (final) transcriptReadiness.observeUserTranscript("", true);
+      return;
+    }
+    const userTranscript =
+      role === "user" ? transcriptReadiness.observeUserTranscript(text, final) : undefined;
     if (!text.trim()) {
       return;
     }
@@ -410,10 +419,14 @@ export function createTalkClientGatewayControlOwner(
       entryId,
       role,
       text,
-    }).then(undefined, (error: unknown) => {
-      transcriptReadiness.fail(error);
-      warn(`talk Gateway control transcript failed: ${formatError(error)}`);
-    });
+      confirmation: userTranscript?.confirmation ?? null,
+    }).then(
+      () => userTranscript?.persisted(),
+      (error: unknown) => {
+        transcriptReadiness.fail(error);
+        warn(`talk Gateway control transcript failed: ${formatError(error)}`);
+      },
+    );
     if (role === "user" && !signal.aborted) {
       runControl.handleSpoken(text, params.flushTranscript);
     }

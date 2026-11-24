@@ -121,8 +121,16 @@ export type AgentSessionPersistParams = {
 export async function persistAgentSessionPhase(
   params: AgentSessionPersistParams,
 ): Promise<AgentSessionPersistResult | undefined> {
+  const onCommitted = (entry: SessionEntry) => {
+    params.expectedSession?.threadContinuationGuard?.onSessionCommitted(entry);
+    params.onSessionCommitted?.(entry);
+  };
   let patchBuild = params.initialPatchBuild;
   const resetReason = patchBuild.automaticResetReason;
+  if (resetReason && params.expectedSession?.threadContinuation)
+    throw new ExpectedExistingSessionChangedError(
+      "Thread continuation cannot rotate its existing generation.",
+    );
   const resetBoundaryId = resetReason ? createSessionResetBoundaryId() : undefined;
   let {
     sessionEntry,
@@ -158,7 +166,7 @@ export async function persistAgentSessionPhase(
       return undefined;
     }
     if (sessionEntry) {
-      params.onSessionCommitted?.(sessionEntry);
+      onCommitted(sessionEntry);
     }
     skipAgentInitialSessionTouch = true;
   } else if (params.storePath && !params.suppressVisibleSessionEffects) {
@@ -337,7 +345,10 @@ export async function persistAgentSessionPhase(
       return merged;
     };
     const commitGuard = composeSessionSourceAssertion(
-      [params.assertAdmissionCurrent],
+      [
+        params.assertAdmissionCurrent,
+        params.expectedSession?.threadContinuationGuard?.assertCurrent,
+      ],
       (assertSource) => {
         assertSource();
         if (createdNewEntry) {
@@ -371,7 +382,7 @@ export async function persistAgentSessionPhase(
             }
             return next;
           },
-          afterEntryMutation: ({ nextEntry }) => params.onSessionCommitted?.(nextEntry),
+          afterEntryMutation: ({ nextEntry }) => onCommitted(nextEntry),
         });
         persisted = reset.nextEntry;
         const cleanup = () =>
@@ -397,7 +408,7 @@ export async function persistAgentSessionPhase(
             (_currentEntry, patchContext) => buildEntry(patchContext.existingEntry),
             {
               fallbackEntry: params.entry ?? mergeSessionEntry(undefined, patchBuild.patch),
-              onCommitted: params.onSessionCommitted,
+              onCommitted,
               replaceEntry: true,
               takeCacheOwnership: true,
               maintenanceConfig: params.maintenanceConfig,

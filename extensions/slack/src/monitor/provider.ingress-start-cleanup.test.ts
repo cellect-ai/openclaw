@@ -4,6 +4,19 @@ import { getSlackTestState, resetSlackTestState } from "../monitor.test-helpers.
 
 const ingressStartMock = vi.hoisted(() => vi.fn());
 const ingressStopMock = vi.hoisted(() => vi.fn());
+const contexts = vi.hoisted(() => [] as Array<{ readRuntimeContext: () => Promise<unknown> }>);
+
+vi.mock("./context.js", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./context.js")>();
+  return {
+    ...actual,
+    createSlackMonitorContext: (...args: Parameters<typeof actual.createSlackMonitorContext>) => {
+      const ctx = actual.createSlackMonitorContext(...args);
+      contexts.push(ctx);
+      return ctx;
+    },
+  };
+});
 
 vi.mock("./ingress.js", () => ({
   createSlackDurableIngress: () => ({
@@ -21,11 +34,13 @@ const { monitorSlackProvider } = await import("./provider.js");
 beforeEach(async () => {
   await resetSlackTestState();
   ingressStartMock.mockReset();
+  contexts.length = 0;
   ingressStopMock.mockReset().mockResolvedValue(undefined);
 });
 
 afterAll(() => {
   vi.doUnmock("./ingress.js");
+  vi.doUnmock("./context.js");
   vi.resetModules();
 });
 
@@ -45,4 +60,6 @@ it("stops ingress and the Bolt transport when ingress start throws", async () =>
   expect(ingressStopMock).toHaveBeenCalledTimes(1);
   expect(getSlackTestState().appStartMock).not.toHaveBeenCalled();
   expect(getSlackTestState().appStopMock).toHaveBeenCalledTimes(1);
+  expect(contexts).toHaveLength(1);
+  await expect(contexts[0]!.readRuntimeContext()).rejects.toThrow("monitor is no longer current");
 });

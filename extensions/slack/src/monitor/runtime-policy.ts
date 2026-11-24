@@ -100,6 +100,7 @@ export function resolveSlackMonitorPolicy(
 export function createSlackRuntimeContextReader<T extends SlackRuntimePolicyContext>(
   ctx: T,
   lookupToken: string,
+  isMonitorCurrent: () => boolean = () => true,
 ): () => Promise<T> {
   const readConfig = createRuntimeConfigReader(ctx.cfg);
   let current:
@@ -111,6 +112,7 @@ export function createSlackRuntimeContextReader<T extends SlackRuntimePolicyCont
     | undefined;
   return async () => {
     for (;;) {
+      if (!isMonitorCurrent()) throw new Error("Slack monitor is no longer current.");
       const cfg = readConfig();
       const identity = ctx.installationIdentity;
       if (!current || current.cfg !== cfg || current.identity !== identity) {
@@ -130,7 +132,7 @@ export function createSlackRuntimeContextReader<T extends SlackRuntimePolicyCont
         });
         mutableNext.readRuntimeContext = async () => next;
         mutableNext.isRuntimePolicyCurrent = () =>
-          readConfig() === cfg && ctx.installationIdentity === identity;
+          isMonitorCurrent() && readConfig() === cfg && ctx.installationIdentity === identity;
         current = {
           cfg,
           identity,
@@ -150,6 +152,17 @@ export function createSlackRuntimeContextReader<T extends SlackRuntimePolicyCont
       // A lookup does not admit work; resolve again if its policy changed while waiting.
     }
   };
+}
+
+/** Speculative policy lookup has no admission authority and must settle on monitor shutdown. */
+export async function prewarmSlackRuntimeContext(
+  ctx: Pick<SlackRuntimePolicyContext, "readRuntimeContext" | "runtime">,
+): Promise<void> {
+  try {
+    await ctx.readRuntimeContext();
+  } catch (error) {
+    ctx.runtime.log?.(`slack policy prewarm failed: ${formatSlackError(error)}`);
+  }
 }
 
 function resolveStableSlackUserIdEntry(raw: string): string | undefined {

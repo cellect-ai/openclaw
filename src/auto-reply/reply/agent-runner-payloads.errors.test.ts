@@ -47,7 +47,7 @@ describe("tool failure reply delivery", () => {
 
     expect(delivered).toEqual([
       expect.objectContaining({
-        text: "⚠️ Exec failed",
+        text: expect.stringMatching(/^⚠️ Exec failed\. I stopped there/),
         isError: true,
       }),
     ]);

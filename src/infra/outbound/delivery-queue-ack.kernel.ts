@@ -12,6 +12,7 @@ import { collectEntrySpoolPaths } from "./delivery-queue-media-paths.js";
 import { createDeliveryQueueMediaRetentionInDatabase } from "./delivery-queue-media-staging.kernel.js";
 import { outboundDeliveryQueueName } from "./delivery-queue-namespaces.js";
 import { resolveOutboundDeliveryQueueNameInDatabase } from "./delivery-queue-ownership.kernel.js";
+import { stageDeliveryPublicationInDatabase } from "./delivery-queue-publication.kernel.js";
 import type {
   AckDeliveryOptions,
   FailPendingDeliveryResult,
@@ -122,8 +123,23 @@ export function ackDeliveryInDatabase(
         preparedOutboundPayloads(current.preparedBatch),
         stateDir,
       );
+      stageDeliveryPublicationInDatabase(database, {
+        queueName,
+        entry: current,
+        evidence: options?.publicationEvidence,
+        evidenceByPayload: options?.publicationEvidenceByPayload,
+        suppressionsByPayload: options?.publicationSuppressionsByPayload,
+        suppressed: options?.suppressCompletionReceipt,
+      });
       if (current.completionRetention && options?.suppressCompletionReceipt !== true) {
-        completeLoadedDeliveryQueueEntryInDatabase(database, queueName, id, current);
+        completeLoadedDeliveryQueueEntryInDatabase(
+          database,
+          queueName,
+          id,
+          current,
+          Date.now(),
+          options?.completionReceipt,
+        );
       } else {
         deleteDeliveryQueueEntryInDatabase(database, queueName, id);
       }

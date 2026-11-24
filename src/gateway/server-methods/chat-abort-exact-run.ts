@@ -1,6 +1,10 @@
 import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { formatErrorMessage } from "../../infra/errors.js";
+import {
+  matchesVerifiedRunStopActor,
+  type VerifiedRunStopActor,
+} from "../../infra/run-stop-actor.js";
 import { getGatewayContextResolver } from "../../plugins/runtime/gateway-request-scope.js";
 import { getSessionControllerSourceIdentity } from "../../sessions/session-controller.identity.js";
 import {
@@ -47,6 +51,8 @@ export async function stopExactClientRun(params: {
   cfg: OpenClawConfig;
   runId: string;
   active: RpcSourceRef;
+  stopActor?: VerifiedRunStopActor;
+  preservePendingInputs?: true;
   lifecycleRevision?: string;
   assertCurrent?: () => void;
   hookContext: Omit<SessionStopHookContext, "sessionKey" | "sessionId">;
@@ -61,6 +67,9 @@ export async function stopExactClientRun(params: {
   // Capture the exact input before any await can select a successor.
   const capture = captureSessionControllerStop({ inputs: [active.input] });
   const { sessionKey, sessionId, agentId } = getRpcSourceIdentity(active);
+  const stopActor = matchesVerifiedRunStopActor(params.stopActor, { sessionKey, agentId })
+    ? params.stopActor
+    : undefined;
   const result: ExactClientRunStopResult = { aborted: false };
   const assertSource = captureSourceAssertion(active.input, params.assertCurrent);
   const markAborted = () => {
@@ -81,7 +90,8 @@ export async function stopExactClientRun(params: {
       source: "client-run",
       capture,
       assertCurrent,
-      reason: createAgentRunDirectAbortError(),
+      reason: createAgentRunDirectAbortError(true, stopActor),
+      preservePendingInputs: params.preservePendingInputs,
       hookContext: { ...params.hookContext, sessionKey, sessionId },
       afterParent: params.afterParent,
       continueChildStop: () => result.aborted,
@@ -98,11 +108,13 @@ export async function stopExactClientRun(params: {
           cancel,
           assertCurrent,
           stopReason: "rpc",
+          stopActor,
           onAbortPrepared: params.onAbortPrepared,
           onAbortCommitted: markAborted,
         }).aborted,
       stopChildren: async (applyParentStop) => {
         result.descendants = await abortControlledSubagents({
+          preservePendingInputs: params.preservePendingInputs,
           cfg: params.cfg,
           sessionKey,
           agentId,

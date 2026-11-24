@@ -1,3 +1,15 @@
+import {
+  isRestrictedBackgroundHookRun,
+  SHADOW_CLI_REFUSAL,
+} from "../../agents/shadow-hook-tool-policy.js";
+export { SHADOW_CLI_REFUSAL };
+export function assertShadowRunNotCli(
+  sessionKeys: Array<string | undefined | null>,
+  cliExecution: boolean,
+): void {
+  if (cliExecution && isRestrictedBackgroundHookRun(...sessionKeys))
+    throw new Error(SHADOW_CLI_REFUSAL);
+}
 import { resolveSessionRuntimeOverrideForProvider } from "../../agents/session-runtime-compat.js";
 import { resolveCronRuntimeSessionEntry } from "../inference-binding.js";
 import { resolveCronCandidateExecution } from "./candidate-execution.js";
@@ -24,11 +36,11 @@ export function createCronRuntimeOverrideResolver(
 export function createCronCandidateExecutionResolver(
   params: Pick<
     CronRunExecutionParams,
-    "cfgWithAgentDefaults" | "agentId" | "runSessionKey" | "cronSession" | "job"
+    "cfgWithAgentDefaults" | "agentId" | "runSessionKey" | "cronSession" | "job" | "agentSessionKey"
   >,
 ) {
-  return (provider: string, model: string, sessionRuntimeOverride: string | undefined) =>
-    resolveCronCandidateExecution(
+  return (provider: string, model: string, sessionRuntimeOverride: string | undefined) => {
+    const execution = resolveCronCandidateExecution(
       {
         cfg: params.cfgWithAgentDefaults,
         agentId: params.agentId,
@@ -44,4 +56,10 @@ export function createCronCandidateExecutionResolver(
       },
       { isCliProvider, resolveEffectiveAgentRuntime },
     );
+    assertShadowRunNotCli(
+      [params.runSessionKey, params.agentSessionKey],
+      execution.cliExecution || isCliProvider(execution.runtime, params.cfgWithAgentDefaults),
+    );
+    return execution;
+  };
 }

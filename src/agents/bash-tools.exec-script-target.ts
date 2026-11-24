@@ -175,7 +175,7 @@ function findNodeScriptArgs(tokens: string[]): string[] {
   return scripts;
 }
 
-function extractInterpreterScriptTargetFromArgv(
+export function extractInterpreterScriptTargetFromArgv(
   argv: string[] | null,
 ): { kind: "python"; relOrAbsPaths: string[] } | { kind: "node"; relOrAbsPaths: string[] } | null {
   if (!argv || argv.length === 0) {

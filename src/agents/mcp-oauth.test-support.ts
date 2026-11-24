@@ -77,6 +77,7 @@ export async function saveMcpOAuthAccessTokenForTest(
 ): Promise<void> {
   await withMcpOAuthProviderForTest({ identity }, async (provider) => {
     await provider.saveTokens({
+      issuer: "https://auth.example.com",
       access_token: accessToken,
       refresh_token: "test-auth-token",
       token_type: "Bearer",

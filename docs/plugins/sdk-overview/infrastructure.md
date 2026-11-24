@@ -720,6 +720,15 @@ the callback button when inbound policy skips the text or processing fails, so
 the user can retry after the blocking condition changes. This result field is
 Telegram-specific; other channels keep their own interactive result contracts.
 
+Slack dispatch supplies `SlackInteractiveHandlerContextV2`, including
+`authority.assertCurrent()`. Approval handlers call this captured host assertion
+after awaited authorization and at each external effect; it rejects a retired
+account-policy or installation snapshot. Pass the same assertion into direct
+outbound adapter handoff guards so awaited route resolution and retries cannot
+outlive the admitted policy. The original Slack context and registration types
+remain source-compatible; new effectful handlers use the V2 contract. A missing
+authority is not permission to execute an approval.
+
 ### Doctor plugin-state repairs
 
 `runtime-doctor-migrations` also exports `PluginDoctorRecoveryCliRegistrar` and

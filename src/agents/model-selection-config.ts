@@ -134,6 +134,19 @@ export function resolveModelFallbackAvailability(params: {
   );
 }
 
+/** Configured recovery only for invalid output from a pinned model, never provider failures. */
+export function resolveFormatFailureFallbackModels(
+  params: Parameters<typeof resolveModelFallbackAvailability>[0],
+): string[] | undefined {
+  if (resolveModelFallbackAvailability(params).kind !== "disabled_by_model_override") {
+    return undefined;
+  }
+  // Keep the selected model's child lineage and explicit-empty policy while
+  // allowing the configured ladder only for malformed or blank output.
+  const availability = resolveModelFallbackAvailability({ ...params, modelOverrideSource: "auto" });
+  return availability.kind === "active" ? availability.models : undefined;
+}
+
 export function resolveEffectiveModelFallbacks(params: {
   cfg: OpenClawConfig;
   agentId: string;

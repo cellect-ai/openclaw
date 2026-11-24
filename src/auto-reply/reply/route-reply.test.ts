@@ -52,6 +52,7 @@ assert(slackPlugin.messaging?.hasStructuredReplyPayload);
 assert(slackPlugin.threading?.resolveReplyTransport);
 const slackMessaging: ChannelMessagingAdapter = {
   hasStructuredReplyPayload: slackPlugin.messaging.hasStructuredReplyPayload,
+  formatSenderMention: ({ senderId, to }) => (to.startsWith("user:") ? "" : `<@${senderId}>`),
 };
 const slackThreading: ChannelThreadingAdapter = {
   resolveReplyTransport: slackPlugin.threading.resolveReplyTransport,
@@ -112,6 +113,43 @@ async function expectSlackNoDelivery(
 }
 
 describe("routeReply", () => {
+  it("mentions the original requester on a routed continuation", async () => {
+    const cfg = {
+      channels: { slack: { responsePrefix: "{sender.mention}" } },
+    } as unknown as OpenClawConfig;
+    await routeTestReply(
+      { text: "I meant responsibility boundaries." },
+      {
+        channel: "slack",
+        to: "channel:C123",
+        requesterSenderId: "U123",
+        cfg,
+      },
+    );
+    expect(lastDeliveryPayload().text).toBe("<@U123> I meant responsibility boundaries.");
+  });
+
+  it.each<[string, { to: string; requesterSenderId?: string; prefix?: string }]>([
+    ["no requester", { to: "channel:C123" }],
+    ["a direct message", { to: "user:U123", requesterSenderId: "U123" }],
+    ["an unknown model", { to: "channel:C123", prefix: "[{model}]" }],
+  ])("never sends a literal template token with %s", async (_name, params) => {
+    const cfg = {
+      channels: { slack: { responsePrefix: params.prefix ?? "{sender.mention}" } },
+    } as unknown as OpenClawConfig;
+    await routeTestReply(
+      { text: "Received." },
+      {
+        channel: "slack",
+        to: params.to,
+        ...(params.requesterSenderId ? { requesterSenderId: params.requesterSenderId } : {}),
+        cfg,
+      },
+    );
+    expect(lastDeliveryPayload().text).toBe("Received.");
+    expect(lastDeliveryPayload().text).not.toMatch(/\{[a-zA-Z][a-zA-Z0-9.]*\}/u);
+  });
+
   beforeEach(() => {
     register(
       createChannelPlugin("slack", { messaging: slackMessaging, threading: slackThreading }),

@@ -292,6 +292,8 @@ it("preserves the signed plugin owner, turn-source route, requesting UI, and cro
   const identity = await createIdentity({
     ...params,
     approvalOwnerPluginId: " codex ",
+    approvalOrigin: "plugin",
+    approvalConversation: { title: "Place call", summary: "Place a call to the owner." },
     turnSourceChannel: " telegram ",
     turnSourceTo: " chat-1 ",
     turnSourceAccountId: " Work ",
@@ -304,6 +306,8 @@ it("preserves the signed plugin owner, turn-source route, requesting UI, and cro
     kind: "agentRuntime",
     ...params,
     approvalOwnerPluginId: "codex",
+    approvalOrigin: "plugin",
+    approvalConversation: { title: "Place call", summary: "Place a call to the owner." },
     turnSourceChannel: "telegram",
     turnSourceTo: "chat-1",
     turnSourceAccountId: "work",

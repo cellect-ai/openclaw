@@ -5,6 +5,7 @@ import {
 } from "../../config/sessions/session-accessor.sqlite-pending-inputs.js";
 import type { SessionMetadataMessageControl } from "../../config/sessions/session-manager-write-contract.js";
 import type { SessionPendingInputAuthorityFacts } from "../../config/sessions/session-pending-input-authority.js";
+import { captureSessionTranscriptQuestionAnswerWorkerCustody } from "../../config/sessions/session-transcript-read-fence.js";
 import type { SqliteWorkerAdmissionRequest } from "../../infra/sqlite-worker-operation-admission.js";
 
 /** Host closures retain authority; worker commands carry only their matching custody facts. */
@@ -19,11 +20,13 @@ export function captureSessionMessageAdmission(
     (message?.role === "user" && typeof message.idempotencyKey === "string")
       ? captureSessionPendingInputWorkerCustody()
       : undefined;
+  const questionAnswers = captureSessionTranscriptQuestionAnswerWorkerCustody();
   const control: SessionMetadataMessageControl = {
     ...(pendingInput
       ? { pendingInput: { facts: pendingInput.facts, relocation: pendingInput.relocation } }
       : {}),
     ...(controls?.beforeFreshMessageCommit ? { freshMessageCheck: true } : {}),
+    ...(questionAnswers ? { questionAnswers: questionAnswers.facts } : {}),
   };
   return {
     control,
@@ -33,6 +36,7 @@ export function captureSessionMessageAdmission(
         return request;
       }
       assertCurrent();
+      questionAnswers?.assertCurrent();
       if (facts.check === "pending") {
         if (!pendingInput) {
           throw new Error("Session message has no captured pending input owner");
@@ -47,10 +51,15 @@ export function captureSessionMessageAdmission(
           throw new Error("Session message has no captured fresh-message assertion");
         }
         controls.beforeFreshMessageCommit();
+      } else if (facts.check === "question") {
+        if (!questionAnswers) {
+          throw new Error("Session message has no captured question answer owner");
+        }
       } else if (facts.check !== undefined) {
         throw new Error("Session message requested an invalid admission check");
       }
       assertCurrent();
+      questionAnswers?.assertCurrent();
       return { ...request, facts: facts.domainFacts };
     },
     publish(receipt: SessionPendingInputWorkerReceipt | undefined) {

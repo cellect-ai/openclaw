@@ -24,6 +24,14 @@ it("normalizes headers, forces free text, and clamps timeout", () => {
   expect(Value.Check(AskUserToolSchema, validArgs)).toBe(true);
   expect(
     Value.Check(AskUserToolSchema, {
+      questions: Array.from({ length: 5 }, (_, index) => ({
+        ...question,
+        id: `item_${index + 1}`,
+      })),
+    }),
+  ).toBe(true);
+  expect(
+    Value.Check(AskUserToolSchema, {
       questions: [{ ...question, isSecret: true }],
     }),
   ).toBe(false);
@@ -42,7 +50,7 @@ it.each([
   ["empty questions", { questions: [] }, "model-facing question contract"],
   [
     "too many questions",
-    { questions: Array.from({ length: 4 }, () => question) },
+    { questions: Array.from({ length: 6 }, () => question) },
     "model-facing question contract",
   ],
   [

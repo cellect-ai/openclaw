@@ -1,13 +1,11 @@
 // Preserve module setup before modules that consume it.
 // oxfmt-ignore
-import {
-  getPreparedModelRuntimeMocks,
-  usePreparedModelRuntimeHarness,
-} from "./prepared-model-runtime.test-harness.js";
+import { modelsHandlers } from "../gateway/server-methods/models.js";
 import { queryObjects } from "node:v8";
 import { describe, expect, it, vi } from "vitest";
 import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { registerGatewayModelCatalogPrivateAccess } from "../gateway/server-model-catalog-auth.js";
 import {
   bindPluginMetadataSnapshotCache,
   createPluginCache,
@@ -68,6 +66,10 @@ import {
 import { retainPreparedPluginGeneration } from "./prepared-model-runtime.plugin-lifetime.js";
 import * as pluginLifetime from "./prepared-model-runtime.plugin-lifetime.js";
 import { updateOwnersForScopedRefresh } from "./prepared-model-runtime.refresh-scope.js";
+import {
+  getPreparedModelRuntimeMocks,
+  usePreparedModelRuntimeHarness,
+} from "./prepared-model-runtime.test-harness.js";
 
 vi.mock("../logging/subsystem.js", async (importOriginal) => {
   const { createMockSubsystemLogger } = await import("../../test/helpers/mock-subsystem-logger.js");
@@ -685,6 +687,72 @@ describe("auth publication generation recovery", () => {
     },
   );
 });
+
+it.for([false, true])(
+  "joins a publication superseding the fresh auth retry (fails: %s)",
+  async (fails, { signal }) => {
+    const { snapshot, config } = await publishOwner();
+    const owner = resolvePreparedModelRuntimeOwnerBySnapshot(snapshot)!;
+    const retryStarted = createDeferred();
+    const releaseRetry = createDeferred();
+    const successorStarted = createDeferred();
+    const releaseSuccessor = createDeferred();
+    const failure = new Error("successor credential acquisition failed");
+    mocks.resolveAmbientCredentials
+      .mockClear()
+      .mockImplementationOnce(() => {
+        throw new PluginInstanceUnavailableError("synthetic retired generation");
+      })
+      .mockImplementationOnce(async () => {
+        retryStarted.resolve();
+        await releaseRetry.promise;
+        return {};
+      })
+      .mockImplementationOnce(async () => {
+        successorStarted.resolve();
+        await releaseSuccessor.promise;
+        if (fails) {
+          throw failure;
+        }
+        return {};
+      });
+    mocks.mutationListener?.({ agentDir: owner.input.agentDir, affectsInheritedStores: false });
+    const reader = prepareModelRuntimeSnapshot(owner.input);
+    const dispatch = loadPublishedGatewayReplyDispatchRuntime({ agentId: "default" });
+    void reader.catch(() => {});
+    void dispatch.catch(() => {});
+    let successor: ReturnType<typeof publishPreparedModelRuntimeSnapshot> | undefined;
+    try {
+      await withinTest(retryStarted.promise, signal);
+      successor = publishPreparedModelRuntimeSnapshot(owner.input, {
+        force: true,
+        provenance: "configured",
+        catalogMode: "static",
+      });
+      void successor.catch(() => {});
+      releaseRetry.resolve();
+      await withinTest(successorStarted.promise, signal);
+      releaseSuccessor.resolve();
+      if (fails) {
+        await expect(successor).rejects.toBe(failure);
+        await expect(reader).rejects.toThrow(failure.message);
+        await expect(dispatch).rejects.toThrow(failure.message);
+      } else {
+        const latest = await successor;
+        await expect(reader).resolves.toBe(latest);
+        await expect(dispatch).resolves.toMatchObject({ agentId: "default", config });
+        expect(latest.isCurrent()).toBe(true);
+        await listModels(config);
+        expect(mocks.warn).not.toHaveBeenCalled();
+      }
+      expect(mocks.resolveAmbientCredentials).toHaveBeenCalledTimes(3);
+    } finally {
+      releaseRetry.resolve();
+      releaseSuccessor.resolve();
+      await Promise.allSettled([reader, dispatch, successor]);
+    }
+  },
+);
 
 describe("prepared model auth publication", () => {
   it("retains the prepared generation through 100 concurrent availability publications", async () => {

@@ -1,4 +1,3 @@
-import type { AgentEvent } from "openclaw/plugin-sdk/agent-core";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
 import { afterEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
@@ -26,9 +25,14 @@ import {
   createBasicAskUserArgs,
   finishPendingAskUserPrompts,
 } from "./embedded-agent-subscribe.handlers.tools.ask-user.test-support.js";
-import { handleToolExecutionUpdate } from "./embedded-agent-subscribe.handlers.tools.progress.js";
+import {
+  type ToolExecutionStartEvent,
+  type ToolExecutionUpdateEvent,
+  startTool,
+  executeTool,
+  updateTool,
+} from "./embedded-agent-subscribe.handlers.tools.events.test-support.js";
 import { registerToolChannelProgressTests } from "./embedded-agent-subscribe.handlers.tools.progress.test-support.js";
-import { handleToolExecutionStart } from "./embedded-agent-subscribe.handlers.tools.start.js";
 import {
   createTestContext,
   endTool,
@@ -36,7 +40,6 @@ import {
   requireString,
   resultWithDetails,
   type CapturedAgentEvent,
-  type ToolExecutionEndEvent,
 } from "./embedded-agent-subscribe.handlers.tools.test-support.js";
 import type { ToolHandlerContext } from "./embedded-agent-subscribe.handlers.types.js";
 import * as questionDispatch from "./harness/gateway-question-dispatch.js";
@@ -60,41 +63,6 @@ vi.mock("./harness/gateway-question-dispatch.runtime.js", () => ({
     return { questions: [] };
   },
 }));
-
-type ToolExecutionStartEvent = Omit<Extract<AgentEvent, { type: "tool_execution_start" }>, "type">;
-type ToolExecutionUpdateEvent = {
-  toolName: string;
-  toolCallId: string;
-  args?: unknown;
-  partialResult?: unknown;
-  hideFromChannelProgress?: boolean;
-};
-
-function startTool(ctx: ToolHandlerContext, event: ToolExecutionStartEvent) {
-  if (event.toolName === "ask_user" || event.toolName === "secrets") {
-    const { sessionKey, runId, agentId } = ctx.params;
-    onTestFinished(() => cancelAskUserPromptDelivery(event.toolCallId, sessionKey, runId, agentId));
-  }
-  return handleToolExecutionStart(ctx, { type: "tool_execution_start", ...event });
-}
-
-async function executeTool(
-  ctx: ToolHandlerContext,
-  event: ToolExecutionStartEvent & Omit<ToolExecutionEndEvent, "toolName" | "toolCallId">,
-) {
-  const { toolName, toolCallId, args, ...completion } = event;
-  await startTool(ctx, { toolName, toolCallId, args });
-  await endTool(ctx, { toolName, toolCallId, ...completion });
-}
-
-function updateTool(ctx: ToolHandlerContext, event: ToolExecutionUpdateEvent) {
-  return handleToolExecutionUpdate(ctx, {
-    type: "tool_execution_update",
-    args: event.args ?? {},
-    partialResult: event.partialResult,
-    ...event,
-  });
-}
 
 afterEach(finishPendingAskUserPrompts);
 
@@ -304,7 +272,7 @@ describe("handleToolExecutionStart read path checks", () => {
 
     expect(onToolResult).toHaveBeenCalledWith({
       text: [
-        "Question for you:",
+        "Agent needs input:",
         "",
         "Target",
         "Where should this deploy?",
@@ -622,6 +590,29 @@ describe("handleToolExecutionStart read path checks", () => {
     expect(warnMeta?.argsType).toBe("string");
     expect(warnMeta).not.toHaveProperty("argsPreview");
     expect(JSON.stringify(warn.mock.calls)).not.toContain(args);
+  });
+
+  it("masks credential environment values in tool-start observers without mutating execution", async () => {
+    const { ctx, onAgentEvent } = createTestContext();
+    const token = "synthetic-delegated-tool-start-secret";
+    const args = {
+      command: "cellect commands list",
+      env: { FI_DELEGATED_USER_TOKEN: token, KEEP: "visible" },
+    };
+    await startTool(ctx, { toolName: "exec", toolCallId: "delegated-observation", args });
+    expect(onAgentEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        stream: "tool",
+        data: expect.objectContaining({
+          args: {
+            ...args,
+            env: { FI_DELEGATED_USER_TOKEN: "[redacted]", KEEP: "visible" },
+          },
+        }),
+      }),
+    );
+    expect(JSON.stringify(onAgentEvent.mock.calls)).not.toContain(token);
+    expect(args.env.FI_DELEGATED_USER_TOKEN).toBe(token);
   });
 
   it("keeps tool state when phase callbacks throw and event callbacks reject", async () => {
@@ -1361,7 +1352,9 @@ describe("handleToolExecutionEnd timeout metadata", () => {
     });
     expectRecordFields(ctx.state.lastToolError, "last tool error", { toolName: "exec", meta });
     const payloads = errorPayloads(ctx);
-    expect(payloads[0]?.text).toBe("⚠️ Exec failed (exit 1)");
+    expect(payloads[0]?.text).toBe(
+      "⚠️ Exec failed (exit 1). I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+    );
   });
 
   it.each([
@@ -1585,7 +1578,9 @@ describe("handleToolExecutionEnd exec approval prompts", () => {
       mutatingAction: false,
     });
     const payloads = errorPayloads(ctx);
-    expect(payloads[0]?.text).toBe("⚠️ Exec blocked");
+    expect(payloads[0]?.text).toBe(
+      "⚠️ Exec blocked. I stopped there, so nothing was saved or sent. Ask me to try again, or tell me to take a different route.",
+    );
   });
 
   it("projects a started execution failure with its duration", async () => {

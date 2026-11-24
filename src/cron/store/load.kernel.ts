@@ -1,9 +1,8 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
-import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import type { EngineConnection } from "../../infra/sql-connection.js";
-import { RETIRED_SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX } from "../system-owned-declaration.js";
+import { stripJobRuntimeFields } from "./job-config-codec.js";
 import {
-  deleteCronJobRowInDatabase,
+  upsertCronJobRow,
   fingerprintCronJobRows,
   fingerprintCronRuntimeRows,
   loadedCronStoreFromRows,
@@ -15,23 +14,16 @@ import {
 } from "./runtime-authority-store.js";
 import type { CronJobReadRow } from "./schema.js";
 import type { LoadedCronStore } from "./types.js";
+import {
+  isLegacyWorkshopCollectionRow,
+  migrateWorkshopCollectionRow,
+  quarantineLegacyWorkshopRow,
+} from "./workshop-collection-migration.js";
 
 type CronLoadWriter = {
   write<T>(operation: (db: EngineConnection) => T, operationLabel: string): T;
   committed(): void;
 };
-
-/** The weekly Workshop curator and its older `skillCollectionReview` payload are retired. */
-function isRetiredCollectionReview(row: CronJobReadRow): boolean {
-  const job = safeParseJsonRecord(row.job_json);
-  const declarationKey = row.declaration_key ?? job?.declarationKey;
-  return (
-    row.payload_kind === "skillCollectionReview" ||
-    asRecord(job?.payload).kind === "skillCollectionReview" ||
-    (typeof declarationKey === "string" &&
-      declarationKey.startsWith(RETIRED_SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX))
-  );
-}
 
 export function loadCronStoreFromDatabase(
   database: EngineConnection,
@@ -39,26 +31,52 @@ export function loadCronStoreFromDatabase(
   writer?: CronLoadWriter,
 ): LoadedCronStore {
   let rows = loadCronRows(database, storeKey);
-  const retiredIds = new Set(rows.filter(isRetiredCollectionReview).map((row) => row.job_id));
-  if (!writer) {
-    // Hide retired jobs before validation; the next mutable load owns durable deletion.
-    rows = rows.filter((row) => !retiredIds.has(row.job_id));
-  } else if (retiredIds.size > 0) {
-    // Retire generated jobs before runtime validation, including databases already
-    // on the current schema version. No replacement job is created.
-    const removed = writer.write((db) => {
-      const current = loadCronRows(db, storeKey, retiredIds).filter(isRetiredCollectionReview);
+  const legacyIds = new Set(rows.filter(isLegacyWorkshopCollectionRow).map((row) => row.job_id));
+  if (writer && legacyIds.size > 0) {
+    const migrated = writer.write((db) => {
+      const current = loadCronRows(db, storeKey);
+      const claimed = new Set(current.map((row) => row.declaration_key).filter(Boolean));
+      let count = 0;
       for (const row of current) {
-        deleteCronJobRowInDatabase(db, storeKey, row.job_id);
+        if (!legacyIds.has(row.job_id) || !isLegacyWorkshopCollectionRow(row)) continue;
+        const job = migrateWorkshopCollectionRow(row);
+        // An existing declaration wins; preserve a duplicate legacy row quarantined for repair.
+        if (!job || claimed.has(job.declarationKey ?? null)) continue;
+        upsertCronJobRow(db, storeKey, job, Number(row.sort_order), { preserveRuntimeState: true });
+        claimed.add(job.declarationKey ?? null);
+        count++;
       }
-      return current.length;
-    }, "cron.retire-collection-review");
-    if (removed > 0) {
-      writer.committed();
-    }
+      return count;
+    }, "cron.migrate-workshop-collection-review");
+    if (migrated > 0) writer.committed();
     rows = loadCronRows(database, storeKey);
   }
+  const persistedRows = rows;
+  // Read-only inventories project the same recognized declaration without mutation.
+  const claimed = new Set(
+    rows.filter((row) => !isLegacyWorkshopCollectionRow(row)).map((row) => row.declaration_key),
+  );
+  rows = rows.map((row) => {
+    if (!isLegacyWorkshopCollectionRow(row)) return row;
+    const job = migrateWorkshopCollectionRow(row);
+    if (!job || claimed.has(job.declarationKey ?? null)) return quarantineLegacyWorkshopRow(row);
+    claimed.add(job.declarationKey ?? null);
+    return {
+      ...row,
+      declaration_key: job.declarationKey ?? null,
+      payload_kind: "agentTurn",
+      job_json: JSON.stringify(stripJobRuntimeFields(job)),
+    };
+  });
   const loaded = loadedCronStoreFromRows(rows);
+  for (const invalid of loaded.invalidConfigRows) {
+    const source = persistedRows[invalid.sourceIndex];
+    if (!source || !isLegacyWorkshopCollectionRow(source)) continue;
+    invalid.raw = { jobId: source.job_id, jobJson: source.job_json, stateJson: source.state_json };
+    const original = safeParseJsonRecord(source.job_json);
+    if (original) invalid.job = original;
+  }
+
   if (rows.length > 0) {
     const authority = loadCronRuntimeAuthorities({
       db: database,
@@ -76,8 +94,8 @@ export function loadCronStoreFromDatabase(
     ? loaded
     : {
         ...loaded,
-        jobsFingerprint: fingerprintCronJobRows(rows),
-        runtimeFingerprint: fingerprintCronRuntimeRows(rows),
+        jobsFingerprint: fingerprintCronJobRows(persistedRows),
+        runtimeFingerprint: fingerprintCronRuntimeRows(persistedRows),
       };
 }
 
@@ -97,6 +115,7 @@ function repairLoadedCronRuntimeAuthority(
       return false;
     }
     const loaded = loadedCronStoreFromRows(rows);
+
     return repairCronRuntimeAuthorityRows({
       db,
       storeKey: params.storeKey,

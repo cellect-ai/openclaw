@@ -538,3 +538,12 @@ export const validateCatalogSearchKeywordsParams = createProtocolValidator(
   S.CatalogSearchKeywordsParamsSchema,
   Checks.isCatalogSearchKeywordsParams,
 );
+
+export const validateFiShadowAnnounceParams = createProtocolValidator(
+  S.FiShadowAnnounceParamsSchema,
+  Checks.isFiShadowAnnounceParams,
+);
+export const validateFiReviewAnnounceParams = createProtocolValidator(
+  S.FiReviewAnnounceParamsSchema,
+  Checks.isFiReviewAnnounceParams,
+);

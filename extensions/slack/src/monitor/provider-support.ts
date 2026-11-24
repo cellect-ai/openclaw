@@ -362,7 +362,9 @@ export function createSlackBoltApp(params: {
   const socketModeLogger = createSlackSocketModeLogger();
   const socketModeReceiverOptions: SlackSocketModeReceiverOptions = {
     appToken: params.appToken ?? "",
-    autoReconnectEnabled: true,
+    // The monitor owns reconnects so disconnect status, liveness watermarks,
+    // and missed-message recovery advance with the actual socket lifecycle.
+    autoReconnectEnabled: false,
     clientPingTimeout: OPENCLAW_SLACK_CLIENT_PING_TIMEOUT_MS,
     logger: socketModeLogger,
     ...(params.dispatcher ? { dispatcher: params.dispatcher } : {}),
@@ -475,6 +477,7 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
   socketClient: Parameters<typeof waitForSlackSocketDisconnect>[0];
   abortSignal?: AbortSignal;
   onStarted?: () => void | Promise<void>;
+  onDisconnected?: () => void;
 }) {
   const waiterAbortController = new AbortController();
   const relayAbort = () => waiterAbortController.abort();
@@ -485,6 +488,7 @@ export async function startSlackSocketAndWaitForDisconnect(params: {
     waiterAbortController.signal,
   ).then((value) => {
     disconnect = value;
+    params.onDisconnected?.();
     return value;
   });
   try {

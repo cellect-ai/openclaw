@@ -1,5 +1,6 @@
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { hasPendingAutomationContinuation } from "../../cron/automation-result.js";
+import { selectLegacyHeartbeatReplyPayloads } from "../../cron/legacy-heartbeat-reply-policy.js";
 import {
   createCronRunDiagnosticsFromAgentResult,
   mergeCronRunDiagnostics,
@@ -75,7 +76,10 @@ export function resolveSessionEventReplyOptions(
   const payload = automation.job.payload;
   return {
     operatorAuthority: automation.operatorAuthority,
-    sourceReplyDeliveryMode: "automatic",
+    // Hold private until the selected native candidate resolves the old policy.
+    sourceReplyDeliveryMode: automation.job.legacyHeartbeatReplyPolicy
+      ? "message_tool_only"
+      : "automatic",
     ...(payload.kind === "agentTurn"
       ? {
           modelOverride: payload.model,
@@ -205,9 +209,23 @@ export async function settleSessionEventTurn(params: {
   // Execution prose is audit-only. Publish the settled answer once,
   // independently of whether this occurrence requests a notification.
   const payloads = selectAutomationReplyPayloads(
-    deliveryEvidence?.payloads ?? [],
+    selectLegacyHeartbeatReplyPayloads({
+      explicitOnly:
+        automation.job.legacyHeartbeatReplyPolicy === true &&
+        automation.legacyHeartbeatExplicitOnly !== false,
+      payloads: deliveryEvidence?.payloads ?? [],
+      result,
+      successful: params.outcome === "completed" && !deliveryEvidence?.meta?.error,
+      pending: hasPendingAutomationContinuation(deliveryEvidence?.meta),
+    }),
     settled.automationResult.result?.outcome === "no_change",
-    deliveryEvidence?.meta?.terminalReply?.disposition === "silent",
+    deliveryEvidence?.meta?.terminalReply?.disposition === "silent" &&
+      !(
+        automation.job.legacyHeartbeatReplyPolicy &&
+        automation.legacyHeartbeatExplicitOnly !== false &&
+        result &&
+        result.outcome !== "no_change"
+      ),
   ).filter(
     (payload) =>
       !shouldSuppressReasoningPayload(payload) &&

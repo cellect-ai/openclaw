@@ -8,10 +8,7 @@ import type { TrustedMessageAuditEvent } from "../../audit/message-audit-events.
 import { onTrustedMessageAuditEventForTest as onTrustedMessageAuditEvent } from "../../audit/message-audit-events.test-support.js";
 import { chunkText } from "../../auto-reply/chunk.js";
 import { createMessageReceiptFromOutboundResults } from "../../channels/message/receipt.js";
-import type {
-  ChannelMessageSendResult,
-  ChannelMessageSendTextContext,
-} from "../../channels/message/types.js";
+import type { ChannelMessageSendTextContext } from "../../channels/message/types.js";
 import type { ChannelOutboundAdapter, ChannelPlugin } from "../../channels/plugins/types.public.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import { resolveStateDir } from "../../config/state-dir.js";
@@ -20,11 +17,7 @@ import type { PluginHookHandlerMap } from "../../plugins/hook-types.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
 import type { commitConfirmedVisibleMessage } from "../../sessions/confirmed-visible-message.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import {
-  createChannelTestPluginBase,
-  createOutboundTestPlugin,
-  createTestRegistry,
-} from "../../test-utils/channel-plugins.js";
+import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { createInternalHookEventPayload } from "../../test-utils/internal-hook-event-payload.js";
 import { createOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import {
@@ -35,6 +28,16 @@ import {
 import { resolvePreferredOpenClawTmpDir } from "../tmp-openclaw-dir.js";
 import * as channelResolution from "./channel-resolution.js";
 import { deliverOutboundPayloadsCore } from "./deliver-core.js";
+import {
+  requireMockCallArg,
+  requireMockCall,
+  requireMatrixSendCall,
+  createNetworkError,
+  setTestPlugin,
+  createTestOutbound,
+  setTestOutbound,
+} from "./deliver-fixtures.test-support.js";
+import { createMatrixMessageSendResult } from "./deliver-message-receipt.test-support.js";
 import { prepareOutboundPayloadBatch } from "./deliver-prepare.js";
 import { countPhysicalOutboundSends, PlatformMessageNotDispatchedError } from "./deliver-types.js";
 import { matrixOutboundForTest } from "./deliver.matrix.test-support.js";
@@ -253,70 +256,6 @@ const matrixChunkConfig: OpenClawConfig = {
 const expectedPreferredTmpRoot = await fsPromises.realpath(resolvePreferredOpenClawTmpDir());
 
 type DeliverOutboundArgs = Parameters<DeliverModule["deliverOutboundPayloads"]>[0];
-function requireMockCallArg<TArgs extends unknown[]>(
-  mockFn: { mock: { calls: TArgs[] } },
-  label: string,
-  index = 0,
-): TArgs[0] {
-  const call = mockFn.mock.calls[index];
-  if (!call || call.length === 0) {
-    throw new Error(`expected ${label} call #${index + 1}`);
-  }
-  return call[0];
-}
-
-function requireMockCall<T extends unknown[] = unknown[]>(
-  mockFn: { mock: { calls: T[] } },
-  label: string,
-  index = 0,
-): T {
-  const call = mockFn.mock.calls[index];
-  if (!call) {
-    throw new Error(`expected ${label} call #${index + 1}`);
-  }
-  return call;
-}
-
-function requireMatrixSendCall(sendMatrix: ReturnType<typeof vi.fn>, index = 0): unknown[] {
-  return requireMockCall(sendMatrix as { mock: { calls: unknown[][] } }, "matrix send", index);
-}
-
-function createNetworkError(message: string, code: string, syscall?: string) {
-  return Object.assign(new Error(message), { code, ...(syscall ? { syscall } : {}) });
-}
-
-function setTestPlugin(
-  plugin: Pick<ChannelPlugin, "id"> & Partial<ChannelPlugin>,
-  pluginId = plugin.id,
-) {
-  setActivePluginRegistry(
-    createTestRegistry([
-      {
-        pluginId,
-        source: "test",
-        plugin: { ...createChannelTestPluginBase({ id: plugin.id }), ...plugin },
-      },
-    ]),
-  );
-}
-
-function createTestOutbound(
-  overrides: Partial<ChannelOutboundAdapter> = {},
-  id: Parameters<typeof createOutboundTestPlugin>[0]["id"] = "matrix",
-): ChannelOutboundAdapter {
-  return {
-    deliveryMode: "direct",
-    sendText: async () => ({ channel: id, messageId: "unused" }),
-    ...overrides,
-  };
-}
-
-function setTestOutbound(
-  overrides: Partial<ChannelOutboundAdapter>,
-  id: Parameters<typeof createOutboundTestPlugin>[0]["id"] = "matrix",
-) {
-  setTestPlugin(createOutboundTestPlugin({ id, outbound: createTestOutbound(overrides, id) }));
-}
 
 type OutboundTextSender = NonNullable<ChannelOutboundAdapter["sendText"]>;
 type OutboundMediaSender = NonNullable<ChannelOutboundAdapter["sendMedia"]>;
@@ -387,19 +326,6 @@ function setMatrixMessageAdapter(
 
 type MatrixMessageAdapter = NonNullable<ChannelPlugin["message"]>;
 type MatrixMessageTextSender = NonNullable<NonNullable<MatrixMessageAdapter["send"]>["text"]>;
-
-function createMatrixMessageSendResult(
-  messageId: string,
-  kind: "media" | "text" = "text",
-): ChannelMessageSendResult {
-  return {
-    messageId,
-    receipt: createMessageReceiptFromOutboundResults({
-      results: [{ channel: "matrix", messageId }],
-      kind,
-    }),
-  };
-}
 
 function installMatrixTextMessageAdapter(params: {
   messageId: string;
@@ -1362,11 +1288,21 @@ describe("deliverOutboundPayloads", () => {
         result: expect.objectContaining({ messageId: "message-adapter-1" }),
       }),
     );
-    expect(queueMocks.ackDelivery).toHaveBeenCalledWith(
-      "mock-queue-id",
-      expectedQueueStateDir,
-      undefined,
+    const commitParams = requireMockCallArg<
+      [Record<string, unknown> & { result?: { messageId?: string } }]
+    >(
+      afterCommit as unknown as {
+        mock: {
+          calls: Array<[Record<string, unknown> & { result?: { messageId?: string } }]>;
+        };
+      },
+      "afterCommit",
     );
+    expect(commitParams?.kind).toBe("text");
+    expect(commitParams?.result?.messageId).toBe("message-adapter-1");
+    expect(queueMocks.ackDelivery).toHaveBeenCalledWith("mock-queue-id", expectedQueueStateDir, {
+      completionReceipt: { platformMessageId: "message-adapter-1" },
+    });
     expect(queueMocks.failDelivery).not.toHaveBeenCalled();
   });
 
@@ -1929,6 +1865,54 @@ describe("deliverOutboundPayloads", () => {
     expect(deliveredPayload?.interactive).toStrictEqual({
       blocks: [{ type: "text", text: "visible" }],
     });
+  });
+
+  it("passes authored fallback text to structured transport renderers", async () => {
+    const renderPresentation = vi.fn<NonNullable<ChannelOutboundAdapter["renderPresentation"]>>(
+      ({ payload, fallbackText }) => ({ ...payload, text: fallbackText }),
+    );
+    const sendText = installTextOutbound(
+      { channel: "matrix", messageId: "authored-controls", roomId: "!room" },
+      {
+        presentationCapabilities: { supported: true, buttons: true },
+        renderPresentation,
+        sendMedia: vi.fn(),
+      },
+    );
+    await deliverMatrix({
+      to: "!room",
+      payloads: [
+        {
+          text: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+          presentationTextMode: "fallback",
+          presentation: {
+            blocks: [
+              {
+                type: "buttons",
+                buttons: [
+                  {
+                    label: "Prepare and hold",
+                    action: { type: "question", questionId: "ask_next", optionValue: "prepare" },
+                  },
+                ],
+              },
+            ],
+          },
+        },
+      ],
+    });
+
+    expect(renderPresentation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payload: expect.objectContaining({ text: undefined }),
+        fallbackText: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+      }),
+    );
+    expect(sendText).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: "Agent needs input:\n1. Prepare and hold\n2. Leave open",
+      }),
+    );
   });
 
   it("keeps authored fallback text when formatting-aware capabilities disable tables", async () => {

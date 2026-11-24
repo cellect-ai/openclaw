@@ -402,6 +402,12 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
         resolveRequireMention: (params) =>
           resolveScopeRequireMention(resolveMatrixGroupScope(params)),
         resolveToolPolicy: (params) => resolveScopeToolsPolicy(resolveMatrixGroupScope(params)),
+        isJoinedMember: async (params) =>
+          (await loadMatrixChannelRuntime()).isJoinedMatrixMember(params),
+        listJoinedMembers: async (params) =>
+          (await loadMatrixChannelRuntime()).listJoinedMatrixMembers(params),
+        resolveCanonicalThreadId: async ({ groupId }) =>
+          (await loadMatrixChannelRuntime()).resolveMatrixCanonicalThreadRoot(groupId),
       },
       conversationBindings: {
         supportsCurrentConversationBinding: true,
@@ -584,6 +590,7 @@ export const matrixPlugin: ChannelPlugin<ResolvedMatrixAccount, MatrixProbe> =
           configured: account.configured,
           extra: {
             baseUrl: account.homeserver,
+            application: runtime?.application,
             lastProbeAt: runtime?.lastProbeAt ?? null,
             lastInboundAt: runtime?.lastInboundAt ?? null,
             lastOutboundAt: runtime?.lastOutboundAt ?? null,

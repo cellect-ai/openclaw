@@ -1,4 +1,5 @@
 import type { AgentRunDelegatedAuthority } from "./agent-run-authority.types.js";
+import { readAgentRunPersistence, hasAgentRunPersistence } from "./agent-run-persistence.js";
 import {
   getAgentRunContext,
   getAgentRunLifecycleGeneration,
@@ -146,12 +147,22 @@ function captureAgentRunTerminalWriteContext(
 export async function drainAgentRunTerminalWrites(instance: OperationalRunInstance): Promise<void> {
   const current = operationalTerminalWrites.get(instance);
   if (current) {
-    while (current.pending.size > 0) {
-      await Promise.allSettled(current.pending);
+    try {
+      // Required event publication can enqueue native terminal writes in its
+      // observers. Join it first, then repeat until both owners are settled.
+      do {
+        await readAgentRunPersistence(current.owner);
+        while (current.pending.size > 0) {
+          await Promise.allSettled(current.pending);
+        }
+      } while (hasAgentRunPersistence(current.owner));
+    } finally {
+      // A failed required barrier must still join unrelated accepted writes.
+      while (current.pending.size > 0) await Promise.allSettled(current.pending);
+      if (terminalWrites.get(current.owner)?.instance === instance) {
+        terminalWrites.delete(current.owner);
+      }
+      operationalTerminalWrites.delete(instance);
     }
-    if (terminalWrites.get(current.owner)?.instance === instance) {
-      terminalWrites.delete(current.owner);
-    }
-    operationalTerminalWrites.delete(instance);
   }
 }

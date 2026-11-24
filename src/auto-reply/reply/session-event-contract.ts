@@ -105,6 +105,8 @@ export type SessionEventOptions = {
   sourceTurnId?: string;
   /** Run that started the producer's work; a provenance fact for this turn, never authority. */
   sourceRunId?: string;
+  /** Captured completion correlation; never execution or sender authority. */
+  origin?: SystemEvent["origin"];
   deliveryContext?: DeliveryContext;
   abortSignal?: AbortSignal;
   expectedTarget?: SessionEventTarget;
@@ -136,6 +138,8 @@ export type SessionEventSourcePolicy = Readonly<
 /** Cron-owned snapshot and live occurrence fence shared with ordinary reply admission. */
 export type ScheduledSessionAutomation = {
   job: CronStoredJob;
+  /** Current candidate's restrict-only projection for a Doctor-converted heartbeat. */
+  legacyHeartbeatExplicitOnly?: boolean;
   /** The occurrence the cron service admitted; the turn's run admission mints from it. */
   occurrence: import("../../cron/scheduled-occurrence.js").ScheduledOccurrence;
   /** Selected with this admission's config and session; never persisted on the job. */

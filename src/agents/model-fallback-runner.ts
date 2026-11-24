@@ -1,4 +1,3 @@
-import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { emitFailoverEvent } from "../infra/diagnostic-events.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
@@ -6,7 +5,6 @@ import { createLazyImportLoader } from "../shared/lazy-promise.js";
 import {
   assertAdmittedRunOperatorAuthority,
   assertOperatorModelAllowed,
-  type AdmittedRunOperatorAuthority,
 } from "./admitted-run-context.js";
 import { externalCliDiscoveryScoped } from "./auth-profiles/external-cli-discovery.js";
 import { resolveSubscriptionAuthModeForProfiles } from "./auth-profiles/profile-list.js";
@@ -39,13 +37,9 @@ import {
   isTranscriptNotContinuableError,
   type ModelFallbackAuthRuntime,
   type ModelFallbackClassifiedResult,
-  type ModelFallbackErrorHandler,
   type ModelFallbackExhaustionResult,
-  type ModelFallbackResultClassifier,
-  type ModelFallbackRunFn,
   type ModelFallbackRunOptions,
   type ModelFallbackRunResult,
-  type ModelFallbackRuntimeContext,
   type ModelFallbackStepHandler,
   recordFailedCandidateAttempt,
   resolveFallbackAuthScope,
@@ -68,6 +62,10 @@ import {
   resolveProbeThrottleKey,
 } from "./model-fallback-cooldown.js";
 import {
+  resolveDeferredFormatFailureCandidates,
+  type RunWithModelFallbackParams,
+} from "./model-fallback-format-failure.js";
+import {
   isModelFallbackDecisionLogEnabled,
   logModelFallbackDecision,
   type ModelFallbackDecisionParams,
@@ -75,65 +73,20 @@ import {
 import { prepareModelFallbackRateLimit } from "./model-fallback-rate-limit.js";
 import { takeStickyRateLimitFallback } from "./model-fallback-sticky.js";
 import {
+  type DeferredSessionSuspensionState,
+  flushDeferredSessionSuspension,
+} from "./model-fallback-suspension.js";
+import {
   MODEL_FALLBACK_SKIPPED_CODE,
   type FallbackAttempt,
   type ModelFallbackCandidate,
-  type ModelFallbackRouteResolution,
 } from "./model-fallback.types.js";
-import type { ModelManifestNormalizationContext } from "./model-ref-shared.js";
-import {
-  resolveSessionSuspensionReason,
-  suspendSession,
-  type SessionSuspensionParams,
-} from "./session-suspension.js";
+import { resolveSessionSuspensionReason, suspendSession } from "./session-suspension.js";
 
 const log = createSubsystemLogger("model-fallback");
 const modelFallbackAuthRuntimeLoader = createLazyImportLoader<ModelFallbackAuthRuntime>(
   () => import("./auth-profiles.runtime.js"),
 );
-
-type RunWithModelFallbackParams<T> = ModelFallbackRuntimeContext & {
-  cfg: OpenClawConfig | undefined;
-  provider: string;
-  model: string;
-  runId?: string;
-  sessionId?: string;
-  /** Keeps a rate-limit fallback first for this session's next turns so the provider prompt cache stays warm. */
-  stickyRateLimitFallback?: boolean;
-  userLockedAuthProfileId?: string;
-  prepareCandidateChain?: (candidates: readonly ModelFallbackCandidate[]) => Promise<void> | void;
-  lane?: string;
-  agentDir?: string;
-  /** Optional explicit fallbacks list; when provided (even empty), replaces agents.defaults.model.fallbacks. */
-  fallbacksOverride?: string[];
-  requestedRouteResolution?: ModelFallbackRouteResolution;
-  run: ModelFallbackRunFn<T>;
-  onError?: ModelFallbackErrorHandler;
-  onFallbackStep?: ModelFallbackStepHandler;
-  classifyResult?: ModelFallbackResultClassifier<T>;
-  /** Return false when a thrown attempt committed work that must not be replayed. */
-  canFallbackAfterError?: (
-    attempt: Parameters<ModelFallbackErrorHandler>[0],
-  ) => boolean | Promise<boolean>;
-  mergeExhaustedResult?: (params: { latestResult: T; preferredResult: T }) => T;
-  /** The attempt owner admits its runtime and selects credentials. */
-  skipAuthProfileRuntime?: boolean;
-  abortSignal?: AbortSignal;
-  operatorAuthority?: AdmittedRunOperatorAuthority;
-} & ModelManifestNormalizationContext;
-
-type DeferredSessionSuspensionState = {
-  pending?: SessionSuspensionParams;
-};
-
-function flushDeferredSessionSuspension(state: DeferredSessionSuspensionState): void {
-  const pending = state.pending;
-  if (!pending) {
-    return;
-  }
-  state.pending = undefined;
-  void suspendSession(pending);
-}
 
 export async function runWithModelFallback<T>(
   params: RunWithModelFallbackParams<T>,
@@ -180,6 +133,20 @@ async function runWithModelFallbackInternal<T>(
   }
   const stickyFallback = takeStickyRateLimitFallback(params, candidates);
   candidates = stickyFallback?.candidates ?? candidates;
+  const formatFailureCandidates = resolveDeferredFormatFailureCandidates({
+    cfg: params.cfg,
+    agentId: params.agentId,
+    provider: params.provider,
+    model: params.model,
+    formatFailureFallbacks: params.formatFailureFallbacks,
+    requestedRouteResolution: params.requestedRouteResolution,
+    manifestPlugins: params.manifestPlugins,
+    candidates,
+    allows: operatorModelPolicy?.allows,
+  });
+  const discoveryCandidates = [...candidates, ...formatFailureCandidates];
+  // Prepare only the models that will run. Held-back format fallbacks are prepared
+  // after a format failure so a successful pinned turn does not select their host.
   await params.prepareCandidateChain?.(candidates);
   const userLockedAuthProfileId = params.userLockedAuthProfileId?.trim() || undefined;
   const authRuntime =
@@ -194,7 +161,7 @@ async function runWithModelFallbackInternal<T>(
         externalCli: externalCliDiscoveryScoped({
           config: params.cfg,
           allowKeychainPrompt: false,
-          providerIds: candidates.map((candidate) => candidate.provider),
+          providerIds: discoveryCandidates.map((candidate) => candidate.provider),
           ...(userLockedAuthProfileId ? { profileIds: [userLockedAuthProfileId] } : {}),
         }),
       })
@@ -257,7 +224,7 @@ async function runWithModelFallbackInternal<T>(
     }
   };
 
-  const hasFallbackCandidates = candidates.length > 1;
+  let hasFallbackCandidates = candidates.length > 1;
   const requestedCandidate = candidates.find((candidate) => candidate.routeOrigin === "requested");
   const runAttribution = { runId: params.runId, sessionId: params.sessionId, lane: params.lane };
   const runObs = {
@@ -682,11 +649,37 @@ async function runWithModelFallbackInternal<T>(
       error: normalized,
       cfg: params.cfg,
     });
-    const failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
+    let failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
       candidates,
       currentIndex: i,
       excludedProviders: tlsFailedProviders,
     });
+    if (
+      failedNextCandidateIndex >= candidates.length &&
+      isKnownFailover &&
+      normalized.reason === "format" &&
+      formatFailureCandidates.length > 0
+    ) {
+      const recoveredCandidates = formatFailureCandidates.splice(0);
+      candidates.push(...recoveredCandidates);
+      await params.prepareCandidateChain?.(recoveredCandidates);
+      hasFallbackCandidates = candidates.length > 1;
+      runObs.fallbackConfigured = hasFallbackCandidates;
+      candObs.fallbackConfigured = hasFallbackCandidates;
+      failedNextCandidateIndex = resolveNextFallbackCandidateIndex({
+        candidates,
+        currentIndex: i,
+        excludedProviders: tlsFailedProviders,
+      });
+      const recovered = candidates[failedNextCandidateIndex];
+      if (recovered) {
+        log.warn(
+          `Format failure on ${sanitizeForLog(candidate.provider)}/${sanitizeForLog(candidate.model)} ` +
+            `is using configured fallback ${sanitizeForLog(recovered.provider)}/${sanitizeForLog(recovered.model)} ` +
+            "suppressed by a user model override.",
+        );
+      }
+    }
     lastError = normalized;
     await recordFailure(normalized, candidates[failedNextCandidateIndex]);
     if (failedNextCandidateIndex > i + 1) {

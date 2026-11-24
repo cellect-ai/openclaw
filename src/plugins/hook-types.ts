@@ -12,6 +12,8 @@ import type { InstallPolicyRequestKind as PluginInstallRequestKind } from "../se
 import type {
   PluginHookAgentContext,
   PluginHookContextWindow,
+  PluginHookRequesterContinuation,
+  PluginHookSpawnedRequester,
 } from "./hook-agent-context.types.js";
 import type {
   PluginHookBeforeAgentRunEvent,
@@ -21,6 +23,7 @@ import type {
   PluginHookBeforePromptBuildResult,
 } from "./hook-before-agent-start.types.js";
 import type { PluginHookBeforeToolCallResult } from "./hook-before-tool-call-result.js";
+import type { PluginHookChannelContext } from "./hook-channel-context.types.js";
 import type { InputGateDecision } from "./hook-decision-types.js";
 import type {
   PluginHookCronChangedEvent,
@@ -39,6 +42,14 @@ import type {
 } from "./hook-message.types.js";
 import type { PluginHookReplyDispatchEvent } from "./hook-reply-dispatch-event.types.js";
 import type { PluginHookSkillChangedEvent, PluginHookSkillContext } from "./hook-skill.types.js";
+import {
+  type PluginHookSubagentContext,
+  type PluginHookSubagentDeliveryTargetEvent,
+  type PluginHookSubagentDeliveryTargetResult,
+  type PluginHookSubagentSpawnedEvent,
+  type PluginHookSubagentProgressEvent,
+  type PluginHookSubagentEndedEvent,
+} from "./hook-subagent.types.js";
 import type {
   PluginHookToolKind,
   PluginHookToolInputKind,
@@ -58,6 +69,8 @@ export type { PluginHookReplyDispatchEvent } from "./hook-reply-dispatch-event.t
 export type {
   PluginHookAgentContext,
   PluginHookToolAuthority,
+  PluginHookRequesterContinuation,
+  PluginHookSpawnedRequester,
 } from "./hook-agent-context.types.js";
 
 export type {
@@ -161,6 +174,7 @@ export const PLUGIN_HOOK_METADATA: Readonly<Record<PluginHookName, PluginHookMet
   cron_changed: {},
   skill_changed: { voidTimeoutMs: 30_000 },
   before_dispatch: {},
+  before_steer: {},
   reply_dispatch: {},
   before_install: { modifyingTimeoutMs: 15_000 },
   before_agent_run: { conversationAccess: true, modifyingTimeoutMs: 15_000 },
@@ -393,6 +407,12 @@ export type PluginHookBeforeDispatchEvent = {
   channel?: string;
   sessionKey?: string;
   senderId?: string;
+  /**
+   * Whether the channel itself proved `senderId` for this event ("verified") or
+   * another party only named it ("asserted"). Absent when the channel does not
+   * report it; treat absence as unproven.
+   */
+  senderAuthentication?: "verified" | "asserted";
   replyToId?: string;
   replyToIdFull?: string;
   replyToBody?: string;
@@ -414,11 +434,38 @@ export type PluginHookBeforeDispatchContext = {
   replyToBody?: string;
   replyToSender?: string;
   replyToIsQuote?: boolean;
+  /** Host-owned channel identity; see `PluginHookMessageContext.channelContext`. */
+  channelContext?: PluginHookChannelContext;
 };
 
 export type PluginHookBeforeDispatchResult = {
   handled: boolean;
   text?: string;
+};
+
+/**
+ * Asked before the host injects a channel message into the run that is already
+ * active in its session. A handler that returns `{ handled: true }` keeps the
+ * message out of that run: the host queues it as its own turn instead, after
+ * the active run settles, where `before_dispatch` proves its sender anew.
+ * Handlers must answer from memory; errors and timeouts let the steer proceed.
+ */
+export type PluginHookBeforeSteerEvent = {
+  messageId?: string;
+  channel?: string;
+  sessionKey?: string;
+  senderId?: string;
+  isGroup?: boolean;
+  /**
+   * Sent once, after an earlier claim, when the host could not queue the message (queue cap,
+   * drop policy "new"). It is a report, not a question: the result is ignored.
+   */
+  queueRefused?: true;
+};
+
+export type PluginHookBeforeSteerResult = {
+  /** True: do not steer; queue the message as its own turn. */
+  handled: boolean;
 };
 
 export type PluginHookReplyDispatchContext = {
@@ -508,6 +555,10 @@ export type PluginHookReplyUsageState = {
 };
 
 export type PluginHookReplyPayloadSendingEvent = {
+  /** Host-minted logical payload identity, persisted with prepared channel content. */
+  publicationId?: string;
+  /** Original immutable source publication time; not logical identity. */
+  publishedAtMs?: number;
   payload: PluginHookReplyPayload;
   kind: ReplyDispatchKind;
   channel?: string;
@@ -625,98 +676,6 @@ export type PluginHookSessionEndEvent = {
   transcriptArchived?: boolean;
   nextSessionId?: string;
   nextSessionKey?: string;
-};
-
-type PluginHookSubagentContext = {
-  runId?: string;
-  childSessionKey?: string;
-  requesterSessionKey?: string;
-};
-
-type PluginHookSubagentTargetKind = "subagent" | "acp";
-
-type PluginHookSubagentRequester = {
-  channel?: string;
-  accountId?: string;
-  to?: string;
-  threadId?: string | number;
-  /** Native source channel/conversation id, when distinct from the routable target. */
-  channelId?: string | number;
-  /** Native source message that initiated the parent run, when available. */
-  messageId?: string | number;
-};
-
-type PluginHookSubagentSpawnBase = {
-  childSessionKey: string;
-  agentId: string;
-  label?: string;
-  mode: "run" | "session";
-  requester?: PluginHookSubagentRequester;
-  threadRequested: boolean;
-};
-
-type PluginHookSubagentDeliveryTargetEvent = {
-  childSessionKey: string;
-  requesterSessionKey: string;
-  requesterOrigin?: {
-    channel?: string;
-    accountId?: string;
-    to?: string;
-    threadId?: string | number;
-  };
-  childRunId?: string;
-  spawnMode?: "run" | "session";
-  expectsCompletionMessage: boolean;
-};
-
-/**
- * @deprecated Core route projection resolves subagent delivery targets from
- * `SessionBindingRecord` and channel `resolveDeliveryTarget`. This hook result
- * remains for plugin compatibility during the transition.
- */
-export type PluginHookSubagentDeliveryTargetResult = {
-  origin?: {
-    channel?: string;
-    accountId?: string;
-    to?: string;
-    threadId?: string | number;
-  };
-};
-
-type PluginHookSubagentSpawnedEvent = PluginHookSubagentSpawnBase & {
-  runId: string;
-  /** Fully resolved provider/model ref applied to the spawned child session. */
-  resolvedModel?: string;
-  /** Provider prefix parsed from resolvedModel when the ref includes one. */
-  resolvedProvider?: string;
-};
-
-/** Portable channel presentation signal for one background child run. */
-type PluginHookSubagentProgressEvent =
-  | {
-      phase: "started";
-      runId: string;
-      childSessionKey: string;
-      requester?: PluginHookSubagentRequester;
-    }
-  | {
-      phase: "ended";
-      runId: string;
-      childSessionKey: string;
-      outcome: "ok" | "error" | "timeout" | "killed" | "unknown";
-      requester?: PluginHookSubagentRequester;
-    };
-
-type PluginHookSubagentEndedEvent = {
-  targetSessionKey: string;
-  targetKind: PluginHookSubagentTargetKind;
-  reason: string;
-  sendFarewell?: boolean;
-  accountId?: string;
-  runId?: string;
-  endedAt?: number;
-  outcome?: "ok" | "error" | "timeout" | "killed" | "reset" | "deleted";
-  error?: string;
 };
 
 export type PluginInstallTargetType = "skill" | "plugin";
@@ -844,6 +803,11 @@ export type PluginHookHandlerMap = PluginMessageHookHandlerMap & {
     PluginHookBeforeDispatchContext,
     PluginHookBeforeDispatchResult
   >;
+  before_steer: AsyncPluginHook<
+    PluginHookBeforeSteerEvent,
+    PluginHookMessageContext,
+    PluginHookBeforeSteerResult
+  >;
   reply_dispatch: AsyncPluginHook<
     PluginHookReplyDispatchEvent,
     PluginHookReplyDispatchContext,
@@ -920,3 +884,5 @@ export type PluginHookRegistration<K extends PluginHookName = PluginHookName> = 
   source: string;
 };
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+export { type PluginHookSubagentDeliveryTargetResult } from "./hook-subagent.types.js";

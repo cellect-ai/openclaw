@@ -1,6 +1,10 @@
 import type { readSqliteDatabaseScopedWriteToken } from "../../infra/sqlite-database-admission.js";
 import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type { ConversationAuthority } from "./conversation-authority.types.js";
+import type {
+  FinalProjectionRelease,
+  FinalProjectionTransition,
+} from "./pending-final-delivery-receipt.js";
 import type { SessionEntryReplacementPublication } from "./session-accessor.sqlite-entry-cache.types.js";
 import type { SqliteLifecycleTargetSnapshot } from "./session-accessor.sqlite-entry-equality.js";
 import type { SessionEntryPatchOperation } from "./session-entry-patch-operation.js";
@@ -43,6 +47,8 @@ export type SessionEntryPatchGuard = {
 };
 
 export type SessionEntryPatchCommit = {
+  projectionReleases?: readonly FinalProjectionRelease[];
+  projectionTransition?: FinalProjectionTransition;
   selection: SessionEntryPatchSelection;
   prepared: SqliteLifecycleTargetSnapshot;
   sessionKey: string;

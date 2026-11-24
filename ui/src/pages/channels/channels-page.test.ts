@@ -458,6 +458,7 @@ describe("ChannelsPage lifecycle", () => {
     source.channels.state.pairingSnapshot = pairingSnapshot({
       accounts: [],
       requests: [],
+      history: [],
       commandOwnerConfigured: true,
     });
     Object.assign(source.runtimeConfig.state, {

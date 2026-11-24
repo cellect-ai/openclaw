@@ -1,4 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  bindReplyPublication,
+  resolveReplyPublication,
+  requireReplyPublicationReceipt,
+  isReplyPublicationReceiptRequired,
+} from "../../../auto-reply/reply-publication.js";
 import type { ReplyPayload } from "../../../auto-reply/types.js";
 import * as presentationPayload from "../../../interactive/payload.js";
 import type { MessagePresentation } from "../../../interactive/payload.js";
@@ -65,6 +71,7 @@ describe("renderPresentationForDelivery", () => {
         [
           { text: "Body", presentation: { ...expectedHeading, blocks } },
           { ...expectedHeading, blocks: [{ type: "buttons", buttons: normalizedButtons }] },
+          undefined,
         ],
       ]);
     },
@@ -97,5 +104,38 @@ describe("renderPresentationForDelivery", () => {
       await renderPresentationForDelivery(handler, { ...fallbackPayload, presentation }),
     ).toStrictEqual({ text: "native rendering" });
     expect(handler.renderPresentation).toHaveBeenCalledTimes(1);
+    if (!tables) {
+      expect(handler.renderPresentation.mock.calls[0]?.[0].text).toBeUndefined();
+      expect(handler.renderPresentation.mock.calls[0]?.[2]).toBe(fallbackPayload.text);
+    }
   });
 });
+
+it.each(["native", "plain", "authored"] as const)(
+  "retains private publication custody through %s presentation rendering",
+  async (mode) => {
+    const payload = {
+      ...fallbackPayload,
+      presentationTextMode: mode === "authored" ? ("fallback" as const) : undefined,
+    };
+    const publication = bindReplyPublication(
+      {},
+      { payload, kind: "final", channel: "matrix", context: { accountId: "ops" } },
+    );
+    requireReplyPublicationReceipt(payload);
+    const renderer = vi.fn(async (prepared: ReplyPayload) => {
+      expect(resolveReplyPublication(prepared)).toBe(publication);
+      return { text: "Rendered" };
+    });
+    const rendered = await renderPresentationForDelivery(
+      {
+        presentationCapabilities: { supported: mode === "native", tables: mode === "native" },
+        ...(mode === "native" ? { renderPresentation: renderer } : {}),
+      },
+      payload,
+    );
+    expect(resolveReplyPublication(rendered)).toBe(publication);
+    expect(isReplyPublicationReceiptRequired(rendered)).toBe(true);
+    expect(resolveReplyPublication({ ...rendered })).toBeUndefined();
+  },
+);

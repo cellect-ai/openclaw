@@ -89,6 +89,9 @@ export type TalkClientGatewayControlOptions = {
     entryId: string;
     role: "user" | "assistant";
     text: string;
+    confirmation?:
+      | import("../../talk/client-voice-confirmation.js").ClientVoiceConfirmationUtteranceContext
+      | null;
   }) => Promise<void>;
   flushTranscript: () => Promise<void>;
   closeLogicalSession: () => Promise<void>;

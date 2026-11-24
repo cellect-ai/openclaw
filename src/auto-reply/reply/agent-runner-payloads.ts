@@ -21,6 +21,7 @@ import {
 import type { OriginatingChannelType } from "../templating.js";
 import type { ReplyPayload, ReplyThreadingPolicy } from "../types.js";
 import { createBlockReplyContentKey, type BlockReplyPipeline } from "./block-reply-pipeline.js";
+import { cellectChannelFailureCopy } from "./cellect-failure-copy.js";
 import { normalizeReplyPayload } from "./normalize-reply.js";
 import { resolveOriginMessageProvider } from "./origin-routing.js";
 import { normalizeReplyPayloadDirectives, type DirectBlockDelivery } from "./reply-delivery.js";
@@ -105,6 +106,8 @@ export async function buildReplyPayloads(params: {
   accountId?: string;
   extractMarkdownImages?: boolean;
   normalizeMediaPaths?: (payload: ReplyPayload) => Promise<ReplyPayload>;
+  /** Run answered by this payload, for channel failure copy. */
+  runId?: string;
 }): Promise<{ replyPayloads: ReplyPayload[] }> {
   const sanitizedPayloads: ReplyPayload[] = [];
   for (const payload of params.payloads) {
@@ -135,7 +138,15 @@ export async function buildReplyPayloads(params: {
         },
       });
     }
-    sanitizedPayloads.push(next);
+    sanitizedPayloads.push(
+      cellectChannelFailureCopy(next, {
+        channel: resolveOriginMessageProvider({
+          originatingChannel: params.originatingChannel,
+          provider: params.messageProvider,
+        }),
+        runId: params.runId,
+      }),
+    );
   }
 
   const messageProvider = resolveOriginMessageProvider({

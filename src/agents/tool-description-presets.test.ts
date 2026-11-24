@@ -17,6 +17,11 @@ it("keeps ask_user native-control requirements visible to the model", () => {
   expect(description).toContain("native controls");
   expect(description).toContain("Put every selectable choice in `options`");
   expect(description).toContain("Use `multiSelect` only");
+  expect(description).toContain("Proceed (Recommended) vs Hold");
+  expect(description).toContain("retrieving available facts and prior answers");
+  expect(description).toContain("unresolved material decision");
+  expect(description).toContain("consent remain unanswered");
+  expect(description).not.toContain("continue with best judgment");
 });
 
 it("distinguishes secret config references from egress permission without offering plaintext", () => {

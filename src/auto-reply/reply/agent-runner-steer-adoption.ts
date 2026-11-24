@@ -368,6 +368,7 @@ export async function runActiveReplySteer(
     const assertLegacyPolicyCurrent = () => assertPolicy(steeringAuthority.toolAuthority.read());
     const injectionAttempt = await beginReplyMessageInjectionTarget(injectionTarget, text, {
       currentInboundContext: followupRun.currentInboundContext,
+      expectedQuestionId: followupRun.expectedQuestionId,
       inboundAudio: followupRun.currentInboundAudio === true,
       assertCurrent: assertReadCurrent,
       toolAuthorityPreparation: bindPreparedToolAuthority(

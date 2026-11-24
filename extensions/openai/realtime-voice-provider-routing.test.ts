@@ -372,6 +372,7 @@ describe("OpenAI realtime voice provider routing", () => {
       vadThreshold: 0.42,
       prefixPaddingMs: 240,
       silenceDurationMs: 620,
+      language: "en",
       reasoningEffort: "low",
       tools: [createRealtimeTool("openclaw_agent_consult")],
       ...browserRequest,

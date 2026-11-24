@@ -276,6 +276,7 @@ export function resolveSessionMutationAuthorization(request: SessionMutationAuth
   const targetRefs =
     talkTargets ??
     resolveSessionMutationTargets({
+      client: params.client,
       method: params.method,
       requestParams: params.requestParams,
       context: params.context,

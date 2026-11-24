@@ -6,12 +6,15 @@ import {
   isReplyPayloadTargetSuppressed,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
+import { isReplyPublicationReceiptRequired } from "../../auto-reply/reply-publication.js";
 import type { FinalizedMsgContext } from "../../auto-reply/templating.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { DeliveryQueueStateContext } from "../../infra/delivery-queue-state-context.js";
 import { isProvenDeliveryNotSentError } from "../../infra/delivery-recovery.shared.js";
 import { normalizeDeliverableOutboundChannel } from "../../infra/outbound/channel-resolution.js";
 import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
 import {
+  type DeliverOutboundPayloadsParams,
   type DurableFinalDeliveryRequirement,
   resolveOutboundDurableFinalDeliverySupport,
 } from "../../infra/outbound/deliver.js";
@@ -44,7 +47,14 @@ import type {
   ChannelTurnDurableDeliveryOptions,
 } from "./types.js";
 
-export type DurableInboundReplyDeliveryOptions = ChannelTurnDurableDeliveryOptions;
+export type DurableInboundReplyDeliveryOptions = ChannelTurnDurableDeliveryOptions &
+  Pick<
+    DeliverOutboundPayloadsParams,
+    | "completionRetention"
+    | "deliveryIntentId"
+    | "reusePendingDeliveryIntent"
+    | "assertDirectAdapterHandoff"
+  >;
 
 export type DurableInboundReplyDeliveryParams = DurableInboundReplyDeliveryOptions & {
   cfg: OpenClawConfig;
@@ -133,8 +143,11 @@ export function throwIfDurableInboundReplyDeliveryFailed(
 
 export async function deliverInboundReplyWithMessageSendContextCore(
   params: DurableInboundReplyDeliveryParams,
+  queueContext?: DeliveryQueueStateContext,
 ): Promise<DurableInboundReplyDeliveryResult> {
-  return await deliverInboundReplyWithMessageSendContext(params, sendDurableMessageBatchCore);
+  return await deliverInboundReplyWithMessageSendContext(params, (sendParams) =>
+    sendDurableMessageBatchCore(sendParams, undefined, queueContext),
+  );
 }
 
 /** Delivers a prepared final reply through the same durable owner without parsing its text. */
@@ -160,7 +173,10 @@ async function deliverInboundReplyWithMessageSendContext(
   try {
     // Final delivery is a new operation of the admitting Gateway, not of the completed model turn.
     const deliver = (cfg: OpenClawConfig, assertCurrent?: () => void) =>
-      deliverAdmittedInboundReply({ ...input, cfg }, sendBatch, assertCurrent);
+      deliverAdmittedInboundReply({ ...input, cfg }, sendBatch, () => {
+        assertCurrent?.();
+        input.assertDirectAdapterHandoff?.();
+      });
     const registry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
     const owner = registry && getPluginRegistryGatewayOwner(registry);
     if (!registry || !owner) {
@@ -231,6 +247,7 @@ async function deliverAdmittedInboundReply(
   sendBatch: typeof sendDurableMessageBatchCore,
   assertCurrent?: () => void,
 ): Promise<DurableInboundReplyDeliveryResult> {
+  assertCurrent?.();
   const group = getGroupThreadDispatchContext();
   const params = group
     ? {
@@ -264,7 +281,10 @@ async function deliverAdmittedInboundReply(
       silent: params.silent,
     });
   const durability =
-    requiredCapabilities.reconcileUnknownSend === true ? "required" : "best_effort";
+    requiredCapabilities.reconcileUnknownSend === true ||
+    isReplyPublicationReceiptRequired(params.payload)
+      ? "required"
+      : "best_effort";
 
   const support = await resolveOutboundDurableFinalDeliverySupport({
     cfg: params.cfg,
@@ -318,6 +338,9 @@ async function deliverAdmittedInboundReply(
     deps: params.deps,
     mediaAccess: params.mediaAccess,
     silent: params.silent,
+    deliveryIntentId: params.deliveryIntentId,
+    reusePendingDeliveryIntent: params.reusePendingDeliveryIntent,
+    completionRetention: params.completionRetention,
     durability,
     ...(requiredCapabilities.reconcileUnknownSend === true
       ? { requireUnknownSendReconciliation: true }

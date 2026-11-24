@@ -37,6 +37,7 @@ import {
   resolveMatrixAuthContext,
   type SharedMatrixClientLease,
 } from "../client.js";
+import { restoreMatrixProjectionExecutions } from "../projection-execution.js";
 import type { MatrixClient } from "../sdk.js";
 import { isMatrixStartupAbortError } from "../startup-abort.js";
 import {
@@ -52,9 +53,11 @@ import { createDirectRoomTracker } from "./direct.js";
 import { registerMatrixMonitorEvents } from "./events.js";
 import { createMatrixRoomMessageHandler } from "./handler.js";
 import { createMatrixIngressMonitor } from "./ingress.js";
+import { resolveMatrixInboundMediaMaxBytes } from "./media.js";
 import { shouldPromoteRecentInviteRoom } from "./recent-invite.js";
 import { createMatrixRoomInfoResolver } from "./room-info.js";
 import { resolveMatrixRoomConfig } from "./rooms.js";
+import { DEFAULT_MATRIX_HISTORY_LIMIT } from "./shared-history.js";
 import { runMatrixStartupMaintenance } from "./startup.js";
 import { createMatrixMonitorStatusController } from "./status.js";
 import { createMatrixMonitorTaskRunner, getMatrixMonitorTaskSignal } from "./task-runner.js";
@@ -282,10 +285,11 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
   const dmSessionScope = dmConfig?.sessionScope ?? "per-user";
   const historyLimit = resolvePromptHistoryLimit(
     accountConfig.historyLimit ?? cfg.messages?.groupChat?.historyLimit,
-    0,
+    DEFAULT_MATRIX_HISTORY_LIMIT,
   );
-  const mediaMaxMb = opts.mediaMaxMb ?? accountConfig.mediaMaxMb ?? DEFAULT_MEDIA_MAX_MB;
-  const mediaMaxBytes = Math.max(1, mediaMaxMb) * 1024 * 1024;
+  const mediaMaxBytes = resolveMatrixInboundMediaMaxBytes(
+    opts.mediaMaxMb ?? accountConfig.mediaMaxMb,
+  );
   const streaming = resolveMatrixStreamingMode(accountConfig.streaming);
   const previewToolProgressEnabled = resolveMatrixPreviewToolProgressEnabled(
     accountConfig.streaming,
@@ -380,6 +384,13 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       role: "monitor",
     });
     client = clientLease.client;
+    statusController.noteSyncCheckpoint(client.getSyncCheckpointStatus());
+    client.setSyncPersistenceBarrier(async () => {
+      await monitorTaskRunner.waitForIdle();
+      if (fatalError) {
+        throw fatalError;
+      }
+    });
     monitorLifecycleSignal = opts.abortSignal
       ? AbortSignal.any([opts.abortSignal, clientLease.abortSignal])
       : clientLease.abortSignal;
@@ -569,6 +580,8 @@ export async function monitorMatrixProvider(opts: MonitorMatrixOpts = {}): Promi
       },
       abortSignal: monitorLifecycleSignal,
     });
+
+    await restoreMatrixProjectionExecutions({ core, client, accountId: effectiveAccountId });
 
     await runMatrixStartupMaintenance({
       client,

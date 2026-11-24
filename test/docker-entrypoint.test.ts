@@ -127,6 +127,56 @@ describe.skipIf(process.platform === "win32")("Docker image activation", () => {
   });
 
   it.for([
+    { exit: 0, status: 0 },
+    { exit: 3, status: 78 },
+  ])(
+    "requires successful NSS seeding before starting: seed exits $exit",
+    async ({ exit, status }, { command }) => {
+      const f = fixture(command);
+      const seed = path.join(f.root, "nss-seed");
+      fs.writeFileSync(
+        seed,
+        `#!/bin/sh\necho '{"args":["nss-seed"]}' >> "$RECORD"\nexit ${exit}\n`,
+        { mode: 0o755 },
+      );
+      const result = await f.run(["openclaw.mjs", "gateway"], {
+        OPENCLAW_NSS_DISTRUST_SEED: seed,
+      });
+      expect(result, result.stderr).toMatchObject({ status, signal: null, error: undefined });
+      expect(f.read().map((row) => row.args)).toEqual(
+        exit === 0
+          ? [["nss-seed"], ["doctor", "--fix", "--non-interactive"], ["gateway"]]
+          : [["nss-seed"]],
+      );
+      expect(result.stderr.includes("OPENCLAW_NSS_SEED_FAILED")).toBe(exit !== 0);
+    },
+  );
+
+  it("does not start the wrapper when the configured NSS seed is unavailable", async ({
+    command,
+  }) => {
+    const f = fixture(command);
+    const result = await f.run(["openclaw.mjs", "gateway"], {
+      OPENCLAW_NSS_DISTRUST_SEED: path.join(f.root, "missing-nss-seed"),
+    });
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("OPENCLAW_NSS_SEED_FAILED");
+    expect(fs.existsSync(path.join(f.root, "calls.jsonl"))).toBe(false);
+  });
+
+  it("does not start the wrapper when NSS seeding is terminated", async ({ command }) => {
+    const f = fixture(command);
+    const seed = path.join(f.root, "nss-seed");
+    fs.writeFileSync(seed, '#!/bin/sh\nkill -TERM "$$"\n', { mode: 0o755 });
+    const result = await f.run(["openclaw.mjs", "gateway"], {
+      OPENCLAW_NSS_DISTRUST_SEED: seed,
+    });
+    expect(result.status).toBe(78);
+    expect(result.stderr).toContain("OPENCLAW_NSS_SEED_FAILED");
+    expect(fs.existsSync(path.join(f.root, "calls.jsonl"))).toBe(false);
+  });
+
+  it.for([
     { signal: undefined, forwarded: undefined, status: 78 },
     { signal: "SIGTERM", forwarded: "SIGTERM", status: 143 },
     { signal: "SIGINT", forwarded: "SIGINT", status: 130 },

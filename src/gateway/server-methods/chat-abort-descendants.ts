@@ -14,6 +14,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { captureExecRequestCustodySelection } from "../../infra/exec-request-context.js";
 
 export async function abortControlledSubagents(params: {
+  preservePendingInputs?: true;
   cfg: OpenClawConfig;
   sessionKey: string;
   agentId?: string;
@@ -213,6 +214,7 @@ export async function abortControlledSubagents(params: {
       await beforeKill();
     } else {
       descendants = await killAllControlledSubagentRuns({
+        preservePendingInputs: params.preservePendingInputs,
         cfg: params.cfg,
         controller,
         runs: requestSelection.runs,

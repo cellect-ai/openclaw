@@ -3,6 +3,7 @@ import { resolveBotThreadMentionPolicy } from "openclaw/plugin-sdk/channel-menti
 import { formatErrorMessage } from "openclaw/plugin-sdk/error-runtime";
 import { formatAudioTranscriptForAgent } from "openclaw/plugin-sdk/media-understanding-runtime";
 import { buildInboundHistoryFromEntries } from "openclaw/plugin-sdk/reply-history";
+import { resolveMatrixInboundMediaContent } from "../media-content.js";
 import { isMatrixMediaSizeLimitError } from "../media-errors.js";
 import {
   formatMatrixMessageText,
@@ -10,11 +11,16 @@ import {
   resolveMatrixMessageAttachment,
 } from "../media-text.js";
 import { fetchMatrixPollSnapshot, type MatrixPollSnapshot } from "../poll-summary.js";
+import {
+  authorizeProjectionReply,
+  getSourceAuthorizedProjection,
+  sendProjectionReplyRejection,
+} from "../projection-reply-authorization.js";
+import { isMatrixReadOnlyProjectionRoom } from "../thread-bindings-shared.js";
 import { resolveMatrixMonitorCommandAccess } from "./access-state.js";
 import type { createMatrixEventContextResolver } from "./event-context.js";
 import {
   isMatrixAudioMediaEnabled,
-  resolveMatrixInboundMediaContent,
   resolveMatrixMentionPrecheckText,
   resolveMatrixPendingHistoryText,
 } from "./handler-helpers.js";
@@ -29,6 +35,7 @@ import { resolveMentions, stripMatrixMentionPrefix } from "./mentions.js";
 import { isMatrixAudioContent, matrixPreflightAudio } from "./preflight-audio.js";
 import { createRoomHistoryTracker, type HistoryEntry } from "./room-history.js";
 import { resolveMatrixInboundRouteAsync } from "./route.js";
+import { logMatrixInboundRoute } from "./threads.js";
 import type { MatrixRawEvent } from "./types.js";
 
 export async function resolveMatrixIngressContent(config: {
@@ -68,6 +75,8 @@ export async function resolveMatrixIngressContent(config: {
     mediaMaxBytes,
     dmSessionScope,
     getMemberDisplayName,
+    threadReplies,
+    dmThreadReplies,
   } = handler;
 
   const {
@@ -93,6 +102,22 @@ export async function resolveMatrixIngressContent(config: {
     accessState,
   } = access;
   const { resolveMessageIngress } = accessState;
+  if (isMatrixReadOnlyProjectionRoom(accountId, roomId)) {
+    discardReservedHistorySlot();
+    return undefined;
+  }
+  const sourceAuthorization = await authorizeProjectionReply({ core, accountId, roomId, senderId });
+  if (sourceAuthorization.outcome !== "allowed") {
+    await sendProjectionReplyRejection({
+      client,
+      roomId,
+      messageId,
+      threadRootId: getSourceAuthorizedProjection(accountId, roomId)?.conversationId,
+      reason: sourceAuthorization.outcome,
+    });
+    discardReservedHistorySlot();
+    return undefined;
+  }
   let content = accessContent;
   let pollSnapshotPromise: Promise<MatrixPollSnapshot | null> | null = null;
   const getPollSnapshot = async (): Promise<MatrixPollSnapshot | null> => {
@@ -348,6 +373,19 @@ export async function resolveMatrixIngressContent(config: {
         roomHistoryTracker.recordPending(roomId, pendingEntry, historyThreadId);
       }
     }
+    logMatrixInboundRoute({
+      outcome: "skip",
+      reason: "no-mention",
+      roomId,
+      eventId: messageId,
+      accountId,
+      isDirectMessage,
+      threadReplies,
+      dmThreadReplies,
+      threadRootId,
+      sessionThreadId: thread.threadId,
+      mentioned: wasMentioned,
+    });
     logger.info("skipping room message", { roomId, reason: "no-mention" });
     return undefined;
   }
@@ -453,7 +491,7 @@ export async function resolveMatrixIngressContent(config: {
           roomId,
           historyLimit,
           {
-            sender: senderName,
+            sender: senderId,
             body: bodyText,
             timestamp: eventTs ?? undefined,
             messageId,
@@ -472,11 +510,28 @@ export async function resolveMatrixIngressContent(config: {
       })
     : undefined;
 
+  logMatrixInboundRoute({
+    outcome: "dispatch",
+    roomId,
+    eventId: messageId,
+    accountId,
+    isDirectMessage,
+    threadReplies,
+    dmThreadReplies,
+    threadRootId,
+    sessionThreadId: thread.threadId,
+    mentioned: wasMentioned,
+  });
   return {
     ...access,
     resolveMessageIngress,
     route: _route,
     hasExplicitSessionBinding,
+    sourceReplyAdmission:
+      sourceAuthorization.sourceReplyAdmission?.sessionKey.toLowerCase() ===
+      _route.sessionKey.toLowerCase()
+        ? { ...sourceAuthorization.sourceReplyAdmission, eventId: messageId }
+        : undefined,
     shouldRequireMention,
     wasMentioned,
     effectiveWasMentioned,

@@ -31,6 +31,7 @@ export type PreparedSlackMessage = {
   replyTarget: string;
   ctxPayload: FinalizedMsgContext;
   turn: {
+    storePath?: string;
     record: InboundReplyRecordOptions;
   };
   replyToMode: ReplyToMode;

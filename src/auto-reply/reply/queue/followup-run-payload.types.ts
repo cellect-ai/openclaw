@@ -77,6 +77,7 @@ export type FollowupRunPayload = {
   /** Shared lifecycle owner for the current user-turn transcript append. */
   userTurnTranscriptRecorder?: UserTurnTranscriptRecorder;
   currentInboundEventKind?: InboundEventKind;
+  expectedQuestionId?: string;
   /** Whether the current inbound message contained audio for inbound-only TTS policy. */
   currentInboundAudio?: boolean;
   /** Host-minted participant evidence; raw channel identities never live on this object. */
@@ -156,6 +157,7 @@ export type FollowupRunPayload = {
   /** Chat type for context-aware threading (e.g., DM vs channel). */
   originatingChatType?: string;
   run: QueuedAgentRunParams & {
+    skillWorkshopWorkspaceAuthoring?: import("../../../skills/workshop/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
     scheduledAutomation?: ScheduledSessionAutomation;
     bootstrapContextMode?: GetReplyOptions["bootstrapContextMode"];
     internalEventExecution?: SessionEventExecution;

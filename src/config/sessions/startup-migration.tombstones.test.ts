@@ -18,6 +18,55 @@ import { resolveSessionWorkStartBlock } from "./session-work-start.js";
 import { runSessionStartupMigration } from "./startup-migration.js";
 
 it.each(["startup", "doctor"] as const)(
+  "%s refuses unresolved legacy requester custody before rewriting its row or transcript",
+  async (mode) =>
+    withOpenClawTestState({ scenario: "minimal" }, async (state) => {
+      const cfg = { agents: { entries: { guarded: {} } } };
+      setRuntimeConfigSnapshot(cfg);
+      const scope = { agentId: "guarded", sessionKey: "agent:guarded:main", env: state.env };
+      replaceSessionEntrySync(scope, { sessionId: "guarded", updatedAt: 42 });
+      expect(
+        appendTranscriptMessageSync(
+          { ...scope, sessionId: "guarded" },
+          {
+            message: { role: "user", content: "Preserve the unresolved request" },
+          },
+        ).ok,
+      ).toBe(true);
+      const database = openOpenClawAgentDatabase(scope);
+      const raw = JSON.stringify({
+        sessionId: "guarded",
+        updatedAt: 42,
+        status: "interrupted",
+        restartRecoveryRequesterSenderId: "@requester:synthetic.test",
+        restartRecoveryRequesterAccountId: "primary",
+        restartRecoveryRequesterEventId: "$original",
+        restartRecoveryDeliveryReceiptState: "terminal-pending",
+      });
+      database.db
+        .prepare("UPDATE session_nodes SET entry_json = ? WHERE session_key = ?")
+        .run(raw, scope.sessionKey);
+      const originalTranscript = database.db
+        .prepare("SELECT * FROM transcript_events ORDER BY session_id, seq")
+        .all();
+      expect(originalTranscript.length).toBeGreaterThan(0);
+      const run = () =>
+        mode === "startup"
+          ? runSessionStartupMigration({ cfg, env: state.env, log: { info() {}, warn() {} } })
+          : repairLegacySessionEntryStates({ apply: true, cfg, env: state.env });
+      await expect(run()).rejects.toThrow(/native authenticated source/);
+      expect(
+        database.db
+          .prepare("SELECT entry_json FROM session_nodes WHERE session_key = ?")
+          .get(scope.sessionKey)?.entry_json,
+      ).toBe(raw);
+      expect(
+        database.db.prepare("SELECT * FROM transcript_events ORDER BY session_id, seq").all(),
+      ).toEqual(originalTranscript);
+    }),
+);
+
+it.each(["startup", "doctor"] as const)(
   "%s retires only custody linked to the tombstoned generation, idempotently",
   async (mode) =>
     withOpenClawTestState({ scenario: "minimal" }, async (state) => {

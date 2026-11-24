@@ -83,3 +83,22 @@ it("ends the current call", async () => {
   });
   expect(runtime.hangup).toHaveBeenCalledWith({ callUUID: "call-1" });
 });
+
+it("keeps approval required but omits conversation copy when the target cannot fit safely", () => {
+  for (const handle of [
+    "a".repeat(280),
+    "owner\u202e@example.com",
+    "owner\u0000@example.com",
+    "owner\u001f@example.com",
+    "owner\u007f@example.com",
+    "owner\u009f@example.com",
+  ]) {
+    const approval = resolveFaceTimeToolApproval({
+      action: "initiate_call",
+      handle,
+    })?.requireApproval;
+    expect(approval).toBeDefined();
+    expect(approval?.conversation).toBeUndefined();
+    expect(approval?.description).toContain(handle);
+  }
+});

@@ -1,3 +1,4 @@
+import { copyReplyPublication } from "../../../auto-reply/reply-publication.js";
 import type { ReplyPayload } from "../../../auto-reply/types.js";
 import {
   type MessagePresentation,
@@ -10,6 +11,7 @@ import { adaptMessagePresentationForChannel } from "./presentation-limits.js";
 
 function withoutPresentation(payload: ReplyPayload): ReplyPayload {
   const { presentation: _presentation, presentationTextMode: _mode, ...rest } = payload;
+  copyReplyPublication(payload, rest);
   return rest;
 }
 
@@ -20,6 +22,7 @@ export async function renderPresentationForDelivery(
     renderPresentation?: (
       payload: ReplyPayload & { presentation: MessagePresentation },
       sourcePresentation?: MessagePresentation,
+      fallbackText?: string,
     ) => ReplyPayload | null | Promise<ReplyPayload | null>;
   },
   payload: ReplyPayload,
@@ -55,14 +58,20 @@ export async function renderPresentationForDelivery(
     ...(textIsFallback ? { text: undefined } : {}),
     presentation: adaptedPresentation,
   };
+  copyReplyPublication(payload, adaptedPayload);
   const rendered = handler.renderPresentation
-    ? await handler.renderPresentation(adaptedPayload, presentation)
+    ? await handler.renderPresentation(
+        adaptedPayload,
+        presentation,
+        textIsFallback ? payload.text : undefined,
+      )
     : null;
   if (rendered) {
+    copyReplyPublication(payload, rendered);
     return withoutPresentation(rendered);
   }
   // Native controls may be clipped or split; plain fallback must retain authored labels.
-  return {
+  const fallback = {
     ...withoutPresentation(payload),
     text: textIsFallback
       ? (payload.text ?? renderMessagePresentationFallbackText({ presentation }))
@@ -71,4 +80,6 @@ export async function renderPresentationForDelivery(
           presentation,
         }),
   };
+  copyReplyPublication(payload, fallback);
+  return fallback;
 }

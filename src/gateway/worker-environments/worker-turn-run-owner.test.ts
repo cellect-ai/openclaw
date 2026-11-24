@@ -7,6 +7,7 @@ import {
   resolveActiveEmbeddedRunOwner,
   resolveActiveEmbeddedRunOwnerForOperation,
 } from "../../agents/embedded-agent-runner/runs.js";
+import { resolveAgentRunErrorLifecycleFields } from "../../agents/run-termination.js";
 import {
   onAgentEventForRun,
   rotateAgentEventLifecycleGeneration,
@@ -117,6 +118,8 @@ describe("cloud worker run ownership", () => {
 
   it.each([
     { cancellation: "user", firstToolDelayMs: 0, collisionAt: "cancellation" },
+    { cancellation: "person", firstToolDelayMs: 0, collisionAt: "cancellation" },
+    { cancellation: "foreign-person", firstToolDelayMs: 0, collisionAt: "cancellation" },
     { cancellation: "deadline", firstToolDelayMs: 10 * 60_000, collisionAt: "progress" },
   ] as const)(
     "keeps a bounded remote tool alive until $cancellation cancellation with a shared session ID at $collisionAt",
@@ -136,7 +139,7 @@ describe("cloud worker run ownership", () => {
             workerSignal = request.signal;
             launched.resolve();
             // User cancellation retains producer custody through its final receipt.
-            await (cancellation === "user"
+            await (cancellation !== "deadline"
               ? finishLaunch.promise
               : new Promise<void>((resolve) => {
                   request.signal?.addEventListener("abort", () => resolve(), { once: true });
@@ -228,9 +231,22 @@ describe("cloud worker run ownership", () => {
           status: "rejected",
           reason: "injection_unavailable",
         });
-        if (cancellation === "user") {
+        const stopActor = {
+          userId: "@reader:matrix.test",
+          roomId: "!room:matrix.test",
+          threadRootEventId: "$root",
+          sessionKey: SESSION_KEY,
+          agentId: cancellation === "foreign-person" ? "other-agent" : "main",
+        };
+        if (cancellation !== "deadline") {
           collideSessionId();
-          expect(resolveActiveEmbeddedRunOwnerForOperation(operation)?.abort()).toBe(true);
+          expect(
+            resolveActiveEmbeddedRunOwnerForOperation(operation)?.abort(
+              cancellation === "person" || cancellation === "foreign-person"
+                ? stopActor
+                : undefined,
+            ),
+          ).toBe(true);
           expect(placements.validateTurnClaim(turnClaim)).toBe(true);
           await expect(turnCapability.run(async () => "late effect")).rejects.toThrow();
           const finishing = {
@@ -263,7 +279,19 @@ describe("cloud worker run ownership", () => {
         expect(workerSignal?.aborted).toBe(true);
         expect(otherOperation?.abortSignal.aborted).toBe(false);
         finishLaunch.resolve();
-        await attempt;
+        const result = await attempt;
+        if (cancellation === "person") {
+          expect(resolveAgentRunErrorLifecycleFields(result, operation.abortSignal)).toMatchObject({
+            aborted: true,
+            stopReason: "aborted",
+            stopActor,
+          });
+        }
+        if (cancellation === "foreign-person") {
+          expect(
+            resolveAgentRunErrorLifecycleFields(result, operation.abortSignal),
+          ).not.toHaveProperty("stopActor");
+        }
         await operation.ownerSettlement;
         expect(isEmbeddedAgentRunHandleActive(SESSION_ID)).toBe(false);
         expect(placements.get(SESSION_ID)).toMatchObject({ state: "active", turnClaim: null });

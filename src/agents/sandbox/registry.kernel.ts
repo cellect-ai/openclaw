@@ -74,9 +74,12 @@ export function reserveSandboxRegistryInDatabase(
 }
 
 export function shouldPruneSandboxRegistryEntry(
-  entry: Pick<SandboxRegistryEntry, "lastUsedAtMs" | "createdAtMs"> & { sessionKey?: string },
+  entry: Pick<SandboxRegistryEntry, "lastUsedAtMs" | "createdAtMs" | "rolloverRetained"> & {
+    sessionKey?: string;
+  },
   prune: SandboxRegistryPrune,
 ): boolean {
+  if (entry.rolloverRetained) return false;
   const now = asDateTimestampMs(prune.now) ?? 0;
   const lastUsed = asDateTimestampMs(entry.lastUsedAtMs) ?? 0;
   const created = asDateTimestampMs(entry.createdAtMs) ?? 0;
@@ -307,6 +310,7 @@ function containerEntryToRow(entry: SandboxRegistryEntry, existing?: SandboxRegi
     configLabelKind: entry.configLabelKind ?? existing?.configLabelKind,
     configHash: entry.configHash ?? existing?.configHash,
     runtimeState: entry.runtimeState ?? existing?.runtimeState,
+    rolloverRetained: existing?.rolloverRetained || entry.rolloverRetained || undefined,
     workspaceDir: existing?.workspaceDir ?? entry.workspaceDir,
     workspaceSource: existing?.workspaceSource ?? entry.workspaceSource,
   };

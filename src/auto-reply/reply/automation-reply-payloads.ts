@@ -11,6 +11,7 @@ export function resolveAutomationReplyState(
   params: {
     opts?: InternalGetReplyOptions;
     terminalFailurePayload?: ReplyPayload;
+    legacyHeartbeatExplicitOnly?: boolean;
   } = {},
 ) {
   const { opts, terminalFailurePayload = execution.terminalFailurePayload } = params;
@@ -23,15 +24,24 @@ export function resolveAutomationReplyState(
     !result.meta?.error &&
     result.meta?.aborted !== true &&
     !terminalFailurePayload;
-  const authoredSilence =
-    successfulTerminal && result.meta?.terminalReply?.disposition === "silent";
   const pendingContinuation = hasPendingAutomationContinuation(result.meta);
+  const explicitLegacyResult =
+    params.legacyHeartbeatExplicitOnly === true &&
+    successfulTerminal &&
+    !pendingContinuation &&
+    execution.automation?.result !== undefined &&
+    execution.automation.result.outcome !== "no_change";
+  const authoredSilence =
+    successfulTerminal &&
+    !explicitLegacyResult &&
+    result.meta?.terminalReply?.disposition === "silent";
   const automationNoChange =
     successfulTerminal &&
     !pendingContinuation &&
     execution.automation?.result?.outcome === "no_change";
   const reasoningPayloadsEnabled = execution.automation
-    ? execution.automation.includeReasoning &&
+    ? params.legacyHeartbeatExplicitOnly !== true &&
+      execution.automation.includeReasoning &&
       successfulTerminal &&
       !pendingContinuation &&
       !authoredSilence &&

@@ -16,7 +16,6 @@ import {
 } from "../agents/agent-run-terminal-outcome.js";
 import { normalizeAgentRunTerminalReplySnapshot } from "../agents/agent-run-terminal-reply.js";
 import { isActiveEmbeddedRunId } from "../agents/embedded-agent-runner/runs.js";
-import { isTimeoutError, resolveFailoverReasonFromError } from "../agents/failover-error.js";
 import { renderCodexAppServerFailureCopy } from "../agents/failover/user-copy.js";
 import { readToolValidationErrorSummary } from "../agents/tool-error-summary.js";
 import { normalizeVerboseLevel } from "../auto-reply/thinking.js";
@@ -37,12 +36,14 @@ import {
   appendChatCanvasBlocksToMessage,
   extractChatToolResultCanvasPreview,
 } from "./chat-display-projection.canvas.js";
+import { hasChatTerminalObserver, publishChatTerminal } from "./chat-terminal-observer.js";
 import { shouldSuppressAssistantEventForLiveChat } from "./live-chat-projector.js";
 import type {
   GatewayBroadcastFn,
   GatewayBroadcastOpts,
   GatewayBroadcastToConnIdsFn,
 } from "./server-broadcast-types.js";
+import { readChatErrorKind, resolveChatErrorKindFromError } from "./server-chat-error-kind.js";
 import {
   createAgentEventAdmission,
   shouldMirrorAgentEventToHiddenSessionMessages,
@@ -105,48 +106,6 @@ export type NodeSendToSession = (
   payload: unknown,
   opts?: GatewayBroadcastOpts,
 ) => void;
-
-// Derived from ChatErrorEventSchema.errorKind (gateway-protocol); keep set in sync.
-type ChatErrorKind = NonNullable<Extract<ChatEvent, { state: "error" }>["errorKind"]>;
-
-const CHAT_ERROR_KINDS = new Set<ChatErrorKind>([
-  "refusal",
-  "timeout",
-  "rate_limit",
-  "context_length",
-  "unknown",
-]);
-
-function readChatErrorKind(value: unknown): ChatErrorKind | undefined {
-  return typeof value === "string" && CHAT_ERROR_KINDS.has(value as ChatErrorKind)
-    ? (value as ChatErrorKind)
-    : undefined;
-}
-
-// Refusal is a stop-reason fact; other badges use the canonical failover classification.
-export function resolveChatErrorKindFromError(error: unknown): ChatErrorKind | undefined {
-  if (error === undefined) {
-    return undefined;
-  }
-  const message = formatErrorMessage(error).toLowerCase();
-  if (
-    message.includes("refusal") ||
-    message.includes("content_filter") ||
-    message.includes("sensitive")
-  ) {
-    return "refusal";
-  }
-  const reason = resolveFailoverReasonFromError(error);
-  if (reason === "rate_limit" || reason === "overloaded") {
-    return "rate_limit";
-  }
-  if (reason === "context_overflow") {
-    return "context_length";
-  }
-  // FailoverReason "timeout" is the retryable-transient bucket and deliberately
-  // swallows generic 5xx; only genuinely timeout-shaped errors get the badge.
-  return isTimeoutError(error) ? "timeout" : undefined;
-}
 
 export type AgentEventHandlerOptions = {
   broadcast: GatewayBroadcastFn;
@@ -434,9 +393,10 @@ export function createAgentEventHandler({
       sessionKey &&
       (isControlUiVisible ||
         (projectSessionMessages &&
-          deliverySessionKeys.some(
-            (deliverySessionKey) => sessionMessageSubscribers.get(deliverySessionKey).size > 0,
-          )))
+          (hasChatTerminalObserver(clientRunId, sessionKey) ||
+            deliverySessionKeys.some(
+              (deliverySessionKey) => sessionMessageSubscribers.get(deliverySessionKey).size > 0,
+            ))))
     ) {
       if (!isAborted) {
         const terminalSessionKey = finished?.sessionKey ?? sessionKey;
@@ -542,6 +502,7 @@ export function createAgentEventHandler({
                 emitFirstAssistantChatSendTiming(terminalDelivery.firstAssistantTimingEntry);
               }
               sendLivePayload("chat", terminalSessionKey, payload, terminalDelivery);
+              publishChatTerminal(payload);
               return;
             }
             const errorDetail = projectChatErrorDetail(terminalErrorObservation);
@@ -565,6 +526,7 @@ export function createAgentEventHandler({
               ...(terminalStopReason && { stopReason: terminalStopReason }),
             };
             sendLivePayload("chat", terminalSessionKey, payload, terminalDelivery);
+            publishChatTerminal(payload);
           };
           const publish = () => {
             if (
@@ -1342,7 +1304,12 @@ export function createAgentEventHandler({
       }
     }
 
-    if ((isControlUiVisible || hasSessionMessageSubscribers) && sessionKey) {
+    if (
+      sessionKey &&
+      (isControlUiVisible ||
+        hasSessionMessageSubscribers ||
+        (projectSessionMessages && hasChatTerminalObserver(clientRunId, sessionKey)))
+    ) {
       if (isToolEvent && evt.data.phase === "result" && !evt.data.isError && !isAborted) {
         const result = extractChatToolResultCanvasPreview(evt.data.result);
         if (result?.preview.surface === "assistant_message") {
@@ -1451,3 +1418,5 @@ export function createAgentEventHandler({
   });
 }
 /* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */
+
+export { resolveChatErrorKindFromError } from "./server-chat-error-kind.js";

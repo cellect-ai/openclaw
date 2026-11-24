@@ -435,6 +435,8 @@ export const SessionsPreviewParamsSchema = closedObject({
 });
 
 export const SessionsDescribeParamsSchema = closedObject({
+  /** Backend-only conditional continuation observation; never a permission grant. */
+  includeThreadContinuation: Type.Optional(Type.Boolean()),
   key: NonEmptyString,
   agentId: Type.Optional(NonEmptyString),
   includeNativeSubagents: Type.Optional(Type.Boolean()),
@@ -516,6 +518,15 @@ export const SessionsAbortParamsSchema = closedObject({
   agentId: Type.Optional(NonEmptyString),
   /** Also discard followup and lane queues for a key-only non-global session abort. */
   clearQueued: Type.Optional(Type.Boolean()),
+  /** Application assertion admitted only from a configured, paired control issuer. */
+  stopActor: Type.Optional(
+    closedObject({
+      userId: Type.String({ minLength: 1, maxLength: 255 }),
+      roomId: Type.String({ minLength: 1, maxLength: 255 }),
+      threadRootEventId: Type.String({ minLength: 1, maxLength: 255 }),
+      agentMxid: Type.String({ minLength: 1, maxLength: 255 }),
+    }),
+  ),
 });
 
 /** Updates or clears one plugin namespace value on a session record. */

@@ -161,7 +161,7 @@ it("imports requests and exact scoped accounts while ignoring invalid candidates
   expect(fs.readdirSync(state.sourceDir)).toEqual([]);
   expect(readPairing("telegram", state.env)).toEqual({
     version: 1,
-    requests: [request],
+    requests: [{ ...request, status: "pending" }],
     allowFrom: { default: ["1001"], alerts: ["1002"], ops_bot: ["1003"] },
   });
 });
@@ -176,7 +176,7 @@ it("merges authoritative SQLite rows and keeps unreadable sources", async () => 
   );
   writeChannelPairingStateSnapshot(
     "custom-channel",
-    { version: 1, requests: [request], allowFrom: { primary: ["kept"] } },
+    { version: 1, requests: [{ ...request, status: "pending" }], allowFrom: { primary: ["kept"] } },
     state.env,
   );
   expect(state.migrate().warnings).toEqual([
@@ -185,7 +185,7 @@ it("merges authoritative SQLite rows and keeps unreadable sources", async () => 
   expect(fs.readdirSync(state.sourceDir)).toEqual(["custom-channel-pairing.json"]);
   expect(readPairing("custom-channel", state.env)).toEqual({
     version: 1,
-    requests: [request],
+    requests: [{ ...request, status: "pending" }],
     allowFrom: { primary: ["kept", "imported"] },
   });
 });

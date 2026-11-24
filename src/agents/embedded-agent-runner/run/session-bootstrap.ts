@@ -400,6 +400,7 @@ export async function prepareInitialSessionWriter(params: {
     agentId: ownerTarget.agentId,
     scope: presence.storePath,
     identities: [ownerTarget.sessionKey, presence.sessionKey, ownerTarget.sessionId],
+    executionRunId: runParams.runId,
     signal,
     assertAllowed: assertAbsent,
     onInterrupt: (reason) => {

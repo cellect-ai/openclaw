@@ -44,6 +44,7 @@ export type ExecToolArgs = Record<string, unknown> & {
   env?: Record<string, string>;
   yieldMs?: number;
   background?: boolean;
+  closeProcessTree?: boolean;
   awaitResults?: boolean;
   timeoutSeconds?: number;
   pty?: boolean;
@@ -82,6 +83,9 @@ export function assertSupportedExecParams(args: unknown): void {
   }
   if (args.awaitResults !== undefined && typeof args.awaitResults !== "boolean") {
     throw new ToolInputError("exec awaitResults must be a boolean");
+  }
+  if (args.closeProcessTree !== undefined && typeof args.closeProcessTree !== "boolean") {
+    throw new ToolInputError("exec closeProcessTree must be a boolean");
   }
   if (args.awaitResults === true && args.background === true) {
     throw new ToolInputError("exec with awaitResults=true cannot be detached with background=true");
@@ -363,6 +367,17 @@ export function createExecRequestPreparation(params: {
 
   return {
     normalizeParams,
+    executionCustody: (args: ExecToolArgs, toolCallId: string, context?: HookContext) => ({
+      closeProcessTree: args.closeProcessTree === true,
+      originRunId: params.defaults?.runId,
+      executionOwner: {
+        toolCallId,
+        sessionKey:
+          context?.sessionKey ?? params.defaults?.runSessionKey ?? params.defaults?.sessionKey,
+        agentId: context?.agentId ?? params.agentId,
+        runId: context?.runId ?? params.defaults?.runId,
+      },
+    }),
     prepareBeforeToolCallParams,
     finalizeBeforeToolCallParams,
     prepareParamsWithResolvedExecEnv,

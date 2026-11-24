@@ -20,7 +20,6 @@ import {
   projectCredentialSnapshotFields,
   resolveConfiguredFromRequiredCredentialStatuses,
 } from "openclaw/plugin-sdk/channel-status";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   createChannelDirectoryAdapter,
   createRuntimeDirectoryLiveAdapter,
@@ -29,8 +28,8 @@ import {
   createLazyRuntimeMethodBinder,
   createLazyRuntimeModule,
 } from "openclaw/plugin-sdk/lazy-runtime";
-import { buildOutboundBaseSessionKey, type RoutePeer } from "openclaw/plugin-sdk/routing";
-import { logVerbose } from "openclaw/plugin-sdk/runtime-env";
+import type { RoutePeer } from "openclaw/plugin-sdk/routing";
+import { buildOutboundBaseSessionKey } from "openclaw/plugin-sdk/routing";
 import {
   createComputedAccountStatusAdapter,
   createDefaultChannelRuntimeState,
@@ -41,25 +40,25 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { sanitizeAssistantVisibleText } from "openclaw/plugin-sdk/text-chunking";
 import { escapeRegExp } from "openclaw/plugin-sdk/text-utility-runtime";
+import type { ResolvedSlackAccount } from "./accounts.js";
 import {
   resolveDefaultSlackAccountId,
   resolveSlackAccount,
   resolveSlackAccountAllowFrom,
   resolveSlackOperationToken,
   resolveSlackReplyToMode,
-  type ResolvedSlackAccount,
 } from "./accounts.js";
 import { resolveSlackAutoThreadId } from "./action-threading.js";
 import { slackApprovalCapability } from "./approval-native.js";
 import { createSlackActions } from "./channel-actions.js";
 import { resolveSlackChannelType, resolveSlackConversationInfo } from "./channel-type.js";
-import { getSlackWriteClient } from "./client.js";
 import { slackConversationRouteOwners } from "./conversation-route-owner.js";
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
 import { resolveSlackEnterpriseUserTeamId } from "./enterprise-user-route.js";
-import { formatSlackError } from "./errors.js";
 import { shouldSuppressLocalSlackExecApprovalPrompt } from "./exec-approvals.js";
+import { formatSlackUserMention } from "./format.js";
 import { resolveSlackGroupRequireMention, resolveSlackGroupToolPolicy } from "./group-policy.js";
+import { setSlackHeartbeatThreadStatus } from "./heartbeat-status.js";
 import { isSlackWorkspaceInstallation } from "./installation-identity-state.js";
 import { SLACK_TEXT_LIMIT } from "./limits.js";
 import { SLACK_PRESENTATION_CAPABILITIES } from "./presentation.js";
@@ -67,7 +66,6 @@ import type { SlackProbe } from "./probe.js";
 import { normalizeSlackReplyPayload, resolveSlackReplyBlocks } from "./reply-blocks.js";
 import type { SlackScopesResult } from "./scopes.js";
 import { slackSecurityAdapter } from "./security.js";
-import { setSlackSessionStatus } from "./session-status.js";
 import {
   slackPluginBase,
   isSlackPluginAccountConfigured,
@@ -82,11 +80,7 @@ import {
   parseSlackTarget,
 } from "./target-parsing.js";
 import { slackContextTargetsMatch } from "./targets.js";
-import {
-  normalizeSlackThreadTsCandidate,
-  resolveSlackReplyThreadTs,
-  resolveSlackThreadTsValue,
-} from "./thread-ts.js";
+import { normalizeSlackThreadTsCandidate, resolveSlackReplyThreadTs } from "./thread-ts.js";
 import { buildSlackThreadingToolContext } from "./threading-tool-context.js";
 
 const loadExtensionSharedSdk = createLazyRuntimeModule(
@@ -116,50 +110,6 @@ const loadSlackProbeModule = createLazyRuntimeModule(() => import("./probe.js"))
 const loadSlackMonitorModule = createLazyRuntimeModule(() => import("./monitor.js"));
 
 const loadSlackDirectoryLiveModule = createLazyRuntimeModule(() => import("./directory-live.js"));
-
-async function setSlackHeartbeatThreadStatus(params: {
-  cfg: OpenClawConfig;
-  to: string;
-  accountId?: string | null;
-  threadId?: string | number | null;
-  status: "processing" | "active";
-}) {
-  const threadTs = resolveSlackThreadTsValue({ threadId: params.threadId });
-  const target = parseSlackTarget(params.to, { defaultKind: "channel" });
-  if (!threadTs || !target) {
-    return;
-  }
-  const account = resolveSlackAccount({ cfg: params.cfg, accountId: params.accountId });
-  assertSlackDetachedTargetAllowed(account.accountId, target.teamId);
-  const botToken = normalizeOptionalString(account.botToken);
-  if (!botToken) {
-    return;
-  }
-  try {
-    const client = getSlackWriteClient(botToken, { teamId: target.teamId });
-    const apiTargetId = canonicalizeSlackApiTargetId(target.kind, target.id, params.to);
-    const channelId =
-      target.kind === "channel"
-        ? apiTargetId
-        : await (
-            await loadSlackSendRuntime()
-          ).resolveSlackDmChannelId({
-            client,
-            userId: apiTargetId,
-            accountId: account.accountId,
-            token: botToken,
-          });
-    await setSlackSessionStatus({
-      client,
-      token: botToken,
-      channelId,
-      threadTs,
-      status: params.status,
-    });
-  } catch (error) {
-    logVerbose(`slack heartbeat status update failed: ${formatSlackError(error)}`);
-  }
-}
 
 function resolveSlackRouteTarget(raw: string) {
   const target = parseSlackTarget(raw, { defaultKind: "channel" });
@@ -353,6 +303,13 @@ export const slackPlugin = createChatChannelPlugin<ResolvedSlackAccount, SlackPr
         return normalizeSlackMessagingTarget(`channel:${id}`);
       },
       inferTargetChatType: ({ to }) => resolveSlackRouteTarget(to)?.chatType,
+      // Inbound room replies mention the requester; DMs do not (see message-handler/dispatch.ts).
+      formatSenderMention: ({ senderId, to }) => {
+        const target = parseSlackTarget(to, { defaultKind: "channel" });
+        return !target || target.kind === "user" || /^D/i.test(target.id)
+          ? ""
+          : formatSlackUserMention(senderId);
+      },
       resolveOutboundSessionRoute: async (params) => {
         const parsed = parseSlackTarget(params.target, { defaultKind: "channel" });
         if (!parsed) {

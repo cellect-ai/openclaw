@@ -65,6 +65,9 @@ export type CronCreatorAuthorityRunScope = {
     senderId?: string;
     channel?: string;
     accountId?: string;
+    sourceTurnId?: string;
+    chatId?: string;
+    eventId?: string;
   }>;
   /** Fresh admission only; never transferred with a management continuation. */
   readonly callerScopedCreation?: true;

@@ -236,7 +236,7 @@ describe("channel-final transcript mirrors", () => {
     expect(rows()).toEqual(laterRows);
   });
 
-  it.each([false, true])("rejects forged source IDs (suppressed=%s)", async (suppressed) => {
+  it.each([false])("rejects forged source IDs (suppressed=%s)", async (suppressed) => {
     const signedText = (id: string, phase: string, text: string) => ({
       type: "text",
       text,
@@ -275,6 +275,27 @@ describe("channel-final transcript mirrors", () => {
       });
     }
     expect(await entries()).toHaveLength(2);
+  });
+
+  it("refuses a caller-supplied suppressed-final marker as an internal delivery state", async () => {
+    // Cellect: a suppressed final is not channel text and is never written as an
+    // assistant message; historical rows are still recognized on replay.
+    const request = {
+      ...delivery("suppressed-delivery"),
+      deliveryMirror: {
+        kind: "channel-final-suppressed",
+        reason: "stale-foreground",
+        sourceMessageId: "suppressed-delivery",
+      },
+    } as unknown as SessionTranscriptAssistantMirrorAppendParams;
+    const before = rows();
+
+    await expect(appendMirror(request)).resolves.toEqual({
+      ok: false,
+      reason: "internal delivery state",
+    });
+
+    expect(rows()).toEqual(before);
   });
 
   it.each(["entry cleanup", "latest-message refusal"] as const)(
