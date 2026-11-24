@@ -276,13 +276,18 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
         const capabilities = resolution.capabilities;
         const controlSource =
           capabilities?.handlesAgentConsult === true ? "delegation" : "transcript";
-        const providerInstructions = await resolveTalkRealtimeProviderInstructions({
+        // Profile files do not depend on the session row. Read them while that
+        // row is ensured. History names the row, so it starts only after.
+        const instructionsPromise = resolveTalkRealtimeProviderInstructions({
           config: runtimeConfig,
           agentId,
           configuredInstructions: realtimeConfig.instructions,
           sessionKey: target.canonicalKey,
           warn: (message) => context.logGateway.warn(`talk realtime context: ${message}`),
         });
+        // A failure before the join below must not leave this read unhandled; the
+        // join still awaits and rethrows it.
+        instructionsPromise.catch(() => undefined);
         assertCommitAllowed();
         await restoreTalkSessionTarget(request, target, replacement?.source(target).assertCurrent);
         const ensuredSessionId = await ensureClientVoiceAgentSessionEntry({
@@ -319,7 +324,10 @@ export const talkSessionHandlers: GatewayRequestHandlers = {
           });
           replacement?.assertCurrent(target);
         };
-        const initialItems = await readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent);
+        const [providerInstructions, initialItems] = await Promise.all([
+          instructionsPromise,
+          readTalkRealtimeInitialItems(target, assertEnsuredTargetCurrent),
+        ]);
         assertEnsuredTargetCurrent();
         const model =
           normalizeOptionalString(providerConfig.model) ?? resolution.provider.defaultModel;
