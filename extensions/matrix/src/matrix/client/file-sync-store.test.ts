@@ -147,7 +147,8 @@ describe("SqliteBackedMatrixSyncStore", () => {
     const response = createSyncResponse("large-cursor");
     response.account_data.events.push({
       type: "com.openclaw.large",
-      content: { value: "🦞".repeat(100_000) },
+      // Sized for 256 KB sync-cache chunks so chunk 10 is still a middle chunk.
+      content: { value: "🦞".repeat(800_000) },
     });
     const writer = await openStore();
     await writer.setSyncData(structuredClone(response));
