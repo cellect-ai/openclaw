@@ -233,13 +233,16 @@ describe("Matrix reply dispatcher delivery", () => {
       blocks,
     );
     expect(sendMessageMatrixMock).toHaveBeenCalledTimes(1);
-    expect(sendCall(0)[1]).toEqual(native ? expect.stringContaining("took 42s") : authoredText);
+    // Matrix retains the producer-authored fallback body; the context block
+    // rides in the structured presentation field (docs/plugins/message-presentation.md).
+    expect(sendCall(0)[1]).toEqual(native ? "Deploy finished." : authoredText);
     expect(sendOptions(0).extraContent).toEqual(
       native
         ? expect.objectContaining({
             [PRESENTATION_KEY]: expect.objectContaining({
               type: "message.presentation",
               version: 1,
+              blocks: [expect.objectContaining({ type: "context", text: "took 42s" })],
             }),
           })
         : undefined,
