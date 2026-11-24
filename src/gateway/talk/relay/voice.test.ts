@@ -225,21 +225,27 @@ it("joins its accepted prefix after close settlement admission is lost", async (
     accepted.release();
     const closing = close();
     let settled = false;
-    void closing.then(() => {
-      settled = true;
-    });
+    const observed = closing.then(
+      () => {
+        settled = true;
+      },
+      () => {
+        settled = true;
+      },
+    );
     try {
       await blocked.entered;
       await vi.advanceTimersByTimeAsync(0);
       expect(settled).toBe(false);
       expect(closeRecord).not.toHaveBeenCalled();
       blocked.resume();
-      await closing;
+      // Cellect's close reports the lost settlement owner instead of a clean close.
+      await expect(closing).rejects.toThrow("Voice session persistence lost its accepted owner");
       expect(session.voiceTranscriptQueue.isIdle).toBe(true);
       expect(closeRecord).not.toHaveBeenCalled();
     } finally {
       blocked.resume();
-      await closing;
+      await observed;
       vi.useRealTimers();
     }
   });
@@ -418,7 +424,8 @@ it("drains bounded finals even when the closing source is refused", async () => 
   expect(closeRecord).not.toHaveBeenCalled();
 
   blocked.resume();
-  await close;
+  // Cellect's close propagates the refused source after draining the accepted prefix.
+  await expect(close).rejects.toThrow("Voice source was replaced before close");
 
   expect(appendTranscript.mock.calls.map(([params]) => params)).toMatchObject(
     Array.from({ length: 41 }, (_, index) => ({
@@ -482,8 +489,10 @@ describe("realtime relay voice transcript persistence", () => {
     expect(enqueue(session, "assistant", "The next number is 5.")).toBe(true);
     await session.voiceTranscriptQueue.flush();
 
+    // 11.7 appends through the captured session writer (second argument).
     expect(voiceSessionMocks.appendRelayVoiceTranscript).toHaveBeenCalledExactlyOnceWith(
       expect.objectContaining({ role: "assistant", text: "The next number is 5." }),
+      expect.anything(),
     );
     expect(projectionMocks.deliverOutboundPayloads).not.toHaveBeenCalled();
   });
