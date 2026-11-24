@@ -68,7 +68,8 @@ describe("buildRealtimeVoiceInstructions", () => {
       "substantive",
     );
     expect(instructions).toContain("Consult behavior:");
-    expect(instructions).toContain("Call openclaw_agent_consult before answering requests");
+    // Cellect's substantive guidance (src/talk/agent-consult-tool.ts) names when to consult.
+    expect(instructions).toContain("Call openclaw_agent_consult for requests that need tools");
     expect(instructions).toContain("- Name: Claw Voice");
     expect(instructions).toContain("- Theme: bright");
     expect(instructions).toContain("### SOUL.md\nStay quick, direct, and warm.");
