@@ -200,7 +200,11 @@ it.each([
           });
     if (accepted) {
       await expect(result).resolves.toMatchObject({ id: "alice" });
-      expect(f.read()).toMatchObject({ requests: [], allowFrom: { alpha: ["alice"] } });
+      // Retention keeps the resolved request for operators; it is no longer pending.
+      expect(f.read()).toMatchObject({
+        requests: [{ id: "alice", status: "approved", resolvedAt: expect.any(String) }],
+        allowFrom: { alpha: ["alice"] },
+      });
     } else {
       await expect(result).rejects.toBe(refusal);
       expect(f.read()).toEqual(f.before);
@@ -339,7 +343,18 @@ it.each(["error", "null", "revoked"] as const)(
     });
     if (outcome === "null") {
       await expect(result).resolves.toMatchObject({ id: "alice" });
-      expect(f.read()).toEqual({ ...f.before, requests: [] });
+      // The request is burned (retained as approved, never pending again) without an allow entry.
+      expect(f.read()).toEqual({
+        ...f.before,
+        requests: [
+          expect.objectContaining({
+            id: "alice",
+            meta: { accountId: "alpha", approval: "allow-alice" },
+            status: "approved",
+            resolvedAt: expect.any(String),
+          }),
+        ],
+      });
     } else {
       await expect(result).rejects.toBe(refusal);
       expect(f.read()).toEqual(f.before);
