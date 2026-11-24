@@ -121,7 +121,9 @@ describe("native Talk Matrix consult delivery", () => {
     } finally {
       acknowledge.resolve();
       await pending;
-      release?.();
+      if (typeof release === "function") {
+        release();
+      }
       source?.cleanup();
     }
   });

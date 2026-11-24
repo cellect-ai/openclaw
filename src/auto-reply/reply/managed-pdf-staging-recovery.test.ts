@@ -256,6 +256,7 @@ describe("managed PDF staging recovery at the admitted reply owner", () => {
     "ssh",
     "remote",
     "missing-owner",
+    "missing-event-owner",
     "mixed",
     "wrong-path",
     "non-pdf",
@@ -279,7 +280,13 @@ describe("managed PDF staging recovery at the admitted reply owner", () => {
             options:
               kind === "missing-owner"
                 ? {}
-                : { ...f.options, disableTools: kind === "tools-disabled" },
+                : {
+                    ...f.options,
+                    disableTools: kind === "tools-disabled",
+                    ...(kind === "missing-event-owner"
+                      ? { internalEventExecution: { onStarted() {}, onTerminal() {} } }
+                      : {}),
+                  },
             enableLocalPathSelfServe: kind === "no-disclosure" ? undefined : disclose,
             contexts: [f.policy.sessionCtx],
             assertCurrent() {},

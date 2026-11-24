@@ -75,7 +75,7 @@ beforeEach(() => vi.clearAllMocks());
 it.each([
   ["thread", "--json", "status", permalink],
   ["thread", "status", permalink, "--json"],
-])("registered status restores JSON fields %j", async (args) => {
+])("registered status restores JSON fields %j", async (...args: string[]) => {
   respond();
   await run(args);
   expect(JSON.parse(mocks.runtime.log.mock.calls[0]![0])).toMatchObject({

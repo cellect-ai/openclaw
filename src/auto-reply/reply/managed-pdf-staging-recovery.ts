@@ -81,7 +81,10 @@ export async function recoverManagedPdfStagingFailure(params: {
         options?.abortSignal?.throwIfAborted();
         operation.abortSignal.throwIfAborted();
         options?.operatorAuthority?.assertCurrent();
-        options?.internalEventExecution?.assertCurrent();
+        if (options?.internalEventExecution) {
+          if (!options.internalEventExecution.assertCurrent) throw error;
+          options.internalEventExecution.assertCurrent();
+        }
         params.assertCurrent();
         channelRead?.assertCurrent();
         reader.assertCurrent();

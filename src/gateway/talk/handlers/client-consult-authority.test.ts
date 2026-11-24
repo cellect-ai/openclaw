@@ -88,7 +88,9 @@ vi.mock("../../server-methods/chat-send-handler.js", () => ({
       chat.dispatched();
       request.respond(true, { runId: "queued-consult", status: "started" });
     } catch (error) {
-      release?.();
+      if (typeof release === "function") {
+        release();
+      }
       request.respond(false, undefined, { code: "UNAVAILABLE", message: String(error) });
     }
   },

@@ -318,9 +318,11 @@ export function createRelayAgentRunRegistration(
           if (params.registerVoice) {
             await params.registerVoice(assertCurrent, physicalSource, onRegistered);
           } else {
+            // Chat routing above uses the canonical key. The voice record stores
+            // the requested session key, and ownership rejects any other key.
             await registerClientVoiceConsultRun({
               agentId,
-              sessionKey,
+              sessionKey: target.sessionKey,
               voiceSessionId: session.id,
               runId: params.runId,
               assertCurrent,

@@ -252,7 +252,7 @@ function createPreparedSlackMessage(params?: {
     ackReactionValue: "eyes",
     ackReactionMessageTs: params?.ackReactionMessageTs,
     ackReactionPromise: params?.ackReactionPromise ?? null,
-  } as never;
+  } as PreparedSlackMessage;
 }
 
 async function dispatch(params?: Parameters<typeof createPreparedSlackMessage>[0]) {
