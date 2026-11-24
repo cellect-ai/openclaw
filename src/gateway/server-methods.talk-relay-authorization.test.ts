@@ -21,40 +21,44 @@ describe("bound Talk relay authorization at gateway dispatch", () => {
     scenario = "owned",
     role: Parameters<typeof roleClient>[0] = "write",
   ) {
-    return withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-      const cfg = rolePolicyConfig();
-      await state.writeConfig(cfg);
-      await captureRuntimeConfigAsyncReader()();
-      const requestClient = roleClient(role, "voice-browser");
-      requestClient.connId = "voice-browser-connection";
-      await upsertSessionEntryCore(
-        { agentId: "main", sessionKey: SESSION_KEY },
-        { sessionId: "matrix-thread-session", updatedAt: 1, visibility: "shared" },
-      );
-      if (scenario !== "closed") {
-        relaySessions.set(RELAY_ID, {
-          id: RELAY_ID,
-          connId: scenario === "foreign" ? "other-connection" : requestClient.connId,
-          sessionTarget: await prepareTalkSessionTarget(cfg, SESSION_KEY),
-          expiresAtMs: Date.now() + (scenario === "expired" ? -1_000 : 60_000),
-        } as RelaySession);
-      }
-      const handler = vi.fn<GatewayRequestHandler>(({ respond }) =>
-        respond(true, { started: true }),
-      );
-      const respond = vi.fn();
-      await handleGatewayRequest({
-        req: { type: "req", id: "bound-relay-consult", method: METHOD, params },
-        client: requestClient,
-        context: createDirectChatContext({
-          getRuntimeConfig: () => cfg,
-        }),
-        respond,
-        isWebchatConnect: () => false,
-        extraHandlers: { [METHOD]: handler },
-      });
-      return { handler, respond };
-    });
+    // 11.7 dispatch authorizes operator roles from the prepared profile catalog.
+    return withOpenClawTestState(
+      { scenario: "minimal", prepareProfileCatalog: true },
+      async (state) => {
+        const cfg = rolePolicyConfig();
+        await state.writeConfig(cfg);
+        await captureRuntimeConfigAsyncReader()();
+        const requestClient = roleClient(role, "voice-browser");
+        requestClient.connId = "voice-browser-connection";
+        await upsertSessionEntryCore(
+          { agentId: "main", sessionKey: SESSION_KEY },
+          { sessionId: "matrix-thread-session", updatedAt: 1, visibility: "shared" },
+        );
+        if (scenario !== "closed") {
+          relaySessions.set(RELAY_ID, {
+            id: RELAY_ID,
+            connId: scenario === "foreign" ? "other-connection" : requestClient.connId,
+            sessionTarget: await prepareTalkSessionTarget(cfg, SESSION_KEY),
+            expiresAtMs: Date.now() + (scenario === "expired" ? -1_000 : 60_000),
+          } as RelaySession);
+        }
+        const handler = vi.fn<GatewayRequestHandler>(({ respond }) =>
+          respond(true, { started: true }),
+        );
+        const respond = vi.fn();
+        await handleGatewayRequest({
+          req: { type: "req", id: "bound-relay-consult", method: METHOD, params },
+          client: requestClient,
+          context: createDirectChatContext({
+            getRuntimeConfig: () => cfg,
+          }),
+          respond,
+          isWebchatConnect: () => false,
+          extraHandlers: { [METHOD]: handler },
+        });
+        return { handler, respond };
+      },
+    );
   }
 
   it("admits an owned bound relay without disclosing its Matrix key in the RPC", async () => {
