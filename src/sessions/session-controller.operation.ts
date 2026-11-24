@@ -307,15 +307,14 @@ export function createReplyOperation(params: CreateReplyOperationParams): ReplyO
     abortInternally(abortReason);
     // Cancellation may throw. Only actual producer completion releases custody.
     try {
-      const stopActor =
+      const verified =
         abortReason instanceof ConversationRunStopReason &&
         matchesVerifiedRunStopActor(abortReason.actor, {
           sessionKey: currentSessionKey,
           agentId: currentAgentId,
-        })
-          ? abortReason.actor
-          : undefined;
-      backend?.cancel(reason, stopActor);
+        });
+      if (verified) backend?.cancel(reason, abortReason.actor);
+      else backend?.cancel(reason); // no verified actor: keep the stock call shape
     } finally {
       watchdog.beginTerminal();
     }
