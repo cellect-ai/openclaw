@@ -17,6 +17,12 @@ import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-cloc
 import { createGatewayCronReconciliation } from "./server-cron-reconciled.js";
 import { createTestCronState } from "./server-reload-handlers.config.test-support.js";
 
+// The carried Workshop review runs after cleanup and writes its own jobs; this
+// case counts only the dreaming cleanup (as in server-cron-reconciled.test.ts).
+vi.mock("../cron/workshop-collection-review.js", () => ({
+  reconcileWorkshopCollectionReviews: vi.fn(async () => {}),
+}));
+
 it.each([
   "current",
   "config",
