@@ -51,6 +51,9 @@ export function capturePayloadPublicationEvidence(
   captured?: WeakMap<OutboundDeliveryResult, DeliveryPublicationEvidence>,
 ): PayloadPublicationEvidence | undefined {
   if (outcome.status !== "sent" || outcome.incompleteReason) return undefined;
+  // A same-ID final replacement can drop contradicted progress from outcome.results;
+  // the payload's reported placement still retains every physical observation.
+  if (!deliveryPlacementMatchesContext(outcome.reportedPlacement, destination)) return undefined;
   const parts = captured ? outcome.results.map((result) => captured.get(result)) : undefined;
   if (parts?.some((part) => !part)) return undefined;
   const evidence = parts

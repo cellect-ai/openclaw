@@ -3,6 +3,7 @@ import {
   captureNativeFinalMemberEvidence,
   type NativeFinalMemberEvidence,
 } from "./delivery-completion-members.js";
+import { deliveryPlacementMatchesContext } from "./delivery-placement-evidence.js";
 import {
   captureDeliveryPublicationEvidence,
   capturePayloadPublicationEvidence,
@@ -56,6 +57,9 @@ export function createDeliveryPublicationCapture(params: {
   };
   const captureOutcome = (outcome: OutboundPayloadDeliveryOutcome) => {
     incompletePayloadSend ||= outcome.status === "sent" && outcome.incompleteReason !== undefined;
+    contradicted ||=
+      outcome.status === "sent" &&
+      !deliveryPlacementMatchesContext(outcome.reportedPlacement, params.destination);
     const evidence = capturePayloadPublicationEvidence(
       outcome,
       params.destination,
