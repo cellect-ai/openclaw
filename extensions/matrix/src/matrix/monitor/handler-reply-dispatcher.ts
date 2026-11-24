@@ -199,7 +199,8 @@ export function createMatrixReplyDispatcher(config: {
       }
     };
     // The reply's own event fields ride its first event, not a later chunk.
-    const extraContent = { ...resolveMatrixExtraContent(reply), ...additionalContent };
+    const replyContent = { ...resolveMatrixExtraContent(reply), ...additionalContent };
+    const extraContent = Object.keys(replyContent).length > 0 ? replyContent : undefined;
     const targets = mediaUrls.length > 0 ? mediaUrls : [undefined];
     try {
       for (const [index, mediaUrl] of targets.entries()) {
