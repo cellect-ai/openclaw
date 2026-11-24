@@ -7,7 +7,10 @@ import {
   validateSessionsViewerPresenceSetParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
-import { isBrowserSessionReadAllowed } from "../matrix-browser-session-authorization.js";
+import {
+  isBrowserSessionReadAllowed,
+  requiresBrowserSessionReadBoundary,
+} from "../matrix-browser-session-authorization.js";
 import { canReviewOperatorApproval } from "../operator-approval-authorization.js";
 import { APPROVALS_SCOPE } from "../operator-scopes.js";
 import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
@@ -133,7 +136,8 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         read = await retainSessionScopedRead(options, canonicalKey, requestedAgentId, {
           // Activity and labels may change while approvals load without revoking access.
           allowMetadataChanges: true,
-          retain: true,
+          // Only browser callers need the retained row for the owning-app boundary.
+          retain: requiresBrowserSessionReadBoundary(client),
           entryMatches: (previous, current) =>
             !hasSessionReadAccessChanged(previous, current) &&
             isBrowserSessionReadAllowed({
