@@ -16,7 +16,8 @@ import {
   MATRIX_SYNC_CACHE_VERSION,
   deleteMatrixSyncCacheStateFromStore,
   openMatrixSyncCacheStoreOptions,
-  readAndClaimPersistedStoreFromStore,
+  claimMatrixSyncCacheCleanShutdownInStore,
+  readPersistedStoreFromStore,
   writeMatrixSyncCacheStateToStore,
   type MatrixSyncCacheRecord,
   type PersistedMatrixSyncStore,
@@ -88,6 +89,8 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
   private readonly restoredCheckpoint: MatrixShutdownCheckpoint | null;
   private checkpoint: MatrixShutdownCheckpoint | undefined;
   private persistenceBarrier?: () => Promise<void>;
+  private cleanShutdownClaim: Promise<void> | null = null;
+  private cleanShutdownClaimed = false;
 
   static async create(
     storageRootDir: string,
@@ -100,7 +103,7 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
       store = getMatrixRuntime().state.openKeyedStoreV2<MatrixSyncCacheRecord>(
         openMatrixSyncCacheStoreOptions(storageRootDir),
       );
-      persisted = await readAndClaimPersistedStoreFromStore({ storageRootDir, store });
+      persisted = await readPersistedStoreFromStore({ storageRootDir, store });
     } catch (error) {
       materializeErrorStack(error);
       unavailableError = error;
@@ -234,6 +237,7 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     if (this.frozen) {
       return;
     }
+    await this.claimLoadedCleanShutdown();
     const handler = this.syncIngressHandler;
     if (handler) {
       await this.runSyncIngress(async () => {
@@ -258,6 +262,31 @@ export class SqliteBackedMatrixSyncStore extends MemoryStore {
     if (eventCount > 0) {
       this.observe("cursor-accepted-unbound");
     }
+  }
+
+  /**
+   * A restored clean checkpoint is single-use. Retire it durably before this
+   * generation admits a newer cursor, so a crash before the next persist cannot
+   * present the old proof again. Diagnostic and read-only opens never advance
+   * the cursor and therefore keep the evidence.
+   */
+  private async claimLoadedCleanShutdown(): Promise<void> {
+    if (!this.hadCleanShutdownOnLoad || this.cleanShutdownClaimed) {
+      return;
+    }
+    this.cleanShutdownClaim ??= claimMatrixSyncCacheCleanShutdownInStore({
+      storageRootDir: this.storageRootDir,
+      store: this.requireStore(),
+    }).then(
+      () => {
+        this.cleanShutdownClaimed = true;
+      },
+      (error: unknown) => {
+        this.cleanShutdownClaim = null;
+        throw error;
+      },
+    );
+    await this.cleanShutdownClaim;
   }
 
   private acceptSyncData(syncData: ISyncResponse): void {

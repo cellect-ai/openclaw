@@ -194,19 +194,20 @@ export async function readPersistedStoreFromStore(params: {
   return syncCacheOperations.enqueue(path.resolve(storageRootDir), () => readPersistedStore(store));
 }
 
-/** Consume clean ownership at startup without republishing an older snapshot. */
-export async function readAndClaimPersistedStoreFromStore(params: {
+/**
+ * Consume clean shutdown evidence before a cursor advances past it, without
+ * republishing an older snapshot. Read-only opens leave the evidence intact.
+ */
+export async function claimMatrixSyncCacheCleanShutdownInStore(params: {
   storageRootDir: string;
-  store: Pick<PluginStateKeyedStore<MatrixSyncCacheRecord>, "lookup" | "lookupMany" | "register">;
-}): Promise<PersistedMatrixSyncStore | null> {
+  store: Pick<PluginStateKeyedStore<MatrixSyncCacheRecord>, "lookup" | "register">;
+}): Promise<void> {
   return syncCacheOperations.enqueue(path.resolve(params.storageRootDir), async () => {
-    const persisted = await readPersistedStore(params.store);
     const key = SYNC_CACHE_META_KEY;
     const meta = await params.store.lookup(key);
     if (isSyncCacheMeta(meta) && meta.cleanShutdown) {
       await params.store.register(key, uncleanSyncCacheMeta(meta));
     }
-    return persisted;
   });
 }
 
