@@ -69,21 +69,22 @@ export const talkClientControlHandlers: GatewayRequestHandlers = {
     validateTalkClientTranscriptParams,
     async ({ params, respond, context, client, sessionMutationAuthorization }) => {
       const config = context.getRuntimeConfig();
+      // The route proof reads the native row of the resolved owner, never a bare alias.
+      const target =
+        sessionMutationAuthorization?.talkSessionTarget ??
+        (await prepareTalkSessionTarget(config, params.sessionKey));
       if (
         !isWebchatSessionAllowed({ cfg: config, client, sessionKey: params.sessionKey }) ||
         (await prepareTalkMatrixBrowserRefusal({
           cfg: config,
           client,
           sessionKey: params.sessionKey,
+          agentId: target.agentId,
           authorizedByBinding: false,
         }))
       ) {
         throw new Error("Matrix Talk sessions require an authorized binding");
       }
-
-      const target =
-        sessionMutationAuthorization?.talkSessionTarget ??
-        (await prepareTalkSessionTarget(config, params.sessionKey));
       sessionMutationAuthorization?.assertCurrent();
       await appendClientVoiceTranscript({
         agentId: target.agentId,
@@ -115,21 +116,21 @@ export const talkClientControlHandlers: GatewayRequestHandlers = {
         return;
       }
       const config = context.getRuntimeConfig();
+      const { agentId } =
+        sessionMutationAuthorization?.talkSessionTarget ??
+        (await prepareTalkSessionTarget(config, params.sessionKey));
       if (
         !isWebchatSessionAllowed({ cfg: config, client, sessionKey: params.sessionKey }) ||
         (await prepareTalkMatrixBrowserRefusal({
           cfg: config,
           client,
           sessionKey: params.sessionKey,
+          agentId,
           authorizedByBinding: false,
         }))
       ) {
         throw new Error("Matrix Talk sessions require an authorized binding");
       }
-
-      const { agentId } =
-        sessionMutationAuthorization?.talkSessionTarget ??
-        (await prepareTalkSessionTarget(config, params.sessionKey));
       sessionMutationAuthorization?.assertCurrent();
       await closeClientVoiceSession({
         agentId,
