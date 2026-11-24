@@ -135,6 +135,19 @@ export function addPreCutoverClientCredentialTablesForTest(database: EngineConne
   database.exec(CLIENT_CREDENTIAL_LEGACY_TABLES_SQL);
 }
 
+/**
+ * Give an upstream predecessor fixture the startup columns every Cellect fork store has
+ * carried since its schema 21 (test/fixtures/sqlite/cellect-openclaw-state-schema-21.sql).
+ * Without them a bounded migration defers to the full historical runner, which is the
+ * correct choice for an upstream-only store but not the path these fixtures model.
+ */
+export function addCellectForkStateColumnsForTest(database: EngineConnection): void {
+  database.exec(`
+    ALTER TABLE channel_pairing_requests ADD COLUMN status TEXT;
+    ALTER TABLE channel_pairing_requests ADD COLUMN resolved_at TEXT;
+  `);
+}
+
 /** Historical schema success paths retain the real owner and Doctor's fresh table backup. */
 export async function withStateMigrationBackupForTest<T>(
   options: OpenClawStateDatabaseOptions,

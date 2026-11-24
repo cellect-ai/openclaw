@@ -21,7 +21,10 @@ import {
   readOpenClawStateLease as readLease,
   renewOpenClawStateLeaseInTransaction as renewLease,
 } from "./openclaw-state-lease-store.js";
-import { withStateMigrationBackupForTest as withBackup } from "./openclaw-state-schema.test-support.js";
+import {
+  addCellectForkStateColumnsForTest,
+  withStateMigrationBackupForTest as withBackup,
+} from "./openclaw-state-schema.test-support.js";
 import { assertSqliteMigrationScopePreserved as assertScope } from "./sqlite-migration-scope.test-support.js";
 
 // v25 changed metadata; v26 changed only this table's physical layout.
@@ -64,6 +67,7 @@ function legacyDatabase(refusePublication = false) {
   mkdirSync(path.dirname(pathname), { recursive: true });
   using db = new DatabaseSync(pathname);
   db.exec(legacySchema);
+  addCellectForkStateColumnsForTest(db);
   db.exec(`PRAGMA user_version = 26;
     INSERT INTO schema_meta (meta_key, role, schema_version, created_at, updated_at)
       VALUES ('primary', 'global', 26, 1, 1);

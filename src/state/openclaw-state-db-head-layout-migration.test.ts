@@ -16,7 +16,10 @@ import {
   runOpenClawStateWriteTransaction,
 } from "./openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
-import { withStateMigrationBackupForTest } from "./openclaw-state-schema.test-support.js";
+import {
+  addCellectForkStateColumnsForTest,
+  withStateMigrationBackupForTest,
+} from "./openclaw-state-schema.test-support.js";
 import { assertSqliteMigrationScopePreserved } from "./sqlite-migration-scope.test-support.js";
 import { migrateSqliteTableWithoutRowid } from "./sqlite-table-layout-migration.js";
 
@@ -80,6 +83,7 @@ function legacyDatabase(refusePublication = false) {
   mkdirSync(path.dirname(pathname), { recursive: true });
   using db = new DatabaseSync(pathname);
   db.exec(legacySchema);
+  addCellectForkStateColumnsForTest(db);
   db.exec(`PRAGMA user_version = 25;
     INSERT INTO schema_meta (meta_key, role, schema_version, created_at, updated_at)
       VALUES ('primary', 'global', 25, 1, 1);

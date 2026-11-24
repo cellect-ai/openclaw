@@ -16,6 +16,7 @@ import { resolveOpenClawStateSqlitePath } from "./openclaw-state-db.paths.js";
 import { getOpenClawStateFeatureSchemaSql } from "./openclaw-state-feature-schema.js";
 import { OPENCLAW_STATE_SCHEMA_SQL } from "./openclaw-state-schema.js";
 import {
+  addCellectForkStateColumnsForTest,
   addPreCutoverClientCredentialTablesForTest,
   createInitialStateSchemaShape,
   restorePreTemplateStateIdentifiersForTest,
@@ -67,6 +68,7 @@ function fixture(provenance = true, refusePublication = false) {
   using db = new DatabaseSync(pathname);
   db.exec("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;");
   db.exec(legacySchema);
+  addCellectForkStateColumnsForTest(db);
   db.exec(getOpenClawStateFeatureSchemaSql("user_profiles"));
   db.exec(`PRAGMA user_version = 35;
     INSERT INTO schema_meta VALUES ('primary', 'global', 35, NULL, 'frozen-schema-35', 100, 100);
