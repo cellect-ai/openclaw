@@ -143,6 +143,56 @@ describe("pending delivery notice end to end", () => {
     expect(runDispatch).toHaveBeenCalledOnce();
     expect(entry()?.pendingDeliveryNotice?.state).toBe("owed");
   });
+  it("dispatches a new Matrix turn while the earlier notice is still sending", async () => {
+    const matrixRoute = { channel: "matrix", accountId: "default" };
+    const matrixContext = { ...matrixRoute, to: "room:!test:example.org", threadId: "$root" };
+    const matrixSessionKey = "agent:main:matrix:channel:!test:example.org:thread:$root";
+    const noticeStarted = createDeferred();
+    const release = createDeferred<{ suppressed: boolean }>();
+    sendNotice.mockImplementationOnce(() => {
+      noticeStarted.resolve();
+      return release.promise;
+    });
+    await replaceSessionEntry(
+      { storePath, sessionKey: matrixSessionKey },
+      {
+        sessionId: "matrix-session",
+        updatedAt: Date.now(),
+        status: "done",
+        delivery: { kind: "external", route: matrixRoute, context: matrixContext, origin: {} },
+        pendingDeliveryNotice: {
+          intentId: "earlier",
+          sourceMessageId: "$earlier",
+          createdAt: 1,
+          state: "owed",
+          context: matrixContext,
+        },
+      },
+    );
+    const dispatched = createDeferred();
+    const turn = runPreparedChannelTurn({
+      ...matrixRoute,
+      storePath,
+      routeSessionKey: matrixSessionKey,
+      ctxPayload: { SessionKey: matrixSessionKey, CommandAuthorized: false },
+      recordInboundSession: async () => undefined,
+      runDispatch: async () => {
+        dispatched.resolve();
+        return { queuedFinal: false, counts: { tool: 0, block: 0, final: 0 } };
+      },
+    });
+    try {
+      await Promise.all([noticeStarted.promise, dispatched.promise, turn]);
+    } finally {
+      release.resolve({ suppressed: false });
+    }
+    await vi.waitFor(() =>
+      expect(
+        loadSessionEntry({ storePath, sessionKey: matrixSessionKey })?.pendingDeliveryNotice?.state,
+      ).toBe("acknowledged"),
+    );
+    expect(appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+  });
   const freshTurn = () => runTurn(visible, false);
   function queueFinal(prepared = false, custody = completion, beforeIdle = Promise.resolve()) {
     dispatchCore.mockImplementationOnce(async (params) => {

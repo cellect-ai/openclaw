@@ -7,6 +7,10 @@ import { truncateWithMarker } from "openclaw/plugin-sdk/string-normalization-run
 import { formatMatrixMessageText, resolveMatrixReplacementContent } from "../media-text.js";
 import { formatPollAsText, isPollStartType, parsePollStart } from "../poll-types.js";
 import { resolveMatrixThreadRootId } from "../relations.js";
+import {
+  MATRIX_REPLY_DELIVERY_KEY,
+  parseMatrixReplyDeliveryStatus,
+} from "../reply-delivery-status.js";
 import type { MatrixClient } from "../sdk.js";
 import { setBoundedMap } from "./bounded-cache.js";
 import type { MatrixRawEvent } from "./types.js";
@@ -20,6 +24,12 @@ export function summarizeMatrixMessageContextEvent(event: MatrixRawEvent): strin
   }
 
   const content = resolveMatrixReplacementContent(event) ?? event.content;
+  if (
+    content.msgtype === "m.notice" &&
+    parseMatrixReplyDeliveryStatus(content[MATRIX_REPLY_DELIVERY_KEY])
+  ) {
+    return undefined;
+  }
   return formatMatrixMessageText({
     body: readStringValue(content.body),
     filename: readStringValue(content.filename),

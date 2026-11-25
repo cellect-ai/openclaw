@@ -10,6 +10,7 @@ import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
   resolveReplyRunDeliveryContext,
+  resolveReplyDeliverySourceMessageId,
   resolveSourceReplyPolicy,
   scheduleFollowupDrainAfterReplyOperationClear,
   type RunReplyAgentParams,
@@ -283,15 +284,20 @@ async function executePreparedReplyAgentRunWithCompletion(
                 storePath,
               },
             });
+            const deliveryContext = resolveReplyRunDeliveryContext({
+              ...context,
+              sessionKey,
+              sessionEntry: activeSessionEntry,
+            });
             await recordPendingDelivery({
               text: hookFinalDeliveryText ?? "",
               intentId: pendingFinalDeliveryIntentId,
               deliveries: [{ id: pendingFinalDeliveryDeliveryId, state: "prepared" }],
-              context: resolveReplyRunDeliveryContext({
-                ...context,
-                sessionKey,
-                sessionEntry: activeSessionEntry,
-              }),
+              context: deliveryContext,
+              sourceMessageId: resolveReplyDeliverySourceMessageId(
+                context.sessionCtx,
+                deliveryContext,
+              ),
             });
           }
         }

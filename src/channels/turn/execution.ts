@@ -228,7 +228,21 @@ export async function runPreparedChannelTurnCore<
         });
         emitStage("record", "done");
         await params.afterRecord?.();
-        await deliverPendingDeliveryNotice(recordSessionKey, params.storePath, recordAgentId);
+        const deliveryNotice = deliverPendingDeliveryNotice(
+          recordSessionKey,
+          params.storePath,
+          recordAgentId,
+        );
+        if (params.channel === "matrix") {
+          // Historical recovery can wait on transport. It must not hold this turn back.
+          void deliveryNotice.catch((error) =>
+            log.warn("Matrix delivery notice failed", {
+              errorName: error instanceof Error ? error.name : "unknown",
+            }),
+          );
+        } else {
+          await deliveryNotice;
+        }
       } catch (err) {
         emitStage("record", "error", err);
         try {

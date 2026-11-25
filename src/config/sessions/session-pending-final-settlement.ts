@@ -87,6 +87,7 @@ function projectPendingFinalDeliveryState(
             createdAt: pending.createdAt,
             context: pending.context,
             intentId: pending.intentId,
+            ...(pending.sourceMessageId ? { sourceMessageId: pending.sourceMessageId } : {}),
             state: "owed" as const,
           },
         }

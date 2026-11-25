@@ -287,18 +287,44 @@ export function createGatewayInstanceRuntime(
       const result = await sendMessage({
         cfg: context.getRuntimeConfig(),
         deps: createOutboundSendDeps(context.deps),
+        agentId: payload.agentId,
         channel: payload.channel,
         to: payload.to,
         accountId: payload.accountId,
         threadId: payload.threadId,
         content: payload.text,
+        ...(payload.channel === "matrix" && payload.replyDelivery
+          ? {
+              skipDestinationHistory: true,
+              payloads: [
+                {
+                  text: payload.text,
+                  channelData: {
+                    matrix: {
+                      extraContent: {
+                        "ai.cellect.reply_delivery": {
+                          version: 1,
+                          state: "uncertain",
+                          ...payload.replyDelivery,
+                        },
+                      },
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
         gatewayOwnedDelivery: true,
         bestEffort: true,
         idempotencyKey: payload.idempotencyKey,
         deliveryIntentId: payload.idempotencyKey,
         reusePendingDeliveryIntent: true,
         completionRetention: LIFECYCLE_NOTICE_COMPLETION_RETENTION,
-        onPlatformSendDispatch: async () => assertNoticeCurrent(),
+        onPlatformSendDispatch: async () => {
+          await payload.assertDeliveryCurrent?.();
+          assertNoticeCurrent();
+        },
+        ...(payload.assertDeliveryCurrent ? { recoveryPolicy: "reconcile_only" as const } : {}),
         // Provider throttles may wait after the asynchronous dispatch check.
         assertDirectAdapterHandoff: assertNoticeCurrent,
         abortSignal: AbortSignal.timeout(10_000),

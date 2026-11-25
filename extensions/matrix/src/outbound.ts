@@ -22,6 +22,10 @@ import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
 import {
+  MATRIX_REPLY_DELIVERY_KEY,
+  parseMatrixReplyDeliveryStatus,
+} from "./matrix/reply-delivery-status.js";
+import {
   editMessageMatrix,
   redactMessageMatrix,
   sendMessageMatrix,
@@ -188,13 +192,17 @@ export function resolveMatrixExtraContent(
             : {}),
         }
       : undefined;
-  if (!presentation && !trustedVoice && !trustedDecision) {
+  const trustedDelivery = parseMatrixReplyDeliveryStatus(raw?.[MATRIX_REPLY_DELIVERY_KEY]);
+  if (!presentation && !trustedVoice && !trustedDecision && !trustedDelivery) {
     return undefined;
   }
   return {
     ...(presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : {}),
     ...(trustedVoice ? { [MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]: trustedVoice } : {}),
     ...(trustedDecision ? { "ai.cellect.card": trustedDecision } : {}),
+    ...(trustedDelivery
+      ? { msgtype: "m.notice", [MATRIX_REPLY_DELIVERY_KEY]: trustedDelivery }
+      : {}),
   };
 }
 

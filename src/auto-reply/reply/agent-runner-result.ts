@@ -17,6 +17,7 @@ import { withAgentTurnCompletion } from "./agent-runner-completion.js";
 import {
   markBeforeAgentRunBlockedPayloads,
   resolveReplyRunDeliveryContext,
+  resolveReplyDeliverySourceMessageId,
   resolveSourceReplyPolicy,
   normalizeAssistantFinalDeliveryText,
 } from "./agent-runner-core.js";
@@ -96,6 +97,11 @@ export async function finalizeReplyAgentRun(
           resolveReplySessionEventDelivery(undefined, context.followupRun.run) !== false
         ) {
           const commandOwner = getCommandOwnerAuthority(context.followupRun.run);
+          const deliveryContext = resolveReplyRunDeliveryContext({
+            ...context,
+            sessionEntry: accounting.activeSessionEntry,
+            sessionKey: context.sessionKey,
+          });
           await admitNativeFinalDeliveryPlan({
             completion,
             operation: context.replyOperation,
@@ -107,11 +113,11 @@ export async function finalizeReplyAgentRun(
             commandOwnerReference: commandOwner
               ? (commandOwner.recoveryReference ?? null)
               : undefined,
-            context: resolveReplyRunDeliveryContext({
-              ...context,
-              sessionEntry: accounting.activeSessionEntry,
-              sessionKey: context.sessionKey,
-            }),
+            context: deliveryContext,
+            sourceMessageId: resolveReplyDeliverySourceMessageId(
+              context.sessionCtx,
+              deliveryContext,
+            ),
           });
         } else await completion?.complete();
         return {
@@ -366,6 +372,10 @@ export async function finalizeReplyAgentRun(
             sourceGeneration,
             dispatchState: "open",
             deliveries: pendingFinalDeliveries,
+            sourceMessageId: resolveReplyDeliverySourceMessageId(
+              sessionCtx,
+              pendingFinalDeliveryContext,
+            ),
             context: pendingFinalDeliveryContext,
             createdAt: Date.now(),
           });

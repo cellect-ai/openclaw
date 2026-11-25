@@ -6,6 +6,8 @@ export type PendingFinalDeliveryState = {
   intentId?: string;
   /** Original admitted source; survives claim cleanup before the queued final settles. */
   sourceRunId?: string;
+  /** Provider message that triggered this final, when owned by the same route. */
+  sourceMessageId?: string;
   /** Native dispatch may append synthetic finals until it closes this intent. */
   dispatchState?: "open" | "closed";
   dispatchClosure?: "completed" | "retired";
@@ -54,5 +56,6 @@ export type PendingDeliveryNoticeState = {
   createdAt: number;
   context: DeliveryContext;
   intentId: string;
+  sourceMessageId?: string;
   state: "owed" | "unresolved" | "acknowledged";
 };

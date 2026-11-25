@@ -464,3 +464,13 @@ export type RunReplyAgentParams = ReplyAgentTurnContext & {
   resetTriggered?: boolean;
   replyThreadingOverride?: TemplateContext["ReplyThreading"];
 };
+
+export function resolveReplyDeliverySourceMessageId(
+  ctx: TemplateContext,
+  delivery: DeliveryContext | undefined,
+) {
+  if (delivery?.channel !== "matrix" || ctx.Provider !== "matrix" || ctx.InternalTurnSource) {
+    return undefined;
+  }
+  return ctx.MessageSidFull ?? ctx.MessageSid;
+}
