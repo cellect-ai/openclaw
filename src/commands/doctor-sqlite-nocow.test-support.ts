@@ -101,7 +101,9 @@ export function createDoctorNoCowToolFixture(root: string, nativeSpawnSync?: typ
           fs.chmodSync(pathname, (fs.statSync(pathname).mode & 0o7000) | modeFromAcl(acl));
         }
       }
-    } else if (command === "fuser" && argv[0]?.includes(".nocow-probe-") && !nativeSpawnSync) {
+    } else if (command === "fuser" && argv[0]?.includes(".nocow-probe-")) {
+      // The capability probe must observe this process. A free result is
+      // "fuser cannot inspect", and the builder image has no fuser binary.
       status = 0;
       stdout = String(process.pid);
     } else if (command === "fuser" && fixture.fuserResult) {
