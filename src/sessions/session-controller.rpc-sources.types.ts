@@ -50,6 +50,10 @@ export type RpcSourceAdapter = SessionControllerSourceAdapter & {
   terminalOutcomeObserved?: boolean;
   /** Native lifecycle delegates the source's chat error response to detached dispatch. */
   chatErrorDispatchOwned?: true;
+  /** This dispatch failure publishes the client chat error; lifecycle must not add another. */
+  dispatchOwnsChatErrorTerminal?: true;
+  /** One client chat error frame has already been broadcast for this source. */
+  chatErrorTerminalBroadcast?: true;
   /** A terminal lifecycle event was observed and is awaiting persistence. */
   projectSessionTerminalPending?: boolean;
   /** Store timestamp expected from the observed terminal lifecycle event. */

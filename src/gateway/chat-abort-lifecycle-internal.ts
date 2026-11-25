@@ -5,6 +5,7 @@ import {
 import { SESSION_CONTROLLER_DRAIN_TIMEOUT_MS } from "../sessions/session-controller.lifecycle.js";
 import { trackSessionControllerSourceWork } from "../sessions/session-controller.mailbox.js";
 import {
+  getRpcSource,
   getRpcSourceForGateway,
   isRpcSourceRegistered,
   type RpcSourceRef,
@@ -16,6 +17,22 @@ export function markChatAbortTerminalOutcome(entry: RpcSourceRef | undefined): v
   if (entry) {
     entry.adapter.terminalOutcomeObserved = true;
   }
+}
+
+/**
+ * One client chat error per source. A missing or ambiguous source still sends:
+ * dropping the only frame is worse than a duplicate we cannot attribute.
+ */
+export function claimChatErrorTerminalBroadcast(runId: string, entry?: RpcSourceRef): boolean {
+  const source = entry ?? getRpcSource(runId);
+  if (!source) {
+    return true;
+  }
+  if (source.adapter.chatErrorTerminalBroadcast === true) {
+    return false;
+  }
+  source.adapter.chatErrorTerminalBroadcast = true;
+  return true;
 }
 
 /** Retired producers may publish until another exact source owns the protocol ID. */

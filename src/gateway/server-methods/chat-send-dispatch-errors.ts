@@ -454,6 +454,10 @@ export function createChatSendDispatchErrorLifecycle(params: {
           visibility,
         );
         if (!occurrence) throw new Error("Chat dispatch terminal was not accepted by its owner");
+        // The client frame is broadcastError. This event persists the native terminal
+        // and must not also publish a second chat error (or an abort-classified one).
+        activeRunAbort.entry.adapter.dispatchOwnsChatErrorTerminal = true;
+        activeRunAbort.entry.adapter.chatErrorDispatchOwned = true;
         const receipt = await persistDispatchTerminal({
           id: terminalPersistenceJobId,
           scheduler: context.lifecycleScheduler,

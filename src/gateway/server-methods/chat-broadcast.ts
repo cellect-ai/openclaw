@@ -6,6 +6,7 @@ import { normalizeAgentId, parseAgentSessionKey } from "../../routing/session-ke
 import type { RpcSourceRef } from "../../sessions/session-controller.rpc-sources.js";
 import {
   captureChatAbortRegistrationGuard,
+  claimChatErrorTerminalBroadcast,
   markChatAbortTerminalOutcome,
 } from "../chat-abort-lifecycle-internal.js";
 import { projectChatDisplayMessage } from "../chat-display-projection.js";
@@ -251,6 +252,15 @@ export function broadcastChatTerminal(params: ChatTerminalBroadcastParams & Chat
     return;
   }
   markChatAbortTerminalOutcome(params.terminalEntry);
+  // A runtime lifecycle frame and this dispatch broadcast can describe one failure.
+  // The first attributed send wins. Warnings without a source registration still send.
+  if (
+    params.state === "error" &&
+    params.terminalEntry &&
+    !claimChatErrorTerminalBroadcast(params.runId, params.terminalEntry)
+  ) {
+    return;
+  }
   broadcastChatFrame(params);
   params.context.agentRunSeq.delete(params.runId);
 }

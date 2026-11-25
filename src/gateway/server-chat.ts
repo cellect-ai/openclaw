@@ -43,6 +43,7 @@ import type {
   GatewayBroadcastOpts,
   GatewayBroadcastToConnIdsFn,
 } from "./server-broadcast-types.js";
+import { deliverLiveChatPayload, skipOwnedChatError } from "./server-chat-error-broadcast.js";
 import { readChatErrorKind, resolveChatErrorKindFromError } from "./server-chat-error-kind.js";
 import {
   createAgentEventAdmission,
@@ -525,8 +526,9 @@ export function createAgentEventHandler({
               ...(errorDetail ? { errorDetail } : {}),
               ...(terminalStopReason && { stopReason: terminalStopReason }),
             };
-            sendLivePayload("chat", terminalSessionKey, payload, terminalDelivery);
-            publishChatTerminal(payload);
+            if (sendLivePayload("chat", terminalSessionKey, payload, terminalDelivery) !== false) {
+              publishChatTerminal(payload);
+            }
           };
           const publish = () => {
             if (
@@ -787,25 +789,20 @@ export function createAgentEventHandler({
           ? { ...liveText, settle: true }
           : liveText,
     };
-    if (visible) {
-      broadcast(event, payload, broadcastOpts);
-      if (deliverySessionKeys?.[0]) {
-        nodeSendToSession(deliverySessionKeys[0], event, payload, broadcastOpts);
-      }
-      return;
-    }
-    const recipients = new Set<string>();
-    for (const deliveryKey of deliverySessionKeys ?? []) {
-      for (const connId of sessionMessageSubscribers.get(deliveryKey)) {
-        recipients.add(connId);
-      }
-    }
-    if (recipients.size > 0) {
-      broadcastToConnIds(event, payload, recipients, {
-        ...broadcastOpts,
-        sessionSubscriptionVerified: true,
-      });
-    }
+    if (
+      !deliverLiveChatPayload({
+        event,
+        payload,
+        visible,
+        broadcastOpts,
+        deliverySessionKeys,
+        broadcast,
+        nodeSendToSession,
+        broadcastToConnIds,
+        subscribers: (deliveryKey) => sessionMessageSubscribers.get(deliveryKey),
+      })
+    )
+      return false;
   };
 
   const sendAgentPayload = (
@@ -1348,7 +1345,7 @@ export function createAgentEventHandler({
     }
 
     if (lifecyclePhase === "error") {
-      const skipChatErrorFinal = !chatLink && delegateChatError(evt.runId);
+      const skipChatErrorFinal = skipOwnedChatError(evt.runId, !!chatLink, delegateChatError);
       const definitiveTerminal = isDefinitiveRunLifecycle({
         phase: lifecyclePhase,
         data: evt.data,
