@@ -239,7 +239,15 @@ describe.each(["browser", "relay"] as const)("native %s Talk consultation", (tra
       };
       let restoreFlush = () => {};
       if (blocked === "provider") {
-        mocks.closeProvider.mockImplementation(waitForFinalization);
+        if (browser) {
+          mocks.closeProvider.mockImplementation(waitForFinalization);
+        } else {
+          // Relay provider finalization is the bridge close, not the browser cancel hook.
+          const bridge = relaySessions.get(call.sessionId)!.bridge;
+          vi.spyOn(bridge, "close").mockImplementation(async () => {
+            await waitForFinalization();
+          });
+        }
       } else if (browser) {
         const flush = voiceSessionWrites.flushClientVoiceSessionWrites;
         const spy = vi
