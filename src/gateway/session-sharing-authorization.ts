@@ -141,9 +141,23 @@ export function prepareSessionMutationAuthorizationRequest(
   const bindsProgressLifecycle =
     params.method === "progressCard.put" || params.method === "progressCard.refresh";
   // Administrator access still needs the exact Talk target for transport ownership.
-  const bindsTalkTarget =
-    resolveTalkSessionTargetInput(params.method, params.requestParams, params.client?.connId) !==
-    undefined;
+  // A foreign relay connection is an invalid request. Shape it here so suspension
+  // admission cannot replace the ownership refusal, and so the probe does not throw
+  // out of pre-dispatch.
+  let bindsTalkTarget = false;
+  try {
+    bindsTalkTarget =
+      resolveTalkSessionTargetInput(params.method, params.requestParams, params.client?.connId) !==
+      undefined;
+  } catch (error) {
+    return {
+      ok: false as const,
+      error: errorShape(
+        ErrorCodes.INVALID_REQUEST,
+        error instanceof Error ? error.message : String(error),
+      ),
+    };
+  }
   const adminBypass = isGatewayAdmin(params.client) && !authorizesAgentRun;
   if (
     !adminBypass &&
