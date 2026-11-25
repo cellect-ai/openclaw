@@ -49,6 +49,7 @@ import {
   type AdmittedFollowupTurn,
   type FollowupRunnerParams,
 } from "./reply-agent-turn-preparation.js";
+import { resolveReplySessionEventDelivery } from "./reply-operation-run-state.js";
 import { runWithReplyOperationLifecycleAdmission } from "./reply-turn-admission-lifecycle.js";
 import {
   isReplyOperationStalledBeforeOutput,
@@ -348,7 +349,9 @@ export function createFollowupRunner(
               turnCompletion &&
               turn.session.kind === "session" &&
               turn.session.storePath &&
-              resolved.kind !== "suppress"
+              resolved.kind !== "suppress" &&
+              // Silent events skip the send. Do not leave prepared transport custody behind.
+              resolveReplySessionEventDelivery(undefined, turn.queued.run) !== false
             ) {
               const commandOwner = getCommandOwnerAuthority(turn.queued.run);
               const reference = {

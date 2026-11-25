@@ -38,6 +38,7 @@ import {
 import { readPostCompactionContext } from "./post-compaction-context.js";
 import { warnPrivateMessageToolFinal } from "./private-message-tool-final.js";
 import { enqueueFollowupRun, refreshQueuedFollowupSession } from "./queue.js";
+import { resolveReplySessionEventDelivery } from "./reply-operation-run-state.js";
 import { isInternalSourceReplyChannel } from "./source-reply-delivery-mode.js";
 import { resolveStrandedReplyRecovery } from "./stranded-reply-recovery.js";
 
@@ -89,7 +90,10 @@ export async function finalizeReplyAgentRun(
           completion &&
           context.sessionKey &&
           context.storePath &&
-          !context.replyOperation.abortSignal.aborted
+          !context.replyOperation.abortSignal.aborted &&
+          // A deliberately silent event has no transport to recover. Opening
+          // custody here leaves the session non-idle after the send is skipped.
+          resolveReplySessionEventDelivery(undefined, context.followupRun.run) !== false
         ) {
           const commandOwner = getCommandOwnerAuthority(context.followupRun.run);
           await admitNativeFinalDeliveryPlan({
@@ -314,7 +318,7 @@ export async function finalizeReplyAgentRun(
                 normalizePendingFinalDeliveryPayloads([payload]).length > 0
               );
             });
-        {
+        if (resolveReplySessionEventDelivery(undefined, followupRun.run) !== false) {
           const commandOwner = getCommandOwnerAuthority(followupRun.run);
           const commandOwnerReference = commandOwner
             ? (commandOwner.recoveryReference ?? null)
