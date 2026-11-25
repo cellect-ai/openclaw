@@ -1,6 +1,9 @@
 import type { ChatEvent } from "../../packages/gateway-protocol/src/schema/logs-chat.js";
 import type { AgentEventPayload } from "../infra/agent-events.js";
-import { getRpcSource } from "../sessions/session-controller.rpc-sources.js";
+import {
+  findDispatchOwnedChatErrorSource,
+  getRpcSource,
+} from "../sessions/session-controller.rpc-sources.js";
 import { claimChatErrorTerminalBroadcast } from "./chat-abort-lifecycle-internal.js";
 import type {
   GatewayBroadcastFn,
@@ -76,11 +79,20 @@ export function skipOwnedChatError(
   runId: string,
   hasChatLink: boolean,
   delegateChatError: (runId: string) => boolean,
+  terminalState?: string,
 ): boolean {
-  const source = getRpcSource(runId);
+  // Success and yielded-final frames stay with lifecycle. An owned failure may be
+  // classified aborted; that frame would contradict the dispatch error broadcast.
+  if (terminalState !== undefined && terminalState !== "error" && terminalState !== "aborted") {
+    return false;
+  }
+  const source = findDispatchOwnedChatErrorSource(runId) ?? getRpcSource(runId);
   const dispatchOwnsTerminal = source?.adapter.dispatchOwnsChatErrorTerminal === true;
   if (dispatchOwnsTerminal && source) {
     source.adapter.chatErrorDispatchOwned = true;
   }
-  return dispatchOwnsTerminal || (!hasChatLink && delegateChatError(runId));
+  if (dispatchOwnsTerminal) {
+    return true;
+  }
+  return terminalState !== "aborted" && !hasChatLink && delegateChatError(runId);
 }

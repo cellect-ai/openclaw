@@ -420,7 +420,7 @@ export function createAgentEventHandler({
         });
         const terminalClassification = classifyAgentRunTerminalOutcome(terminalOutcome);
         const terminalState = CHAT_STATE_BY_TERMINAL_CLASSIFICATION[terminalClassification];
-        if (!(opts?.skipChatErrorFinal && terminalState === "error")) {
+        if (!skipOwnedChatError(evt.runId, !!chatLink, delegateChatError, terminalState)) {
           const terminalDelivery = {
             sessionKey: terminalSessionKey,
             clientRunId: terminalRunId,

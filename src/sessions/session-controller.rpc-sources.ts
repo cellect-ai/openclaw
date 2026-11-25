@@ -83,6 +83,16 @@ export function getRpcSource(runId: string): RpcSourceRef | undefined {
   return sources?.size === 1 ? sources.values().next().value : undefined;
 }
 
+/** Dispatch-owned chat error, including when more than one registration shares the run id. */
+export function findDispatchOwnedChatErrorSource(runId: string): RpcSourceRef | undefined {
+  for (const source of rpcSourcesByRunId.get(runId) ?? []) {
+    if (source.adapter.dispatchOwnsChatErrorTerminal === true) {
+      return source;
+    }
+  }
+  return undefined;
+}
+
 /** Signal-owned control selects its exact input even when another Gateway reuses the ID. */
 export function getRpcSourceForSignal(
   runId: string,
