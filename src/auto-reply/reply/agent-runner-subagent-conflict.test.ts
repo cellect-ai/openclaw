@@ -142,7 +142,7 @@ it("settles a reply visibly when the reactivation cohort changes before replacem
   });
 
   expect(changedCohort).toBe(true);
-  expect(result).toMatchObject({ text: expect.stringContaining("couldn't finish this request") });
+  expect(result).toMatchObject({ text: expect.stringContaining("couldn't finish that") });
   if (!result || Array.isArray(result)) {
     throw new Error("Expected one visible continuation failure");
   }

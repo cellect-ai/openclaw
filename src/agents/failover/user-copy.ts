@@ -334,7 +334,7 @@ export function renderSanitizedUserFacingText(
 }
 
 export const GENERIC_EXTERNAL_RUN_FAILURE_TEXT =
-  "⚠️ OpenClaw couldn't finish this request. Check the conversation before trying again. For details, open Settings → Logs in the Control UI or run `openclaw logs --follow`.";
+  "⚠️ I couldn't finish that. Check the conversation, then try again.";
 
 export const PROVIDER_CONVERSATION_STATE_ERROR_USER_MESSAGE =
   "⚠️ The model provider rejected the conversation state. Please try again, or use /new to start a fresh session.";
