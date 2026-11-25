@@ -137,12 +137,14 @@ type FailureRecorderArgsUnchanged = RequireTrue<Equal<Parameters<FailureRecorder
   expectedPlatformSendAttemptId?: string | null,
 ]>>;
 // Cellect: completionReceipt is an additive optional field carried by stable producers.
+// suppressPublication skips staging when every payload was natively suppressed.
 // The publication evidence fields are additive optional Cellect custody fields; the
 // rest of the published ack contract must stay exactly as shipped.
 type AckOptionsUnchanged = RequireTrue<Equal<Omit<NonNullable<Parameters<QueueOwner["ack"]>[0]>,
   "publicationEvidence" | "publicationEvidenceByPayload" | "publicationSuppressionsByPayload">, {
   retainSpoolArtifacts?: boolean;
   suppressCompletionReceipt?: boolean;
+  suppressPublication?: boolean;
   completionReceipt?: Readonly<{ platformMessageId: string }>;
   expectedPlatformSendAttemptId?: string | null;
 }>>;
