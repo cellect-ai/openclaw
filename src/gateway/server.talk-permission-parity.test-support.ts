@@ -202,6 +202,20 @@ export async function runTalkNodePermissionParity({
       let directVoiceSessionId: string | undefined;
       let activeSignal: AbortSignal | undefined;
       let activeRunId: string | undefined;
+      // A live call retains the request root until close. Dispatch settlement
+      // waits for that root, so the call has to be released first.
+      const releaseDirectCall = async () => {
+        if (!directVoiceSessionId) {
+          return;
+        }
+        const id = directVoiceSessionId;
+        directVoiceSessionId = undefined;
+        await closeTalkClientGatewayControlSession({
+          voiceSessionId: id,
+          sessionKey,
+          connId: connectionId,
+        });
+      };
       const dispatch = (
         method: string,
         params: Record<string, unknown>,
@@ -369,6 +383,7 @@ export async function runTalkNodePermissionParity({
         } else {
           await task;
         }
+        await releaseDirectCall();
         await waitForDispatchEnd();
         if (publicOnly) {
           expect(
@@ -407,14 +422,8 @@ export async function runTalkNodePermissionParity({
           await rpc("chat.abort", { sessionKey, runId: activeRunId });
         }
         await task?.catch(() => {});
+        await releaseDirectCall();
         await waitForDispatchEnd();
-        if (directVoiceSessionId) {
-          await closeTalkClientGatewayControlSession({
-            voiceSessionId: directVoiceSessionId,
-            sessionKey,
-            connId: connectionId,
-          });
-        }
         source.release();
       }
     }
