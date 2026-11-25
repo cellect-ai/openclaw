@@ -136,7 +136,9 @@ export const talkVoicePreviewHandlers: GatewayRequestHandlers = {
         cfg,
         providerConfig: resolution.providerConfig,
         audioFormat: format,
-        instructions: `Say exactly: ${PREVIEW_PHRASE} Do not add any other words or call tools.`,
+        // End on the phrase. A following sentence is spoken aloud: the live
+        // transcript was the phrase plus "Do not add any other words or call tools."
+        instructions: `Say exactly: ${PREVIEW_PHRASE}`,
         tools: [],
         // Presence selects the authenticated GPT-Live bridge; it grants no agent execution.
         runAgentConsult: async () => {

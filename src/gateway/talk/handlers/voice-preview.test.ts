@@ -148,6 +148,7 @@ describe("sessionless realtime voice previews", () => {
     const call = start();
     await vi.advanceTimersByTimeAsync(0);
     expect(bridge.sendUserMessage).toHaveBeenCalledWith("Hello! This is a preview of my voice.");
+    expect(request.instructions).toBe("Say exactly: Hello! This is a preview of my voice.");
     expect(request).toMatchObject({
       tools: [],
       audioFormat: { encoding: "pcm16", sampleRateHz: 24000 },
