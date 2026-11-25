@@ -127,6 +127,11 @@ describe("hook background admission", () => {
       requesterAttestation: `pra:review-job:${"A".repeat(43)}`,
       requesterEnvironment: undefined,
     };
+    const adminReviewCase = {
+      ...reviewCase,
+      purpose: "admin review",
+      agentId: "cellect-fi-admin",
+    };
     const rfiCase = {
       purpose: "RFI",
       sessionKey: "hook:fi-rfi:rfi-job",
@@ -139,7 +144,7 @@ describe("hook background admission", () => {
       requesterAttestation: `fcw:co-job:${"C".repeat(43)}`,
       requesterEnvironment: "prod",
     };
-    const cases = [reviewCase, rfiCase, coCase];
+    const cases = [reviewCase, adminReviewCase, rfiCase, coCase];
     function firstRunParams() {
       const [call] = mocks.runCronIsolatedAgentTurn.mock.calls;
       if (!call) {
@@ -150,12 +155,12 @@ describe("hook background admission", () => {
     beforeEach(() => {
       mocks.getRuntimeConfig.mockReturnValue({
         ...config,
-        agents: { entries: { "cellect-fi-user": {} } },
+        agents: { entries: { "cellect-fi-user": {}, "cellect-fi-admin": {} } },
         hooks: {
           ...config.hooks,
           presets: [],
           defaultSessionKey: reviewKey,
-          allowedAgentIds: ["cellect-fi-user"],
+          allowedAgentIds: ["cellect-fi-user", "cellect-fi-admin"],
           allowedSessionKeyPrefixes: ["hook:fi-review:", "hook:fi-rfi:", "hook:fi-co:"],
         },
         plugins: {
@@ -216,6 +221,7 @@ describe("hook background admission", () => {
         expect(mocks.runCronIsolatedAgentTurn).toHaveBeenCalledTimes(1);
         const params = firstRunParams();
         expect(params).toMatchObject({ hookRequesterAttestation: input.requesterAttestation });
+        expect(params.job.agentId).toBe(body(input).agentId);
         expect(params.hookRequesterEnvironment).toBe(input.requesterEnvironment);
         expect(params.job.delivery).toEqual({ mode: "none" });
         expect(JSON.stringify(params.job)).not.toContain(input.requesterAttestation);
