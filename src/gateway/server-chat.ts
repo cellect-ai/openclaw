@@ -764,7 +764,7 @@ export function createAgentEventHandler({
         sendLivePayload(event, sessionKey, payload, opts),
       )
     ) {
-      return;
+      return true;
     }
     const visible = opts?.controlUiVisible ?? true;
     const deliverySessionKeys = sessionKey
@@ -789,20 +789,17 @@ export function createAgentEventHandler({
           ? { ...liveText, settle: true }
           : liveText,
     };
-    if (
-      !deliverLiveChatPayload({
-        event,
-        payload,
-        visible,
-        broadcastOpts,
-        deliverySessionKeys,
-        broadcast,
-        nodeSendToSession,
-        broadcastToConnIds,
-        subscribers: (deliveryKey) => sessionMessageSubscribers.get(deliveryKey),
-      })
-    )
-      return false;
+    return deliverLiveChatPayload({
+      event,
+      payload,
+      visible,
+      broadcastOpts,
+      deliverySessionKeys,
+      broadcast,
+      nodeSendToSession,
+      broadcastToConnIds,
+      subscribers: (deliveryKey) => sessionMessageSubscribers.get(deliveryKey),
+    });
   };
 
   const sendAgentPayload = (
