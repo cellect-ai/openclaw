@@ -56,11 +56,16 @@ describe("Fi shadow hook tool cap", () => {
     ).toEqual({ allow: [...REVIEW_HOOK_TOOL_ALLOWLIST] });
   });
   it("lets an admin-agent review key carry the same cap, with the admin tools allowlisted", () => {
-    const session = `agent:cellect-fi-admin:hook:fi-review:${"a".repeat(40)}`;
-    expect(REVIEW_HOOK_TOOL_ALLOWLIST).toEqual(
-      expect.arrayContaining(["fi_admin_operation", "fi_workbook"]),
-    );
-    expect(capBackgroundHookToolsAllow([session], ["*"])).toEqual([...REVIEW_HOOK_TOOL_ALLOWLIST]);
+    const bare = `hook:fi-review:${"a".repeat(40)}`;
+    const session = `agent:cellect-fi-admin:${bare}`;
+    expect(capBackgroundHookToolsAllow([session, bare], ["*"])).toEqual([
+      ...REVIEW_HOOK_TOOL_ALLOWLIST,
+      "fi_admin_operation",
+      "fi_workbook",
+    ]);
+    expect(capBackgroundHookToolsAllow([session, `agent:cellect-fi-user:${bare}`], ["*"])).toEqual([
+      ...REVIEW_HOOK_TOOL_ALLOWLIST,
+    ]);
     expect(shadowHookRunParams(session, { toolsAllow: ["*"] })).toMatchObject({
       disableMessageTool: true,
       disableToolSearch: true,

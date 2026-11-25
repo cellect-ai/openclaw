@@ -21,8 +21,9 @@ export const REVIEW_HOOK_TOOL_ALLOWLIST: readonly string[] = [
   "fi_user_review_sources",
   "fi_user_review_report",
   "m365_review_read",
-  // Admin-tier review runs only; the cap intersects with registered tools, so
-  // a user-tier review run never has them.
+];
+const ADMIN_REVIEW_HOOK_TOOL_ALLOWLIST: readonly string[] = [
+  ...REVIEW_HOOK_TOOL_ALLOWLIST,
   "fi_admin_operation",
   "fi_workbook",
 ];
@@ -45,15 +46,20 @@ export function capBackgroundHookToolsAllow(
   keys: Array<string | undefined | null>,
   requested?: readonly string[],
 ): string[] {
-  const purposes = keys
-    .filter(isAttestedBackgroundHookSessionKey)
-    .map((key) =>
-      isPersonalReviewHookSessionKey(key)
-        ? REVIEW_HOOK_TOOL_ALLOWLIST
-        : isGuestHookSessionKey(key)
-          ? GUEST_HOOK_TOOL_ALLOWLIST
-          : capShadowHookToolsAllow(undefined, key),
-    );
+  const hookKeys = keys.filter(isAttestedBackgroundHookSessionKey);
+  const reviewKeys = hookKeys.filter(isPersonalReviewHookSessionKey);
+  const adminReview =
+    reviewKeys.some((key) => key?.toLowerCase().startsWith("agent:cellect-fi-admin:")) &&
+    !reviewKeys.some((key) => key?.toLowerCase().startsWith("agent:cellect-fi-user:"));
+  const purposes = hookKeys.map((key) =>
+    isPersonalReviewHookSessionKey(key)
+      ? adminReview
+        ? ADMIN_REVIEW_HOOK_TOOL_ALLOWLIST
+        : REVIEW_HOOK_TOOL_ALLOWLIST
+      : isGuestHookSessionKey(key)
+        ? GUEST_HOOK_TOOL_ALLOWLIST
+        : capShadowHookToolsAllow(undefined, key),
+  );
   const allow = (purposes[0] ?? SHADOW_HOOK_TOOL_ALLOWLIST).filter((tool) =>
     purposes.every((scope) => scope.includes(tool)),
   );
