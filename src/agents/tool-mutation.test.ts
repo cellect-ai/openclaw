@@ -35,7 +35,7 @@ it.each([
   ["cron", "add", true, false],
   ["gateway", "config.get config.schema.lookup", false, true],
   ["gateway", "config.patch", true, false],
-  ["nodes", "status describe pending", false, true],
+  ["nodes", "status describe pending which", false, true],
   ["nodes", "approve", true, false],
   ["skill_workshop", "list inspect read", false, true],
   ["skill_workshop", "create", false, false],
