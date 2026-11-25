@@ -17,6 +17,7 @@ import {
   readLifecycleResultReceipt,
 } from "./conversation-lifecycle-receipt.js";
 import type { LifecycleRecordReceipt } from "./conversation-lifecycle-record.worker.js";
+import { createLifecycleRoomScheduler } from "./conversation-lifecycle-room-scheduler.js";
 import type { RunStoppedBy } from "./conversation-lifecycle-signals.js";
 import type { RunFailureKind } from "./conversation-lifecycle-signals.js";
 import { decisionCardsEnabled, lifecycleSignalsEnabled } from "./conversation-lifecycle-signals.js";
@@ -30,17 +31,15 @@ import {
   ROOM_PENDING_CAP,
   RETRY_BASE_MS,
   OWNERLESS_HOLD_MS,
-  PARKED_ROW_EXPIRY_MS,
-  PARKED_ROW_MAX_AGE_MS,
-  HEAD_ROW_FAILURES,
-  PARKED_PROBE_MS,
-  defer,
   lifecycleState,
   transition,
   appendTransition,
   noteDecisionCards,
 } from "./conversation-lifecycle.reducer.js";
-import type { ConversationLifecycleTransportOptions } from "./conversation-lifecycle.types.js";
+import type {
+  ConversationLifecycleTransportOptions,
+  LifecycleWriteTiming,
+} from "./conversation-lifecycle.types.js";
 import { captureDeliveryQueueStateContext } from "./delivery-queue-state-context.js";
 import { executeDeliveryQueueOperation } from "./delivery-queue-worker-store.js";
 
@@ -116,10 +115,11 @@ export function registerConversationLifecycleTransport(
   // retain the transport's own authority rather than a revoked producer scope.
   const inOwnerContext = AsyncLocalStorage.snapshot();
   const stateContext = captureDeliveryQueueStateContext(options.stateDir);
-  let draining: Promise<void> | undefined;
   const owners = new Map<string, readonly ConversationProjectionBinding[]>();
   const capturedOwners = new Set<string>();
   const retireTimers = new Set<ReturnType<typeof setTimeout>>();
+  const firstWriteTiming = new Map<string, LifecycleWriteTiming>();
+  let committedWriteRevision = 0;
   // Hydration must precede new writes: plugin replacement cannot retarget a run.
   const ready = inOwnerContext(async () => {
     const rows = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
@@ -239,6 +239,8 @@ export function registerConversationLifecycleTransport(
     };
     const executionOwner = hasAgentRunContextExecutionOwner(event.runId);
     const registeredAt = context.registeredAt;
+    const queuedAt =
+      incomingState === "queued" && options.onSlowPublish ? performance.now() : undefined;
     const signals = signalsOn();
     const cards = cardsOn();
     const assertCurrent = () => {
@@ -319,9 +321,22 @@ export function registerConversationLifecycleTransport(
         assertCurrent,
         readReceipt: readLifecycleRecordReceipt,
       });
+      const writeStartedAt = queuedAt === undefined ? undefined : performance.now();
       const receipt = await persist();
-      for (const row of receipt.rows)
+      if (receipt.rows.length) {
+        committedWriteRevision += 1;
+      }
+      const committedAt = writeStartedAt === undefined ? undefined : performance.now();
+      for (const row of receipt.rows) {
         liveness.set(row.id, { live: row.live ?? false, activeAt: row.activeAt ?? 0 });
+        if (queuedAt !== undefined && writeStartedAt !== undefined && committedAt !== undefined) {
+          firstWriteTiming.set(row.id, {
+            writerWaitMs: writeStartedAt - queuedAt,
+            workerWriteMs: committedAt - writeStartedAt,
+            committedAt,
+          });
+        }
+      }
       if (receipt.adopted) unbound.delete(ownerKey);
       for (const { id, roomId } of receipt.overtaken) {
         if (lateTerminals.has(id)) continue;
@@ -344,7 +359,7 @@ export function registerConversationLifecycleTransport(
         retireTimers.add(timer);
       }
       queueMicrotask(() => {
-        void flush().catch(options.onError);
+        wakePublisher();
       });
     }, context);
   };
@@ -397,55 +412,72 @@ export function registerConversationLifecycleTransport(
     get closing() {
       return closing;
     },
-    publishFailure: undefined as unknown,
+    publishFailures: new Map<string, unknown>(),
   };
-  const {
-    deliver,
-    unset,
-    isolatesHead,
-    abandon,
-    expireParked,
-    trackOwner,
-    heartbeat,
-    owesCards,
-    releaseCards,
-    setAside,
-    told,
-  } = createConversationLifecycleDelivery({
+  const { publishRoom } = createConversationLifecycleDelivery({
     options,
     stateContext,
     deliveryState,
     liveness,
     heads,
     cardRetries,
+    roomRetries,
     parked,
     interruptedSent,
+    stuckFailures,
+    firstWriteTiming,
     append,
     enqueue,
-    drainWrites,
     signalsOn,
     cardsOn,
   });
 
-  const flush = (): Promise<void> => {
-    if (draining) return draining;
-    if (stopped) return Promise.resolve();
-    draining = inOwnerContext(async () => {
-      await drainWrites(false);
-      if (closing) return;
-      await adoptLateBindings();
-      await drainWrites(false);
+  const roomScheduler = createLifecycleRoomScheduler({
+    isClosing: () => closing || stopped,
+    publish: (roomId, rows) => inOwnerContext(() => publishRoom(roomId, rows)),
+    onSettled: (roomId) => {
+      deliveryState.publishFailures.delete(roomId);
+    },
+    onError: options.onError,
+  });
+  const { activeRooms } = roomScheduler;
+  let scanning: Promise<Promise<void>[]> | undefined;
+  let scanAgain = false;
+  let refreshingBindings: Promise<void> | undefined;
+
+  const scanCommitted = (): Promise<Promise<void>[]> => {
+    if (closing || stopped) {
+      return Promise.resolve([]);
+    }
+    if (scanning) {
+      return scanning;
+    }
+    scanning = inOwnerContext(async () => {
+      await ready;
+      if (closing) {
+        return [];
+      }
+      const scannedWriteRevision = committedWriteRevision;
       const rows = await executeDeliveryQueueOperation(stateContext, options.stateDir, {
         type: "deliveryQueue.lifecycleRead",
         input: {},
       });
+      if (closing) {
+        return [];
+      }
+      const byRoom = new Map<string, LifecycleObligation[]>();
       const backlog = new Map<string, number>();
       for (const row of rows) {
         if (row.transportId !== options.transportId) continue;
         const roomId = row.binding.roomId;
+        const group = byRoom.get(roomId) ?? [];
+        group.push(row);
+        byRoom.set(roomId, group);
         backlog.set(roomId, (backlog.get(roomId) ?? 0) + row.pending.length);
       }
-      const capped = new Set<string>();
+      const capped = new Set(
+        [...cappedRooms].filter((roomId) => activeRooms.has(roomId) && !byRoom.has(roomId)),
+      );
       for (const [roomId, count] of backlog) {
         if (count < ROOM_PENDING_CAP) continue;
         capped.add(roomId);
@@ -457,150 +489,85 @@ export function registerConversationLifecycleTransport(
           });
       }
       cappedRooms = capped;
-      const present = new Set(rows.map((row) => row.id));
-      for (const kept of [liveness, interruptedSent, lateTerminals, stuckFailures])
-        for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
-      for (const roomId of parked.keys()) if (!backlog.has(roomId)) parked.delete(roomId);
-      for (const roomId of roomRetries.keys()) if (!backlog.has(roomId)) roomRetries.delete(roomId);
-      for (const roomId of heads.keys()) if (!backlog.has(roomId)) heads.delete(roomId);
-      // Each parked room whose interval has passed probes with its oldest row
-      // that still has status worth sending: unexpired, or owed to a room that
-      // already knows the run.
-      const probes = new Map<string, LifecycleObligation>();
-      for (const row of rows) {
-        const roomId = row.binding.roomId;
-        const parkedAt = parked.get(roomId);
-        const now = Date.now();
-        if (
-          row.transportId === options.transportId &&
-          parkedAt !== undefined &&
-          now - parkedAt >= PARKED_PROBE_MS &&
-          row.pending.length &&
-          (now - row.enqueuedAt < PARKED_ROW_EXPIRY_MS ||
-            (told(row) && now - row.enqueuedAt < PARKED_ROW_MAX_AGE_MS)) &&
-          row.enqueuedAt < (probes.get(roomId)?.enqueuedAt ?? Infinity)
-        )
-          probes.set(roomId, row);
+      if (scannedWriteRevision === committedWriteRevision) {
+        const present = new Set(rows.map((row) => row.id));
+        for (const batch of activeRooms.values()) {
+          for (const row of batch.rows) {
+            present.add(row.id);
+          }
+        }
+        for (const kept of [
+          liveness,
+          interruptedSent,
+          lateTerminals,
+          stuckFailures,
+          firstWriteTiming,
+        ])
+          for (const id of kept.keys()) if (!present.has(id)) kept.delete(id);
       }
-      for (const [index, initial] of rows.entries()) {
-        if (stopped || initial.transportId !== options.transportId) continue;
-        if (options.onRetiredProducer && initial.generation !== getAgentRunLifecycleGeneration()) {
-          const admittedGeneration = getAgentRunLifecycleGeneration();
-          const assertRetired = () => {
-            if (
-              stopped ||
-              closing ||
-              getAgentRunLifecycleGeneration() !== admittedGeneration ||
-              initial.generation === admittedGeneration
-            ) {
-              throw new Error("Conversation final producer retirement lost its native owner");
-            }
-          };
-          // Include terminal rows with no pending status: dispatch closure can be
-          // lost after the model's terminal event was already acknowledged.
-          await options
-            .onRetiredProducer(
-              {
-                runId: initial.runId,
-                generation: initial.generation,
-                sessionId: initial.sessionId,
-                binding: initial.binding,
-              },
-              assertRetired,
-            )
-            .catch(options.onError);
-        }
-        // Settled lifecycle rows may intentionally wait for a final-result
-        // correlation. They have no publication obligation until noteResult.
-        if (!initial.pending.length && TERMINAL.has(initial.state) && !owesCards(initial)) {
-          if (
-            initial.resultEventId &&
-            Object.values(initial.cards ?? {}).some((card) => card.sent < card.revision)
-          ) {
-            await releaseCards(initial.id).catch(options.onError);
+      for (const kept of [parked, roomRetries, heads]) {
+        for (const roomId of kept.keys()) {
+          if (!byRoom.has(roomId) && !activeRooms.has(roomId)) {
+            kept.delete(roomId);
           }
-          continue;
-        }
-        const roomId = initial.binding.roomId;
-        const now = Date.now();
-        await trackOwner(initial).catch(options.onError);
-        await heartbeat(initial).catch(options.onError);
-        const probing = parked.has(roomId) && probes.get(roomId)?.id === initial.id;
-        if (!parked.has(roomId) && initial.stuckAt !== undefined) {
-          // A stuck row never holds back or backs off its room. It ends like a
-          // parked one: after PARKED_ROW_MAX_AGE_MS its status is given up.
-          if (now - initial.enqueuedAt >= PARKED_ROW_MAX_AGE_MS)
-            await abandon(initial.id).catch(options.onError);
-          else if (now - initial.stuckAt >= PARKED_PROBE_MS)
-            // An accepted send clears the mark in the worker; with nothing to
-            // send the row is not stuck either, so the run is normal again.
-            await setAside(initial.id)
-              .then(() => deliver(initial.id))
-              .then((sent) => (sent ? undefined : unset(initial.id, "stuckAt")))
-              .then(() => stuckFailures.delete(initial.id))
-              .catch((error: unknown) => {
-                const failures = (stuckFailures.get(initial.id) ?? 0) + 1;
-                stuckFailures.set(initial.id, failures);
-                // Reported at 1, 2, 4, 8... failed retries, like a room that is down.
-                if (!stopped && (failures & (failures - 1)) === 0)
-                  options.onError(error, { roomId, reason: "row_stuck", failures });
-              });
-          continue;
-        }
-        if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
-        try {
-          if (parked.has(roomId) && !probing) {
-            await expireParked(initial.id);
-            continue;
-          }
-          const sent = await deliver(initial.id);
-          // Only an accepted send proves a parked room is open again.
-          if (probing && !sent) continue;
-          parked.delete(roomId);
-          roomRetries.delete(roomId);
-          heads.delete(roomId);
-        } catch (error) {
-          if (stopped) return;
-          if (options.isDestinationGone?.(error)) {
-            parked.set(roomId, Date.now());
-            heads.delete(roomId);
-            const failures = (roomRetries.get(roomId)?.failures ?? 0) + 1;
-            options.onError(error, { roomId, reason: "room_parked", failures });
-            continue;
-          }
-          // Any other failure is an ordinary outage: back off instead of parking.
-          parked.delete(roomId);
-          const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
-          // Only a failed send counts against the row; anything else thrown by
-          // a delivery says nothing about the row or its room.
-          if (error === deliveryState.publishFailure) {
-            const head = heads.get(roomId);
-            const count = (head?.id === initial.id ? head.failures : 0) + 1;
-            heads.set(roomId, { id: initial.id, failures: count });
-            const next = rows
-              .slice(index + 1)
-              .find(
-                (row) =>
-                  row.transportId === options.transportId &&
-                  row.binding.roomId === roomId &&
-                  row.stuckAt === undefined &&
-                  row.pending.length > 0,
-              );
-            if (count >= HEAD_ROW_FAILURES && next && (await isolatesHead(initial, next, count)))
-              roomRetries.delete(roomId);
-          }
-          // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
-          if ((failures & (failures - 1)) === 0)
-            options.onError(error, { roomId, reason: "delivery_failed", failures });
         }
       }
-      // Retryable record failures remain caller-visible without starving rows
-      // already committed for other runs or destinations.
-      await drainWrites();
+
+      return roomScheduler.schedule(byRoom);
     }).finally(() => {
-      draining = undefined;
+      scanning = undefined;
+      if (scanAgain) {
+        scanAgain = false;
+        wakePublisher();
+      }
     });
-    return draining;
+    return scanning;
+  };
+
+  function wakePublisher(): void {
+    if (scanning) {
+      scanAgain = true;
+    } else {
+      void scanCommitted().catch(options.onError);
+    }
+  }
+
+  const refreshBindings = (): Promise<void> => {
+    if (closing || stopped) {
+      return Promise.resolve();
+    }
+    refreshingBindings ??= inOwnerContext(async () => {
+      await ready;
+      if (!closing) {
+        await adoptLateBindings();
+      }
+    }).finally(() => {
+      refreshingBindings = undefined;
+    });
+    return refreshingBindings;
+  };
+
+  // Explicit flush joins captured writes and the resulting sends. Background
+  // publication only looks at committed rows so one slow write cannot hold it.
+  const flush = async (): Promise<void> => {
+    for (;;) {
+      await drainWrites(false);
+      await refreshBindings();
+      await drainWrites(false);
+      const tail = writerTail;
+      await scanning;
+      const batches = await scanCommitted();
+      const settled = await Promise.allSettled(batches);
+      for (const result of settled) {
+        if (result.status === "rejected") {
+          throw result.reason;
+        }
+      }
+      if (closing || tail === writerTail) {
+        break;
+      }
+    }
+    await drainWrites();
   };
 
   const unsubscribe = registerAgentEventPersistenceHandler(record);
@@ -644,12 +611,11 @@ export function registerConversationLifecycleTransport(
   });
   void restoration.catch(() => undefined);
   const timer = setInterval(() => {
-    void flush().catch(options.onError);
+    void refreshBindings().catch(options.onError);
+    wakePublisher();
   }, 5_000);
   timer.unref();
-  queueMicrotask(() => {
-    void flush().catch(options.onError);
-  });
+  queueMicrotask(wakePublisher);
   const resultWrites = new Map<string, AgentRunPersistenceWork>();
   return {
     flush,
@@ -687,7 +653,7 @@ export function registerConversationLifecycleTransport(
           const receipt = await persist();
           if (receipt.roomId) parked.delete(receipt.roomId);
           queueMicrotask(() => {
-            void flush().catch(options.onError);
+            wakePublisher();
           });
         });
         resultWrites.set(key, work);
@@ -709,7 +675,14 @@ export function registerConversationLifecycleTransport(
       clearInterval(timer);
       unsubscribe();
       unsubscribeAdmission();
-      const settled = await Promise.allSettled([restoration, drainWrites(), draining]);
+      roomScheduler.cancelPending();
+      const settled = await Promise.allSettled([
+        restoration,
+        drainWrites(),
+        refreshingBindings,
+        scanning,
+        ...Array.from(activeRooms.values(), (batch) => batch.done.promise),
+      ]);
       stopped = true;
       owners.clear();
       capturedOwners.clear();
