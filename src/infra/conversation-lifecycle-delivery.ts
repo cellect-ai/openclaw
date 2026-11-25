@@ -20,6 +20,7 @@ import {
   PARKED_ROW_EXPIRY_MS,
   PARKED_ROW_MAX_AGE_MS,
   PARKED_PROBE_MS,
+  HEAD_ROW_FAILURES,
   RETRY_BASE_MS,
   HEARTBEAT_WAIT_LIMIT_MS,
   HEARTBEAT_INTERVAL_MS,
@@ -28,7 +29,10 @@ import {
   giveUpCards,
   defer,
 } from "./conversation-lifecycle.reducer.js";
-import type { ConversationLifecycleTransportOptions } from "./conversation-lifecycle.types.js";
+import type {
+  ConversationLifecycleTransportOptions,
+  LifecycleWriteTiming,
+} from "./conversation-lifecycle.types.js";
 import type { captureDeliveryQueueStateContext } from "./delivery-queue-state-context.js";
 import { executeDeliveryQueueOperation } from "./delivery-queue-worker-store.js";
 import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-admission.js";
@@ -37,12 +41,19 @@ import { createSqliteWorkerOperationAdmission } from "./sqlite-worker-operation-
 export function createConversationLifecycleDelivery(params: {
   options: ConversationLifecycleTransportOptions;
   stateContext: ReturnType<typeof captureDeliveryQueueStateContext>;
-  deliveryState: { readonly stopped: boolean; readonly closing: boolean; publishFailure: unknown };
+  deliveryState: {
+    readonly stopped: boolean;
+    readonly closing: boolean;
+    publishFailures: Map<string, unknown>;
+  };
   liveness: Map<string, { live: boolean; activeAt: number; missingSince?: number }>;
   heads: Map<string, { id: string; failures: number }>;
   cardRetries: Map<string, Retry>;
+  roomRetries: Map<string, Retry>;
+  stuckFailures: Map<string, number>;
   parked: Map<string, number>;
   interruptedSent: Set<string>;
+  firstWriteTiming: Map<string, LifecycleWriteTiming>;
   append: (
     row: LifecycleObligation,
     state: ConversationLifecycleState,
@@ -50,7 +61,6 @@ export function createConversationLifecycleDelivery(params: {
     terminal?: { failureKind?: RunFailureKind; stoppedBy?: RunStoppedBy },
   ) => void;
   enqueue: (write: () => Promise<void>) => Promise<void>;
-  drainWrites: (includeFailures?: boolean) => Promise<void>;
   signalsOn: () => boolean;
   cardsOn: () => boolean;
 }) {
@@ -61,11 +71,13 @@ export function createConversationLifecycleDelivery(params: {
     liveness,
     heads,
     cardRetries,
+    roomRetries,
+    stuckFailures,
     parked,
     interruptedSent,
+    firstWriteTiming,
     append,
     enqueue,
-    drainWrites,
     signalsOn,
     cardsOn,
   } = params;
@@ -175,7 +187,8 @@ export function createConversationLifecycleDelivery(params: {
     } catch (error) {
       if (
         deliveryState.stopped ||
-        error !== deliveryState.publishFailure ||
+        !deliveryState.publishFailures.has(roomId) ||
+        error !== deliveryState.publishFailures.get(roomId) ||
         options.isDestinationGone?.(error)
       )
         return true;
@@ -284,7 +297,10 @@ export function createConversationLifecycleDelivery(params: {
         input: { id },
       })
     )[0];
-    if (!row || deliveryState.stopped) return 0;
+    if (!row || deliveryState.stopped || deliveryState.closing) {
+      return 0;
+    }
+    deliveryState.publishFailures.delete(row.binding.roomId);
     // Restart or the silent-run sweep removed the owner, so nothing can ever
     // report this run again: close it as interrupted. No run is inferred
     // complete and no execution is re-admitted or resumed by recovery. A live
@@ -346,6 +362,16 @@ export function createConversationLifecycleDelivery(params: {
         if (!row?.pending.length) break;
         event = row.pending[0]!;
       }
+      if (deliveryState.closing || deliveryState.stopped) {
+        break;
+      }
+      const startedAt = options.onSlowPublish ? performance.now() : undefined;
+      const occurredAt =
+        event.revision === 1 ? row.enqueuedAt : row.signals?.[event.revision]?.atMs;
+      const ageAtSendMs =
+        startedAt !== undefined && occurredAt !== undefined
+          ? Math.max(0, Date.now() - occurredAt)
+          : undefined;
       try {
         await options.publish(
           row.binding,
@@ -356,15 +382,36 @@ export function createConversationLifecycleDelivery(params: {
           `${row.id}:${event.revision}`,
         );
       } catch (error) {
-        deliveryState.publishFailure = error;
+        deliveryState.publishFailures.set(row.binding.roomId, error);
         // A refusal is the response: the row's first send did not land.
         if (firstSend && options.isDestinationGone?.(error))
           await unset(id, "attempted").catch(options.onError);
         throw error;
       }
+      if (startedAt !== undefined) {
+        const matrixAckMs = performance.now() - startedAt;
+        const timing = event.revision === 1 ? firstWriteTiming.get(id) : undefined;
+        if (timing) {
+          firstWriteTiming.delete(id);
+        }
+        if ((ageAtSendMs ?? 0) + matrixAckMs >= 1_000) {
+          try {
+            options.onSlowPublish?.({
+              roomId: row.binding.roomId,
+              revision: event.revision,
+              ageAtSendMs,
+              writerWaitMs: timing?.writerWaitMs,
+              workerWriteMs: timing?.workerWriteMs,
+              committedToSendMs: timing ? Math.max(0, startedAt - timing.committedAt) : undefined,
+              matrixAckMs,
+            });
+          } catch {
+            // A diagnostic sink cannot turn an accepted send into a retry.
+          }
+        }
+      }
       firstSend = false;
       sent += 1;
-      await drainWrites(false);
       // A lifecycle transition can append while publish awaits;
       // reload its custody rather than overwriting the newer terminal fact.
       row = await executeDeliveryQueueOperation(
@@ -377,9 +424,12 @@ export function createConversationLifecycleDelivery(params: {
         { createAdmission: publicationAdmission },
       );
     }
+    if (firstSend && deliveryState.closing) {
+      await unset(id, "attempted").catch(options.onError);
+    }
     // Cards follow the facts and never hold them back: a card that cannot be
     // sent is retried on its own backoff and reported, and the room's status goes on.
-    if (row && cardsOn()) {
+    if (row && !deliveryState.closing && cardsOn()) {
       await sendDecisionCards(row).catch(options.onError);
     }
     return sent;
@@ -396,7 +446,10 @@ export function createConversationLifecycleDelivery(params: {
   /** Sends each card's newest revision, then records it as sent unless the row changed meanwhile. */
   const sendDecisionCards = async (row: LifecycleObligation): Promise<void> => {
     for (const [approvalId, card] of Object.entries(row.cards ?? {})) {
-      if (deliveryState.stopped || card.sent >= card.revision || cardLapsed(card)) {
+      if (deliveryState.closing || deliveryState.stopped) {
+        return;
+      }
+      if (card.sent >= card.revision || cardLapsed(card)) {
         continue;
       }
       const retry = cardRetries.get(`${row.id}:${approvalId}`);
@@ -575,18 +628,132 @@ export function createConversationLifecycleDelivery(params: {
     });
   };
 
-  return {
-    deliver,
-    unset,
-    isolatesHead,
-    abandon,
-    expireParked,
-    trackOwner,
-    heartbeat,
-    owesCards,
-    completeSettled,
-    releaseCards,
-    setAside,
-    told,
+  const publishRoom = async (roomId: string, rows: LifecycleObligation[]): Promise<void> => {
+    const parkedAt = parked.get(roomId);
+    const scanTime = Date.now();
+    // Rows are ordered by admission. Probe the oldest parked row that still matters.
+    const probe =
+      parkedAt !== undefined && scanTime - parkedAt >= PARKED_PROBE_MS
+        ? rows.find(
+            (row) =>
+              row.pending.length &&
+              (scanTime - row.enqueuedAt < PARKED_ROW_EXPIRY_MS ||
+                (told(row) && scanTime - row.enqueuedAt < PARKED_ROW_MAX_AGE_MS)),
+          )
+        : undefined;
+    for (const [index, initial] of rows.entries()) {
+      if (deliveryState.stopped || deliveryState.closing) {
+        return;
+      }
+      if (options.onRetiredProducer && initial.generation !== getAgentRunLifecycleGeneration()) {
+        const admittedGeneration = getAgentRunLifecycleGeneration();
+        const assertRetired = () => {
+          if (
+            deliveryState.stopped ||
+            deliveryState.closing ||
+            getAgentRunLifecycleGeneration() !== admittedGeneration ||
+            initial.generation === admittedGeneration
+          ) {
+            throw new Error("Conversation final producer retirement lost its native owner");
+          }
+        };
+        // Include terminal rows with no pending status: dispatch closure can be
+        // lost after the model's terminal event was already acknowledged.
+        await options
+          .onRetiredProducer(
+            {
+              runId: initial.runId,
+              generation: initial.generation,
+              sessionId: initial.sessionId,
+              binding: initial.binding,
+            },
+            assertRetired,
+          )
+          .catch(options.onError);
+      }
+      // Settled lifecycle rows may intentionally wait for a final-result
+      // correlation. They have no publication obligation until noteResult.
+      if (!initial.pending.length && TERMINAL.has(initial.state) && !owesCards(initial)) {
+        if (
+          initial.resultEventId &&
+          Object.values(initial.cards ?? {}).some((card) => card.sent < card.revision)
+        ) {
+          await releaseCards(initial.id).catch(options.onError);
+        }
+        continue;
+      }
+      const now = Date.now();
+      await trackOwner(initial).catch(options.onError);
+      await heartbeat(initial).catch(options.onError);
+      const probing = parked.has(roomId) && probe?.id === initial.id;
+      if (!parked.has(roomId) && initial.stuckAt !== undefined) {
+        // A stuck row never holds back or backs off its room. It ends like a
+        // parked one: after PARKED_ROW_MAX_AGE_MS its status is given up.
+        if (now - initial.enqueuedAt >= PARKED_ROW_MAX_AGE_MS)
+          await abandon(initial.id).catch(options.onError);
+        else if (now - initial.stuckAt >= PARKED_PROBE_MS)
+          // An accepted send clears the mark in the worker; with nothing to
+          // send the row is not stuck either, so the run is normal again.
+          await setAside(initial.id)
+            .then(() => deliver(initial.id))
+            .then((sent) => (sent ? undefined : unset(initial.id, "stuckAt")))
+            .then(() => stuckFailures.delete(initial.id))
+            .catch((error: unknown) => {
+              const failures = (stuckFailures.get(initial.id) ?? 0) + 1;
+              stuckFailures.set(initial.id, failures);
+              // Reported at 1, 2, 4, 8... failed retries, like a room that is down.
+              if (!deliveryState.stopped && (failures & (failures - 1)) === 0)
+                options.onError(error, { roomId, reason: "row_stuck", failures });
+            });
+        continue;
+      }
+      if (!parked.has(roomId) && (roomRetries.get(roomId)?.notBefore ?? 0) > now) continue;
+      try {
+        if (parked.has(roomId) && !probing) {
+          await expireParked(initial.id);
+          continue;
+        }
+        const sent = await deliver(initial.id);
+        // Only an accepted send proves a parked room is open again.
+        if (probing && !sent) continue;
+        parked.delete(roomId);
+        roomRetries.delete(roomId);
+        heads.delete(roomId);
+      } catch (error) {
+        if (deliveryState.stopped || deliveryState.closing) {
+          return;
+        }
+        if (options.isDestinationGone?.(error)) {
+          parked.set(roomId, Date.now());
+          heads.delete(roomId);
+          const failures = (roomRetries.get(roomId)?.failures ?? 0) + 1;
+          options.onError(error, { roomId, reason: "room_parked", failures });
+          continue;
+        }
+        // Any other failure is an ordinary outage: back off instead of parking.
+        parked.delete(roomId);
+        const failures = defer(roomRetries, roomId, RETRY_BASE_MS);
+        // Only a failed send counts against the row; anything else thrown by
+        // a delivery says nothing about the row or its room.
+        if (
+          deliveryState.publishFailures.has(roomId) &&
+          error === deliveryState.publishFailures.get(roomId)
+        ) {
+          const head = heads.get(roomId);
+          const count = (head?.id === initial.id ? head.failures : 0) + 1;
+          heads.set(roomId, { id: initial.id, failures: count });
+          const next = rows
+            .slice(index + 1)
+            .find((row) => row.stuckAt === undefined && row.pending.length > 0);
+          if (count >= HEAD_ROW_FAILURES && next && (await isolatesHead(initial, next, count)))
+            roomRetries.delete(roomId);
+        }
+        // A room that stays down reports at 1, 2, 4, 8... failures, not each one.
+        if ((failures & (failures - 1)) === 0)
+          options.onError(error, { roomId, reason: "delivery_failed", failures });
+      }
+    }
   };
+
+  return { publishRoom };
 }

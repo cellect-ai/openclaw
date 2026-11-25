@@ -2,6 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import {
   captureChannelReadAuthority,
@@ -122,6 +123,105 @@ describe("trusted durable conversation lifecycle", () => {
     const retained = custody.loadDeliveryQueueEntries("conversation-lifecycle-v2", stateDir)[0];
     expect(retained).toMatchObject({ state: "completed", pending: [] });
   });
+  it("publishes a newly committed room while a different room is on the wire", async () => {
+    const other = {
+      ...binding,
+      roomId: "!other:test",
+      bindingId: "other",
+      sessionKey: "agent:example:other",
+    };
+    const firstOnWire = createDeferred<void>();
+    const releaseFirst = createDeferred<void>();
+    const otherOnWire = createDeferred<void>();
+    const order: string[] = [];
+    const transport = registerConversationLifecycleTransport({
+      transportId: "test-matrix",
+      stateDir,
+      resolveBindings: ({ sessionKey }) => [sessionKey === other.sessionKey ? other : binding],
+      publish: async (_, event) => {
+        if (event.state !== "queued") {
+          return;
+        }
+        order.push(event.runId);
+        if (event.runId === "first") {
+          firstOnWire.resolve();
+          await releaseFirst.promise;
+        } else if (event.runId === "other-room") {
+          otherOnWire.resolve();
+        }
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+    stop.push(() => releaseFirst.resolve(), transport.stop);
+    owner("first");
+    await firstOnWire.promise;
+    owner("same-room");
+    await awaitAgentRunAdmission("same-room", getAgentRunContext("same-room"));
+    owner("other-room", other);
+    await otherOnWire.promise;
+    expect(order).toEqual(["first", "other-room"]);
+    releaseFirst.resolve();
+    await transport.flush();
+    expect(order).toEqual(["first", "other-room", "same-room"]);
+  });
+
+  it("acknowledges a sent status while an unrelated lifecycle write is waiting", async () => {
+    const firstOnWire = createDeferred<string>();
+    const releaseFirst = createDeferred<void>();
+    const pendingWrite = createDeferred<void>();
+    const releaseWriter = createDeferred<void>();
+    const acknowledged = createDeferred<void>();
+    const execute = worker.executeDeliveryQueueOperation;
+    vi.spyOn(worker, "executeDeliveryQueueOperation").mockImplementation(async (...args) => {
+      const command = args[2];
+      if (
+        command.type === "deliveryQueue.lifecycleRecord" &&
+        command.input.event.runId === "pending"
+      ) {
+        pendingWrite.resolve();
+        await releaseWriter.promise;
+      }
+      const result = await execute(...args);
+      if (command.type === "deliveryQueue.lifecycleAck" && command.input.id === sentId) {
+        acknowledged.resolve();
+      }
+      return result;
+    });
+    const other = {
+      ...binding,
+      roomId: "!other:test",
+      bindingId: "other",
+      sessionKey: "agent:example:other",
+    };
+    const transport = registerConversationLifecycleTransport({
+      transportId: "test-matrix",
+      stateDir,
+      resolveBindings: ({ sessionKey }) => [sessionKey === other.sessionKey ? other : binding],
+      publish: async (_, event, transactionId) => {
+        if (event.runId === "first") {
+          firstOnWire.resolve(transactionId.slice(0, transactionId.lastIndexOf(":")));
+          await releaseFirst.promise;
+        }
+      },
+      onError: (error) => {
+        throw error;
+      },
+    });
+    stop.push(() => {
+      releaseFirst.resolve();
+      releaseWriter.resolve();
+    }, transport.stop);
+    owner("first");
+    const sentId = await firstOnWire.promise;
+    owner("pending", other);
+    await pendingWrite.promise;
+    releaseFirst.resolve();
+    await acknowledged.promise;
+    releaseWriter.resolve();
+    await transport.flush();
+  });
   it("publishes retained status in transport custody after the producer read scope closes", async () => {
     let failFirstSend = true;
     const transport = registerConversationLifecycleTransport({
@@ -160,11 +260,11 @@ describe("trusted durable conversation lifecycle", () => {
     expect(publications.map((event) => event.state)).toEqual(["queued", "queued", "completed"]);
     expect(publications[1]?.transactionId).toBe(publications[0]?.transactionId);
   });
-  function owner(runId: string) {
+  function owner(runId: string, target = binding) {
     registerAgentRunContext(runId, {
-      sessionKey: binding.sessionKey,
+      sessionKey: target.sessionKey,
       sessionId: "session",
-      agentId: binding.agentId,
+      agentId: target.agentId,
     });
   }
   function emit(runId: string, phase: string, data: Record<string, unknown> = {}) {
