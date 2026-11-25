@@ -119,11 +119,9 @@ export function finishRelaySessionClose(
   closeVoice: (disposition: "abort" | "detach") => Promise<void>,
   options?: RealtimeVoiceCloseOptions & { eventReason?: "output-cancelled" },
 ): Promise<void> {
-  // Provider shutdown can emit final speech before transcript flush. Keep this
-  // complete closing prefix owned even when socket cleanup has no admitted root.
-  const releaseFinalPersistence = session.cleanupAdmission
-    ? beginLifecycleWriteCustody("talk-final-persistence")
-    : undefined;
+  // Provider shutdown can emit final speech before transcript flush. Own this
+  // closing prefix even when socket cleanup retained no admitted root.
+  const releaseFinalPersistence = beginLifecycleWriteCustody("talk-final-persistence");
   let providerCloseFailed = false;
   const disposition =
     options?.disposition ??

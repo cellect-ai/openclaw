@@ -9,6 +9,7 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
+import { beginLifecycleWriteCustody } from "../../infra/lifecycle-write-custody.js";
 import {
   retainGatewayRootWorkAdmissionContinuationScope,
   type GatewayRootWorkAdmissionContinuationScope,
@@ -26,8 +27,13 @@ type VoiceSession = {
   /** Exact provider route; private model identifiers never leave this owner. */
   launch: { provider: string; model?: string };
   providerReady: boolean;
-  /** Native call ownership also keeps normal suspension from interrupting audio. */
+  /** Native call ownership also keeps a non-drain suspension from interrupting audio. */
   admission?: GatewayRootWorkAdmissionContinuationScope;
+  /**
+   * Drain readiness ignores root admission and watches write custody. A live call
+   * holds this until unregister, including when the creating request has no root.
+   */
+  releaseCallCustody?: (failure?: unknown) => void;
 };
 
 type VoiceChange = {
@@ -60,6 +66,11 @@ const changes = resolveGlobalMap<string, VoiceChange>(
 
 function sessionKey(session: Pick<VoiceSession, "connId" | "voiceSessionId" | "sessionTarget">) {
   return `${session.connId}\0${session.sessionTarget.agentId}\0${session.voiceSessionId}`;
+}
+
+function releaseVoiceSession(session: VoiceSession | undefined) {
+  session?.releaseCallCustody?.();
+  session?.admission?.release();
 }
 
 export function readTalkVoiceSelection(session: VoiceSession): TalkVoiceSelection {
@@ -159,7 +170,7 @@ function trackConnection(connId: string) {
     }
     for (const [key, session] of sessions) {
       if (session.connId === connId) {
-        session.admission?.release();
+        releaseVoiceSession(session);
         sessions.delete(key);
       }
     }
@@ -167,7 +178,7 @@ function trackConnection(connId: string) {
 }
 
 export function registerTalkVoiceSession(
-  params: Omit<VoiceSession, "admission"> & { voiceChangeId?: string },
+  params: Omit<VoiceSession, "admission" | "releaseCallCustody"> & { voiceChangeId?: string },
 ) {
   const { voiceChangeId, ...session } = params;
   const change = voiceChangeId ? changes.get(voiceChangeId) : undefined;
@@ -189,10 +200,11 @@ export function registerTalkVoiceSession(
     change.replacement = session;
   }
   const key = sessionKey(session);
-  sessions.get(key)?.admission?.release();
+  releaseVoiceSession(sessions.get(key));
   const ownedSession: VoiceSession = {
     ...session,
     admission: retainGatewayRootWorkAdmissionContinuationScope() ?? undefined,
+    releaseCallCustody: beginLifecycleWriteCustody("talk-call"),
   };
   // Replacement tracking and the registry must retain the same exact identity.
   if (change) {
@@ -221,7 +233,7 @@ export function unregisterTalkVoiceSession(
   }
   const key = `${connId}\0${agentId}\0${voiceSessionId}`;
   const session = sessions.get(key);
-  session?.admission?.release();
+  releaseVoiceSession(session);
   sessions.delete(key);
   for (const change of changes.values()) {
     if (change.replacement === session && session) {
