@@ -32,4 +32,23 @@ describe("native projection source identity", () => {
       });
     },
   );
+
+  it("refuses conflicting roots on the same account instead of returning the newest", () => {
+    const row = {
+      boundAt: 1,
+      boundBy: "session-projection",
+      parentConversationId: "!room",
+      conversationId: "$root",
+      accountId: "matrix-account",
+    };
+    mocks.list.mockReturnValue([row, { ...row, boundAt: 2, conversationId: "$other-root" }]);
+    expect(() => getMatrixProjectionStatus("!room")).toThrow("Projection thread is ambiguous");
+    expect(() => getMatrixProjectionStatus("!room", "matrix-account")).toThrow(
+      "Projection thread is ambiguous",
+    );
+    expect(getMatrixProjectionStatus("!room", "other-account")).toEqual({
+      status: "missing",
+      roomId: "!room",
+    });
+  });
 });

@@ -62,16 +62,19 @@ export function getMatrixProjectionStatus(roomId: string, accountId?: string) {
   if (!roomId.startsWith("!") || roomId.length > 255) {
     throw new Error("A Matrix room id is required");
   }
-  const bindings = listAllBindings()
-    .filter(
-      (binding) =>
-        binding.parentConversationId === roomId &&
-        (!accountId || binding.accountId === accountId) &&
-        binding.boundBy?.startsWith("session-projection"),
-    )
-    .toSorted((left, right) => right.boundAt - left.boundAt);
+  const bindings = listAllBindings().filter(
+    (binding) =>
+      binding.parentConversationId === roomId &&
+      (!accountId || binding.accountId === accountId) &&
+      binding.boundBy?.startsWith("session-projection"),
+  );
   if (new Set(bindings.map((binding) => binding.accountId)).size > 1) {
     throw new Error("Projection account is ambiguous; specify accountId");
+  }
+  if (bindings.length > 1) {
+    // Bootstrap and ingress already require a unique owner. Status also feeds
+    // Fi provisioning and publication replay, which need the same root proof.
+    throw new Error("Projection thread is ambiguous for this account");
   }
   const binding = bindings[0];
   if (!binding) {
