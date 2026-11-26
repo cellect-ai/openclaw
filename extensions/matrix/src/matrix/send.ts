@@ -30,6 +30,7 @@ import {
   withResolvedMatrixSendClient,
 } from "./send/client.js";
 import { resolveMatrixEditContent } from "./send/edit-content.js";
+import { withMatrixExtraContentFields } from "./send/extra-content.js";
 import {
   buildTextContent,
   diffMatrixMentions,
@@ -130,17 +131,6 @@ function resolvePreviousThreadId(previousEvent: unknown): string | undefined {
   return normalizeThreadId(relation.event_id) ?? undefined;
 }
 
-function withMatrixExtraContentFields<T extends Record<string, unknown>>(
-  content: T,
-  extraContent?: MatrixExtraContentFields,
-): T {
-  if (!extraContent) {
-    return content;
-  }
-  const { [MATRIX_PROJECTION_CONTENT_KEY]: _forged, ...ordinary } = extraContent;
-  return { ...content, ...ordinary };
-}
-
 async function resolvePreviousEditMentions(params: {
   client: MatrixClient;
   roomId: string;
@@ -196,6 +186,7 @@ export async function sendMessageMatrix(
             roomId,
             transactionScopeId: transactionScopeId!,
             wireEventType: wireEventType!,
+            threadId,
           })
         : null;
       let plannedEvents: readonly MatrixPreparedEvent[] | undefined = storedPlan?.events;
@@ -320,6 +311,13 @@ export async function sendMessageMatrix(
           }
           await prepareContent(buildTextContent(chunk, textRelation), "text", chunk);
         }
+        const terminal = events.at(-1);
+        if (terminal && opts.terminalExtraContent) {
+          terminal.content = withMatrixExtraContentFields(
+            terminal.content,
+            opts.terminalExtraContent,
+          );
+        }
         if (opts.publication)
           events.forEach((event, index) => {
             (event.content as Record<string, unknown>)[MATRIX_PROJECTION_CONTENT_KEY] =
@@ -367,6 +365,7 @@ export async function sendMessageMatrix(
                   roomId,
                   transactionScopeId: transactionScopeId!,
                   wireEventType: dispatch.eventType,
+                  threadId,
                   events: plannedEvents,
                   dispatch,
                 });

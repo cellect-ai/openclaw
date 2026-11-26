@@ -8,6 +8,7 @@ import {
   createPreviewMessageReceipt,
   createReplyPrefixOptions,
   createTypingCallbacks,
+  deriveDurableFinalDeliveryRequirements,
   type MessageReceipt,
   type LivePreviewDeliveryResult,
 } from "openclaw/plugin-sdk/channel-outbound";
@@ -17,21 +18,26 @@ import {
   getReplyPayloadTtsSupplement,
   resolveSendableOutboundReplyParts,
 } from "openclaw/plugin-sdk/reply-payload";
-import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
+import { readNativeFinalReplySource, type ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
 import type { RuntimeEnv } from "openclaw/plugin-sdk/runtime";
 import {
   normalizeLowercaseStringOrEmpty,
   normalizeOptionalString,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { stripReasoningTagsFromText } from "openclaw/plugin-sdk/text-chunking";
-import { resolveMatrixExtraContent } from "../../outbound.js";
+import { prepareMatrixReplyPayload, resolveMatrixExtraContent } from "../../outbound.js";
 import { getMatrixRuntime } from "../../runtime.js";
 import type { CoreConfig, MatrixStreamingMode, ReplyToMode } from "../../types.js";
 import { deliverBoundSourceReply } from "../bound-source-reply.js";
 import { resolveMatrixReplyPublication } from "../projection-publication.js";
 import type { MatrixClient } from "../sdk.js";
 import { sendMessageMatrix } from "../send.js";
-import { MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY, type MatrixSendResult } from "../send/types.js";
+import {
+  MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY,
+  MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY,
+  MATRIX_STREAM_PHASE_CONTENT_KEY,
+  type MatrixSendResult,
+} from "../send/types.js";
 import type {
   createMatrixDraftController,
   MatrixReplyDispatchInfo,
@@ -120,6 +126,7 @@ export function createMatrixReplyDispatcher(config: {
   sourceReply?: { sessionKey: string; eventId: string };
   accountId: string;
   mediaLocalRoots: readonly string[];
+  durableProjection?: boolean;
   logVerboseMessage: (message: string) => void;
 }) {
   const {
@@ -140,6 +147,7 @@ export function createMatrixReplyDispatcher(config: {
     sourceReply,
     accountId,
     mediaLocalRoots,
+    durableProjection = false,
     logVerboseMessage,
   } = config;
   const quietDraftStreaming = streaming === "quiet" || streaming === "progress";
@@ -238,6 +246,38 @@ export function createMatrixReplyDispatcher(config: {
   };
   const { previewLifecycle } = draftController;
   let nonFinalReplyDeliveryFailed = false;
+  const isDurableFinal = (payload: ReplyPayload, info: MatrixReplyDispatchInfo) =>
+    durableProjection && !sourceReply && info.kind === "final" && !payload.isCompactionNotice;
+  const forwardBoundSourceReply = async (
+    payload: ReplyPayload,
+    result: MatrixReplyDeliveryResult | void,
+  ) => {
+    if (
+      !sourceReply ||
+      !result?.visibleReplySent ||
+      !payload.text?.trim() ||
+      payload.isCompactionNotice ||
+      payload.isReasoning ||
+      payload.isCommentary ||
+      payload.isStatusNotice
+    ) {
+      return;
+    }
+    const partIndex = sourceReplyPart++;
+    try {
+      await deliverBoundSourceReply({
+        matrixAccountId: accountId,
+        roomId,
+        sessionKey: sourceReply.sessionKey,
+        triggerEventId: sourceReply.eventId,
+        partIndex,
+        text: payload.text,
+      });
+    } catch {
+      // The room already has the answer. A Slack miss must not fail that delivery.
+      logVerboseMessage(`matrix: bound source reply was not delivered room=${roomId}`);
+    }
+  };
   const beginNextBlockDraft = (
     boundary: ReturnType<MatrixDraftController["captureDraftBlockBoundary"]>,
   ) => {
@@ -251,6 +291,93 @@ export function createMatrixReplyDispatcher(config: {
   };
 
   return {
+    preparePayload: async (payload: ReplyPayload, info: MatrixReplyDispatchInfo) => {
+      if (!isDurableFinal(payload, info)) {
+        return await prepareMatrixReplyPayload(payload);
+      }
+      const prepared = await prepareMatrixReplyPayload(payload);
+      const text = resolveVisibleMatrixReplyText(prepared.text);
+      if (
+        payload.isReasoning ||
+        (!text?.trim() && !resolveSendableOutboundReplyParts(prepared).hasMedia)
+      ) {
+        return null;
+      }
+      const explicitReply = prepared.replyToTag || prepared.replyToCurrent;
+      const source = readNativeFinalReplySource(payload);
+      return {
+        ...prepared,
+        text,
+        ...(threadTarget && !explicitReply ? { replyToId: undefined } : {}),
+        channelData: {
+          ...prepared.channelData,
+          matrix: {
+            ...(threadTarget ? { fallbackReplyToId: prepared.replyToId ?? threadTarget } : {}),
+            extraContent: {
+              ...resolveMatrixExtraContent(prepared),
+              ...letMeKnowAnswerContent,
+              ...(source
+                ? {
+                    [MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]: {
+                      version: 1,
+                      triggerEventId: source.sourceMessageId,
+                      deliveryId: source.deliveryId,
+                    },
+                  }
+                : {}),
+              [MATRIX_STREAM_PHASE_CONTENT_KEY]: "answer",
+            },
+          },
+        },
+      };
+    },
+    durable: (payload: ReplyPayload, info: MatrixReplyDispatchInfo) => {
+      if (!isDurableFinal(payload, info)) {
+        return false as const;
+      }
+      previewLifecycle.beginFinalDelivery();
+      const explicit = payload.replyToTag || payload.replyToCurrent;
+      const ambient =
+        !threadTarget && replyToMode !== "off" && (replyToMode === "all" || !hasReplied);
+      const replyToId = explicit
+        ? (payload.replyToId ?? null)
+        : ambient
+          ? (payload.replyToId ?? replyToEventId ?? null)
+          : null;
+      return {
+        to: `room:${roomId}`,
+        threadId: threadTarget,
+        replyToId,
+        noDirectFallback: true as const,
+        mediaAccess: resolveOutboundMediaAccessForConfig(cfg),
+        requiredCapabilities: deriveDurableFinalDeliveryRequirements({
+          payload,
+          replyToId,
+          threadId: threadTarget,
+          payloadTransport: true,
+          afterCommit: true,
+          reconcileUnknownSend: true,
+        }),
+      };
+    },
+    onDelivered: async (
+      payload: ReplyPayload,
+      info: MatrixReplyDispatchInfo,
+      result: Partial<MatrixReplyDeliveryResult> | void,
+    ) => {
+      // Projected finals already required a fresh, immutable event instead of a
+      // preview edit. Observe queue custody through the same preview lifecycle.
+      if (!isDurableFinal(payload, info)) return;
+      if (result?.visibleReplySent) {
+        await previewLifecycle.observeDelivery(
+          { ...result, visibleReplySent: true },
+          { isError: payload.isError },
+        );
+        if (result.replyToId) hasReplied = true;
+      } else {
+        previewLifecycle.observeSuppression();
+      }
+    },
     turnDispatcherOptions: {
       ...prefixOptions,
       humanDelay,
@@ -449,36 +576,16 @@ export function createMatrixReplyDispatcher(config: {
         beginNextBlockDraft(blockBoundary);
         await typingCallbacks.onReplyStart();
       }
-      if (
-        sourceReply &&
-        (info.kind === "final" || info.kind === "block") &&
-        mergedDelivery?.visibleReplySent &&
-        payload.text?.trim() &&
-        payload.isCompactionNotice !== true &&
-        payload.isReasoning !== true &&
-        payload.isCommentary !== true &&
-        payload.isStatusNotice !== true
-      ) {
-        const partIndex = sourceReplyPart;
-        sourceReplyPart += 1;
-        try {
-          await deliverBoundSourceReply({
-            matrixAccountId: accountId,
-            roomId,
-            sessionKey: sourceReply.sessionKey,
-            triggerEventId: sourceReply.eventId,
-            partIndex,
-            text: payload.text,
-          });
-        } catch {
-          // The room already has the answer. A Slack miss must not fail that delivery.
-          logVerboseMessage(`matrix: bound source reply was not delivered room=${roomId}`);
-        }
+      if (info.kind === "block" || info.kind === "final") {
+        await forwardBoundSourceReply(payload, mergedDelivery);
       }
       return mergedDelivery;
     },
     onReplyError: (err: unknown, info: { kind: "tool" | "block" | "final" }) => {
       if (info.kind === "final") {
+        if (durableProjection && !sourceReply && draftStream?.eventId()) {
+          previewLifecycle.retainPreview();
+        }
         previewLifecycle.observeFailure();
       } else {
         nonFinalReplyDeliveryFailed = true;

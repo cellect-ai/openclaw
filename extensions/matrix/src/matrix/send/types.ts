@@ -35,6 +35,7 @@ export const EventType = {
 
 export const MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY = "com.openclaw.finalized_preview" as const;
 export const MATRIX_STREAM_PHASE_CONTENT_KEY = "com.openclaw.stream_phase" as const;
+export const MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY = "ai.cellect.reply_to_trigger" as const;
 
 /** Semantic phase of a Matrix draft, independent of whether it is still live. */
 export type MatrixStreamPhase = "progress" | "answer";
@@ -109,6 +110,8 @@ export type MatrixSendOpts = {
   signal?: AbortSignal;
   /** Additional Matrix event content fields to merge into the first sent event. */
   extraContent?: MatrixExtraContentFields;
+  /** Only the last physical event can prove this logical final reached Matrix. */
+  terminalExtraContent?: MatrixExtraContentFields;
   /** When false, the body is not scanned for Matrix mentions. Status notices use this. */
   includeMentions?: boolean;
   /** Plugin-owned capability; public/model-authored extraContent cannot mint provenance. */

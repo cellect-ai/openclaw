@@ -333,6 +333,18 @@ export async function finalizeReplyAgentRun(
           const expectedSessionId = activeSessionEntry?.sessionId ?? followupRun.run.sessionId;
           const sourceGeneration =
             context.replyOperation.lifecycleGeneration ?? getAgentRunLifecycleGeneration();
+          const pendingFinalDeliveryContext = resolveReplyRunDeliveryContext({
+            cfg,
+            sessionCtx,
+            sessionEntry: activeSessionEntry,
+            sessionKey,
+            runtimePolicySessionKey,
+            opts,
+          });
+          const sourceMessageId = resolveReplyDeliverySourceMessageId(
+            sessionCtx,
+            pendingFinalDeliveryContext,
+          );
           const pendingFinalDeliveries = sendableFinalPayloads.map((payload) => {
             const deliveryId = crypto.randomUUID();
             setReplyPayloadMetadata(payload, {
@@ -342,6 +354,7 @@ export async function finalizeReplyAgentRun(
                 deliveryId,
                 intentId: pendingFinalDeliveryIntentId,
                 sourceRunId: context.runId,
+                sourceMessageId,
                 sourceGeneration,
                 sessionId: expectedSessionId,
                 sessionKey,
@@ -349,14 +362,6 @@ export async function finalizeReplyAgentRun(
               },
             });
             return { id: deliveryId, state: "prepared" as const };
-          });
-          const pendingFinalDeliveryContext = resolveReplyRunDeliveryContext({
-            cfg,
-            sessionCtx,
-            sessionEntry: activeSessionEntry,
-            sessionKey,
-            runtimePolicySessionKey,
-            opts,
           });
           // A reset can rebind the key while the model runs; its replacement must
           // never inherit the old run's final or advertise an uncommitted intent.
@@ -372,10 +377,7 @@ export async function finalizeReplyAgentRun(
             sourceGeneration,
             dispatchState: "open",
             deliveries: pendingFinalDeliveries,
-            sourceMessageId: resolveReplyDeliverySourceMessageId(
-              sessionCtx,
-              pendingFinalDeliveryContext,
-            ),
+            sourceMessageId,
             context: pendingFinalDeliveryContext,
             createdAt: Date.now(),
           });
@@ -395,6 +397,7 @@ export async function finalizeReplyAgentRun(
             intentId: pendingFinalDeliveryIntentId,
             sourceRunId: context.runId,
             sourceGeneration,
+            sourceMessageId,
             commandOwnerReference,
           });
         }

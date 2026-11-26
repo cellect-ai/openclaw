@@ -76,6 +76,7 @@ export {
 export type { ReplyPublication } from "../auto-reply/reply-publication.js";
 export {
   readNativeFinalDeliveryReceipt,
+  readNativeFinalReplySource,
   retainNativeFinalDeliveryReceipt,
   releaseNativeFinalDeliveryReceipt,
   registerNativeFinalDeliveryListener,

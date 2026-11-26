@@ -171,6 +171,8 @@ export type ChannelTurnDurableDeliveryOptions = Pick<
   to?: string | null;
   replyToId?: string | null;
   requiredCapabilities?: DurableFinalDeliveryRequirements;
+  /** The caller proved a durable-final route and must not fall back to a raw send. */
+  noDirectFallback?: true;
   /**
    * @deprecated Ignored. Core marks every durable final itself; an ordinary final text is
    * resent once after an unconfirmed send on every channel that cannot reconcile it.

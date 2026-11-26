@@ -1,4 +1,5 @@
 import { createTypingCallbacks } from "openclaw/plugin-sdk/channel-outbound";
+import { setReplyPayloadMetadata } from "openclaw/plugin-sdk/reply-payload-testing";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { installMatrixMonitorTestRuntime } from "../../test-runtime.js";
 import type { MatrixClient } from "../sdk.js";
@@ -36,7 +37,11 @@ const context = {
   logVerboseMessage: vi.fn(),
 };
 
-async function dispatcher(streaming: "off" | "partial", letMeKnowTriggerEventId?: string) {
+async function dispatcher(
+  streaming: "off" | "partial",
+  letMeKnowTriggerEventId?: string,
+  durableProjection = false,
+) {
   const draftController = await createMatrixDraftController({
     ...context,
     streaming,
@@ -44,7 +49,7 @@ async function dispatcher(streaming: "off" | "partial", letMeKnowTriggerEventId?
     previewToolProgressEnabled: false,
   });
   const typingCallbacks = createTypingCallbacks({ start: async () => {}, onStartError: vi.fn() });
-  const { deliverReply } = createMatrixReplyDispatcher({
+  const replies = createMatrixReplyDispatcher({
     ...context,
     streaming,
     draftStream: draftController.draftStream,
@@ -54,9 +59,11 @@ async function dispatcher(streaming: "off" | "partial", letMeKnowTriggerEventId?
     typingCallbacks,
     runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     mediaLocalRoots: [],
+    durableProjection,
+    ...(durableProjection ? { threadTarget: "$root" } : {}),
     ...(letMeKnowTriggerEventId ? { letMeKnowTriggerEventId } : {}),
   });
-  return { deliverReply, draftController };
+  return { ...replies, draftController };
 }
 
 describe("Matrix let-me-know answer marking", () => {
@@ -103,6 +110,51 @@ describe("Matrix let-me-know answer marking", () => {
     expect(
       sendMessageMatrixMock.mock.calls[0]?.[2].extraContent?.["ai.cellect.let_me_know_answer"],
     ).toBeUndefined();
+  });
+
+  it("routes projected final replacement through the exact durable owner without changing reply placement", async () => {
+    const { preparePayload, durable } = await dispatcher("off", "$ask", true);
+    const info = { kind: "final" } as const;
+    const final = await preparePayload(
+      setReplyPayloadMetadata(
+        { text: "Done." },
+        {
+          pendingFinalDeliveryCompletion: {
+            sourceMessageId: "$queued-followup",
+            deliveryId: "df2257e8-ccfa-43ad-adb2-9709ddbd6c26",
+            intentId: "intent",
+            sessionId: "session",
+            sessionKey: "agent:main:matrix:room",
+            storePath: "sessions.json",
+          },
+        },
+      ),
+      info,
+    );
+    expect(final).not.toBeNull();
+    expect(final).toMatchObject({
+      channelData: {
+        matrix: {
+          extraContent: {
+            ...ANSWER,
+            "ai.cellect.reply_to_trigger": {
+              version: 1,
+              triggerEventId: "$queued-followup",
+              deliveryId: "df2257e8-ccfa-43ad-adb2-9709ddbd6c26",
+            },
+            "com.openclaw.stream_phase": "answer",
+          },
+        },
+      },
+    });
+    expect(durable(final!, info)).toMatchObject({
+      to: `room:${context.roomId}`,
+      threadId: "$root",
+      replyToId: null,
+      requiredCapabilities: { payload: true, reconcileUnknownSend: true },
+    });
+    expect(durable(final!, { kind: "block" })).toBe(false);
+    expect(sendMessageMatrixMock).not.toHaveBeenCalled();
   });
 
   it("marks the final edit of a live preview instead of finalizing it silently", async () => {

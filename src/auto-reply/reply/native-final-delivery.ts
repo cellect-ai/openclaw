@@ -47,6 +47,7 @@ export async function admitNativeFinalDeliveryPlan(params: {
     sessionId: params.operation.sessionId,
     intentId: randomUUID(),
     sourceRunId: params.runId,
+    sourceMessageId: params.sourceMessageId,
     sourceGeneration: params.operation.lifecycleGeneration ?? getAgentRunLifecycleGeneration(),
     commandOwnerReference: params.commandOwnerReference,
   };
@@ -63,7 +64,7 @@ export async function admitNativeFinalDeliveryPlan(params: {
     createdAt: Date.now(),
     intentId: reference.intentId,
     sourceRunId: reference.sourceRunId,
-    sourceMessageId: params.sourceMessageId,
+    sourceMessageId: reference.sourceMessageId,
     sourceGeneration: reference.sourceGeneration,
     dispatchState: "open",
     deliveries,
@@ -99,6 +100,7 @@ export function nativeFinalDeliveryReference(
     deliveryId,
     sourceRunId,
     sourceGeneration,
+    sourceMessageId,
   } = completion;
   return {
     agentId,
@@ -109,8 +111,22 @@ export function nativeFinalDeliveryReference(
     deliveryId,
     sourceRunId,
     sourceGeneration,
+    ...(sourceMessageId ? { sourceMessageId } : {}),
   };
 }
+export function readNativeFinalReplySource(payload: ReplyPayload):
+  | {
+      sourceMessageId: string;
+      deliveryId: string;
+    }
+  | undefined {
+  const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
+  if (completion?.sourceMessageId) {
+    return { sourceMessageId: completion.sourceMessageId, deliveryId: completion.deliveryId };
+  }
+  return undefined;
+}
+
 export function registerNativeFinalDeliveryListener(
   listener: (reference: Plan) => Promise<void>,
 ): () => void {

@@ -357,20 +357,21 @@ type AdmissionParams = {
 };
 
 /** Called only by authenticated native ingress, after access/mention routing and before dispatch. */
-export async function admitMatrixProjectionExecution(params: AdmissionParams): Promise<void> {
+export async function admitMatrixProjectionExecution(params: AdmissionParams): Promise<boolean> {
   if (localRows(params.roomId).length || !related.has(params.roomId)) {
     return admitCanonicalExecution(params);
   }
   // Another gateway owns this room. Before relate existed such a run was
   // dispatched without lifecycle; a refused relation must not now drop the turn.
   try {
-    await admitCanonicalExecution(params);
+    return await admitCanonicalExecution(params);
   } catch {
     // The run proceeds unadmitted and publishes no lifecycle, as before.
+    return false;
   }
 }
 
-async function admitCanonicalExecution(params: AdmissionParams): Promise<void> {
+async function admitCanonicalExecution(params: AdmissionParams): Promise<boolean> {
   const row = canonical(params.roomId);
   if (!row) {
     if (
@@ -387,7 +388,7 @@ async function admitCanonicalExecution(params: AdmissionParams): Promise<void> {
     ) {
       throw new Error("Matrix execution admission refused: canonical_binding_conflict");
     }
-    return;
+    return false;
   }
   // The room answers only in its canonical thread. A message in another thread,
   // or at the top level, fails the same way on every retry of that event.
@@ -398,7 +399,7 @@ async function admitCanonicalExecution(params: AdmissionParams): Promise<void> {
   const environment = row.environment;
   const conversationId = row.projectedConversationId;
   if (!environment || !conversationId) {
-    return;
+    return false;
   }
   const execution: MatrixProjectionExecution = {
     version: 1,
@@ -465,6 +466,7 @@ async function admitCanonicalExecution(params: AdmissionParams): Promise<void> {
     assertCurrent();
     admitted.set(key(execution), { execution, manager });
   });
+  return true;
 }
 
 export function resolveMatrixProjectionExecutions(

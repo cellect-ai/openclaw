@@ -6,6 +6,7 @@ import { createEmptyPluginRegistry } from "../../plugins/registry.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { createOutboundTestPlugin, createTestRegistry } from "../../test-utils/channel-plugins.js";
 import { getDeliveryQueueEntryStatus } from "../delivery-queue-sqlite.test-support.js";
+import { PlatformMessageNotDispatchedError } from "./deliver-types.js";
 import {
   boundedCronCompletionRetention,
   drainMatrixReconnect,
@@ -35,9 +36,13 @@ describe("exact Matrix delivery queue reconciliation", () => {
     setActivePluginRegistry(createEmptyPluginRegistry());
   });
 
-  it.each(["required", "best_effort"] as const)(
-    "settles one exact Matrix %s send without restart replay",
-    async (queuePolicy) => {
+  it.each([
+    ["required", false],
+    ["best_effort", false],
+    ["required", true],
+  ] as const)(
+    "settles one exact Matrix %s send (provider handoff aborted: %s)",
+    async (queuePolicy, abortBeforeDispatch) => {
       process.env.OPENCLAW_STATE_DIR = tmpDir;
       const deliveryIntentId = `cron-direct-delivery:v1:exact-${queuePolicy}-completion`;
       const messageId = `exact-${queuePolicy}-message`;
@@ -53,6 +58,14 @@ describe("exact Matrix delivery queue reconciliation", () => {
           }),
         };
       });
+      if (abortBeforeDispatch) {
+        sendText.mockRejectedValueOnce(
+          new PlatformMessageNotDispatchedError("pre-wire abort", {
+            cause: new DOMException("This operation was aborted", "AbortError"),
+            retryable: true,
+          }),
+        );
+      }
       setActivePluginRegistry(
         createTestRegistry([
           {
@@ -86,8 +99,17 @@ describe("exact Matrix delivery queue reconciliation", () => {
         requireUnknownSendReconciliation: true,
       };
 
-      await expect(deliverOutboundPayloads(params)).resolves.toMatchObject([{ messageId }]);
-      expect(sendText).toHaveBeenCalledOnce();
+      if (abortBeforeDispatch) {
+        await expect(deliverOutboundPayloads(params)).rejects.toThrow("pre-wire abort");
+        expect(
+          getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, deliveryIntentId, tmpDir),
+        ).toBe("pending");
+        await drainMatrixReconnect({ deliver: deliverOutboundPayloads, stateDir: tmpDir });
+      } else {
+        await expect(deliverOutboundPayloads(params)).resolves.toMatchObject([{ messageId }]);
+      }
+      const attempts = abortBeforeDispatch ? 2 : 1;
+      expect(sendText).toHaveBeenCalledTimes(attempts);
       expect(reconcileUnknownSend).not.toHaveBeenCalled();
       expect(
         getDeliveryQueueEntryStatus(OUTBOUND_DELIVERY_QUEUE_NAME, deliveryIntentId, tmpDir),
@@ -96,12 +118,12 @@ describe("exact Matrix delivery queue reconciliation", () => {
         platformMessageId: messageId,
       });
       await expect(deliverOutboundPayloads(params)).resolves.toEqual([]);
-      expect(sendText).toHaveBeenCalledOnce();
+      expect(sendText).toHaveBeenCalledTimes(attempts);
 
       const recoveryDeliver = vi.fn<DeliverFn>(async () => []);
       await drainMatrixReconnect({ deliver: recoveryDeliver, stateDir: tmpDir });
       expect(recoveryDeliver).not.toHaveBeenCalled();
-      expect(sendText).toHaveBeenCalledOnce();
+      expect(sendText).toHaveBeenCalledTimes(attempts);
     },
   );
 });

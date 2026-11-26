@@ -280,6 +280,49 @@ it("fails closed without provider I/O when any expected part plan is missing", a
   await expect(loadMatrixDeliveryPlan(planTarget(incompleteIdentity))).resolves.toBeNull();
 });
 
+it("checks every frozen part's thread before replaying any part", async () => {
+  for (let partIndex = 0; partIndex < 2; partIndex++) {
+    const target = planTarget(identity("queue-thread", partIndex, 2));
+    await persistEvents(
+      createMatrixPlannedEvents({
+        identity: target.identity,
+        events: [
+          {
+            receiptKind: "text",
+            content: {
+              msgtype: "m.text",
+              body: "frozen part",
+              "m.relates_to": {
+                rel_type: "m.thread",
+                event_id: partIndex === 0 ? "$thread" : "$other",
+              },
+            },
+          },
+        ],
+      }),
+      target,
+    );
+  }
+  await expect(
+    reconcileMatrixUnknownSend({
+      ...reconciliationContext("queue-thread"),
+      threadId: "$thread",
+    }),
+  ).resolves.toMatchObject({ status: "unresolved", retryable: false });
+  expect(client.sendMessage).not.toHaveBeenCalled();
+});
+
+it("does not issue a receipt when the provider gives no event identity", async () => {
+  await persist();
+  client.sendMessage.mockResolvedValueOnce("");
+  await expect(reconcileMatrixUnknownSend(reconciliationContext())).resolves.toMatchObject({
+    status: "unresolved",
+    retryable: true,
+    error: expect.stringContaining("identified event receipt"),
+  });
+  await expect(loadMatrixDeliveryPlan(planTarget())).resolves.not.toBeNull();
+});
+
 it("fails closed when the SDK selects a different Matrix endpoint path", async () => {
   await persist({ queueId: "queue-route" });
   client.sendMessage.mockImplementationOnce(

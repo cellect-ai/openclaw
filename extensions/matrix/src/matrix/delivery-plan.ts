@@ -14,7 +14,7 @@ import type { MatrixClient } from "./sdk.js";
 import type { MatrixMessageWireDispatch } from "./sdk/message-wire-dispatch.js";
 import { withResolvedMatrixSendClient } from "./send/client.js";
 import { createMatrixSendReceipt, type MatrixReceiptEvent } from "./send/receipt.js";
-import { resolveMatrixRoomId } from "./send/targets.js";
+import { normalizeThreadId, resolveMatrixRoomId } from "./send/targets.js";
 import type { MatrixOutboundContent } from "./send/types.js";
 
 const DELIVERY_PLAN_VERSION = 1;
@@ -49,6 +49,7 @@ type MatrixDeliveryTarget = {
   roomId: string;
   transactionScopeId: string;
   wireEventType: "m.room.message" | "m.room.encrypted";
+  threadId?: string | null;
 };
 
 type MatrixDeliveryPlan = {
@@ -180,10 +181,23 @@ function assertPlanIdentity(plan: MatrixDeliveryPlan, params: MatrixDeliveryTarg
     plan.accountId !== (params.accountId ?? "") ||
     plan.roomId !== params.roomId ||
     plan.transactionScopeId !== params.transactionScopeId ||
-    plan.wireEventType !== params.wireEventType
+    plan.wireEventType !== params.wireEventType ||
+    (params.threadId !== undefined &&
+      plan.events.some(
+        (event) => (resolveMatrixThreadRootId(event.content) ?? null) !== params.threadId,
+      ))
   ) {
     throw new MatrixDeliveryPlanInvariantError(
       "Matrix durable delivery plan no longer matches the active delivery target",
+    );
+  }
+  if (
+    plan.events.some(
+      (event, index) => event.transactionId !== transactionId(params.identity, index),
+    )
+  ) {
+    throw new MatrixDeliveryPlanInvariantError(
+      "Matrix durable delivery plan has an invalid transaction identifier",
     );
   }
 }
@@ -262,13 +276,6 @@ export async function persistMatrixDeliveryPlan(
     );
   }
   const partCount = requirePartCount(params.identity.partCount);
-  for (const [index, event] of params.events.entries()) {
-    if (event.transactionId !== transactionId(params.identity, index)) {
-      throw new MatrixDeliveryPlanInvariantError(
-        "Matrix durable delivery plan has an invalid transaction identifier",
-      );
-    }
-  }
   const plan: MatrixDeliveryPlan = {
     version: DELIVERY_PLAN_VERSION,
     queueId: params.identity.queueId,
@@ -283,6 +290,7 @@ export async function persistMatrixDeliveryPlan(
     partCount,
     events: params.events,
   };
+  assertPlanIdentity(plan, params);
   const bytes = new TextEncoder().encode(JSON.stringify(plan));
   const store = createDeliveryPlanStore();
   await store.deleteExpired();
@@ -439,6 +447,7 @@ export async function replayMatrixProjectionPublication(
       roomId,
       transactionScopeId,
       wireEventType,
+      threadId: owner.threadRootEventId,
     });
     const accepted: string[] = [];
     for (const event of plan.events)
@@ -450,6 +459,7 @@ export async function replayMatrixProjectionPublication(
             roomId,
             transactionScopeId,
             wireEventType,
+            threadId: owner.threadRootEventId,
             events: plan.events,
             dispatch,
           });
@@ -484,6 +494,9 @@ export async function reconcileMatrixUnknownSend(
         const wireEventType = await client.getMessageWireEventType(roomId);
         const orderedPlans = [...plans].toSorted((left, right) => left.partIndex - right.partIndex);
         const results = new Map<string, MatrixReceiptEvent>();
+        const threadId = normalizeThreadId(ctx.threadId);
+        // Prove every frozen part before replaying any event. A later invalid
+        // part cannot leave an otherwise sound prefix newly published.
         for (const plan of orderedPlans) {
           assertPlanIdentity(plan, {
             identity: plan,
@@ -491,7 +504,10 @@ export async function reconcileMatrixUnknownSend(
             roomId,
             transactionScopeId,
             wireEventType,
+            threadId,
           });
+        }
+        for (const plan of orderedPlans) {
           for (const event of plan.events) {
             const messageId = await client.sendMessage(
               roomId,
@@ -504,11 +520,15 @@ export async function reconcileMatrixUnknownSend(
                   roomId,
                   transactionScopeId,
                   wireEventType,
+                  threadId,
                   events: plan.events,
                   dispatch,
                 });
               },
             );
+            if (!/^\$\S{1,254}$/u.test(messageId)) {
+              throw new Error("Matrix did not return an identified event receipt");
+            }
             if (!results.has(messageId)) {
               const replyToId = resolveMatrixReplyToEventId(event.content);
               results.set(messageId, {
@@ -522,7 +542,7 @@ export async function reconcileMatrixUnknownSend(
         const receipt = createMatrixSendReceipt({
           roomId,
           events: [...results.values()],
-          threadId: resolveMatrixThreadRootId(orderedPlans[0]!.events[0]!.content),
+          threadId: threadId ?? undefined,
         });
         const final = orderedPlans.at(-1)?.events.at(-1)?.projectionFinalResult;
         if (final && receipt.platformMessageIds.at(-1))

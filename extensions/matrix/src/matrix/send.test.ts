@@ -49,7 +49,10 @@ import {
   makeEncryptedMediaClient,
   registerMatrixMediaMetadataTests,
 } from "./send.test-support.js";
-import { MATRIX_STREAM_PHASE_CONTENT_KEY } from "./send/types.js";
+import {
+  MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY,
+  MATRIX_STREAM_PHASE_CONTENT_KEY,
+} from "./send/types.js";
 
 const loadOutboundMediaFromUrlMock = vi.hoisted(() => vi.fn());
 const loadConfigMock = vi.fn(() => ({}));
@@ -368,6 +371,7 @@ describe("sendMessageMatrix durable delivery", () => {
       return eventId;
     });
     const payload = { text: "first|second", mediaUrl: "file:///tmp/photo.png" };
+    const replyTrigger = { version: 1, triggerEventId: "$ask" };
     const onDeliveryResult = vi.fn();
     await expect(
       send(payload.text, {
@@ -378,6 +382,7 @@ describe("sendMessageMatrix durable delivery", () => {
         deliveryQueueId: "queue-media",
         deliveryPartIndex: 0,
         deliveryPartCount: 1,
+        terminalExtraContent: { [MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]: replyTrigger },
       }),
     ).rejects.toThrow("provider response lost");
     expect(
@@ -387,6 +392,8 @@ describe("sendMessageMatrix durable delivery", () => {
       "m.in_reply_to": { event_id: "$reply" },
     });
     expect(sentContent(1)).not.toHaveProperty("m.relates_to");
+    expect(sentContent(0)[MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]).toBeUndefined();
+    expect(sentContent(1)[MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]).toEqual(replyTrigger);
     withResolvedRuntimeMatrixClientMock.mockImplementationOnce(
       async (_opts: unknown, run: (resolved: typeof client) => Promise<unknown>) =>
         await run(client),

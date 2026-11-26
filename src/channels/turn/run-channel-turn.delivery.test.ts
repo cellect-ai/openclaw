@@ -739,6 +739,22 @@ describe("channel turn delivery", () => {
     expect(deliver).not.toHaveBeenCalled();
   });
 
+  it("does not send directly when an exact durable final cannot be negotiated", async () => {
+    resolveOutboundDurableFinalDeliverySupport.mockResolvedValueOnce({
+      ok: false,
+      reason: "capability_mismatch",
+      capability: "reconcileUnknownSend",
+    });
+    const deliver = vi.fn();
+    await expect(
+      runAssembled({
+        delivery: { deliver, durable: { noDirectFallback: true } },
+      }),
+    ).rejects.toThrow("Required final delivery is unavailable");
+    expect(sendDurableMessageBatch).not.toHaveBeenCalled();
+    expect(deliver).not.toHaveBeenCalled();
+  });
+
   it("preserves durable partial-send visibility without retrying via direct delivery", async () => {
     sendDurableMessageBatch.mockResolvedValueOnce({
       ...createDurableSendResult(["tg-1"]),

@@ -274,30 +274,32 @@ async function executePreparedReplyAgentRunWithCompletion(
           if (!sourceReplyPolicy.suppressDelivery) {
             const pendingFinalDeliveryIntentId = crypto.randomUUID();
             const pendingFinalDeliveryDeliveryId = crypto.randomUUID();
+            const deliveryContext = resolveReplyRunDeliveryContext({
+              ...context,
+              sessionKey,
+              sessionEntry: activeSessionEntry,
+            });
+            const sourceMessageId = resolveReplyDeliverySourceMessageId(
+              context.sessionCtx,
+              deliveryContext,
+            );
             setReplyPayloadMetadata(hookReply, {
               pendingFinalDeliveryCompletion: {
                 agentId: followupRun.run.agentId,
                 deliveryId: pendingFinalDeliveryDeliveryId,
                 intentId: pendingFinalDeliveryIntentId,
+                sourceMessageId,
                 sessionId: replyOperation.sessionId,
                 sessionKey,
                 storePath,
               },
-            });
-            const deliveryContext = resolveReplyRunDeliveryContext({
-              ...context,
-              sessionKey,
-              sessionEntry: activeSessionEntry,
             });
             await recordPendingDelivery({
               text: hookFinalDeliveryText ?? "",
               intentId: pendingFinalDeliveryIntentId,
               deliveries: [{ id: pendingFinalDeliveryDeliveryId, state: "prepared" }],
               context: deliveryContext,
-              sourceMessageId: resolveReplyDeliverySourceMessageId(
-                context.sessionCtx,
-                deliveryContext,
-              ),
+              sourceMessageId,
             });
           }
         }

@@ -47,6 +47,7 @@ export function canReplayAmbiguousFinalText(
 ): boolean {
   return (
     entry.retryAmbiguousFinalText === true &&
+    entry.requireUnknownSendReconciliation !== true &&
     reconciliation?.status !== "not_sent" &&
     (entry.ambiguousTransportError === true || entry.recoveryState === "send_attempt_started") &&
     resolveDeliveryQueueAttemptCount(entry) <

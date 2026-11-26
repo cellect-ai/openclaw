@@ -45,6 +45,7 @@ export type NativeFinalDeliveryReference = {
   deliveryId: string;
   sourceRunId: string;
   sourceGeneration: string;
+  sourceMessageId?: string;
 };
 
 /**
