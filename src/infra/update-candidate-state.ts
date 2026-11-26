@@ -27,7 +27,6 @@ import {
   withPreparedSqliteSnapshot,
 } from "./sqlite-readonly-location-cleanup.js";
 import {
-  inspectSqliteSchemaHeaderInProcess,
   prepareSqliteReadOnlyLocationInProcess,
   prepareSqliteReadOnlyLocationSyncInProcess,
 } from "./sqlite-readonly-location.js";
@@ -282,6 +281,8 @@ export async function discoverUpdateStateSchemaInspectionInProcess(
     stagingRoot: string;
     onProgress?: (progress: UpdateStateInspectionProgress) => void;
     preserveSourceArtifacts?: boolean;
+    /** The stopped backup owner already captured this generation and verifies source stability. */
+    sharedDatabaseImage?: string;
   },
 ): Promise<UpdateStateSchemaInspectionPlan> {
   const shared = path.resolve(input.stateDir, "state", "openclaw.sqlite");
@@ -298,16 +299,19 @@ export async function discoverUpdateStateSchemaInspectionInProcess(
     const result = await readUpdatePostgresState(input, files);
     return { files: result.files, sharedVersion: { path: shared, ...result.version } };
   }
-  const sharedVersion = await withStateDatabaseSnapshot(
-    shared,
-    async (location) => ({
-      path: shared,
-      ...(await readSharedDatabaseVersion(location, shared, files, input)),
-    }),
-    input.stagingRoot,
-    input.onProgress,
-    input.preserveSourceArtifacts,
-  );
+  const read = async (location: string) => ({
+    path: shared,
+    ...(await readSharedDatabaseVersion(location, shared, files, input)),
+  });
+  const sharedVersion = input.sharedDatabaseImage
+    ? await read(input.sharedDatabaseImage)
+    : await withStateDatabaseSnapshot(
+        shared,
+        read,
+        input.stagingRoot,
+        input.onProgress,
+        input.preserveSourceArtifacts,
+      );
   return { files: [...files], sharedVersion };
 }
 
@@ -542,6 +546,8 @@ export async function snapshotUpdateCandidateState(
     onProgress?: (progress: UpdateStateInspectionProgress) => void;
   },
 ): Promise<z.infer<typeof UpdateCandidateStateSnapshotSchema>> {
+  const { inspectSqliteSchemaHeaderInProcess } =
+    await import("./sqlite-schema-header-inspection.js");
   const { createVerifiedSqliteSnapshot } = await import("./sqlite-snapshot.js");
   const coldArchives = await import("./update-candidate-cold-archives.worker.js");
   const { AGENT_FTS_SCHEMAS } = await import("../state/openclaw-agent-fts-schema.js");

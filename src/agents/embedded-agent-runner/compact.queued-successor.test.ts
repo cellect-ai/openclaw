@@ -8,6 +8,7 @@ import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js"
 import type { SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { ContextEngine, ContextEngineRuntimeContext } from "../../context-engine/types.js";
+import { sessionManagerReadTranscriptBranch } from "../sessions/session-manager-view-types.js";
 import {
   acquireAgentRunPreparedModelRuntimeMock,
   contextEngineCompactMock,
@@ -20,7 +21,9 @@ import {
 import type { QueuedCompactionHostOptions } from "./compact.types.js";
 import type { AcceptedCompactionSuccessor } from "./compaction-successor.js";
 
-const { compactEmbeddedAgentSession: compact } = await loadCompactHooksHarness();
+const { compactEmbeddedAgentSession: compact } = await loadCompactHooksHarness({
+  durableSession: true,
+});
 // The harness resets modules. Load every real owner afterward so the manager
 // and queued compaction share the same private write context and database lifetime.
 const [
@@ -158,10 +161,10 @@ async function transcriptFixture() {
   const hooks: { beforeBranchRead?: () => void } = {};
   openAsync.mockImplementation(async (...args) => {
     const manager = await originalOpenAsync(...args);
-    const getBranch = manager.getBranch.bind(manager);
-    vi.spyOn(manager, "getBranch").mockImplementation((...branchArgs) => {
+    const readBranch = manager[sessionManagerReadTranscriptBranch].bind(manager);
+    vi.spyOn(manager, sessionManagerReadTranscriptBranch).mockImplementation((...branchArgs) => {
       hooks.beforeBranchRead?.();
-      return getBranch(...branchArgs);
+      return readBranch(...branchArgs);
     });
     return manager;
   });

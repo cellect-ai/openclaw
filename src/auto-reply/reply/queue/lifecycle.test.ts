@@ -1,5 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { createAdmittedRunOperatorAuthority } from "../../../agents/admitted-run-context.js";
 import { captureSessionControllerSourceSettlement as settleSource } from "../../../sessions/session-controller.mailbox.js";
 import {
   admitFollowupRunLifecycle as admit,
@@ -30,6 +31,70 @@ it("keeps the public deferral callback free of internal observation arguments", 
   run.turnAdoptionLifecycle = lifecycle;
   expect(markEnqueued(run)).toBe(true);
   expect(lifecycle.onDeferred).toHaveBeenCalledExactlyOnceWith();
+});
+
+it.each([false, true])(
+  "checks queued=%s authority once per single-flight adoption",
+  async (enqueued) => {
+    const release = queue.gate();
+    const failure = new Error("source adoption failed");
+    const reauthorize = vi.fn();
+    const persistInput = vi.fn(async () => {});
+    const onAdopted = vi
+      .fn(async () => {
+        expect(persistInput).toHaveBeenCalledTimes(onAdopted.mock.calls.length);
+        await release.wait();
+      })
+      .mockRejectedValueOnce(failure);
+    run.operatorAuthority = createAdmittedRunOperatorAuthority({
+      profileId: "operator",
+      scopes: ["operator.write"],
+      source: {},
+      assertCurrent: () => {},
+      reauthorize,
+    });
+    run.turnAdoptionLifecycle = { onAdopted };
+    if (enqueued) {
+      expect(markEnqueued(run)).toBe(true);
+    }
+    await expect(admit(run, persistInput)).rejects.toThrow(failure);
+    expect(persistInput).toHaveBeenCalledOnce();
+    expect(reauthorize).toHaveBeenCalledTimes(enqueued ? 1 : 0);
+    const retry = admit(run, persistInput);
+    const concurrent = admit(run);
+    await release.entered;
+    expect(reauthorize).toHaveBeenCalledTimes(enqueued ? 2 : 0);
+    expect(onAdopted).toHaveBeenCalledTimes(2);
+    release.resolve();
+    await Promise.all([retry, concurrent]);
+    await admit(run);
+    expect(reauthorize).toHaveBeenCalledTimes(enqueued ? 2 : 0);
+    expect(onAdopted).toHaveBeenCalledTimes(2);
+  },
+);
+
+it("rejects queued authority before consuming input or acknowledging adoption", async () => {
+  const rejected = queue.source("revoked");
+  const failure = new Error("queued requester lost access");
+  const persistInput = vi.fn(async () => {});
+  const onAdopted = vi.fn();
+  const reauthorize = vi.fn(() => {
+    throw failure;
+  });
+  rejected.operatorAuthority = createAdmittedRunOperatorAuthority({
+    profileId: "operator",
+    scopes: ["operator.write"],
+    assertCurrent: () => {},
+    reauthorize,
+  });
+  rejected.turnAdoptionLifecycle = { onAdopted };
+  expect(markEnqueued(rejected)).toBe(true);
+  await expect(admit(rejected, persistInput)).rejects.toThrow(failure);
+  expect(reauthorize).toHaveBeenCalledOnce();
+  expect(persistInput).not.toHaveBeenCalled();
+  expect(onAdopted).not.toHaveBeenCalled();
+  complete(rejected);
+  await expect(settleSource(rejected.controllerInput!)).rejects.toThrow(failure);
 });
 
 it.each(["abandonment", "publication failure", "adoption"] as const)(

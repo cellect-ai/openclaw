@@ -33,6 +33,7 @@ import { getPluginInstance, type PluginInstanceHandle } from "../plugins/plugin-
 import { watchPluginReplacement } from "../plugins/plugin-replacement-watchers.js";
 import { getActivePluginRegistry } from "../plugins/runtime.js";
 import { seedInstalledPluginIndex } from "../plugins/test-helpers/installed-plugin-index.js";
+import * as steering from "../sessions/session-controller.steer.js";
 import { onSessionTranscriptUpdate } from "../sessions/transcript-events.js";
 import { setUserProfileRole } from "../state/user-profile-writes.worker.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
@@ -61,8 +62,9 @@ const DONE = "BOB-TARGET-COMPLETED-7d2e";
 const WAKE =
   "Continue the original task in this conversation. Do not repeat a completed operation.";
 const UNDELIVERED = "could not continue this conversation automatically";
-// Observed refusal: Bob's revoked authority ends the retained Gateway continuation.
-const CONTINUATION_REVOKED = "Gateway continuation authority is no longer active";
+// The accepted continuation survives; the next start checks Bob's original source.
+const CONTINUATION_REVOKED =
+  "operator source authority is no longer active. Reconnect to the Gateway, then resend your message. If access is denied, ask an administrator to restore it.";
 const ORIGIN = "https://control.revocation.example.test";
 const ADMIN = "admin@revocation.example.test";
 const ALICE = "alice@revocation.example.test";
@@ -108,6 +110,18 @@ it.for(["allowed", "revoked"] as const)(
     const sendResult = createDeferred<Record<string, unknown>>();
     const failure = createDeferred<never>();
     void failure.promise.catch(() => {});
+    const steerAccepted = createDeferred<boolean>();
+    const beginSteer = steering.beginSessionControllerSteer;
+    vi.spyOn(steering, "beginSessionControllerSteer").mockImplementation(async (params) => {
+      const attempt = await beginSteer(params);
+      if (params.text.includes(STEER)) {
+        void (attempt?.acceptance ?? Promise.resolve(false)).then(
+          steerAccepted.resolve,
+          failure.reject,
+        );
+      }
+      return attempt;
+    });
     const targetEffect = createDeferred();
     const handoffWake = createDeferred<string>();
     const notice = createDeferred<string>();
@@ -262,6 +276,10 @@ it.for(["allowed", "revoked"] as const)(
                   queueMode: "steer",
                 });
                 expect(steer.status).toBe("started");
+                // The RPC ACK owns custody; native acceptance owns the next model input.
+                expect(
+                  await withinTest(Promise.race([steerAccepted.promise, failure.promise]), signal),
+                ).toBe(true);
                 probes++;
                 writeToolCall(response, TOOL, {});
                 return;
@@ -331,6 +349,9 @@ it.for(["allowed", "revoked"] as const)(
             if (raw.includes(MESSAGE) && agentTurn) {
               effects++;
               targetEffect.resolve();
+              if (revoked) {
+                failure.reject(new Error("Revoked retained send reached the target effect"));
+              }
               reply(DONE);
               return;
             }
@@ -500,7 +521,14 @@ it.for(["allowed", "revoked"] as const)(
       expect(await withinTest(reload, signal)).toMatchObject({ ok: true });
       await withinTest(
         Promise.race([
-          revoked ? notice.promise : Promise.all([targetEffect.promise, handoffWake.promise]),
+          revoked
+            ? Promise.race([
+                notice.promise,
+                Promise.race([targetEffect.promise, handoffWake.promise]).then(() => {
+                  throw new Error("Revoked replay produced a target effect or wake");
+                }),
+              ])
+            : Promise.all([targetEffect.promise, handoffWake.promise]),
           failure.promise,
         ]),
         signal,
@@ -573,7 +601,11 @@ it.for(["allowed", "revoked"] as const)(
             sessionKey: targetKey,
             sessionId: targetEntry.sessionId,
           }),
-        ).toEqual({ items: [], total: 0 });
+        ).toMatchObject(
+          revoked
+            ? { items: [{ runId: result.runId, state: "cancelled" }], total: 1 }
+            : { items: [], total: 0 },
+        );
       }
       if (revoked) {
         expect(revocation).toEqual({ method: revokeMethod, bobRefused: true });
@@ -586,7 +618,7 @@ it.for(["allowed", "revoked"] as const)(
         expect(notices).toHaveLength(1);
         // The host notice carries the refused replay's own settled outcome.
         const noticeText = messageText(durableNotices[0]);
-        expect(noticeText).toContain(UNDELIVERED + ": " + CONTINUATION_REVOKED);
+        expect(noticeText).toContain(UNDELIVERED + ": ");
         settledOutcome = between(noticeText, "Its result: ", ". Send a message");
         expect(settledOutcome).toEqual({
           outcomes: [

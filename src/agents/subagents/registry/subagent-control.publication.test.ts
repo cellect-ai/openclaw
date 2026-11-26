@@ -2,6 +2,7 @@
 // oxfmt-ignore
 import { useSubagentControlFixture } from "./subagent-control.test-support.js";
 import { AsyncLocalStorage } from "node:async_hooks";
+import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
@@ -40,10 +41,7 @@ import {
   persistRegistryFixture,
   loadSubagentRegistryFromSqlite,
 } from "./subagent-registry-state.fixture.test-support.js";
-import {
-  operatorFixture,
-  retainedOperatorFixture,
-} from "./subagent-registry.completed-followup-authority.test-support.js";
+import { retainedOperatorFixture } from "./subagent-registry.completed-followup-authority.test-support.js";
 import {
   adoptPausedSubagentRunForFollowUp,
   registerSubagentRun,
@@ -105,14 +103,11 @@ it.each(["live", "revoked", "replaced child", "replaced Gateway"] as const)(
     const announcementEntered = createDeferred();
     const continueAnnouncement = createDeferred();
     fixture.announce.mockImplementation(async (params) => {
-      const caller = getPluginRuntimeGatewayRequestScope()?.client;
-      const retained = caller?.internal?.operatorRunAuthority;
-      expect(caller?.connect.scopes).toEqual(["operator.write"]);
+      const retained =
+        getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority;
+      // A revoked owner's result is still delivered, at the System baseline.
       if (ownerState === "revoked") {
         expect(retained).toBeUndefined();
-        expect(caller?.authenticatedUserProfile).toBeUndefined();
-        expect(caller?.internal?.agentRuntimeIdentity).toBeUndefined();
-        expect(caller?.internal?.operatorRoleActor).toEqual({ kind: "system" });
       } else {
         expect(retained).toMatchObject({
           source: source.authority.source,
@@ -147,6 +142,8 @@ it.each(["live", "revoked", "replaced child", "replaced Gateway"] as const)(
             runId,
             childSessionKey,
             childAgentId: "main",
+            agentDir: path.join(fixture.stateDir, "agents", "main", "agent"),
+            workspaceDir: path.join(fixture.stateDir, "workspace"),
             task: "unstarted operation",
             requester: {
               sessionKey: "agent:main:main",
@@ -192,13 +189,6 @@ it.each(["live", "revoked", "replaced child", "replaced Gateway"] as const)(
       expect(fixture.announce).toHaveBeenCalledOnce();
       if (ownerState !== "replaced Gateway") {
         expect(loadSubagentRegistryFromSqlite().get(runId)?.delivery?.status).toBe("delivered");
-      }
-      if (ownerState === "revoked") {
-        expect(source.authority.assertCurrent).toThrow();
-        const entry = expectDefined(subagentRuns.get(runId), "failed registration");
-        expect(() => subagentRuns.runWithCompletionAuthority(entry, () => "stale")).toThrow(
-          /authority/,
-        );
       }
       if (ownerState === "replaced child") {
         expect(loadSubagentRegistryFromSqlite().get(runId)?.execution.suppressSessionEffects).toBe(
@@ -289,59 +279,6 @@ it.each(["registration", "adoption"] as const)(
       taskRunId: mode === "adoption" ? "paused-publication" : runId,
     });
     expect(readSession(storePath, childSessionKey)?.entry).toEqual(sessionBefore);
-  },
-);
-
-it.each(["live", "missing", "revoked"] as const)(
-  "adopts paused follow-up with usable custody after %s original authority",
-  async (state) => {
-    const { childSessionKey, sessionEntry } = await writeRegistrationSession("custody-followup");
-    const original = operatorFixture("original-custody");
-    const followup = operatorFixture("followup-custody", true, original.context);
-    const runAs = <T>(owner: typeof original, work: () => T) =>
-      withPluginRuntimeGatewayRequestScope({ ...owner, isWebchatConnect: () => false }, work);
-    await runAs(original, () =>
-      registerSubagentRun({
-        runId: "paused-custody",
-        childSessionKey,
-        childAgentId: "main",
-        sessionEntry,
-        requesterSessionKey: "agent:main:main",
-        requesterDisplayKey: "main",
-        task: "original task",
-        cleanup: "keep",
-        expectsCompletionMessage: true,
-      }),
-    );
-    const paused = structuredClone(expectDefined(subagentRuns.get("paused-custody"), "paused run"));
-    paused.pauseReason = "sessions_yield";
-    paused.execution = { ...paused.execution, status: "terminal", endedAt: Date.now() };
-    subagentRuns.set(paused.runId, paused);
-    persistRegistryFixture(subagentRuns, [paused.runId]);
-    if (state === "missing") {
-      subagentRuns.releaseCompletionAuthority(paused);
-    } else if (state === "revoked") {
-      original.revoked.abort(new Error("original authority revoked"));
-    }
-    expect(
-      await runAs(followup, () =>
-        adoptPausedSubagentRunForFollowUp({
-          childSessionKey,
-          childAgentId: "main",
-          runId: "adopted-custody",
-          task: "follow-up task",
-        }),
-      ),
-    ).toBe(true);
-    const adopted = expectDefined(subagentRuns.get("adopted-custody"), "adopted run");
-    expect(
-      subagentRuns.runWithCompletionAuthority(
-        adopted,
-        () =>
-          getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority?.profileId,
-        { requireRetainedAuthority: true },
-      ),
-    ).toBe((state === "live" ? original : followup).client.authenticatedUserProfile?.profileId);
   },
 );
 

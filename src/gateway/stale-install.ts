@@ -1,5 +1,8 @@
+import { constants } from "node:fs";
+import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { readFileHandleBounded } from "@openclaw/fs-safe/advanced";
 import {
   coerceErrorMessage,
   collectErrorGraphCandidates,
@@ -13,11 +16,11 @@ import {
   type ErrorShape,
 } from "../../packages/gateway-protocol/src/index.js";
 import { formatCliCommand } from "../cli/command-format.js";
-import { tryReadJson } from "../infra/json-files.js";
 import {
   resolveOpenClawInstallationRootSync,
   resolveOpenClawPackageRootSync,
 } from "../infra/openclaw-root.js";
+import { acquirePackageReleaseLease } from "../infra/package-release-lease.js";
 import { hasNodeErrorCode, isPathInside } from "../infra/path-guards.js";
 import { resolveUpdateInstallRoot } from "../infra/update-install-root.js";
 import {
@@ -68,6 +71,7 @@ export type GatewayInstallationReplacement = {
 type InstallationObserver = {
   root: string | null;
   installationRoot: string | null;
+  /** The update lease key of the installation, captured with it. */
   updateKey: string | null;
   running: InstallationIdentity;
   onReplacement: (fact: GatewayInstallationReplacement) => void;
@@ -95,6 +99,15 @@ export function registerGatewayInstallationReplacementHandler(
     onReplacement,
   };
   installationState.observer = observer;
+  // A Gateway keeps loading files from its release after the link moves on.
+  let releaseLease = () => {};
+  try {
+    releaseLease = gatewayInstallRoot
+      ? acquirePackageReleaseLease(gatewayInstallRoot)
+      : releaseLease;
+  } catch {
+    // Without a lease the release still survives collection for 24 hours.
+  }
   const releaseSuspension = onGatewaySuspendAdmissionChange((phase) => {
     if (phase !== "accepting") {
       // A host operation may restore the running installation before reopening.
@@ -103,6 +116,11 @@ export function registerGatewayInstallationReplacementHandler(
   });
   return () => {
     releaseSuspension();
+    try {
+      releaseLease();
+    } catch {
+      // A lease left behind by a stopped Gateway is ignored as soon as its process is gone.
+    }
     if (installationState.observer === observer) {
       installationState.observer = undefined;
     }
@@ -136,6 +154,31 @@ function recordReplacement(observer: InstallationObserver, onDisk?: Installation
   observer.onReplacement(fact);
 }
 
+async function readInstallationMetadata(file: string): Promise<unknown> {
+  try {
+    if (!(await fs.lstat(file)).isFile()) {
+      return null;
+    }
+    const handle = await fs.open(
+      file,
+      constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0) | (constants.O_NONBLOCK ?? 0),
+    );
+    try {
+      if (!(await handle.stat()).isFile()) {
+        return null;
+      }
+      // This is one bounded observation, not write authority. A later tick observes replacement.
+      // Expose only read: fs-safe's optional fd size hint performs synchronous fstat calls.
+      const raw = await readFileHandleBounded({ read: handle.read.bind(handle) }, 16 * 1024);
+      return JSON.parse(raw.toString("utf8"));
+    } finally {
+      await handle.close();
+    }
+  } catch {
+    return null;
+  }
+}
+
 /** The existing maintenance tick owns disk reads; requests only consume recorded facts. */
 export function checkGatewayInstallationReplacement(): Promise<void> {
   const observer = installationState.observer;
@@ -152,9 +195,7 @@ export function checkGatewayInstallationReplacement(): Promise<void> {
   if (observer.check) {
     return observer.check;
   }
-  observer.check = tryReadJson(path.join(root, "dist", "build-info.json"), {
-    maxBytes: 16 * 1024,
-  })
+  observer.check = readInstallationMetadata(path.join(root, "dist", "build-info.json"))
     .then(async (value) => {
       const metadata = asNullableRecord(value);
       const version = normalizeNullableString(metadata?.version);
@@ -176,36 +217,39 @@ export function checkGatewayInstallationReplacement(): Promise<void> {
   return observer.check;
 }
 
-/** The updater owns restart until its live installation lease is released. */
+/**
+ * The update run owns the installation while it holds the install lease: it stops
+ * and restarts this Gateway itself. A self-restart into the new package during the
+ * run races its Doctor and Gateway start. A Gateway the run leaves stale restarts on
+ * a later check, after the run releases the lease.
+ */
 async function isInstallationHeldByUpdateRun(installRoot: string): Promise<boolean> {
   try {
-    const [
-      { WorkerTaskPool },
-      { captureRuntimeWorkerSource },
-      { resolveRuntimeWorkerUrl },
-      { runtimeProcessEntrypoints },
-      { resolveServiceManagerEnv },
-    ] = await Promise.all([
-      import("../infra/worker-task-pool.js"),
-      import("../infra/runtime-worker-generation.js"),
-      import("../infra/runtime-worker-url.js"),
-      import("../infra/runtime-process-entrypoints.js"),
+    // Lease reads and process probes are synchronous; they run in the handoff worker.
+    const [{ prepareManagedHandoffParentStore }, { resolveServiceManagerEnv }] = await Promise.all([
+      import("../infra/update-managed-service-handoff-worker.js"),
       import("../daemon/service-process-env.js"),
     ]);
-    const source = captureRuntimeWorkerSource(
-      resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.managedHandoffEngine),
-    );
-    const pool = new WorkerTaskPool<
-      { installRoot: string; serviceManagerEnv: NodeJS.ProcessEnv },
-      boolean
-    >({ workerUrl: source.moduleUrl, maxWorkers: 1 });
+    const store = await prepareManagedHandoffParentStore({
+      installRoot,
+      serviceManagerEnv: resolveServiceManagerEnv(),
+    });
     try {
-      return await pool.run({ installRoot, serviceManagerEnv: resolveServiceManagerEnv() }, {});
+      const held = await store.read(installRoot);
+      if (held.kind !== "current") {
+        return false;
+      }
+      for (const holder of [held.lease.executor, held.lease.helper]) {
+        if (await store.isProcessIdentityCurrent(holder)) {
+          return true;
+        }
+      }
+      return false;
     } finally {
-      await pool.close();
+      await store.close();
     }
   } catch {
-    // An unreadable lease preserves the existing self-restart behavior.
+    // An unreadable lease cannot hold the installation; keep today's self-restart.
     return false;
   }
 }

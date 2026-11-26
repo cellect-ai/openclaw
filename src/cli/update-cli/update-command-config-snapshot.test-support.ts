@@ -146,10 +146,8 @@ export async function runUpdateSnapshotIsolationProof(
   }
   // Publication must stage bytes beside the rollback point without overwriting it.
   assert.equal(writes.length, 1);
-  const [writtenPath] = writes;
-  assert.ok(writtenPath);
-  assert.equal(path.dirname(writtenPath), path.dirname(configB));
-  assert.notEqual(writtenPath, `${configB}.pre-update`);
+  assert.equal(path.dirname(writes[0]!), path.dirname(configB));
+  assert.notEqual(writes[0], `${configB}.pre-update`);
   assert.deepEqual(blocked, []);
   assert.deepEqual(
     new Set(listDirectoryTreeStrictSync(root).map((walkEntry) => walkEntry.relativePath)),

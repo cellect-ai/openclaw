@@ -33,6 +33,7 @@ import {
   MAX_LATEST_USER_REQUEST_CHARS,
   parseCompactionDetails,
 } from "./compaction-details.js";
+import { stripSummaryFloor } from "./compaction-floor.js";
 import type {
   CompactionPreparation,
   CompactionSettings,
@@ -220,7 +221,7 @@ export function prepareCompactionEntries(
     previous: (entry) =>
       entry.type === "compaction"
         ? {
-            summary: entry.summary,
+            summary: stripSummaryFloor(entry.summary),
             details: parseCompactionDetails(entry.details),
           }
         : {},
@@ -268,6 +269,7 @@ export function collectCompactionPreparationEntryFact(
   const contextMessage = projectSessionContextMessage({
     entry,
     context: "reset-retained",
+    placement: context.pendingBackground ? entry : undefined,
   });
   const collect = (value: AgentMessage): CompactionPreparationMessageFact => {
     const request = extractLatestUserRequest([value]);
@@ -290,7 +292,7 @@ export function collectCompactionPreparationEntryFact(
     ...(entry.type === "compaction"
       ? {
           fromHook: entry.fromHook,
-          previousSummary: entry.summary,
+          previousSummary: stripSummaryFloor(entry.summary),
           previousSummaryDetails: parseCompactionDetails(entry.details),
         }
       : {}),

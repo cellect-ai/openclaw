@@ -18,6 +18,8 @@ export type CatalogInspectionTask = Omit<PreparedModelCatalogWorkerTask, "value"
     expectedCredential?: string;
     failCatalog?: boolean;
     copyProbePath?: string;
+    observeConfigSnapshots?: boolean;
+    collectConfigCaptures?: boolean;
   };
 };
 

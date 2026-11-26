@@ -130,8 +130,7 @@ it.each([
         { mode: 0o755 },
       );
     }
-    // Keep host-installed compatible runtimes outside this synthetic version matrix.
-    vi.stubEnv("PATH", path.dirname(pathNode));
+    vi.stubEnv("PATH", `${path.dirname(pathNode)}${path.delimiter}${process.env.PATH}`);
     const native = createMockGatewayService({
       isLoaded: async () => true,
       readCommand: async () => ({

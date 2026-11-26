@@ -72,7 +72,7 @@ it("keeps the suspension limit while required observers collect existing process
     assert(value && typeof value === "object" && "sessionId" in value);
     assert(typeof value.sessionId === "string");
     const sessionId = value.sessionId;
-    // The short-lived child can finish before the exec result reaches this fixture.
+    // Background completion may precede delivery of the catalog result.
     const session = getSession(sessionId) ?? getFinishedSession(sessionId);
     assert(session);
     await waitForExecSession(session);

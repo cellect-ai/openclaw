@@ -8,6 +8,7 @@ import { getAiTransportHost } from "../host.js";
 import { convertMessages, hasToolCallHistory } from "../openai-completions-messages.js";
 import { measuredRequestPressure, type OpenAICompletionsOptions } from "../provider-options.js";
 import {
+  PROVIDER_DEFERRED_TOOL_NAMES,
   PROVIDER_MODEL_INPUT,
   type ProviderContext,
   type ProviderModel,
@@ -297,11 +298,17 @@ export function buildOpenAICompletionsRequest(
   const convertedMessages = convertMessages(providerModel, context, compat, {
     cacheOptOutIndexes,
     supportsTools,
-    declaredToolNames: new Set(converted?.projection.tools.map((tool) => tool.name)),
+    // Deferred tools stay callable without a declaration; only unavailable history becomes text.
+    declaredToolNames: new Set([
+      ...(converted?.projection.tools.map((tool) => tool.name) ?? []),
+      ...(options?.[PROVIDER_DEFERRED_TOOL_NAMES] ?? []),
+    ]),
     preserveSystemPromptCacheBoundary:
-      cacheControl !== undefined && !managedCompat?.requiresStringContent,
+      cacheControl !== undefined &&
+      !managedCompat?.requiresStringContent &&
+      !compat.cacheControlSystemOnly,
   });
-  applyCompletionsReplay(convertedMessages, context, model, compat);
+  applyCompletionsReplay(convertedMessages, model, compat);
   let messages: unknown[] = convertedMessages;
   if (managedCompat) {
     if (managedCompat.strictMessageKeys) {
@@ -357,7 +364,7 @@ export function buildOpenAICompletionsRequest(
     params.presence_penalty = options.presencePenalty;
   }
   if (policy.mode === "managed" && options?.seed !== undefined) {
-    params.seed = options.seed;
+    params[compat.seedField ?? "seed"] = options.seed;
   }
   if (options?.stop !== undefined && options.stop.length > 0) {
     params.stop = options.stop;
@@ -416,6 +423,7 @@ export function buildOpenAICompletionsRequest(
       markTools,
       true,
       compat.cacheControlSystemOnly,
+      compat.cacheControlSharedSystem,
     );
   }
   if (policy.mode === "direct" && options?.toolChoice) {
@@ -610,6 +618,7 @@ export function buildOpenAICompletionsRequest(
       markTools,
       !managedCompat?.requiresStringContent,
       compat.cacheControlSystemOnly,
+      compat.cacheControlSharedSystem,
     );
   }
   if (params.tools?.length && isKnownOpenAIEndpoint(model)) {

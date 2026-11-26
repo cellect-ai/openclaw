@@ -1,10 +1,14 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
-import { observeSqliteReadSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
+import { waitForFixtureFile } from "../../test/helpers/process-wait.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { readSelectedSessionEntryRows } from "../config/sessions/session-accessor.sqlite-entry-select.js";
+import { StateDatabaseOfflineMaintenanceError } from "../infra/gateway-state-owner-errors.js";
+import {
+  acquireGatewayStateOwner,
+  acquireStateDatabaseSchemaLease,
+} from "../infra/gateway-state-owner.js";
 import { requireNodeSqlite } from "../infra/node-sqlite.js";
 import {
   readSqliteCleanCloseSeal,
@@ -19,9 +23,9 @@ import { resolveSqliteDatabaseFilePaths } from "../infra/sqlite-files.js";
 import * as integrity from "../infra/sqlite-integrity.js";
 import * as snapshots from "../infra/sqlite-snapshot-source.js";
 import { sqliteWorkerPreloadEnv } from "../infra/sqlite-worker-preload.test-support.js";
-import { VERSION } from "../version.js";
 import { readAgentDatabaseAdmissionRefusal } from "./agent-database-admission.js";
 import { withAgentDatabaseStartupAdmission } from "./agent-database-startup.js";
+import { withLiveStateReads } from "./artifact-preserving-state-reads.js";
 import {
   supportedVersions,
   closeDatabases,
@@ -40,8 +44,11 @@ import {
   closeOpenClawAgentDatabaseByPath,
   withOpenClawAgentDatabaseAsync,
 } from "./openclaw-agent-db.js";
-import { OPENCLAW_AGENT_SCHEMA_SQL } from "./openclaw-agent-schema.js";
-import { snapshotPreflightSourceManifest } from "./openclaw-database-preflight.test-support.js";
+import { createAgentSchemaInspectionWorker } from "./openclaw-agent-schema-inspection-worker.js";
+import {
+  expectLiveReadSourceManifest,
+  snapshotPreflightSourceManifest,
+} from "./openclaw-database-preflight.test-support.js";
 import { sqliteDatabaseSealSchemaFor } from "./openclaw-database-seal-schema.js";
 import {
   closeOpenClawStateDatabase,
@@ -59,6 +66,68 @@ function transcriptRows(reader: OpenClawAgentReadOnlyDatabase) {
     includeRowTranscriptProjection: true,
   });
 }
+
+it.each(["schema lease", "offline maintenance"] as const)(
+  "handles a foreign %s observed by the native startup inspection child",
+  async (holder) => {
+    const fixture = databaseFixture(tempDirs.make("startup-inspection-handoff-"));
+    const { path: pathname } = fixture.state();
+    await closeOpenClawStateDatabaseAsync();
+    const lease =
+      holder === "schema lease"
+        ? acquireStateDatabaseSchemaLease(pathname)
+        : acquireGatewayStateOwner({ databasePath: pathname });
+    const receipt = path.join(fixture.dir, "observed-owner");
+    const preload = path.join(fixture.dir, "observe-owner.cjs");
+    try {
+      // Release only after the native child reads the real record, without guessing its startup time.
+      fs.writeFileSync(
+        preload,
+        [
+          'const fs = require("node:fs");',
+          "const read = fs.readFileSync;",
+          "fs.readFileSync = function (file, ...args) {",
+          "  const raw = read.call(this, file, ...args);",
+          "  if (file === " + JSON.stringify(lease.path) + ") {",
+          "    fs.writeFileSync(" + JSON.stringify(receipt) + ', "observed");',
+          "  }",
+          "  return raw;",
+          "};",
+        ].join("\n"),
+      );
+      for (const [key, value] of Object.entries(sqliteWorkerPreloadEnv(preload))) {
+        vi.stubEnv(key, value);
+      }
+      await using worker = createAgentSchemaInspectionWorker();
+      const inspection = worker.inspectState(
+        {
+          pathname,
+          supportedVersion: supportedVersions.state,
+          requireStartupMigrationReadiness: true,
+          purpose: "runtime",
+        },
+        undefined,
+      );
+      const asserted =
+        holder === "schema lease"
+          ? expect(inspection).resolves.toMatchObject({
+              schemas: { incompatible: [], indeterminate: [] },
+              registeredDatabases: [],
+            })
+          : expect(inspection).rejects.toBeInstanceOf(StateDatabaseOfflineMaintenanceError);
+      void asserted.catch(() => {});
+      if (holder === "schema lease") {
+        // The inspection already owns the deadline for its cold child.
+        await waitForFixtureFile(receipt, inspection);
+        lease.release();
+      }
+      await asserted;
+    } finally {
+      lease.release();
+      vi.unstubAllEnvs();
+    }
+  },
+);
 
 it("cold-loads a compatible storage seal without validation SQL or snapshots", async () => {
   const fixture = databaseFixture(tempDirs.make("openclaw-clean-startup-"));
@@ -83,46 +152,36 @@ it("cold-loads a compatible storage seal without validation SQL or snapshots", a
   expect(readSqliteDatabaseCleanClose(agentPath)).toBe(true);
 });
 
-it.each(["legacy", "malformed", "unknown-policy"])(
-  "runs full agent admission for a %s seal",
-  async (kind) => {
-    const fixture = databaseFixture(tempDirs.make("openclaw-invalid-seal-"));
-    const { path: agentPath } = fixture.agent();
-    closeDatabases();
-    const file = fs.statSync(agentPath, { bigint: true });
-    const seal = readSqliteCleanCloseSeal(agentPath, file)!;
-    if (kind === "malformed") {
-      fs.writeFileSync(`${agentPath}.seal`, "{torn");
-    } else {
-      const identity =
-        kind === "legacy"
-          ? createHash("sha256")
-              .update(JSON.stringify([2, VERSION, "agent"]))
-              .update(OPENCLAW_AGENT_SCHEMA_SQL)
-              .digest("hex")
-          : "unknown-policy";
-      expect(
-        writeSqliteCleanCloseSeal(agentPath, identity, file, {
-          ...seal,
-          identity:
-            kind === "legacy"
-              ? undefined
-              : { ...sqliteDatabaseSealSchemaFor("agent")!.identity, policy: -1 },
-        }),
-      ).toBe(true);
-    }
-    retireSqliteDatabaseAdmissionForPath(agentPath);
-    expect(readSqliteDatabaseCleanClose(agentPath)).toBe(false);
-    fixture.state();
-    const observer = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
-    try {
-      fixture.agent();
-      expect(observer.queries.filter((sql) => sql === "PRAGMA integrity_check;")).toHaveLength(1);
-    } finally {
-      observer.restore();
-    }
-  },
-);
+it("checks an unsealed closed WAL agent at live startup without a private copy", async () => {
+  const fixture = databaseFixture(tempDirs.make("openclaw-live-closed-wal-"));
+  const { path: agentPath } = fixture.agent();
+  closeDatabases();
+  const mutation = openRawDatabase(agentPath);
+  mutation.exec(`
+    CREATE TABLE integrity_probe_parent(id INTEGER PRIMARY KEY);
+    CREATE TABLE integrity_probe_child(parent_id INTEGER REFERENCES integrity_probe_parent(id));
+  `);
+  mutation.close();
+  retireSqliteDatabaseAdmissionForPath(agentPath);
+  expect(readSqliteDatabaseCleanClose(agentPath)).toBe(false);
+  expectFiles([`${agentPath}-wal`, `${agentPath}-shm`], false);
+  const snapshot = rejectSnapshot(agentPath, "No space for a full agent database snapshot");
+  const onAgentInspection = vi.fn();
+  await expect(
+    withLiveStateReads(() => fixture.ready(undefined, "gateway-startup", { onAgentInspection })),
+  ).resolves.toBeUndefined();
+  expect(onAgentInspection).toHaveBeenLastCalledWith(
+    expect.objectContaining({ schemaSnapshotCount: 0 }),
+  );
+  const corrupt = openRawDatabase(agentPath);
+  corrupt.exec("PRAGMA foreign_keys = OFF; INSERT INTO integrity_probe_child VALUES (42);");
+  corrupt.close();
+  await expect(withLiveStateReads(() => fixture.ready())).rejects.toMatchObject({
+    name: "SqliteIntegrityError",
+    message: expect.stringContaining(`foreign_key_check failed for ${agentPath}`),
+  });
+  expect(snapshot.mock.calls.filter(([pathname]) => pathname === agentPath)).toEqual([]);
+});
 
 it("admits every previously sealed same-version agent before transcript readers run", async () => {
   const fixture = databaseFixture(tempDirs.make("startup-additive-seal-"));
@@ -279,7 +338,7 @@ it("reads a replacement database's committed WAL after loading the old clean sea
 });
 
 it.each(["DELETE", "WAL", "closed WAL"])(
-  "freshly checks startup integrity off the main thread and preserves %s source artifacts",
+  "freshly checks startup integrity off the main thread and preserves %s agent source artifacts",
   async (mode) => {
     const stateDir = tempDirs.make("openclaw-startup-integrity-");
     const fixture = databaseFixture(stateDir);
@@ -299,10 +358,10 @@ it.each(["DELETE", "WAL", "closed WAL"])(
       return prepare(pathname, options);
     });
     const check = integrity.assertSqliteIntegrity;
-    const mainThreadAgentChecks: string[] = [];
+    const mainThreadChecks: string[] = [];
     vi.spyOn(integrity, "assertSqliteIntegrity").mockImplementation((database, label) => {
-      if (label === agentPath) {
-        mainThreadAgentChecks.push(label);
+      if (label === agentPath || label === fixture.statePath) {
+        mainThreadChecks.push(label);
       }
       return check(database, label);
     });
@@ -342,10 +401,13 @@ it.each(["DELETE", "WAL", "closed WAL"])(
         } else {
           await expect(readiness).resolves.toBeUndefined();
         }
-        expect(mainThreadAgentChecks).toEqual([]);
-        expect(
-          snapshotPreflightSourceManifest(stateDir, mode === "WAL" ? agentPath : undefined),
-        ).toEqual(before);
+        expect(mainThreadChecks).toEqual([]);
+        expectLiveReadSourceManifest(
+          stateDir,
+          before,
+          fixture.statePath,
+          mode === "WAL" ? agentPath : undefined,
+        );
       }
     } finally {
       writer?.close();

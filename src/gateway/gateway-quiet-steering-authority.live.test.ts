@@ -5,7 +5,6 @@ import fs from "node:fs/promises";
 import { createServer as createHttpServer } from "node:http";
 import net from "node:net";
 import path from "node:path";
-import { DatabaseSync } from "node:sqlite";
 import { createServer as createTlsServer } from "node:tls";
 import { describe, expect, it } from "vitest";
 import { createOpenClawTestInstance } from "../../test/helpers/openclaw-test-instance.js";
@@ -13,10 +12,8 @@ import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { runQaGatewayFixture } from "../../test/helpers/qa-gateway-cleanup.js";
 import { TEST_TLS_CERT_PEM, TEST_TLS_KEY_PEM } from "../../test/helpers/tls-fixture.js";
 import { isLiveTestEnabled } from "../agents/live-test-helpers.js";
-import { getSessionKysely } from "../config/sessions/session-accessor.sqlite-scope-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { loadOrCreateDeviceIdentity } from "../infra/device-identity.js";
-import { executeSqliteQuerySync } from "../infra/kysely-sync.js";
 import { buildCatalogModel } from "../plugin-sdk/provider-catalog.test-support.js";
 import { listKnownProviderAuthEnvVarNamesCore } from "../secrets/provider-env-vars.js";
 import { extractAssistantPhaseText } from "../shared/chat-message-content.js";
@@ -867,12 +864,16 @@ describeLive("quiet steering with real caller authority", () => {
       }
       await restartQueue(false, "queue");
 
-      await caseRun("cold Gateway restart settles inputs without replay", async () => {
+      await caseRun("cold Gateway crash cancels queued input without replay", async () => {
         const key = await create("cold");
         const gate = relay.arm();
         const root = await send(high, key, "Do not use tools. Reply COLD_ROOT.");
         await withinTest(gate.entered.promise, signal);
-        const queued = await send(third, key, "Do not use tools. Reply COLD_QUEUED_RECOVERED.");
+        const queued = await send(
+          third,
+          key,
+          "Do not use tools. Reply COLD_QUEUED_MUST_NOT_REPLAY.",
+        );
         await waitQueued(queued.runId);
         const before = await history(key, [queued.runId]);
         expect(before.inputReceipts).toContainEqual(
@@ -885,34 +886,6 @@ describeLive("quiet steering with real caller authority", () => {
         }
         gate.release.resolve();
         await instance.stopGateway();
-        // Read only after the crashed process and its workers have stopped. Public
-        // history hides unowned queued rows, so it cannot diagnose orphan discovery.
-        const recordOfflineInput = (phase: string) => {
-          const database = new DatabaseSync(
-            instance.state.statePath("agents", "main", "agent", "openclaw-agent.sqlite"),
-            { readOnly: true },
-          );
-          try {
-            const pending = executeSqliteQuerySync(
-              database,
-              getSessionKysely(database)
-                .selectFrom("session_pending_inputs as pending")
-                .leftJoin("session_nodes as node", "node.session_key", "pending.session_key")
-                .select([
-                  "pending.state",
-                  "pending.session_id",
-                  "pending.lifecycle_generation",
-                  "pending.consumed_event_id",
-                  "node.current_session_id",
-                ])
-                .where("pending.run_id", "=", queued.runId),
-            ).rows;
-            console.error(`[quiet-live] ${phase} ` + JSON.stringify(pending));
-          } finally {
-            database.close();
-          }
-        };
-        recordOfflineInput("cold-offline-input");
         await instance.startGateway();
         expect(instance.child?.pid).not.toBe(oldPid);
         high = await connect(0);
@@ -928,36 +901,18 @@ describeLive("quiet steering with real caller authority", () => {
               pending: recovered.pendingInputs,
             }),
         );
-        // SIGKILL has no graceful-restart marker. A new admitted turn is the
-        // startup-settlement barrier; the orphan must not be replayed.
-        const fresh = await send(high, key, "Do not use tools. Reply exactly AFTER_COLD_RESTART.");
-        await waitRun(fresh.runId);
+        // SIGKILL cannot capture graceful-shutdown replay custody. Startup must
+        // settle this exact input as cancelled and resendable, never execute it.
+        await expect
+          .poll(
+            async () =>
+              (await history(key, [queued.runId])).inputReceipts?.find(
+                (receipt) => receipt.runId === queued.runId,
+              ),
+            { timeout: 130_000 },
+          )
+          .toMatchObject({ runId: queued.runId, cancelled: true });
         const after = await history(key, [queued.runId]);
-        const newPid = instance.child?.pid;
-        // Freeze the observed post-startup state without letting graceful shutdown
-        // settle inputs and obscure whether startup changed the durable row.
-        await instance.crashGateway();
-        for (const client of clients) {
-          await client.stopAndWait();
-        }
-        await instance.stopGateway();
-        recordOfflineInput("cold-post-startup-input");
-        console.error(
-          "[quiet-live] restart-settlement-warnings " +
-            JSON.stringify(
-              instance
-                .logs()
-                .split("\n")
-                .filter((line) =>
-                  /Restart resume discovery failed:|Skipped restart resume for agent|Skipped interrupted input settlement/.test(
-                    line,
-                  ),
-                ),
-            ),
-        );
-        expect(after.inputReceipts).toContainEqual(
-          expect.objectContaining({ runId: queued.runId, state: "pending", cancelled: true }),
-        );
         expect(
           after.pendingInputs?.items.filter(
             (input) => input.runId === queued.runId && input.state === "queued",
@@ -968,17 +923,16 @@ describeLive("quiet steering with real caller authority", () => {
             .filter((message) => message.role === "assistant")
             .map(safeAssistantText)
             .join("\n"),
-        ).not.toContain("COLD_QUEUED_RECOVERED");
+        ).not.toContain("COLD_QUEUED_MUST_NOT_REPLAY");
         expect(
-          after.messages
-            .filter((message) => message.role === "assistant")
-            .map(safeAssistantText)
-            .join("\n"),
-        ).toContain("AFTER_COLD_RESTART");
+          relay.requests.some((request) =>
+            JSON.stringify(request.input).includes("COLD_QUEUED_MUST_NOT_REPLAY"),
+          ),
+        ).toBe(false);
         return {
           root: root.runId,
           oldPid,
-          newPid,
+          newPid: instance.child?.pid,
           receipts: after.inputReceipts,
         };
       });

@@ -271,6 +271,7 @@ export async function runPluginCommandScheduledTurn(params: {
       if (!entry || entry.archivedAt) {
         throw new Error("Scheduled plugin command parent was deleted or archived.");
       }
+      // Turn admission, dispatch and persistence all target the parent's current transcript.
       const parent = {
         ...schedule.parent,
         sessionId: entry.sessionId,
@@ -289,6 +290,7 @@ export async function runPluginCommandScheduledTurn(params: {
       // retain the native operator lease without inheriting a closed occurrence callback.
       restored = await restoreGatewayQueuedOperatorRecovery({
         source: schedule.operatorSource,
+        startGrant: "operator.cron",
         context,
         assertCurrent: () => {
           if (
@@ -374,7 +376,7 @@ export async function runPluginCommandScheduledTurn(params: {
                 jobId: job.id,
                 runId,
                 sourceSessionKey: schedule.parent.sessionKey,
-                originSessionId: schedule.parent.sessionId,
+                originSessionId: parent.sessionId,
                 sourceChannel: schedule.channel,
               },
             },
@@ -539,7 +541,7 @@ export async function runPluginCommandScheduledTurn(params: {
           const text = result.text ?? result.fallbackText?.text;
           if (text || mediaUrls?.length) {
             const appended = await appendAssistantMessageToSessionTranscript({
-              ...schedule.parent,
+              ...parent,
               storePath,
               config: cfg,
               expectedSessionId: entry.sessionId,

@@ -22,6 +22,7 @@ import { pickFallbackThinkingLevel } from "../embedded-agent-helpers/thinking.js
 import { registerProviderStreamForModel } from "../provider-stream.js";
 import type { StreamFn } from "../runtime/index.js";
 import { getModelRegistryRuntime } from "../sessions/model-registry-runtime.js";
+import type { CompactionSummaryOutputPolicy } from "../sessions/compaction/preparation.types.js";
 import { setSessionModelUsageSink } from "../sessions/session-model-usage.js";
 import type { SettingsManager } from "../sessions/settings-manager.js";
 import type { UsageLike } from "../usage.js";
@@ -139,14 +140,24 @@ export async function executeBoundedCompactionSession(
           onOutputDelta: refresh,
         },
       );
+      const transcriptPolicy = runtime.runtimePlan.transcript.resolvePolicy(
+        runtime.runtimePlanModelContext,
+      );
+      const summaryOutputPolicy: CompactionSummaryOutputPolicy =
+        params.summaryRefusal === "floor"
+          ? "deterministic"
+          : trigger === "manual" || resolveEffectiveCompactionMode(params.config) !== "default"
+            ? "none"
+            : "retry-invalid-once";
       const prepared = await prepareEmbeddedCompactionSession(
         runtime,
         target,
         settingsManager,
+        transcriptPolicy,
         assertActive,
-        runtime.buildSystemPromptText(),
+        await runtime.buildSystemPromptText(),
         replayEnabled,
-        mapThinkingLevel(mapThinkingLevelForProvider(thinkLevel, effectiveModel)),
+        summaryOutputPolicy,
       );
       effects = prepared.effects;
       setSessionModelUsageSink(effects, recordUsage ?? null);
@@ -175,8 +186,12 @@ export async function executeBoundedCompactionSession(
         return { ok: true, compacted: false, reason };
       };
       await runCompactionHooks({ ...hookContext, phase: "before", metrics });
-      if (!prepared.value.hasRealConversation) {
-        return await skipped("no real conversation messages");
+      if (!(prepared.value.status === "prepared" && prepared.value.hasRealConversation)) {
+        return await skipped(
+          prepared.value.status === "skipped"
+            ? prepared.value.reason
+            : "no real conversation messages",
+        );
       }
       let summaryReady = false;
       let summarySignal: AbortSignal | undefined;
@@ -187,7 +202,7 @@ export async function executeBoundedCompactionSession(
             resetTimeout = reset;
             setCompactionSafeguardCancellation(effects, undefined);
             return prepared.execute({
-              signal,
+              signal: signal ?? new AbortController().signal,
               summaryOutputPolicy: policy,
               thinkingLevel: mapThinkingLevel(
                 mapThinkingLevelForProvider(thinkLevel, effectiveModel),

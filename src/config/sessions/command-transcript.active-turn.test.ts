@@ -30,6 +30,10 @@ it("records a mid-turn exchange as context after the active turn settles", async
       await finish.promise;
     },
   );
+  onTestFinished(async () => {
+    finish.resolve();
+    await turn;
+  });
   await started.promise;
 
   await expect(
@@ -129,6 +133,7 @@ it("records once its own store's turn settles while another store stays busy", a
   const [ownTurn, otherTurn] = [runTurn(ownStore, "t0"), runTurn(otherStore, "t1")] as const;
   await Promise.all([ownTurn.started.promise, otherTurn.started.promise]);
   onTestFinished(async () => {
+    ownTurn.finish.resolve();
     otherTurn.finish.resolve();
     await Promise.all([ownTurn.turn, otherTurn.turn]);
   });

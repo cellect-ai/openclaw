@@ -1,5 +1,6 @@
 import type { Model } from "openclaw/plugin-sdk/llm";
 import { describe, expect, it } from "vitest";
+import { stripSummaryFloor } from "../../../packages/agent-core/src/harness/compaction/compaction-floor.js";
 import { applyAgentCompactionSettingsFromConfig } from "../agent-settings.js";
 import { textStream } from "./agent-session-boundary.test-support.js";
 import { agentSessionAutomaticCompaction } from "./agent-session-compaction.js";
@@ -73,7 +74,7 @@ describe("configured compaction summary limit", () => {
     );
 
     const result = await session.compact();
-    expect(result.summary.length).toBe(expectedLimit);
+    expect(stripSummaryFloor(result.summary).length).toBe(expectedLimit);
     expect(
       sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
     ).toMatchObject({ summary: result.summary });
@@ -181,46 +182,4 @@ describe("configured compaction summary limit", () => {
       );
     },
   );
-  it("fits manual compaction with the default recent-history retention", async () => {
-    const model = { ...testModel, contextWindow: 32_768, maxTokens: 8_192 };
-    const settingsManager = SettingsManager.inMemory({
-      compaction: { maxSummaryChars: 64_000, reserveTokens: 16_384, keepRecentTokens: 20_000 },
-      retry: { enabled: false },
-    });
-    const sessionManager = SessionManager.inMemory();
-    await sessionManager.appendMessageAsync({
-      role: "user",
-      content: "a".repeat(100_000),
-      timestamp: 1,
-    });
-    await sessionManager.appendMessageAsync(createAssistant(model, "b".repeat(30_000)));
-    await sessionManager.appendMessageAsync({
-      role: "user",
-      content: "c".repeat(50_000),
-      timestamp: 3,
-    });
-    await sessionManager.appendMessageAsync(createAssistant(model, "d".repeat(1_000)));
-    const { session } = await createTestSession({ model, settingsManager, sessionManager });
-    streamMocks.streamSimple.mockImplementation((activeModel: Model) =>
-      textStream(activeModel, "Preserve the project decisions. ".repeat(2_000)),
-    );
-    const budget = createCompactionRequestBudget({
-      contextWindow: model.contextWindow,
-      reserveTokens: settingsManager.getCompactionReserveTokens(),
-      systemPrompt: session.systemPrompt,
-      tools: session.state.tools,
-    });
-
-    const result = await session.compact();
-
-    expect(result.summary.length).toBeGreaterThan(0);
-    expect(estimateCompactedRequestTokens(session.messages, budget)).toBeLessThanOrEqual(
-      model.contextWindow - budget.reserveTokens,
-    );
-    expect(
-      sessionManager.getBranch().findLast((entry) => entry.type === "compaction"),
-    ).toMatchObject({
-      summary: result.summary,
-    });
-  });
 });

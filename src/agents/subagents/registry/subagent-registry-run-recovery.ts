@@ -225,9 +225,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
     let refreshCompletionAuthority: true | undefined;
     try {
       // A surviving requester owns the whole cohort, including this successor.
-      subagentRuns.runWithCompletionAuthority(paused, () => undefined, {
-        requireRetainedAuthority: true,
-      });
+      subagentRuns.runWithCompletionAuthority(paused, () => undefined);
     } catch {
       refreshCompletionAuthority = true;
     }
@@ -569,7 +567,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
           } else if (previousRunId !== nextRunId) {
             postimages.set(previousRunId, null);
           }
-          return { value: { source, next }, postimages };
+          return { value: { source, next }, postimages, removalReason: "superseded" };
         },
         {
           runs: this.options.runs,
@@ -613,6 +611,7 @@ export class SubagentRecoveryManager extends SubagentWaitManager {
                 requesterRunInstance?.runId === next.requesterTurnRunId
                   ? requesterRunInstance
                   : undefined,
+                sameRequesterTask ? subagentRuns.getRequesterCompletion(next) : undefined,
               );
               custodyTransferred = true;
             }

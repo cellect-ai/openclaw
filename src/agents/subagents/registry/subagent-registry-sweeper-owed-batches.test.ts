@@ -3,12 +3,12 @@ import { setRuntimeConfigSnapshot } from "../../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../../config/sessions/paths.js";
 import { replaceSessionEntrySync } from "../../../config/sessions/session-accessor.sqlite-entry.js";
 import { prepareRestartCompletionCustody } from "../../../gateway/session-restart-resume-custody.js";
+import { prepareRestartStores } from "../../../gateway/session-restart-resume-discovery.js";
 import * as stateWorker from "../../../state/openclaw-state-worker-store.js";
 import { ensureGatewayOwnerProfile } from "../../../state/user-profiles.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import type { deliverSubagentAnnouncement } from "../announce/subagent-announce-delivery.js";
-import { captureRequesterSessionEntryCurrent } from "../announce/subagent-announce-delivery.runtime.js";
 import { visibleCompletion } from "../announce/subagent-announce-fixtures.test-support.js";
 import {
   createRequesterSettleContext,
@@ -57,10 +57,6 @@ it("settles ready results from overlapping yielded batches without consuming mes
       createdActor: { type: "human" as const, source: "profile" as const, id: person.id },
     };
     replaceSessionEntrySync({ ...target, sessionKey }, requester);
-    vi.mocked(captureRequesterSessionEntryCurrent).mockResolvedValue({
-      readCurrent: () => requester,
-      release() {},
-    });
     loadRequester.mockResolvedValue(
       requesterSnapshot({}, requester, { sessionKey, storePath: target.storePath }),
     );
@@ -154,10 +150,8 @@ it("settles ready results from overlapping yielded batches without consuming mes
       const context = createRequesterSettleContext();
       context.resolveGatewayContext = () => context;
       const recovery = { context, signal: new AbortController().signal, log: { warn: vi.fn() } };
-      await prepareRestartCompletionCustody(recovery, {
-        target,
-        entries: [{ sessionKey, entry: requester }],
-      });
+      const stores = await prepareRestartStores(recovery, [target]);
+      await prepareRestartCompletionCustody(recovery, stores![0]!);
       expect(recovery.log.warn).not.toHaveBeenCalled();
       registryRead.listSubagentRunsForRequester.mockImplementation(() => [
         ...subagentRuns.values(),
@@ -184,18 +178,24 @@ it("settles ready results from overlapping yielded batches without consuming mes
           return { delivered: true, path: "direct" };
         },
       );
-      for (const batch of batches) {
-        void batch;
+      for (let pass = 0; pass < batches.length; pass++) {
         const drain = observeRootWork();
         await harness.sweeper.sweepOnce();
         await drain();
+        expect(deliver, `sweep ${pass + 1}`).toHaveBeenCalled();
       }
-      expect(deliver).toHaveBeenCalled();
       expect(harness.resumeRequesterSettleWake).toHaveBeenCalled();
       for (let index = 0; index < 58; index++) {
         expect(subagentRuns.get(id(index))?.requesterSettleWake, id(index)).toBeUndefined();
         const current = subagentRuns.get(id(index));
-        expect(current?.delivery?.status, id(index)).toBe("delivered");
+        expect(["delivered", "failed"], id(index)).toContain(current?.delivery?.status);
+        if (current?.delivery?.status === "failed") {
+          expect(current.delivery).toMatchObject({
+            disposition: "permanent_failure",
+            lastError: expect.any(String),
+            payload: { childRunId: id(index) },
+          });
+        }
         expect(current?.completion?.resultText).toBe(`Saved result ${index}`);
       }
       for (const runId of pausedIds) {

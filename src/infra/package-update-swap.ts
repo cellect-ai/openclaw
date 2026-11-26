@@ -33,6 +33,7 @@ import {
   createNpmPackageRootLinkLifecycle,
   verifyRetainedNpmRootRecovery,
 } from "./package-update-npm-root.js";
+import { installStagedPackage } from "./package-update-release-switch.js";
 import {
   PackageUpdateActivationError,
   type PackageUpdateTransaction,
@@ -66,7 +67,13 @@ import { SystemPackageOwnershipError } from "./update-system-package-ownership.j
 
 export { removePackageUpdatePath } from "./package-update-filesystem.js";
 
-export async function swapStagedPackageInstall(
+/** Install a verified stage: the release switch where it can be used, otherwise the swap below. */
+export const swapStagedPackageInstall = (params: StagedPackageSwapParams) =>
+  params.stage.release || params.stage.releaseUnavailable
+    ? installStagedPackage(params, swapStagedPackageDirectory)
+    : swapStagedPackageDirectory(params);
+
+async function swapStagedPackageDirectory(
   params: StagedPackageSwapParams,
 ): Promise<StagedPackageSwapResult> {
   const startedAt = Date.now();
@@ -528,6 +535,7 @@ export async function swapStagedPackageInstall(
             backupRoot,
             // Rollback snapshots remain recovery evidence even after successful restoration.
             databaseBackupRoot: rollbackResult ? undefined : transaction.databaseBackupRoot,
+            discardDatabaseCaptures: transaction.discardDatabaseCaptures,
             retireLegacyBackups: rollbackResult ? undefined : retireLegacyBackups,
             launchers,
             packageBackedUp,

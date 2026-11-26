@@ -133,6 +133,7 @@ export function prepareSessionEntryReplacementPublication(
   );
   const publication: SessionEntryReplacementPublication = {
     kind: "session-entry-replacements",
+    ...(result.patchDiffBaselines ? { patchDiffBaselines: result.patchDiffBaselines } : {}),
     conversationPublication: readStagedConversationPublications(database),
     transcriptPublication: readStagedSessionTranscriptAuthority(database),
     pendingArchiveRecovery: result.pendingArchiveRecovery,

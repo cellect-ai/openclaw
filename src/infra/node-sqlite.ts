@@ -84,6 +84,7 @@ export function resolveImmutableSqliteFileUri(
 export function openNodeSqliteDatabase(
   location: string,
   options?: NodeSqliteDatabaseOptions,
+  expectedAdmissionIdentity?: string,
 ): import("node:sqlite").DatabaseSync {
   const sqlite = requireNodeSqlite();
   // Callers may pass file: URIs or already-namespaced paths from specialized
@@ -93,6 +94,13 @@ export function openNodeSqliteDatabase(
     options?.open === false
       ? undefined
       : prepareSqliteDatabaseAdmission(resolvedLocation, { create: options?.readOnly !== true });
+  if (
+    options?.open !== false &&
+    expectedAdmissionIdentity !== undefined &&
+    identity !== expectedAdmissionIdentity
+  ) {
+    throw new Error("SQLite staging database changed before native open");
+  }
   const database = new sqlite.DatabaseSync(resolvedLocation, options ?? {});
   if (database.isOpen) {
     try {
@@ -106,6 +114,9 @@ export function openNodeSqliteDatabase(
     const reopenedIdentity = prepareSqliteDatabaseAdmission(resolvedLocation, {
       create: options?.readOnly !== true,
     });
+    if (expectedAdmissionIdentity !== undefined && reopenedIdentity !== expectedAdmissionIdentity) {
+      throw new Error("SQLite staging database changed before native open");
+    }
     sqlite.DatabaseSync.prototype.open.call(database);
     try {
       bindSqliteDatabaseAdmission(database, reopenedIdentity);

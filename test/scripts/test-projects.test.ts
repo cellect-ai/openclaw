@@ -302,6 +302,16 @@ describe("scripts/test-projects changed-target routing", () => {
     );
   });
 
+  it("selects compiler planner unit and workflow consumers for planner changes", () => {
+    expectChangedTargets(
+      ["scripts/ci-check-plan.mts"],
+      testFiles(
+        "test/scripts",
+        "ci-check-plan ci-workflow-planning check-changed-compiler-delegation",
+      ),
+    );
+  });
+
   it("unions semantic workflow owners with bounded direct references", () => {
     withTinyGitRepo(
       {

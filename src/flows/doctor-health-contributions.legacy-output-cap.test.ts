@@ -1,6 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { validateConfigObjectRaw } from "../config/validation-core.js";
 import {
   createDoctorHealthFlowContext,
   resolveDoctorHealthContributions,
@@ -25,7 +24,7 @@ function legacyOutputCapContribution() {
 }
 
 function customProvider(maxTokens: number): OpenClawConfig {
-  const parsed = validateConfigObjectRaw({
+  return {
     models: {
       providers: {
         custom: {
@@ -34,11 +33,7 @@ function customProvider(maxTokens: number): OpenClawConfig {
         },
       },
     },
-  });
-  if (!parsed.ok) {
-    throw new Error(JSON.stringify(parsed.issues));
-  }
-  return parsed.config;
+  } as unknown as OpenClawConfig;
 }
 
 it("prints saved legacy output caps as a doctor note without failing health", async () => {

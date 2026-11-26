@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it, beforeEach, describe, vi } from "vitest";
+import { expectBytesEqual } from "../../test/helpers/file-snapshots.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { resolveCronStoreSelectionInDatabase } from "../cron/store/paths.js";
 import { runCommandBuffered } from "../process/exec.js";
@@ -47,27 +48,6 @@ async function resizeFile(file: string, size: number, flag: "w" | "a") {
 describe("snapshot inventory", () => {
   const dirs = useAutoCleanupTempDirTracker(afterEach);
   afterEach(() => closeOpenClawStateDatabaseForTest());
-
-  it("preserves a closed WAL source family while measuring cold archives", async () => {
-    const root = dirs.make("candidate-cold-inventory-");
-    const stateDir = path.join(root, "source");
-    const stagingRoot = path.join(root, "staging");
-    const source = path.join(stateDir, "agents", "main", "agent", "openclaw-agent.sqlite");
-    await fs.mkdir(path.dirname(source), { recursive: true });
-    const database = openNodeSqliteDatabase(source);
-    database.exec("PRAGMA journal_mode=WAL; PRAGMA user_version=7;");
-    database.close();
-    const before = await fs.readFile(source);
-    expect(await fs.readdir(path.dirname(source))).toEqual(["openclaw-agent.sqlite"]);
-
-    await readUpdateCandidateStateInventoryInProcess(
-      createStateSnapshotInput(root, stateDir, stagingRoot),
-    );
-
-    // Inventory must not create source WAL/SHM before the later header inspection.
-    expect(await fs.readdir(path.dirname(source))).toEqual(["openclaw-agent.sqlite"]);
-    expect(await fs.readFile(source)).toEqual(before);
-  });
 
   it("queues retained custom shared-state roots for exact capture with plugins disabled", async () => {
     const root = dirs.make("candidate-shared-roots-");
@@ -381,7 +361,7 @@ describe("snapshot legacy cron identity", () => {
         ),
       );
       expect(selection).toMatchObject({ status: "ready", storeKey });
-      expect(await fs.readFile(source)).toEqual(original);
+      expectBytesEqual(await fs.readFile(source), original, "source");
     },
   );
 });

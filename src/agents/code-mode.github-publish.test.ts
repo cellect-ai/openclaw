@@ -19,18 +19,11 @@ afterEach(async () => {
 it.each(["node", "quickjs"] as const)(
   "%s returns a catchable publication timeout instead of an unbounded bridge wait",
   async (executor) => {
-    await import("./session-placement-admission.js");
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
     const harness = createSubscribedCodeModeHarness({ name: "github-deadline", executor });
+    const frontier = vi.spyOn(codeModeState, "waitForPendingBridgeSettlement");
     const started = createDeferred();
     const release = createDeferred();
-    const parked = createDeferred();
-    const waitForSettlement = codeModeState.waitForPendingBridgeSettlement;
-    vi.spyOn(codeModeState, "waitForPendingBridgeSettlement").mockImplementation((...args) => {
-      const waiting = waitForSettlement(...args);
-      parked.resolve();
-      return waiting;
-    });
     // Stall the entire Gateway request, including preparation before handler dispatch.
     const request = vi.spyOn(gateway, "callInProcessGatewayTool").mockImplementation(async () => {
       started.resolve();
@@ -65,10 +58,13 @@ it.each(["node", "quickjs"] as const)(
     });
     try {
       await started.promise;
-      // Both executors must publish their parked frontier before advancing host deadlines.
-      await parked.promise;
+      // Do not advance the worker's dispatch timer before its parked frontier is published.
+      await vi.waitFor(() =>
+        expect(frontier.mock.calls.find(([, mode]) => mode.kind === "awaiting")?.[0]).toHaveLength(
+          1,
+        ),
+      );
       await vi.advanceTimersByTimeAsync(600_001);
-      expect(harness.replyOperation.abortSignal.reason).toBeUndefined();
       await vi.waitFor(() =>
         expect(result, JSON.stringify(result)).toMatchObject({ status: "completed" }),
       );

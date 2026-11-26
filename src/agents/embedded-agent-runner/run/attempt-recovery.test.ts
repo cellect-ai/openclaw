@@ -1,7 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { queryObjects } from "node:v8";
 import { WEBSOCKET_NON_RETRYABLE_CLOSE_ERROR_CODE } from "@openclaw/ai/diagnostics";
 import { APIError } from "openai/core/error";
 import { createRequireRecord } from "openclaw/plugin-sdk/test-fixtures";
@@ -12,6 +11,7 @@ import { makeTextToolResult } from "../../../../test/helpers/text-tool-result.js
 import { sleepWithAbort } from "../../../infra/backoff.js";
 import { flushDiagnosticsTimeline } from "../../../infra/diagnostics-timeline.js";
 import { withEnvAsync } from "../../../test-utils/env.js";
+import { forceFullGc } from "../../../test-utils/retention.js";
 import {
   buildEmbeddedRunnerAssistant,
   createMockUsage,
@@ -640,9 +640,9 @@ describe("recoverEmbeddedRunAttempt", () => {
     expect(fixture.failoverRetryController.advanceAuthProfile).not.toHaveBeenCalled();
     const [payload] = buildEmbeddedRunPayloads({ ...fixture.attempt, sessionKey: "cap-test" });
     expect(payload?.isError).toBe(true);
-    expect(payload?.text).toBe(
-      "⚠️ The AI service needs a short break. Please try again in a few minutes.",
-    );
+    expect(payload?.text).toContain("openai/mock-1 is rate-limited.");
+    expect(payload?.text).toContain("retry in 3 hours");
+    expect(payload?.text).toContain("model picker");
   });
 
   it("exhausts sixteen rate-limited attempts with bounded history before rotation and failover", async () => {
@@ -696,7 +696,7 @@ describe("recoverEmbeddedRunAttempt", () => {
       fixture.continueFromCurrentTranscript.mockClear();
       if (retry === 2 || retry === 8 || retry === 15) {
         await nextTurn();
-        queryObjects(WeakRef);
+        forceFullGc();
         retainedBytes.push(histories.filter((history) => history.deref()).length * imageBytes);
       }
     }

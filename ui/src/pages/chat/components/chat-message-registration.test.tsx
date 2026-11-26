@@ -1,6 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
-/* @vitest-environment jsdom */
 import { expect, it } from "vitest";
+/* @vitest-environment jsdom */
 import { prepareChatMessageRender } from "../../../lib/chat/message-display.ts";
 import { mountSolid } from "../../../test-helpers/solid-render.tsx";
 import { waitForSolid } from "../../../test-helpers/solid-settle.ts";

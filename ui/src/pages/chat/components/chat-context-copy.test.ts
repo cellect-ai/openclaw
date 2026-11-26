@@ -1,7 +1,7 @@
-/* @vitest-environment jsdom */
 import { createComponent, createSignal, flush } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { toSanitizedMarkdownHtml } from "../../../components/markdown.ts";
+/* @vitest-environment jsdom */
 import { prepareChatMessageRender } from "../../../lib/chat/message-display.ts";
 import { cleanupSolid, mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { AttachmentStateCard, CompactAttachmentCard } from "./chat-attachment-card-solid.tsx";
@@ -266,9 +266,11 @@ describe("chat content context copy", () => {
     open(owner.querySelector("code")!);
     document.querySelector<HTMLButtonElement>('[role="menuitem"]')!.click();
     await vi.waitFor(() =>
-      expect(document.querySelector('[role="menuitem"]')?.textContent).toBe("Copy failed"),
+      expect(document.querySelector('[role="menuitem"]')?.textContent).toBe(
+        "Couldn’t copy. Try again.",
+      ),
     );
-    await copy("Copy failed", "literal tool output");
+    await copy("Couldn’t copy. Try again.", "literal tool output");
     Reflect.deleteProperty(document, "execCommand");
   });
 });

@@ -4,7 +4,10 @@ import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { createDeclarationInputBoundary } from "../../scripts/lib/local-check-runtime.mts";
 import { emitNativeDeclarations } from "../../scripts/lib/native-declaration-emitter.mts";
-import { readNativeTypeScriptConfig } from "../../scripts/lib/native-typescript-config.mts";
+import {
+  createNativeTypeScriptConfigReader,
+  readNativeTypeScriptConfig,
+} from "../../scripts/lib/native-typescript-config.mts";
 import { createNodeEvalArgs } from "../../src/test-utils/node-process.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
@@ -18,6 +21,34 @@ const roots = useAutoCleanupTempDirTracker(afterEach);
 const tempRoot = (name: string) =>
   fs.realpathSync.native(roots.make(`native-declaration-${name}-`));
 const moduleOptions = { module: "NodeNext", moduleResolution: "NodeNext", target: "ES2023" };
+
+it("keeps roots, options, and input inventories separate across a config-reading batch", () => {
+  const root = tempRoot("config-batch");
+  for (const [file, contents] of Object.entries({
+    "alpha/base.json": '{"compilerOptions":{"strict":true}}',
+    "beta/base.json": '{"compilerOptions":{"strict":false}}',
+    "alpha/tsconfig.json": '{"extends":"./base.json","files":["entry.ts"]}',
+    "beta/tsconfig.json": '{"extends":"./base.json","files":["entry.ts"]}',
+    "alpha/entry.ts": "export const alpha = 1;",
+    "beta/entry.ts": "export const beta = 2;",
+  })) {
+    writeNativeFixtureFile(root, file, contents);
+  }
+  using reader = createNativeTypeScriptConfigReader({ cwd: root });
+  const alpha = reader.read("alpha/tsconfig.json");
+  const beta = reader.read("beta/tsconfig.json");
+  for (const [name, parsed, strict] of [
+    ["alpha", alpha, true],
+    ["beta", beta, false],
+  ] as const) {
+    expect(parsed.fileNames).toEqual([path.join(root, name, "entry.ts")]);
+    expect(parsed.options.strict).toBe(strict);
+    expect(parsed.configFiles).toEqual([
+      path.join(root, name, "base.json"),
+      path.join(root, name, "tsconfig.json"),
+    ]);
+  }
+});
 
 it("keeps test-only ambient augmentation out of declaration roots but in test graphs", () => {
   const root = fs.realpathSync.native(roots.make("native-declaration-production-roots-"));
@@ -87,28 +118,32 @@ it("keeps test-only ambient augmentation out of declaration roots but in test gr
   }
 });
 
-it("rechecks a previously missing declaration path after its parent becomes a symlink", () => {
-  const ancestor = fs.realpathSync.native(roots.make("declaration-path-recheck-"));
-  const root = path.join(ancestor, "checkout");
-  const outside = path.join(ancestor, "outside");
-  const parent = path.join(root, "generated");
-  const file = path.join(parent, "value.d.ts");
-  fs.mkdirSync(root);
-  fs.mkdirSync(outside);
-  fs.writeFileSync(path.join(outside, "value.d.ts"), "export {};\n");
-  const boundary = createDeclarationInputBoundary(root);
-  expect(boundary.assert(file)).toBe(file);
-  expect(boundary.assert(file)).toBe(file);
+it.each(["absolute", "relative"])(
+  "rechecks a missing %s declaration path after its parent becomes a symlink",
+  (spelling) => {
+    const ancestor = fs.realpathSync.native(roots.make("declaration-path-recheck-"));
+    const root = path.join(ancestor, "checkout");
+    const outside = path.join(ancestor, "outside");
+    const parent = path.join(root, "generated");
+    const file = path.join(parent, "value.d.ts");
+    fs.mkdirSync(root);
+    fs.mkdirSync(outside);
+    fs.writeFileSync(path.join(outside, "value.d.ts"), "export {};\n");
+    const boundary = createDeclarationInputBoundary(root);
+    const input = spelling === "absolute" ? file : path.relative(root, file);
+    expect(boundary.assert(input)).toBe(file);
+    expect(boundary.assert(input)).toBe(file);
 
-  fs.rmSync(parent, { recursive: true, force: true });
-  fs.symlinkSync(outside, parent, "junction");
-  expect(() => boundary.assert(file)).toThrow("Declaration input escapes checkout");
+    fs.rmSync(parent, { recursive: true, force: true });
+    fs.symlinkSync(outside, parent, "junction");
+    expect(() => boundary.assert(input)).toThrow("Declaration input escapes checkout");
 
-  fs.rmSync(parent, { recursive: true, force: true });
-  fs.mkdirSync(parent);
-  fs.writeFileSync(file, "export {};\n");
-  expect(boundary.assert(file)).toBe(file);
-});
+    fs.rmSync(parent, { recursive: true, force: true });
+    fs.mkdirSync(parent);
+    fs.writeFileSync(file, "export {};\n");
+    expect(boundary.assert(input)).toBe(file);
+  },
+);
 
 function createNativeFixture(root: string, declared = root) {
   fs.mkdirSync(root, { recursive: true });

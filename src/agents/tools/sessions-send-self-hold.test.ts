@@ -3,7 +3,6 @@ import { expect, it, vi } from "vitest";
 import { runWithAgentToolExecutionContext } from "../../../packages/agent-core/src/tool-execution-context.js";
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { createDeferred } from "../../../test/helpers/promise.js";
-import { clearSessionResetRuntimeState } from "../../auto-reply/reply/session-reset-cleanup.js";
 import { getRuntimeConfig, setRuntimeConfigSnapshot } from "../../config/config.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import {
@@ -29,7 +28,6 @@ import {
 } from "../../gateway/server-plugin-in-process-dispatch.test-support.js";
 import { PluginInstance, type PluginReplacementOutcome } from "../../plugins/plugin-instance.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
-import { captureSessionTarget } from "../../sessions/session-controller.lifecycle.js";
 import { createReplyTurnParticipants } from "../../sessions/session-controller.tool-authority.js";
 import { resolveIncognitoOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
@@ -57,10 +55,7 @@ import {
 } from "./gateway-caller-context.js";
 import * as gateway from "./in-process-gateway.js";
 import * as handoff from "./session-tool-handoff.js";
-import {
-  createSelfHeldSendRetainer,
-  hasRetainedSessionSendForSubagent,
-} from "./sessions-send-self-hold.js";
+import { createSelfHeldSendRetainer, stopRetainedSessionSends } from "./sessions-send-self-hold.js";
 import * as delivery from "./sessions-send-tool.delivery.js";
 import * as input from "./sessions-send-tool.input.js";
 import { createSessionsSendTool } from "./sessions-send-tool.js";
@@ -112,17 +107,13 @@ async function refuseSelfHeldAdmission(cause: unknown) {
 }
 
 it.each([
-  [true, false, false, false, "active"],
-  [false, false, false, false, "active"],
-  [false, true, false, false, "active"],
-  [false, false, true, false, "active"],
-  [false, false, false, true, "active"],
-  [false, false, true, false, "aborted"],
-  [false, false, true, false, "released"],
-  [false, false, true, false, "revoked"],
+  [true, false, false],
+  [false, false, false],
+  [false, true, false],
+  [false, false, true],
 ] as const)(
-  "classifies the real factory caller before retention (parent-owned=%s, unobserved async=%s, implicit resume=%s, target successor=%s, handoff=%s)",
-  async (parentOwned, unobserved, implicitResume, successor, lifetime) =>
+  "classifies the real factory caller before retention (parent-owned=%s, unobserved async=%s, implicit resume=%s)",
+  async (parentOwned, unobserved, implicitResume) =>
     withOpenClawTestState({ scenario: "minimal" }, async () => {
       const config: OpenClawConfig = {
         agents: { ownership: "explicit", entries: { main: {} } },
@@ -188,23 +179,12 @@ it.each([
       const handle = createEmbeddedRunHandle({ runId: "source-run" });
       const operation = registerTestEmbeddedRun(sourceId, handle, sourceKey, undefined, "main");
       const onYield = vi.fn();
-      const handoffAbort = new AbortController();
-      let handoffCurrent = true;
-      let releaseWork: (() => void) | undefined;
       let work: Parameters<typeof handoff.handoffSessionTool>[0] | undefined;
       const timeout = vi.spyOn(input, "readSessionsSendTimeout");
       const handoffs = vi
         .spyOn(handoff, "handoffSessionTool")
         .mockImplementation(async (params) => {
           work = params;
-          releaseWork = params.retainWork?.({
-            signal: handoffAbort.signal,
-            assertCurrent: () => {
-              if (!handoffCurrent) {
-                throw new Error("Handoff revoked");
-              }
-            },
-          });
           await params.onYield?.("fixture handoff admitted");
           return jsonResult({ status: "started", async: true, message: "fixture handoff started" });
         });
@@ -281,13 +261,6 @@ it.each([
               }
             : { status: "started", retained: { acceptance: "not_accepted" } },
         );
-        if (successor) {
-          await replaceSessionEntry(target, {
-            sessionId: "compacted-target-session",
-            lifecycleRevision: "compacted-target-revision",
-            updatedAt: 2,
-          });
-        }
         release();
         consumer.release();
         settled.resolve({ kind: "applied", committed: true, unavailablePluginIds: [] });
@@ -301,21 +274,6 @@ it.each([
         expect(effect).not.toHaveBeenCalled();
         expect(dispatch).toHaveBeenCalledOnce();
         if (implicitResume) {
-          const child = subagentRuns.get("paused-resume");
-          assert(child);
-          expect(hasRetainedSessionSendForSubagent(child)).toBe(true);
-          // Equal metadata without the in-process owner is a different incarnation.
-          expect(hasRetainedSessionSendForSubagent({ ...child })).toBe(false);
-          if (lifetime === "aborted") {
-            handoffAbort.abort();
-          } else if (lifetime === "released") {
-            releaseWork?.();
-          } else if (lifetime === "revoked") {
-            handoffCurrent = false;
-          }
-          expect(hasRetainedSessionSendForSubagent(child)).toBe(lifetime === "active");
-        }
-        if ((implicitResume || successor) && lifetime === "active") {
           assert(work?.run);
           const replayed = await withGatewayToolCallerIdentity(caller, () =>
             work!.run!({
@@ -324,18 +282,12 @@ it.each([
             }),
           );
           expect(replayed, JSON.stringify(replayed)).toMatchObject({
-            outcomes: [
-              implicitResume
-                ? { status: "accepted", mode: "resume", completion: "task" }
-                : { status: "accepted" },
-            ],
+            outcomes: [{ status: "accepted", mode: "resume", completion: "task" }],
           });
-          if (implicitResume) {
-            expect(timeout.mock.calls.at(-1)).toEqual([
-              expect.objectContaining({ mode: "resume", timeoutSeconds: 0, watch: undefined }),
-              "resume",
-            ]);
-          }
+          expect(timeout.mock.calls.at(-1)).toEqual([
+            expect.objectContaining({ mode: "resume", timeoutSeconds: 0, watch: undefined }),
+            "resume",
+          ]);
           expect(effect).toHaveBeenCalledOnce();
           expect(dispatch).toHaveBeenCalledTimes(2);
           for (const invalid of [{ timeoutSeconds: 1 }, { watch: true }]) {
@@ -355,14 +307,8 @@ it.each([
             ).rejects.toThrow("admission only");
           }
           expect(dispatch).toHaveBeenCalledTimes(2);
-          if (implicitResume) {
-            expect(hasRetainedSessionSendForSubagent(subagentRuns.get("paused-resume")!)).toBe(
-              false,
-            );
-          }
         }
       } finally {
-        releaseWork?.();
         release();
         consumer.release();
         settled.resolve({ kind: "failed", committed: false, unavailablePluginIds: [] });
@@ -379,11 +325,6 @@ it.each([
 
 // Handoff/opaque replay are ports here; the guard fact, batch and policy state machine are real.
 it.each([
-  "target-reset",
-  "target-delete",
-  "target-reset-preparation",
-  "target-other-store",
-  "target-other-agent",
   "uncertain",
   "policy-denied",
   "sender-denied",
@@ -403,6 +344,7 @@ it.each([
   "entered-error",
   "different-requester",
   "handoff-failure",
+  "target-reset",
 ] as const)("settles retained send at the %s boundary without a second replay", async (boundary) =>
   withOpenClawTestState({ scenario: "minimal" }, async (state) => {
     const currentness = /sandbox-(preparation|admission|effect|known-result|stable)-/.test(
@@ -458,19 +400,6 @@ it.each([
         const result = await classify(params, authority, consume);
         if (boundary.startsWith("sandbox-admission-")) {
           await removeOptOut();
-        }
-        if (boundary === "target-reset-preparation") {
-          clearSessionResetRuntimeState(["agent:main:target"], {
-            cause: "reset",
-            agentId: "main",
-            sessionKey: "agent:main:target",
-            controllerTarget: captureSessionTarget({
-              storeScope: "/fixture/store",
-              sessionKey: "agent:main:target",
-              agentId: "main",
-            }),
-            assertCurrent() {},
-          });
         }
         return result;
       });
@@ -540,7 +469,7 @@ it.each([
         sessionKey: "agent:main:target",
         targetAgentId: "main",
         storePath: "/fixture/store",
-        targetRun: null,
+        hadTask: false,
         requesterParentOwned: false,
       };
       const call = (origin: string) =>
@@ -580,23 +509,6 @@ it.each([
           selfHold: { why: "different-requester" },
         });
         expect(handoffs).toHaveBeenCalledOnce();
-      }
-      if (
-        ["target-reset", "target-delete", "target-other-store", "target-other-agent"].includes(
-          boundary,
-        )
-      ) {
-        clearSessionResetRuntimeState([send.sessionKey], {
-          cause: boundary === "target-reset" ? "reset" : "deleted",
-          agentId: boundary === "target-other-agent" ? "other" : "main",
-          controllerTarget: captureSessionTarget({
-            storeScope: boundary === "target-other-store" ? "/fixture/other" : send.storePath,
-            sessionKey: send.sessionKey,
-            agentId: "main",
-          }),
-          sessionKey: send.sessionKey,
-          assertCurrent() {},
-        });
       }
       release();
       consumer.release();
@@ -655,25 +567,17 @@ it.each([
         ["policy-denied", "sender-denied", "sandbox-denied", "sandbox-enabled"].includes(boundary);
       assert(work?.run);
       const scope = { signal: new AbortController().signal, assertCurrent: () => {} };
-      const replayResult = await work.run(scope);
-      if (
-        boundary === "target-reset" ||
-        boundary === "target-delete" ||
-        boundary === "target-reset-preparation"
-      ) {
-        expect(replayResult).toEqual({
-          outcomes: [
-            {
-              runId: "original-send",
-              status: "not_delivered",
-              stopCause: boundary === "target-delete" ? "deleted" : "reset",
-            },
-          ],
+      if (boundary === "target-reset") {
+        // Reset stops the held send by its chat key; nothing compares the target's revision.
+        stopRetainedSessionSends({ agentId: "main", sessionKeys: ["agent:main:target"] }, "reset");
+        expect(await work.run(scope)).toEqual({
+          outcomes: [{ runId: "original-send", status: "not_delivered", stopCause: "reset" }],
         });
-        expect(replay).not.toHaveBeenCalled();
         expect(await work.run(scope)).toEqual({ outcomes: [] });
+        expect(replay).not.toHaveBeenCalled();
         return;
       }
+      const replayResult = await work.run(scope);
       expect(replayResult, JSON.stringify(replayResult)).toMatchObject({
         outcomes: [
           {
@@ -765,7 +669,7 @@ it.each([false, true])(
             sessionKey,
             operatorProfileId: source.authority.profileId,
           });
-          return { source, device, origin };
+          return { client, source, device, origin };
         }),
       );
       const [alice, bob] = people;
@@ -838,7 +742,7 @@ it.each([false, true])(
                     sessionKey: "agent:main:target",
                     targetAgentId: "main",
                     storePath: "/fixture/store",
-                    targetRun: null,
+                    hadTask: false,
                     requesterParentOwned: false,
                   },
                   id,
@@ -862,14 +766,21 @@ it.each([false, true])(
         );
         expect(handoffs).toHaveBeenCalledOnce();
         invalidateGatewayDeviceRevocation(context, "bob", "operator");
-        expect(() => bob.source.authority.assertCurrent()).toThrow();
+        expect(() => bob.source.authority.assertCurrent()).not.toThrow();
+        await expect(
+          captureGatewayOperatorRunAuthority({
+            client: bob.client,
+            context,
+            hasCurrentClientAuthority: bob.device.isCurrent,
+          }),
+        ).rejects.toThrow("Gateway caller authority is no longer active.");
         expect(() => alice.source.authority.assertCurrent()).not.toThrow();
         release();
         consumer.release();
         settled.resolve({ kind: "applied", committed: true, unavailablePluginIds: [] });
         assert(work?.run && selected);
-        // Handoff is a port here, not a full Gateway authorization proof. Its captured
-        // participant source is real and still fences the actual retainer replay.
+        // Handoff is a port here, not a full Gateway authorization proof. Replay
+        // retains the admitted participant rather than widening to another user.
         const replayResult = await work.run({
           signal: new AbortController().signal,
           assertCurrent: selected.assertCurrent,

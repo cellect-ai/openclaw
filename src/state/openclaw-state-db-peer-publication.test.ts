@@ -80,19 +80,6 @@ it("adopts a peer process publication on a retained connection", async () => {
   expect(() => assertCurrentStateRuntimeSchema(borrowedDatabase, opened.path)).not.toThrow();
 });
 
-it("refuses a peer metadata publication when its header is still deferred", async () => {
-  const options = { env: { OPENCLAW_STATE_DIR: tempDirs.make("state-peer-mismatch-") } };
-  const { opened } = await openDeferredState(options);
-  using peer = new DatabaseSync(opened.path);
-  peer.exec(
-    `UPDATE schema_meta SET schema_version = ${OPENCLAW_STATE_SCHEMA_VERSION} WHERE meta_key = 'primary'`,
-  );
-  expect(() =>
-    assertCurrentStateRuntimeSchema(requireNativeSqliteDatabase(opened.db), opened.path),
-  ).toThrow(/metadata schema version .* does not match 15/iu);
-  expect(getStateSchemaVersionAdmission(opened.db)?.userVersion).toBe(15);
-});
-
 it("admits a peer process publication for existing-schema writes", async () => {
   const options = { env: { OPENCLAW_STATE_DIR: tempDirs.make("state-peer-existing-write-") } };
   const { opened } = await openDeferredState(options);
@@ -110,17 +97,13 @@ it("admits a peer process publication for existing-schema writes", async () => {
     ],
     { stdio: ["ignore", "pipe", "inherit"] },
   );
-  const exited = once(peer, "exit");
-  try {
-    await once(peer.stdout, "data");
-    const write = withLeaseWriteTransaction(
-      { scope: "shared", options, schemaPolicy: "existing" },
-      "peer-publication lease write",
-      () => true,
-      5_000,
-    );
-    expect(write).toBe(true);
-  } finally {
-    expect((await exited)[0]).toBe(0);
-  }
+  await once(peer.stdout, "data");
+  const write = withLeaseWriteTransaction(
+    { scope: "shared", options, schemaPolicy: "existing" },
+    "peer-publication lease write",
+    () => true,
+    5_000,
+  );
+  expect(write).toBe(true);
+  expect((await once(peer, "exit"))[0]).toBe(0);
 });

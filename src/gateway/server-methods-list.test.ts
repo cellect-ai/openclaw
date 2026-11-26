@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { authorizeOperatorScopesForMethod } from "./method-scopes.js";
 import {
   createCoreGatewayMethodDescriptors,
   STARTUP_UNAVAILABLE_GATEWAY_METHODS,
@@ -14,6 +15,12 @@ it.each([
   ["talk.voice.preview", "operator.write", { since: "<=2026.9" }],
   ["talk.session.announce", "operator.talk", { since: "<=2026.10" }],
   ["fi.shadow.announce fi.review.announce", "operator.admin", { since: "2026.11" }],
+  ["toolUsage.status", "operator.admin", { since: "2026.11" }],
+  [
+    "toolUsage.import toolUsage.reset",
+    "operator.admin",
+    { since: "2026.11", controlPlaneWrite: true },
+  ],
   ["agents.avatar.generate", "operator.admin", { since: "2026.10", controlPlaneWrite: true }],
   [
     "models.authSetApiKey plugins.reload plugins.refresh cron.add cron.update cron.remove cron.run",
@@ -24,6 +31,7 @@ it.each([
   ["projects.searchRemote", "operator.write", {}],
   ["node.runnerInventory.update", "node", { advertise: false }],
   ["mcp.events.list", "operator.read", { since: "2026.10" }],
+  ["sessions.groups.create", "operator.write", { since: "2026.10" }],
   ["gateway.restart.preflight", "operator.read", { since: "<=2026.7" }],
   [
     "environments.create environments.destroy environments.prepare",
@@ -91,3 +99,19 @@ it.each([
   expect(listGatewayMethods()).toContain(name);
   expect(coreGatewayHandlers[name]).toBeTypeOf("function");
 });
+
+it.each(["toolUsage.status", "toolUsage.import", "toolUsage.reset"])(
+  "requires admin authority for %s, including inspection",
+  (method) => {
+    expect(authorizeOperatorScopesForMethod(method, ["operator.admin"]).allowed).toBe(true);
+    expect(
+      authorizeOperatorScopesForMethod(method, ["operator.read", "operator.write"]).allowed,
+    ).toBe(false);
+    expect(
+      authorizeOperatorScopesForMethod(method, [
+        "operator.sessions.read",
+        "operator.sessions.write",
+      ]).allowed,
+    ).toBe(false);
+  },
+);

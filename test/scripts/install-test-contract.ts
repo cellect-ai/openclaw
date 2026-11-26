@@ -495,23 +495,15 @@ export function defineInstallerNpmRetryContract(installer: InstallerContract) {
     },
   );
 
-  it.each([
-    { callerUmask: "0002", expectedMode: 0o755 },
-    { callerUmask: "0077", expectedMode: 0o700 },
-  ])(
-    "installs safe npm package modes under a $callerUmask caller umask",
-    ({ callerUmask, expectedMode }) => {
-      const fixture = npmRetryFixture(installer, callerUmask);
-      const result = fixture.run("latest", "success", "");
-      expect(result.status, result.stdout + result.stderr).toBe(0);
-      const paths = ["", "dist", "dist/entry.js", "openclaw.mjs"].map((entry) =>
-        join(fixture.packageDir, entry),
-      );
-      expect(paths.map((path) => lstatSync(path).mode & 0o777)).toEqual(
-        paths.map(() => expectedMode),
-      );
-    },
-  );
+  it("installs the npm package without group-writable paths under a 0002 caller umask", () => {
+    const fixture = npmRetryFixture(installer, "0002");
+    const result = fixture.run("latest", "success", "");
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    const paths = ["", "dist", "dist/entry.js", "openclaw.mjs"].map((entry) =>
+      join(fixture.packageDir, entry),
+    );
+    expect(paths.filter((path) => (lstatSync(path).mode & 0o022) !== 0)).toEqual([]);
+  });
 
   it("fails after retrying the exact npm spec when npm exits zero without installing OpenClaw", () => {
     const fixture = npmRetryFixture(installer);

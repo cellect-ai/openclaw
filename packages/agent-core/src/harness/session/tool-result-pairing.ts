@@ -1,20 +1,21 @@
 import { DEFAULT_MISSING_TOOL_RESULT_TEXT } from "@openclaw/llm-core/types";
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
-import { normalizeUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import type { AgentMessage } from "../../types.js";
 import type { SessionTreeEntry } from "../types.js";
-import { classifyToolPairingFacts, type ToolPairingMessageFact } from "./tool-pairing-facts.js";
+import {
+  classifyToolPairingFacts,
+  selectResetKeptMessageFacts,
+  type ToolCallLike,
+  type ToolPairingMessageFact,
+} from "./tool-pairing-facts.js";
+
+export { createToolCallOccurrenceQueue } from "./tool-pairing-facts.js";
 
 const TOOL_CALL_TYPES = new Set(["toolCall", "toolUse", "functionCall"]);
 export const SYNTHETIC_MISSING_TOOL_RESULT_DETAIL_KEY = "openclawSyntheticMissingToolResult";
 export const LEGACY_MISSING_TOOL_RESULT_TEXT =
   "[openclaw] missing tool result in session history; inserted synthetic error result for transcript repair.";
-
-type ToolCallLike = {
-  id: string;
-  name?: string;
-};
 
 type ToolCallOccurrence = {
   contentIndex: number;
@@ -45,8 +46,6 @@ type ToolUsePairingFrame = {
   failed: boolean;
 };
 
-export { createToolCallOccurrenceQueue } from "./tool-pairing-facts.js";
-
 function readToolCall(block: unknown): ToolCallLike | undefined {
   const record = asOptionalObjectRecord(block);
   if (
@@ -66,18 +65,6 @@ export function extractToolCallsFromAssistant(
   return Array.isArray(message.content)
     ? message.content.flatMap((block) => readToolCall(block) ?? [])
     : [];
-}
-
-export function extractToolResultIds(message: ToolResultMessage): string[] {
-  const record: ToolResultIdAliases = message;
-  return normalizeUniqueTrimmedStringList([
-    record.toolCallId,
-    record.toolUseId,
-    record.tool_call_id,
-    record.tool_use_id,
-    record.callId,
-    record.call_id,
-  ]);
 }
 
 export function extractToolResultId(message: ToolResultMessage): string | null {
@@ -145,23 +132,34 @@ function normalizeToolResultName(
   return toolName && toolName !== rawToolName ? { ...message, toolName } : message;
 }
 
-export function normalizeLegacyToolResultId(
-  message: ToolResultMessage,
-  toolCalls: ToolCallLike[],
-): ToolResultMessage {
-  if (extractToolResultId(message) || toolCalls.length !== 1) {
-    return message;
+/** Adjacent, ordered results need no repair; reject extras that could replace earlier results. */
+export function isToolUseResultPairingCanonical(messages: readonly AgentMessage[]): boolean {
+  for (let index = 0; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (!message || typeof message !== "object" || message.role === "toolResult") {
+      return false;
+    }
+    if (message.role !== "assistant" || !Array.isArray(message.content)) {
+      continue;
+    }
+    for (const block of message.content) {
+      const call = readToolCall(block);
+      if (!call) {
+        continue;
+      }
+      const result = messages[++index];
+      if (
+        message.stopReason === "error" ||
+        message.stopReason === "aborted" ||
+        result?.role !== "toolResult" ||
+        extractToolResultId(result) !== call.id ||
+        normalizeToolResultName(result, call.name) !== result
+      ) {
+        return false;
+      }
+    }
   }
-  const toolCall = toolCalls[0];
-  if (!toolCall) {
-    return message;
-  }
-  const resultName = normalizeOptionalString(message.toolName);
-  const callName = normalizeOptionalString(toolCall.name);
-  if (resultName && callName && resultName !== callName) {
-    return message;
-  }
-  return { ...message, toolCallId: toolCall.id, isError: true };
+  return true;
 }
 
 /** Collect ownership facts while a source row is decoded; never retain its content or details. */
@@ -206,10 +204,7 @@ export function classifyToolUseResultPairing(
     }
     return {
       source,
-      normalized:
-        id && id !== extractToolResultId(source)
-          ? { ...source, toolCallId: id, isError: true }
-          : source,
+      normalized: id && id !== extractToolResultId(source) ? { ...source, toolCallId: id } : source,
     };
   };
   return frames.map((frame) => {
@@ -263,20 +258,18 @@ export function collectCompletedToolCallBlocks(
 
 /** Select reset-tail model context without changing persisted entry bytes or order. */
 export function selectResetKeptEntries(entries: readonly SessionTreeEntry[]): SessionTreeEntry[] {
-  const messages = entries.flatMap((entry) => (entry.type === "message" ? [entry.message] : []));
-  const frames = classifyToolUseResultPairing(messages);
-  const pairedResults = new Set(
-    frames.flatMap((frame) =>
-      frame.occurrences.flatMap((occurrence) =>
-        occurrence.sourceResult ? [occurrence.sourceResult] : [],
-      ),
+  return selectResetKeptMessageFacts(
+    entries.flatMap((entry) =>
+      entry.type === "message"
+        ? [
+            {
+              entry,
+              role: entry.message.role,
+              pairing: collectToolPairingMessageFact(entry.message),
+              identity: entry.message,
+            },
+          ]
+        : [],
     ),
-  );
-  return entries.filter(
-    (entry) =>
-      entry.type === "message" &&
-      (entry.message.role === "user" ||
-        entry.message.role === "assistant" ||
-        (entry.message.role === "toolResult" && pairedResults.has(entry.message))),
-  );
+  ).map(({ entry }) => entry);
 }

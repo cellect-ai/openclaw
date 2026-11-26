@@ -22,6 +22,7 @@ import {
 import { withinTest } from "../helpers/promise.js";
 import { createTempDirTracker, useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import { isProcessAlive } from "./live-process-fixture.test-support.js";
+import { writeFixtureFiles as writeFiles } from "./z0632-fixtures.test-support.js";
 
 const SCRIPT_PATH = "scripts/test-install-sh-docker.sh";
 const INSTALL_E2E_DOCKER_PATH = "scripts/test-install-sh-e2e-docker.sh";
@@ -123,14 +124,6 @@ function writeExecutable(file: string, source: string) {
 function writeCommands(bin: string, commands: Record<string, string>) {
   for (const [name, source] of Object.entries(commands)) {
     writeExecutable(join(bin, name), source);
-  }
-}
-
-function writeFiles(root: string, files: Record<string, string>) {
-  for (const [name, source] of Object.entries(files)) {
-    const file = join(root, name);
-    mkdirSync(path.dirname(file), { recursive: true });
-    writeFileSync(file, source);
   }
 }
 
@@ -822,10 +815,12 @@ fs.appendFileSync(process.env.CONTAINER_RECEIPTS, JSON.stringify({ args, env: Ob
       "unset HOME; source scripts/docker/install-sh-common/version-parse.sh; resolve_npm_config_path_value '~/.npmrc'",
     );
     expect(noHomeResult.status, noHomeResult.stderr).toBe(0);
+    const noHomeEnv = { ...process.env };
+    delete noHomeEnv.HOME;
     const nativeHomeResult = runCommand(
       process.execPath,
-      ["-e", "delete process.env.HOME; process.stdout.write(require('node:os').homedir())"],
-      { env: process.env },
+      ["-e", "process.stdout.write(require('node:os').homedir())"],
+      { env: noHomeEnv },
     );
     expect(nativeHomeResult.status, nativeHomeResult.stderr).toBe(0);
     expect(noHomeResult.stdout).toBe(join(nativeHomeResult.stdout, ".npmrc"));

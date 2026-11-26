@@ -5,10 +5,15 @@ import {
   emptySqliteCounts,
   observeParentSqlite,
 } from "../../../test/helpers/sqlite-parent-observer.js";
+import { observeHostDataSql } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { clearAgentRunContext, registerAgentRunContext } from "../../infra/agent-run-registry.js";
 import { beginSessionEffect } from "../../sessions/session-controller.lifecycle.js";
-import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
+import {
+  closeOpenClawAgentDatabasesAsync,
+  openOpenClawAgentDatabase,
+} from "../../state/openclaw-agent-db.js";
 import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.js";
+import { requireNativeSqliteDatabase } from "../../test-utils/native-sqlite.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -16,14 +21,20 @@ import {
 import * as archiveWorkers from "./session-accessor.sqlite-archive.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
 import { resolveSessionColdArchivePath } from "./session-cold-storage-codec.js";
+import { selectSessionColdBatch } from "./session-cold-storage-selection.js";
 import { readSessionColdTranscript } from "./session-cold-storage-state.js";
-import { runSessionColdStorageMaintenance } from "./session-cold-storage.js";
+import {
+  restoreSessionColdTranscript,
+  runSessionColdStorageMaintenance,
+} from "./session-cold-storage.js";
 import {
   createSessionColdStorageFixture,
   currentId,
   historicalId,
   maintenanceConfig,
+  setTranscriptActivity,
 } from "./session-cold-storage.test-support.js";
+import { readPreparedSessionCompactionInWorker } from "./session-compaction-prepared.js";
 
 let state: OpenClawTestState;
 let fixture: Awaited<ReturnType<typeof createSessionColdStorageFixture>>;
@@ -56,6 +67,60 @@ afterEach(async () => {
 afterAll(async () => {
   await state.cleanup();
 });
+
+it("archives by default after 30 days, respects opt-out, and restores history", async () => {
+  const defaultFixture = await createSessionColdStorageFixture(state.statePath("default.sqlite"));
+  const config = {
+    agents: { entries: { main: {} } },
+    session: { store: defaultFixture.scope.storePath },
+  };
+  const run = () => runSessionColdStorageMaintenance({ config });
+  setTranscriptActivity(defaultFixture.options, historicalId, Date.now() - 15 * 86_400_000);
+  const recent = defaultFixture.snapshot();
+  await expect(run()).resolves.toMatchObject({ archivedTranscripts: 0 });
+  expect(defaultFixture.snapshot()).toEqual(recent);
+  setTranscriptActivity(defaultFixture.options, historicalId, Date.now() - 31 * 86_400_000);
+  const old = defaultFixture.snapshot();
+  await expect(
+    maintain(maintenanceConfig(defaultFixture.scope.storePath, false)),
+  ).resolves.toMatchObject({
+    archivedTranscripts: 0,
+  });
+  expect(defaultFixture.snapshot()).toEqual(old);
+  await expect(run()).resolves.toMatchObject({ archivedTranscripts: 1 });
+  expect(readSessionColdTranscript(defaultFixture.database(), historicalId)).toBeDefined();
+  await restoreSessionColdTranscript(defaultFixture.scope);
+  expect(defaultFixture.snapshot()).toEqual(old);
+});
+
+it.each([false, true])(
+  "skips an empty archive carrier only without free pages: %s",
+  async (freePages) => {
+    const storePath = state.statePath(`empty-${freePages}.sqlite`);
+    const database = requireNativeSqliteDatabase(
+      openOpenClawAgentDatabase({ agentId: "main", path: storePath }).db,
+    );
+    if (freePages) {
+      database.exec(`CREATE TABLE test_free_pages (value BLOB);
+      INSERT INTO test_free_pages VALUES (zeroblob(1048576));
+      DROP TABLE test_free_pages;`);
+    }
+    expect(Number(database.prepare("PRAGMA freelist_count").get()?.freelist_count) > 0).toBe(
+      freePages,
+    );
+    await closeOpenClawAgentDatabasesAsync();
+    const prepare = vi.spyOn(archiveWorkers, "prepareSqliteColdArchiveBatch");
+    await expect(maintain(maintenanceConfig(storePath))).resolves.toMatchObject({
+      archivedTranscripts: 0,
+      externalizedTranscripts: 0,
+    });
+    expect(prepare).toHaveBeenCalledTimes(freePages ? 1 : 0);
+    const after = requireNativeSqliteDatabase(
+      openOpenClawAgentDatabase({ agentId: "main", path: storePath }).db,
+    );
+    expect(after.prepare("PRAGMA freelist_count").get()?.freelist_count).toBe(0);
+  },
+);
 
 function delayPreparation() {
   const entered = createDeferred();
@@ -212,6 +277,80 @@ it("propagates selection failure without a mutation or synchronous fallback", as
   expectHistoryUnchanged();
 });
 
+it("scans hot-window protection only when embedded archives leave a batch slot", async () => {
+  await expect(maintain()).resolves.toEqual({
+    archivedTranscripts: 1,
+    externalizedTranscripts: 0,
+  });
+  const archive = readSessionColdTranscript(fixture.database(), historicalId)!;
+  const bytes = await fs.readFile(
+    resolveSessionColdArchivePath(fixture.scope.storePath, archive.archive_name),
+  );
+  fixture
+    .database()
+    .prepare(
+      "UPDATE session_transcript_cold_archives SET storage = 'sqlite', archive_blob = ? WHERE session_id = ?",
+    )
+    .run(bytes, historicalId);
+  fixture
+    .database()
+    .prepare(
+      "UPDATE session_windows SET updated_at = 1, transcript_updated_at = 1 WHERE session_id = ?",
+    )
+    .run(currentId);
+  const referenceScope = {
+    ...fixture.scope,
+    sessionKey: "agent:main:cold-reference",
+    sessionId: "cold-reference-current",
+  };
+  replaceSessionEntrySync(referenceScope, {
+    sessionId: referenceScope.sessionId,
+    updatedAt: 1,
+    previousSessionId: currentId,
+  });
+  const input = {
+    databaseOptions: fixture.options,
+    admissionIdentities: [],
+    liveSessionKeys: [],
+    cooledSessionIds: [],
+    beforeMs: 100,
+    maxTranscripts: 1,
+    maxBytes: 64 * 1024 * 1024,
+  };
+  for (const maxTranscripts of [1, 2]) {
+    const observer = observeHostDataSql();
+    try {
+      const selected = selectSessionColdBatch({ ...input, maxTranscripts });
+      expect(selected.found).toBe(true);
+      if (!selected.found) {
+        throw new Error("Cold selection database was not found");
+      }
+      expect(selected.value.externalizations.map((item) => item.session_id)).toEqual([
+        historicalId,
+      ]);
+      expect(selected.value.plans).toEqual([]);
+      expect(
+        observer.queries.some(
+          (sql) =>
+            sql.includes('from "session_nodes"') &&
+            sql.includes('"last_activity_at"') &&
+            sql.includes('"last_interaction_at"'),
+        ),
+      ).toBe(maxTranscripts > 1);
+    } finally {
+      observer.restore();
+    }
+  }
+  replaceSessionEntrySync(referenceScope, {
+    sessionId: referenceScope.sessionId,
+    updatedAt: 1,
+  });
+  const unprotected = selectSessionColdBatch({ ...input, maxTranscripts: 2 });
+  expect(unprotected.found && unprotected.value.plans.map((plan) => plan.sessionId)).toEqual([
+    currentId,
+  ]);
+});
+
 it("retains an embedded archive when its window gains an admitted owner after preparation", async () => {
   const config = maintenanceConfig(fixture.scope.storePath);
   await expect(maintain(config)).resolves.toEqual({
@@ -274,4 +413,22 @@ it("retains an embedded archive when its window gains an admitted owner after pr
     admission?.release();
     await admission?.released;
   }
+});
+
+it("restores the captured cold source for native compaction preflight", async () => {
+  await expect(maintain()).resolves.toMatchObject({ archivedTranscripts: 1 });
+  expect(readSessionColdTranscript(fixture.database(), historicalId)).toBeDefined();
+  const prepared = await readPreparedSessionCompactionInWorker(fixture.scope, {
+    kind: "preflight",
+  });
+  expect(prepared.status).toBe("preflight");
+  if (prepared.status !== "preflight") {
+    throw new Error("Expected restored preflight");
+  }
+  expect(prepared.source.entries.map((entry) => entry.id)).toEqual([
+    "history-user",
+    "history-assistant",
+  ]);
+  expect(prepared.reads.extractedRows).toBe(3);
+  expectHistoryUnchanged();
 });

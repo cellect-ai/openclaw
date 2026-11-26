@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { assert, describe, expect, it, vi } from "vitest";
 import { trackSqliteStatementExecutions } from "../../../test/helpers/sqlite-statement-execution-counter.js";
+import { chatRef } from "../../sessions/chat-ref.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -25,6 +26,7 @@ import {
   failDelivery,
   failDeliveryAfterPlatformSend,
   failDeliveryBeforePlatformSend,
+  failChatDeliveries,
   loadPendingDelivery,
   loadUnfinishedDeliveries,
   loadCompletedDeliveryReceipt,
@@ -116,13 +118,11 @@ describe("delivery-queue storage", () => {
         completionRetention,
         ...(bound
           ? {
-              sessionGeneration: {
+              sessionGeneration: chatRef({
                 agentId: "main",
                 storePath: tmpDir() + "/sessions.sqlite",
                 sessionKey: "agent:main:test",
-                sessionId: "test",
-                lifecycleRevision: null,
-              },
+              }),
             }
           : {}),
       });
@@ -332,6 +332,30 @@ describe("delivery-queue storage", () => {
       },
     });
     expect(readQueuedEntry(tmpDir(), id).preparedBatch).toEqual(preparedBatch);
+  });
+
+  it("dead-letters only a deleted chat's unsent replies", async () => {
+    const stateDir = tmpDir();
+    const generation = (sessionKey: string) =>
+      chatRef({ agentId: "main", storePath: "/store", sessionKey });
+    const enqueueFor = (sessionKey: string) =>
+      enqueueTextDelivery({
+        payloads: [{ text: sessionKey }],
+        sessionGeneration: generation(sessionKey),
+      });
+    const deleted = await enqueueFor("agent:main:deleted");
+    const sending = await enqueueFor("agent:main:deleted");
+    const kept = await enqueueFor("agent:main:kept");
+    const claimId = await claimDeliveryPlatformSendAttempt(sending, stateDir);
+    assert(claimId, "test invariant: the send must own its row");
+    await markDeliveryPlatformSendAttemptStarted(sending, stateDir, undefined, claimId);
+
+    await failChatDeliveries({ agentId: "main", sessionKey: "agent:main:deleted" }, stateDir);
+
+    expect((await loadUnfinishedDeliveries(stateDir)).map((entry) => entry.id).toSorted()).toEqual(
+      [sending, kept].toSorted(),
+    );
+    expect(await loadPendingDelivery(deleted, stateDir)).toBeNull();
   });
 
   it("atomically reserves delivery attempts up to the producer budget", async () => {

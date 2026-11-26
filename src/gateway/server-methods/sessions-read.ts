@@ -79,17 +79,15 @@ export const sessionReadHandlers: GatewayRequestHandlers = {
       return;
     }
     if (params.recall) {
-      await searchRecallSessionTranscripts({
+      const result = await searchRecallSessionTranscripts({
         query,
         limit: params.limit,
         recall: params.recall,
         projection: requireSessionRowProjection(context),
         client: client ?? null,
-        onResult: (result) => {
-          sessionMutationAuthorization?.assertCurrent();
-          respond(true, result);
-        },
       });
+      sessionMutationAuthorization?.assertCurrent();
+      respond(true, result);
       return;
     }
     if (params.scope !== undefined) {

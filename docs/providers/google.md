@@ -74,74 +74,10 @@ the Gateway already runs inside a managed Google Cloud environment.
   </Tab>
 
   <Tab title="Vertex AI (ADC)">
-    **Recommended for:** Gateway instances running inside Google Cloud (GCE,
-    GKE, Cloud Run) or workstations already authenticated through gcloud
-    Application Default Credentials.
-
-    <Steps>
-      <Step title="Authenticate with gcloud ADC">
-        On a workstation, run:
-
-        ```bash
-        gcloud auth application-default login
-        ```
-
-        On a Google Cloud VM with an attached service account, the metadata
-        server already provides credentials and no file is needed.
-      </Step>
-      <Step title="Set project and location">
-        Both are required in the gateway service environment:
-
-        ```bash
-        export GOOGLE_CLOUD_PROJECT="my-project"
-        export GOOGLE_CLOUD_LOCATION="us-central1"
-        ```
-
-        `GCLOUD_PROJECT` is also accepted for the project. Without a project,
-        runs fail with `Vertex AI requires a project ID. Set GOOGLE_CLOUD_PROJECT/GCLOUD_PROJECT or pass project in options.`
-        Without a location, the error is `Vertex AI requires a location. Set GOOGLE_CLOUD_LOCATION or pass location in options.`
-      </Step>
-      <Step title="Credential: automatic discovery or manual sentinel">
-        With a recognized ADC file (created by
-        `gcloud auth application-default login`) **and** the project and
-        location variables set, OpenClaw discovers `google-vertex`
-        automatically — nothing needs to be stored.
-
-        Manual storage is only needed for metadata-only credentials (for
-        example a GCE VM with an attached service account and no ADC file on
-        disk) or to select the ADC path explicitly. The ADC path is selected
-        by a sentinel value, not a real key — store exactly
-        `gcp-vertex-credentials`:
-
-        ```bash
-        openclaw models auth paste-api-key --provider google-vertex
-        # paste exactly: gcp-vertex-credentials
-        ```
-
-        <Warning>
-        Other stored values are sent in the `x-goog-api-key` header, not as
-        ADC credentials. Do not paste an OAuth access token from
-        `gcloud auth print-access-token`: it is not an API key and can cause
-        an authentication error such as `401 UNAUTHENTICATED`.
-        </Warning>
-      </Step>
-      <Step title="List the Vertex catalog">
-        ```bash
-        openclaw models list --refresh --all --provider google-vertex
-        ```
-
-        `--all` includes models you have not configured. `--refresh` populates
-        the local catalog when it has not been loaded yet; it does not query
-        a live Vertex model inventory or verify that ADC can obtain a token.
-      </Step>
-    </Steps>
-
-    <Tip>
-    Vertex uses a separate static model catalog; new Gemini variants appear
-    there per OpenClaw release rather than through the live refresh used by the
-    AI Studio key path.
-    </Tip>
-
+    Use `google-vertex` for Gemini with Google Cloud project billing and
+    Application Default Credentials. Follow the [Google (Vertex AI)
+    setup guide](/providers/google-vertex) for gcloud user ADC, service account
+    keys, metadata-server credentials, and Gateway environment configuration.
   </Tab>
 
   <Tab title="Gemini CLI runtime">
@@ -228,6 +164,17 @@ Gemini 4 Argon supports text, image, audio, video, and PDF inputs, function
 calling, structured outputs, and search grounding. It uses implicit context
 caching only: explicit `cachedContents` handles and the Live API are not
 supported. See [Google's model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-4-argon).
+
+## Gemini 4 Hydrogen
+
+`google/gemini-4-hydrogen` has a 1,048,576-token context window shared by input
+and output, and up to 65,536 output tokens by default. Google accepts text,
+image, video, audio, and PDF input. Thinking levels are low, medium, and high;
+xhigh currently sends high. Like Argon, it supports implicit context caching only.
+The catalog prices it at Google's paid-tier rates per million tokens: $1.50 input,
+$7.50 output (thinking tokens included), and $0.075 cached input. See
+[Google's model documentation](https://ai.google.dev/gemini-api/docs/models/gemini-4-hydrogen)
+and [pricing](https://ai.google.dev/gemini-api/docs/pricing#gemini-4-hydrogen).
 
 The bundled catalog also includes the stable `google/gemini-3.8-flash`, with a
 1,048,576-token context window and up to 65,536 output tokens. The built-in
@@ -652,21 +599,22 @@ roundtrip; pass `--openai-audio-cycles 3` for a short repeated lifecycle soak.
 
 <AccordionGroup>
   <Accordion title="Gemini Interactions API (stateless)">
-    Gemini Flash text models use the Interactions API by default on the API-key
+    Gemini text models use the Interactions API by default on the API-key
     `google` provider when the effective base URL is the official Google AI Studio
-    endpoint. Custom proxy URLs default to `google-generative-ai` (GenerateContent),
-    even when the model comes from the catalog rather than a configured model row.
-    The official-endpoint default includes Flash-Lite, `gemini-flash-latest`, and
-    forward-compatible Flash model IDs. Pro and other non-Flash models, including
-    the default `google/gemini-4-argon`, keep `google-generative-ai` (GenerateContent).
-    Vertex AI, Gemini CLI, image generation, speech, Live, embeddings, media
-    understanding, web search, and PDF processing keep their existing routes.
+    endpoint. This covers Flash, Flash-Lite, Pro, the default `google/gemini-4-argon`,
+    `-latest` aliases, and forward-compatible Gemini model IDs. Gemma models keep
+    `google-generative-ai` (GenerateContent). Custom proxy URLs default to
+    `google-generative-ai`, even when the model comes from the catalog rather than
+    a configured model row. Vertex AI, Gemini CLI, image generation, speech, Live,
+    embeddings, media understanding, web search, and PDF processing keep their
+    existing routes.
 
     GenerateContent, music, and video SDK clients explicitly use `v1beta` unless
     a configured base URL already includes an API version. Vertex AI keeps `v1`;
     Live and browser-token routes keep their existing versions.
 
-    To force GenerateContent for a Flash model, set its existing `api` override:
+    To force GenerateContent for a Gemini model, for example to keep explicit
+    `cachedContent` handles, set its existing `api` override:
 
     ```json5
     {

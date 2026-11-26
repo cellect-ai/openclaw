@@ -197,6 +197,7 @@ describe("cloud turn media boundary", () => {
     vi.stubEnv("PATH", `${bin}${path.delimiter}${process.env.PATH ?? ""}`);
   });
   afterEach(async () => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     await cleanupWorkerTurnLauncherTest({ reuseReadWorkers: true });
     vi.unstubAllEnvs();
@@ -247,7 +248,8 @@ describe("cloud turn media boundary", () => {
     expect(path.dirname(mediaUrl!)).toBe(path.join(getMediaDir(), "outbound"));
     await expect(fs.readFile(mediaUrl!)).resolves.toEqual(bytes);
     await expect(fs.stat(remotePath)).rejects.toMatchObject({ code: "ENOENT" });
-    expect((await openSessionManager()).getLeafEntry()).toMatchObject({
+    const branch = (await openSessionManager()).getBranch();
+    expect(branch.findLast((entry) => entry.type === "message")).toMatchObject({
       type: "message",
       message: { role: "assistant", content: [{ type: "text", text }] },
     });
@@ -333,6 +335,13 @@ describe("cloud turn media boundary", () => {
 
   it("restores ordered mixed input without a recorder", async () => {
     const rig = await harness();
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-11-21T05:24:59Z"));
+    const stageAttachments = vi.mocked(rig.tunnel.stageAttachments!).getMockImplementation()!;
+    vi.mocked(rig.tunnel.stageAttachments!).mockImplementation(async (request) => {
+      await stageAttachments(request);
+      vi.setSystemTime(new Date("2026-11-21T05:25:01Z"));
+    });
     const offloaded = createSolidPngBuffer(3, 3, { r: 0, g: 0, b: 255 });
     const inline = inlineImage();
     const saved = await save(offloaded);

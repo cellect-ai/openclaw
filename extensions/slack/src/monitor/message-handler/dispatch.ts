@@ -613,6 +613,9 @@ async function dispatchSlackMessageWithSetup(
     if (hasVisibleInboundReplyDispatch(settledDispatchResult)) {
       await previewLifecycle.observeDelivery({ visibleReplySent: true });
     }
+    if (progress.useDraftProgressCard) {
+      await progress.finalizeDraftProgressCard("success");
+    }
   }
   await previewLifecycle.cleanup({ failed: Boolean(dispatchError || agentRunFailed) });
 

@@ -11,8 +11,9 @@ import { SESSIONS_SPAWN_SESSION_SCHEMA } from "./sessions-spawn-visible.schema.j
 
 const SESSIONS_SPAWN_RUNTIMES = ["subagent", "acp"] as const;
 const SESSIONS_SPAWN_SANDBOX_MODES = ["inherit", "require"] as const;
-// Keep the schema local to avoid a circular import through acp-spawn/openclaw-tools.
+// ACP execution reaches the tools registry; schema metadata must not import that runtime.
 const SESSIONS_SPAWN_ACP_STREAM_TARGETS = ["parent"] as const;
+
 export const createSessionsSpawnToolSchema = createCachedToolSchema({
   build: buildSessionsSpawnToolSchema,
   key: (params) =>
@@ -60,7 +61,7 @@ function buildSessionsSpawnToolSchema(params: {
     cwd: Type.Optional(
       Type.String({
         description:
-          "Child working directory. Workspace-contained file tools (apply_patch/file writes) resolve and contain paths against cwd; set cwd for edits outside the agent workspace. Visible paths outside configured agent workspaces require operator.admin. Mutually exclusive with projectId/projectGitUrl. With no source selector and worktree=true: inherit the same-agent parent managed repository; otherwise use the target agent workspace.",
+          "Child working directory. File tools resolve relative paths against cwd. With configuration-only containment, cwd also binds their workspace root. With an explicit restricted permission mode, a hidden native child keeps its inherited recorded root; changing cwd cannot widen it. Required roots, sender restrictions, and sandbox boundaries still apply. Visible paths outside configured agent workspaces require operator.admin. Mutually exclusive with projectId/projectGitUrl. With no source selector and worktree=true: inherit the same-agent parent managed repository; otherwise use the target agent workspace.",
       }),
     ),
     ...(params.threadAvailable

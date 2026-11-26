@@ -80,13 +80,6 @@ it.each(["release", "offline", "exhausted", "cancelled"] as const)(
     const controller = new AbortController();
     const cancelled = new Error("read cancelled while awaiting foreign schema owner");
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
-    const admissionWaiting = createDeferredCore();
-    const schedule = globalThis.setTimeout;
-    const timerSpy = vi.spyOn(globalThis, "setTimeout").mockImplementation((...args) => {
-      const timer = schedule(...args);
-      admissionWaiting.resolve();
-      return timer;
-    });
     const reading = executeExistingOpenClawStateRead(options, backupRead, {
       signal: controller.signal,
     });
@@ -130,8 +123,6 @@ it.each(["release", "offline", "exhausted", "cancelled"] as const)(
         expect(dispatched).toHaveBeenCalledOnce();
       } else {
         if (outcome === "exhausted") {
-          // Real owner-file I/O must establish the admission deadline before time advances.
-          await admissionWaiting.promise;
           await vi.advanceTimersByTimeAsync(4_999);
           expect(settled).toBe(false);
           await vi.advanceTimersByTimeAsync(1);
@@ -164,7 +155,6 @@ it.each(["release", "offline", "exhausted", "cancelled"] as const)(
       dispatch.resolve();
       task.result.resolve(emptyReply);
       await result;
-      timerSpy.mockRestore();
       vi.useRealTimers();
     }
   },

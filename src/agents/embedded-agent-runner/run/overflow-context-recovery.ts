@@ -14,7 +14,9 @@ import {
 } from "../../embedded-agent-helpers/context-overflow-observation.js";
 import { isLikelyContextOverflowError } from "../../failover/context-overflow.js";
 import { isProviderRequestSizeCeilingError } from "../../failover/message-patterns.js";
-import type { FailoverClassification } from "../../failover/signal.js";
+import { resolveRetryAfterMs } from "../../failover/retry-evidence.js";
+import type { FailoverClassification, FailoverReason } from "../../failover/signal.js";
+import { sessionManagerReadToolResultProjectionEntries } from "../../sessions/session-manager-view-types.js";
 import { withSessionManagerWrite } from "../../sessions/session-manager-write-admission.js";
 import { classifyCompactionReason, isBenignCompactionSkipResult } from "../compact-reasons.js";
 import { runContextEngineMaintenance } from "../context-engine-maintenance.js";
@@ -40,6 +42,13 @@ import {
   isNoRealConversationCompactionNoop,
   resetNoRealConversationTokenSnapshot,
 } from "./session-bootstrap.js";
+
+const TRANSIENT_COMPACTION_FAILURE_REASONS = [
+  "rate_limit",
+  "overloaded",
+  "server_error",
+  "timeout",
+] as const satisfies readonly FailoverReason[];
 
 function renderRecoverySideEffectCaution(
   attempt: EmbeddedRunCompactionRecoveryInput["attempt"],
@@ -72,27 +81,38 @@ type EmbeddedRunOverflowRecoveryInput = EmbeddedRunCompactionRecoveryInput & {
   attemptCompactionCount: number;
   prepareCurrentTranscriptRetry: () => void;
   markOwnedTranscriptRetry: () => void;
+  /** Waits out a transient provider failure; false when the retry policy declines. */
+  retryTransientCompactionFailure: (failure: {
+    reason: FailoverReason;
+    code?: string;
+    message?: string;
+    retryAfterMs?: number;
+  }) => Promise<boolean>;
 };
+
+/** Soft pressure stopped this attempt at a safe boundary; it must never fail the turn. */
+function isBoundaryMaintenance(input: EmbeddedRunOverflowRecoveryInput): boolean {
+  return (
+    input.attempt.preflightRecovery?.pressure === "maintenance" &&
+    projectAgentRunAttemptTerminal(input.attempt.terminal).promptErrorSource === "precheck"
+  );
+}
 
 export async function recoverEmbeddedRunOverflow(
   input: EmbeddedRunOverflowRecoveryInput,
 ): Promise<EmbeddedRunOverflowRecoveryOutcome> {
-  const maintenance =
-    input.attempt.preflightRecovery?.pressure === "maintenance" &&
-    projectAgentRunAttemptTerminal(input.attempt.terminal).promptErrorSource === "precheck";
+  const maintenance = isBoundaryMaintenance(input);
   const outcome = await recoverContextPressure(input, maintenance);
-  if (
-    !maintenance ||
-    input.aborted ||
-    input.signalOwnedInterruption ||
-    outcome.action === "retry"
-  ) {
+  if (!maintenance || outcome.action === "retry") {
     return outcome;
   }
-  // A declined soft threshold never turns a request that still fits into a failure.
-  input.assertRecoveryActive();
+  // Maintenance could not reduce context. The request still fits, so send it and
+  // leave further reduction to the window guard for the rest of this run.
   declineBoundaryMaintenance(input.runParams.runId);
-  log.warn("[context-maintenance] continuing the turn without maintenance; the request still fits");
+  log.warn(
+    `[context-maintenance] declined for ${input.modelSelection.provider}/${input.modelSelection.model}; ` +
+      `continuing the turn without maintenance reason=${outcome.action === "surface" ? truncateUtf16Safe(outcome.errorText, 200) : "recovery_unavailable"}`,
+  );
   input.markOwnedTranscriptRetry();
   if (
     input.attempt.preflightRecovery?.source === "mid-turn" ||
@@ -210,7 +230,7 @@ async function recoverContextPressure(
     return { action: "retry" };
   };
   const truncateToolResults = async () => {
-    const { sessionManager, assertActive } = await input.prepareRecoverySession(contextTokenBudget);
+    const { sessionManager, assertActive } = await input.prepareRecoverySession();
     if (!sessionManager) {
       return {
         truncated: false,
@@ -225,7 +245,7 @@ async function recoverContextPressure(
       const projectionState = promptState.state.toolResults;
       restoreCacheTtlToolResultProjections(
         projectionState,
-        sessionManager.getToolResultProjectionEntries(),
+        sessionManager[sessionManagerReadToolResultProjectionEntries](),
       );
       const result = await truncateOversizedToolResultsInSessionManager({
         sessionManager,
@@ -297,6 +317,7 @@ async function recoverContextPressure(
   let parkedWorkBlocksContinuation = false;
   let failedCompactionReason: string | undefined;
   let compactionSkippedBenignly = false;
+  let providerUnavailable = false;
   if (
     !isCompactionFailure &&
     input.attemptCompactionCount > 0 &&
@@ -344,7 +365,7 @@ async function recoverContextPressure(
         );
       }
       if (input.contextEngine.maintain) {
-        const transcript = await input.prepareRecoverySession(contextTokenBudget);
+        const transcript = await input.prepareRecoverySession();
         await runContextEngineMaintenance({
           ...transcript,
           contextEngine: input.contextEngine,
@@ -369,7 +390,7 @@ async function recoverContextPressure(
     if (preflightRecovery && isNoRealConversationCompactionNoop(compactResult)) {
       input.state.lastCompactionTokensAfter = undefined;
       input.state.lastContextBudgetStatus = undefined;
-      const transcript = await input.prepareRecoverySession(contextTokenBudget);
+      const transcript = await input.prepareRecoverySession();
       await resetNoRealConversationTokenSnapshot({
         sessionTarget: transcript.sessionManager?.getSessionTarget(),
         sessionPersistence: runParams.sessionPersistence,
@@ -414,7 +435,6 @@ async function recoverContextPressure(
       input.assertRecoveryActive();
       input.runParams.onAutoCompactionSucceeded?.(input.state.autoCompactionCount);
       input.assertRecoveryActive();
-      input.armPostCompactionGuard();
       if (parkedWorkBlocksContinuation) {
         log.warn(
           `${compactionOutcome} for ${input.modelSelection.provider}/${input.modelSelection.model}, but parked nested tool work cannot follow the rotated session; surfacing overflow guidance`,
@@ -438,6 +458,27 @@ async function recoverContextPressure(
       log.warn(
         `auto-compaction failed for ${input.modelSelection.provider}/${input.modelSelection.model}: ${failedCompactionReason}`,
       );
+      const failure = compactResult.failure;
+      const transientReason =
+        classifyCompactionReason(failedCompactionReason) === "timeout"
+          ? undefined // A compaction watchdog timeout already used its whole budget.
+          : TRANSIENT_COMPACTION_FAILURE_REASONS.find((reason) => reason === failure?.reason);
+      providerUnavailable = transientReason !== undefined;
+      if (
+        transientReason &&
+        (await input.retryTransientCompactionFailure({
+          reason: transientReason,
+          code: failure?.code,
+          message: failure?.rawError ?? failedCompactionReason,
+          retryAfterMs: resolveRetryAfterMs(failure?.rawError, Date.now()),
+        }))
+      ) {
+        input.assertRecoveryActive();
+        // The failed summary compacted nothing, so it does not use up an overflow attempt.
+        input.state.overflowCompactionAttempts -= 1;
+        input.markOwnedTranscriptRetry();
+        return retryCurrentTranscript();
+      }
     }
   }
 
@@ -487,7 +528,7 @@ async function recoverContextPressure(
   const userText = unshrinkableRequest
     ? `${failedCompactionReason}` + renderRecoverySideEffectCaution(input.attempt)
     : recoveryCompactionFailed
-      ? `${reasonClass === "timeout" ? "Auto-compaction timed out" : "Auto-compaction failed"} ${failurePhase}. Try again or run /compact.` +
+      ? `${reasonClass === "timeout" ? "Auto-compaction timed out" : providerUnavailable ? "Auto-compaction could not reach the model provider" : "Auto-compaction failed"} ${failurePhase}. Try again or run /compact.` +
         renderRecoverySideEffectCaution(input.attempt)
       : CONTEXT_OVERFLOW_ERROR_MESSAGE + renderRecoverySideEffectCaution(input.attempt);
   // Declined maintenance is reported by its owner; it does not block the run.

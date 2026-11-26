@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, expect, it, vi } from "vitest";
+import { expectBytesEqual } from "../../test/helpers/file-snapshots.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeFixtureJsonSync } from "../cli/cli-fixtures.test-support.js";
 import { stateSchemaHealthCheck } from "../flows/doctor-lint-flow.js";
@@ -218,7 +219,7 @@ it.each(["openclaw", "crestodian"])(
       );
       expect(preservedValue(migrated)).toBe(preservedBytes);
       migrated.close();
-      expect(fs.readFileSync(ordinaryPath)).toEqual(ordinaryBytes);
+      expectBytesEqual(fs.readFileSync(ordinaryPath), ordinaryBytes, ordinaryPath);
       expect((await repair(env)).changes).toEqual([]);
       expect(recoveryHolds(env)).toEqual([held[1]]);
     }, agentId),
@@ -242,7 +243,7 @@ it.each(["different-agent", "noncanonical-path"])(
         { changes: [], warnings: [], restored: [] },
       );
       expect(recoveryHolds(env)).toEqual(held);
-      expect(fs.readFileSync(pathname)).toEqual(bytes);
+      expectBytesEqual(fs.readFileSync(pathname), bytes, pathname);
     }, "openclaw"),
 );
 
@@ -427,7 +428,7 @@ it.each(["present-incomplete", "different-owner", "unconfigured"])("keeps %s sto
       agentId: "main",
       path: agentPath,
     });
-    expect(fs.readFileSync(agentPath)).toEqual(bytes);
+    expectBytesEqual(fs.readFileSync(agentPath), bytes, agentPath);
     await expect(
       assertOpenClawDatabasesReady({
         env,
@@ -470,7 +471,7 @@ it.each(["root", "included"])(
         expect(mutation).toHaveBeenCalledOnce();
         expect(fs.readFileSync(changedPath, "utf8")).toBe(newerConfig);
         expect(fs.existsSync(path.join(root, "workspace"))).toBe(false);
-        expect(fs.readFileSync(agentPath)).toEqual(bytes);
+        expectBytesEqual(fs.readFileSync(agentPath), bytes, agentPath);
         expect(recoveryHolds(env)).toContainEqual({
           agentId: "main",
           path: agentPath,

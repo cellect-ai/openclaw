@@ -4,8 +4,7 @@ import pg from "pg";
 import { expect, it } from "vitest";
 import { boardFixture, htmlWidget } from "../../boards/board-store.fixtures.test-support.js";
 import { closeBoardDatabases } from "../../boards/board-store.test-support.js";
-import { boardStore } from "../../gateway/board-store.js";
-import { createBoardHarness } from "../../gateway/server-methods/board.test-support.js";
+import { SqliteBoardStore } from "../../boards/sqlite-board-store.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { assertEngineStoreExecutionAllowed, withEngineStoreAdmission } from "./admission-scope.js";
@@ -45,23 +44,21 @@ it.skipIf(!connection)(
           expect(() => assertEngineStoreExecutionAllowed()).toThrow(
             "PostgreSQL connections must run in a worker",
           );
-          const store = boardStore;
-          const harness = createBoardHarness(undefined, {}, store);
-          const put = async (params: Record<string, unknown>) => {
-            const response = (await harness.invoke("board.widget.put", params)).mock.calls[0];
-            expect(response, JSON.stringify(response)).toMatchObject([true, expect.any(Object)]);
-            return response![1] as Awaited<ReturnType<typeof store.putWidget>>;
-          };
+          const store = new SqliteBoardStore(seeded.storeOptions);
           expect((await store.getSnapshot(seeded.target)).revision).toBe(0);
-          const created = await put(htmlWidget(seeded.sessionKey, "duration", "<p>initial</p>"));
-          const updated = await put(htmlWidget(seeded.sessionKey, "duration", "<p>updated</p>"));
+          const created = await store.putWidget(
+            htmlWidget(seeded.sessionKey, "duration", "<p>initial</p>"),
+          );
+          const updated = await store.putWidget(
+            htmlWidget(seeded.sessionKey, "duration", "<p>updated</p>"),
+          );
           expect(updated.revision).toBe(created.revision + 1);
           expect(updated.widgets.map((widget) => widget.name)).toEqual(["duration"]);
           expect(
             await store.useWidgetDocument(seeded.target, "duration", (document) => document),
-          ).toMatchObject({ html: expect.stringContaining("<p>updated</p>") });
+          ).toMatchObject({ html: "<p>updated</p>" });
           const report = { blocks: [{ type: "text", text: "Native report persisted" }] };
-          const published = await put({
+          const published = await store.putWidget({
             ...seeded.target,
             name: "report",
             content: { kind: "plugin", pluginKind: "session:report", props: report },
@@ -75,10 +72,9 @@ it.skipIf(!connection)(
             }),
           );
           await closeOpenClawAgentDatabasesAsync();
-          expect(await store.getSnapshot(seeded.target)).toMatchObject({
-            revision: published.revision,
-            widgets: published.widgets,
-          });
+          expect(
+            await new SqliteBoardStore(seeded.storeOptions).getSnapshot(seeded.target),
+          ).toMatchObject({ revision: published.revision, widgets: published.widgets });
           expect(() => assertEngineStoreExecutionAllowed()).toThrow(
             "PostgreSQL connections must run in a worker",
           );

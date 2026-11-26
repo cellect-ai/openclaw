@@ -21,6 +21,7 @@ import { bindPluginCliProgram } from "./cli-callback-binding.js";
 import { pluginCliGatewayNodesRuntime } from "./cli-gateway-nodes-runtime.js";
 import { withPluginCliServiceScheduler } from "./cli-service-scheduler.js";
 import { resolvePluginControlPlaneWorkspace } from "./control-plane-workspace.js";
+import { preparePluginDoctorContractModules } from "./doctor-contract-preparation.js";
 import { loadPluginDoctorRecoveryCliRegistrar } from "./doctor-contract-registry.js";
 import type { PluginLoadOptions } from "./loader.js";
 import {
@@ -293,7 +294,13 @@ async function appendPluginRecoveryCliRegistrars(
     if (degraded && degradedPluginMatchesRoot(degraded, manifest.rootDir)) {
       continue;
     }
-    // This release's Doctor loader captures and owns the selected source synchronously.
+    await preparePluginDoctorContractModules({
+      config: context.config,
+      env: context.env,
+      manifestRegistry: { plugins: [manifest], diagnostics: [] },
+      surfaces: ["recoveryCli"],
+      assertCurrent: prepared.assertCurrent,
+    });
     prepared.assertCurrent();
     const register = loadPluginDoctorRecoveryCliRegistrar(manifest);
     if (!register) {

@@ -33,6 +33,7 @@ import {
   requiresGoogleToolCallId,
   convertGoogleTools,
   type GoogleStreamChunk as GoogleSseChunk,
+  applyProviderPayloadHook,
   createEmptyTransportUsage,
   createWritableTransportEventStream,
   failTransportStream,
@@ -49,7 +50,7 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { parseGeminiAuth } from "./gemini-auth.js";
 import { stripGoogleProviderPrefix } from "./model-id.js";
-import { isGoogleNativeVideoModelId } from "./provider-models.js";
+import { isGoogleGeminiTextModelId } from "./provider-models.js";
 import { isOfficialGoogleAiStudioBaseUrl, normalizeGoogleApiBaseUrl } from "./provider-policy.js";
 import { resolveGoogleVertexBaseUrlLocation } from "./src/google-api-base-url.js";
 import {
@@ -76,6 +77,7 @@ type GoogleTransportOptions = SimpleStreamOptions &
   ProviderCallStreamOptions & {
     cachedContent?: string;
     topP?: number;
+    seed?: number;
     toolChoice?:
       | "auto"
       | "none"
@@ -158,7 +160,7 @@ function supportsGoogleNativeVideo(model: GoogleTransportModel): boolean {
     model.provider === "google" &&
     normalizeGoogleTransportRouteApi(model.api) === "google-generative-ai" &&
     isOfficialGoogleAiStudioBaseUrl(model.baseUrl) &&
-    isGoogleNativeVideoModelId(model.id) &&
+    isGoogleGeminiTextModelId(model.id) &&
     model.input.includes("video")
   );
 }
@@ -276,11 +278,10 @@ export function buildGoogleGenerativeAiParams(
     options?.thinking ?? buildGoogleSimpleThinking(canonicalGoogleModel(model), options),
     options?.maxTokens,
   );
-  if (typeof options?.temperature === "number") {
-    generationConfig.temperature = options.temperature;
-  }
-  if (typeof options?.topP === "number") {
-    generationConfig.topP = options.topP;
+  for (const key of ["temperature", "topP", "seed"] as const) {
+    if (typeof options?.[key] === "number") {
+      generationConfig[key] = options[key];
+    }
   }
   if (options?.stop !== undefined && options.stop.length > 0) {
     generationConfig.stopSequences = options.stop;
@@ -513,10 +514,8 @@ function createGoogleTransportStreamFn(kind: CanonicalGoogleTransportApi): Strea
           : context;
         const videoSlots: GoogleVideoSlots = new Map();
         let params = buildGoogleGenerativeAiParams(model, providerContext, options, videoSlots);
-        const nextParams = await options?.onPayload?.(params, canonicalModel);
-        if (nextParams !== undefined) {
-          params = nextParams as GoogleGenerateContentRequest;
-        }
+        const nextParams = await applyProviderPayloadHook(options, params, canonicalModel);
+        params = nextParams as GoogleGenerateContentRequest;
         const trustedVideoSlots: Record<string, unknown>[] = [];
         materializeGoogleVideoSlots(
           params,

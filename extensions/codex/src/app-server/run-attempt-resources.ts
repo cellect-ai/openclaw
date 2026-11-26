@@ -46,7 +46,6 @@ import {
 import { clearCodexBindingForClient } from "./session-binding.js";
 import {
   clearSharedCodexAppServerClientIfCurrentAndUnclaimed,
-  createIsolatedCodexAppServerClient,
   retainSharedCodexAppServerClientIfCurrent,
 } from "./shared-client.js";
 import type {
@@ -62,7 +61,7 @@ import { isCodexNativeDelegationDisabledForRun } from "./thread-requests.js";
 import { createCodexTrajectoryRecorder } from "./trajectory.js";
 import type { CodexAppServerTurnRouter, CodexThreadRouteReservation } from "./turn-router.js";
 
-const oneShotShutdown = {
+const CODEX_ONE_SHOT_CLIENT_CLOSE_OPTIONS = {
   exitTimeoutMs: 6_000,
   // A clean Codex shutdown can spend several seconds flushing its state database
   // after stdin closes under release-path load. Preserve a bounded grace period
@@ -181,30 +180,35 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     state.sharedCodexClientRetiredForOneShotCleanup = true;
     const client = state.client;
     // The first close starts the memoized transport shutdown; joining it cannot extend grace.
-    const retired = clearSharedCodexAppServerClientIfCurrentAndUnclaimed(client, oneShotShutdown);
+    const retired = clearSharedCodexAppServerClientIfCurrentAndUnclaimed(
+      client,
+      CODEX_ONE_SHOT_CLIENT_CLOSE_OPTIONS,
+    );
     // Retained peers prevent retirement; preserve their client without treating
     // missing close evidence as a completed one-shot cleanup.
     const result =
-      client && retired.closed ? await client.closeAndWait(oneShotShutdown) : undefined;
+      client && retired.closed
+        ? await client.closeAndWait(CODEX_ONE_SHOT_CLIENT_CLOSE_OPTIONS)
+        : undefined;
     if (!result || result.cleanup === "uncertain") {
       throw new Error("Codex one-shot client cleanup could not be confirmed");
     }
   };
   const releaseSandboxExecEnvironment = async () => {
-    if (state.sandboxExecEnvironment) {
-      const environment = state.sandboxExecEnvironment;
-      state.sandboxExecEnvironment = undefined;
+    const environment = state.sandboxExecEnvironment;
+    state.sandboxExecEnvironment = undefined;
+    if (environment) {
       await releaseCodexSandboxExecServerEnvironment(sandbox, environment);
     }
   };
   const releaseSharedClientLeaseAndRetireOneShotClient = async () => {
-    if (connection.attemptClientFactory === createIsolatedCodexAppServerClient) {
+    if (connection.callerOwnedAttemptClient) {
       // Close the authorized node lease first; losing its socket first is a real disconnect.
       await releaseSandboxExecEnvironment();
       const ownedClient = state.releaseSharedClientLease ? state.client : undefined;
       releaseSharedClientLeaseOnce();
       if (ownedClient) {
-        const result = await ownedClient.closeAndWait(oneShotShutdown);
+        const result = await ownedClient.closeAndWait(CODEX_ONE_SHOT_CLIENT_CLOSE_OPTIONS);
         if (params.oneShotCliRun && result.cleanup === "uncertain") {
           throw new Error("Codex isolated client cleanup could not be confirmed");
         }
@@ -215,9 +219,7 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
     await retireSharedCodexClientForOneShotCleanup();
   };
   const runCleanupStep = (step: string, operation: () => Promise<void> | void | undefined) =>
-    runCodexCleanupStep(params, step, async () => {
-      await operation();
-    });
+    runCodexCleanupStep(params, step, async () => await operation());
   let nativeSubagentMonitorSettlement: Promise<void> | undefined;
   const unregisterNativeSubagentMonitor = async () => {
     const registration = state.nativeSubagentMonitor;
@@ -634,7 +636,6 @@ export function prepareCodexAttemptResources(prompt: CodexAttemptPrompt) {
       attemptTimeoutMs: params.timeoutMs,
       startupTimeoutMs,
       turnStartTimeoutMs: params.timeoutMs,
-      loopDetectionPreToolUseRelay: appServer.loopDetectionPreToolUseRelay,
       signal: runAbortController.signal,
       hostCapabilities: params.hostCapabilities,
       nativeProcessAuthority: requiresProcessAdmission

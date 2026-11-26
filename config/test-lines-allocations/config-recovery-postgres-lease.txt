@@ -1,2 +1,2 @@
-# Owned, expired and revoked PostgreSQL startup lease regressions adapted to stable config.
+# Real PostgreSQL startup recovery, expired/revoked lease refusal and ordinary SQL isolation.
 83

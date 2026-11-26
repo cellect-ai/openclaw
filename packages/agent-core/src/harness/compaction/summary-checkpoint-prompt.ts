@@ -79,7 +79,7 @@ Summarize the prefix to provide context for the retained suffix:
 
 Be concise. Focus on what's needed to understand the kept suffix.`;
 
-/** @internal Array and worker sources share exact prompt and output policy. */
+/** @internal Array and worker-source consumers share exact prompt and output policy. */
 export function prepareCompactionSummaryRequest(params: {
   model: Model;
   reserveTokens: number;

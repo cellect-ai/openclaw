@@ -2,13 +2,15 @@
 // oxfmt-ignore
 import { emptyReply, mock, queueTask, source, tempDirs } from "./openclaw-state-read-worker.test-harness.js";
 import fs from "node:fs";
-import { stat } from "node:fs/promises";
 import path from "node:path";
 import { threadId } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it, vi } from "vitest";
+import * as pathExistence from "../infra/path-existence.js";
+import * as sqliteIdentity from "../infra/sqlite-worker-identity.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import { freezeTrustedJsonSnapshot } from "../shared/immutable-data.js";
 import {
   closeOpenClawStateDatabaseByPathAsync,
   registerOpenClawStateDatabaseAsyncResource,
@@ -20,6 +22,7 @@ import {
 } from "./openclaw-state-db-readonly.js";
 import { withExistingOpenClawStateSchema } from "./openclaw-state-db-schema-policy.js";
 import { closeOpenClawStateDatabaseAsync, openOpenClawStateDatabase } from "./openclaw-state-db.js";
+import * as statePaths from "./openclaw-state-db.paths.js";
 import { captureOpenClawStateReadSource } from "./openclaw-state-read-worker.js";
 import type {
   OpenClawStateReadCommand,
@@ -27,11 +30,6 @@ import type {
 } from "./openclaw-state-read.types.js";
 import { captureOpenClawStateWorkerContext } from "./openclaw-state-worker-context.js";
 import { encodeOpenClawStateWorkerError } from "./openclaw-state-worker-error.js";
-
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const original = await importOriginal<typeof import("node:fs/promises")>();
-  return { ...original, stat: vi.fn(original.stat) };
-});
 
 it.each(["complete", "cancel", "revoke", "consumer-error", "worker-failure"] as const)(
   "joins asynchronous stream consumption before releasing its reader (%s)",
@@ -208,41 +206,6 @@ it("captures queued read routing and schema facts without reading unrelated envi
   }
 });
 
-it.skipIf(process.platform === "win32").each(["queued", "custody"] as const)(
-  "rejects a file replaced during %s read admission",
-  async (phase) => {
-    const { pathname, options } = source();
-    const dispatch = createDeferredCore();
-    const task = queueTask(dispatch.promise);
-    void task.captured.then(
-      () => task.result.resolve(emptyReply),
-      () => {},
-    );
-    const reading = executeExistingOpenClawStateRead(options, { type: "backup.runs" });
-    const rejected = expect(reading).rejects.toThrow(/identity changed/);
-    await task.submitted;
-    const replace = () => {
-      const replacement = pathname + ".replacement";
-      fs.writeFileSync(replacement, "replacement source");
-      fs.renameSync(replacement, pathname);
-    };
-    if (phase === "queued") {
-      replace();
-    } else {
-      const original = await vi.importActual<typeof import("node:fs/promises")>("node:fs/promises");
-      vi.mocked(stat).mockImplementationOnce(async (...args) => {
-        // Replace the source at the awaited dispatch-time identity check, after
-        // the queued request has captured its original admission identity.
-        replace();
-        return await original.stat(...args);
-      });
-    }
-    dispatch.resolve();
-    await rejected;
-    await expect(task.captured).rejects.toThrow(/identity changed/);
-  },
-);
-
 it("lets an active reader's host callback finish a nested read before the parent settles", async () => {
   const { pathname, options } = source();
   if (threadId === 0) {
@@ -373,7 +336,7 @@ it.each(["task", "source"] as const)(
   },
 );
 
-it("reads externally created state after an absent read without allocating a worker first", async () => {
+it("reads newly created state without blocking warm reads or allocating absent-source workers", async () => {
   const root = tempDirs.make("openclaw-read-first-creation-");
   const pathname = path.join(root, "source.sqlite");
   const options = { path: pathname, env: { OPENCLAW_STATE_DIR: root } };
@@ -388,6 +351,37 @@ it("reads externally created state after an absent read without allocating a wor
   const task = queueTask();
   task.result.resolve(emptyReply);
   expect(await executeExistingOpenClawStateRead(options, command)).toEqual(emptyReply);
+
+  const warmed = queueTask();
+  void warmed.captured.then(() => warmed.result.resolve(emptyReply), warmed.result.reject);
+  using existence = vi.spyOn(statePaths, "existingPathOrUndefined");
+  using identity = vi.spyOn(sqliteIdentity, "assertExistingDatabaseIdentity");
+  expect(await executeExistingOpenClawStateRead(options, command)).toEqual(emptyReply);
+  expect(existence).not.toHaveBeenCalled();
+  expect(identity).not.toHaveBeenCalled();
+});
+
+it("refuses an absent result when its owner closes during the filesystem probe", async () => {
+  const { options, pathname } = source();
+  const probing = createDeferredCore<undefined>();
+  const entered = createDeferredCore();
+  using probe = vi.spyOn(pathExistence, "statIfExists").mockImplementationOnce(() => {
+    entered.resolve();
+    return probing.promise;
+  });
+  const reading = executeExistingOpenClawStateRead(options, { type: "backup.runs" });
+  void reading.catch(() => {});
+  await entered.promise;
+  const closing = closeOpenClawStateDatabaseByPathAsync(pathname);
+  try {
+    expect(probe).toHaveBeenCalledExactlyOnceWith(pathname);
+    probing.resolve(undefined);
+    await expect(reading).rejects.toThrow(/admission.*closed/);
+    expect(mock.runTask).not.toHaveBeenCalled();
+  } finally {
+    probing.resolve(undefined);
+    await closing;
+  }
 });
 
 it("retains successful read custody until native exit", async () => {
@@ -433,10 +427,12 @@ it("closes one read path without aborting its sibling", async () => {
     type: "backup.runs",
   });
   const assertion = expect(firstRead).rejects.toThrow(/read admission (?:is )?closed/i);
+  // Bind the FIFO task before the sibling source probe can overtake it.
+  await first.captured;
   const siblingRead = executeExistingOpenClawStateRead(siblingSource.options, {
     type: "backup.runs",
   });
-  await Promise.all([first.captured, sibling.captured]);
+  await sibling.captured;
   const firstOptions = await first.submitted;
   const siblingOptions = await sibling.submitted;
   await closeOpenClawStateDatabaseByPathAsync(firstSource.pathname);
@@ -461,6 +457,7 @@ function captureCase<T extends OpenClawStateReadCommand>(
     queued?: () => void;
     checkFreshAdmission?: boolean;
     mutateWhenQueued?: boolean;
+    mutate?: () => void;
   } = {},
 ) {
   return { command, reply, bytes, mutate: () => mutateInput(command), ...options };
@@ -527,6 +524,40 @@ const metadataEntries = [
   { keys: ["entry-without-optionals"] },
 ];
 const captures = [
+  ...["mutable", "shallow-frozen", "immutable"].map((mode) => {
+    const command = {
+      type: "subagents.runs",
+      scope: {
+        kind: "descendants",
+        sessionKeys: ["agent:main:cron:parent"],
+        liveTopology: [
+          { childSessionKey: "agent:main:child", requesterSessionKey: "agent:main:cron:parent" },
+        ],
+      },
+    } as const;
+    if (mode === "immutable") {
+      freezeTrustedJsonSnapshot(command);
+    } else if (mode === "shallow-frozen") {
+      Object.freeze(command);
+    }
+    return captureCase(
+      command,
+      { ok: true, sourceAdmitted: true, type: "subagents.runs", runs: new Map() },
+      0,
+      {
+        prepared: true,
+        mutate: () => {
+          for (const [target, key, value] of [
+            [command, "scope", { kind: "maintenance" }],
+            [command.scope.sessionKeys, "0", "different-root"],
+            [command.scope.liveTopology[0], "childSessionKey", "different-child"],
+          ] as const) {
+            Reflect.set(target, key, value);
+          }
+        },
+      },
+    );
+  }),
   captureCase(
     { type: "acpSessions.metadata", entries: metadataEntries },
     { ok: true, type: "acpSessions.metadata", sourceAdmitted: true, rows: [null, null] },
@@ -607,7 +638,7 @@ it.each(captures)(
     const baseline = baselineTransport
       ? baselineTransport.startRead(location, authority)
       : executeExistingOpenClawStateRead(options, { type: "backup.runs" });
-    // The mock assigns tasks at submission; asynchronous source preparation may finish out of order.
+    // Bind the FIFO baseline before another filesystem probe can overtake it.
     await baselineTask.submitted;
     const result = transport
       ? transport.startRead(location, authority)

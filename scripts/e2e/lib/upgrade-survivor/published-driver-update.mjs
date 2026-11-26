@@ -15,7 +15,7 @@ const extended = (version) => {
 
 export function publishedDriverFixtureVersion(candidateVersion, driverVersion) {
   const comparison = compareReleaseVersions(candidateVersion, driverVersion);
-  if (comparison !== null && comparison <= 0 && extended(driverVersion)) {
+  if (comparison <= 0 && extended(driverVersion)) {
     // Selector updates skip an already-installed version. Keep this synthetic
     // relabel on the same release train while forcing an actual byte replacement.
     const driver = parseReleaseVersion(driverVersion);

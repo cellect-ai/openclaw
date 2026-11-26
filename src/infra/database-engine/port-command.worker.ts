@@ -15,7 +15,7 @@ import { WorkerTaskError } from "../worker-task-pool.js";
 import { resolveDatabaseEngineInput } from "./config.js";
 import { getScopedDatabaseEngineSelection } from "./context.js";
 import { readBackupEngineImage } from "./physical-store-inspection.js";
-import { readBackupEngine } from "./physical-store.js";
+import { readBackupEngine, type BackupEngine } from "./physical-store.js";
 import {
   assertDatabasePortNamespaceOwner,
   databasePortProviders,
@@ -29,7 +29,6 @@ import {
   inspectSqlitePortSchema,
   materializeDatabasePort,
   migrateDatabasePortSource,
-  readPostgresPortCapabilities,
   sqlitePortAllocations,
   type PortDescriptor,
   type PortVerification,
@@ -38,7 +37,7 @@ import {
   refreshPostgresPlannerStatistics,
   type PostgresPlannerStatistics,
 } from "./postgres-planner-statistics.js";
-import type { BackupEngine } from "./types.js";
+import { readPostgresPortCapabilities } from "./postgres-port-capabilities.js";
 
 type Common = { sourcePath: string; config: OpenClawConfig };
 type Identity = { storeId: string; namespace: string };
@@ -120,11 +119,12 @@ async function inspectSqliteImage(
       !schemaMigrationRequired || !descriptor.migrateSqliteSource
         ? inspectSqlitePortSchema(db, descriptor, pendingColumns, pendingTables)
         : descriptor;
-    return { version, migrationRequired, notes: admitted.notes };
+    return { descriptor: admitted, version, migrationRequired, notes: admitted.notes };
   }
   const admitted = inspectSqlitePortSchema(db, descriptor);
   const { tables, allocations } = await inspectDatabasePort({ engine: "sqlite", db }, admitted);
   return {
+    descriptor: admitted,
     version,
     migrationRequired,
     notes: admitted.notes,
@@ -188,7 +188,10 @@ async function stage(
   task: Extract<DatabasePortTask, { operation: "stage" }>,
   descriptor: PortDescriptor,
   assertCurrent: () => void,
-  source: Awaited<ReturnType<typeof inspectSqliteImage>>,
+  source: Pick<
+    Awaited<ReturnType<typeof inspectSqliteImage>>,
+    "migrationRequired" | "verification"
+  >,
 ): Promise<{ verification: PortVerification; plannerStatistics?: PostgresPlannerStatistics }> {
   const { migrationRequired, verification } = source;
   let plannerStatistics: PostgresPlannerStatistics | undefined;
@@ -324,7 +327,10 @@ async function stage(
 async function verify(
   task: Extract<DatabasePortTask, { operation: "verify" }>,
   descriptor: PortDescriptor,
-  source?: { engine: BackupEngine; facts?: Awaited<ReturnType<typeof inspectSqliteImage>> },
+  source?: {
+    engine: BackupEngine;
+    facts?: Pick<Awaited<ReturnType<typeof inspectSqliteImage>>, "verification">;
+  },
 ) {
   const engine = source?.engine ?? readBackupEngine(task.sourcePath);
   if (
@@ -394,19 +400,19 @@ export async function executeDatabasePortTask(
           engine,
           async (_db, family) => family,
         );
-        return { engine, descriptor, facts: undefined };
+        return { engine, descriptor, admitted: descriptor, facts: undefined };
       }
       using db = openNodeSqliteDatabase(imagePath, { readOnly: true });
       const descriptor = await loadDatabasePortDescriptor(
         sqliteDatabasePortProvider(db).id,
         "config" in task ? task.config : undefined,
       );
-      const facts = await inspectSqliteImage(
+      const { descriptor: admitted, ...facts } = await inspectSqliteImage(
         db,
         descriptor,
         task.operation === "inspect" || task.operation === "migrate",
       );
-      return { engine, descriptor, facts };
+      return { engine, descriptor, admitted, facts };
     } finally {
       prepared?.cleanup();
     }
@@ -433,7 +439,7 @@ export async function executeDatabasePortTask(
   if (task.operation === "migrate" || task.operation === "stage") {
     const result =
       task.operation === "stage"
-        ? await stage(task, descriptor, assertCurrent, source.facts!)
+        ? await stage(task, source.admitted, assertCurrent, source.facts!)
         : {
             verification: await migrateDatabasePortSource(
               task.sourcePath,

@@ -2,7 +2,7 @@ import { expectDefined } from "@openclaw/normalization-core";
 import { Type } from "typebox";
 import { describe, expect, it, vi } from "vitest";
 import { mcpTool, pluginTool } from "./code-mode.test-support.js";
-import { MAX_TOOL_SEARCH_BATCH_RESPONSE_CHARS } from "./tool-search-types.js";
+import { MAX_TOOL_SEARCH_BATCH_RESPONSE_CHARS } from "./tool-search-protocol.js";
 import {
   applyToolSearchCatalog,
   createToolSearchCatalogRef,

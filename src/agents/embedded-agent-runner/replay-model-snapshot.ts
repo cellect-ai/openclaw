@@ -1,10 +1,24 @@
-import type { ModelSnapshotEntry, ModelSnapshotState } from "./replay-session-state.types.js";
-
 export const MODEL_SNAPSHOT_CUSTOM_TYPE = "model-snapshot";
+export type ModelSnapshotEntry = {
+  timestamp: number;
+  provider?: string;
+  modelApi?: string | null;
+  modelId?: string;
+};
+export type ModelSnapshotState = {
+  lastSnapshot: ModelSnapshotEntry | null;
+  latestSwitchTimestamp: number | null;
+};
 
-/** The native reader and SessionManager use the same snapshot history reducer. */
+type ModelSnapshotSourceEntry = {
+  type: string;
+  customType?: string;
+  data?: unknown;
+};
+
+/** Scan the already-selected active branch without cloning transcript-owned payloads. */
 export function readModelSnapshotStateFromEntries(
-  entries: Iterable<import("../sessions/session-manager-types.js").SessionEntry>,
+  entries: readonly ModelSnapshotSourceEntry[],
 ): ModelSnapshotState {
   let lastSnapshot: ModelSnapshotEntry | null = null;
   let latestSwitchTimestamp: number | null = null;

@@ -6,7 +6,6 @@ import { rotateAgentEventLifecycleGeneration } from "../../infra/agent-events.js
 import { runWithSqliteBusyTimeout } from "../../infra/sqlite-busy-timeout.js";
 import { resetLogger, setLoggerOverride } from "../../logging/logger.js";
 import type { PersistedUserTurnMessage } from "../../sessions/user-turn-transcript.types.js";
-import { readOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
 import {
   closeOpenClawAgentDatabasesAsync,
   closeOpenClawAgentDatabasesForTest,
@@ -52,16 +51,10 @@ const rows = (sql: string) => query(sql).all();
 const pendingRows = (fields: string) =>
   rows(`SELECT ${fields} FROM session_pending_inputs ORDER BY seq`);
 const actorPendingInputs = async () => {
-  const identity = readOpenClawAgentDatabaseIdentity(database());
   const actor = await createSessionActorFactory({ ...options(), path: database().path }).acquire(
     {
       sessionKey: scope().sessionKey,
-      database: {
-        kind: "file",
-        physicalIdentity: identity.identity,
-        birthtime: identity.birthtime,
-        nativeLocation: database().path,
-      },
+      database: { kind: "file" },
     },
     { assertCurrent() {}, assertReadable() {} },
   );

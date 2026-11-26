@@ -707,13 +707,12 @@ describe("credentials owned by a running Gateway", () => {
       gatewayOwner.pid = process.pid + 1;
       gatewayOwner.stateDir = process.env.OPENCLAW_STATE_DIR;
       const manager = createTestManager({ refreshCredential });
-      const store = readStored(mainAgentDir);
 
       // Like agent exec: this run's own state moves, its credentials stay with the Gateway.
       const result = redirected
         ? withEnvAsync({ OPENCLAW_STATE_DIR: path.join(mainAgentDir, "exec-state") }, () =>
             withAuthProfileStoreAgentDir(mainAgentDir, gatewayOwner.stateDir!, () =>
-              resolve(manager, profileId, credential, mainAgentDir, { store }),
+              resolve(manager, profileId, credential, mainAgentDir),
             ),
           )
         : resolve(manager, profileId, credential, mainAgentDir);

@@ -18,9 +18,8 @@ import {
   closeOpenClawStateDatabaseAsync,
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
-import { localWorkspaceDigestBytes } from "./local-workspace-cas.js";
+import { decodeLocalWorkspaceTree, localWorkspaceDigestBytes } from "./local-workspace-cas.js";
 import { readLocalWorkspaceTree } from "./local-workspace-cas.kernel.js";
-import type { LocalWorkspaceManifestCheckpoint } from "./local-workspace-manifest-scan.js";
 import { withLocalWorkspaceProjection } from "./local-workspace-projection.js";
 import * as workspaceStore from "./local-workspace-store.js";
 import { withLocalWorkspaceStore } from "./local-workspace-store.js";
@@ -28,6 +27,7 @@ import {
   observeLocalWorkspaceStoreSql,
   readLocalWorkspaceProjection,
 } from "./local-workspace-store.test-support.js";
+import type { LocalWorkspaceManifestCheckpoint } from "./local-workspace-store.types.js";
 import type { LocalWorkspaceOwner } from "./local-workspace-types.js";
 import { parseWorkerWorkspaceManifest } from "./workspace-manifest.js";
 
@@ -39,8 +39,8 @@ const writeText = (directory: string, relative: string, data: string) =>
   fs.writeFile(path.join(directory, relative), data);
 const expectText = async (directory: string, relative: string, expected: string) =>
   expect(await fs.readFile(path.join(directory, relative), "utf8")).toBe(expected);
-const expectMissing = async (directory: string, relative: string) =>
-  expect(fs.stat(path.join(directory, relative))).rejects.toMatchObject({ code: "ENOENT" });
+export const expectMissing = async (directory: string, ...parts: string[]) =>
+  expect(fs.stat(path.join(directory, ...parts))).rejects.toMatchObject({ code: "ENOENT" });
 
 export function observeAcknowledgedUpdate(
   observe: (row: workspaceStore.LocalWorkspaceProjection) => void,
@@ -247,6 +247,7 @@ export async function proveStagedInputCheckpointOwnership(owner: LocalWorkspaceO
 export async function prepareSandboxCheckpointFixture(
   owner: LocalWorkspaceOwner & Partial<Disposable>,
   assertCurrent?: () => void,
+  signal?: AbortSignal,
 ) {
   const projectionOwner = await import("./local-workspace-projection.js");
   const { prepareLocalSandboxWorkspace } = await import("../../agents/sandbox/local-workspace.js");
@@ -262,6 +263,7 @@ export async function prepareSandboxCheckpointFixture(
     workspaceDir: owner.worktree.path,
     sandbox: resolveSandboxConfigForAgent({}, owner.agentId),
     assertCurrent,
+    signal,
   });
   assert(projection, "Expected managed projection");
   return projection;
@@ -296,7 +298,10 @@ export async function proveSharedSandboxCheckpoints(
         ...store,
         manifest: async (row, action) => {
           const result = await store.manifest(row, action);
-          if (action.kind === "scan" && action.target === "canonical") {
+          if (
+            (action.kind === "scan" || (action.kind === "probe" && result.kind === "scan")) &&
+            action.target === "canonical"
+          ) {
             scans++;
             await afterScan?.();
           }
@@ -305,7 +310,7 @@ export async function proveSharedSandboxCheckpoints(
       });
     }),
   );
-  for (const phase of ["waiting", "captured", "revoked"] as const) {
+  for (const phase of ["waiting", "captured", "revoked", "known mutation"] as const) {
     const entered = createDeferred();
     const released = createDeferred();
     const pause = async () => {
@@ -331,7 +336,7 @@ export async function proveSharedSandboxCheckpoints(
       if (phase === "captured") {
         await writeText(second.workspaceDir, "late.txt", "write after capture\n");
       }
-      later = second.checkpoint();
+      later = second.checkpoint(phase === "known mutation" ? { knownMutation: true } : undefined);
       joinedAuthorityRevoked = phase === "revoked";
     } finally {
       released.resolve();
@@ -344,7 +349,7 @@ export async function proveSharedSandboxCheckpoints(
         ? { status: "rejected", reason: new Error("Joined checkpoint authority revoked") }
         : { status: "fulfilled", value: undefined },
     );
-    expect.soft(scans).toBe(phase === "captured" ? 2 : 1);
+    expect.soft(scans).toBe(phase === "captured" || phase === "known mutation" ? 2 : 1);
     await expectText(owner.worktree.path, "source.txt", "shared checkpoint\n");
     if (phase === "captured") {
       await expectText(owner.worktree.path, "late.txt", "write after capture\n");
@@ -427,14 +432,18 @@ function restoreV31CheckpointLayout(
   pending: workspaceStore.LocalWorkspaceProjection,
 ): void {
   const database = openOpenClawStateDatabase();
-  const baseline = readLocalWorkspaceTree(database.db, pending.tree_root_digest!);
+  const baseline = decodeLocalWorkspaceTree(
+    readLocalWorkspaceTree(database.db, pending.tree_root_digest!),
+  );
   const {
     treeRoot,
     previousTreeRoot: _previousTreeRoot,
     fingerprints: _fingerprints,
     ...checkpoint
   } = JSON.parse(pending.checkpoint_json!) as LocalWorkspaceManifestCheckpoint;
-  const resulting = readLocalWorkspaceTree(database.db, localWorkspaceDigestBytes(treeRoot!));
+  const resulting = decodeLocalWorkspaceTree(
+    readLocalWorkspaceTree(database.db, localWorkspaceDigestBytes(treeRoot!)),
+  );
   // Recreate the released v31 layout around the actual interrupted receipt.
   // Recovery must convert this projection online before staging and accepting its edits.
   for (const record of baseline.values()) {
@@ -470,6 +479,84 @@ export async function prepareLocalWorkspaceArchiveFixture(
   ).fingerprint;
   await registry.insertRegistryWorktree(process.env, owner.worktree, { provisionedPaths });
   return { service, registry, retentionMs: SNAPSHOT_RETENTION_MS };
+}
+
+export async function proveWorkerOwnedArchive(owner: LocalWorkspaceOwner) {
+  const { service } = await prepareLocalWorkspaceArchiveFixture(owner);
+  const projection = await prepare(owner);
+  const snapshot = await requireGit(owner.worktree.repoRoot, ["rev-parse", "HEAD"]);
+  const mergeHead = await requireGit(owner.worktree.path, [
+    "rev-parse",
+    "--git-path",
+    "MERGE_HEAD",
+  ]);
+  const mergePath = path.resolve(owner.worktree.path, mergeHead);
+  await fs.writeFile(mergePath, `${snapshot}\n`);
+  await expect(service.remove({ id: owner.worktree.id, reason: "idle-gc" })).rejects.toThrow(
+    "Workspace integration is pending",
+  );
+  expect(
+    await requireGit(owner.worktree.repoRoot, [
+      "for-each-ref",
+      "--format=%(refname)",
+      "refs/openclaw/snapshots/",
+    ]),
+  ).toBe("");
+  expect(
+    (await service.listRegistryRecords()).find((record) => record.id === owner.worktree.id)
+      ?.snapshotRef,
+  ).toBeUndefined();
+  expect(await fs.readFile(mergePath, "utf8")).toBe(`${snapshot}\n`);
+  expect(await fs.readFile(path.join(projection, "source.txt"), "utf8")).toBe(
+    await fs.readFile(path.join(owner.worktree.path, "source.txt"), "utf8"),
+  );
+  await fs.unlink(mergePath);
+  const before = await readLocalWorkspaceProjection(owner.worktree.id);
+  const source = path.join(projection, "source.txt");
+  const original = await fs.readFile(source);
+  for (const change of ["edit", "delete", "add", "symlink"] as const) {
+    const added = path.join(projection, "new.txt");
+    const saved = `${projection}-saved`;
+    if (change === "symlink") {
+      await fs.rename(projection, saved);
+      await fs.symlink(saved, projection, "junction");
+    } else if (change === "delete") {
+      await fs.unlink(source);
+    } else {
+      await fs.writeFile(change === "edit" ? source : added, "changed\n");
+    }
+    try {
+      await expect(
+        withLocalWorkspaceProjection(owner, async (state) =>
+          (await state.prepareArchive())(snapshot),
+        ),
+      ).rejects.toThrow(
+        change === "symlink"
+          ? "Local sandbox workspace directory changed"
+          : "Local workspace changed before archive capture",
+      );
+      expect((await readLocalWorkspaceProjection(owner.worktree.id))?.baseline_ref).toBe(
+        before?.baseline_ref,
+      );
+    } finally {
+      if (change === "symlink") {
+        await fs.unlink(projection);
+        await fs.rename(saved, projection);
+      } else if (change === "add") {
+        await fs.unlink(added);
+      } else {
+        await fs.writeFile(source, original);
+      }
+    }
+  }
+  const manifests = await import("./workspace-manifest.js");
+  const parse = vi.spyOn(manifests, "parseWorkerWorkspaceManifest");
+  expect((await service.gc({ readOwnerState: () => "active" })).removed).toEqual([]);
+  expect((await fs.stat(owner.worktree.path)).isDirectory()).toBe(true);
+  expect(parse).not.toHaveBeenCalled();
+  expect((await service.gc()).removed).toContain(owner.worktree.id);
+  await expectMissing(owner.worktree.path, "");
+  expect(parse).not.toHaveBeenCalled();
 }
 
 export async function proveInterruptedWorkspaceCheckpoint(

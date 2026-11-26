@@ -1,3 +1,4 @@
+import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { getAgentToolExecutionContext } from "../../packages/agent-core/src/tool-execution-context.js";
 import type { AgentRunApprovalWait } from "./agent-run-approval-wait.js";
 import { raceWithAbortSignal } from "./agent-tools.abort.js";
@@ -10,6 +11,7 @@ import {
 import {
   pendingBridgeStatesForSettlement,
   waitForPendingBridgeSettlement,
+  type CodeModeRunOwner,
   type PendingBridgeState,
 } from "./code-mode-state.js";
 
@@ -48,6 +50,7 @@ export async function waitForRequiredCodeModePending(
   mode: CodeModeSettlementMode,
   params: {
     signal: AbortSignal;
+    owner: CodeModeRunOwner;
     catalogProjection: CodeModeCatalogProjection;
   },
   reserveForSteering: () => boolean,
@@ -61,12 +64,18 @@ export async function waitForRequiredCodeModePending(
     const outstanding = pending.filter((entry) => !entry.settled);
     if (
       outstanding.length &&
-      outstanding.every(
-        (entry) =>
-          entry.method === "callValue" &&
-          typeof entry.args[0] === "string" &&
-          params.catalogProjection.byCallableName.get(entry.args[0])?.id === "openclaw:core:exec",
-      ) &&
+      outstanding.every((entry) => {
+        if (entry.method !== "callValue" || typeof entry.args[0] !== "string") {
+          return false;
+        }
+        const id = params.catalogProjection.byCallableName.get(entry.args[0])?.id;
+        return (
+          id === "openclaw:core:exec" ||
+          (id === "openclaw:core:process" &&
+            isRecord(entry.args[1]) &&
+            entry.args[1].action === "poll")
+        );
+      }) &&
       reserveForSteering()
     ) {
       yieldWait.abort();

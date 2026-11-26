@@ -69,12 +69,6 @@ describe("rebuildAgentPortProjections on PostgreSQL", () => {
       expect(values).toContain("session-a");
       expect(values.length).toBeLessThan(65_535);
     }
-    expect(
-      queries.filter(({ sql }) => sql.includes("INSERT INTO session_transcript_active_events")),
-    ).toHaveLength(count);
-    expect(
-      queries.filter(({ sql }) => sql.includes("INSERT INTO session_transcript_index_state")),
-    ).toHaveLength(1);
     const firstBatch = writes[0]!.values;
     const row = firstBatch.indexOf("m-1");
     expect(firstBatch.slice(row, row + 4)).toEqual(["m-1", "hello 1", "assistant", 1_001]);

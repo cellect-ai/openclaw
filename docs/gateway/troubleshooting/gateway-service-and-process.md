@@ -120,6 +120,16 @@ Related:
 - [Logging](/logging)
 - [Doctor](/gateway/doctor)
 
+## macOS LAN commands fail with No route to host
+
+When the Gateway runs but LAN commands fail with `EHOSTUNREACH` while the same
+operation works in Terminal, check the service runtime's **Local Network**
+permission. A LaunchAgent can have different access from Terminal, and Doctor
+does not currently diagnose that permission. Follow [Local Network access for
+the Gateway](/platforms/mac/permissions#local-network-access-for-the-gateway),
+then retry through the Gateway. Routing, firewall, and device failures can produce
+the same error.
+
 ## macOS launchd supervisor loop with duplicate gateway/node LaunchAgents
 
 Use this when a macOS install keeps restarting every few seconds, `openclaw`
@@ -315,6 +325,8 @@ An administrator can also [sample allocations](/gateway/diagnostics#sampling-hea
 Review the sanitized diagnostics export before attaching it to a bug report; avoid copying raw logs.
 
 Node's automatic heap ceiling can be roughly 4 GiB on a large host. That is a default sizing decision, not a general 64-bit address-space ceiling. `--max-old-space-size` controls V8 old space; the measured total V8 heap ceiling also includes other heap spaces. RSS additionally includes native allocations, buffers, and other process memory. A higher heap ceiling does not preallocate the ceiling, but it still needs enough real capacity and headroom under sustained load.
+
+On Linux, newly installed or regenerated managed Gateway services and the Docker image default to `MALLOC_ARENA_MAX=2` to reduce glibc malloc arena fragmentation. Service installation preserves an explicit value from config or the state-directory `.env`, the installing shell, or the existing service (in that order). You can also override it through a systemd drop-in, service `EnvironmentFile`, or container environment (for example, `docker run -e MALLOC_ARENA_MAX=4 ...`). Restart the Gateway after changing its launch environment: glibc reads this setting at process startup. Child processes inherit the value. macOS and Windows service defaults are unchanged; musl and jemalloc ignore this glibc-specific setting.
 
 For a foreground Node Gateway, set a native heap flag before Node starts, for example on a host with sufficient capacity:
 

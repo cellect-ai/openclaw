@@ -29,10 +29,12 @@ import {
   type TrustedGroupMetadata,
 } from "../../../gateway/server-methods/agent-subagent-registration.js";
 import type { PreparedGatewaySessionLifecycle } from "../../../gateway/session-create-service.types.js";
-import { resolveSessionProjectRoot } from "../../../gateway/session-project-source.js";
 import { isSessionVisibilityAllowed } from "../../../gateway/session-sharing-policy.js";
 import type { GatewaySessionStoreTargetWithStore } from "../../../gateway/session-utils-store.types.js";
-import { prepareSessionWorktreeCreation } from "../../../gateway/session-worktree-preparation.js";
+import {
+  prepareSessionWorktreeCreation,
+  resolveSessionProjectRoot,
+} from "../../../gateway/session-worktree-preparation.js";
 import {
   captureSessionTarget,
   type SessionTarget,
@@ -44,7 +46,9 @@ import {
   type DeliveryContext,
 } from "../../../utils/delivery-context.shared.js";
 import { captureDelegatedToolPolicyAssertion } from "../../delegated-tool-policy.js";
+import { getSessionToolUsageRanking } from "../../embedded-agent-runner/session-prompt-state.js";
 import { inheritedToolAllowPatch, inheritedToolDenyPatch } from "../../inherited-tool-deny.js";
+import { readSessionToolUsageRankingSnapshot } from "../../session-tool-usage-snapshot.js";
 import type { resolveSpawnAdmission } from "../../spawn-plan.js";
 import type { PreparedSessionPermissionPolicy } from "../../tool-fs-policy.types.js";
 import { captureSpawnParentLineage } from "./spawn-parent-lineage.js";
@@ -67,6 +71,7 @@ type InitialSubagentSession = {
 
 export async function createInitialSubagentSession(input: {
   cfg: OpenClawConfig;
+  /** Operator (or creator role) the spawn acts for; bounds projectId and inherited sources. */
   projectRequester: ProjectRequester;
   requesterAgentId: string;
   targetAgentId: string;
@@ -160,6 +165,16 @@ export async function createInitialSubagentSession(input: {
           const parentTarget = params.parentTarget;
           // Request preparation joined participant writes and captured this complete row.
           const parentEntry = parentTarget.store[parentTarget.canonicalKey];
+          const toolUsageRankingSeed =
+            params.cfg.agents?.defaults?.experimental?.usageRankedToolIndex === true && parentEntry
+              ? (getSessionToolUsageRanking(parentEntry.sessionId) ??
+                (await readSessionToolUsageRankingSnapshot({
+                  agentId: params.requesterAgentId,
+                  sessionKey: params.requesterInternalKey,
+                  config: params.cfg,
+                  assertCurrent: () => params.assertActive?.(),
+                })))
+              : undefined;
           const assertDraftCreationAllowed = () => {
             if (
               parentEntry?.visibility === "draft" &&
@@ -262,11 +277,11 @@ export async function createInitialSubagentSession(input: {
                 sandboxRequired: params.creationPolicy.sandbox === "required",
               },
               workspace: project?.value ?? params.spawnedCwd,
-              projectRequester: params.projectRequester,
               inheritParentKey:
                 !projectId && !params.spawnedCwd && parentTarget.agentId === params.targetAgentId
                   ? params.requesterInternalKey
                   : undefined,
+              projectRequester: params.projectRequester,
               name: params.worktree.worktreeName,
               baseRef: params.worktree.worktreeBaseRef,
               deferWorktree: true,
@@ -317,6 +332,7 @@ export async function createInitialSubagentSession(input: {
                       }
                     : {}),
                   ...childSessionIdentity,
+                  ...(toolUsageRankingSeed ? { toolUsageRankingSeed } : {}),
                   // Stamp after all request patches so model input cannot create a grant.
                   ...parentLineage,
                   ...(parentEntry?.visibility === "draft" ? { visibility: "draft" as const } : {}),

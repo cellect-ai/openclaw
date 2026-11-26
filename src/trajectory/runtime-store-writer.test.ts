@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import { afterEach, expect, it, vi } from "vitest";
 import { cleanupEmbeddedAttemptSessionPhase } from "../agents/embedded-agent-runner/run/attempt-session-settle.js";
 import { createEmbeddedAttemptDeferredLifecycleOwner } from "../agents/embedded-agent-runner/run/deferred-lifecycle-owner.js";
@@ -43,10 +45,10 @@ vi.mock("../state/openclaw-agent-execution.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../state/openclaw-agent-execution.js")>();
   return {
     ...actual,
-    captureOpenClawAgentDatabaseExecution: (
-      ...args: Parameters<typeof actual.captureOpenClawAgentDatabaseExecution>
-    ): ReturnType<typeof actual.captureOpenClawAgentDatabaseExecution> => {
-      const owned = actual.captureOpenClawAgentDatabaseExecution(...args);
+    captureOpenClawAgentDatabaseExecutionAsync: async (
+      ...args: Parameters<typeof actual.captureOpenClawAgentDatabaseExecutionAsync>
+    ): ReturnType<typeof actual.captureOpenClawAgentDatabaseExecutionAsync> => {
+      const owned = await actual.captureOpenClawAgentDatabaseExecutionAsync(...args);
       let executingAppend = false;
       return {
         ...owned,
@@ -264,8 +266,36 @@ it("persists repeated events and retains the worker owner without a main-thread 
     expect(sink.describeFlushState()).toBe(
       `pendingRows=2 queuedBytes=${2 * (Buffer.byteLength(line, "utf8") + 1)} activeOperation=sqlite-append`,
     );
-    await sink.flush();
-    await retention.accepted;
+    let syncCalls = 0;
+    const previousStackLimit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 50;
+    const count = () => {
+      const stack = new Error().stack ?? "";
+      if (/\/trajectory\/runtime-(?:store-writer|retention)\.ts:/.test(stack)) {
+        syncCalls += 1;
+      }
+    };
+    const stat = fs.statSync;
+    const realpath = fs.realpathSync.native;
+    const statSpy = vi.spyOn(fs, "statSync").mockImplementation((...args) => {
+      count();
+      return Reflect.apply(stat, fs, args);
+    });
+    const realpathSpy = vi.spyOn(fs.realpathSync, "native").mockImplementation((...args) => {
+      count();
+      return Reflect.apply(realpath, fs.realpathSync, args);
+    });
+    syncBuiltinESMExports();
+    try {
+      await sink.flush();
+      await retention.accepted;
+    } finally {
+      statSpy.mockRestore();
+      realpathSpy.mockRestore();
+      syncBuiltinESMExports();
+      Error.stackTraceLimit = previousStackLimit;
+    }
+    expect(syncCalls).toBe(0);
     expect(sink.describeFlushState()).toBeUndefined();
     expect(await loadSqliteTrajectoryRuntimeEvents(target)).toEqual([event, event]);
     expect(getOpenClawAgentDatabaseIfOpen(databaseOptions)).toBeUndefined();
@@ -341,6 +371,38 @@ it("reuses committed trajectory facts across metadata writes and clears them aft
     expect(loadSqliteTrajectoryRuntimeEventRowsSync(target)).toEqual([
       { event: events[0], seq: 0 },
     ]);
+  });
+});
+
+it("keeps interleaved session append windows warm in one database", async () => {
+  await withTrajectoryState("trajectory-interleaved-a", async ({ target, state }) => {
+    const other = {
+      ...target,
+      sessionId: "trajectory-interleaved-b",
+      sessionKey: "agent:main:trajectory-interleaved-b",
+    };
+    await replaceSessionEntry(other, { sessionId: other.sessionId, updatedAt: 1 });
+    const targets = [target, other];
+    const sinks = await Promise.all(targets.map((entry) => createSink(state, entry)));
+    for (let round = 0; round < 4; round++) {
+      for (const [index, entry] of targets.entries()) {
+        const event = createTrajectoryEvent({ type: `round-${round}`, sessionId: entry.sessionId });
+        sinks[index]!.write(event, JSON.stringify(event));
+        await sinks[index]!.flush();
+        await retention.accepted;
+      }
+      if (round === 1) {
+        // Initial retention invalidates window facts; measure only the warmed writes.
+        delivery.appendInputs = [];
+      }
+    }
+    expect(delivery.appendInputs).toHaveLength(4);
+    for (const input of delivery.appendInputs) {
+      expect(input).toHaveProperty("windowFacts", expect.any(Object));
+    }
+    for (const entry of targets) {
+      expect(await eventTypes(entry)).toEqual(["round-0", "round-1", "round-2", "round-3"]);
+    }
   });
 });
 

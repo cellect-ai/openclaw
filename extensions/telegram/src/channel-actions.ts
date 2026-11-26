@@ -10,10 +10,6 @@ import type {
   ChannelMessageActionName,
   ChannelMessageToolSchemaContribution,
 } from "openclaw/plugin-sdk/channel-contract";
-import {
-  isMessagePresentationInteractiveBlock,
-  normalizeMessagePresentation,
-} from "openclaw/plugin-sdk/interactive-runtime";
 import { createLazyRuntimeModule } from "openclaw/plugin-sdk/lazy-runtime";
 import { createRuntimeConfigReader } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { asNonArrayRecord, readStringValue } from "openclaw/plugin-sdk/string-coerce-runtime";
@@ -26,6 +22,7 @@ import {
   resolveTelegramPollActionGateState,
 } from "./accounts.js";
 import { TELEGRAM_MESSAGE_ACTION_MAP } from "./action-names.js";
+import { readTelegramMessageEffectId } from "./action-params.js";
 import { isTelegramInlineButtonsEnabled } from "./inline-buttons.js";
 import { rejectTelegramNativeButtonParams } from "./native-button-params.js";
 
@@ -211,7 +208,7 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
     edit: { aliases: ["messageId"], deliveryTargetAliases: [] },
     delete: { aliases: ["messageId"], deliveryTargetAliases: [] },
   },
-  prepareSendPayload: async ({ ctx, payload }) => {
+  prepareSendPayload: async ({ ctx, to, payload }) => {
     rejectTelegramNativeButtonParams(ctx.params);
     if (
       ctx.action !== "send" ||
@@ -220,13 +217,8 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
       return null;
     }
     const quoteText = readStringParam(ctx.params, "quoteText", { trim: false });
-    // Message-tool controls retain agent ownership through queued delivery.
-    const hasControls = Boolean(
-      normalizeMessagePresentation(payload.presentation)?.blocks.some(
-        isMessagePresentationInteractiveBlock,
-      ),
-    );
-    if (!quoteText && !hasControls) {
+    const messageEffectId = readTelegramMessageEffectId(ctx.params, to);
+    if (!quoteText && !messageEffectId) {
       return payload;
     }
     const telegramData = asNonArrayRecord(payload.channelData?.telegram);
@@ -237,7 +229,7 @@ export const telegramMessageActions: ChannelMessageActionAdapter = {
         telegram: {
           ...telegramData,
           ...(quoteText ? { quoteText } : {}),
-          ...(hasControls ? { typedCallbackOwner: "agent" } : {}),
+          ...(messageEffectId ? { messageEffectId } : {}),
         },
       },
     };

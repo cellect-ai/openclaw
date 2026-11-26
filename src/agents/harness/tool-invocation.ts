@@ -8,10 +8,8 @@ import {
   runWithToolExecutionValidation,
 } from "../agent-tools.execution-validation.js";
 import type { AnyAgentTool } from "../agent-tools.types.js";
-import {
-  consumeTrustedToolNoStartError,
-  resolveToolResultFailureKind,
-} from "../tool-result-error.js";
+import { consumeToolExecutionNotStarted as consumeTrustedToolNoStartError } from "../tool-effect-receipt.js";
+import { resolveToolResultFailureKind } from "../tool-result-error.js";
 import { createAgentHarnessToolExecutionBoundaryRegistry } from "./tool-execution.js";
 import { resolveAgentHarnessToolResultPresentation } from "./tool-result-facts.js";
 

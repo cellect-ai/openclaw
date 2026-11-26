@@ -48,6 +48,24 @@ afterEach(() => {
 });
 const modelRows = (ids: string[]) => ids.map((id) => ({ id, object: "model" }));
 
+it("scopes the API-key instructions cache workaround to GPT-6.2", async () => {
+  const affected = ["gpt-6.2-sol", "gpt-6.2-astra"];
+  const unaffected = ["gpt-6-astra", "gpt-6.1-sol"];
+  const { provider } = await runCatalog(
+    Response.json({ data: modelRows([...affected, ...unaffected]) }),
+  );
+  for (const id of affected) {
+    expect(provider.models.find((model) => model.id === id)?.compat).toMatchObject({
+      cachesInstructions: false,
+    });
+  }
+  for (const id of unaffected) {
+    const model = provider.models.find((entry) => entry.id === id);
+    expect(model).toBeDefined();
+    expect(model?.compat?.cachesInstructions).toBeUndefined();
+  }
+});
+
 it("lists configured API-key models without loading profile auth runtimes", async () => {
   // mock-isolation: Prepared credentials must not load either broad auth owner.
   vi.doMock("openclaw/plugin-sdk/provider-auth", () => {
@@ -57,27 +75,44 @@ it("lists configured API-key models without loading profile auth runtimes", asyn
   vi.doMock("openclaw/plugin-sdk/provider-auth-runtime", () => {
     throw new Error("Configured API-key catalogs must not load profile auth runtime");
   });
-  const admittedIds = ["gpt-5.3-codex", "gpt-5.5-2026-04-23", "gpt-5.6-cyber", "gpt-6.2"];
-  // Include pre-GPT-5, non-chat, subscription-only and experimental model families.
-  const unadmittedIds = (
-    "gpt-4-0613 gpt-4.1-mini o3 ft:gpt-4.1-mini:acme::abc123 gpt-5.3-codex-spark " +
-    "gpt-unknown-cyber-fixture gpt-7-alpha kepler-alpha " +
-    "gpt-5.5-codex-1p-exp-p-0618-b2fcc1-ev3-text-1-treatment " +
-    "gpt5-5-1p-exp-p-0628-2069ab-ev3-text-1-treatment " +
-    "gpt-4o-mini-search-preview gpt-5-search-api gpt-live-1 gpt-4o-transcribe-diarize " +
-    "gpt-image-2 gpt-realtime-2.1-mini gpt-audio-mini gpt-3.5-turbo-instruct babbage-002 " +
+  const admittedIds = ["gpt-5.3-codex", "gpt-5.5-2026-04-23", "gpt-6.2"];
+  // Listed ids that often fail for the listing key or name a non-text family: absent from
+  // default pickers, still runnable by typed or configured ref.
+  const unlikelyIds = (
+    "gpt-5.6-cyber gpt-unknown-cyber-fixture gpt-7-alpha codename-alpha " +
+    "gpt-fixture-codex-exp-treatment gpt-fixture-exp-0101 gpt-live-fixture " +
+    "gpt-image-2 gpt-realtime-2.1-mini gpt-audio-mini babbage-002 " +
     "text-embedding-3-small omni-moderation-latest tts-1-hd whisper-1 sora-2"
   ).split(" ");
+  // Pre-GPT-5, subscription-only and Chat-Completions-only search families are not listed.
+  const droppedIds = (
+    "gpt-4-0613 gpt-4.1-mini o3 ft:gpt-4.1-mini:acme::abc123 gpt-5.3-codex-spark " +
+    "gpt-4o-mini-search-preview gpt-5-search-api gpt-4o-transcribe-diarize gpt-3.5-turbo-instruct"
+  ).split(" ");
   const data = [
-    ...modelRows(["gpt-5.5", ...admittedIds, ...unadmittedIds]),
+    ...modelRows(["gpt-5.5", ...unlikelyIds, ...droppedIds]),
+    ...admittedIds.map((id) => ({ id, object: "model", capabilities: { chat: true } })),
     // OpenAI keeps retired models listed with a past shutdown date; requests to them 404.
     { id: "gpt-5.2-chat-latest", object: "model", shutdown_date: "2026-01-01" },
   ];
   const { provider } = await runCatalog(Response.json({ data }));
 
-  expect(provider.models.map((model) => model.id).toSorted()).toEqual(
+  const ids = (keep: (model: (typeof provider.models)[number]) => boolean) =>
+    provider.models
+      .filter(keep)
+      .map((model) => model.id)
+      .toSorted();
+  expect(ids((model) => model.inference === undefined)).toEqual(
     ["gpt-5.5", ...admittedIds].toSorted(),
   );
+  expect(ids((model) => model.inference?.chatEvidence === "unlikely")).toEqual(
+    unlikelyIds.toSorted(),
+  );
+  expect(provider.models).toHaveLength(1 + admittedIds.length + unlikelyIds.length);
+  expect(provider.models.find((model) => model.id === "tts-1-hd")?.inference).toEqual({
+    chat: true,
+    chatEvidence: "unlikely",
+  });
   for (const id of ["gpt-5.3-codex", "gpt-6.2"]) {
     expect(provider.models.find((model) => model.id === id)).toEqual({
       id,
@@ -103,12 +138,20 @@ it.each([
   ["an unauthorized key", 401, "sk-openai", "auth-rejected"],
   ["a forbidden key", 403, "sk-openai", "auth-rejected"],
   ["a temporary failure", 503, "sk-openai", "unavailable"],
+  ["a transport failure", undefined, "sk-openai", "unavailable"],
 ] as const)("scopes the selected profile for %s", async (_label, httpStatus, apiKey, status) => {
   const { provider, outcomes, requests } = await runCatalog(
-    Response.json({ data: modelRows(["text-embedding-3-small"]) }, { status: httpStatus }),
+    httpStatus === undefined
+      ? undefined
+      : Response.json({ data: modelRows(["text-embedding-3-small"]) }, { status: httpStatus }),
     { apiKey, profileId: "openai:api-key" },
   );
-  expect(provider.models.map((model) => model.id)).toEqual(
+  // Picker-offered rows: an embedding-named bare row is unlikely chat, listed but not offered.
+  expect(
+    provider.models
+      .filter((model) => model.inference?.chat !== false && !model.inference?.chatEvidence)
+      .map((model) => model.id),
+  ).toEqual(
     status === "unavailable"
       ? manifest.modelCatalog.providers.openai.models.map((model) => model.id)
       : [],

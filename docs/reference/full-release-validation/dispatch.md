@@ -87,7 +87,7 @@ compare actual operands: changing the command cannot turn normal admission into 
 
 Use executable tooling recovery only for diagnosed qualification/orchestration
 defects—not product failures or unexplained red jobs. Local controller updates
-cannot retrofit frozen workflows. For an explicitly authorized failed-job grant,
+cannot retrofit frozen workflows. For an explicitly authorized waiver,
 use the [Q-only ledger procedure](/reference/full-release-validation/evidence#release-tooling-waivers):
 commit directly to Q without a grant PR to `main` or a C change, then use a fresh
 request/admission with that exact Q. Its ledger-only delta permits eligible raw
@@ -127,18 +127,35 @@ pnpm ci:full-release \
   -f fail_fast=false
 ```
 
+For an explicitly selected historical qualification, add both inputs before the
+new request is admitted:
+
+- `-f qualification_baselines_json='<original-baseline-object>'` selects exact
+  published stable predecessors, validated against C and the release context.
+  Without this input, a fresh request resolves the current baseline policy.
+- `-f publication_artifact_source_json='{"runId":"<original-parent>","runAttempt":1}'`
+  selects original publication artifacts independently of the parent verdict.
+  It requires candidate admission, `rerun_group=all`, and `reuse_evidence=true`.
+  The original source admission, sealed candidate, producer receipts, and exact
+  package digest must agree. Missing or changed evidence fails closed instead
+  of rebuilding different bytes. Cross-Q selection still requires the shared
+  workload compatibility proof; changing actual workloads is not permitted.
+
+Both selections are frozen in P admission and the execution plan. Resume keeps
+them unchanged even when npm advances. The new parent must pass its own gates;
+selecting a failed historical parent never adopts its aggregate verdict.
+
 The helper obtains P admission through `openclaw-release-prepare.yml`, then
 creates immutable `release-ci/*` at Q. Never create it or assemble admission
 manually. `--dry-run` previews the tuple, not hosted admission or success.
 
 5. Record new admission and parent run/attempt; require fresh parent success and
    strict verification before publication. Whole-parent reuse keeps exact Q/P.
-   Cross-Q child reuse requires authenticated identical workload closure (excluding
-   only the Q grant ledger, whose current grants are reevaluated) and exact
-   C, role, effective inputs, candidate descriptor, receipt, artifact, and live-attempt
-   checks; retain producer Q. Plan-cache-only repairs may qualify; filenames,
-   green jobs, or fix SHAs alone prove neither closure nor eligibility. Missing
-   evidence/changed closure requires fresh work, never relabeling.
+   [Cross-Q child reuse](/reference/full-release-validation/stages) keeps exact C,
+   role, effective inputs, candidate descriptor, receipt, artifact, live attempt,
+   and authenticated producer Q. Current Q grants are reevaluated. Tooling and
+   harness changes do not force reruns; set `reuse_evidence=false` to execute the
+   new harness. Missing or invalid evidence requires fresh work, never relabeling.
 
 ### November 2026 plan-cache restoration incident
 
@@ -169,11 +186,10 @@ at original Q=C and exact recorded inputs:
 | Candidate release checks      | `43747437691/1` | `14178081554`       |
 | Independent release checks    | `43744253043/2` | `14177235935`       |
 
-All five must rerun: independent-Q changes shared qualification scripts under
-current conservative closure policy. Original receipts remain historical, not
-cross-Q evidence; later parent-only changes may preserve eligible children after
-strict verification. Existing npm/Docker bytes/receipts are not a qualified new-Q
-bundle. Reacquire/qualify selected stages against unchanged C; preserve coverage,
+At the time, all five needed reruns under the former cross-Q closure rule.
+Under the current rule, assess each receipt against the new parent and reuse only
+if strict verification accepts it. Existing npm/Docker bytes/receipts are not a
+qualified new-Q bundle. Reacquire/qualify selected stages against unchanged C; preserve coverage,
 soak, platforms, and exact policy-grant scope. Rerun missing/failed required work.
 New P admission, successful FRV, immutable plan, and final verification are mandatory.
 
@@ -296,3 +312,37 @@ source manifest, trusted tooling, and child tuple must match.
 
 Final verification independently chooses newest available Decision/Drain artifacts;
 both bind the same plan/child tuple, retaining possibly different source attempts.
+
+### Historical artifact workload compatibility
+
+Historical artifact selection preserves the producer's original Q; it does not relabel
+artifacts as built by the new qualification workflow. Unlike child receipt reuse,
+artifact selection still checks workload compatibility. It recognizes the reviewed
+beta.2 bookkeeping transition from
+f95261af52cdf1f6abcbd77a459dd5a630e0f3c7. This is an exact source-blob transition,
+not an exemption for the scripts directory or arbitrary future edits.
+
+The transition changes admission/selection (full-release-validation-at-sha,
+publication contract/inputs), receipt reconstruction (full-release-artifacts
+and its shared publication-artifacts helper), aggregation/sealing (validation
+policy/state and manifest), and consumer authentication (evidence identity,
+summary, npm preflight identity, and publication evidence validation). These
+owners select or verify operands and evidence; they do not build the package,
+image, plugins, or execute the child test workload. Their declarations and
+focused tests are included in the reviewed transition. The frozen C still owns
+the product and tests, and none of these test files is materialized as a Q-owned
+child harness. Current admitted input equality, required gates, live producer
+attempts, receipt authentication, and exact payload digests remain mandatory.
+
+The shared reconstruction helper is extracted from the existing receipt
+recovery owner so the historical qualification branch does not need to import
+the newer recovery dispatcher. A backport must retain that owner boundary and
+the reviewed source blobs; a different same-file edit, actual child workflow,
+build helper, workload planner, upgrade scenario/baseline resolver, or product
+change still requires fresh work. The ordinary conservative workload-tree
+comparison remains the fallback for every unrecognized transition.
+
+The release-Q backport preserves the historical rejection of receipt-backed
+recovery and does not introduce the publication-manifest acquisition CLI. Its
+shared discovery helper reconstructs original child artifact receipts only;
+neither an absent recovery workflow nor an absent recovery module is revived.

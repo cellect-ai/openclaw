@@ -1,5 +1,5 @@
-import "../test-utils/prepare-compiled-subprocesses.js";
 import fs from "node:fs";
+import "../test-utils/prepare-compiled-subprocesses.js";
 import path from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { MessageChannel } from "node:worker_threads";

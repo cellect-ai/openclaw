@@ -27,6 +27,7 @@ import type { AgentsApiBinding } from "./agentsapi-bindings.js";
 import { AgentsApiClient } from "./agentsapi-client.js";
 import { resolveAgentsApiSessionAccessError } from "./agentsapi-errors.js";
 import * as files from "./agentsapi-files.js";
+import { buildAgentsApiHistoryContext } from "./agentsapi-history.js";
 import { buildAgentsApiMcpTools } from "./agentsapi-mcp.js";
 import { AgentsApiMessageProjection } from "./agentsapi-messages.js";
 import {
@@ -297,31 +298,34 @@ export async function runAgentsApiAttempt(
       historyLimits,
     ]);
     let preparedHistory: AgentsApiPromptHistory["messages"] | undefined;
+    const readHistory = async () => {
+      assertCurrent();
+      if (preparedHistory) {
+        return preparedHistory;
+      }
+      const retained = recorder && promptHistories.get(recorder);
+      if (retained?.scope === historyScope && retained.nativeSessionId === remoteSessionId) {
+        return (preparedHistory = retained.messages);
+      }
+      if (recorder) {
+        promptHistories.delete(recorder);
+      }
+      const history = await SessionManager.openModelContextAsync(target, {
+        cwd: params.workspaceDir,
+        admission: recorder?.getAdmissionReceipt(),
+        signal: controller.signal,
+        limits: historyLimits,
+      });
+      assertCurrent();
+      return (preparedHistory = history.buildSessionContext().messages);
+    };
     const promptBuild = await resolveAgentHarnessBeforePromptBuildResult({
       prompt: params.prompt,
       currentInboundContext: params.currentInboundContext,
       currentUserMessage: admittedMessage ?? params.prompt,
       // Agents API cannot narrow native tools per turn; hook toolsAllow is advisory here.
       developerInstructions: instructions,
-      messages: async () => {
-        assertCurrent();
-        const retained = recorder && promptHistories.get(recorder);
-        if (retained?.scope === historyScope && retained.nativeSessionId === remoteSessionId) {
-          return retained.messages;
-        }
-        if (recorder) {
-          promptHistories.delete(recorder);
-        }
-        const history = await SessionManager.openModelContextAsync(target, {
-          cwd: params.workspaceDir,
-          admission: recorder?.getAdmissionReceipt(),
-          signal: controller.signal,
-          limits: historyLimits,
-        });
-        assertCurrent();
-        preparedHistory = history.buildSessionContext().messages;
-        return preparedHistory;
-      },
+      messages: readHistory,
       ctx: hooks.hookContext,
       bootstrapContextRunKind: params.bootstrapContextRunKind,
       toolAuthority: {
@@ -330,6 +334,14 @@ export async function runAgentsApiAttempt(
         assertActive: assertCurrent,
       },
     });
+    const historyContext = buildAgentsApiHistoryContext(
+      await readHistory(),
+      remoteSessionId,
+      params.contextWindowInfo?.tokens ??
+        params.contextTokenBudget ??
+        params.model.contextWindow ??
+        128_000,
+    );
     assertCurrent();
     // Match the cloud first-event window without shortening active native tool work.
     // HTTP acknowledgements and SSE keepalives do not establish turn progress.
@@ -348,10 +360,11 @@ export async function runAgentsApiAttempt(
       },
     });
     if (!remoteSessionId) {
-      // System hook contributions share the native session's immutable instruction snapshot.
+      // Seed at creation so a restart after binding but before input cannot lose
+      // the imported history. Quoted data is appended after instruction hooks.
       remoteSessionId = await client.create(
         controller.signal,
-        promptBuild.developerInstructions,
+        [promptBuild.developerInstructions, historyContext].filter(Boolean).join("\n\n"),
         params.model.id,
         {
           nativeTools,
@@ -481,7 +494,9 @@ export async function runAgentsApiAttempt(
     const turnInput = await buildAgentsApiTurnInput(
       params,
       declarations,
-      promptBuild.prompt,
+      !creatingSession && historyContext
+        ? [historyContext, "Current user request:", promptBuild.prompt].join("\n\n")
+        : promptBuild.prompt,
       inputs.mappingText,
       environment.type,
       assertCurrent,

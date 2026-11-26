@@ -8,17 +8,14 @@ import {
   prepareGatewayContextBindingOwner,
 } from "./gateway-context-binding-owner.js";
 
-// Native SDK and source-host consumers share private brands without exposing constructors.
-export const {
-  bindGatewayContextResolver,
-  getGatewayContextLifetime,
-  getGatewayContextResolver,
-  clearGatewayContextResolver,
+// The SDK host and execution frame survive module reloads; their bindings must share that identity.
+const {
+  gatewayContextBindingKey,
+  gatewayContextLifetimeKey,
+  GatewayContextBinding,
+  GatewayContextLifetime,
 } = resolveGlobalSingleton(Symbol.for("openclaw.gatewayContextBindings"), () => {
-  const gatewayContextBindingKey = Symbol("gatewayContextBinding");
-  const gatewayContextLifetimeKey = Symbol("gatewayContextLifetime");
-
-  class GatewayContextBinding {
+  class Binding {
     readonly #owner: object;
     #resolver: GatewayContextResolver | undefined;
 
@@ -27,7 +24,7 @@ export const {
       Object.setPrototypeOf(this, null);
     }
 
-    static read(value: unknown, owner: object): GatewayContextBinding | undefined {
+    static read(value: unknown, owner: object): Binding | undefined {
       return typeof value === "object" &&
         value !== null &&
         #owner in value &&
@@ -36,16 +33,16 @@ export const {
         : undefined;
     }
 
-    static get(binding: GatewayContextBinding): GatewayContextResolver | undefined {
+    static get(binding: Binding): GatewayContextResolver | undefined {
       return binding.#resolver;
     }
 
-    static set(binding: GatewayContextBinding, resolver: GatewayContextResolver | undefined): void {
+    static set(binding: Binding, resolver: GatewayContextResolver | undefined): void {
       binding.#resolver = resolver;
     }
   }
 
-  class GatewayContextLifetime {
+  class Lifetime {
     readonly #owner: GatewayContextResolver;
     readonly #controller = new AbortController();
 
@@ -63,63 +60,57 @@ export const {
         : undefined;
     }
   }
-
-  function getGatewayContextBinding(owner: object): GatewayContextBinding | undefined {
-    const slot = getGatewayContextBindingSlot(owner);
-    const binding: unknown =
-      slot && Object.getOwnPropertyDescriptor(slot, gatewayContextBindingKey)?.value;
-    return GatewayContextBinding.read(binding, owner);
-  }
-
-  function getLifetime(resolver: GatewayContextResolver): AbortController {
-    const retained: unknown = Object.getOwnPropertyDescriptor(
-      resolver,
-      gatewayContextLifetimeKey,
-    )?.value;
-    const existing = GatewayContextLifetime.read(retained, resolver);
-    if (existing) {
-      return existing;
-    }
-    // A closed resolver keeps its terminal lifetime even if a late loader borrows it again.
-    const lifetime = new GatewayContextLifetime(resolver);
-    Object.defineProperty(resolver, gatewayContextLifetimeKey, { value: lifetime });
-    return GatewayContextLifetime.read(lifetime, resolver)!;
-  }
-
-  function bindResolver(owner: object, resolver: GatewayContextResolver | undefined): void {
-    if (resolver) {
-      prepareGatewayContextBindingOwner(owner);
-      let binding = getGatewayContextBinding(owner);
-      if (!binding) {
-        const slot = getGatewayContextBindingSlot(owner)!;
-        binding = new GatewayContextBinding(owner);
-        Object.defineProperty(slot, gatewayContextBindingKey, { value: binding });
-      }
-      GatewayContextBinding.set(binding, resolver);
-    }
-  }
-
-  function readResolver(owner: object): GatewayContextResolver | undefined {
-    const binding = getGatewayContextBinding(owner);
-    return binding ? GatewayContextBinding.get(binding) : undefined;
-  }
-
-  function clearResolver(owner: object): boolean {
-    const binding = getGatewayContextBinding(owner);
-    const bound = binding !== undefined && GatewayContextBinding.get(binding) !== undefined;
-    if (binding) {
-      GatewayContextBinding.set(binding, undefined);
-    }
-    return bound;
-  }
-
   return {
-    bindGatewayContextResolver: bindResolver,
-    getGatewayContextLifetime: getLifetime,
-    getGatewayContextResolver: readResolver,
-    clearGatewayContextResolver: clearResolver,
+    gatewayContextBindingKey: Symbol("gatewayContextBinding"),
+    gatewayContextLifetimeKey: Symbol("gatewayContextLifetime"),
+    GatewayContextBinding: Binding,
+    GatewayContextLifetime: Lifetime,
   };
 });
+type GatewayContextBinding = InstanceType<typeof GatewayContextBinding>;
+
+function getGatewayContextBinding(owner: object): GatewayContextBinding | undefined {
+  const slot = getGatewayContextBindingSlot(owner);
+  const binding: unknown =
+    slot && Object.getOwnPropertyDescriptor(slot, gatewayContextBindingKey)?.value;
+  return GatewayContextBinding.read(binding, owner);
+}
+
+export function getGatewayContextLifetime(resolver: GatewayContextResolver): AbortController {
+  const retained: unknown = Object.getOwnPropertyDescriptor(
+    resolver,
+    gatewayContextLifetimeKey,
+  )?.value;
+  const existing = GatewayContextLifetime.read(retained, resolver);
+  if (existing) {
+    return existing;
+  }
+  // A closed resolver keeps its terminal lifetime even if a late loader borrows it again.
+  const lifetime = new GatewayContextLifetime(resolver);
+  Object.defineProperty(resolver, gatewayContextLifetimeKey, { value: lifetime });
+  return GatewayContextLifetime.read(lifetime, resolver)!;
+}
+
+export function bindGatewayContextResolver(
+  owner: object,
+  resolver: GatewayContextResolver | undefined,
+): void {
+  if (resolver) {
+    prepareGatewayContextBindingOwner(owner);
+    let binding = getGatewayContextBinding(owner);
+    if (!binding) {
+      const slot = getGatewayContextBindingSlot(owner)!;
+      binding = new GatewayContextBinding(owner);
+      Object.defineProperty(slot, gatewayContextBindingKey, { value: binding });
+    }
+    GatewayContextBinding.set(binding, resolver);
+  }
+}
+
+export function getGatewayContextResolver(owner: object): GatewayContextResolver | undefined {
+  const binding = getGatewayContextBinding(owner);
+  return binding ? GatewayContextBinding.get(binding) : undefined;
+}
 
 /** Follows explicit wrapper ownership without invoking any execution resolver. */
 export function getCanonicalGatewayContextResolver(
@@ -146,6 +137,15 @@ export function hasGatewayContextOwner(
   const resolver = getGatewayContextResolver(owner);
   // Nested lifetime wrappers retain their execution binding but share one canonical host.
   return resolver !== undefined && getCanonicalGatewayContextResolver(resolver) === gatewayOwner;
+}
+
+export function clearGatewayContextResolver(owner: object): boolean {
+  const binding = getGatewayContextBinding(owner);
+  const bound = binding !== undefined && GatewayContextBinding.get(binding) !== undefined;
+  if (binding) {
+    GatewayContextBinding.set(binding, undefined);
+  }
+  return bound;
 }
 
 export function getSharedGatewayContextResolver(

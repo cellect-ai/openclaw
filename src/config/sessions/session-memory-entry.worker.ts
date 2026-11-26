@@ -226,7 +226,7 @@ async function streamSessionMemoryEntry(
         : undefined,
     reset: async () => {
       if (delivered) {
-        // Late classification discards rendered text, not original observations.
+        // Late classification discards rendered text, not the original observations.
         await send({ index, reset: true });
       }
     },

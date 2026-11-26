@@ -14,6 +14,7 @@ const assetsByIdentity = new Map<string, Promise<WorkerNativeAsset[]>>();
 const nativeLoad =
   "const loaded = runNativeInitialization(() => require(nativePackageForTarget(target)));";
 
+/** Use the dependency's existing exact pins; no package installation or host-native lookup. */
 async function resolveWorkerNativePins(rootDir: string, manifestPath: string) {
   const manifest = JSON.parse(await fs.readFile(manifestPath, "utf8")) as {
     optionalDependencies: Record<string, string>;
@@ -22,7 +23,7 @@ async function resolveWorkerNativePins(rootDir: string, manifestPath: string) {
   const lock = parse(pnpmLockfileDocuments(await fs.readFile(lockPath, "utf8")).dependencies) as {
     packages: Record<string, { resolution: { integrity: string } }>;
   };
-  const pins = Object.entries(WORKER_BUNDLE_DARWIN_NATIVE_ARTIFACTS).map(([target, fileName]) => {
+  return Object.entries(WORKER_BUNDLE_DARWIN_NATIVE_ARTIFACTS).map(([target, fileName]) => {
     const name = `@openclaw/fs-safe-${target}`;
     const version = manifest.optionalDependencies[name];
     const integrity = lock.packages[`${name}@${version}`]?.resolution.integrity;
@@ -32,61 +33,71 @@ async function resolveWorkerNativePins(rootDir: string, manifestPath: string) {
       );
     }
     const digest = createHash("sha256").update(integrity).digest("hex");
-    return { fileName, name, version, integrity, archive: `${target}-${version}-${digest}.tgz` };
+    return { fileName, name, version, integrity, cachedName: `${target}-${version}-${digest}.tgz` };
   });
-  return pins;
 }
 
-function verifyWorkerNativeArchive(bytes: Buffer, name: string, integrity: string): void {
+function verifyWorkerNativeArchive(bytes: Buffer, integrity: string, name: string) {
   if (`sha512-${createHash("sha512").update(bytes).digest("base64")}` !== integrity) {
     throw new Error(`Worker native package archive integrity mismatch: ${name}`);
   }
 }
 
-/** Copy only verified build inputs; never download or mutate the prepared host cache. */
-export async function copyWorkerDarwinNativeAssetCache(
+/** Admit only lock-pinned public package bytes, never the surrounding host artifact cache. */
+export async function copyWorkerNativeArchiveCache(
   rootDir: string,
-  snapshotDir: string,
+  snapshot: string,
   manifestPath: string,
-): Promise<void> {
-  const pins = await resolveWorkerNativePins(snapshotDir, manifestPath);
+) {
+  const pins = await resolveWorkerNativePins(snapshot, manifestPath);
   const archives = await Promise.all(
     pins.map(async (pin) => {
-      const source = path.join(rootDir, ".artifacts", "worker-native-assets", pin.archive);
+      const file = path.join(rootDir, ".artifacts", "worker-native-assets", pin.cachedName);
       let bytes: Buffer;
       try {
-        bytes = await fs.readFile(source);
-      } catch (error) {
-        if (error instanceof Error && "code" in error && error.code === "ENOENT") {
-          throw new Error(
-            `Missing prepared worker native package ${pin.name}@${pin.version}; prepare its archive before isolated runtime tests.`,
-            { cause: error },
-          );
+        const stat = await fs.lstat(file);
+        if (!stat.isFile() || stat.size > 32 * 1024 * 1024 || (await fs.realpath(file)) !== file) {
+          throw new Error("Expected an ordinary bounded archive without symlinked ancestors");
         }
-        throw error;
+        bytes = await fs.readFile(file);
+      } catch (cause) {
+        throw new Error(
+          `Offline worker native archive unavailable: ${pin.name}@${pin.version}. Prepare the pinned build assets before isolation.`,
+          { cause },
+        );
       }
-      verifyWorkerNativeArchive(bytes, pin.name, pin.integrity);
-      return { archive: pin.archive, bytes };
+      verifyWorkerNativeArchive(bytes, pin.integrity, pin.name);
+      return { pin, bytes };
     }),
   );
-  const destination = path.join(snapshotDir, ".artifacts", "worker-native-assets");
-  await fs.mkdir(destination, { recursive: true });
-  for (const { archive, bytes } of archives) {
-    await fs.writeFile(path.join(destination, archive), bytes, { flag: "wx", mode: 0o600 });
+  const cache = path.join(snapshot, ".artifacts", "worker-native-assets");
+  // Source admission excludes .artifacts; never adopt preexisting snapshot state.
+  await fs.mkdir(path.dirname(cache), { mode: 0o700 });
+  await fs.mkdir(cache, { mode: 0o700 });
+  for (const archive of archives) {
+    await fs.writeFile(path.join(cache, archive.pin.cachedName), archive.bytes, {
+      flag: "wx",
+      mode: 0o600,
+    });
   }
+  return archives.map(({ pin: { name, version, integrity }, bytes }) => ({
+    name,
+    version,
+    integrity,
+    sha256: createHash("sha256").update(bytes).digest("hex"),
+  }));
 }
 
-/** Use the dependency's existing exact pins; no package installation or host-native lookup. */
 export async function prepareWorkerDarwinNativeAssets(rootDir: string, manifestPath: string) {
   const pins = await resolveWorkerNativePins(rootDir, manifestPath);
   const identity = JSON.stringify([path.resolve(rootDir), pins]);
   let pending = assetsByIdentity.get(identity);
   if (!pending) {
     pending = Promise.all(
-      pins.map(async ({ archive, fileName, name, version, integrity }) => {
+      pins.map(async ({ cachedName, fileName, name, version, integrity }) => {
         const cache = path.join(rootDir, ".artifacts", "worker-native-assets");
         await fs.mkdir(cache, { recursive: true });
-        const cached = path.join(cache, archive);
+        const cached = path.join(cache, cachedName);
         let bytes: Buffer | undefined;
         try {
           bytes = await fs.readFile(cached);
@@ -119,7 +130,7 @@ export async function prepareWorkerDarwinNativeAssets(rootDir: string, manifestP
           }
           bytes = Buffer.concat(downloaded);
         }
-        verifyWorkerNativeArchive(bytes, name, integrity);
+        verifyWorkerNativeArchive(bytes, integrity, name);
         if (cacheMiss) {
           const staging = `${cached}.${randomUUID()}`;
           try {

@@ -11,7 +11,7 @@ import {
 import { findSessionControllerOperationByRunId } from "../../../sessions/session-controller.queries.js";
 import { runInDetachedAsyncContext } from "../../../shared/detached-async-context.js";
 import { reconcileRetiredSubagentCancellation } from "../completion/subagent-completion-admission.store.js";
-import { hasConsumedRequesterInput, isDeliverySuspended } from "./subagent-delivery-state.js";
+import { isDeliverySuspended } from "./subagent-delivery-state.js";
 import { SUBAGENT_ENDED_REASON_ERROR } from "./subagent-lifecycle-events.js";
 import { createSubagentRegistryCompletionRuntime } from "./subagent-registry-completion-runtime.js";
 import { emitSubagentProgressEndedHook } from "./subagent-registry-completion.js";
@@ -46,9 +46,7 @@ import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
 import type { RegisterSubagentRunParams } from "./subagent-registry-run-launch-record.js";
 import { createSubagentRunManager } from "./subagent-registry-run-manager.js";
 import { clearSubagentRunsReadCacheForTest } from "./subagent-registry-state.js";
-import { createSubagentSweepReadScope } from "./subagent-registry-sweep-cleanup.js";
 import { reconcileProvisionalSubagentKill } from "./subagent-registry-sweep-kill.js";
-import { settleRestartInterruptedSubagentRun } from "./subagent-registry-sweep-settle.js";
 import {
   createSubagentRegistrySweeper,
   retireSupersededSubagentRun as retireSupersededSubagentRunForSweep,
@@ -108,6 +106,7 @@ const completionRuntime = createSubagentRegistryCompletionRuntime({
 });
 const pendingLifecycle = completionRuntime.pendingLifecycle;
 const clearPendingLifecycleError = pendingLifecycle.clearError;
+export const completeSubagentRunWithRecovery = completionRuntime.completeSubagentRunWithRecovery;
 const clearPendingLifecycleTimeout = pendingLifecycle.clearTimeout;
 
 const contextCleanup = createSubagentRegistryContextCleanup({
@@ -564,8 +563,7 @@ const publicApi = createSubagentRegistryPublicApi({
 
 export const getSubagentRunByRunId = publicApi.getSubagentRunByRunId;
 export const prepareSubagentRunsByRunIds = publicApi.prepareSubagentRunsByRunIds;
-export const listCollectorRunsForRequesterIncarnation =
-  publicApi.listCollectorRunsForRequesterIncarnation;
+export const listCollectorRunsForRequester = publicApi.listCollectorRunsForRequester;
 export const completeCollectorLaunchCleanup = publicApi.completeCollectorLaunchCleanup;
 export const recordSwarmStructuredOutput = publicApi.recordSwarmStructuredOutput;
 export const listSwarmRunsForGroup = publicApi.listSwarmRunsForGroup;
@@ -576,7 +574,7 @@ export function initSubagentRegistry() {
 }
 
 export {
-  listLiveSubagentRootSessions,
+  listLiveSubagentSessions,
   resolveRootSubagentRequester,
 } from "./subagent-registry-read.js";
 
@@ -593,10 +591,9 @@ export async function terminateLiveSubagentsForShutdown(
   );
   await Promise.all(
     entries.map((entry) =>
-      // Join the terminal write after root admission closes, without starting delivery.
+      // Shutdown joins this terminal write after new-root admission has closed.
       completeSubagentRunAttempt(subagentLifecycleController, {
         runId: entry.runId,
-        expectedEntry: entry,
         reason: SUBAGENT_ENDED_REASON_ERROR,
         outcome: { status: "error", error: "Gateway stopped" },
         triggerCleanup: false,
@@ -606,41 +603,14 @@ export async function terminateLiveSubagentsForShutdown(
   );
 }
 
-export async function activateSubagentRegistry(
+export function activateSubagentRegistry(
   resolveGatewayContext: GatewayContextResolver,
 ): Promise<void> {
   // Reuse the instance's own fenced closure so late-restored siblings share one
   // authority across repeated activation; the raw holder can outlive that instance.
-  const resolver = resolveGatewayContext()?.resolveGatewayContext;
-  activeGatewayContextResolver = resolver;
-  bindGatewayContextResolver(subagentRuns, resolver);
-  await subagentRestorer.activate();
-  if (activeGatewayContextResolver !== resolver || !resolver?.()) {
-    return;
-  }
-  // Settle interrupted execution before restart admission rebinds requester custody.
-  // Do not sweep other retired delivery: its exact requester can still recover it.
-  const readScope = createSubagentSweepReadScope(subagentRuns);
-  for (const entry of subagentRuns.values()) {
-    readScope.assertCurrent();
-    if (
-      await settleRestartInterruptedSubagentRun({
-        runId: entry.runId,
-        entry,
-        readScope,
-        complete: completionRuntime.completeSubagentRunWithRecovery,
-        now: Date.now(),
-      })
-    ) {
-      continue;
-    }
-    readScope.assertCurrent();
-    // Consumed inputs need only receipt settlement, never execution replay.
-    if (entry.requesterSettleWake && hasConsumedRequesterInput(entry)) {
-      subagentLifecycleController.markRequesterSettleWakeRestored(entry);
-      resumeRequesterSettleWake(entry.runId, entry);
-    }
-  }
+  activeGatewayContextResolver = resolveGatewayContext()?.resolveGatewayContext;
+  bindGatewayContextResolver(subagentRuns, activeGatewayContextResolver);
+  return subagentRestorer.activate();
 }
 export const settleRequesterAfterSessionSpawns = publicApi.settleRequesterAfterSessionSpawns;
 export const markRequesterTurnYielded = publicApi.markRequesterTurnYielded;

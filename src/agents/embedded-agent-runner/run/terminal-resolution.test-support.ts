@@ -103,7 +103,6 @@ export function makeTerminalInput(input: TerminalInputOverrides = {}): TerminalI
       activateCompactionContinuation: vi.fn(),
       clearCompactionContinuation: vi.fn(),
     },
-    armPostCompactionGuard: vi.fn(),
     readTerminalToolPresentation: () => undefined,
     resolveReplayInvalid: () => false,
     setTerminalLifecycleMeta: vi.fn(),

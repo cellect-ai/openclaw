@@ -23,7 +23,7 @@ import { resolveCronSkillsSnapshot } from "../../skills/runtime/cron-snapshot.js
 import {
   isWorkshopCollectionReview,
   preflightWorkshopCollectionReview,
-} from "../../skills/workshop/collection-review.js";
+} from "../../skills/workshop-host/collection-review.js";
 import { waitForAgentDatabaseWriteAdmission } from "../../state/agent-database-preparation-context.js";
 import { resolveCronJobEffectiveAgentId } from "../agent-id.js";
 import { resolveCronRuntimeSessionEntry } from "../inference-binding.js";
@@ -381,6 +381,7 @@ export async function resolveCronRunPreparation(params: CronRunPreparationParams
       const runtimeSessionEntry = resolveCronRuntimeSessionEntry(
         input.job.inferenceBinding,
         cronSession.sessionEntry,
+        provider,
       );
       const effectiveAgentRuntime = resolveEffectiveAgentRuntime({
         cfg: cfgWithAgentDefaults,
@@ -592,6 +593,7 @@ export async function resolveCronRunPreparation(params: CronRunPreparationParams
               cfg: admittedConfig,
               provider,
               modelId: model,
+              agentRuntime: effectiveAgentRuntime,
               ...(provider === resolvedModelSelection.provider &&
               resolvedModelSelection.configuredProfileId
                 ? { configuredProfileId: resolvedModelSelection.configuredProfileId }

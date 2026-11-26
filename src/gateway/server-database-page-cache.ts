@@ -18,7 +18,7 @@ const MAX_PASS_BYTES = 2 * 1024 * 1024 * 1024;
 
 /** Each pass owns one cancellable reader; no page map or SQLite snapshot survives it. */
 export async function warmGatewayDatabasePageCache(params: {
-  databases: readonly PreparedStartupSessionDatabase[];
+  databases: readonly Pick<PreparedStartupSessionDatabase, "database" | "assertCurrent">[];
   signal: AbortSignal;
   startupTrace?: GatewayStartupTrace;
   log: { info: (message: string) => void; warn: (message: string) => void };
@@ -52,7 +52,7 @@ export async function warmGatewayDatabasePageCache(params: {
         }))),
   ];
   let remaining = MAX_PASS_BYTES;
-  for (const target of targets) {
+  for (const [index, target] of targets.entries()) {
     if (params.signal.aborted || remaining <= 0 || isConstrainedProcessLowOnMemory()) {
       return;
     }
@@ -62,9 +62,6 @@ export async function warmGatewayDatabasePageCache(params: {
       target.assertCurrent();
       const identity = await readDatabasePathIdentity(target.path);
       target.assertCurrent();
-      if (isConstrainedProcessLowOnMemory()) {
-        return;
-      }
       const options = {
         source: "canonical" as const,
         expectedIdentity: identity.key,
@@ -78,7 +75,12 @@ export async function warmGatewayDatabasePageCache(params: {
             target.path,
             {
               type: "pageCache.begin",
-              input: { kind: target.kind, maxBytes: remaining, now: Date.now() },
+              // Reserve a share for later databases; unused bytes stay available to them.
+              input: {
+                kind: target.kind,
+                maxBytes: Math.floor(remaining / (targets.length - index)),
+                now: Date.now(),
+              },
             },
             options,
           );
@@ -104,7 +106,7 @@ export async function warmGatewayDatabasePageCache(params: {
           let previousBytes = 0;
           let chunkStarted = performance.now();
           while (!progress.complete) {
-            // Optional warming releases its reader when requests need the memory.
+            // Page warming is optional; release its worker when requests need the memory.
             if (isConstrainedProcessLowOnMemory()) {
               return;
             }
@@ -120,10 +122,10 @@ export async function warmGatewayDatabasePageCache(params: {
               undefined,
               { signal },
             );
-            target.assertCurrent();
             if (isConstrainedProcessLowOnMemory()) {
               return;
             }
+            target.assertCurrent();
             previousBytes = Math.max(progress.readBytes, progress.diskBytes);
             chunkStarted = performance.now();
             progress = await runSqliteReadOnlyOperation(

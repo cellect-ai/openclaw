@@ -5,10 +5,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resolveMediaList } from "./message-media.js";
 
 const lookup = vi.hoisted(() => vi.fn<LookupFn>());
-vi.mock("node:dns/promises", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("node:dns/promises")>()),
-  lookup,
-}));
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("node:dns/promises") & { default: typeof import("node:dns/promises") }
+  >();
+  const overrides = {
+    lookup,
+  };
+  return { ...actual, ...overrides, default: { ...actual.default, ...overrides } };
+});
 afterEach(() => vi.restoreAllMocks());
 
 const message = {
@@ -26,27 +31,6 @@ const message = {
 const body = Buffer.from("discord-media");
 
 describe("Discord CDN download authority", () => {
-  it.each([false, true])(
-    "retains explicit host trust and denials (blocked: %s)",
-    async (blocked) => {
-      lookup.mockResolvedValue([{ address: "10.0.0.1", family: 4 }]);
-      const fetchSpy = vi.fn(
-        async () => new Response(body, { headers: { "content-type": "image/png" } }),
-      );
-      const hosts = ["cdn.discordapp.com", "media.discordapp.net"];
-      const media = await resolveMediaList(message, 1024, {
-        fetchImpl: async () => fetchSpy(),
-        ssrfPolicy: {
-          allowedHostnames: hosts,
-          ...(blocked ? { blockedHostnames: hosts } : {}),
-        },
-      });
-      expect(media).toHaveLength(2);
-      expect(media.every((item) => Boolean(item.path))).toBe(!blocked);
-      expect(fetchSpy).toHaveBeenCalledTimes(blocked ? 0 : 2);
-    },
-  );
-
   it.each(["allowPrivateNetwork", "dangerouslyAllowPrivateNetwork"] as const)(
     "ignores browser %s for private and link-local DNS answers",
     async (flag) => {

@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { isDeepStrictEqual } from "node:util";
@@ -66,9 +67,7 @@ export async function removeBootedOutLaunchAgentPlist(
   trashPath: string,
 ): Promise<{ trashed: boolean }> {
   try {
-    assertGatewayServiceUpdateCurrent();
     await fs.mkdir(path.dirname(trashPath), { recursive: true });
-    assertGatewayServiceUpdateCurrent();
     await fs.rename(plistPath, trashPath);
     return { trashed: true };
   } catch (error) {
@@ -76,7 +75,6 @@ export async function removeBootedOutLaunchAgentPlist(
       throw error;
     }
   }
-  assertGatewayServiceUpdateCurrent();
   await fs.unlink(plistPath);
   return { trashed: false };
 }
@@ -91,6 +89,58 @@ export function resolveLaunchAgentEnvFilePath(env: GatewayServiceEnv, label: str
 
 export function resolveLaunchAgentEnvWrapperPath(env: GatewayServiceEnv, label: string): string {
   return path.join(resolveLaunchAgentEnvDir(env), `${label}-env-wrapper.sh`);
+}
+
+/** Doctor owns quote-shape recovery; runtime reads must preserve literal quotes. */
+export async function inspectLaunchAgentEnvironmentQuotes(env: GatewayServiceEnv) {
+  const filePath = resolveLaunchAgentEnvFilePath(env, resolveLaunchAgentLabel(env));
+  const original = await fs.readFile(filePath, "utf8").catch((error: unknown) => {
+    return ignoreMissingPath(error) ?? null;
+  });
+  if (!original?.startsWith(`${LAUNCH_AGENT_ENV_FILE_HEADER}\n`)) {
+    return null;
+  }
+  const keys: string[] = [];
+  // Consume whole shell values, including multiline data and escaped apostrophes,
+  // so an export-looking line inside another value is never treated as an entry.
+  const contents = original.replace(
+    /^export ([A-Za-z_][A-Za-z0-9_]*)='((?:[^']|'\\'')*)'(?=\n|$)/gm,
+    (entry, key: string, value: string) => {
+      if (value.length < 2 || !value.startsWith('"') || !value.endsWith('"')) {
+        return entry;
+      }
+      keys.push(key);
+      return `export ${key}='${value.slice(1, -1)}'`;
+    },
+  );
+  if (!keys.length) {
+    return null;
+  }
+  return {
+    filePath,
+    keys,
+    // Caller holds this service's operation lock across inspection and consent.
+    repair: async (assertCurrent: () => void) => {
+      const verify = async () => {
+        if ((await fs.readFile(filePath, "utf8")) !== original) {
+          throw new Error("Service env file changed after inspection; rerun doctor.");
+        }
+        assertCurrent();
+      };
+      await verify();
+      const backupPath = `${filePath}.quotes-${randomUUID()}.bak`;
+      assertCurrent();
+      await fs.writeFile(backupPath, original, { flag: "wx", mode: 0o600, flush: true });
+      await publishServiceFile({
+        filePath,
+        contents,
+        mode: LAUNCH_AGENT_ENV_FILE_MODE,
+        beforeRename: verify,
+        assertCurrent,
+      });
+      return backupPath;
+    },
+  };
 }
 
 function collectLaunchAgentEnvironmentEntries(

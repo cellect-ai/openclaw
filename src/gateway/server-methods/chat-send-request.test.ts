@@ -195,6 +195,18 @@ it("keeps ordinary typed @names inert and fingerprints only explicit selections"
   expect(first.requestIdentity).toBe((await fingerprint("alex-one")).requestIdentity);
 });
 
+it.each(["openclaw-macos", "openclaw-linux", "openclaw-ios", "openclaw-android"] as const)(
+  "accepts signed-in native UI mention input from %s",
+  async (id) => {
+    const client = humanClient();
+    client.connect.client.id = id;
+    client.connect.client.mode = "ui";
+    expect((await normalize({ message: "@Bob hello", mentions: [mention(0, 4)] }, client)).ok).toBe(
+      true,
+    );
+  },
+);
+
 it("requires authenticated human ingress and rejects unsupported mention modes", async () => {
   const mentions = [mention(0, 4)];
   const unqualified = humanClient();
@@ -298,6 +310,32 @@ it.each([
     }
   },
 );
+
+it("retains App attachment receipts without changing model text and binds them to retries", async () => {
+  const attachment = {
+    title: "Helmet shell",
+    uri: "shell://specimens/helmet",
+    icon: "https://example.test/shell.png",
+  };
+  const appContext = [attachment];
+  const value = await normalizeValue({ message: "Describe this shell.", appContext });
+  expect(value.appContext).toEqual(appContext);
+  const reordered = [{ icon: attachment.icon, uri: attachment.uri, title: attachment.title }];
+  expect(
+    (await normalizeValue({ message: "Describe this shell.", appContext: reordered }))
+      .requestIdentity,
+  ).toBe(value.requestIdentity);
+  expect(value.inboundMessage).toBe("Describe this shell.");
+  expect(value.rawMessage).toBe("Describe this shell.");
+  const changed = await normalizeValue({
+    message: "Describe this shell.",
+    appContext: [{ title: "Clam" }],
+  });
+  expect(changed.requestIdentity).not.toBe(value.requestIdentity);
+  await expectRejected({ message: "/stop", appContext });
+  await expectRejected({ appContext: [{ title: "x".repeat(201) }] });
+});
+
 it.each([
   [undefined, "off", false],
   ["other-tool", "off", false],

@@ -7,7 +7,7 @@ import {
   prepareUpdateCandidatePluginTrees,
 } from "../infra/update-candidate-plugin-tree.js";
 import { closeDefaultRetainedNativeWorkerSource } from "../infra/worker-native-lifecycle.js";
-import { preparePluginDoctorMigrationBackupResources } from "./doctor-contract-registry.js";
+import { preparePluginDoctorMigrationBackupResources } from "./doctor-contract-preparation.js";
 import { createPluginCache, withPluginCache } from "./plugin-cache.js";
 import { createPluginManifestRecordFixture } from "./plugin-metadata.test-support.js";
 const dirs = useAutoCleanupTempDirTracker(afterEach);

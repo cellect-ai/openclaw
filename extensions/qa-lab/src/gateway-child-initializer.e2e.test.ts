@@ -94,10 +94,7 @@ it(
         ${
           phase === "populated"
             ? `database.db.prepare("INSERT INTO session_nodes (session_key,current_session_id,entry_json,entry_valid,updated_at) VALUES (?,?,?,?,?)").run("agent:qa:pending-fixture", "pending-fixture", JSON.stringify({ sessionId: "pending-fixture", updatedAt: 1 }), 1, 1);`
-            : `// beta.4 repairs a pending validity flag when its payload is valid.
-               // Corrupt the persisted payload so startup must refuse actual invalid state.
-               const mutation = database.db.prepare("UPDATE session_nodes SET entry_json = ?, entry_valid = 0 WHERE session_key = ?").run("{", "agent:qa:pending-fixture");
-               if (Number(mutation.changes) !== 1) throw new Error("Invalid fixture row was not updated");`
+            : `database.db.prepare("UPDATE session_nodes SET entry_valid = 0 WHERE session_key = ?").run("agent:qa:pending-fixture");`
         }
         markCanonicalSessionValidationPending(database);
         database.db.exec("COMMIT");

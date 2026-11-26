@@ -1,6 +1,10 @@
 import { asNonArrayRecord } from "@openclaw/normalization-core/record-coerce";
-import { narrowSessionEventSettings } from "../../auto-reply/reply/session-event-policy.js";
+import {
+  inheritSessionEventToolPolicy,
+  narrowSessionEventSettings,
+} from "../../auto-reply/reply/session-event-policy.js";
 import type { SessionEntriesCurrentCheck } from "../../config/sessions/session-entry-current.types.js";
+import type { SessionEntry } from "../../config/sessions/types.js";
 import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
@@ -31,11 +35,25 @@ import {
 import { readToolStringParam, type AnyAgentTool } from "./common.js";
 import {
   type ReceiptAuthority,
-  type GatewayToolCallerIdentity,
+  type GatewayToolCallerIdentity as IssuedGatewayToolCallerIdentity,
   type GatewayToolCallerSource,
   type GatewayToolOperatorSelection,
 } from "./gateway-caller-identity.types.js";
 import type { GatewayToolCallerReceiptAdmission } from "./gateway-caller-receipt.types.js";
+
+/** 11.10 publication and session-event fields on the extracted caller identity. */
+type GatewayToolCallerIdentity = IssuedGatewayToolCallerIdentity & {
+  /** The surface restates this caller session's own policy; follow-ups to that session skip it. */
+  sessionEventToolsAllowSessionScoped?: true;
+  /** Reporting attribution only; never restores the yielding turn's execution authority. */
+  workspacePublicationRunId?: string;
+  /** Effective requesting surface captured by local publication before yielding. */
+  workspacePublicationPolicy?: {
+    allow: string[];
+    deny: string[];
+    permissionMode?: SessionEntry["permissionMode"];
+  };
+};
 
 const gatewayToolCallerStorage = new AsyncContext<GatewayToolCallerIdentity>(
   Symbol("gatewayToolCaller"),
@@ -113,11 +131,24 @@ export function captureGatewayToolReceiptAssertion(
     }
   };
   const prepare = receipt.prepareSessionSource?.bind(receipt);
+  const prepareEffect = receipt.prepareSessionSourceEffect?.bind(receipt);
   return Object.assign(() => assertAllowed(receipt()), {
     nativeSource: receipt.nativeSource,
     opaqueCommitGuard: receipt.opaqueCommitGuard,
     assertScopeCurrent: receipt.assertScopeCurrent?.bind(receipt),
     prepareSessionSourceScope: receipt.prepareSessionSourceScope?.bind(receipt),
+    ...(prepareEffect
+      ? {
+          async prepareSessionSourceEffect() {
+            const prepared = await prepareEffect();
+            return {
+              ...prepared,
+              assertCurrent: () => assertAllowed(prepared.assertCurrent()),
+              release: prepared.release?.bind(prepared),
+            };
+          },
+        }
+      : {}),
     ...(prepare
       ? {
           async prepareSessionSource() {
@@ -504,14 +535,11 @@ export async function withGatewayToolCallerIdentity<T>(
               identity.sessionEventSettings,
             )
           : (identity.sessionEventSettings ?? inheritedOwner?.sessionEventSettings),
-      sessionEventToolsAllow:
-        identity.sessionEventToolsAllow && inheritedOwner?.sessionEventToolsAllow
-          ? identity.sessionEventToolsAllow.filter((name) =>
-              inheritedOwner.sessionEventToolsAllow!.includes(name),
-            )
-          : (identity.sessionEventToolsAllow ?? inheritedOwner?.sessionEventToolsAllow),
+      ...inheritSessionEventToolPolicy(identity, inheritedOwner),
       workspaceBaseRefreshSandbox: inheritedValue("workspaceBaseRefreshSandbox"),
       workspacePrAdoptionSessionId: inheritedValue("workspacePrAdoptionSessionId"),
+      workspacePublicationRunId: inheritedValue("workspacePublicationRunId"),
+      workspacePublicationPolicy: inheritedValue("workspacePublicationPolicy"),
       workspaceEvidenceSandbox: inheritedValue("workspaceEvidenceSandbox"),
       personalToolParticipants: inheritedValue("personalToolParticipants"),
       personalToolUser: inheritedValue("personalToolUser"),

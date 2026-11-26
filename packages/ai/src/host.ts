@@ -311,10 +311,11 @@ type AiTransportHostState = {
 const HOST_STATE_KEY = Symbol.for("openclaw.ai.transportHost");
 
 function resolveAiTransportHostState(): AiTransportHostState {
-  const globalStore: typeof globalThis & { [HOST_STATE_KEY]?: AiTransportHostState } = globalThis;
-  const existing = globalStore[HOST_STATE_KEY];
-  if (Object.hasOwn(globalStore, HOST_STATE_KEY) && existing !== undefined) {
-    return existing;
+  // SAFETY: globalThis is an object; this view only accesses our symbol-owned state.
+  const globalStore = globalThis as Record<PropertyKey, unknown>;
+  if (Object.hasOwn(globalStore, HOST_STATE_KEY)) {
+    // SAFETY: this module is the sole writer of this symbol and always stores AiTransportHostState.
+    return globalStore[HOST_STATE_KEY] as AiTransportHostState;
   }
   const state: AiTransportHostState = {
     inert: inertAiTransportHost,

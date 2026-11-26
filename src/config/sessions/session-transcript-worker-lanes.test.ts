@@ -8,15 +8,17 @@ import { expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, withinTest } from "../../../test/helpers/promise.js";
 import { SESSION_TRANSCRIPT_FOREGROUND_WORKERS } from "../../infra/worker-pool-sizing.js";
 import { WorkerTaskPool } from "../../infra/worker-task-pool.js";
+import {
+  beginGatewayShutdownCleanup,
+  markGatewayRestartDraining,
+  resetGatewayWorkAdmission,
+} from "../../process/gateway-work-admission.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
 import { createSessionTranscriptHistoryPool } from "./session-transcript-read-pools.js";
 import {
   historyLane,
-  maintenanceLane,
-  projectionLane,
-  prepareSessionStoreCandidatesInWorker,
-  targetDiscoveryLane,
+  sessionStoreLane,
   transcriptSearchLane,
   withSessionHistoryWorkerReadCandidates,
 } from "./session-transcript-worker-resources.js";
@@ -54,27 +56,29 @@ function input() {
 const prewarmed = { ok: true as const, value: { kind: "prewarm" as const } };
 const absent = { ok: true as const, value: false };
 
-it.each(["idle", "critical"])("retires preparation-only discovery workers on %s", async (mode) => {
-  const pressure = channel("openclaw.memory.critical");
+it("retires idle readers during shutdown without interrupting a pending read", async () => {
+  const request = input();
+  observed.run.mockResolvedValue(absent);
+  await request.read(sessionStoreLane);
   const reply = createDeferredCore<unknown>();
   observed.run.mockReturnValueOnce(reply.promise);
-  const preparing = prepareSessionStoreCandidatesInWorker({ storePath: input().database.path });
+  const reading = request.read();
   try {
-    pressure.publish(true);
-    expect(observed.rotate).not.toHaveBeenCalled();
-    reply.resolve({ ok: true, value: { kind: "session-target-prepare", candidates: [] } });
-    await preparing;
-    if (mode === "idle") {
-      await vi.advanceTimersByTimeAsync(90_000);
-    } else {
-      pressure.publish(true);
-      await targetDiscoveryLane.rotation;
-    }
-    expect(observed.rotate).toHaveBeenCalledOnce();
-    expect(pressure.hasSubscribers).toBe(false);
+    expect(historyLane.pending).toBe(1);
+    markGatewayRestartDraining();
+    beginGatewayShutdownCleanup();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observed.rotate).toHaveBeenCalledTimes(1);
+    expect(historyLane.pending).toBe(1);
+    reply.resolve(absent);
+    await expect(reading).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(observed.rotate).toHaveBeenCalledTimes(2);
+    expect([historyLane.native, sessionStoreLane.native]).toEqual([false, false]);
   } finally {
-    reply.resolve({ ok: true, value: { kind: "session-target-prepare", candidates: [] } });
-    await preparing;
+    reply.resolve(absent);
+    await reading;
+    resetGatewayWorkAdmission();
   }
 });
 
@@ -298,50 +302,6 @@ it("keeps cold reads progressing while history searches await the same writer", 
   }
 });
 
-it("keeps cold candidate authorization independent of the searching worker", async () => {
-  observed.preparedDatabase = false;
-  observed.serializePools = true;
-  const request = input();
-  const queued = createDeferredCore<boolean>();
-  const release = createDeferredCore<boolean[]>();
-  let reading: Promise<boolean> | undefined;
-  observed.run.mockImplementation(async (work, options) => {
-    assert(isRecord(work));
-    if (work.kind !== "transcript-search") {
-      return absent;
-    }
-    assert(options.onRequest);
-    await options.onRequest([request.scope.sessionKey], {
-      signal: new AbortController().signal,
-      yieldSignal: new AbortController().signal,
-    });
-    return { ok: true, value: { kind: "transcript-search", result: { hits: [] } } };
-  });
-  const searching = withSessionHistoryWorkerDatabase(
-    request.database,
-    (owner) =>
-      owner.searchTranscripts(
-        { agentId: "main", query: "needle" },
-        async () => false,
-        () => {
-          observed.queued.mockImplementation((busy) => queued.resolve(busy));
-          reading = request.read(projectionLane);
-          return Promise.race([reading.then((present) => [present]), release.promise]);
-        },
-      ),
-    transcriptSearchLane,
-  );
-  try {
-    // A cold exact-row read must dispatch while its search awaits authorization.
-    expect(await queued.promise).toBe(false);
-    await expect(searching).resolves.toEqual({ hits: [] });
-    await expect(reading).resolves.toBe(false);
-  } finally {
-    release.resolve([false]);
-    await Promise.allSettled([searching, reading]);
-  }
-});
-
 it("hands admitted read deadlines to the worker pool", async () => {
   observed.preparedDatabase = false;
   const request = input();
@@ -382,7 +342,7 @@ it("hands admitted read deadlines to the worker pool", async () => {
 it("dedupes independent lane prewarms while idle readers retire and regrow", async () => {
   const request = input();
   const warm = [historyLane, transcriptSearchLane];
-  const background = [projectionLane, maintenanceLane, targetDiscoveryLane];
+  const background = [sessionStoreLane];
   const lanes = [...warm, ...background];
   const prewarm = (lane: (typeof lanes)[number]) =>
     prewarmSessionHistoryWorker(request.database, lane);
@@ -401,9 +361,9 @@ it("dedupes independent lane prewarms while idle readers retire and regrow", asy
       Promise.all(preparing),
       "Prewarms settled before every independent lane dispatched",
     );
-    expect(observed.run).toHaveBeenCalledTimes(5);
+    expect(observed.run).toHaveBeenCalledTimes(3);
     expect(observed.run.mock.calls[0]?.[0]).toMatchObject({ kind: "prewarm" });
-    expect(lanes.map((lane) => lane.pending)).toEqual([1, 1, 1, 1, 1]);
+    expect(lanes.map((lane) => lane.pending)).toEqual([1, 1, 1]);
     replies[0]!.resolve(prewarmed);
     const completedLane = await Promise.race(
       preparing.map((preparation, index) => preparation.then(() => index)),
@@ -413,17 +373,17 @@ it("dedupes independent lane prewarms while idle readers retire and regrow", asy
     );
     replies.forEach((reply) => reply.resolve(prewarmed));
     await Promise.all(preparing);
-    expect(lanes.map((lane) => lane.pending)).toEqual([0, 0, 0, 0, 0]);
+    expect(lanes.map((lane) => lane.pending)).toEqual([0, 0, 0]);
     expect(observed.unregister).not.toHaveBeenCalled();
 
     await vi.advanceTimersByTimeAsync(89_999);
     await Promise.all(lanes.map(prewarm));
-    expect(observed.run).toHaveBeenCalledTimes(5);
+    expect(observed.run).toHaveBeenCalledTimes(3);
     await vi.advanceTimersByTimeAsync(1);
     expect(lanes.filter((lane) => !isSessionHistoryWorkerCold(lane))).toEqual(warm);
-    expect(observed.rotate).toHaveBeenCalledTimes(3);
+    expect(observed.rotate).toHaveBeenCalledTimes(1);
     await Promise.all(warm.map(prewarm));
-    expect(observed.run).toHaveBeenCalledTimes(5);
+    expect(observed.run).toHaveBeenCalledTimes(3);
 
     observed.run.mockResolvedValue(absent);
     for (const lane of background) {
@@ -432,7 +392,7 @@ it("dedupes independent lane prewarms while idle readers retire and regrow", asy
     }
     await vi.advanceTimersByTimeAsync(209_999);
     await Promise.all(warm.map(prewarm));
-    expect(observed.run).toHaveBeenCalledTimes(8);
+    expect(observed.run).toHaveBeenCalledTimes(4);
     expect(lanes.filter((lane) => !isSessionHistoryWorkerCold(lane))).toEqual(warm);
     await vi.advanceTimersByTimeAsync(1);
     expect(lanes.every((lane) => isSessionHistoryWorkerCold(lane))).toBe(true);
@@ -440,7 +400,7 @@ it("dedupes independent lane prewarms while idle readers retire and regrow", asy
 
     observed.run.mockResolvedValue(prewarmed);
     await Promise.all(lanes.map(prewarm));
-    expect(observed.run).toHaveBeenCalledTimes(13);
+    expect(observed.run).toHaveBeenCalledTimes(7);
     expect(lanes.every((lane) => !isSessionHistoryWorkerCold(lane))).toBe(true);
   } finally {
     replies.forEach((reply) => reply.resolve(prewarmed));
@@ -476,7 +436,7 @@ it("reuses minute-spaced branch reads and retires after ninety idle seconds", as
     expect(observed.rotate).not.toHaveBeenCalled();
     await vi.advanceTimersByTimeAsync(1);
     expect(observed.rotate).toHaveBeenCalledOnce();
-    expect(isSessionHistoryWorkerCold(maintenanceLane)).toBe(true);
+    expect(isSessionHistoryWorkerCold(sessionStoreLane)).toBe(true);
   } finally {
     independentRead.mockRestore();
   }
@@ -484,8 +444,7 @@ it("reuses minute-spaced branch reads and retires after ninety idle seconds", as
 
 it.each([
   ["history", historyLane, 300_000, transcriptSearchLane],
-  ["projection", projectionLane, 90_000, targetDiscoveryLane],
-  ["maintenance", maintenanceLane, 90_000, targetDiscoveryLane],
+  ["store", sessionStoreLane, 90_000, sessionStoreLane],
 ] as const)(
   "keeps %s idle retirement anchored to reads across database cleanup",
   async (_name, lane, idleMs, siblingLane) => {
@@ -533,7 +492,7 @@ it("rearms idle retirement after expired and explicit native cleanup both fail",
   }
 });
 
-it.each([historyLane, maintenanceLane])(
+it.each([historyLane, sessionStoreLane])(
   "settles failed and revoked $name prewarms without rejecting callers",
   async (lane) => {
     const request = input();
@@ -578,9 +537,9 @@ it("maintenance cleanup preserves the independent foreground reader", async () =
         value: request.target,
       });
       await scope.readStoreTarget(request.targetInput);
-      await request.read(maintenanceLane);
+      await request.read(sessionStoreLane);
     },
-    maintenanceLane,
+    sessionStoreLane,
   );
   expect(observed.unregister).toHaveBeenCalledOnce();
   const retained = observed.resources.find((resource) => resource.agentId === "main");
@@ -742,7 +701,7 @@ it.each([
     const request = input();
     observed.run.mockResolvedValue(absent);
     const owners: SessionHistoryWorkerDatabase[] = [];
-    for (const lane of [historyLane, projectionLane, maintenanceLane]) {
+    for (const lane of [historyLane, sessionStoreLane]) {
       await withSessionHistoryWorkerDatabase(
         request.database,
         async (owner) => {
@@ -756,27 +715,20 @@ it.each([
     const resource = observed.resources[0]!;
     const retained = pending ? retainSessionHistoryWorkerDatabase(request.database) : undefined;
     const foreground = createDeferredCore();
-    const projection = createDeferredCore();
-    const maintenance = createDeferredCore();
+    const store = createDeferredCore();
     const cleanup = pending || !capable ? observed.rotate : observed.closeResources;
-    cleanup
-      .mockReturnValueOnce(foreground.promise)
-      .mockReturnValueOnce(projection.promise)
-      .mockReturnValueOnce(maintenance.promise);
+    cleanup.mockReturnValueOnce(foreground.promise).mockReturnValueOnce(store.promise);
     resource.revoke();
     retained?.release();
     for (const owner of owners) {
       expect(owner.assertCurrent).toThrow("revoked");
     }
     const closing = resource.close();
-    expect(cleanup).toHaveBeenCalledTimes(3);
+    expect(cleanup).toHaveBeenCalledTimes(2);
     foreground.resolve();
     await foreground.promise;
     expect(observed.unregister).not.toHaveBeenCalled();
-    projection.resolve();
-    await projection.promise;
-    expect(observed.unregister).not.toHaveBeenCalled();
-    maintenance.resolve();
+    store.resolve();
     await closing;
     expect(observed.unregister).toHaveBeenCalledTimes(1);
   },
@@ -807,6 +759,7 @@ it.each([false, true])("retains reads dispatched after cleanup (capable=%s)", as
 });
 
 it("releases pressure subscriptions after native settlement and rearms reopened lanes", async () => {
+  using clock = vi.spyOn(performance, "now").mockReturnValue(0);
   const pressure = channel("openclaw.memory.critical");
   const request = input();
   observed.run.mockResolvedValue(absent);
@@ -818,7 +771,10 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   expect(observed.unregister).not.toHaveBeenCalled();
   const retirement = createDeferredCore();
   observed.rotate.mockReturnValueOnce(retirement.promise);
-  pressure.publish(true);
+  pressure.publish(undefined);
+  expect(historyLane.rotation).toBeUndefined();
+  clock.mockReturnValue(1_000);
+  pressure.publish(undefined);
   const rotation = historyLane.rotation;
   assert(rotation);
   try {
@@ -841,7 +797,8 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   expect(pressure.hasSubscribers).toBe(true);
   const reopenedRetirement = createDeferredCore();
   observed.rotate.mockReturnValueOnce(reopenedRetirement.promise);
-  pressure.publish(true);
+  clock.mockReturnValue(2_000);
+  pressure.publish(undefined);
   const reopenedRotation = historyLane.rotation;
   assert(reopenedRotation);
   const successor = request.read();
@@ -849,7 +806,8 @@ it("releases pressure subscriptions after native settlement and rearms reopened 
   await Promise.all([reopenedRotation, successor]);
   // The queued successor retains its newly opened native reader.
   expect(pressure.hasSubscribers).toBe(true);
-  pressure.publish(true);
+  clock.mockReturnValue(3_000);
+  pressure.publish(undefined);
   await historyLane.rotation;
   expect(pressure.hasSubscribers).toBe(false);
 

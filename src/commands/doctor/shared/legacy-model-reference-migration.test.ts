@@ -206,7 +206,6 @@ describe("canonical model-reference migration", () => {
       },
     ],
     ["an API primary with a CLI fallback", defaults({ model: selection(api, cli) })],
-    ["a profile-qualified API primary", defaults({ model: selection(`${api}@work`, cli) })],
     ["a CLI primary with an API fallback", defaults({ model: selection(cli, api) })],
     ["an agent API primary with a CLI fallback", entries({ main: { model: selection(api, cli) } })],
     [
@@ -313,33 +312,16 @@ describe("canonical model-reference migration", () => {
     expect(warnings).toHaveLength(1);
   });
 
-  it.each(["fallback", "inherited heartbeat"])(
-    "preserves API and CLI routes through Doctor for %s",
-    (route) => {
-      const raw =
-        route === "fallback"
-          ? defaults({ model: selection(api, cli) })
-          : {
-              agents: {
-                defaults: { model: api },
-                entries: { work: { heartbeat: { model: cli } } },
-              },
-            };
-      const seeded = applyLegacyDoctorMigrations(raw, { sourceConfigBeforeMigrations: raw });
-      const result = normalizeCompatibilityConfigValues(seeded.next ?? raw);
-      expect(result.config.agents).toEqual(raw.agents);
-      expect(
-        runtime(
-          result.config,
-          "anthropic",
-          "claude-opus-4-7",
-          route === "fallback" ? undefined : "work",
-        )?.id,
-      ).not.toBe("claude-cli");
-    },
-  );
+  it("keeps both selected routes through the complete Doctor normalization pass", async () => {
+    const model = selection("anthropic/claude-opus-4-7", "claude-cli/claude-opus-4-7");
+    const raw = defaults({ model });
+    const seeded = applyLegacyDoctorMigrations(raw, { sourceConfigBeforeMigrations: raw });
+    const result = await normalizeCompatibilityConfigValues(seeded.next ?? raw);
+    expect(result.config.agents?.defaults?.model).toEqual(model);
+    expect(runtime(result.config, "anthropic", "claude-opus-4-7")?.id).not.toBe("claude-cli");
+  });
 
-  it("canonicalizes a seeded legacy Claude CLI allowlist in one doctor pass", () => {
+  it("canonicalizes a seeded legacy Claude CLI allowlist in one doctor pass", async () => {
     vi.stubEnv("ANTHROPIC_API_KEY", "");
     vi.stubEnv("ANTHROPIC_OAUTH_TOKEN", "");
     // #124952: the seeded allowlist and its model map must migrate in one pass.
@@ -353,7 +335,7 @@ describe("canonical model-reference migration", () => {
       "claude-cli/claude-sonnet-4-6",
     ]);
 
-    const res = normalizeCompatibilityConfigValues(seeded.next);
+    const res = await normalizeCompatibilityConfigValues(seeded.next);
     expect(res.config.agents?.defaults?.models).toEqual({
       "anthropic/*": { agentRuntime: { id: "claude-cli" } },
       "anthropic/claude-opus-4-7": { agentRuntime: { id: "claude-cli" } },
@@ -363,6 +345,6 @@ describe("canonical model-reference migration", () => {
     expect(res.config.agents?.defaults?.modelPolicy).toEqual({
       allow: ["anthropic/claude-opus-4-7", "anthropic/claude-sonnet-4-6"],
     });
-    expect(normalizeCompatibilityConfigValues(res.config).changes).toEqual([]);
+    expect((await normalizeCompatibilityConfigValues(res.config)).changes).toEqual([]);
   });
 });

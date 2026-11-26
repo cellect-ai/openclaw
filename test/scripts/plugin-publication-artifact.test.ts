@@ -5,7 +5,10 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { crc32, deflateRawSync, gzipSync } from "node:zlib";
 import { describe, expect, it, vi } from "vitest";
-import { downloadExactActionsArtifactArchive } from "../../scripts/lib/actions-artifact-archive.mjs";
+import {
+  downloadExactActionsArtifactArchive,
+  validateActionsArtifactProducerJob,
+} from "../../scripts/lib/actions-artifact-archive.mjs";
 import {
   createPluginPublicationArtifact,
   downloadActionsArtifactArchive,
@@ -807,8 +810,7 @@ describe("plugin publication artifact", () => {
       const assertion = expect(result).rejects.toThrow(
         "deadline would be exceeded before the permitted retry",
       );
-      await vi.advanceTimersByTimeAsync(300_000);
-      await assertion;
+      await Promise.all([assertion, vi.advanceTimersByTimeAsync(300_000)]);
       expect(urls).toEqual([
         "https://api.github.com/repos/" + REPOSITORY + "/actions/artifacts/" + ARTIFACT_ID,
       ]);
@@ -994,6 +996,49 @@ describe("plugin publication artifact", () => {
     );
     await expect(downloadForAttempts(3, 2)).rejects.toThrow(
       "Producer workflow run attempt must not be newer than the consumer attempt.",
+    );
+  });
+
+  it("requires explicit same-attempt upload-step binding to consume an active producer job", () => {
+    const fixture = createDownloadFixture(2);
+    const producerJobName = "Publish plugins, then OpenClaw";
+    const workflowJobs = {
+      total_count: 1,
+      jobs: [
+        {
+          ...workflowJobsMetadata(producerJobName, 2, "success").jobs[0]!,
+          status: "in_progress",
+          conclusion: null,
+          steps: [
+            { name: "Upload immutable artifact", status: "completed", conclusion: "success" },
+          ],
+        },
+      ],
+    };
+    const params = {
+      expected: {
+        ...fixture.expected,
+        consumerRunAttempt: 2,
+        producerJobName,
+        producerStepName: "Upload immutable artifact",
+        runStatePolicy: "same-run-producer-success",
+      },
+      workflowJobs,
+    };
+    expect(() => validateActionsArtifactProducerJob(params)).toThrow("producer job");
+    expect(() =>
+      validateActionsArtifactProducerJob({ ...params, allowActiveJob: true }),
+    ).not.toThrow();
+    expect(() =>
+      validateActionsArtifactProducerJob({
+        ...params,
+        allowActiveJob: true,
+        expected: { ...params.expected, consumerRunAttempt: 3 },
+      }),
+    ).toThrow("producer job");
+    workflowJobs.jobs[0]!.steps[0]!.conclusion = "failure";
+    expect(() => validateActionsArtifactProducerJob({ ...params, allowActiveJob: true })).toThrow(
+      "producer step",
     );
   });
 

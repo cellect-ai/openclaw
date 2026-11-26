@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
-import { getEnvironmentData } from "node:worker_threads";
+import { getEnvironmentData, receiveMessageOnPort } from "node:worker_threads";
 import { Client } from "pg";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { withEngineStoreAdmission } from "../database-engine/admission-scope.js";
 import { stageSqliteTransactionState } from "../sqlite-post-commit.js";
 import {
@@ -15,7 +15,14 @@ import {
   settleSqliteWorkerOperationContext,
   type SqliteWorkerOperationContext,
 } from "../sqlite-worker-operation-settlement.js";
+import * as bridgePrestart from "./bridge-prestart.js";
 import { PostgresSyncConnection } from "./connection.js";
+import type { BridgeRequest, PostgresBridge } from "./protocol.js";
+
+vi.mock("node:worker_threads", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:worker_threads")>();
+  return { ...actual, receiveMessageOnPort: vi.fn(actual.receiveMessageOnPort) };
+});
 
 const configured = getEnvironmentData("openclaw.test.workboard.connection");
 const connection = typeof configured === "string" ? configured : undefined;
@@ -23,7 +30,7 @@ const connection = typeof configured === "string" ? configured : undefined;
 describe.skipIf(!connection)("PostgreSQL domain commit receipts", () => {
   const admin = new Client({ connectionString: connection });
   const schema = `receipts_${randomUUID().replaceAll("-", "")}`;
-  const cleanups: Array<() => void> = [];
+  const cleanups: Array<() => void | Promise<void>> = [];
   const run = withEngineStoreAdmission;
 
   function open() {
@@ -45,6 +52,8 @@ describe.skipIf(!connection)("PostgreSQL domain commit receipts", () => {
       db,
       prefix: `${randomUUID()}:`,
       admission,
+      owner,
+      publications,
       execute: <T>(operation: () => T) =>
         run(() => withSqliteWorkerOperationAdmission(owner, operation)),
       settle(facts?: unknown) {
@@ -83,10 +92,11 @@ describe.skipIf(!connection)("PostgreSQL domain commit receipts", () => {
     await admin.query(`CREATE SCHEMA "${schema}"; CREATE TABLE "${schema}".entries (id text)`);
   });
 
-  afterEach(() => {
+  afterEach(async () => {
     for (const cleanup of cleanups.splice(0).toReversed()) {
-      cleanup();
+      await cleanup();
     }
+    vi.restoreAllMocks();
   });
 
   afterAll(async () => {
@@ -214,5 +224,60 @@ describe.skipIf(!connection)("PostgreSQL domain commit receipts", () => {
     );
     expect(operation.admission.committed).toBeUndefined();
     operation.settle(facts);
+  });
+
+  it("does not publish or replay a committed write after losing its host COMMIT reply", async () => {
+    const actual =
+      await vi.importActual<typeof import("node:worker_threads")>("node:worker_threads");
+    const create = bridgePrestart.createPostgresBridge;
+    let bridge: PostgresBridge | undefined;
+    vi.spyOn(bridgePrestart, "createPostgresBridge").mockImplementation((params) => {
+      bridge = create(params);
+      return bridge;
+    });
+    const { db, prefix, ...operation } = admitted();
+    expect(bridge).toBeDefined();
+    const port = bridge!.port;
+    const sent = vi.spyOn(port, "postMessage");
+    let dropped = 0;
+    vi.mocked(receiveMessageOnPort).mockImplementation((source) => {
+      const received = actual.receiveMessageOnPort(source);
+      const request: BridgeRequest | undefined = sent.mock.calls.at(-1)?.[0];
+      if (
+        source === port &&
+        request?.operation === "query" &&
+        request.sql === "COMMIT" &&
+        received?.message.id === request.id
+      ) {
+        expect(received.message.result.command).toBe("COMMIT");
+        dropped++;
+        // Consume the real bridge reply without delivering it to the synchronous caller.
+        return undefined;
+      }
+      return received;
+    });
+    const id = `${prefix}committed`;
+    try {
+      expect(() =>
+        operation.execute(() =>
+          db.runTransaction(() => {
+            insert(db, id);
+            deferSqliteWorkerCommitReceipt(db, { kind: "saved-entry", id });
+          }),
+        ),
+      ).toThrow(expect.objectContaining({ code: "outcome-unknown" }));
+      expect(dropped).toBe(1);
+      expect(db.isOpen).toBe(false);
+      expect(() => run(() => insert(db, id))).toThrow("outcome unknown");
+      expect(
+        (await admin.query(`SELECT id FROM "${schema}".entries WHERE id = $1`, [id])).rows,
+      ).toEqual([{ id }]);
+      operation.admission.service();
+      expect(operation.owner.pendingReceipts?.size).toBe(0);
+      expect(operation.admission.committed).toBeUndefined();
+      expect(operation.publications).toEqual([]);
+    } finally {
+      vi.mocked(receiveMessageOnPort).mockImplementation(actual.receiveMessageOnPort);
+    }
   });
 });

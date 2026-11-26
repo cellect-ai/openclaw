@@ -24,6 +24,40 @@ response settle before the execution ends, preserving each call's own result.
 Stop, timeouts, and permission revocation can still cancel those calls while
 they settle. The handoff does not start another model request.
 
+Without a registered wake source, `sessions_yield` returns `nothing_pending`
+and keeps the model turn open. The model should reply to the user or start the
+work it intended to await. Keeping a spawned session does not keep its completed
+task alive: a new human message in that session needs its own continuation source.
+The tool stays available because the turn can start children or background work
+later; its availability does not imply that a wait has been registered.
+
+Gateway maintenance settles older unreachable yielded session lifecycles with a
+recorded failure, including runs absent from the subagent registry. It preserves active
+execution, queued input, retained continuations and wake-armed process completion.
+Restart recovery reports the missing continuation without attributing its loss to
+the restart.
+
+An empty model stop after tool results is not intentional silence. A direct human
+turn in a kept child follows the ordinary human reply policy: an explicit
+`NO_REPLY` stays silent, while a missing answer receives the existing recovery or
+missing-reply notice. Historical asynchronous tool activity alone cannot suppress
+that notice once the work has settled. A retained tool handoff still owns its
+continuation even after its tool call completes: the current turn releases
+ownership, then the handoff result resumes the conversation.
+
+Completion inputs already committed to the requester transcript remain consumed
+when its announcing turn produces no reply; they are not recorded as failed child
+deliveries or replayed. Results not yet consumed remain owed to the requester.
+A descendant whose delivery has settled cannot hold a later completion behind
+unfinished cleanup. Session deletion still waits for that cleanup.
+Committed child-row removal also retires its accepted completion receipt, so a
+later requester yield transfers the remaining cohort without requiring deleted
+rows. An unknown missing child still fails the complete-cohort check. Tracking
+the spawning turn for receipt cleanup does not claim a session-bound message wait;
+only an explicit watched continuation binds that wait to requester completion.
+This does not claim that a channel received an answer: ambiguous outbound delivery
+keeps its separate outcome, and private child input stays private.
+
 ## Ownership through the handoff
 
 | Phase                | Owner                                         | Required handoff                                                                                                                                                       |
@@ -41,6 +75,18 @@ The implementation owners are `subagent-registry-requester-yield.ts`,
 registry replacement operation; it does not create a second delegated task.
 Adoption clears a child-only pause notice instead of carrying it into completion.
 Actual requester completion batches keep their frozen membership and generation.
+Each ready member wakes the requester without waiting for siblings that are still
+working; those siblings keep the same generation and wake it again later. A
+followup caller that awaits one reply, and a Goal return, continue on the
+partition that leaves no member pending; earlier partitions are ordinary settle turns.
+
+Background commands belong to the session that started them, not to a run. A
+yield awaits every wake-armed command that is still running in the session,
+including commands that an earlier run started. A command exit becomes an
+ordinary exec wake turn in the child session. Like a tool handoff result, the
+wake continues the task that is paused in that session, whichever run paused it.
+Without a paused task, the wake stays a separate follow-up, and a hidden child
+that did not yield gets only a passive notice.
 
 Before admitting another turn in a yielded requester, the recovery owner transfers
 its ended execution's fence to the current durable child batch. The batch is
@@ -62,15 +108,25 @@ An outcome the yield already recorded stays: a collector an earlier version left
 `ok` settles as done with the reply its yielded turn ended on, the same result a
 collector that yields now gets. Only a run with no recorded outcome settles as an
 `error` that says why, and its collector completion carries
-`reason: "yielded_without_result"`. Other paused runs with a surviving continuation stay continuable however long they
-have been paused: a declared message wait with a live requester or an orchestrator
-waiting on reachable descendants is not bounded by this settlement. A kill
+`reason: "yielded_without_result"`. A declared message wait belongs to its
+requester session across turns until a watched continuation claims it. A claimed
+wait closes with a recorded error when its requester task finishes. Completion
+follows an adopted execution of that task and retains its committed end when a
+later turn replaces the session row. Unrelated pause notices and tool-handoff
+turns do not abandon the waiting child. Missing or archived requester sessions
+close both claimed and unclaimed waits, including restored waits. The sweeper
+also reconciles claims whose requester finished before the child parked.
+Waiting for a live requester or owned descendants has no elapsed-time limit.
+The yielded batch retains the original requester run ID after releasing its
+execution binding. If completion delivery permanently fails without admitting a
+successor, settlement closes that exact parked lifecycle with a recorded error.
+A newer turn, Stop, or reset rejects the stale terminal write.
+Older batches without that run ID record the same delivery-failure notice without
+changing the current lifecycle: a replacement turn may already own it. Their
+failure notice identifies the batch, rather than guessing its original writer.
+A leaf that an earlier version left paused without a recorded wait keeps its
+existing continuation behavior. A kill
 claim on a paused run is never settled over; cancellation stays with the kill path.
-A retired child with no reachable descendant completion is settled through that
-same completion owner, rather than parked forever. Yield batches retain their
-original requester run ID after releasing execution. Permanent delivery failure
-ends only that exact parked lifecycle; legacy batches without the ID record a
-scoped failure notice without assigning the current writer to the old batch.
 
 Session rows show a continuable paused run as `subagentRunState: "paused"`
 while its recorded `status` stays unchanged, so the parent's lists can tell it
@@ -186,26 +242,26 @@ owner, so callbacks from the closed Gateway cannot settle the recovered wake.
   it closes. Retiring the delivered child batch cannot revoke a still-running
   requester. A new direct user turn retires the automation entitlement, not the
   child batch’s separately retained completion source. Valid results can still
-  return under live original custody or the System write-only baseline; they never borrow the new
-  turn’s identity or permissions.
+  return under live original custody or the System baseline; they never borrow
+  the new turn’s identity or permissions.
 - **Completion-source custody.** Registration retains the live operator source
-  separately from execution. Delivery uses live retained custody rather than the
-  async caller scheduling cleanup. A batch retains custody only when every member
-  has the same live source, invocation, and permission ceiling. Missing, revoked,
-  or mixed custody uses the System write-only baseline without borrowing a sibling's
-  profile or runtime identity. Temporary access-policy unavailability leaves the
-  completion owed for retry. Committed settlement, explicit retirement, or source
-  revocation releases custody; provisional writes and same-task replacement cannot
-  drop it. Cancellation-only notices without custody retain their independently
-  admitted cancellation caller. Explicit redrive captures its newly admitted caller
-  and transfers custody only after the new generation commits.
-  Visible settlement cohorts use the host-only binding when every captured
-  requester session and lifecycle revision matches the current parent. Private
-  cohorts retain their strict requester identity checks. This lets a guest's own yielded session
-  resume under its existing session-write scope without granting `operator.write`.
-  Stale, mixed-incarnation, or unbound visible history does not gain this scope
-  alternative; its existing authorized recovery path stays unchanged. Copied
-  request fields cannot supply the host-only binding.
+  separately from execution. Individual delivery uses that live custody when
+  available, not the async caller that later schedules cleanup. A settlement batch
+  retains custody only when every member has the same live operator source and
+  permission ceiling. Missing, revoked, or mixed custody uses the System write-only
+  baseline; it does not refuse delivery or borrow a sibling's permissions.
+  Committed settlement, retirement, or source/Gateway revocation releases custody;
+  provisional writes and same-task replacement cannot drop it. Cancellation-only
+  notices without retained custody keep the independently admitted cancellation
+  caller. An explicit delivery redrive captures its newly admitted caller while live
+  and transfers custody only after the new delivery generation commits; it does not reopen the
+  expired source. Restart still admits a
+  fresh recovery owner rather than reviving the previous process capability.
+  Settlement cohorts use the host-only binding to the current requester agent and
+  session key, regardless of the recorded store path, also after a reset or a
+  compaction successor. This lets a guest's own
+  yielded session resume under its existing session-write scope without granting
+  `operator.write`. Copied request fields cannot supply the host-only binding.
 - **Stable audience.** A nested wake uses internal delivery. A settlement
   continuation targeting a live `sessions_yield`-paused row adopts that row;
   unrelated inter-session messages do not adopt that row. An ordinary

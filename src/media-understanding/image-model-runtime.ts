@@ -7,11 +7,11 @@ import {
   acquireAgentRunPreparedModelRuntime,
   type PreparedModelRuntimeSnapshot,
 } from "../agents/prepared-model-runtime.js";
-import { retainPreparedModelRuntimeSnapshotResources } from "../agents/prepared-model-runtime.resources.js";
+import { acquirePreparedModelRuntimeSnapshotInvocation } from "../agents/prepared-model-runtime.resources.js";
 import { prepareModelWithCredentials } from "../agents/simple-completion-runtime.js";
 import type { Model } from "../llm/types.js";
 import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
-import type { ImageDescriptionRequest } from "./types.js";
+import type { ImageDescriptionRequest } from "./provider-types.js";
 
 type ImageRuntimeParams = Omit<
   ImageDescriptionRequest,
@@ -19,11 +19,18 @@ type ImageRuntimeParams = Omit<
 >;
 
 type ImageRuntimeResources = AsyncDisposable & {
+  run: <T>(run: () => T) => T;
   assertResourcesOpen?: () => void;
 };
 
-function bindResolvedImageRuntime(params: ImageRuntimeParams, apiKey: string, model: Model) {
+function bindResolvedImageRuntime(
+  params: ImageRuntimeParams,
+  apiKey: string,
+  model: Model,
+  run: ImageRuntimeResources["run"],
+) {
   return {
+    run,
     runtimeValue: apiKey,
     model,
     cfg: params.cfg,
@@ -77,12 +84,17 @@ export async function resolveImageRuntime(
         manifestPlugins: suppliedSnapshot.metadataSnapshot,
       })
     : { provider: params.provider, model: params.model };
-  const suppliedClaim = suppliedSnapshot
-    ? retainPreparedModelRuntimeSnapshotResources(suppliedSnapshot)
-    : undefined;
-  const preparedRuntimeLease = suppliedSnapshot
+  const supplied = suppliedSnapshot
     ? {
         snapshot: suppliedSnapshot,
+        claim: acquirePreparedModelRuntimeSnapshotInvocation(suppliedSnapshot),
+      }
+    : undefined;
+  const suppliedClaim = supplied?.claim;
+  const preparedRuntimeLease = supplied
+    ? {
+        snapshot: supplied.snapshot,
+        run: <T>(run: () => T): T => supplied.claim.run(run),
         async [Symbol.asyncDispose]() {
           await suppliedClaim?.release();
         },
@@ -115,7 +127,12 @@ export async function resolveImageRuntime(
         },
       );
   // The operation owns release before setup can leave asynchronous cleanup behind.
+  const runPrepared = <T>(run: () => T): T =>
+    preparedRuntimeLease.run(() =>
+      withPluginRuntimeGenerationScope(preparedRuntimeLease.snapshot, run),
+    );
   onAcquired({
+    run: runPrepared,
     [Symbol.asyncDispose]: () => preparedRuntimeLease[Symbol.asyncDispose](),
     ...(suppliedClaim ? { assertResourcesOpen: suppliedClaim.assertOpen } : {}),
   });
@@ -144,7 +161,7 @@ export async function resolveImageRuntime(
     ...(preparedParams.workspaceDir ? { workspaceDir: preparedParams.workspaceDir } : {}),
     ...authProfileOptions,
   };
-  return await withPluginRuntimeGenerationScope(preparedRuntime, async () => {
+  return await runPrepared(async () => {
     const resolved = await resolveModelAsync(
       resolvedRef.provider,
       resolvedRef.model,
@@ -199,6 +216,6 @@ export async function resolveImageRuntime(
       prepared.auth.mode === "aws-sdk" && model.api === "bedrock-converse-stream"
         ? (prepared.auth.apiKey ?? "")
         : requireApiKey(prepared.auth, model.provider);
-    return bindResolvedImageRuntime(preparedParams, apiKey, model);
+    return bindResolvedImageRuntime(preparedParams, apiKey, model, runPrepared);
   });
 }

@@ -36,7 +36,7 @@ import {
   resolveFollowupAgentRuntimeId,
   resolveFollowupContextTokens,
 } from "./agent-runner-memory-runtime.js";
-import { estimatePromptTokensFromSessionTranscript } from "./agent-runner-memory-transcript-context.js";
+import { estimateContextTokensFromSessionTranscript } from "./agent-runner-memory-transcript-context.js";
 import {
   resolveCompactionCompletionNotice,
   type CompactionNoticePhase,
@@ -143,7 +143,6 @@ export async function runSessionCompactionIfNeeded(params: {
       rawBytes: undefined,
       runtime: params.followupRun.run,
       maxBytes: maxActiveTranscriptBytes,
-      contextTokenBudget: contextWindowTokens,
       signal: params.abortSignal,
     });
 
@@ -183,7 +182,7 @@ export async function runSessionCompactionIfNeeded(params: {
   const transcriptUsageTokens =
     freshPersistedTokens !== undefined && !freshNeedsOutputRead
       ? undefined
-      : await estimatePromptTokensFromSessionTranscript({
+      : await estimateContextTokensFromSessionTranscript({
           ...compactionTarget,
           abortSignal: params.abortSignal,
           sessionId: entry.sessionId,

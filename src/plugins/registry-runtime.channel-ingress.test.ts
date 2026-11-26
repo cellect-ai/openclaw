@@ -1,6 +1,4 @@
 import { AsyncResource } from "node:async_hooks";
-import { setImmediate } from "node:timers/promises";
-import { queryObjects } from "node:v8";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { buildChannelInboundEventContext } from "../channels/inbound-event/context.js";
 import {
@@ -28,6 +26,7 @@ import {
   getBoundLegacyPluginSdkResourceHost,
   LegacyPluginSdkResourceHost,
 } from "./legacy-sdk-resource-host.js";
+import { expectCollected } from "../test-utils/retention.js";
 import { createLazyPluginRuntime } from "./loader-module-runtime.js";
 import { getPluginInstance } from "./plugin-instance-scope.js";
 import { createEmptyPluginRegistry } from "./registry-empty.js";
@@ -155,8 +154,12 @@ afterEach(async () => {
 });
 
 it("keeps adopted channel operations usable after their captured registry is collected", async () => {
+  const references: WeakRef<object>[] = [];
   class RetainedService {
     id = "retired-channel-scope";
+    constructor() {
+      references.push(new WeakRef(this));
+    }
     start() {}
   }
   const registryBuilder = createRegistry(createPluginRuntime());
@@ -203,8 +206,7 @@ it("keeps adopted channel operations usable after their captured registry is col
   })();
   const input = { channelId: record.id, targetSessionKey: "agent:main:channel:dm:fixture" };
   try {
-    await setImmediate();
-    expect(queryObjects(RetainedService)).toBe(0);
+    await expectCollected(...references);
     for (const readChannel of [() => capturedChannel, () => api.runtime.channel]) {
       await resource.runInAsyncScope(async () => {
         const channel = readChannel();

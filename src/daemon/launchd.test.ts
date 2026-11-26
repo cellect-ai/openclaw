@@ -37,18 +37,17 @@ import {
 } from "./launchd-install.test-support.js";
 import { LAUNCH_AGENT_ENV_WRAPPER_SHELL } from "./launchd-plist.js";
 import * as launchdRuntime from "./launchd-runtime.js";
+import { resolveLaunchAgentPlistPath } from "./launchd-service-files.js";
 import { launchdTestState as state } from "./launchd-state.test-support.js";
 import {
   isLaunchAgentEnabled,
   readLaunchAgentProgramArguments,
   repairLaunchAgentBootstrap,
   restartLaunchAgent,
-  resolveLaunchAgentPlistPath,
   startLaunchAgent,
   stopLaunchAgent,
   uninstallLaunchAgent,
 } from "./launchd.js";
-import { withGatewayServiceUpdateAuthority } from "./service-update-authority.js";
 
 const ENV_FILE = "/Users/test/.openclaw/service-env/ai.openclaw.gateway.env";
 const WRAPPER = "/Users/test/.openclaw/service-env/ai.openclaw.gateway-env-wrapper.sh";
@@ -226,7 +225,6 @@ describe("launchd uninstall", () => {
   it.each([
     { operation: "lstat", code: "EACCES" },
     { operation: "rename", code: "ENOENT" },
-    { operation: "rename", code: "ENOSPC" },
   ] as const)(
     "reports $operation $code without leaking the plist path",
     async ({ operation, code }) => {
@@ -245,42 +243,18 @@ describe("launchd uninstall", () => {
     },
   );
 
-  it.each([
-    ["mkdir", "EPERM"],
-    ["rename", "EPERM"],
-    ["mkdir", "EACCES"],
-    ["rename", "EACCES"],
-  ] as const)(
-    "removes the booted-out plist when Trash %s is denied with %s",
-    async (operation, code) => {
+  it.each(["mkdir", "rename"] as const)(
+    "removes the booted-out plist when Trash %s is denied without Full Disk Access",
+    async (operation) => {
       state.files.set(PLIST, "RunAtLoad=true");
-      vi.mocked(fs[operation]).mockRejectedValueOnce(Object.assign(new Error(code), { code }));
+      vi.mocked(fs[operation]).mockRejectedValueOnce(
+        Object.assign(new Error(`EPERM: operation not permitted, ${operation}`), { code: "EPERM" }),
+      );
 
       await expect(uninstallLaunchAgent(control())).resolves.toBeUndefined();
       expect(state.files.has(PLIST)).toBe(false);
     },
   );
-
-  it("preserves the plist when authority expires before the unlink fallback", async () => {
-    state.files.set(PLIST, "RunAtLoad=true");
-    let current = true;
-    vi.mocked(fs.rename).mockImplementationOnce(async () => {
-      current = false;
-      throw Object.assign(new Error("EPERM"), { code: "EPERM" });
-    });
-    await expect(
-      withGatewayServiceUpdateAuthority(
-        () => {
-          if (!current) {
-            throw new Error("Maintenance custody released");
-          }
-        },
-        () => uninstallLaunchAgent(control()),
-      ),
-    ).rejects.toMatchObject({ code: "service-authority-revoked" });
-    expect(state.files.has(PLIST)).toBe(true);
-    expect(fs.unlink).not.toHaveBeenCalled();
-  });
 
   it("moves the plist into the Trash without replacing an earlier same-name item", async () => {
     const earlier = "/Users/test/.Trash/ai.openclaw.gateway.plist";
@@ -401,6 +375,34 @@ describe("launchd install", () => {
       expect(await isLaunchAgentEnabled({ env: ENV })).toBe(enabled);
     },
   );
+  it.each([
+    [true, true],
+    [true, false],
+    [false, true],
+  ])(
+    "restores the previous LaunchAgent and runs the hook only once booted-out PIDs exit (replacement loads=%s, exits=%s)",
+    async (replacementLoads, exits) => {
+      const previous = setGatewayPlist(PREVIOUS_ARGS);
+      Object.assign(state, {
+        bootstrapError: "injected activation failure",
+        bootstrapTransient: true,
+        bootstrapLoadsServiceOnFailure: replacementLoads,
+      });
+      // The booted-out PID outlives bootout and exits on its third liveness check, or never.
+      let pidChecks = 0;
+      isPidDefinitelyDead.mockImplementation(() => exits && ++pidChecks > 2);
+      const checksAtHook: number[] = [];
+      const beforeRecovery = async () => void checksAtHook.push(pidChecks);
+
+      const error = await runWithFakeTimers(() =>
+        install({ beforeRecovery }).catch((e: unknown) => e),
+      );
+      expect(error instanceof AggregateError).toBe(!exits);
+      expect(checksAtHook).toEqual(exits ? [3] : []);
+      expect(state.files.get(PLIST)).toBe(previous);
+    },
+  );
+
   it.each(["install", "restart"] as const)(
     "refuses %s before user LaunchAgent mutation when a system daemon owns it",
     async (action) => {

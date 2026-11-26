@@ -27,7 +27,6 @@ import {
 import { readSessionReferenceOwners } from "./session-accessor.sqlite-references.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson as parseSessionEntryRow } from "./session-accessor.sqlite-status.js";
-import type { SessionDeletionSurvivors } from "./session-entry-storage.types.js";
 import type { SessionEntryWritePostimages } from "./session-entry-write-postimage.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -54,31 +53,6 @@ export {
   resolveLifecyclePrimaryEntry,
 } from "./session-accessor.sqlite-entry-snapshot.js";
 
-/** Prepare indexed survivors before writer admission; hydrate only selected owners. */
-export function readSessionDeletionSurvivors(
-  database: OpenClawAgentDatabase,
-  sessionKey: string,
-  sessionIds: readonly string[],
-): SessionDeletionSurvivors {
-  const db = getSessionKysely(database.db);
-  const survivingOwners = readSessionReferenceOwners(database, new Set([sessionKey]), sessionIds);
-  const survivingNodes = new Map(
-    [...new Set(survivingOwners.values())].map((key) => [
-      key,
-      executeSqliteQueryTakeFirstSync(
-        database.db,
-        db
-          .selectFrom("session_nodes")
-          .select(["current_session_id", "entry_json", "session_key", "entry_valid", "updated_at"])
-          .where("session_key", "=", key),
-      ),
-    ]),
-  );
-  return new Map(
-    [...survivingOwners].map(([sessionId, key]) => [sessionId, survivingNodes.get(key)]),
-  );
-}
-
 export function deleteSessionEntryRows(
   database: OpenClawAgentDatabase,
   sessionKey: string,
@@ -87,7 +61,7 @@ export function deleteSessionEntryRows(
     deliveryCleanupKeys?: readonly string[];
     validatedEntry?: SessionEntry;
     postimages?: SessionEntryWritePostimages;
-    preparedSurvivors?: () => SessionDeletionSurvivors | undefined;
+    preparedReferenceOwners?: () => Map<string, string> | undefined;
   } = {},
 ): boolean {
   // Lifecycle deletion reuses its transaction snapshot; Doctor also supplies validated legacy rows.
@@ -102,17 +76,32 @@ export function deleteSessionEntryRows(
     database.db,
     db.selectFrom("session_windows").select("session_id").where("session_key", "=", sessionKey),
   ).rows;
-  const survivingNodes =
-    options.preparedSurvivors?.() ??
-    readSessionDeletionSurvivors(
+  // Project references once for all retained windows; only winning successors need
+  // their full entry for publication. Unrelated payloads stay out of the writer.
+  const survivingOwners =
+    options.preparedReferenceOwners?.() ??
+    readSessionReferenceOwners(
       database,
-      sessionKey,
+      new Set([sessionKey]),
       windows.map((window) => window.session_id),
     );
+  const survivingNodes = new Map(
+    [...new Set(survivingOwners.values())].map((key) => [
+      key,
+      executeSqliteQueryTakeFirstSync(
+        database.db,
+        db
+          .selectFrom("session_nodes")
+          .select(["current_session_id", "entry_json", "session_key", "entry_valid", "updated_at"])
+          .where("session_key", "=", key),
+      ),
+    ]),
+  );
   const ownedSessionIds: string[] = [];
   let transcriptInventoryUnchanged = options.deleteOwnedWindows !== true;
   for (const window of windows) {
-    const survivingNode = survivingNodes.get(window.session_id);
+    const survivingKey = survivingOwners.get(window.session_id);
+    const survivingNode = survivingKey ? survivingNodes.get(survivingKey) : undefined;
     if (survivingNode) {
       transcriptInventoryUnchanged &&=
         resolveAgentIdFromSessionKey(sessionKey, database.agentId) ===
@@ -204,14 +193,14 @@ export function deleteLifecycleTargetRows(
   database: OpenClawAgentDatabase,
   target: { canonicalKey: string; storeKeys: string[] },
   snapshot: SqliteLifecycleTargetSnapshot,
-  preparedSurvivors?: (sessionKey: string) => SessionDeletionSurvivors | undefined,
+  preparedReferenceOwners?: (sessionKey: string) => Map<string, string> | undefined,
 ): boolean {
   let transcriptInventoryUnchanged = true;
   for (const sessionKey of uniqueStrings([target.canonicalKey, ...target.storeKeys])) {
     const trimmed = sessionKey.trim();
     if (trimmed) {
       const unchanged = deleteSessionEntryRows(database, trimmed, {
-        preparedSurvivors: () => preparedSurvivors?.(trimmed),
+        preparedReferenceOwners: () => preparedReferenceOwners?.(trimmed),
         validatedEntry: snapshot.find((row) => row.sessionKey === trimmed)?.entry,
       });
       transcriptInventoryUnchanged &&= unchanged;

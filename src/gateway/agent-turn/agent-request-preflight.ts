@@ -63,8 +63,11 @@ export async function prepareAgentRequestPreflight(params: {
     return undefined;
   };
   const cfg = params.context.getRuntimeConfig();
+  // The declared mode is caller-chosen; only in-process or handshake-attested local backends qualify.
   const canUseInternalRuntimeHandoff =
-    params.client?.connect?.client?.mode === GATEWAY_CLIENT_MODES.BACKEND;
+    params.client?.connect?.client?.mode === GATEWAY_CLIENT_MODES.BACKEND &&
+    (params.client.internal?.syntheticClient === true ||
+      params.client.internal?.localBackendClient === true);
   const requestSessionKey = request.sessionKey?.trim();
   const parsedRequestSessionKey = requestSessionKey
     ? parseAgentSessionKey(requestSessionKey)
@@ -176,7 +179,6 @@ export async function prepareAgentRequestPreflight(params: {
   }
   const allowModelOverride =
     hasGatewayAdminScope(params.client) || params.client?.internal?.allowModelOverride === true;
-  const canUseCronRunContinuation = params.client?.internal?.cronRunContinuation === true;
   const expectedSessionResult = resolveExpectedExistingSessionConstraint({
     canUseInternalRuntimeHandoff,
     expectedExistingSessionId: request.expectedExistingSessionId,
@@ -322,7 +324,6 @@ export async function prepareAgentRequestPreflight(params: {
     runId,
     allowModelOverride,
     canUseInternalRuntimeHandoff,
-    canUseCronRunContinuation,
     expectedSession: expectedSessionResult.constraint,
     expectedExistingSessionId: expectedSessionResult.constraint?.sessionId,
     providerOverride: allowModelOverride ? request.provider : undefined,

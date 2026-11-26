@@ -73,7 +73,12 @@ export async function runPublicMessageActionsScenario(context: MatrixQaScenarioC
       `Matrix ${name} result`,
     );
     remaining();
-    assert.equal(result.ok, true, `Matrix ${name} must succeed`);
+    if (name === "send") {
+      assert.equal(result.channel, "matrix", "Matrix send must identify its channel");
+      assert.equal(result.deliveryStatus, "sent", "Matrix send must succeed");
+    } else {
+      assert.equal(result.ok, true, `Matrix ${name} must succeed`);
+    }
     return result;
   };
   const observe = async (predicate: (event: MatrixQaObservedEvent) => boolean) =>
@@ -94,44 +99,17 @@ export async function runPublicMessageActionsScenario(context: MatrixQaScenarioC
   };
 
   try {
-    // The topology gives SUT room ownership; inspect actual permissions rather than granting more.
-    const power = await read("state/m.room.power_levels");
-    const state = (
-      await requestMatrixJson<unknown>({
-        accessToken: context.observerAccessToken,
-        baseUrl: context.baseUrl,
-        endpoint: `${roomPath}/state`,
-        method: "GET",
-        timeoutMs: remaining(),
-      })
-    ).body;
-    assert(Array.isArray(state), "Matrix room state must be an array");
-    const creation = record(
-      state.find(
-        (event) => isRecord(event) && event.type === "m.room.create" && event.state_key === "",
-      ),
-      "Matrix room creation event",
-    );
-    const creationContent = record(creation.content, "Matrix room creation content");
-    const users = isRecord(power.users) ? power.users : {};
-    const events = isRecord(power.events) ? power.events : {};
-    // Version 12 creators have infinite power and are omitted from the users map.
-    const sutPower =
-      creationContent.room_version === "12" && creation.sender === context.sutUserId
-        ? Number.POSITIVE_INFINITY
-        : (users[context.sutUserId] ?? power.users_default ?? 0);
-    const pinPower = events["m.room.pinned_events"] ?? power.state_default ?? 50;
-    assert(
-      typeof sutPower === "number" && typeof pinPower === "number" && sutPower >= pinPower,
-      "SUT must already have permission to set the room's pinned events",
-    );
+    // Creator authority can be implicit (room v12); prove permission through the
+    // actual pin and independent homeserver reads, not duplicated power arithmetic.
     assert(await observer.prime(), "Matrix observer needs a pre-action sync cursor");
 
     const sent = await action("send", { to: room.roomId, message: marker });
     const sendResult = record(sent.result, "Matrix send payload");
     const messageId = acceptedEventId(sendResult.messageId, "Matrix send");
     completed.push(`send accepted=${messageId}`);
-    assert.equal(sendResult.roomId, room.roomId, "send result must identify the requested room");
+    const sendTarget = record(sendResult.target, "Matrix send target");
+    assert.equal(sendTarget.kind, "room");
+    assert.equal(sendTarget.id, room.roomId, "send result must identify the requested room");
     await observe((event) => event.eventId === messageId && event.type === "m.room.message");
     const original = await eventContent(messageId, "m.room.message");
     assert.equal(original.body, marker);
@@ -196,7 +174,6 @@ export async function runPublicMessageActionsScenario(context: MatrixQaScenarioC
     return {
       details: [
         "Five public Gateway message.action operations independently observed on Matrix.",
-        `SUT room power=${sutPower}; pin requirement=${pinPower}`,
         ...completed,
       ].join("\n"),
     } satisfies MatrixQaScenarioExecution;

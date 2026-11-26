@@ -31,6 +31,7 @@ import { createCodingToolsGatewayCaller } from "./agent-tools.caller.js";
 import {
   captureLocalBrowserLoopbackConfig,
   createLocalBrowserLoopbackPreparation,
+  projectAgentToolsExecPolicy,
 } from "./agent-tools.execution-policy.js";
 import { finalizeAgentTools } from "./agent-tools.finalize.js";
 import { captureChildToolAllowlist } from "./agent-tools.inheritance.js";
@@ -70,29 +71,22 @@ import {
   filterToolsByClientCaps,
   resolveSessionToolListingClientCaps,
 } from "./openclaw-tools.client-caps.js";
-import { applySwarmCollectorToolContract } from "./openclaw-tools.swarm.js";
 import { prepareCoreToolPolicy } from "./prepared-tool-surface.js";
 import { resolveSandboxFileIdentity } from "./sandbox/file-mutation-identity.js";
 import { createEmbeddedMessageInvocationPolicy } from "./scheduled-message-invocation.js";
 import { resolveScheduledToolCallerContext } from "./scheduled-tool-policy.js";
-import { projectEffectiveExecPolicy } from "./session-permission-exec-mode.js";
 import { resolveSessionPlacementComputer } from "./session-placement-computer.js";
 import {
   resolveSubagentRequesterChannel,
   resolveSubagentSpawnedFrom,
 } from "./subagents/spawn/subagent-spawn-requester-binding.js";
 import { subagentAttachmentRootForRun } from "./subagents/subagent-attachment-paths.js";
-import { resolveToolLoopDetectionConfig } from "./tool-loop-detection-config.js";
+import { applySwarmCollectorToolContract } from "./subagents/swarm/swarm-collector-capability.js";
 import { buildDeclaredToolAllowlistContext } from "./tool-policy-declared-context.js";
 import type { ToolPolicyFilterEvent } from "./tool-policy-pipeline.js";
 import { expandToolGroups, normalizeToolPolicyName } from "./tool-policy.js";
-import {
-  createToolSearchTools,
-  resolveToolSearchConfig,
-  TOOL_CALL_RAW_TOOL_NAME,
-  TOOL_DESCRIBE_RAW_TOOL_NAME,
-  TOOL_SEARCH_RAW_TOOL_NAME,
-} from "./tool-search.js";
+import { TOOL_SEARCH_CONTROL_TOOL_NAMES } from "./tool-search-protocol.js";
+import { createToolSearchTools, resolveToolSearchConfig } from "./tool-search.js";
 import { AUTOMATIONS_TOOL_NAME } from "./tools/automations-tool-name.js";
 import { replaceWithEffectiveCronCreatorToolAllowlist } from "./tools/cron-tool-creator-cap.js";
 import { prepareSessionPortalToolAccess } from "./tools/session-portal-target.js";
@@ -144,7 +138,7 @@ export function* assembleOpenClawCodingTools(
   const toolSearchControlsEnabled =
     options?.includeToolSearchControls === true && toolSearchConfig.enabled;
   const toolSearchControlAllowlist = toolSearchControlsEnabled
-    ? [TOOL_SEARCH_RAW_TOOL_NAME, TOOL_DESCRIBE_RAW_TOOL_NAME, TOOL_CALL_RAW_TOOL_NAME]
+    ? [...TOOL_SEARCH_CONTROL_TOOL_NAMES]
     : [];
   const runtimeToolAllowlistIncludesMessage = expandToolGroups(
     options?.runtimeToolAllowlist ?? [],
@@ -226,11 +220,11 @@ export function* assembleOpenClawCodingTools(
   };
   options?.recordToolPrepStage?.("workspace-policy");
   const scheduledExecTarget = options?.scheduledToolPolicy?.execTarget;
-  const effectiveExecPolicy = projectEffectiveExecPolicy({
-    base: execConfig,
-    overrides: options?.exec,
-    permissionPolicy: sessionPermissionPolicy,
-    scheduledExecTarget,
+  const effectiveExecPolicy = projectAgentToolsExecPolicy({
+    options,
+    execConfig,
+    agentId,
+    model: capabilityProfile.model,
   });
   const browserLoopback = createLocalBrowserLoopbackPreparation({
     options,
@@ -297,6 +291,7 @@ export function* assembleOpenClawCodingTools(
               }),
               messageProvider: options?.messageProvider,
               currentChannelId: options?.currentChannelId,
+              currentMessagingTarget: options?.currentMessagingTarget,
               currentThreadTs: options?.currentThreadTs,
               channelContext: options?.channelContext,
               accountId: options?.agentAccountId,
@@ -321,12 +316,10 @@ export function* assembleOpenClawCodingTools(
         }
       : [];
   const sessionToolAccess = prepareSessionPortalToolAccess({
+    ...options,
     sessionKey: executionSessionKey,
     agentId: executionAgentId,
-    sessionId: options?.sessionId,
-    senderIsOwner: options?.senderIsOwner,
     sandboxed: Boolean(sandbox),
-    runId: options?.runId,
     cronSelfRemoveOnlyJobId,
   });
   const { sessionPortalTarget, cronCreatorAuthorityResolver } = sessionToolAccess;
@@ -377,6 +370,10 @@ export function* assembleOpenClawCodingTools(
     sandboxed: Boolean(sandbox),
     pluginToolAllowlist,
     pluginToolDenylist,
+    // Only the grant's owner reaches tool construction; the grant itself stays in the allowlist.
+    ...(runtimePluginToolGrant
+      ? { runtimePluginToolOwnerId: runtimePluginToolGrant.pluginId }
+      : {}),
     disableMessageTool: options?.disableMessageTool || options?.swarmCollector,
     requesterAgentIdOverride: executionAgentId,
   };
@@ -501,9 +498,9 @@ export function* assembleOpenClawCodingTools(
             inheritedToolDenylist,
             delegatedToolDenyFloor,
             requesterToolDenylist,
-            readDelegationConfig:
-              options?.readDelegationConfig ??
-              (options?.config ? createRuntimeConfigReader(options.config) : undefined),
+            readDelegationConfig: options?.config
+              ? createRuntimeConfigReader(options.config)
+              : undefined,
             inheritedToolPolicySource: capabilityProfile.policy.inheritedToolPolicySource,
             processScopeKey: scopeKey,
           },
@@ -588,6 +585,7 @@ export function* assembleOpenClawCodingTools(
         ? completeTurnTools(messageInvocationPolicy.filter(capabilityProfile, undefined, "session"))
         : undefined,
     ownerOnlyDenied: new Set(ownerOnlyCoreToolDenylist),
+    ownerToolCurrentAssertion: sessionToolAccess.ownerToolCurrentAssertion,
     hostSystemTurn: isHostSystemTurn(options ?? {}),
   });
   assertMemoryFlushPersistenceToolAvailable(authorizedTools, options?.memoryFlushTools);
@@ -657,7 +655,6 @@ export function* assembleOpenClawCodingTools(
     ...(options?.agentAccountId ? { turnSourceAccountId: options.agentAccountId } : {}),
     ...(options?.currentThreadTs ? { turnSourceThreadId: options.currentThreadTs } : {}),
     ...(options?.trace ? { trace: options.trace } : {}),
-    loopDetection: resolveToolLoopDetectionConfig({ cfg: options?.config, agentId }),
     onToolOutcome: options?.onToolOutcome,
     allocateToolOutcomeOrdinal: options?.allocateToolOutcomeOrdinal,
   };

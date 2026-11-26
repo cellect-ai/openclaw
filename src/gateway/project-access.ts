@@ -1,4 +1,3 @@
-import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
   resolveConfiguredGitHubApiBaseUrl,
@@ -6,7 +5,7 @@ import {
 } from "../agents/github-host.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { parseProjectGitUrl } from "../projects/project-git-url.js";
-import { listWorkspaceProjects, resolveProjectRegistry } from "../projects/project-registry.js";
+import { resolveProjectRegistry } from "../projects/project-registry.js";
 import type {
   ProjectRegistryIdentity,
   ProjectRegistryRecord,
@@ -56,7 +55,7 @@ export function resolveRunProjectRequester(
 }
 
 /** operator.write callers may use every registry project; restricted roles see a subset. */
-function hasFullProjectAccess(requester: ProjectRequester): boolean {
+export function hasFullProjectAccess(requester: ProjectRequester): boolean {
   return (
     requester.kind === "internal" ||
     authorizeOperatorScopesForRequiredScope(WRITE_SCOPE, requester.scopes).allowed
@@ -149,7 +148,7 @@ async function isPublicGitHubOrigin(
  * Restricted requesters may use agent-workspace pseudo-projects (governed by
  * roles.agents) and public GitHub repositories on the configured host.
  */
-async function canRequesterUseProject(
+export async function canRequesterUseProject(
   cfg: OpenClawConfig,
   project: Pick<ProjectRegistryIdentity, "source" | "originUrl">,
   requester: ProjectRequester,
@@ -159,6 +158,16 @@ async function canRequesterUseProject(
     return true;
   }
   return await isPublicGitHubOrigin(cfg, project.originUrl, options);
+}
+
+/** Repository URLs follow the same public-only rule as registered projects. */
+export async function canRequesterUseRepositoryUrl(
+  cfg: OpenClawConfig,
+  url: string,
+  requester: ProjectRequester,
+  options: ProjectAccessOptions = {},
+): Promise<boolean> {
+  return hasFullProjectAccess(requester) || (await isPublicGitHubOrigin(cfg, url, options));
 }
 
 /** Hidden projects are indistinguishable from unknown ids. */
@@ -189,21 +198,4 @@ export async function filterProjectsForRequester<
     projects.map((project) => canRequesterUseProject(cfg, project, requester, options)),
   );
   return projects.filter((_, index) => allowed[index]);
-}
-
-/** A new inherited checkout is a fresh handoff, unlike continuing an existing checkout. */
-export async function canRequesterInheritProject(
-  cfg: OpenClawConfig,
-  source: { projectId?: string; workspace: string },
-  requester: ProjectRequester,
-): Promise<boolean> {
-  if (hasFullProjectAccess(requester)) {
-    return true;
-  }
-  return source.projectId
-    ? (await resolveRequesterProject(cfg, source.projectId, requester, { fresh: true })) !==
-        undefined
-    : listWorkspaceProjects(cfg).some(
-        (project) => path.resolve(project.repoRoot) === path.resolve(source.workspace),
-      );
 }

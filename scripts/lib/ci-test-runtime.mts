@@ -3,6 +3,7 @@ import { globSync, readFileSync } from "node:fs";
 import path from "node:path";
 import {
   loadPatternListFromEnv,
+  matchesVitestCliSelection,
   matchesVitestGlob,
 } from "../../test/vitest/vitest.pattern-file.ts";
 import { fullSuiteVitestShards } from "../../test/vitest/vitest.test-shards.mjs";
@@ -107,29 +108,32 @@ const nodeRequiredFiles = new Set([
   "packages/ai/src/transports/openai-responses-websocket.test.ts",
   "src/agents/agent-tools.execution-validation.test.ts",
   "src/config/sessions/session-accessor.pending-input-retention.test.ts",
-  "src/gateway/control-ui-session-pr-prepared-read.retention.test.ts",
   "src/gateway/session-list-history-retention.test.ts",
   "src/gateway/session-row-projection.retention.test.ts",
   "src/gateway/session-database-retention.test.ts",
-  "ui/src/components/desktop/desktop-mobile-keyboard.test.ts",
-  "ui/src/lib/reactive/session-progress-roster.test.ts",
+  "ui/src/components/desktop/desktop-mobile-keyboard-retention.test.ts",
   "ui/src/pages/chat/chat-pane-retention.test.ts",
   "ui/src/pages/chat/chat-thread-retention.test.ts",
   "ui/src/pages/chat/components/chat-transcript-layout-retention.test.ts",
   "ui/src/pages/chat/session-message-cache-retention.test.ts",
-  "ui/src/pages/chat/session-snapshot-store.test.ts",
+  "ui/src/pages/chat/session-snapshot-store-retention.test.ts",
   "ui/src/pages/usage/usage-page-retention.test.ts",
 ]);
 // Physical schema and worker lifecycle proofs exercise both host runtimes. Keep Bun coverage
 // while qualifying Node workers independently of any guest runtime choice.
 const bothHostFiles = new Set([
+  "test/scripts/vitest-pair-benchmark.test.ts",
+  // Portable catalog lifecycle plus a separate V8 planner-count proof.
+  "src/agents/prepared-model-catalog-worker.reuse.integration.test.ts",
   "src/agents/code-mode.bridge.lifecycle.test.ts",
   "src/agents/code-mode-engine-parity.test.ts",
   "src/agents/code-mode.failure-phase.test.ts",
   "src/cli/update-cli/update-command-admission-terminal.test.ts",
+  // Cold Decision preparation must retain the same owner on both host runtimes.
+  "src/decisions/clawrouter.integration.test.ts",
   "src/infra/sqlite-database-admission.worker.test.ts",
-  "src/infra/sqlite-schema-facts.native.test.ts",
   "src/infra/sqlite-schema-facts.physical-cache.test.ts",
+  "src/infra/update-run-recovery-admission.test.ts",
   "src/state/openclaw-agent-db-schema-refresh.test.ts",
   "src/state/openclaw-agent-db.worker-admission.test.ts",
   "src/state/openclaw-agent-db-maintenance.schema-renewal.test.ts",
@@ -512,6 +516,48 @@ export function filterCiTestRuntimeSelections(
     throw new Error(`Invalid OPENCLAW_CI_TEST_RUNTIME: ${runtime}; expected node or bun`);
   }
   return selections.filter((selection) => selection.runtime === runtime);
+}
+
+// Measurement consumes the same runtime and CLI owners as execution. It never
+// discovers files or changes a selection; opaque inputs have no denominator.
+export function resolveCiTestRuntimeInventory(
+  config: string,
+  files: readonly string[],
+  env: Record<string, string> | undefined,
+  policy: CiTestRuntimePolicy,
+) {
+  if (
+    env?.OPENCLAW_VITEST_INCLUDE_FILE ||
+    env?.OPENCLAW_VITEST_POST_SHARD_INCLUDE_FILE ||
+    (env?.OPENCLAW_NODE_TEST_VITEST_ARGS_JSON && env.OPENCLAW_NODE_TEST_VITEST_ARGS_JSON !== "[]")
+  ) {
+    return undefined;
+  }
+  return resolveCiTestRuntimeSelections(
+    { configs: [config], includePatterns: files, env },
+    policy,
+  ).map((selection) => {
+    if (selection.engine === "bun-test") {
+      return {
+        runtime: selection.runtime,
+        engine: selection.engine,
+        args: [],
+        files: selection.files,
+      };
+    }
+    if (selection.includeAfterShard) {
+      return undefined;
+    }
+    const args = selection.vitestArgs ?? [];
+    return {
+      runtime: selection.runtime,
+      engine: "vitest" as const,
+      args,
+      files: files.filter((file) =>
+        matchesVitestCliSelection(file, [file], args, "", {}, selection.includePatterns ?? files),
+      ),
+    };
+  });
 }
 
 /** Match the shard runner's original process envelopes without splitting or dropping coverage. */

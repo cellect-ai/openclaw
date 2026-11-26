@@ -1,41 +1,15 @@
 import type { SessionAccessScope } from "./session-accessor.types.js";
-import { selectSessionMessageCut } from "./session-message-cut-plan.js";
-import type {
-  SessionMessageCutIntent,
-  SessionMessageCutResult,
-} from "./session-message-cut.types.js";
-import { loadSessionTranscriptEvents } from "./session-transcript-events.js";
+import type { SessionMessageCutIntent } from "./session-message-cut.types.js";
 import type { InternalSessionEntry } from "./types.js";
 
-/** Validate before retirement and settle the source before the transcript fences its incarnation. */
+/** Settle the source before the transcript fences its incarnation, without creating a projection. */
 export async function prepareMessageCutLocalWorkspace(
   scope: SessionAccessScope & { agentId: string },
   entry: InternalSessionEntry,
   assertCurrent: () => void,
-  cut?: { intent: SessionMessageCutIntent; sourceRepositoryWorkspaceId?: string },
-): Promise<
-  | { status: "settled"; workspace: SessionMessageCutIntent["settledLocalWorkspace"] }
-  | Exclude<SessionMessageCutResult, { status: "created" }>
-> {
+): Promise<SessionMessageCutIntent["settledLocalWorkspace"]> {
   if (!entry.worktree) {
-    return { status: "settled", workspace: undefined };
-  }
-  if (cut) {
-    cut.intent.expectedState ??= {
-      sessionId: entry.sessionId,
-      lifecycleRevision: entry.lifecycleRevision,
-    };
-    const events = await loadSessionTranscriptEvents({ ...scope, sessionId: entry.sessionId });
-    assertCurrent();
-    const selected = selectSessionMessageCut(
-      entry,
-      events,
-      cut.intent,
-      cut.sourceRepositoryWorkspaceId,
-    );
-    if (selected.status !== "selected") {
-      return selected;
-    }
+    return undefined;
   }
   const { resolveLocalWorkspaceOwner, withSettledLocalWorkspace } =
     await import("../../gateway/worker-environments/local-workspace-projection.js");
@@ -55,7 +29,7 @@ export async function prepareMessageCutLocalWorkspace(
   ) {
     throw new Error("Session changed before local workspace history-cut settlement");
   }
-  const workspace = await withSettledLocalWorkspace(
+  return await withSettledLocalWorkspace(
     { ...owner, sessionOwner: owner, retireRuntime: true },
     async (custody) => {
       owner.assertCurrent();
@@ -69,5 +43,4 @@ export async function prepareMessageCutLocalWorkspace(
           };
     },
   );
-  return { status: "settled", workspace };
 }

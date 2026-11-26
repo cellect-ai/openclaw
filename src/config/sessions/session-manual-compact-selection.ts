@@ -1,4 +1,5 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core";
+import { readBackgroundResultPlacement } from "../../../packages/agent-core/src/harness/session/background-result-placement.js";
 import type { SessionTranscriptManualTrimResult } from "./session-accessor.types.js";
 import {
   scanSessionTranscriptTree,
@@ -30,7 +31,27 @@ export function selectManualCompactTranscriptLines<Snapshot>(
   if (count <= maxLines) {
     return { lines: [header, ...tailLines], result: { compacted: false, kept: count }, snapshot };
   }
-  const retained = normalizeManualCompactTranscriptLines(header, tailLines);
+  const dependencyIds = new Set(
+    tailLines.flatMap(
+      (line) => readBackgroundResultPlacement(safeParseJsonRecord(line))?.resultEntryIds ?? [],
+    ),
+  );
+  // Retained placements still own payloads accepted before the tail window.
+  const dependencies: string[] = [];
+  if (dependencyIds.size > 0) {
+    let index = 0;
+    const tailStart = count - tailLines.length;
+    readLines((line) => {
+      const position = index++;
+      if (position > 0 && position < tailStart) {
+        const id = safeParseJsonRecord(line)?.id;
+        if (typeof id === "string" && dependencyIds.has(id)) {
+          dependencies.push(line);
+        }
+      }
+    });
+  }
+  const retained = normalizeManualCompactTranscriptLines(header, [...dependencies, ...tailLines]);
   return retained
     ? { lines: retained, result: { compacted: true, kept: retained.length }, snapshot }
     : { lines: [], result: { compacted: false, kept: 0 }, snapshot };

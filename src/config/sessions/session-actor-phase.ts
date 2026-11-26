@@ -16,7 +16,7 @@ import type {
   SessionActorReducerOutcome,
 } from "./session-actor-contract.js";
 import { reduceSessionActorEntry } from "./session-actor-reducers.js";
-import { assertCanonicalSessionKeyWrite } from "./session-canonical-key.js";
+import { assertCanonicalSessionKeyWrite } from "./session-canonical-row.js";
 import { reduceSessionEntryPatch } from "./session-entry-patch-operation.js";
 import { projectPendingFinalDeliverySettlement } from "./session-pending-final-settlement.js";
 import type {
@@ -31,7 +31,10 @@ import type {
   SessionTranscriptTurnExpectedState,
   SessionTranscriptTurnLifecyclePatch,
 } from "./session-transcript-turn-lifecycle.types.js";
-import { sessionMatchesExpectedTranscriptTurn } from "./session-transcript-turn-state.js";
+import {
+  buildSessionTranscriptTurnExpectedState,
+  sessionMatchesExpectedTranscriptTurn,
+} from "./session-transcript-turn-state.js";
 import type { SessionTurnCommitted, SessionTurnPlan } from "./session-turn.types.js";
 import type { InternalSessionEntry as SessionEntry } from "./types.js";
 
@@ -76,6 +79,15 @@ export function applySessionActorPhaseWithBackend(
     }
     return entry;
   };
+  // Prior-run settlement can advance lifecycle during input preparation.
+  // Only explicit guards survive that gap; ordinary input adopts this owner's preimage.
+  const inputExpectedState = (
+    input: SessionTurnPlan,
+    expected: SessionTranscriptTurnExpectedState | undefined,
+  ) =>
+    expected ??
+    input.options.expectedSessionState ??
+    buildSessionTranscriptTurnExpectedState(requireEntry());
   const lifecycle = (
     sessionId: string,
     expectedState: SessionTranscriptTurnExpectedState,
@@ -146,12 +158,12 @@ export function applySessionActorPhaseWithBackend(
       const input = command.input.turn;
       if (
         input?.options.initialSessionEntry &&
-        Object.values(expectedState).some((value) => value !== undefined)
+        Object.values(expectedState ?? {}).some((value) => value !== undefined)
       ) {
         throw new Error("Session actor initialization cannot expect an existing lifecycle");
       }
-      if (!input && pending) {
-        lifecycle(pending.sessionId, expectedState, patch);
+      if (!command.input.turn && pending) {
+        lifecycle(pending.sessionId, command.input.expectedState, patch);
       }
       result = {
         inputId: pending && (pending.expected.existing?.input_id ?? pending.inputId),
@@ -162,7 +174,7 @@ export function applySessionActorPhaseWithBackend(
                 options: {
                   ...input.options,
                   ...(!input.options.initialSessionEntry
-                    ? { expectedSessionState: expectedState }
+                    ? { expectedSessionState: inputExpectedState(input, expectedState) }
                     : {}),
                   sessionLifecyclePatch: { ...input.options.sessionLifecyclePatch, ...patch },
                 },
@@ -184,8 +196,8 @@ export function applySessionActorPhaseWithBackend(
         ...command.input.lifecycle,
         ...(command.input.runId !== undefined ? { activeWriterRunId: command.input.runId } : {}),
       };
-      const input = command.input.turn;
-      if (input) {
+      if (command.input.turn) {
+        const input = command.input.turn;
         if (input.options.expectedSessionId !== command.input.sessionId) {
           throw new Error("Session actor adoption changed its captured session");
         }
@@ -193,7 +205,7 @@ export function applySessionActorPhaseWithBackend(
           ...input,
           options: {
             ...input.options,
-            expectedSessionState: command.input.expectedState,
+            expectedSessionState: inputExpectedState(input, command.input.expectedState),
             sessionLifecyclePatch: { ...input.options.sessionLifecyclePatch, ...patch },
           },
         });

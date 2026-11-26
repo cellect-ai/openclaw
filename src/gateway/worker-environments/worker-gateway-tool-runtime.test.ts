@@ -138,81 +138,6 @@ function request(
   return { generation, toolId: entry.id, toolCallId: call, arguments: { value: "input" } };
 }
 
-it.each(["node", "quickjs"] as const)(
-  "%s cancels abandoned transport calls but preserves parked calls through resume",
-  async (executor) => {
-    onTestFinished(resetCodeModeTestState);
-    for (const abandon of [true, false]) {
-      const entered = createDeferredCore<AbortSignal>();
-      const release = createDeferredCore();
-      const finished = createDeferredCore<boolean>();
-      const disconnected = createDeferredCore<never>();
-      const source = tool("remote", async (_id, _args, signal) => {
-        assert.isDefined(signal);
-        const abort = () => release.resolve();
-        signal.addEventListener("abort", abort, { once: true });
-        entered.resolve(signal);
-        try {
-          await release.promise;
-          return success;
-        } finally {
-          signal.removeEventListener("abort", abort);
-          finished.resolve(signal.aborted);
-        }
-      });
-      const { runtime } = fixture([source]);
-      const surface = await runtime.getSurface(identity);
-      const proxies = createWorkerGatewayToolProxies(surface, {
-        invokeGatewayTool: async (params) => {
-          const response = runtime.invoke(identity, params, sink).then((payload) => ({
-            type: "res" as const,
-            id: "host-result",
-            ok: true as const,
-            payload,
-          }));
-          // Fixed transport I/O: losing the response does not stop Gateway execution.
-          return await Promise.race([response, disconnected.promise]);
-        },
-        cancelGatewayTool: async (params) => ({
-          type: "res",
-          id: "host-cancel",
-          ok: true,
-          payload: runtime.cancel(params),
-        }),
-      });
-      const guest = createCatalogCodeModeHarness(proxies, { codeMode: { executor } });
-      try {
-        const parked = await guest.run(
-          'const pending = remote({ value: "input" }); await yield_control(); return await pending;',
-        );
-        expect(parked.status).toBe("waiting");
-        const signal = await entered.promise;
-        expect(signal.aborted).toBe(false);
-        if (abandon) {
-          disconnected.reject(new Error("Worker gateway-tool request timed out"));
-          expect(await guest.resume(parked)).toMatchObject({
-            status: "failed",
-            failurePhase: "bridge",
-            error: expect.stringContaining("timed out"),
-          });
-          expect(signal.aborted).toBe(true);
-          expect(await finished.promise).toBe(true);
-        } else {
-          const resumed = guest.resume(parked);
-          expect(signal.aborted).toBe(false);
-          release.resolve();
-          expect(await resumed).toMatchObject({ status: "completed", value: success.details });
-          expect(await finished.promise).toBe(false);
-          expect(signal.aborted).toBe(false);
-        }
-      } finally {
-        release.resolve();
-        await runtime.close();
-      }
-    }
-  },
-);
-
 it("enforces the deployment action policy when dispatching an issued worker handle", async () => {
   const config: OpenClawConfig = {
     tools: { gatewayPolicy: { allow: ["remote"], actions: { remote: ["list"] } } },
@@ -301,6 +226,81 @@ it("delivers the Gateway's owned MCP result to the worker Code Mode namespace", 
   expect(await workerExecute.mock.results[0]?.value).not.toHaveProperty("mcpGuestResult");
   expect(execute).toHaveBeenCalledTimes(1);
 });
+
+it.each(["node", "quickjs"] as const)(
+  "%s cancels abandoned transport calls but preserves parked calls through resume",
+  async (executor) => {
+    onTestFinished(resetCodeModeTestState);
+    for (const abandon of [true, false]) {
+      const entered = createDeferredCore<AbortSignal>();
+      const release = createDeferredCore();
+      const finished = createDeferredCore<boolean>();
+      const disconnected = createDeferredCore<never>();
+      const source = tool("remote", async (_id, _args, signal) => {
+        assert.isDefined(signal);
+        const abort = () => release.resolve();
+        signal.addEventListener("abort", abort, { once: true });
+        entered.resolve(signal);
+        try {
+          await release.promise;
+          return success;
+        } finally {
+          signal.removeEventListener("abort", abort);
+          finished.resolve(signal.aborted);
+        }
+      });
+      const { runtime } = fixture([source]);
+      const surface = await runtime.getSurface(identity);
+      const proxies = createWorkerGatewayToolProxies(surface, {
+        invokeGatewayTool: async (params) => {
+          const response = runtime.invoke(identity, params, sink).then((payload) => ({
+            type: "res" as const,
+            id: "host-result",
+            ok: true as const,
+            payload,
+          }));
+          // Fixed transport I/O: losing the response does not stop Gateway execution.
+          return await Promise.race([response, disconnected.promise]);
+        },
+        cancelGatewayTool: async (params) => ({
+          type: "res",
+          id: "host-cancel",
+          ok: true,
+          payload: runtime.cancel(params),
+        }),
+      });
+      const guest = createCatalogCodeModeHarness(proxies, { codeMode: { executor } });
+      try {
+        const parked = await guest.run(
+          'const pending = remote({ value: "input" }); await yield_control(); return await pending;',
+        );
+        expect(parked.status).toBe("waiting");
+        const signal = await entered.promise;
+        expect(signal.aborted).toBe(false);
+        if (abandon) {
+          disconnected.reject(new Error("Worker gateway-tool request timed out"));
+          expect(await guest.resume(parked)).toMatchObject({
+            status: "failed",
+            failurePhase: "bridge",
+            error: expect.stringContaining("timed out"),
+          });
+          expect(signal.aborted).toBe(true);
+          expect(await finished.promise).toBe(true);
+        } else {
+          const resumed = guest.resume(parked);
+          expect(signal.aborted).toBe(false);
+          release.resolve();
+          expect(await resumed).toMatchObject({ status: "completed", value: success.details });
+          expect(await finished.promise).toBe(false);
+          expect(signal.aborted).toBe(false);
+        }
+      } finally {
+        release.resolve();
+        await runtime.close();
+      }
+    }
+  },
+);
 
 it("returns the Gateway action denial to Code Mode before the MCP tool executes", async () => {
   onTestFinished(resetCodeModeTestState);
@@ -399,7 +399,7 @@ it("prepares deferred discovery guidance with the model tool projection", async 
 
 it("carries the run-granted listing that the cached deferred directory omits", async () => {
   const { runtime } = fixture([], async () => ({
-    tools: [tool("web_fetch"), tool("suggest_task")],
+    tools: [tool("web_fetch"), tool("skill_library")],
     policy,
     presentation: createToolSurfacePresentationForTest({
       tools: { codeMode: false, toolSearch: { enabled: true, mode: "tools" } },
@@ -407,8 +407,8 @@ it("carries the run-granted listing that the cached deferred directory omits", a
   }));
   const projection = await runtime.getPromptProjection(identity);
   expect(projection.toolSchemaDirectoryPrompt).toContain("- web_fetch");
-  expect(projection.toolSchemaDirectoryPrompt).not.toContain("suggest_task");
-  expect(projection.runGrantedToolDirectory).toContain("- suggest_task (core)");
+  expect(projection.toolSchemaDirectoryPrompt).not.toContain("skill_library");
+  expect(projection.runGrantedToolDirectory).toContain("- skill_library (core)");
 });
 
 it("issues one finite surface and invokes only an issued Gateway handle with valid arguments", async () => {
@@ -670,7 +670,7 @@ it("preserves error text through worker tool execution", async () => {
   const { invoke } = await issued([tool("remote", execute)]);
   const result = await invoke();
   expect(result).toEqual({
-    content: [{ type: "text", text: JSON.stringify({ status: "error", error: message }, null, 2) }],
+    content: [{ type: "text", text: JSON.stringify({ status: "error", error: message }) }],
     details: { status: "error", error: message },
     isError: true,
   });

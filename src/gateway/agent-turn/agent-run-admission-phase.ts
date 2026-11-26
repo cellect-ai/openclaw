@@ -39,7 +39,6 @@ import {
 import { createChatAbortOps } from "../chat-abort-ops.js";
 import { abortChatRunById, registerChatAbortController } from "../chat-abort.js";
 import { readInProcessSubagentResume } from "../in-process-subagent-resume.js";
-import { retainGatewayOperatorRun } from "../operator-run-cancellation.js";
 import { prepareGatewayCronCreatorAuthorityAdmission } from "../server-methods/cron-creator-authority-admission.js";
 import { assertParentSubagentResumeSuccessorCurrent } from "../session-subagent-resume.js";
 import { getThreadContinuationGuard } from "../thread-continuation.js";
@@ -74,6 +73,7 @@ import {
   releasePreparedAgentRunUserTurnAfterFailure,
   type PreparedAgentRunUserTurn,
 } from "./agent-run-user-turn.js";
+import { retainAgentTurnOperatorRun } from "./agent-turn-source-admission.js";
 
 export async function prepareAgentRunDispatch(
   params: PrepareAgentRunDispatchParams,
@@ -267,7 +267,7 @@ export async function prepareAgentRunDispatch(
   });
   let preparedModelRuntimeLease: PreparedModelRuntimeLease | undefined;
   let dispatchRuntimeLease: ReturnType<typeof scopePreparedModelRuntimeLease> | undefined;
-  let capturedOperator: Awaited<ReturnType<typeof retainGatewayOperatorRun>> | undefined;
+  let capturedOperator: Awaited<ReturnType<typeof retainAgentTurnOperatorRun>> | undefined;
   let cronCreatorAuthority: ReturnType<typeof prepareGatewayCronCreatorAuthorityAdmission>;
   let callerAuthorityReleased = false;
   const releaseCallerAuthority = () => {
@@ -350,27 +350,27 @@ export async function prepareAgentRunDispatch(
       runtimeLease.run(() =>
         // The selected run retains its own generation beyond this short dispatch lease.
         pluginInvocationContext.exit(() =>
-          acquireAgentRunPreparedModelRuntime(
-            {
-              config: replyDispatchRuntime.config,
-              agentId: replyDispatchRuntime.agentId,
-              agentDir: replyDispatchRuntime.agentDir,
-              allowGatewaySubagentBinding: true,
-              workspaceDir: workspaceDir ?? replyDispatchRuntime.workspaceDir,
-              runtimePluginSelections: [
-                {
-                  provider: resolvedRuntime.provider,
-                  modelId: resolvedRuntime.model,
-                  runtime: resolvedRuntime.harness,
-                },
-              ],
-            },
-            {
-              catalogMode: "static",
-              pluginGeneration: replyDispatchRuntime.pluginGeneration,
-              abortSignal: activeRunAbort.controller.signal,
-            },
-          ),
+        acquireAgentRunPreparedModelRuntime(
+          {
+            config: replyDispatchRuntime.config,
+            agentId: replyDispatchRuntime.agentId,
+            agentDir: replyDispatchRuntime.agentDir,
+            allowGatewaySubagentBinding: true,
+            workspaceDir: workspaceDir ?? replyDispatchRuntime.workspaceDir,
+            runtimePluginSelections: [
+              {
+                provider: resolvedRuntime.provider,
+                modelId: resolvedRuntime.model,
+                runtime: resolvedRuntime.harness,
+              },
+            ],
+          },
+          {
+            catalogMode: "static",
+            pluginGeneration: replyDispatchRuntime.pluginGeneration,
+            abortSignal: activeRunAbort.controller.signal,
+          },
+        ),
         ),
       );
     if (canPrepareAgentSessionWorktree(params.resolvedSessionKey, params.sessionEntry)) {
@@ -406,6 +406,8 @@ export async function prepareAgentRunDispatch(
   try {
     subagentAdmission = await prepareGatewaySubagentRun({
       ...params,
+      agentDir: replyDispatchRuntime.agentDir,
+      workspaceDir: replyDispatchRuntime.workspaceDir,
       lifecycleStorePath,
       retainPluginSubagentAdmission: (reject) => {
         rejectPluginSubagentAdmission = reject;
@@ -538,8 +540,6 @@ export async function prepareAgentRunDispatch(
       params.client.internal.operatorRoleActor?.kind === "system" &&
       !params.client.internal.operatorRunAuthority &&
       !params.client.authenticatedUserProfile &&
-      !params.client.internal.cronRunContinuation &&
-      !params.restoredCronContinuation &&
       params.resolvedSessionKey &&
       !isCronSessionKey(params.resolvedSessionKey) &&
       userTurn.inputProvenance?.kind === "internal_system" &&
@@ -557,8 +557,10 @@ export async function prepareAgentRunDispatch(
           }
         : undefined;
     // Accepted work retains this caller's continuation for the turn's whole lifetime.
-    capturedOperator = await retainGatewayOperatorRun({
+    capturedOperator = await retainAgentTurnOperatorRun({
       ...params,
+      lifecycleStorePath,
+      assertInputCurrent: assertInputOwnerCurrent,
       systemTurn,
       entry: activeRunAbort.entry,
       abortSession: params.resolvedSessionKey
@@ -633,7 +635,6 @@ export async function prepareAgentRunDispatch(
         spawnedBy: params.sessionEntry?.spawnedBy,
         isCurrent: params.hasCurrentClientAuthority,
         inputProvenance: userTurn.inputProvenance,
-        hasRestoredCronContinuation: params.restoredCronContinuation !== undefined,
       },
       activeRunAbort.controller.signal,
     );
@@ -680,7 +681,6 @@ export async function prepareAgentRunDispatch(
       ...modelSelection,
       imageUnderstandingModel: params.needsImageUnderstanding ? resolvedRuntime : undefined,
       trustedInternalHandoff,
-      restoredCronContinuationLifecycleRevision: params.restoredCronContinuation?.lifecycleRevision,
       resolvedThreadId,
       reactivateSubagent,
       followupCompletion,

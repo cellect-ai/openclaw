@@ -251,6 +251,7 @@ export function broadcastChatTerminal(params: ChatTerminalBroadcastParams & Chat
   ) {
     return;
   }
+  params.context.chatRunState?.flushPendingText(params.runId);
   markChatAbortTerminalOutcome(params.terminalEntry);
   // A runtime lifecycle frame and this dispatch broadcast can describe one failure.
   // The first attributed send wins. Warnings without a source registration still send.

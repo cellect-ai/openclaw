@@ -6,7 +6,6 @@ import { WebSocketServer } from "ws";
 import {
   createSlackBoltApp,
   gracefulStopSlackApp,
-  publishSlackDisconnectedStatus,
   resolveSlackBoltInterop,
   startSlackSocketAndWaitForDisconnect,
 } from "./provider-support.js";
@@ -236,19 +235,14 @@ describe("createSlackBoltApp", () => {
       });
       Reflect.set(client, "start", start);
       const delayReconnectAttempt = Reflect.get(client, "delayReconnectAttempt");
+      const lifecycle = new AbortController();
       if (typeof delayReconnectAttempt !== "function") {
         throw new Error("expected a native reconnect scheduler");
       }
 
-      const reconnect = delayReconnectAttempt.call(
-        client,
-        () => client.start(),
-        new AbortController().signal,
-      );
-      expect(client.listenerCount("disconnecting")).toBe(1);
+      const reconnect = delayReconnectAttempt.call(client, () => client.start(), lifecycle.signal);
       await gracefulStopSlackApp(app, client);
       await expect(reconnect).resolves.toBeUndefined();
-      expect(client.listenerCount("disconnecting")).toBe(0);
       await app.start();
       await vi.advanceTimersByTimeAsync(15_000);
 
@@ -456,20 +450,6 @@ describe("createSlackBoltApp", () => {
 });
 
 describe("slack socket reconnect helpers", () => {
-  it("marks socket mode disconnected without error when the socket closes cleanly", () => {
-    const setStatus = vi.fn();
-    vi.spyOn(Date, "now").mockReturnValue(1_711_406_402_000);
-
-    publishSlackDisconnectedStatus(setStatus);
-
-    expect(setStatus).toHaveBeenCalledExactlyOnceWith({
-      connected: false,
-      lifecycle: "recovering",
-      lastDisconnect: { at: 1_711_406_402_000 },
-      lastError: null,
-    });
-  });
-
   it("warns once when Slack reports a shared Socket Mode app token", () => {
     const client = new EventEmitter();
     const onSharedConnection = vi.fn();

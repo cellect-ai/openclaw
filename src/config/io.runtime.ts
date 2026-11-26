@@ -11,7 +11,6 @@ import {
   createConfigRuntimeEnvBase,
   prepareConfigRuntimeEnvLoad,
 } from "./config-env-vars.js";
-import { resolveManagedUnsetPathsForWrite } from "./config-path-mutation.js";
 import { assertConfigWriteAllowedInCurrentMode } from "./config-write-guard.js";
 import { getDeferredPluginMigrationConfigFacts } from "./deferred-plugin-migration-config.js";
 import { resolveWriteEnvSnapshotForPath } from "./env-preserve.js";
@@ -397,8 +396,10 @@ export async function recoverConfigFromJsonRootSuffix(
   return await createConfigIO().recoverConfigFromJsonRootSuffix(snapshot, assertRecoveryCandidate);
 }
 
-export async function readSourceConfigSnapshot(): Promise<ConfigFileSnapshot> {
-  return await readConfigFileSnapshot();
+export async function readSourceConfigSnapshot(
+  options?: Pick<ConfigSnapshotReadOptions, "observe">,
+): Promise<ConfigFileSnapshot> {
+  return await readConfigFileSnapshot(options);
 }
 
 export async function readConfigFileSnapshotForRuntimeTransaction(
@@ -515,7 +516,6 @@ export async function writeConfigFile(
           expectedConfigPath: options.expectedConfigPath,
           envSnapshotForRestore: options.envSnapshotForRestore,
         }),
-        unsetPaths: resolveManagedUnsetPathsForWrite(options.unsetPaths),
         explicitSetValueSource: options.explicitSetPaths
           ? (options.explicitSetValueSource ?? cfg)
           : undefined,

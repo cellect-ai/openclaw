@@ -5,7 +5,7 @@ import { GIT_COAUTHOR_PREFERENCE_KEY } from "../../../packages/gateway-protocol/
 import { sessionSqlFixture } from "../../commands/doctor-session-sqlite.sql.test-support.js";
 import { createDirectChatContext } from "../../gateway/server-chat.agent-events.test-helpers.js";
 import { authorizationClient } from "../../gateway/server-methods.authorization.test-support.js";
-import { prepareAuthenticatedProfile } from "../../gateway/server-methods/users-profile-access.js";
+import { preparePersonalProfileAction } from "../../gateway/server-methods/personal-profile-authorization.js";
 import {
   openOpenClawStateDatabase,
   runOpenClawStateWriteTransaction,
@@ -25,7 +25,7 @@ import {
   getCanonicalUserPreferences,
   setCanonicalUserPreferences,
 } from "../../state/user-preferences.js";
-import { readProfileAuthority } from "../../state/user-profile-authority.js";
+import { prepareProfileAuthorityRead } from "../../state/user-profile-authority.js";
 import { captureUserProfileAuthorityRead } from "../../state/user-profile-events.js";
 import { setCanonicalUserProfileRole } from "../../state/user-profile-writes.js";
 import { setUserProfileRole } from "../../state/user-profile-writes.worker.js";
@@ -69,14 +69,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         getRuntimeConfig: () => ({}),
         getClientConnIds: (filter) => new Set(!filter || filter(client) ? [connId] : []),
       });
-      return prepareAuthenticatedProfile({
-        client,
-        context,
-        req: { type: "req", id: "profile-authority", method: "users.preferences.set" },
-        params: {},
-        respond: vi.fn(),
-        isWebchatConnect: () => false,
-      });
+      return preparePersonalProfileAction({ client, context }, "operator.write");
     };
     const custody = (subject: string) =>
       admit(() => {
@@ -91,7 +84,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
       );
 
     it.each([false, true])(
-      "fences production action and transferred readers at native COMMIT (rollback=%s)",
+      "fences transferred readers without revoking an admitted action at native COMMIT (rollback=%s)",
       async (rollback) => {
         const person = profile(`native-fence-${rollback}`);
         const action = await prepareAction(person);
@@ -99,10 +92,10 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           captureOpenClawStateWorkerContext({}).admission,
         );
         const bound = authority.bind(person.id)!;
-        const transferred = structuredClone(bound.transferable);
-        const readBound = () => readProfileAuthority(transferred);
-        const transferredSettled = structuredClone(authority.transferSettled(person.id));
-        const readSettled = () => readProfileAuthority(transferredSettled);
+        const readBound = prepareProfileAuthorityRead(structuredClone(bound.transferable));
+        const readSettled = prepareProfileAuthorityRead(
+          structuredClone(authority.transferSettled(person.id)),
+        );
         const perform = (value: boolean) =>
           setCanonicalUserPreferences(
             person.id,
@@ -119,7 +112,8 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
             commits++;
             expect([bound(), readBound(), readSettled()]).toEqual([false, "pending", "pending"]);
             expect(() => authority.assertSettled(person.id)).toThrow("has not settled");
-            expect(action.assertCurrent).toThrow("Gateway requester profile changed");
+            // Role edits fence fresh authority reads, not an already-admitted request.
+            expect(action.assertCurrent).not.toThrow();
             if (rollback) {
               throw new Error("synthetic native COMMIT refusal");
             }
@@ -135,11 +129,10 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           );
         if (rollback) {
           expect(mutate).toThrow("synthetic native COMMIT refusal");
-          await expect(perform(false)).resolves.toMatchObject({ ok: true });
         } else {
           mutate();
-          await expect(perform(false)).rejects.toThrow("Gateway requester profile changed");
         }
+        await expect(perform(false)).resolves.toMatchObject({ ok: true });
         expect(commits).toBe(1);
         expect([bound(), readBound(), readSettled()]).toEqual([
           rollback,
@@ -148,7 +141,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
         ]);
         expect(() => authority.assertSettled(person.id)).not.toThrow();
         await expect(getCanonicalUserPreferences(person.id)).resolves.toMatchObject({
-          entries: { "synthetic.authority": !rollback },
+          entries: { "synthetic.authority": false },
         });
       },
     );
@@ -232,7 +225,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
     });
 
     it.runIf(engine === "postgres")(
-      "keeps production authority closed after losing a real COMMIT reply",
+      "keeps transferred authority closed after losing a real COMMIT reply",
       async () => {
         const person = profile("lost-role-commit");
         const action = await prepareAction(person);
@@ -240,10 +233,10 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
           captureOpenClawStateWorkerContext({}).admission,
         );
         const bound = authority.bind(person.id)!;
-        const transferred = structuredClone(bound.transferable);
-        const readBound = () => readProfileAuthority(transferred);
-        const transferredSettled = structuredClone(authority.transferSettled(person.id));
-        const readSettled = () => readProfileAuthority(transferredSettled);
+        const readBound = prepareProfileAuthorityRead(structuredClone(bound.transferable));
+        const readSettled = prepareProfileAuthorityRead(
+          structuredClone(authority.transferSettled(person.id)),
+        );
         expect([bound(), readBound(), readSettled()]).toEqual([true, "current", "current"]);
         const { db } = admit(() => openOpenClawStateDatabase());
         if (!isPostgresSqlConnection(db)) {
@@ -295,7 +288,7 @@ describe.skipIf(!mixedAgentConnection).each(["sqlite", "postgres"] as const)(
             { "synthetic.authority": false },
             { assertCurrent: action.assertCurrent },
           ),
-        ).rejects.toThrow("Gateway requester profile changed");
+        ).resolves.toMatchObject({ ok: true });
         const observer = new Client({ connectionString: mixedAgentConnection });
         await observer.connect();
         try {

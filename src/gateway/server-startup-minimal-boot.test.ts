@@ -1,5 +1,5 @@
 // Keep bundled plugins enabled: disabling them hid a startup stall from UI e2e proof.
-import fs from "node:fs/promises";
+import { promises as fs, readFileSync } from "node:fs";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -10,6 +10,7 @@ import {
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { resetConfigRuntimeState } from "../config/runtime-snapshot.js";
 import { resolveConfigDir } from "../infra/config-dir.js";
+import { flushDiagnosticsTimeline } from "../infra/diagnostics-timeline.js";
 import { writeGatewayRestartHandoff } from "../infra/restart-handoff.js";
 import { readLoggingConfig } from "../logging/config.js";
 import { resetLogger } from "../logging/logger.js";
@@ -35,7 +36,7 @@ async function readTimelineAtReady(port: number, timelinePath: string): Promise<
     try {
       const response = await fetch(`http://127.0.0.1:${port}/readyz`);
       if (response.ok) {
-        return await fs.readFile(timelinePath, "utf8");
+        return readFileSync(timelinePath, "utf8");
       }
     } catch {
       // The HTTP listener comes up before the readiness boundary.
@@ -215,10 +216,12 @@ it(
           snapshotVersion,
         );
         snapshotVersion = nextVersion;
-        const startupMeasures = (await fs.readFile(timelinePath, "utf8"))
+        flushDiagnosticsTimeline();
+        const startupEvents = readFileSync(timelinePath, "utf8")
           .trim()
           .split("\n")
-          .map((line) => JSON.parse(line) as Record<string, unknown>)
+          .map((line) => JSON.parse(line) as Record<string, unknown>);
+        const startupMeasures = startupEvents
           .filter((event) => event.type === "span.start" && event.phase === "startup")
           .map((event) => {
             const attributes = event.attributes as { traceName?: string } | undefined;
@@ -228,6 +231,18 @@ it(
         expect(startupMeasures.indexOf("runtime.early")).toBeGreaterThan(
           startupMeasures.indexOf("http.listen"),
         );
+        const postAttachEnd = startupEvents.findIndex(
+          (event) =>
+            event.type === "span.end" &&
+            (event.attributes as { traceName?: string } | undefined)?.traceName ===
+              "runtime.post-attach",
+        );
+        const readyMark = startupEvents.findIndex(
+          (event) =>
+            event.type === "mark" && event.phase === "startup" && event.name === "gateway.ready",
+        );
+        expect(postAttachEnd).toBeGreaterThan(-1);
+        expect(readyMark).toBeGreaterThan(postAttachEnd);
       } finally {
         await server.close({ reason: "minimal boot smoke complete" });
       }

@@ -128,7 +128,9 @@ type ToolCatalogMetadata = {
 
 type ToolCatalogHandle = ((input?: unknown) => Promise<unknown>) &
   ToolCatalogMetadata & {
-    describe(): Promise<ToolCatalogDescription | McpCatalogDescription>;
+    describe(options?: {
+      includeRarelyNeededOutputSchema?: boolean;
+    }): Promise<ToolCatalogDescription | McpCatalogDescription>;
     toJSON(): ToolCatalogMetadata;
   };
 ```
@@ -155,6 +157,13 @@ is limited to 512 UTF-16 code units without splitting surrogate pairs; input and
 output hints remain absent. Returning or emitting MCP discovery metadata uses
 the normal untrusted-content wrapper, even if no MCP tool is called.
 
+An unused search result does not mark the cell as external content. Reading an
+MCP or client handle's metadata does, even if the program discards that text;
+returning or emitting the handle also exposes its metadata. Reading MCP API
+declarations and executing network tools retain their external-content marking.
+This marking taints the current turn, so later memory writes remain untrusted.
+The distinction does not restore trust to previously quarantined memory files.
+
 MCP handles invoke the existing namespace path with one object argument, including
 its input defaults, policy checks, approvals, and native MCP result projection.
 Their `describe()` returns the exact tool's `$api(method, { schema: true })`
@@ -165,7 +174,12 @@ declaration. Search also accepts the fully qualified `callableName`.
 `catalog.all()` continues to list only native and client handles; searching does
 not add remote tools to that list or to the trusted quick index.
 
-Full schema is loaded only on demand:
+Full schema is loaded only on demand. Native and client `describe()` omits
+`outputSchema` by default: `API.read("tools/<callableName>.d.ts")` already
+renders the trusted output as a TypeScript declaration, and the raw schema can
+cost tens of thousands of characters when returned. Pass
+`{ includeRarelyNeededOutputSchema: true }` only when the original JSON Schema
+is required, for example when declaration bounds leave the output `unknown`.
 
 ```typescript
 type ToolCatalogDescription = Omit<ToolCatalogMetadata, "toolName"> & {
@@ -255,10 +269,23 @@ Native Gateway and sandbox exec workdir errors and foreground process failures
 include their concise diagnostic in `message`, with command output in `aggregated`. Returned failures
 remain values; thrown tool errors remain catchable.
 
+A successful foreground `exec` returns exactly what the command wrote in
+`aggregated`, so it is safe to parse. What OpenClaw has to say about the call is
+in `warningText`: for example, that the command left a process running, with the
+session ID to pass to `process`. The field is absent when there is nothing to report.
+
 The `ls`, `find`, and `grep` tools include their bounded listing or search text
 in `content`, including empty-result messages and truncation notices. Directory
 pages retain `nextAfter`; search results retain their existing limit and
 truncation metadata.
+
+## Reading skill companions
+
+Installed skills use `await skills.read(name)` for complete instructions.
+For local Gateway skills, `await skills.read(name, "references/workflow.md")`
+returns a text companion scoped to that skill's directory (256 KiB maximum).
+Traversal, symlinks, hardlinks, and binary content are rejected. Restricted
+placements remain instruction-only; see [skill reads](/tools/skills#search-installed-skills).
 
 ## Session store
 

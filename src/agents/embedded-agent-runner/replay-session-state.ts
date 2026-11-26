@@ -5,11 +5,14 @@ import type {
   ProviderReplaySessionStateV2,
 } from "../../plugins/provider-replay.types.js";
 import { rethrowIncognitoSessionError } from "../../state/incognito-session-error.js";
+import { sessionManagerReadTranscriptBranch } from "../sessions/session-manager-view-types.js";
 import { withSessionManagerWriteAssertion } from "../sessions/session-manager-write-admission.js";
 import type { SessionManager } from "../sessions/session-manager.js";
 import { warnSessionPersistenceDeprecation } from "../sessions/session-persistence-deprecation.js";
-import { readModelSnapshotStateFromEntries } from "./replay-model-snapshot.js";
-import type { ModelSnapshotState } from "./replay-session-state.types.js";
+import {
+  readModelSnapshotStateFromEntries,
+  type ModelSnapshotState,
+} from "./replay-model-snapshot.js";
 
 export function createProviderReplaySessionState(sessionManager: SessionManager): {
   state: ProviderReplaySessionStateV2;
@@ -69,7 +72,7 @@ export function createProviderReplaySessionState(sessionManager: SessionManager)
 
 export function readModelSnapshotState(sessionManager: SessionManager): ModelSnapshotState {
   try {
-    return readModelSnapshotStateFromEntries(sessionManager.getBranch());
+    return readModelSnapshotStateFromEntries(sessionManager[sessionManagerReadTranscriptBranch]());
   } catch (error) {
     rethrowIncognitoSessionError(error);
     return { lastSnapshot: null, latestSwitchTimestamp: null };

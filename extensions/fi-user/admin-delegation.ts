@@ -463,11 +463,16 @@ export function registerAdminDelegation(
         origin?.sender?.isBot !== true
       ) {
         run.sender = sender;
-        if (sourceReply && sourceOrigin) {
-          run.matrixOrigin = {
-            matrixUserId: sourceOrigin.matrixUserId,
-            ...(sourceOrigin.accountId ? { accountId: sourceOrigin.accountId } : {}),
-          };
+        if (sourceReply && sourceOrigin && typeof origin?.chat?.eventId === "string") {
+          const roomId = arrived.sourceRooms.get(origin.chat.eventId);
+          if (roomId) {
+            run.matrixOrigin = {
+              matrixUserId: sourceOrigin.matrixUserId,
+              ...(sourceOrigin.accountId ? { accountId: sourceOrigin.accountId } : {}),
+              roomId,
+              eventId: origin.chat.eventId,
+            };
+          }
         }
         // Dispatch can queue several native events before the first run starts.
         // Consume only this run's exact event; later runs need their own proof.

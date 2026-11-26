@@ -215,22 +215,22 @@ describe("prepared model runtime scoped refresh", () => {
       config,
       makeCatalog([entry("custom", "initial", "Initial")]),
     );
-    const original = catalogLifetime.retainPreparedPluginGeneration;
+    const original = catalogLifetime.runWithPreparedPluginGeneration;
     const publication = createDeferredCore();
     const release = createDeferredCore();
     let calls = 0;
     const lifetimeSpy = vi
-      .spyOn(catalogLifetime, "retainPreparedPluginGeneration")
-      .mockImplementation((generation) => {
+      .spyOn(catalogLifetime, "runWithPreparedPluginGeneration")
+      .mockImplementation((params, build) => {
         const call = ++calls;
-        const dispose = original(generation);
-        return async () => {
-          await dispose();
+        return original(params, async () => {
+          const value = await build();
           if (call === 1) {
             publication.resolve();
             await release.promise;
           }
-        };
+          return value;
+        });
       });
     try {
       currentNativeId = "first";

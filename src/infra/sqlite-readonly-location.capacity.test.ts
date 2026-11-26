@@ -7,11 +7,17 @@ import { requireNodeSqlite } from "./node-sqlite.js";
 import { markSqliteInspectionOperation } from "./sqlite-error-diagnostics.js";
 import * as sqliteCopy from "./sqlite-file-copy.js";
 import { SqliteSnapshotCleanupError } from "./sqlite-lifecycle-errors.js";
-import { prepareSqliteReadOnlyCopyInProcess } from "./sqlite-readonly-location.js";
-import { isSqliteSnapshotCapacityError } from "./sqlite-snapshot-capacity-error.js";
+import {
+  prepareSqliteReadOnlyCopyInProcess,
+  prepareSqliteReadOnlyLocationInProcess,
+  prepareSqliteReadOnlyLocationSyncInProcess,
+} from "./sqlite-readonly-location.js";
+import {
+  isSqliteSnapshotCapacityError,
+  SqliteSnapshotCapacityError,
+} from "./sqlite-snapshot-capacity-error.js";
 import { decodeSqliteSnapshotStagingError } from "./sqlite-snapshot-staging-error.js";
 import { sqliteSnapshotStagingError } from "./sqlite-snapshot-staging.js";
-import * as tmpRoot from "./tmp-openclaw-dir.js";
 
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => {
   afterEach(() => {
@@ -29,6 +35,42 @@ function createTempDatabasePath(sql: string): string {
 }
 
 it.each([
+  ["synchronous copy", prepareSqliteReadOnlyLocationSyncInProcess],
+  ["asynchronous copy", prepareSqliteReadOnlyCopyInProcess],
+  ["online backup", prepareSqliteReadOnlyLocationInProcess],
+] as const)("refuses an undersized cache before an 8.4 GB %s", async (_mode, prepare) => {
+  const databasePath = createTempDatabasePath("CREATE TABLE probe(value);");
+  const stagingRoot = tempDirs.make("sqlite-snapshot-capacity-");
+  const original = fs.readFileSync(databasePath);
+  // Advertise the reported database size without allocating or reading gigabytes in this fixture.
+  const stat = fs.statSync.bind(fs);
+  vi.spyOn(fs, "statSync").mockImplementation((...args) => {
+    const result = stat(...args);
+    return String(args[0]) === databasePath && result && typeof result.size === "number"
+      ? Object.assign(result, { size: 8_400_000_000 })
+      : result;
+  });
+  const space = fs.statfsSync(stagingRoot);
+  vi.spyOn(fs, "statfsSync").mockReturnValue(
+    Object.assign(space, { bsize: 1, bavail: 1_000_000_000 }),
+  );
+  let prepared: Awaited<ReturnType<typeof prepare>> | undefined;
+  try {
+    const preparation = Promise.resolve()
+      .then(() => prepare(databasePath, stagingRoot))
+      .then((location) => (prepared = location));
+    await expect(preparation).rejects.toThrow(
+      /8400000000 bytes.*1000000000 bytes.*[Ff]ree disk space/s,
+    );
+    await expect(preparation).rejects.toBeInstanceOf(SqliteSnapshotCapacityError);
+  } finally {
+    await prepared?.cleanupAsync();
+  }
+  expect(fs.readFileSync(databasePath)).toEqual(original);
+  expect(fs.readdirSync(stagingRoot)).toEqual([]);
+});
+
+it.each([
   { allocation: "cache root", code: "ENOSPC", capacity: true },
   { allocation: "namespace", code: "EDQUOT", capacity: true },
   { allocation: "namespace", code: "EACCES", capacity: false },
@@ -41,21 +83,28 @@ it.each([
     vi.stubEnv("OPENCLAW_UPDATE_IN_PROGRESS", "0");
     vi.stubEnv("XDG_CACHE_HOME", cacheRoot);
     const failure = Object.assign(new Error(`root allocation ${code}`), { code });
-    if (allocation === "cache root") {
-      vi.spyOn(tmpRoot, "resolvePreferredOpenClawTmpDir").mockImplementationOnce(() => {
+    const mkdir = fs.mkdirSync.bind(fs);
+    let injected = false;
+    vi.spyOn(fs, "mkdirSync").mockImplementation((directory, options) => {
+      const target = String(directory);
+      if (
+        allocation === "cache root"
+          ? target === cacheRoot
+          : path.dirname(target) === path.join(cacheRoot, "openclaw") &&
+            path.basename(target).startsWith("sqlite-")
+      ) {
+        injected = true;
         throw failure;
-      });
-    } else {
-      vi.spyOn(fs, "mkdtempSync").mockImplementationOnce(() => {
-        throw failure;
-      });
-    }
+      }
+      return mkdir(directory, options);
+    });
 
     const error = await prepareSqliteReadOnlyCopyInProcess(databasePath).catch(
       (cause: unknown) => cause,
     );
+    expect(injected).toBe(true);
     expect(isSqliteSnapshotCapacityError(error)).toBe(capacity);
-    expect(error).toMatchObject({ cause: failure });
+    expect(capacity && error instanceof Error ? error.cause : error).toBe(failure);
     expect(fs.readFileSync(databasePath)).toEqual(original);
   },
 );

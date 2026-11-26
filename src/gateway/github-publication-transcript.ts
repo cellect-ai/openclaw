@@ -27,8 +27,8 @@ function formatGitHubPublicationResult(result: SessionGitHubPublicationResult): 
     publisher?.source === "personal"
       ? "My GitHub"
       : publisher?.source === "agent-override"
-        ? "Agent override"
-        : "System";
+        ? "Own account"
+        : "Shared agent account";
   const acting = publisher ? ` Using @${publisher.login} (${source}).` : "";
   switch (result.status) {
     case "published":
@@ -51,8 +51,13 @@ export async function reportGitHubPublicationTranscript(
   coordinator: Pick<GitHubPublicationCoordinator, "markReportedAsync" | "readReportLifecycleAsync">,
   params: GitHubPublicationTranscriptReport,
 ): Promise<void> {
-  const lifecycleRevision = await coordinator.readReportLifecycleAsync(params);
-  const memory = captureSessionActorStorageOwner(params, {
+  const sourceLifecycle = await coordinator.readReportLifecycleAsync(params);
+  if (params.origin && params.origin.agentId !== params.agentId) {
+    throw new Error("GitHub publication transcript origin is invalid.");
+  }
+  const recipient = params.origin ?? params;
+  const lifecycleRevision = params.origin ? params.origin.lifecycleRevision : sourceLifecycle;
+  const memory = captureSessionActorStorageOwner(recipient, {
     assertCurrent() {},
     authorize() {},
   });
@@ -60,17 +65,17 @@ export async function reportGitHubPublicationTranscript(
     ? {
         target: {
           agentId: memory.agentId,
-          canonicalKey: params.sessionKey,
+          canonicalKey: recipient.sessionKey,
           storePath: memory.path,
         },
-        entry: readCapturedSessionActorEntry(memory, params.sessionKey),
+        entry: readCapturedSessionActorEntry(memory, recipient.sessionKey),
       }
     : await (async () => {
         const runtime = await loadSessionRuntime();
         const target = await runtime.resolveGatewaySessionStoreTargetInWorker({
           cfg: getRuntimeConfig(),
-          key: params.sessionKey,
-          agentId: params.agentId,
+          key: recipient.sessionKey,
+          agentId: recipient.agentId,
         });
         return {
           target,
@@ -81,20 +86,21 @@ export async function reportGitHubPublicationTranscript(
   // A reset or rotation ended that transcript for good; the receipt stays readable by request id.
   if (
     entry &&
-    target.canonicalKey === params.sessionKey &&
-    (entry.sessionId !== params.sessionId ||
+    target.canonicalKey === recipient.sessionKey &&
+    (entry.sessionId !== recipient.sessionId ||
       (entry.lifecycleRevision ?? null) !== lifecycleRevision)
   ) {
     await coordinator.markReportedAsync(params.result.requestId);
     return;
   }
-  if (entry?.sessionId !== params.sessionId || target.canonicalKey !== params.sessionKey) {
+  if (entry?.sessionId !== recipient.sessionId || target.canonicalKey !== recipient.sessionKey) {
     throw new Error("GitHub publication transcript owner changed");
   }
-  // Defer live-run receipts to preserve the append-only provider prefix.
+  // A receipt that lands inside a live run would sit before that run's later messages on
+  // replay. Use the pending background-result row, so the run's next request appends it.
   const placement = isSessionControllerWorkActive(
     target.storePath,
-    [params.sessionKey, params.sessionId],
+    [recipient.sessionKey, recipient.sessionId],
     target.agentId,
   )
     ? {
@@ -107,7 +113,7 @@ export async function reportGitHubPublicationTranscript(
   const appended = await appendSessionTranscriptReport(
     {
       agentId: target.agentId,
-      sessionId: params.sessionId,
+      sessionId: recipient.sessionId,
       sessionKey: target.canonicalKey,
       storePath: target.storePath,
       expectedLifecycleRevision: lifecycleRevision ?? undefined,
@@ -127,7 +133,7 @@ export async function reportGitHubPublicationTranscript(
           timestamp: Date.now(),
           ...placement,
         },
-        params.runId,
+        params.origin?.runId ?? params.runId,
       ),
     },
   );

@@ -30,19 +30,19 @@ type Settlement = Parameters<typeof settlePendingFinalDelivery>;
 type PendingUpdate = Partial<
   Pick<
     NonNullable<InternalSessionEntry["pendingFinalDelivery"]>,
-    "context" | "deliveries" | "intentId"
+    "context" | "deliveries" | "intentId" | "sourceMessageId"
   >
 >;
 
 function observeActorCommands(
   hooks: { beforeCommand?: () => void; beforeCommit?: () => void } = {},
 ) {
-  const capture = agentExecution.captureOpenClawAgentDatabaseExecution;
+  const capture = agentExecution.captureOpenClawAgentDatabaseExecutionAsync;
   const createAdmission = workerAdmission.createSqliteWorkerOperationAdmission;
   const commands: string[] = [];
-  vi.spyOn(agentExecution, "captureOpenClawAgentDatabaseExecution").mockImplementation(
-    (...args) => {
-      const owner = capture(...args);
+  vi.spyOn(agentExecution, "captureOpenClawAgentDatabaseExecutionAsync").mockImplementation(
+    async (...args) => {
+      const owner = await capture(...args);
       const runExisting = owner.runExisting.bind(owner);
       owner.runExisting = (source, run, options) =>
         runExisting(

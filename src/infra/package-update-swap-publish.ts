@@ -59,13 +59,12 @@ async function exchangeStagedPackageRoot(params: {
   }
   let exchange: PathExchangeResult;
   try {
-    exchange = await exchangePaths(params.backupRoot, params.liveRoot, assertCaller);
+    exchange = await exchangePaths(params.backupRoot, params.liveRoot);
   } catch (error) {
     params.onUncertain();
     throw error;
   }
   if (exchange.status === "unavailable") {
-    assertCaller();
     try {
       await fs.rename(params.backupRoot, params.stagedRoot);
     } catch (error) {

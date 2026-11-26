@@ -6,19 +6,29 @@ import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import { loadExactSessionEntry } from "../config/sessions/session-accessor.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import { appendTranscriptMessage } from "../config/sessions/session-accessor.sqlite-transcript-write.js";
+import { retainSessionColdNavigationInTransaction } from "../config/sessions/session-cold-storage-navigation.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
+import {
+  openOpenClawAgentDatabase,
+  runOpenClawAgentWriteTransaction,
+} from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { createContext } from "./server-plugin-in-process-dispatch.test-support.js";
 import { persistGatewaySessionLifecycleEvent } from "./session-lifecycle-state.js";
-import { hasInterruptedCommittedRequesterSettleInput } from "./session-restart-resume-custody.js";
 import {
   persistRunningSessionsForRestart,
   resumeMarkedSessions,
 } from "./session-restart-resume.js";
+
 it.for([
   "message",
+  "committed-interrupted",
+  "retired-message",
   "nested-message",
+  "nested-retired-message",
   "nested-lost",
+  "lost",
+  "failed-delivery",
   "stale-requester",
   "current-completed",
   "retired-completed",
@@ -34,7 +44,7 @@ it.for([
       sessionId: "parked-root",
     };
     const runId =
-      source === "message"
+      source === "message" || source === "committed-interrupted"
         ? `announce:requester-settle:main:${target.sessionKey}:parked-child-run`
         : "parked-root-run";
     const lifecycleRevision = "parked-root-revision";
@@ -44,7 +54,7 @@ it.for([
       activeWriterRunId: runId,
       updatedAt: 100,
     });
-    if (source === "message") {
+    if (source === "message" || source === "committed-interrupted") {
       await appendTranscriptMessage(target, {
         message: {
           role: "user",
@@ -57,15 +67,19 @@ it.for([
     }
     for (const event of [
       { ts: 100, data: { phase: "start", startedAt: 100 } },
-      {
-        ts: 120,
-        data: {
-          phase: "end",
-          yielded: true,
-          livenessState: "paused",
-          stopReason: "end_turn",
-        },
-      },
+      ...(source === "committed-interrupted"
+        ? []
+        : [
+            {
+              ts: 120,
+              data: {
+                phase: "end",
+                yielded: true,
+                livenessState: "paused",
+                stopReason: "end_turn",
+              },
+            },
+          ]),
     ]) {
       await persistGatewaySessionLifecycleEvent({
         sessionKey: target.sessionKey,
@@ -76,8 +90,19 @@ it.for([
     const childSessionKey = "agent:main:dashboard:parked-child";
     const childSessionId = "parked-child";
     const childRevision = "parked-child-revision";
-    const recovery = ["retired-completed", "stopped", "interrupted"].includes(source);
-    const completed = source === "current-completed" || source === "retired-completed";
+    const recovery = [
+      "committed-interrupted",
+      "retired-completed",
+      "retired-message",
+      "nested-retired-message",
+      "stopped",
+      "lost",
+      "failed-delivery",
+      "interrupted",
+    ].includes(source);
+    const completed = ["current-completed", "retired-completed", "failed-delivery"].includes(
+      source,
+    );
     const child = createSubagentRunRecord({
       runId: childRunId,
       childSessionKey,
@@ -87,27 +112,41 @@ it.for([
       requesterAgentId: target.agentId,
       completionRequesterSessionId: target.sessionId,
       completionRequesterLifecycleRevision: lifecycleRevision,
-      expectsCompletionMessage: true,
+      expectsCompletionMessage: source !== "failed-delivery",
       endedAt: source === "interrupted" ? undefined : 110,
       outcome: completed ? { status: "ok" } : undefined,
       endedReason:
         source === "stopped" ? "subagent-killed" : completed ? "subagent-complete" : undefined,
-      pauseReason: completed || recovery ? undefined : "sessions_yield",
-      waitForMessage: source === "message" || source === "stale-requester" ? true : undefined,
-      requesterSettleWake: {
-        status: "pending",
-        attemptCount: 0,
-        requesterYieldBatch: true,
-        requesterRunId: source === "stale-requester" ? "older-root-run" : runId,
-        batchRunIds: [childRunId],
-      },
+      pauseReason:
+        completed || source === "stopped" || source === "interrupted"
+          ? undefined
+          : "sessions_yield",
+      waitForMessage: [
+        "message",
+        "committed-interrupted",
+        "retired-message",
+        "stale-requester",
+      ].includes(source)
+        ? true
+        : undefined,
+      delivery: source === "failed-delivery" ? { status: "failed" } : undefined,
+      requesterSettleWake:
+        source === "failed-delivery"
+          ? undefined
+          : {
+              status: "pending",
+              attemptCount: 0,
+              requesterYieldBatch: true,
+              requesterRunId: source === "stale-requester" ? "older-root-run" : runId,
+              batchRunIds: [childRunId],
+            },
     });
     subagentRuns.set(childRunId, child);
-    if (source === "retired-completed") {
+    if (source === "retired-completed" || source === "retired-message") {
       subagentRuns.retireCompletionAuthority(child);
     }
     const grandchildRunId = "parked-grandchild-run";
-    if (source === "nested-message") {
+    if (source === "nested-message" || source === "nested-retired-message") {
       subagentRuns.set(
         grandchildRunId,
         createSubagentRunRecord({
@@ -131,6 +170,9 @@ it.for([
           },
         }),
       );
+      if (source === "nested-retired-message") {
+        subagentRuns.retireCompletionAuthority(subagentRuns.get(grandchildRunId)!);
+      }
     }
     const resume = vi.spyOn(sessionEvents, "enqueueSessionEventForHost").mockReturnValue({
       accepted: Promise.resolve({ ok: true }),
@@ -140,32 +182,51 @@ it.for([
     });
     try {
       await persistRunningSessionsForRestart({ cfg });
-      expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toEqual({
-        queuedInputIds: [],
-      });
+      expect(loadExactSessionEntry(target)?.entry.resumeAfterRestart).toEqual(
+        source === "failed-delivery" ? undefined : { queuedInputIds: [] },
+      );
+      if (source === "lost") {
+        subagentRuns.delete(childRunId);
+      }
       for (let boot = 0; boot < 2; boot++) {
+        const warn = vi.fn();
         await resumeMarkedSessions({
           context: createContext([], () => cfg),
           signal: new AbortController().signal,
-          log: { warn() {} },
+          log: { warn },
         });
+        const parked = warn.mock.calls.filter(([message]) => message.includes("(yield-waiting)"));
+        expect(parked).toEqual(
+          [
+            "message",
+            "nested-message",
+            "nested-lost",
+            "stale-requester",
+            "current-completed",
+          ].includes(source)
+            ? [[expect.stringContaining(target.sessionKey)]]
+            : [],
+        );
         const restored = (await readSessionEntryReadOnlyInWorker(target))!;
         expect(restored.resumeAfterRestart).toBeUndefined();
         expect(restored.activeWriterRunId).toBe(runId);
-        if (source === "message" || source === "nested-message" || source === "current-completed") {
-          expect(restored.lifecycleRunId).toBe(runId);
-          expect(restored.status).toBeUndefined();
-          expect(restored.endedAt).toBe(120);
-        } else if (recovery) {
+        if (recovery) {
           expect(restored.lifecycleRunId).toBeUndefined();
           expect(restored.status).toBe("killed");
         } else {
-          expect(restored.lifecycleRunId).toBeUndefined();
-          expect(restored.status).toBe("failed");
-          expect(restored.lastRunError).toMatch(/wait|child|restart/i);
+          expect(restored.lifecycleRunId).toBe(runId);
+          expect(restored.status).toBeUndefined();
+          expect(restored.endedAt).toBe(120);
         }
+        expect(restored.lastRunError).toBeUndefined();
       }
       expect(resume).toHaveBeenCalledTimes(recovery ? 1 : 0);
+      if (recovery) {
+        expect(resume.mock.calls[0]?.[1]).toMatchObject({
+          sessionKey: target.sessionKey,
+          source: "restart",
+        });
+      }
     } finally {
       resume.mockRestore();
       subagentRuns.delete(childRunId);
@@ -174,36 +235,89 @@ it.for([
   }),
 );
 
-it.for(["committed", "yielded", "foreign", "missing"] as const)(
-  "recognizes committed interrupted settle input without replay (%s)",
+it.for(["archived", "done", "killed", "failed", "unset"] as const)(
+  "settles a cold %s restart marker once without restoring its transcript",
   (kind) =>
     withOpenClawTestState({ scenario: "minimal" }, async () => {
-      const target = {
-        agentId: "main",
-        sessionKey: "agent:main:dashboard:committed-settle",
-        sessionId: "committed-settle",
-      };
-      const runId = "announce:requester-settle:main:committed-settle:child";
-      replaceSessionEntrySync(target, { sessionId: target.sessionId, updatedAt: 100 });
-      if (kind !== "missing") {
-        await appendTranscriptMessage(target, {
+      const cfg = { agents: { entries: { main: {} } } };
+      setRuntimeConfigSnapshot(cfg);
+      const target = { agentId: "main", sessionKey: "agent:main:cold-restart" };
+      const sessionId = "cold-restart";
+      replaceSessionEntrySync(target, {
+        sessionId,
+        updatedAt: 1,
+        ...(kind === "archived"
+          ? { archivedAt: 2, status: "done" as const }
+          : kind === "unset"
+            ? {}
+            : { status: kind }),
+        lastRunId: "announce:requester-settle:old-child",
+      });
+      await appendTranscriptMessage(
+        { ...target, sessionId },
+        {
           message: {
             role: "user",
-            content: "Saved child result",
-            timestamp: 90,
-            idempotencyKey: `${runId}:user`,
-            provenance: {
-              kind: "inter_session",
-              sourceTool: kind === "foreign" ? "sessions_send" : "subagent_settle",
-            },
+            content: "Old child result",
+            timestamp: 1,
+            idempotencyKey: "announce:requester-settle:old-child:user",
+            provenance: { kind: "inter_session", sourceTool: "subagent_settle" },
           },
-        });
+        },
+      );
+      const marker =
+        kind === "archived"
+          ? { resumeAfterRestart: {} }
+          : { mainRestartRecovery: { cycleId: "old-cycle" } };
+      // Persist the stale historical shape: current writers already clear markers on archive.
+      runOpenClawAgentWriteTransaction(
+        (database) => {
+          const { db } = database;
+          db.prepare(
+            "UPDATE session_nodes SET entry_json = json_patch(entry_json, ?) WHERE session_key = ?",
+          ).run(JSON.stringify(marker), target.sessionKey);
+          db.prepare(`INSERT INTO session_transcript_cold_archives
+        (session_id, generation, archive_name, archive_sha256, event_count, raw_bytes,
+         archive_bytes, last_seq, archived_at, storage, archive_blob)
+        VALUES (?, 'generation', 'unavailable.zst', ?, 1, 1, 1, 0, 1, 'file', NULL)`).run(
+            sessionId,
+            "0".repeat(64),
+          );
+          retainSessionColdNavigationInTransaction(database, sessionId);
+        },
+        { agentId: "main" },
+      );
+      const warn = vi.fn();
+      const resume = vi.spyOn(sessionEvents, "enqueueSessionEventForHost");
+      try {
+        expect(await readSessionEntryReadOnlyInWorker(target)).toMatchObject(marker);
+        for (let restart = 0; restart < 2; restart++) {
+          await resumeMarkedSessions({
+            context: createContext([], () => cfg),
+            signal: new AbortController().signal,
+            log: { warn },
+          });
+          const entry = (await readSessionEntryReadOnlyInWorker(target))!;
+          expect(entry.resumeAfterRestart).toBeUndefined();
+          expect(entry.mainRestartRecovery).toBeUndefined();
+          expect(resume).not.toHaveBeenCalled();
+          expect(
+            warn.mock.calls.some(([message]) => message.includes("SessionTranscriptColdError")),
+          ).toBe(false);
+          if (restart === 0) {
+            warn.mockClear();
+          }
+        }
+        expect(warn).not.toHaveBeenCalled();
+        expect(
+          openOpenClawAgentDatabase({ agentId: "main" })
+            .db.prepare(
+              "SELECT archive_name FROM session_transcript_cold_archives WHERE session_id = ?",
+            )
+            .get(sessionId),
+        ).toEqual({ archive_name: "unavailable.zst" });
+      } finally {
+        resume.mockRestore();
       }
-      expect(
-        await hasInterruptedCommittedRequesterSettleInput(target, {
-          lifecycleRunId: runId,
-          ...(kind === "yielded" ? { endedAt: 120 } : { status: "interrupted" as const }),
-        }),
-      ).toBe(kind === "committed");
     }),
 );

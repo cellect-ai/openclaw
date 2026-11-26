@@ -22,6 +22,7 @@ import {
   finalizeWorktreeRemoval,
 } from "./run-lease.js";
 import { captureManagedWorktreeSnapshot } from "./snapshot-host.js";
+import { worktreeSnapshotBase } from "./snapshot-ref.js";
 import type {
   ManagedWorktreeRecord,
   WorktreeRegistryPredicate,
@@ -125,7 +126,7 @@ export async function evictManagedWorktree(params: {
                     "--no-commit-id",
                     "--name-only",
                     "-r",
-                    `${snapshotRef}^`,
+                    worktreeSnapshotBase(snapshotRef, snapshotRef),
                     snapshotRef,
                   ],
                   { signal: guard.signal, beforeRun },
@@ -137,7 +138,8 @@ export async function evictManagedWorktree(params: {
                   ["rev-parse", `${snapshotRef}^{commit}`],
                   { signal: guard.signal, beforeRun },
                 );
-                await accepted.prepareArchive?.(snapshotCommit);
+                const archive = await accepted.prepareArchive?.();
+                await archive?.(snapshotCommit);
               }
             },
           );

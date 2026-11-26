@@ -1,16 +1,33 @@
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
+import { readRestoredSessionTranscriptInWorker } from "./session-cold-storage-read.js";
 import type { SessionPreparedCompactionInput } from "./session-compaction-prepared.types.js";
-import { prepareSessionTranscriptHydration } from "./session-transcript-hydration.js";
+import { withSessionTranscriptReadSource } from "./session-transcript-read-source.js";
 
-/** Capture source custody for each short worker read; never retain a reader across inference. */
-export async function readPreparedSessionCompactionInWorker(
+/** Each call captures current source custody; a plan never retains a reader across inference. */
+export function readPreparedSessionCompactionInWorker(
   target: SessionTranscriptRuntimeTarget,
   operation: SessionPreparedCompactionInput["operation"],
   signal?: AbortSignal,
 ) {
-  const reader = prepareSessionTranscriptHydration(target, { compaction: true }, signal);
-  if (!reader.readCompaction) {
-    throw new Error("In-memory compaction uses its session actor");
-  }
-  return reader.readCompaction(operation);
+  return withSessionTranscriptReadSource(
+    target,
+    async (source) => {
+      source.assertCurrent();
+      const result = await readRestoredSessionTranscriptInWorker(source, () =>
+        source.owner.readPreparedCompaction(
+          {
+            target: { ...source.scope, sessionId: target.sessionId, sessionKey: target.sessionKey },
+            resolvedScope: source.resolved,
+            expectedIdentity: source.expectedIdentity,
+            operation,
+            caller: "compaction",
+          },
+          signal,
+        ),
+      );
+      source.assertCurrent();
+      return result;
+    },
+    signal,
+  );
 }

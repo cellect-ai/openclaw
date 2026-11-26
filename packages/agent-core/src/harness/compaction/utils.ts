@@ -4,7 +4,6 @@ import { asOptionalRecord as asRecord } from "@openclaw/normalization-core/recor
 import { sliceUtf16Safe, truncateUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import type { AgentMessage } from "../../types.js";
 import { createToolCallOccurrenceQueue } from "../session/tool-result-pairing.js";
-import type { FileOperations } from "../types.js";
 import { copyString } from "../utils/truncate.js";
 import {
   ELISION_MARKER_RESERVE_CHARS,
@@ -16,7 +15,6 @@ import {
   type ConversationTextVariant,
 } from "./conversation-serialization.js";
 
-export type { FileOperations } from "../types.js";
 export {
   MAX_SUMMARY_INPUT_CHARS,
   type BoundedConversation,
@@ -24,152 +22,18 @@ export {
   type ConversationTextVariant,
 } from "./conversation-serialization.js";
 
-const SAMPLED_TOOL_RESULT_MAX_CHARS = 500;
+export type { FileOperations } from "../types.js";
 
-function normalizeFileToolName(value: string): string {
-  const name = value.toLowerCase();
-  const separator = name.indexOf("__", name.startsWith("mcp__") ? 5 : 0);
-  return separator < 0 ? name : name.slice(separator + 2);
-}
-
-function addFilePaths(target: Set<string>, value: unknown): void {
-  for (const path of Array.isArray(value) ? value : []) {
-    if (typeof path === "string") {
-      target.add(path);
-    }
-  }
-}
-
-/** Create an empty file-operation accumulator. */
-export function createFileOps(): FileOperations {
-  return { read: new Set(), written: new Set(), edited: new Set() };
-}
-
-/** Restore file metadata recorded by an earlier compaction or branch summary. */
-export function mergeSummaryFileOperations(
-  fileOps: FileOperations,
-  details: { readFiles: string[]; modifiedFiles: string[] },
-): void {
-  addFilePaths(fileOps.read, details.readFiles);
-  addFilePaths(fileOps.edited, details.modifiedFiles);
-}
-
-export type FileOperationMessageFact = { read: string[]; written: string[]; edited: string[] };
-
-/** Exact file identities survive a row; message text and tool arguments do not. */
-export function collectFileOperationMessageFact(message: AgentMessage): FileOperationMessageFact {
-  const facts = { read: new Set<string>(), written: new Set<string>(), edited: new Set<string>() };
-  if (message.role === "toolResult") {
-    if (normalizeFileToolName(message.toolName) === "apply_patch") {
-      for (const result of [message, ...(Array.isArray(message.content) ? message.content : [])]) {
-        const summary = asRecord(asRecord(asRecord(result)?.details)?.summary);
-        addFilePaths(facts.written, summary?.added);
-        addFilePaths(facts.edited, summary?.modified);
-      }
-    }
-  } else if (message.role === "assistant") {
-    for (const call of message.content) {
-      if (call.type !== "toolCall") {
-        continue;
-      }
-      const args = asRecord(call.arguments);
-      const path = [args?.path, args?.file_path, args?.filePath].find(
-        (value): value is string => typeof value === "string",
-      );
-      if (path === undefined) {
-        continue;
-      }
-      const name = normalizeFileToolName(call.name);
-      if (name === "read") {
-        facts.read.add(path);
-      } else if (name === "write") {
-        facts.written.add(path);
-      } else if (name === "edit") {
-        facts.edited.add(path);
-      }
-    }
-  }
-  return { read: [...facts.read], written: [...facts.written], edited: [...facts.edited] };
-}
-
-export function extractFileOpsFromFacts(
-  facts: Iterable<FileOperationMessageFact>,
-  fileOps: FileOperations,
-): void {
-  for (const fact of facts) {
-    addFilePaths(fileOps.read, fact.read);
-    addFilePaths(fileOps.written, fact.written);
-    addFilePaths(fileOps.edited, fact.edited);
-  }
-}
-
-export function extractFileOpsFromMessage(message: AgentMessage, fileOps: FileOperations): void {
-  extractFileOpsFromFacts([collectFileOperationMessageFact(message)], fileOps);
-}
-
-export function extractFileOpsFromMessages(
-  messages: readonly AgentMessage[],
-  fileOps: FileOperations,
-): void {
-  for (const message of messages) {
-    extractFileOpsFromMessage(message, fileOps);
-  }
-}
-
-/** Compute sorted read-only and modified file lists from accumulated operations. */
-export function computeFileLists(fileOps: FileOperations): {
-  readFiles: string[];
-  modifiedFiles: string[];
-} {
-  const modified = new Set([...fileOps.edited, ...fileOps.written]);
-  const readOnly = [...fileOps.read].filter((f) => !modified.has(f)).toSorted();
-  const modifiedFiles = [...modified].toSorted();
-  return { readFiles: readOnly, modifiedFiles };
-}
-
-// File lists ratchet across compactions (prior summary entries merge into the
-// next accumulation), so an unbounded join grows without limit in long
-// sessions. Hard caps keep the model-visible section bounded per the
-// context-budget invariant; overflow collapses to a "...and N more" line.
-const MAX_FILE_OPS_LIST_CHARS = 900;
-
-function formatBoundedFileList(tag: string, files: string[], maxChars: number): string {
-  if (files.length === 0 || maxChars <= 0) {
-    return "";
-  }
-  const openTag = `<${tag}>\n`;
-  const closeTag = `\n</${tag}>`;
-  const lines: string[] = [];
-  let usedChars = openTag.length + closeTag.length;
-
-  for (let i = 0; i < files.length; i++) {
-    const line = `${files[i]}\n`;
-    const remaining = files.length - i - 1;
-    const overflowLine = remaining > 0 ? `...and ${remaining} more\n` : "";
-    const projected = usedChars + line.length + overflowLine.length;
-    if (projected > maxChars) {
-      const overflow = `...and ${files.length - i} more\n`;
-      if (usedChars + overflow.length <= maxChars) {
-        lines.push(overflow);
-      }
-      break;
-    }
-    lines.push(line);
-    usedChars += line.length;
-  }
-
-  return lines.length > 0 ? `${openTag}${lines.join("").trimEnd()}${closeTag}` : "";
-}
-
-/** Format file lists as bounded summary metadata tags. */
-export function formatFileOperations(readFiles: string[], modifiedFiles: string[]): string {
-  const sections = [
-    formatBoundedFileList("read-files", readFiles, MAX_FILE_OPS_LIST_CHARS),
-    formatBoundedFileList("modified-files", modifiedFiles, MAX_FILE_OPS_LIST_CHARS),
-  ].filter(Boolean);
-  // Both 900-character lists and their separators fit the 2,000-character section cap.
-  return sections.length > 0 ? `\n\n${sections.join("\n\n")}` : "";
-}
+export {
+  collectFileOperationMessageFact,
+  computeFileLists,
+  createFileOps,
+  extractFileOpsFromFacts,
+  extractFileOpsFromMessages,
+  formatFileOperations,
+  mergeSummaryFileOperations,
+  type FileOperationMessageFact,
+} from "./file-operations.js";
 
 /** Extract visible summary text without normalizing valid model output. */
 export function extractSummaryText(response: AssistantMessage): string | undefined {
@@ -181,6 +45,9 @@ export function extractSummaryText(response: AssistantMessage): string | undefin
 }
 
 const TOOL_RESULT_MAX_CHARS = 2000;
+// Tool output fills most of a long history; when the summary input is sampled,
+// results older than the newest entries keep this much of their head and tail.
+const SAMPLED_TOOL_RESULT_MAX_CHARS = 500;
 const IMPORTANT_TOOL_RESULT_TAIL =
   /(error|exception|failed|fatal|traceback|panic|stack trace|errno|exit code)/i;
 
@@ -235,43 +102,53 @@ function truncateForSummary(text: string, maxChars: number): string {
   return `${head}\n\n[... ${truncatedChars} more characters truncated]${tail ? `\n\n${tail}` : ""}`;
 }
 
+/** One block projection shared by payload serialization and detached token facts. */
+export function projectCompactionContentBlock(block: {
+  type: string;
+  content?: unknown;
+  text?: string;
+}): { text: string; omission?: string } {
+  let text = "";
+  if (
+    (block.type === "text" || block.type === "toolResult" || block.type === "tool_result") &&
+    block.text
+  ) {
+    text = block.text;
+  } else if (
+    (block.type === "toolResult" || block.type === "tool_result") &&
+    typeof block.content === "string"
+  ) {
+    text = block.content;
+  }
+  return {
+    text,
+    ...(block.type !== "text" && !text
+      ? {
+          omission:
+            block.type === "image"
+              ? "[image data omitted from summary input]"
+              : "[non-text data omitted from summary input]",
+        }
+      : {}),
+  };
+}
+
 /** Project summary content once so rendering and token accounting share omission facts. */
 export function getCompactionContent(
   content: string | Array<{ type: string; content?: unknown; text?: string }>,
 ): { text: string; omissionText: string } {
+  if (typeof content === "string") {
+    return { text: content, omissionText: "" };
+  }
   const omissions = new Set<string>();
-  const text =
-    typeof content === "string"
-      ? content
-      : content
-          .map((block) => {
-            let blockText = "";
-            if (
-              (block.type === "text" ||
-                block.type === "toolResult" ||
-                block.type === "tool_result") &&
-              block.text
-            ) {
-              blockText = block.text;
-            } else if (
-              (block.type === "toolResult" || block.type === "tool_result") &&
-              typeof block.content === "string"
-            ) {
-              blockText = block.content;
-            }
-            if (block.type !== "text" && !blockText) {
-              // This projection knows only what it omits, not whether a model processed it.
-              omissions.add(
-                block.type === "image"
-                  ? "[image data omitted from summary input]"
-                  : "[non-text data omitted from summary input]",
-              );
-            }
-            return blockText;
-          })
-          .filter(Boolean)
-          .join("\n");
-  return { text, omissionText: [...omissions].join("\n") };
+  const parts = content.map((block) => {
+    const projected = projectCompactionContentBlock(block);
+    if (projected.omission) {
+      omissions.add(projected.omission);
+    }
+    return projected.text;
+  });
+  return { text: parts.filter(Boolean).join("\n"), omissionText: [...omissions].join("\n") };
 }
 
 const MAX_OMISSION_MESSAGES = 8;
@@ -444,9 +321,14 @@ export function clearCompactionPendingAskSection(summary: string): string {
 
 /** Serialize LLM messages to plain text for summarization prompts. */
 export function serializeConversation(messages: Message[]): string {
-  return collectConversationEntries(messages)
-    .map(({ text }) => text.full)
-    .join(ENTRY_SEPARATOR);
+  const project = createConversationProjector();
+  const parts: string[] = [];
+  for (const message of messages) {
+    for (const text of project(message).parts) {
+      parts.push(text.full);
+    }
+  }
+  return parts.join(ENTRY_SEPARATOR);
 }
 
 // A sampled tool result names its call; long arguments keep their start.
@@ -460,11 +342,12 @@ function formatCallLabel(name: string, args: ReadonlyArray<readonly [string, str
         `${key}=${text.length > MAX_CALL_LABEL_ARGUMENT_CHARS ? `${truncateUtf16Safe(text, MAX_CALL_LABEL_ARGUMENT_CHARS)}...` : text}`,
     )
     .join(", ")})`;
-  return copyString(
+  const bounded =
     label.length > MAX_CALL_LABEL_CHARS
       ? `${truncateUtf16Safe(label, MAX_CALL_LABEL_CHARS)}...)`
-      : label,
-  );
+      : label;
+  // Detach bounded labels from potentially enormous argument strings, preserving UTF-16.
+  return copyString(bounded);
 }
 
 type ConversationProjectionState = { omissionMessages: number; callLabel?: string };

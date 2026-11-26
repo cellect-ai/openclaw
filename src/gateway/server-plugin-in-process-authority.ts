@@ -26,6 +26,7 @@ import {
 } from "./in-process-subagent-resume.js";
 import {
   projectOperatorScopesForMethod,
+  resolveAgentRuntimeCronScope,
   resolveLeastPrivilegeOperatorScopesForMethod,
 } from "./method-scopes.js";
 import { resolveGatewayOperatorRoleActor } from "./operator-role-policy.js";
@@ -44,6 +45,7 @@ import {
   runWithOperatorToolGatewayAuthority,
   runOutsideOperatorToolGatewayAuthority,
 } from "./operator-tool-gateway-authority.js";
+import { resolvePluginSessionWorkDispatch } from "./plugin-session-work-authority.js";
 import type { GatewayOperatorRoleActor } from "./server-methods/shared-types.js";
 import type {
   DispatchGatewayMethodInProcessOptions,
@@ -56,6 +58,7 @@ import {
   mergePluginRuntimeClientInternal,
   projectPluginRuntimeClientExecution,
 } from "./server-plugin-runtime-client.js";
+import { createSessionContinuationLifetime } from "./session-continuation-lifetime.js";
 import { resolveSessionRuntimeAuthority } from "./session-runtime-authority.js";
 import {
   cancelSubagentCompletionToolHandoff,
@@ -216,7 +219,7 @@ export function captureOperatorToolGatewayContinuationContextInternal(
         captured?.authority.signal,
         gatewayOwner && getGatewayContextLifetime(gatewayOwner).signal,
       ].filter((signal): signal is AbortSignal => Boolean(signal));
-      const lifetime = new AbortController();
+      const lifetime = createSessionContinuationLifetime(target, gatewayOwner);
       const release = () => {
         if (lifetime.signal.aborted) {
           return;
@@ -241,7 +244,6 @@ export function captureOperatorToolGatewayContinuationContextInternal(
         } else {
           resolved.assertSourceCurrent();
         }
-        lifetime.signal.throwIfAborted();
       };
       const runInScope = <T>(run: () => T): T => {
         assertCurrent();
@@ -333,6 +335,13 @@ export function resolveInProcessGatewayDispatch(
       `In-process gateway dispatch requires a gateway request scope or instance binding (method: ${method}).`,
     );
   }
+  const service = resolvePluginSessionWorkDispatch({
+    method,
+    params,
+    context,
+    scopedPluginId: scope?.pluginId,
+    pluginRuntimeOwnerId: options?.pluginRuntimeOwnerId,
+  });
   const operatorRunAuthority =
     selection?.operatorAuthority ??
     caller?.operatorAuthority ??
@@ -370,6 +379,9 @@ export function resolveInProcessGatewayDispatch(
     options.agentToolCaller?.agentId === caller.agentId &&
     options.agentToolCaller.sessionKey === caller.sessionKey;
   const assertInvocationCurrent = composeSessionSourceAssertion([
+    // Host-owned agent paths may omit the ambient invocation guard below, but
+    // none may outlive or broaden a recovered service operation's tool ceiling.
+    service?.assertCurrent,
     selection?.assertCurrent,
     runtimeAuthority?.assertCurrent,
     assertSettleWakeCurrent,
@@ -489,7 +501,16 @@ export function resolveInProcessGatewayDispatch(
     .getGatewayMethodRegistry?.()
     .getSessionAccess?.(method)?.allowOwnSessionScope;
   const syntheticScopeMode = options?.syntheticScopeMode;
+  const cronScope = agentRuntimeIdentity && resolveAgentRuntimeCronScope(method);
+  // Scheduling retains the initiating grant for the saved continuation, not only
+  // permission to edit its job. Other scoped cron calls need just cron authority.
+  const cronScopes = cronScope
+    ? ((method === "cron.add" || method === "cron.update" ? operatorScopes : undefined) ?? [
+        cronScope,
+      ])
+    : undefined;
   const requestedSyntheticScopes = (
+    (syntheticScopeMode === "minimum" ? cronScopes : undefined) ??
     options?.syntheticScopes ??
     (syntheticScopeMode === "exact"
       ? (operatorScopes ?? scope?.client?.connect.scopes)
@@ -676,6 +697,7 @@ export function resolveInProcessGatewayDispatch(
     assertSourceCurrent,
     assertInvocationCurrent,
     assertContextCurrent: composeSessionSourceAssertion([
+      service?.assertCurrent,
       selection?.assertCurrent,
       runtimeAuthority?.assertCurrent,
       assertSourceCurrent,

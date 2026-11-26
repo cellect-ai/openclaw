@@ -25,6 +25,7 @@ export function runWithMetadataMessageAdmission<T>(
 ): { value: T; pendingInputReceipt?: SessionPendingInputWorkerReceipt } {
   let transactionFacts: unknown;
   let pendingAuthorityChecked = false;
+  let freshInvitationChecked = false;
   const readAuthority = () => {
     const source = controls?.pendingInput?.facts;
     // Foreign custody keeps its original host owner's live assertion.
@@ -48,6 +49,8 @@ export function runWithMetadataMessageAdmission<T>(
     });
     if (check === "pending") {
       pendingAuthorityChecked = true;
+    } else if (controls?.mentionInvitation) {
+      freshInvitationChecked = true;
     }
   };
   const admit: MetadataWorkerAdmission = (stage) =>
@@ -59,6 +62,9 @@ export function runWithMetadataMessageAdmission<T>(
           kind: "session-message",
           domainFacts: request.facts,
           ...(stage === "commit" && pendingAuthorityChecked ? { check: "pending" } : {}),
+          ...(stage === "commit" && !pendingAuthorityChecked && freshInvitationChecked
+            ? { check: "fresh" }
+            : {}),
           ...(stage === "commit" && pendingAuthorityChecked ? { authority: readAuthority() } : {}),
         },
       });

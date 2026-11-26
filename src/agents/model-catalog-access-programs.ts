@@ -130,6 +130,47 @@ export function resolveCyberAccessProgramForProvider(
     : { program: "standard", notApplied: program };
 }
 
+const CYBER_ACCESS_PROGRAM_NOTICE_LIMIT = 1_000;
+const claimedCyberAccessProgramNotices = new Set<string>();
+
+/** One notice per scope, program, and model per process; a restart may repeat it once. */
+function claimCyberAccessProgramNotice(key: string): boolean {
+  if (claimedCyberAccessProgramNotices.has(key)) {
+    return false;
+  }
+  if (claimedCyberAccessProgramNotices.size >= CYBER_ACCESS_PROGRAM_NOTICE_LIMIT) {
+    claimedCyberAccessProgramNotices.clear();
+  }
+  claimedCyberAccessProgramNotices.add(key);
+  return true;
+}
+
+/** Applies a turn's Access to its provider and reports a non-OpenAI downgrade once per scope. */
+export function resolveTurnCyberAccessProgram(params: {
+  program: CyberAccessProgram | undefined;
+  provider: string;
+  model: string;
+  noticeScope: string;
+  notify?: (notice: string) => void;
+}): CyberAccessProgram | undefined {
+  const { program, notApplied } = resolveCyberAccessProgramForProvider(
+    params.program,
+    params.provider,
+  );
+  const model = `${params.provider}/${params.model}`;
+  if (
+    notApplied &&
+    params.notify &&
+    claimCyberAccessProgramNotice(`${params.noticeScope}\0${notApplied}\0${model}`)
+  ) {
+    const label = notApplied === "daybreak_red" ? "Daybreak Red" : "Daybreak Blue";
+    params.notify(
+      `${label} applies only to OpenAI models, so ${model} used Standard access. Your ${label} choice is kept for when this chat returns to an OpenAI model.`,
+    );
+  }
+  return program;
+}
+
 /** The application baseline and configured inheritance do not grant Daybreak entitlement. */
 export function projectModelCatalogAccessPrograms(
   params: Parameters<typeof resolveModelCatalogAccessPrograms>[0] & {

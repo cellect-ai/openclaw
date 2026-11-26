@@ -9,8 +9,8 @@ import { getGatewayToolCallerIdentity } from "../../agents/tools/gateway-caller-
 import { readChannelContextGatewayContextResolver } from "../../channels/message-access/admission-evidence.js";
 import { resolveGroupSessionKey } from "../../config/sessions/group.js";
 import { getAgentRunContext } from "../../infra/agent-run-registry.js";
-import { resolveWorkshopSkillsDir } from "../../skills/workshop/skills-root.js";
-import type { SkillWorkshopWorkspaceAuthoring } from "../../skills/workshop/workspace-authoring.types.js";
+import { resolveWorkshopSkillsDir } from "../../skills/workshop-host/skills-root.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../../skills/workshop-host/workspace-authoring.types.js";
 import type { MsgContext } from "../templating.js";
 
 /** The explicit native tool policy grants only this agent's Workshop, never role or profile skills. */

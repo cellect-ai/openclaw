@@ -35,13 +35,13 @@ export function createUserTurnProcessingCompletion(
       const pendingInput = readPendingInput();
       return pendingInput ? pendingInput.run(run) : run();
     },
-    finishPendingInput: (disposition: "cancelled" | "interrupted") => {
+    finishPendingInput: (disposition: "cancelled" | "interrupted", userInitiated?: true) => {
       const pendingInput = readPendingInput();
       if (pendingInput) {
-        pendingInput.finish(disposition);
+        pendingInput.finish(disposition, userInitiated);
       } else {
         for (const source of sources ?? []) {
-          source.finishPendingInput?.(disposition);
+          source.finishPendingInput?.(disposition, userInitiated);
         }
       }
     },
@@ -133,16 +133,4 @@ export function createUserTurnProcessingCompletion(
       }
     },
   };
-}
-
-/** Observer failures are diagnostic and cannot replace an accepted input's outcome. */
-export function notifyUserTurnObserver(
-  observer: () => void | Promise<void>,
-  onError: (error: unknown) => void,
-): void {
-  try {
-    void Promise.resolve(observer()).catch(onError);
-  } catch (error) {
-    onError(error);
-  }
 }

@@ -96,25 +96,21 @@ describe("readStringArrayParam", () => {
 
 describe("readNumberParam", () => {
   it("parses numeric strings", () => {
-    const params = { messageId: "42" };
-    expect(readNumberParam(params, "messageId")).toBe(42);
+    expect(readNumberParam({ messageId: "42" }, "messageId")).toBe(42);
   });
 
   it("keeps partial parse behavior by default", () => {
     // Some legacy channel tools pass identifiers with numeric prefixes; strict
     // parsing is opt-in for new bounded fields.
-    const params = { messageId: "42abc" };
-    expect(readNumberParam(params, "messageId")).toBe(42);
+    expect(readNumberParam({ messageId: "42abc" }, "messageId")).toBe(42);
   });
 
   it("rejects partial numeric strings when strict is enabled", () => {
-    const params = { messageId: "42abc" };
-    expect(readNumberParam(params, "messageId", { strict: true })).toBeUndefined();
+    expect(readNumberParam({ messageId: "42abc" }, "messageId", { strict: true })).toBeUndefined();
   });
 
   it("truncates when integer is true", () => {
-    const params = { messageId: "42.9" };
-    expect(readNumberParam(params, "messageId", { integer: true })).toBe(42);
+    expect(readNumberParam({ messageId: "42.9" }, "messageId", { integer: true })).toBe(42);
   });
 
   it("accepts only positive safe integers when positiveInteger is true", () => {

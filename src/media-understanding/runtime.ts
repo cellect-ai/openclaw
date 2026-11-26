@@ -2,8 +2,14 @@
 // structured extraction calls outside normal channel message handling.
 import path from "node:path";
 import { kindFromMime, mimeTypeFromFilePath } from "@openclaw/media-core/mime";
+import type { ProviderModelRef } from "@openclaw/model-catalog-core/model-catalog-refs";
 import { hasHttpUrlPrefix } from "@openclaw/net-policy/url-protocol";
+import {
+  findDecisionReason,
+  normalizeDecisionReason,
+} from "../../packages/media-understanding-common/src/format.js";
 import { resolveAgentDir, resolveDefaultAgentDir } from "../agents/agent-scope.js";
+import { resolveImageCompressionModelPolicy } from "../agents/image-compression-policy.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { withGuardedFetchRequestAuthority } from "../infra/net/fetch-request-authority.js";
 import { withCommandProcessScope } from "../process/exec-spawn.js";
@@ -20,11 +26,7 @@ import {
   normalizeMediaProviderId,
 } from "./provider-registry.js";
 import { resolveMaxBytes, resolveMediaRuntimeTimeoutMs, resolveModelEntries } from "./resolve.js";
-import {
-  findDecisionReason,
-  normalizeDecisionReason,
-  type MediaRequestOverrides,
-} from "./runner.entries.js";
+import type { MediaRequestOverrides } from "./runner.entries.js";
 import {
   buildProviderRegistry,
   createMediaAttachmentCache,
@@ -113,6 +115,20 @@ export async function runMediaUnderstandingFile(
 }
 
 async function runFile(
+  params: RunMediaUnderstandingFileParams,
+  request: MediaRequestOverrides,
+  execution?: MediaExecutionContext,
+): Promise<RunMediaUnderstandingFileResult> {
+  const run = () => runFileInScope(params, request, execution);
+  return execution
+    ? withGuardedFetchRequestAuthority(
+        () => assertMediaExecutionCurrent(execution),
+        () => withCommandProcessScope(run, execution.signal),
+      )
+    : run();
+}
+
+async function runFileInScope(
   params: RunMediaUnderstandingFileParams,
   request: MediaRequestOverrides,
   execution?: MediaExecutionContext,
@@ -283,11 +299,13 @@ export async function describePreparedImageWithModel(
   const image = await optimizeImageDescriptionInput({
     ...params.image,
     maxBytes: MEDIA_CAPABILITY_DEFAULTS.image.maxBytes,
-    cfg: params.cfg,
-    provider: params.provider,
-    model: params.model,
-    agentDir,
-    workspaceDir: params.workspaceDir,
+    modelPolicy: await resolveImageCompressionModelPolicy({
+      cfg: params.cfg,
+      provider: params.provider,
+      model: params.model,
+      agentDir,
+      workspaceDir: params.workspaceDir,
+    }),
   });
   assertMediaExecutionCurrent(execution);
   return await describeImage({
@@ -347,8 +365,9 @@ export async function extractStructuredWithModel(params: ExtractStructuredWithMo
 
 export async function describeVideoFile(
   params: DescribeVideoFileParams,
+  execution?: MediaExecutionContext,
 ): Promise<RunMediaUnderstandingFileResult> {
-  return await runMediaUnderstandingFile({ ...params, capability: "video" });
+  return await runFile({ ...params, capability: "video" }, {}, execution);
 }
 
 /** Prepares the largest input that any configured transcription fallback can accept. */
@@ -377,23 +396,28 @@ export async function resolveAudioInputBudget(params: {
   };
 }
 
+function audioRequest(params: TranscribeAudioFileParams): MediaRequestOverrides {
+  return {
+    prompt: params.prompt?.trim() || params.prompt || undefined,
+    language: params.language || undefined,
+  };
+}
+
 export async function transcribeAudioFile(
   params: TranscribeAudioFileParams,
   execution?: MediaExecutionContext,
 ): Promise<RunMediaUnderstandingFileResult> {
-  const run = () =>
-    runFile(
-      { ...params, capability: "audio" },
-      {
-        prompt: params.prompt?.trim() || params.prompt || undefined,
-        language: params.language || undefined,
-      },
-      execution,
-    );
-  return execution
-    ? withGuardedFetchRequestAuthority(
-        () => assertMediaExecutionCurrent(execution),
-        () => withCommandProcessScope(run, execution.signal),
-      )
-    : run();
+  return await runFile({ ...params, capability: "audio" }, audioRequest(params), execution);
+}
+
+/** `infer audio transcribe` / `infer video describe --model`: only the requested model receives the file. */
+export async function runMediaFileWithModel(
+  params: TranscribeAudioFileParams & {
+    capability: "audio" | "video";
+    modelOverride: ProviderModelRef;
+  },
+  execution?: MediaExecutionContext,
+): Promise<RunMediaUnderstandingFileResult> {
+  const request = { ...audioRequest(params), modelOverride: params.modelOverride };
+  return await runFile(params, request, execution);
 }

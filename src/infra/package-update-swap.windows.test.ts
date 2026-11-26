@@ -20,7 +20,7 @@ const restorePackageRoot = packageFilesystem.restoreNpmPackageRoot;
 const movePackageRoot = packageFilesystem.movePackageRoot;
 let wait: ReturnType<typeof vi.fn<(ms: number) => Promise<void>>>;
 beforeEach(() => {
-  // Select both Windows publication and rename policy without changing fs-safe's native platform.
+  // Select the Windows rename policy without changing fs-safe's native platform.
   publishWithoutPathExchange();
   vi.spyOn(packageFilesystem, "backupNpmPackageRoot").mockImplementation(
     (source, destination, assertCurrent, warnings) =>

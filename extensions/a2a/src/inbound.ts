@@ -152,6 +152,7 @@ export async function dispatchA2aInbound(params: {
   deliverQueuedReply.ownsCompletion = (channel) => channel === "a2a";
 
   const activeRun = activeRuns.get(route.sessionKey);
+  const activeRunFinalsStart = activeRun?.finals.length ?? 0;
   if (!activeRun) {
     activeRuns.set(route.sessionKey, run);
   }
@@ -211,9 +212,8 @@ export async function dispatchA2aInbound(params: {
         "A2A channel accepted the turn without dispatching it",
       );
     } else if (dispatch.dispatchResult.deferredToActiveRun === "steer" && activeRun) {
-      const from = activeRun.finals.length;
       const settleSteered = (completion: RunCompletion) =>
-        settle(activeRun.finals.slice(from), completion);
+        settle(activeRun.finals.slice(activeRunFinalsStart), completion);
       if (activeRun.completion) {
         await settleSteered(activeRun.completion);
       } else {

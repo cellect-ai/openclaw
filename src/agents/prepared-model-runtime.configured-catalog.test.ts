@@ -736,11 +736,63 @@ it.each([
   expect(rows[0]).toMatchObject({
     name: "Configured",
     baseUrl: custom ? "https://custom.fixture.invalid/v1" : "https://catalog.fixture.invalid/v1",
-    inference: custom ? { chat: false } : inference,
   });
-  if (custom) {
-    expect(rows[0]!.inference).not.toHaveProperty("decision");
-  }
+  // A different route loses Decision metadata but keeps an explicit chat veto.
+  expect(rows[0]!.inference).toEqual(custom ? (chat ? undefined : { chat: false }) : inference);
+});
+
+it("keeps typed-only manifest rows after live chat discovery acquires their provider", () => {
+  const typed = {
+    id: "typed",
+    name: "Typed",
+    inference: {
+      chat: false as const,
+      decision: { protocol: "fixture", input: ["text" as const] },
+    },
+  };
+  const metadata = createPluginMetadataSnapshotFixture({
+    plugins: [
+      {
+        id: "fixture",
+        providers: ["fixture"],
+        modelCatalog: { providers: { fixture: { models: [typed] } } },
+      },
+    ],
+  });
+  const config: OpenClawConfig = { agents: { defaults: { decisionModel: "fixture/typed" } } };
+  const registry = ModelRegistry.create(AuthStorage.inMemory({}), "captured:typed-acquired", {
+    config,
+    includePluginCatalogs: false,
+    pluginMetadataSnapshot: metadata,
+  });
+  const captured = captureRegistry(registry, config, metadata);
+  const project = createPreparedModelCatalogProjection({
+    agentFacts: {
+      input: { config },
+      configuredModelRefs: [],
+      configuredRuntimeModels: [],
+      runtimeCapabilityModels: [],
+      credentials: {},
+    } as unknown as Parameters<typeof createPreparedModelCatalogProjection>[0]["agentFacts"],
+    normalizeProvider: (provider) => provider,
+    catalogFacts: captured,
+    pluginGeneration: {
+      pluginMetadataSnapshot: metadata,
+    } as Parameters<typeof createPreparedModelCatalogProjection>[0]["pluginGeneration"],
+  });
+  // Live discovery succeeded and lists only conversational rows for this provider.
+  const chat = { provider: "fixture", id: "chat", name: "Chat" };
+  const projected = project({
+    catalog: {
+      entries: [chat],
+      routeVariants: [chat],
+      providerOutcomes: [{ provider: "fixture", status: "ready" }],
+    },
+    providers: new Map([["fixture", {}]]) as never,
+  });
+  const rows = projected.entries.filter((entry) => entry.id === "typed");
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.inference).toMatchObject({ chat: false });
 });
 
 it("keeps typed-only manifest rows after live chat discovery acquires their provider", () => {

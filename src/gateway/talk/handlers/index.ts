@@ -5,14 +5,12 @@ import {
   errorShape,
   missingScopeErrorShape,
   normalizeUiAppearancePreference,
-  type TalkCatalogParams,
   type TalkSpeakParams,
   UI_APPEARANCE_PREFERENCE_KEYS,
-  validateTalkCatalogParams,
   validateTalkConfigParams,
   validateTalkSpeakParams,
 } from "../../../../packages/gateway-protocol/src/index.js";
-import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
+
 import { projectConfigOntoRuntimeSourceSnapshot } from "../../../config/config.js";
 import { redactConfigObject } from "../../../config/redact-snapshot.js";
 import {
@@ -32,7 +30,6 @@ import {
   isSecretOwnerAvailable,
 } from "../../../secrets/runtime-degraded-state.js";
 import { getCanonicalUserPreferences } from "../../../state/user-preferences.js";
-import { resolveTalkSessionAgentId } from "../../../talk/agent-target.js";
 import {
   projectInternalRealtimeVoicePublicConfig,
   projectInternalRealtimeVoicePublicProjection,
@@ -45,41 +42,35 @@ import { canonicalizeSpeechProviderId, getSpeechProvider } from "../../../tts/pr
 import { withSpeakerSelectionFallbackCompat } from "../../../tts/speaker.js";
 import { CODE_HEAVY_SPOKEN_FALLBACK, isCodeHeavySpeechText } from "../../../tts/speech-text.js";
 import { synthesizeTalkSpeech } from "../../../tts/tts-synthesis.js";
-import { type TtsDirectiveOverrides } from "../../../tts/tts.js";
+import type { TtsDirectiveOverrides } from "../../../tts/tts.js";
 import { ADMIN_SCOPE, READ_SCOPE, TALK_SECRETS_SCOPE } from "../../operator-scopes.js";
 import { respondUnavailable } from "../../server-methods/response.js";
 import { inferSpeechMimeType } from "../../server-methods/speech-mime.js";
 import type { GatewayRequestHandlers } from "../../server-methods/types.js";
 import { assertValidParams } from "../../server-methods/validation.js";
-import { getSessionRowProjection } from "../../session-row-projection-access.js";
-import { withPreparedSessionResolve } from "../../sessions-resolve.js";
 import { mintTalkBindingCapability } from "../../talk-binding-capability.js";
 import { resolveMatrixTalkBinding } from "../../talk-matrix-binding.js";
 import { formatForLog } from "../../ws-log.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
-import type { TalkSpeakReason } from "./catalog.js";
-import {
-  buildTalkTtsConfig,
-  readTalkCatalog,
-  resolveTalkVoiceId,
-  withTalkBaseTtsSpeakerSelectionCompat,
-} from "./catalog.js";
+import { talkCatalogHandler } from "./catalog.js";
 import { talkClientHandlers } from "./client.js";
 import { talkSessionHandlers } from "./session.js";
-import { talkVoicePreviewHandlers } from "./voice-preview.js";
+import {
+  buildTalkTtsConfig,
+  resolveTalkVoiceId,
+  withTalkBaseTtsSpeakerSelectionCompat,
+  type TalkSpeakReason,
+} from "./speech-config.js";
 import { talkVoiceHandlers } from "./voice.js";
+import { talkVoicePreviewHandlers } from "./voice-preview.js";
 
-type TalkSpeakErrorDetails = {
-  reason: TalkSpeakReason;
-  fallbackEligible: boolean;
-};
-
+type TalkSpeakReasonWithFallback = TalkSpeakReason | "method_unavailable";
 function canReadTalkSecrets(client: { connect?: { scopes?: string[] } } | null): boolean {
   const scopes = client?.connect?.scopes ?? [];
   return scopes.includes(ADMIN_SCOPE) || scopes.includes(TALK_SECRETS_SCOPE);
 }
 
-function isFallbackEligibleTalkReason(reason: TalkSpeakReason): boolean {
+function isFallbackEligibleTalkReason(reason: TalkSpeakReasonWithFallback): boolean {
   return (
     reason === "talk_unconfigured" ||
     reason === "talk_provider_unsupported" ||
@@ -88,11 +79,12 @@ function isFallbackEligibleTalkReason(reason: TalkSpeakReason): boolean {
 }
 
 function talkSpeakError(reason: TalkSpeakReason, message: string) {
-  const details: TalkSpeakErrorDetails = {
-    reason,
-    fallbackEligible: isFallbackEligibleTalkReason(reason),
-  };
-  return errorShape(ErrorCodes.UNAVAILABLE, message, { details });
+  return errorShape(ErrorCodes.UNAVAILABLE, message, {
+    details: {
+      reason,
+      fallbackEligible: isFallbackEligibleTalkReason(reason),
+    },
+  });
 }
 
 function resolveTalkSpeed(params: TalkSpeakParams): number | undefined {
@@ -384,92 +376,7 @@ export const talkHandlers: GatewayRequestHandlers = {
   },
   ...talkSessionHandlers,
   ...talkClientHandlers,
-  "talk.catalog": async ({ params, respond, context, client }) => {
-    const catalogParams = params ?? {};
-    if (!assertValidParams(catalogParams, validateTalkCatalogParams, "talk.catalog", respond)) {
-      return;
-    }
-
-    try {
-      const config = context.getRuntimeConfig();
-      const respondCatalog = (resolvedParams: TalkCatalogParams) => {
-        const catalog = readTalkCatalog(context, config, resolvedParams);
-        if (catalog) {
-          respond(true, catalog, undefined);
-        } else {
-          respond(
-            false,
-            undefined,
-            errorShape(ErrorCodes.UNAVAILABLE, "Talk catalog is warming; retry shortly", {
-              retryable: true,
-              retryAfterMs: 250,
-              details: { reason: "talk-catalog-warming" },
-            }),
-          );
-        }
-      };
-      if (!catalogParams.sessionKey) {
-        respondCatalog(catalogParams);
-        return;
-      }
-      const projection = getSessionRowProjection(context);
-      if (!projection) {
-        respond(
-          false,
-          undefined,
-          errorShape(ErrorCodes.INVALID_REQUEST, "Session rows are initializing; try again"),
-        );
-        return;
-      }
-      const agentId = resolveTalkSessionAgentId(config, catalogParams.sessionKey);
-      const resolveStarted = Date.now();
-      await withPreparedSessionResolve(
-        {
-          projection,
-          client,
-          isCurrent: () => getSessionRowProjection(context) === projection,
-          p: {
-            key: catalogParams.sessionKey,
-            agentId,
-            includeGlobal: true,
-            includeUnknown: true,
-          },
-        },
-        (session) => {
-          if (!session.ok) {
-            respond(false, undefined, session.error);
-          } else if ("missing" in session || "ambiguous" in session) {
-            respond(
-              false,
-              undefined,
-              errorShape(
-                ErrorCodes.INVALID_REQUEST,
-                `No session found: ${catalogParams.sessionKey}`,
-              ),
-            );
-          } else {
-            // Disclosure stays inside the projection's live authorization callback.
-            respondCatalog({ ...catalogParams, sessionKey: session.key });
-          }
-        },
-      );
-      const resolveMs = Date.now() - resolveStarted;
-      if (resolveMs >= 1_000) {
-        context.logGateway?.warn(`talk.catalog sessionResolve elapsedMs=${resolveMs}`);
-      }
-    } catch (err) {
-      respond(
-        false,
-        undefined,
-        errorShape(
-          err instanceof AgentSelectionRequiredError
-            ? ErrorCodes.INVALID_REQUEST
-            : ErrorCodes.UNAVAILABLE,
-          formatForLog(err),
-        ),
-      );
-    }
-  },
+  "talk.catalog": talkCatalogHandler,
   "talk.config": async ({ params, respond, client, context }) => {
     if (!assertValidParams(params, validateTalkConfigParams, "talk.config", respond)) {
       return;
@@ -633,4 +540,3 @@ export const talkHandlers: GatewayRequestHandlers = {
     }
   },
 };
-/* oxlint-disable max-lines -- TODO: split this grandfathered oversized file. */

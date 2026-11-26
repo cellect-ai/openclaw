@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-import { createAiTransportHost, getAiTransportHost, runWithAiTransportHost } from "@openclaw/ai";
+import { configureAiTransportHost, getAiTransportHost } from "@openclaw/ai";
 import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
 import { stableStringify } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
@@ -35,15 +36,22 @@ it.each([
   "failed-repair",
   "deferred",
   "deferred-internal",
+  "deferred-after-tool",
+  "deferred-exhausted",
+  "deferred-delivered",
 ] as const)(
   "preserves Responses replay across a cold runner reopen (%s)",
   async (mode) => {
     const conflictingReplay = mode !== "healthy" && mode !== "legacy";
     const deferred = mode.startsWith("deferred");
+    const unsafe = mode === "deferred-after-tool";
+    const exhausted = mode === "deferred-exhausted";
+    const delivered = mode === "deferred-delivered";
     await withOpenClawTestState({ label: "responses-cold-prefix" }, async (state) => {
       const sessionId = "responses-cold-prefix";
       const sessionKey = "agent:main:" + sessionId;
       const model = "gpt-5-cold-prefix-fixture";
+      const effectsFile = state.path("tool-effects.txt");
       const pluginDir = state.path("plugins", "cache-proof");
       writeTempPlugin({
         dir: state.path("plugins"),
@@ -54,7 +62,7 @@ it.each([
           contracts: { tools: ["cache_probe"] },
         },
         body: `module.exports = { id: "cache-proof", register(api) {
-      api.registerTool({ name: "cache_probe", label: "Cache probe", description: "Return a synthetic record.", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "synthetic tool result" }] }) });
+      api.registerTool({ name: "cache_probe", label: "Cache probe", description: "Return a synthetic record.", parameters: { type: "object", properties: {} }, execute: async () => { require("node:fs").appendFileSync(${JSON.stringify(effectsFile)}, "effect\\n"); return { content: [{ type: "text", text: "synthetic tool result" }] }; } });
     }};`,
       });
       const config = cacheRunnerConfig({
@@ -93,7 +101,7 @@ it.each([
       const history = new Map<string, unknown[]>();
       let turnRequests = 0;
       let conflicts = 0;
-      const transportHost = createAiTransportHost({
+      configureAiTransportHost({
         ...host,
         logInfo,
         buildModelFetch: () => async (input, init) => {
@@ -109,9 +117,12 @@ it.each([
           if (
             conflictingReplay &&
             ((mode === "failed-repair" && requests.length === 5) ||
+              (unsafe && requests.length === 5) ||
+              (exhausted && requests.length === 5) ||
+              // Only cold replay resends this ciphertext; the repair drops rejected reasoning.
               payload.input.some((value) => {
                 const item = value as Record<string, unknown>;
-                return item.id === "fc_response_1";
+                return !unsafe && item.encrypted_content === "encrypted_response_1";
               }))
           ) {
             conflicts++;
@@ -152,7 +163,9 @@ it.each([
           }
           const comparable = effectiveInput.map((value) => {
             const item = value as Record<string, unknown>;
+            // Provider item IDs render no tokens; cold replay omits unverifiable ones.
             return item.type === "function_call" ||
+              item.type === "reasoning" ||
               (item.type === "message" && item.role === "assistant")
               ? omitWireFields(item, ["id", "status"])
               : item;
@@ -169,6 +182,7 @@ it.each([
               type: "reasoning",
               id: "rs_" + id,
               summary: [],
+              encrypted_content: "encrypted_" + id,
             },
             ++turnRequests < 3
               ? {
@@ -180,7 +194,7 @@ it.each([
                 }
               : responseMessage("msg_" + id, "synthetic answer"),
           ];
-          // A provider-owned empty message precedes saved reasoning in the last warm turn.
+          // A provider-owned empty message precedes encrypted reasoning in the last warm turn.
           if (requests.length === 1) {
             output.unshift(responseMessage("msg_empty", ""));
           }
@@ -206,118 +220,160 @@ it.each([
           );
         },
       });
-      // Lazy provider initialization may replace the process default during a cold reopen.
-      await runWithAiTransportHost(transportHost, async () => {
-        try {
-          // Hook/skill refresh and warm reuse are covered by embedded-agent-runner.prompt-cache.test.ts.
-          for (let turn = 1; turn <= (conflictingReplay ? 3 : 2); turn++) {
-            turnRequests = 0;
-            if (turn > 1) {
-              clearEmbeddedSessionPromptStates([sessionId]);
-              await closeOpenClawAgentDatabasesAsync(state.stateDir);
-              cleanupSessionResources(sessionId);
-            }
-            const runId = sessionId + "-" + turn;
-            const admission = prepareSystemAgentRunAdmission(
+      try {
+        // Hook/skill refresh and warm reuse are covered by embedded-agent-runner.prompt-cache.test.ts.
+        for (let turn = 1; turn <= (conflictingReplay ? 3 : 2); turn++) {
+          turnRequests = 0;
+          const deliveredBlocks: string[] = [];
+          if (turn > 1) {
+            clearEmbeddedSessionPromptStates([sessionId]);
+            await closeOpenClawAgentDatabasesAsync(state.stateDir);
+            cleanupSessionResources(sessionId);
+          }
+          const runId = sessionId + "-" + turn;
+          const admission = prepareSystemAgentRunAdmission(
+            config,
+            runId,
+            "main",
+            "cold-prefix-proof",
+          );
+          const target =
+            mode === "deferred-internal" && turn === 3
+              ? await prepareInternalSessionEffectsSession({
+                  agentId: "main",
+                  runId,
+                  source: sessionTarget,
+                  storePath: sessionTarget.storePath,
+                  cwd: state.workspaceDir,
+                })
+              : sessionTarget;
+          const recorder = createUserTurnTranscriptRecorder({
+            target: { ...target, sessionEntry: undefined },
+            input: {
+              text: "visible turn " + turn,
+              timestamp: turn,
+              idempotencyKey: runId + ":user",
+            },
+          });
+          try {
+            const run = runEmbeddedAgent({
+              userTurnTranscriptRecorder: recorder,
+              preparedRunAdmission: admission,
+              agentId: "main",
+              sessionId: target.sessionId,
+              sessionKey: target.sessionKey,
+              sessionTarget: target,
+              agentDir: state.agentDir(),
+              workspaceDir: state.workspaceDir,
               config,
+              provider: "openai",
+              model,
+              agentHarnessRuntimeOverride: "openclaw",
+              modelSelectionLocked: true,
+              codeModeOverride: false,
+              thinkLevel: "off",
+              toolsAllow: ["cache_probe"],
               runId,
-              "main",
-              "cold-prefix-proof",
-            );
-            const target =
-              mode === "deferred-internal" && turn === 3
-                ? await prepareInternalSessionEffectsSession({
-                    agentId: "main",
-                    runId,
-                    source: sessionTarget,
-                    storePath: sessionTarget.storePath,
-                    cwd: state.workspaceDir,
-                  })
-                : sessionTarget;
-            const recorder = createUserTurnTranscriptRecorder({
-              target: { ...target, sessionEntry: undefined },
-              input: {
-                text: "visible turn " + turn,
-                timestamp: turn,
-                idempotencyKey: runId + ":user",
-              },
+              timeoutMs: 60000,
+              prompt: "visible turn " + turn,
+              ...(delivered
+                ? {
+                    blockReplyChunking: { minChars: 1, maxChars: 16 },
+                    onBlockReply: async (payload: { text?: string }) => {
+                      if (payload.text) {
+                        deliveredBlocks.push(payload.text);
+                      }
+                    },
+                    resolveReplyDelivery: async () =>
+                      deliveredBlocks.length ? ("delivered" as const) : ("missing" as const),
+                  }
+                : {}),
             });
-            try {
-              const run = runEmbeddedAgent({
-                userTurnTranscriptRecorder: recorder,
-                preparedRunAdmission: admission,
-                agentId: "main",
-                sessionId: target.sessionId,
-                sessionKey: target.sessionKey,
-                sessionTarget: target,
-                agentDir: state.agentDir(),
-                workspaceDir: state.workspaceDir,
-                config,
-                provider: "openai",
-                model,
-                agentHarnessRuntimeOverride: "openclaw",
-                modelSelectionLocked: true,
-                codeModeOverride: false,
-                thinkLevel: "off",
-                toolsAllow: ["cache_probe"],
-                runId,
-                timeoutMs: 60000,
-                prompt: "visible turn " + turn,
-              });
-              if (mode === "failed-repair" && turn === 2) {
-                await expect(run).rejects.toMatchObject({ code: "item_conflict" });
-              } else if (deferred && turn === 2) {
-                expect((await run).meta.error).toBeDefined();
-              } else {
-                expect((await run).meta.error).toBeUndefined();
+            if (mode === "failed-repair" && turn === 2) {
+              await expect(run).rejects.toMatchObject({ code: "item_conflict" });
+            } else if ((unsafe || exhausted || delivered) && turn === 2) {
+              if (delivered) {
+                await run;
+                expect(deliveredBlocks.join(" ")).toContain("Already started.");
               }
-              expect(requests).toHaveLength(
-                deferred
-                  ? [3, 4, 7][turn - 1]!
-                  : mode === "failed-repair"
-                    ? [3, 5, 8][turn - 1]!
-                    : turn * 3 + (conflictingReplay && turn > 1 ? 1 : 0),
-              );
-            } finally {
-              admission.close();
+              expect((await run).meta.error).toMatchObject({ code: "item_conflict" });
+              if (delivered) {
+                expect(deliveredBlocks.join(" ")).not.toContain("synthetic answer");
+              } else {
+                expect((await run).payloads).toContainEqual(
+                  expect.objectContaining({ isError: true }),
+                );
+              }
+            } else {
+              expect((await run).meta.error).toBeUndefined();
+              if (delivered) {
+                expect(deliveredBlocks.join(" ")).toContain("synthetic answer");
+              } else {
+                expect((await run).payloads).toContainEqual(
+                  expect.objectContaining({ text: "synthetic answer" }),
+                );
+              }
             }
-          }
-          expect(requests[1]?.previous_response_id).toBe("response_1");
-          expect(requests[3]?.previous_response_id).toBeUndefined();
-          if (!conflictingReplay) {
-            expect(requests[3]?.input).toContainEqual(
-              expect.objectContaining({
-                type: "function_call",
-                id: "fc_response_1",
-                arguments: mode === "legacy" ? "{}" : "{ }",
-              }),
+            expect(requests).toHaveLength(
+              delivered
+                ? [3, 4, 7][turn - 1]!
+                : unsafe || exhausted || mode === "failed-repair"
+                  ? [3, 5, 8][turn - 1]!
+                  : turn * 3 + (conflictingReplay && turn > 1 ? 1 : 0),
             );
-          }
-          expect(conflicts).toBe(mode === "failed-repair" ? 2 : conflictingReplay ? 1 : 0);
-          if (deferred) {
-            expect(logInfo).toHaveBeenCalledWith(
-              "openai-transport",
-              expect.stringMatching(/item_conflict_recovery .* outcome=deferred/),
-              undefined,
+            expect(readFileSync(effectsFile, "utf8").trim().split("\n")).toHaveLength(
+              unsafe
+                ? [2, 3, 5][turn - 1]!
+                : exhausted || delivered || mode === "failed-repair"
+                  ? [2, 2, 4][turn - 1]!
+                  : turn * 2,
             );
-            expect(logInfo).toHaveBeenCalledWith(
-              "openai-transport",
-              expect.stringMatching(/item_conflict_recovery .* outcome=recovered/),
-              undefined,
-            );
+          } finally {
+            admission.close();
           }
-          // The repair changes only the poisoned prefix once. Later cold turns retain it.
-          for (let index = conflictingReplay ? 4 : 1; index < prefixes.length; index++) {
-            assertStableProviderPrefix(prefixes[index - 1]!, prefixes[index]!, {
-              label: "request " + (index + 1),
-            });
-          }
-        } finally {
-          cleanupSessionResources(sessionId);
-          clearEmbeddedSessionPromptStates([sessionId]);
-          await clearActivePluginRegistry();
         }
-      });
+        expect(requests[1]?.previous_response_id).toBe("response_1");
+        expect(requests[3]?.previous_response_id).toBeUndefined();
+        if (!conflictingReplay) {
+          expect(requests[3]?.input).toContainEqual(
+            expect.objectContaining({
+              type: "function_call",
+              call_id: "call_response_1",
+              arguments: mode === "legacy" ? "{}" : "{ }",
+            }),
+          );
+        }
+        expect(conflicts).toBe(
+          mode === "failed-repair" || exhausted ? 2 : conflictingReplay ? 1 : 0,
+        );
+        if (deferred) {
+          expect(logInfo).toHaveBeenCalledWith(
+            "openai-transport",
+            expect.stringMatching(/item_conflict_recovery .* outcome=deferred/),
+            undefined,
+          );
+          expect(logInfo).toHaveBeenCalledWith(
+            "openai-transport",
+            expect.stringMatching(/item_conflict_recovery .* outcome=recovered/),
+            undefined,
+          );
+        }
+        // The repair changes only the poisoned prefix once. Later cold turns retain it.
+        for (let index = unsafe ? 5 : conflictingReplay ? 4 : 1; index < prefixes.length; index++) {
+          // The internal fork starts its own cache identity after the recovered turn.
+          if (mode === "deferred-internal" && index === 6) {
+            continue;
+          }
+          assertStableProviderPrefix(prefixes[index - 1]!, prefixes[index]!, {
+            label: "request " + (index + 1),
+          });
+        }
+      } finally {
+        configureAiTransportHost(host);
+        cleanupSessionResources(sessionId);
+        clearEmbeddedSessionPromptStates([sessionId]);
+        await clearActivePluginRegistry();
+      }
     });
   },
   120000,

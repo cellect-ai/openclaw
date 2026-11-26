@@ -2,15 +2,13 @@ import { setImmediate as yieldToScheduler } from "node:timers/promises";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { codeModeGcAttribution, logCodeModeFailure } from "../logging/code-mode-diagnostic.js";
 import type { AgentRunApprovalWait } from "./agent-run-approval-wait.js";
+import { readToolTurnHandoff } from "./agent-tools.abort.js";
 import {
   codeModeReplayIdForToolCall,
   isCodeModeSwarmAvailable,
   requiresCodeModeCompletion,
 } from "./code-mode-bridge.js";
-import {
-  createCodeModeCatalogProjection,
-  type CodeModeCatalogProjection,
-} from "./code-mode-catalog.js";
+import type { CodeModeCatalogProjection } from "./code-mode-catalog.js";
 import {
   usableResumeBudgetMs,
   waitForCodeModePending,
@@ -23,12 +21,14 @@ import type {
   CodeModeExecutorInlineHost,
 } from "./code-mode-executor-types.js";
 import { runCodeModeExecutor } from "./code-mode-executor.js";
-import { CodeModeOutputState, EMPTY_CODE_MODE_OUTPUT } from "./code-mode-json.js";
 import {
-  createCodeModeNamespaceRuntime,
-  type CodeModeNamespaceRuntime,
-} from "./code-mode-namespaces.js";
+  captureCodeModeValue,
+  CodeModeOutputState,
+  EMPTY_CODE_MODE_OUTPUT,
+} from "./code-mode-json.js";
+import type { CodeModeNamespaceRuntime } from "./code-mode-namespaces.js";
 import { prepareCodeModeNodeCatalog } from "./code-mode-node-input.js";
+import { getPreparedCodeModeCatalog } from "./code-mode-prepared-catalog.js";
 import {
   CODE_MODE_WORKER_WATCHDOG_GRACE_MS,
   codeModeFailureCode,
@@ -59,25 +59,13 @@ import {
   type CodeModeBridgeDispatchState,
   type CodeModeRunOwner,
 } from "./code-mode-state.js";
-import { recordCodeModeToolOutcome } from "./code-mode-tool-outcome.js";
 import { resolveCodeModeWaitRun } from "./code-mode-wait-errors.js";
 import type { AgentToolUpdateCallback } from "./runtime/index.js";
 import type { ToolResultBudget } from "./tool-result-limits.js";
 import { resolveCatalog } from "./tool-search-catalog.js";
 import { ToolSearchRuntime } from "./tool-search-runtime.js";
-import type { ToolSearchCatalogEntry, ToolSearchToolContext } from "./tool-search-types.js";
+import type { ToolSearchToolContext } from "./tool-search-types.js";
 import { ToolInputError } from "./tools/common.js";
-
-// Catalog registration/restriction publishes a new entries array. Keep only
-// metadata here; bridge execution still resolves the current catalog authority.
-const preparedCatalogs = new WeakMap<
-  ToolSearchCatalogEntry[],
-  {
-    namespaceRuntime: CodeModeNamespaceRuntime;
-    catalogProjection: CodeModeCatalogProjection;
-    workerCatalogs: ReturnType<typeof prepareCodeModeNodeCatalog>[];
-  }
->();
 
 export async function runCodeModeExec(params: {
   toolCallId: string;
@@ -108,19 +96,7 @@ export async function runCodeModeExec(params: {
   const bridgeDispatch: CodeModeBridgeDispatchState = { started: false };
   const budget: CodeModeCallBudget = { deadlineMs: performance.now() + config.timeoutMs };
   const entries = resolveCatalog(params.ctx).entries;
-  let prepared = preparedCatalogs.get(entries);
-  if (!prepared) {
-    const namespaceRuntime = createCodeModeNamespaceRuntime(runtime.namespaceEntries());
-    prepared = {
-      namespaceRuntime,
-      catalogProjection: createCodeModeCatalogProjection(runtime.all({ includeMcp: false }), {
-        reservedNames: namespaceRuntime.descriptors.map((descriptor) => descriptor.globalName),
-        mcpIds: namespaceRuntime.mcpBindings.keys(),
-      }),
-      workerCatalogs: [],
-    };
-    preparedCatalogs.set(entries, prepared);
-  }
+  const prepared = getPreparedCodeModeCatalog(entries);
   const { namespaceRuntime, catalogProjection } = prepared;
   const swarmEnabled = isCodeModeSwarmAvailable(params.ctx, entries);
   const workerCatalog = (prepared.workerCatalogs[Number(swarmEnabled)] ??=
@@ -141,6 +117,7 @@ export async function runCodeModeExec(params: {
     output,
     budget,
     parentToolCallId: params.toolCallId,
+    toolCallId: params.toolCallId,
     codeModeReplayId,
     ctx: params.ctx,
     config,
@@ -190,6 +167,10 @@ export async function runCodeModeExec(params: {
       result,
     });
   } catch (error) {
+    const handoff = takeToolTurnHandoffResult(context);
+    if (handoff) {
+      return handoff;
+    }
     const code = signal.aborted ? ("aborted" as const) : codeModeFailureCode(error);
     const failurePhase = code === "invalid_input" ? "input" : "host";
     inlineHost.onFailure?.(error, failurePhase);
@@ -218,6 +199,7 @@ type CodeModeSettlementContext = {
   result: CodeModeWorkerResult;
   output: CodeModeOutputState;
   parentToolCallId: string;
+  toolCallId: string;
   codeModeReplayId: string;
   ctx: ToolSearchToolContext;
   config: CodeModeConfig;
@@ -232,6 +214,26 @@ type CodeModeSettlementContext = {
   signal: AbortSignal;
   onUpdate?: AgentToolUpdateCallback;
 };
+
+function takeToolTurnHandoffResult(
+  params: Pick<
+    CodeModeSettlementContext,
+    "output" | "runtime" | "signal" | "parentToolCallId" | "toolCallId" | "config"
+  >,
+) {
+  const handoff = readToolTurnHandoff(params.signal.reason);
+  if (
+    !handoff ||
+    (handoff.toolCallId !== params.parentToolCallId && handoff.toolCallId !== params.toolCallId)
+  ) {
+    return undefined;
+  }
+  return params.output.takeResult(
+    { status: "completed" as const, telemetry: telemetry(params.runtime) },
+    { value: captureCodeModeValue(handoff.receipt, params.config.maxOutputBytes) },
+    params.runtime.hasNetworkContent(),
+  );
+}
 
 function dispatchCodeModeRequests(
   params: Omit<CodeModeSettlementContext, "result">,
@@ -407,7 +409,7 @@ async function settleCodeModeResult(params: CodeModeSettlementContext) {
   // produced them. The deadline is also the only bound on sequential drain
   // rounds; maxPendingToolCalls stays a per-batch concurrency cap enforced in
   // the worker.
-  const abortedResult = () => codeModeAbortedResult(params);
+  const abortedResult = () => takeToolTurnHandoffResult(params) ?? codeModeAbortedResult(params);
   const parkSnapshot = (
     waiting: Extract<CodeModeWorkerResult, { status: "waiting" }>,
     remainingRequiredBudgetMs?: number,
@@ -570,6 +572,10 @@ async function settleCodeModeResult(params: CodeModeSettlementContext) {
   // Defensive cleanup covers aborts or terminal failures; successful runs have
   // already drained every dispatched call before releasing their snapshot.
   cancelPendingBridgeStates(pending);
+  const handoff = takeToolTurnHandoffResult(params);
+  if (handoff) {
+    return handoff;
+  }
   const storeWarning =
     result.status === "completed"
       ? await commitCodeModeSessionStore(params.owner.sessionStore)
@@ -591,14 +597,9 @@ async function settleCodeModeResult(params: CodeModeSettlementContext) {
     ...(storeWarning ? { warnings: [storeWarning] } : {}),
   };
   const networkContent = params.runtime.hasNetworkContent();
-  const delivered = output.takeResult(metadata, channels, networkContent, (source) =>
+  return output.takeResult(metadata, channels, networkContent, (source) =>
     params.owner.results.retain(source, networkContent),
   );
-  // Automatic retention changes the receipt, not the value the guest returned.
-  return recordCodeModeToolOutcome(delivered, {
-    ...delivered,
-    ...(result.status === "completed" ? { value: result.value } : {}),
-  });
 }
 
 export async function runWait(params: {
@@ -629,6 +630,7 @@ export async function runWait(params: {
     output: state.output,
     budget,
     parentToolCallId: state.parentToolCallId,
+    toolCallId: params.toolCallId,
     codeModeReplayId: state.replayId,
     ctx: state.ctx,
     config: state.config,
@@ -673,7 +675,12 @@ export async function runWait(params: {
       : undefined;
     if (!ready || resumeBudgetMs === undefined) {
       if (signal.aborted) {
-        return { ...codeModeAbortedResult(state), failurePhase: "bridge" as const };
+        return (
+          takeToolTurnHandoffResult(context) ?? {
+            ...codeModeAbortedResult(state),
+            failurePhase: "bridge" as const,
+          }
+        );
       }
       return storeSuspendedRun(state);
     }
@@ -697,6 +704,10 @@ export async function runWait(params: {
       reservedActiveRunSlot: true,
     });
   } catch (error) {
+    const handoff = takeToolTurnHandoffResult(context);
+    if (handoff) {
+      return handoff;
+    }
     const aborted = signal.aborted;
     const code = aborted ? ("aborted" as const) : codeModeFailureCode(error);
     const failurePhase = code === "invalid_input" ? "input" : "host";

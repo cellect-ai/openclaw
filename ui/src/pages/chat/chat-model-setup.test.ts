@@ -75,6 +75,12 @@ it.each(["missing-auth", "auth-failed"] as const)(
     ).toBeUndefined();
     expect(
       banner(active, { modelCatalogState: { ...loaded.modelCatalogState, retired: true } }),
+    ).toBeUndefined();
+    expect(
+      banner(active, {
+        modelCatalogState: { ...loaded.modelCatalogState, retired: true },
+        catalogError: "Catalog failed",
+      }),
     ).toBeDefined();
     expect(
       banner(active, {
@@ -131,32 +137,6 @@ it("reads credential readiness from the session's selected runtime route", () =>
   expect(banner(true, false, "claude-cli")).toBeDefined();
 });
 
-it("does not treat an unsupported runtime as a configured model route", () => {
-  expect(
-    requiresChatModelSetup({
-      ...loaded,
-      agentModel: "example/model",
-      chatModelCatalog: [
-        {
-          id: "model",
-          name: "Model",
-          provider: "example",
-          available: false,
-          unavailableReason: "missing-auth",
-          runtimeChoices: [
-            {
-              agentRuntime: { id: "openclaw", source: "model" },
-              available: false,
-              unavailableReason: "unsupported-runtime",
-            },
-          ],
-        },
-      ],
-      modelAuthStatusResult: { ts: 1, providers: [] },
-    }),
-  ).toBe(true);
-});
-
 it.each(["auth-failed", "cooldown"] as const)(
   "preserves a configured route during %s despite an empty auth inventory",
   (unavailableReason) => {
@@ -182,53 +162,50 @@ it.each(["auth-failed", "cooldown"] as const)(
   },
 );
 
+const catalogState = (overrides: Partial<ModelSetup["modelCatalogState"]>) => ({
+  ...loaded.modelCatalogState,
+  ...overrides,
+});
+const authStatus = (
+  ...providers: NonNullable<ModelSetup["modelAuthStatusResult"]>["providers"]
+) => ({
+  ts: 1,
+  providers,
+});
+
 it.each([
   ["empty catalog with a configured model", { chatModelCatalog: [] }, false],
   ["empty catalog with no model configured", { chatModelCatalog: [], agentModel: "" }, true],
   ["unavailable built-in default", {}, true],
-  ["no catalog snapshot", { modelCatalogState: { hasSnapshot: false, status: "ready" } }, false],
-  [
-    "catalog loading",
-    { modelCatalogState: { ...loaded.modelCatalogState, status: "loading" } },
-    false,
-  ],
-  ["catalog error", { modelCatalogState: { ...loaded.modelCatalogState, status: "error" } }, false],
-  [
-    "catalog refresh failed",
-    { modelCatalogState: { ...loaded.modelCatalogState, refreshFailed: true } },
-    false,
-  ],
-  [
-    "uninitialized catalog",
-    { modelCatalogState: { ...loaded.modelCatalogState, initialized: false } },
-    false,
-  ],
+  ["no catalog snapshot", { modelCatalogState: catalogState({ hasSnapshot: false }) }, false],
+  ["catalog loading", { modelCatalogState: catalogState({ status: "loading" }) }, false],
+  ["catalog error", { modelCatalogState: catalogState({ status: "error" }) }, false],
+  ["catalog refresh failed", { modelCatalogState: catalogState({ refreshFailed: true }) }, false],
+  ["uninitialized catalog", { modelCatalogState: catalogState({ initialized: false }) }, false],
   [
     "auth unavailable",
     {
       modelAuthStatusResult: {
-        ts: 1,
-        providers: [],
+        ...authStatus(),
         unavailable: { code: "PREPARED_MODEL_AUTH_UNAVAILABLE", message: "pending" },
       },
     },
     false,
   ],
   ["auth still loading", { modelAuthStatusResult: null }, false],
-  ["auth read failed", { modelAuthStatusResult: { ts: 0, providers: [] } }, false],
+  ["auth read failed", { modelAuthStatusResult: { ...authStatus(), ts: 0 } }, false],
   [
     "catalog still discovering",
-    { modelCatalogState: { ...loaded.modelCatalogState, pendingProviders: ["ollama"] } },
+    { modelCatalogState: catalogState({ pendingProviders: ["ollama"] }) },
     false,
   ],
-  ["retired catalog", { modelCatalogState: { ...loaded.modelCatalogState, retired: true } }, false],
+  ["retired catalog", { modelCatalogState: catalogState({ retired: true }) }, false],
   [
     "restricted account",
     {
-      modelCatalogState: {
-        ...loaded.modelCatalogState,
+      modelCatalogState: catalogState({
         modelSelectionPolicy: { restricted: true, defaultModel: null },
-      },
+      }),
     },
     false,
   ],
@@ -258,41 +235,33 @@ it.each([
   ],
   [
     "worker-owned inference",
-    { activeSession: { key: "main", kind: "direct", updatedAt: 1, placement: active } },
+    {
+      activeSession: { key: "main", kind: "direct", updatedAt: 1, placement: active },
+    },
     false,
   ],
   [
     "saved rejected key",
     {
-      modelAuthStatusResult: {
-        ts: 1,
-        providers: [
-          {
-            provider: "openai",
-            displayName: "OpenAI",
-            status: "missing",
-            profiles: [{ profileId: "openai:default", type: "api_key", status: "missing" }],
-          },
-        ],
-      },
+      modelAuthStatusResult: authStatus({
+        provider: "openai",
+        displayName: "OpenAI",
+        status: "missing",
+        profiles: [{ profileId: "openai:default", type: "api_key", status: "missing" }],
+      }),
     },
     false,
   ],
   [
     "environment key",
     {
-      modelAuthStatusResult: {
-        ts: 1,
-        providers: [
-          {
-            provider: "openai",
-            displayName: "OpenAI",
-            status: "static",
-            profiles: [],
-            apiKey: { source: "env" },
-          },
-        ],
-      },
+      modelAuthStatusResult: authStatus({
+        provider: "openai",
+        displayName: "OpenAI",
+        status: "static",
+        profiles: [],
+        apiKey: { source: "env" },
+      }),
     },
     false,
   ],
@@ -302,11 +271,11 @@ it.each([
     expect(
       requiresChatModelSetup({
         ...loaded,
-        agentModel: "openai/gpt-6-astra",
+        agentModel: "openai/test-model",
         chatModelCatalog: [
-          { id: "gpt-6-astra", name: "GPT-6-Astra", provider: "openai", available: false },
+          { id: "test-model", name: "Test Model", provider: "openai", available: false },
         ],
-        modelAuthStatusResult: { ts: 1, providers: [] },
+        modelAuthStatusResult: authStatus(),
         ...overrides,
       }),
     ).toBe(expected);

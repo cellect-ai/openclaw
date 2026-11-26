@@ -24,6 +24,7 @@ import { adaptAnthropicToolCallIds } from "./mock-anthropic-wire.js";
 import { resolveAfterToolHttpFailure } from "./mock-openai-after-tool-failures.js";
 import {
   buildAssistantText,
+  buildImageGenerationCompletionReply,
   buildImageInspectionReply,
   readForkedContextCompletion,
   isCanonicalCompactionRetryWriteResult,
@@ -33,8 +34,8 @@ import { planAutomationScenarioTurn } from "./mock-openai-automation-turns.js";
 import {
   QA_COMPACTION_EMPTY_OUTPUT_ONCE_MARKER_RE,
   QA_COMPACTION_REASONING_ONLY_OUTPUT_ONCE_MARKER_RE,
-  resolveCompactionRecoverySummary,
   hasCompactionOutputRecoveryMarker,
+  resolveCompactionRecoverySummary,
 } from "./mock-openai-compaction-summaries.js";
 import {
   type ResponsesInputItem,
@@ -64,7 +65,6 @@ import {
   QA_FINAL_ONLY_MARKER_STREAMING_PROMPT_RE,
   QA_BLOCK_STREAMING_PROMPT_RE,
   QA_TOOL_PROGRESS_PROMPT_RE,
-  QA_TOOL_LOOP_GLOBAL_BREAKER_PROMPT_RE,
   QA_MSTEAMS_THREAD_DEDUPE_PROMPT_RE,
   QA_THREAD_REPLY_RECEIPT_PROMPT_RE,
   QA_A2A_MESSAGE_TOOL_MIRROR_PROMPT_RE,
@@ -189,6 +189,7 @@ import {
 } from "./mock-openai-slack-requester.js";
 import * as mockSubagent from "./mock-openai-subagent-completion.js";
 import { planSubagentFanoutTurn } from "./mock-openai-subagent-fanout.js";
+import { resolveToolRepeatTurn } from "./mock-openai-tool-repeat.js";
 import {
   QA_CODE_MODE_TARGET_MARKER,
   encodeCodeModeTarget,
@@ -215,6 +216,7 @@ import {
   isSnackRecallPrompt,
   extractSnackPreference,
 } from "./mock-openai-tooling.js";
+import { resolveQaUxStream } from "./mock-openai-ux-stream.js";
 import type { QaMockOpenAiServerOptions } from "./server-options.js";
 import {
   createQaSessionIdentityResolver,
@@ -648,18 +650,16 @@ async function buildResponsesPayload(
   if (slackRequester) {
     return slackRequester;
   }
-  if (QA_TOOL_LOOP_GLOBAL_BREAKER_PROMPT_RE.test(allInputText)) {
-    if (!hasCompletedToolOutput) {
-      scenarioState.toolLoopReadAttempts = 0;
-    }
-    if (/do not repeat this exact tool action/i.test(toolOutput)) {
-      return buildAssistantEvents(exactReplyDirective ?? "GLOBAL-LOOP-BREAKER-OK");
-    }
-    scenarioState.toolLoopReadAttempts += 1;
-    if (scenarioState.toolLoopReadAttempts > 21) {
-      return buildAssistantEvents("GLOBAL-LOOP-BREAKER-NOT-REACHED");
-    }
-    return buildToolCallEventsWithArgs("read", { path: "LOOP_STEADY.txt" });
+  const toolRepeatTurn = resolveToolRepeatTurn({
+    text: allInputText,
+    toolOutput,
+    hasToolOutput: hasCompletedToolOutput,
+    exactReply: exactReplyDirective ?? undefined,
+    state: scenarioState,
+    read: (path) => buildToolCallEventsWithArgs("read", { path }),
+  });
+  if (toolRepeatTurn) {
+    return toolRepeatTurn;
   }
   if (
     QA_TOOL_SEARCH_PROMPT_RE.test(allInputText) ||
@@ -1235,13 +1235,7 @@ async function buildResponsesPayload(
     // Progress scenarios share transcripts. Only the selected prompt's result can finish it.
     const progressInput = turn ? input.slice(turn.index) : [];
     const command = !expectsError && execCommandFromToolProgressPrompt(scenarioFamilyPrompt);
-    // A malformed call/result still belongs to the progress validator, not a new exec.
-    const hasProgressCall =
-      command &&
-      progressInput.some(
-        (item) => item.type === "function_call" || item.type === "custom_tool_call",
-      );
-    if (!hasToolOutput(progressInput) && !hasProgressCall) {
+    if (!hasToolOutput(progressInput)) {
       return buildToolCallEventsWithArgs(
         command ? "exec" : "read",
         command ? { command } : { path: readTargetFromPrompt(scenarioFamilyPrompt) },
@@ -1682,6 +1676,10 @@ async function buildResponsesPayload(
     }
     return buildAssistantEvents("NONE");
   }
+  const imageCompletionReply = buildImageGenerationCompletionReply(input);
+  if (imageCompletionReply) {
+    return buildAssistantEvents(imageCompletionReply);
+  }
   if (
     QA_IMAGE_GENERATION_PROMPT_RE.test(allInputText) &&
     !hasCompletedToolOutput &&
@@ -1958,6 +1956,11 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
     }
     const inflightRequestId = nextInflightRequestId++;
     inflightRequests.set(inflightRequestId, { prompt, allInputText });
+    const uxStream = resolveQaUxStream(
+      splitMockConversationContext(prompt).current,
+      input,
+      resolveCurrentToolDeclarationSurface(body, input),
+    );
     let events: StreamEvent[];
     let injectedFailure: QaMockProviderDispatchResult["failure"];
     try {
@@ -1987,6 +1990,8 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
             : shouldFail
               ? buildAssistantEvents("")
               : buildAssistantEvents("ANTHROPIC-THINKING-ERROR-RECOVERED-OK");
+      } else if (uxStream) {
+        events = uxStream.events;
       } else {
         events = await buildResponsesPayload(body, scenarioState, {
           subagentTurn,
@@ -2071,6 +2076,7 @@ export async function startQaMockOpenAiServer(params?: QaMockOpenAiServerOptions
           }
         : {}),
       ...(failure ? { failure } : {}),
+      ...(uxStream ? { deltaIntervalMs: uxStream.deltaIntervalMs } : {}),
       ...((() => {
         const telegramPause = resolveTelegramChannelStreamingPause(
           splitMockConversationContext(prompt).current,

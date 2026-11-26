@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import type { Model } from "../types.js";
+import type { Context, Model } from "../types.js";
 import { buildOpenAICompletionsParams } from "./openai-completions-params.js";
 import { streamFixture } from "./openai-completions-suite.test-support.js";
 import {
@@ -126,4 +126,64 @@ it.each([
   ["unsigned gemini-4-argon", gemini("gemini-4-argon"), undefined, undefined, google(skip)],
 ] as const)("replays %s", (_name, model, sourceApi, thoughtSignature, expected) => {
   expect(replayedTool(model, { sourceApi, thoughtSignature })).toEqual(expected);
+});
+
+it.each([
+  ["LiteLLM", litellm, [undefined, "FIRST-OPAQUE==", undefined, "SECOND-OPAQUE=="]],
+  ["Google", geminiModel, [skip, "FIRST-OPAQUE==", skip, "SECOND-OPAQUE=="]],
+] as const)("keeps reused IDs bound to each call occurrence (%s)", (_name, model, signatures) => {
+  const context: Context = {
+    tools: [{ name: "echo_value", description: "Echo", parameters: { type: "object" } }],
+    messages: [],
+  };
+  for (const [index, sourceSignature] of [
+    "FOREIGN-OPAQUE==",
+    "FIRST-OPAQUE==",
+    undefined,
+    "SECOND-OPAQUE==",
+  ].entries()) {
+    context.messages.push(
+      {
+        ...createAssistantOutput(model),
+        provider: index === 0 ? "other-route" : model.provider,
+        content: [
+          {
+            type: "toolCall",
+            id: "same_id",
+            name: "echo_value",
+            arguments: { index },
+            ...(sourceSignature ? { thoughtSignature: sourceSignature } : {}),
+          },
+        ],
+        stopReason: "toolUse",
+      },
+      {
+        role: "toolResult",
+        toolCallId: "same_id",
+        toolName: "echo_value",
+        content: [{ type: "text", text: "ok" }],
+        isError: false,
+        timestamp: index,
+      },
+    );
+  }
+  const request = buildOpenAICompletionsParams(model, context, undefined);
+  const calls: unknown[] = request.messages.flatMap((message) => {
+    const record = expectRecordFields(message, {});
+    return record.role === "assistant" && Array.isArray(record.tool_calls) ? record.tool_calls : [];
+  });
+  expect(calls).toHaveLength(4);
+  calls.forEach((call, index) => {
+    const record = expectRecordFields(call, {});
+    expectRecordFields(record.function, { arguments: JSON.stringify({ index }) });
+    const expectedSignature = signatures[index];
+    if (expectedSignature) {
+      expect(call).toMatchObject(
+        model.provider === "google" ? google(expectedSignature) : litellmField(expectedSignature),
+      );
+    } else {
+      expect(call).not.toHaveProperty("extra_content");
+      expect(call).not.toHaveProperty("provider_specific_fields");
+    }
+  });
 });

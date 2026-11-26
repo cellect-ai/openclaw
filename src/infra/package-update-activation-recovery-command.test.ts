@@ -101,7 +101,7 @@ it.skipIf(process.platform === "win32").each([false, true])(
         packageModes(path.join(root, "stage/lib/node_modules/openclaw"), false);
       });
       const journal = openPackageActivationJournal(prepared.anchor);
-      // Leave the old package displaced so repair must finish publication.
+      // The interruption leaves the installation displaced, which only the two moves do.
       publishWithoutPathExchange();
       const originalRename = fsp.rename;
       const interrupted = vi.spyOn(fsp, "rename").mockImplementation(async (from, to) => {

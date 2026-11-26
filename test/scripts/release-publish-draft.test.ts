@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import { delimiter, join, resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { expect, it } from "vitest";
 import { parse } from "yaml";
 import { createNestedGitEnv, writeJsonFile } from "../helpers/temp-repo.js";
@@ -32,6 +32,58 @@ function runBash(root: string, script: string, env: NodeJS.ProcessEnv, shell = "
 }
 const workflow = parse(fs.readFileSync(".github/workflows/openclaw-release-publish.yml", "utf8"));
 const frozenNotes = (version: string) => `## ${version}\n\n### Fixes\n\n- Frozen release fix.`;
+
+it.each(
+  ["attach_or_verify_release_asset", "replace_release_asset"].flatMap((operation) =>
+    ["current", "moved", "missing"].map((tagState) => ({ operation, tagState })),
+  ),
+)("allows $operation only for the current release tag ($tagState)", ({ operation, tagState }) => {
+  const root = createTempDir("release-publish-asset-tag-");
+  const mutations = join(root, "mutations");
+  const asset = join(root, "manifest.json");
+  fs.writeFileSync(asset, "{}");
+  const result = runBash(
+    root,
+    `
+source "$OWNER_SCRIPT"
+git() {
+  [[ "$TAG_STATE" != missing ]] || return 0
+  local commit="$TARGET_SHA"
+  [[ "$TAG_STATE" != moved ]] || commit="$MOVED_SHA"
+  printf '%s\\t%s\\n' "$commit" "refs/tags/$RELEASE_TAG"
+}
+gh() {
+  case "$1 $2" in
+    "release view") printf '{"assets":[]}\\n' ;;
+    "release upload") printf 'uploaded\\n' >> "$MUTATIONS" ;;
+    *) return 2 ;;
+  esac
+}
+"$OPERATION" "$ASSET" manifest.json
+`,
+    {
+      PATH: process.env.PATH,
+      OWNER_SCRIPT: resolve("scripts/lib/release-publish-children.sh"),
+      RELEASE_TAG: "v2026.11.2",
+      GITHUB_REPOSITORY: "fixture/repository",
+      TARGET_SHA: "a".repeat(40),
+      MOVED_SHA: "b".repeat(40),
+      OPERATION: operation,
+      TAG_STATE: tagState,
+      ASSET: asset,
+      MUTATIONS: mutations,
+    },
+    process.platform === "darwin" ? "/bin/bash" : "bash",
+  );
+  const current = tagState === "current";
+  expect(result.status, result.stderr).toBe(current ? 0 : 1);
+  expect(fs.existsSync(mutations)).toBe(current);
+  if (current) {
+    expect(fs.readFileSync(mutations, "utf8")).toBe("uploaded\n");
+  } else {
+    expect(result.stderr).toContain(tagState === "missing" ? "no longer exists" : "moved");
+  }
+});
 
 function publicationFixture(releaseVersion = "2026.9.4") {
   const root = fs.realpathSync(createTempDir("release-publish-historical-tooling-"));
@@ -81,18 +133,21 @@ function publicationFixture(releaseVersion = "2026.9.4") {
   fs.mkdirSync(bin);
   fs.writeFileSync(
     join(bin, "gh"),
-    "#!" +
-      process.execPath +
-      "\n" +
-      "if (process.argv[2] === 'api' && process.argv[3]?.endsWith('/releases/latest')) { console.log('v2026.9.6'); } else { process.exit(1); }\n",
+    `#!${process.execPath}
+const fs = require("node:fs");
+if (process.argv[3]?.endsWith("/releases/latest")) { console.log("v2026.9.6"); process.exit(0); }
+require("node:assert/strict").deepEqual(process.argv.slice(2), ["api", "repos/openclaw/openclaw/contents/package.json?ref=refs/heads/main", "--jq", ".content"]);
+process.stdout.write(fs.readFileSync(process.env.GITHUB_WORKSPACE + "/.release-harness/package.json").toString("base64"));
+`,
     { mode: 0o755 },
   );
   const env = {
     ...createNestedGitEnv(),
-    PATH: bin + delimiter + process.env.PATH,
+    PATH: `${bin}:${process.env.PATH}`,
     GITHUB_WORKSPACE: root,
     GITHUB_REPOSITORY: "fixture/repository",
     RELEASE_TAG: `v${releaseVersion}`,
+    RELEASE_NPM_DIST_TAG: "latest",
     TARGET_SHA: targetSha,
   };
   return {
@@ -318,7 +373,14 @@ attach_or_verify_release_asset "$RUNNER_TEMP/manifest.json" "$ASSET_NAME"
   expect(JSON.parse(read("release.json")).body).toBe(releaseBody);
 });
 
-it.each([{ releaseVersion: "2026.9.36", regularStableVersion: "2026.10.8", reason: "" }])(
+it.each([
+  { releaseVersion: "2026.9.36", regularStableVersion: "2026.10.8", reason: "" },
+  {
+    releaseVersion: "2026.9.37",
+    regularStableVersion: "2026.11.2",
+    reason: "Approved retired-line security fix",
+  },
+])(
   "resumes canonical extended-stable public page $releaseVersion",
   ({ releaseVersion, regularStableVersion, reason }) => {
     const { root, json, read, run } = publicationFixture(releaseVersion);

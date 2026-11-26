@@ -1,8 +1,8 @@
 import { resolveConfiguredAgentId } from "../../agents/agent-scope-config.js";
-import { getRuntimeConfigSnapshotMetadata } from "../../config/runtime-snapshot.js";
 import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
 import type { SessionSourceAssertion } from "../../config/sessions/session-source-authority.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { readCronOperatorSnapshot } from "../../cron/operator-source-snapshot.js";
 import { createCronExecutionId } from "../../cron/run-id.js";
 import { resolveCreatorSandbox } from "../../gateway/operator-role-policy.js";
 import {
@@ -47,7 +47,6 @@ export function prepareSessionEventInput(text: string, options: SessionEventOpti
     : undefined;
   operatorAuthority?.assertCurrent();
   const cfg = getSessionEventRuntimeConfig();
-  const configPublication = getRuntimeConfigSnapshotMetadata();
   const agentId = normalizeAgentId(options.agentId);
   resolveConfiguredAgentId(cfg, agentId);
   const sessionKey = resolveSessionEventKey(agentId, options.sessionKey);
@@ -70,7 +69,7 @@ export function prepareSessionEventInput(text: string, options: SessionEventOpti
       "Session event destination was reset or replaced while its producer was running",
     );
   }
-  return { cfg, configPublication, agentId, sessionKey, env, storePath, operatorAuthority };
+  return { cfg, agentId, sessionKey, env, storePath, operatorAuthority };
 }
 
 /** Durably stage the admitted occurrence before the reply owner starts it. */
@@ -85,7 +84,7 @@ export async function stageSessionEventInput(
     !(await recorder.stageApproved({
       runId,
       assertCurrent,
-      // Only this live policy retry can reclaim its cancelled attempt.
+      // Only this live admission retry can reclaim its cancelled attempt.
       retryCancelled: readmissionAttempt > 0,
     }))
   ) {
@@ -187,10 +186,16 @@ export function buildSessionEventContext(params: {
   occurrenceId: string;
   deliveryContext?: DeliveryContext;
   target: SessionEventTarget;
-  assertCurrent: () => void;
+  assertCurrent: SessionSourceAssertion;
 }): MsgContext {
   const { agentId, sessionKey, text, options, occurrenceId, deliveryContext, target } = params;
   const automation = options.scheduledAutomation;
+  // An internal session stores no route; its own WebChat route keeps replies in this conversation.
+  const sessionRoute =
+    channelRouteTargetsMatchExact({ left: deliveryContext, right: target.deliveryContext }) ||
+    (!target.deliveryContext &&
+      deliveryContext?.channel === INTERNAL_MESSAGE_CHANNEL &&
+      deliveryContext.to === sessionKey);
   const ctx: MsgContext = {
     AgentId: agentId,
     SessionKey: sessionKey,
@@ -221,12 +226,7 @@ export function buildSessionEventContext(params: {
           ? { runId: options.sourceRunId }
           : {}),
     },
-    ChatType: channelRouteTargetsMatchExact({
-      left: deliveryContext,
-      right: target.deliveryContext,
-    })
-      ? target.chatType
-      : undefined,
+    ChatType: sessionRoute ? target.chatType : undefined,
     Surface: deliveryContext?.channel ?? INTERNAL_MESSAGE_CHANNEL,
     Provider: deliveryContext?.channel ?? INTERNAL_MESSAGE_CHANNEL,
     OriginatingChannel: deliveryContext?.channel,
@@ -243,11 +243,14 @@ export function buildSessionEventContext(params: {
     ctx.SessionCreation = {
       via: "cron",
       actor: automation.job.createdActor ?? { type: "system" },
-      sandbox: resolveCreatorSandbox(params.cfg, { actor: automation.job.createdActor }),
+      sandbox: resolveCreatorSandbox(params.cfg, {
+        actor: automation.job.createdActor,
+        openclawIdPrincipal: readCronOperatorSnapshot(automation.job)?.openclawIdPrincipal,
+      }),
       skillLibrarySelections: automation.job.skillLibrarySelections,
     };
   }
-  const operatorAuthority = automation?.controlUiAdmin
+  const operatorAuthority = automation?.automationAdmin
     ? automation.operatorAuthority
     : options.source === "plugin" ||
         options.source === "tool_handoff" ||
@@ -259,7 +262,7 @@ export function buildSessionEventContext(params: {
   const requesterOwnerCheck = readSessionEventTargetRequesterOwner(target)?.assertCurrent;
   if (
     operatorAuthority &&
-    (automation?.controlUiAdmin ||
+    (automation?.automationAdmin ||
       (options.source === "restart"
         ? operatorAuthority.scopes.includes("operator.admin")
         : readSessionEventTargetOwnerContinuation(target)))
@@ -269,6 +272,7 @@ export function buildSessionEventContext(params: {
     // text's existing command authorization. Non-owner and system turns never gain it.
     bindCommandOwnerAuthority(ctx, {
       operatorAuthority,
+      sourceAssertion: params.assertCurrent,
       isCurrent: () => {
         params.assertCurrent();
         return true;
@@ -276,6 +280,7 @@ export function buildSessionEventContext(params: {
       // Work that outlives this occurrence keeps only the live operator source.
       successor: {
         operatorAuthority,
+        sourceAssertion: operatorAuthority.assertCurrent,
         isCurrent: () => {
           operatorAuthority.assertCurrent();
           return true;
@@ -286,6 +291,7 @@ export function buildSessionEventContext(params: {
     // Work the scheduler started for a job keeps its requester's owner tools only while
     // the requester is still an owner, rechecked before each owner-only effect.
     bindCommandOwnerAuthority(ctx, {
+      sourceAssertion: params.assertCurrent,
       isCurrent: () => {
         params.assertCurrent();
         requesterOwnerCheck();
@@ -306,6 +312,7 @@ export function buildSessionEventContext(params: {
       // they are still an owner under the current config.
       bindCommandOwnerAuthority(ctx, {
         recoveryReference: authority.recoveryReference,
+        sourceAssertion: params.assertCurrent,
         isCurrent: () => {
           params.assertCurrent();
           return authority.isCurrent(getSessionEventRuntimeConfig());

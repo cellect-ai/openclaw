@@ -8,6 +8,7 @@ import { createOperationalRunInstanceRef } from "../agents/admitted-run-context.
 import { createOpenClawCodingToolsAsync } from "../agents/agent-tools.js";
 import { createAdmittedHostCapabilityTestFixture } from "../agents/harness/host-capability.test-support.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
+import * as configCli from "../cli/config-cli.js";
 import {
   clearConfigCache,
   clearRuntimeConfigSnapshot,
@@ -35,7 +36,9 @@ import {
 } from "../system-agent/system-agent.test-helpers.js";
 import { createTestGatewayScheduler } from "../test-utils/gateway-scheduler-clock.js";
 import { ExecApprovalManager } from "./exec-approval-manager.js";
+import { getOperatorApprovalDetailed } from "./operator-approval-store.js";
 import { createRequestGatewayMethodRegistry } from "./server-methods.js";
+import { cancelAgentRuntimeBoundApprovals } from "./server-methods/approval-run-cancellation.js";
 import { systemAgentHandlers, type SystemAgentChatSession } from "./server-methods/system-agent.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
@@ -108,12 +111,17 @@ export function registerGatewayToolFinalEffectTests() {
       const requested = createDeferred();
       let requestCount = 0;
       const registry = createRequestGatewayMethodRegistry(systemAgentHandlers);
+      const executions: Promise<unknown>[] = [];
       const context = {
         systemAgentSessions: sessions,
         systemAgentApprovalManager: manager,
         getRuntimeConfig: () => cfg,
         getGatewayMethodRegistry: () => registry,
-        trackExecution: <T>(run: () => Promise<T>) => run(),
+        trackExecution: <T>(run: () => Promise<T>) => {
+          const execution = run();
+          executions.push(execution);
+          return execution;
+        },
         broadcast: (event: string) => {
           if (event === "openclaw.approval.requested") {
             requestCount++;
@@ -187,20 +195,21 @@ export function registerGatewayToolFinalEffectTests() {
         stateDir,
         workspaceDir,
         configPath,
+        databasePath,
+        session,
         original,
         image,
         manager,
-        session,
         requested,
         authority,
         call,
-        execution: inference.binding.execution,
         requestCount: () => requestCount,
         close: async () => {
           for (const record of await manager.listPendingRecords()) {
             await manager.expire(record.id);
           }
           await manager.drain();
+          await Promise.allSettled(executions);
           await engine.dispose();
           host?.closeHost();
           host?.closeAdmission();
@@ -254,14 +263,12 @@ export function registerGatewayToolFinalEffectTests() {
     );
 
     it.each(["approve", "tool-cancelled", "run-revoked", "precommit-revoked"] as const)(
-      "fences workspace-restricted persistent Gateway delegation: %s",
+      "settles workspace-restricted persistent Gateway delegation: %s",
       async (outcome) => {
         const f = await fixture(true);
         const controller = new AbortController();
-        const applyStarted = createDeferred();
-        const releaseApply = createDeferred();
+        const revokeBeforeWrite = vi.fn(() => releaseAgentRunDelegatedAuthority(f.authority));
         let pending: ReturnType<typeof f.call> | undefined;
-        let pendingApproval: SystemAgentChatSession["pendingApproval"];
         try {
           pending = f.call(controller.signal);
           // Observe settlement too: on the broken factory the forbidden write completes instead of requesting approval.
@@ -274,58 +281,71 @@ export function registerGatewayToolFinalEffectTests() {
           expect(await fs.readFile(f.configPath, "utf8")).toBe(f.original);
           const [record] = await f.manager.listPendingRecords();
           assert(record);
-          pendingApproval = f.session.pendingApproval;
-          assert(pendingApproval);
-          expect(pendingApproval.id).toBe(record.id);
-          // Pause external inference preparation, not the approval owner or persistent sink.
+          const completion = f.session.pendingApproval?.completion;
+          assert(completion);
+          // Exact commands skip inference. Revoke after approval and hand off to the real writer.
           if (outcome === "precommit-revoked") {
-            const execution = f.execution;
-            vi.mocked(setupInference.resolvePersistentApplyInference).mockImplementationOnce(
-              async () => {
-                applyStarted.resolve();
-                await releaseApply.promise;
-                return execution;
-              },
-            );
+            const runConfigSet = configCli.runConfigSet;
+            vi.spyOn(configCli, "runConfigSet").mockImplementationOnce((opts) => {
+              revokeBeforeWrite();
+              return runConfigSet(opts);
+            });
           }
           if (outcome === "tool-cancelled") {
+            expect(f.manager.isPending(record)).toBe(true);
             controller.abort();
           } else if (outcome === "run-revoked") {
             releaseAgentRunDelegatedAuthority(f.authority);
-            await f.manager.forceDenyIfRuntimeAuthorityClosed(record.id);
+            await cancelAgentRuntimeBoundApprovals({
+              authority: f.authority,
+              manager: f.manager,
+              publish: vi.fn(),
+            });
           } else {
             expect(await f.manager.resolve(record.id, "allow-once", "fixture-operator")).toBe(true);
-            if (outcome === "precommit-revoked") {
-              await applyStarted.promise;
-              releaseAgentRunDelegatedAuthority(f.authority);
-              releaseApply.resolve();
-            }
           }
           const result = await pending.then(
             (value) => ({ value }),
             (error: unknown) => ({ error }),
           );
-          // Tool cancellation is prompt; its approval owner still finishes durable bookkeeping.
-          await pendingApproval.completion;
-          if (outcome === "approve") {
-            expect(result).toHaveProperty("value");
+          if (outcome === "tool-cancelled") {
+            expect(result).toMatchObject({
+              error: { name: "AbortError" },
+            });
+          }
+          // A cancelled tool wait can finish before the approval owner's durable handoff.
+          await completion;
+          if (outcome === "tool-cancelled") {
+            expect(f.manager.isPending(record)).toBe(false);
+          }
+          if (outcome === "precommit-revoked") {
+            expect(revokeBeforeWrite).toHaveBeenCalledOnce();
+          }
+          if (outcome === "approve" || outcome === "precommit-revoked") {
+            if (outcome === "approve") {
+              expect(result).toHaveProperty("value");
+            }
             expect(JSON.parse(await fs.readFile(f.configPath, "utf8"))).toMatchObject({
               logging: { level: "debug" },
             });
           } else {
             expect(await fs.readFile(f.configPath, "utf8")).toBe(f.original);
-            expect((await f.manager.getSnapshot(record.id))?.status).toBe(
-              outcome === "precommit-revoked" ? "allowed" : "cancelled",
-            );
+            expect((await f.manager.getSnapshot(record.id))?.status).toBe("cancelled");
+            expect(
+              await getOperatorApprovalDetailed({
+                id: record.id,
+                databaseOptions: { path: f.databasePath },
+              }),
+            ).toMatchObject({
+              outcome: "found",
+              record: { status: "cancelled" },
+            });
             expect(await f.manager.resolve(record.id, "allow-once", "late-operator")).toBe(false);
             expect(await fs.readFile(f.configPath, "utf8")).toBe(f.original);
           }
         } finally {
-          pendingApproval ??= f.session.pendingApproval;
-          releaseApply.resolve();
           controller.abort();
           await pending?.catch(() => undefined);
-          await pendingApproval?.completion;
           await f.close();
         }
       },

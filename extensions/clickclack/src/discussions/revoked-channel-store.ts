@@ -57,34 +57,9 @@ export function adoptLegacyMarkers(runtime: PluginRuntime): Promise<void> {
   if (!adoption) {
     adoption = (async () => {
       const store = getStore(runtime);
-      // Keep originals until the portable evidence commits; a full namespace stays fail-closed.
       for (const entry of await store.entries()) {
         if (entry.key.includes("\0")) {
-          const key = revokedChannelKey(entry.value);
-          for (;;) {
-            const current = await store.observe(key);
-            // A partially adopted or broader marker already covers this evidence.
-            if (
-              current.value &&
-              (!current.value.binding ||
-                isDeepStrictEqual(current.value.binding, entry.value.binding))
-            ) {
-              break;
-            }
-            if (current.value && entry.value.binding) {
-              // Two different scoped markers cannot be represented by one row.
-              // Retain both and deny access rather than silently discard authority.
-              throw new Error("Conflicting ClickClack revocation evidence; legacy marker retained");
-            }
-            const result = await store.compareAndApply(key, current.comparison, {
-              operation: "update",
-              action: "set",
-              value: entry.value,
-            });
-            if (result.status !== "conflict") {
-              break;
-            }
-          }
+          await store.registerIfAbsent(revokedChannelKey(entry.value), entry.value);
           await store.delete(entry.key);
         }
       }

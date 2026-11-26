@@ -43,6 +43,7 @@ import {
   closeOpenClawStateDatabaseAsync,
   closeOpenClawStateDatabaseForTest,
 } from "../src/state/openclaw-state-db.js";
+import { withEnvAsync } from "../src/test-utils/env.js";
 import { createAccountOwnedScheduledJob } from "./helpers/cron/account-owned-scheduled-job.js";
 import { installScheduledMessageReadRuntime } from "./helpers/cron/message-read-runtime.js";
 import {
@@ -703,15 +704,10 @@ describe("scheduled message actions", () => {
             accountId: creatorAccountId,
             senderId: nativeRequesterId,
           });
-          vi.stubEnv("OPENCLAW_SCHEDULED_CREATE_JOB", JSON.stringify(params));
-          let producerReply: Awaited<ReturnType<typeof getReplyFromConfig>>;
-          try {
-            producerReply = await getReplyFromConfig(creatorContext, {
-              runId: "native-cron-creator",
-            });
-          } finally {
-            vi.stubEnv("OPENCLAW_SCHEDULED_CREATE_JOB", undefined);
-          }
+          const producerReply = await withEnvAsync(
+            { OPENCLAW_SCHEDULED_CREATE_JOB: JSON.stringify(params) },
+            () => getReplyFromConfig(creatorContext, { runId: "native-cron-creator" }),
+          );
           for (const payload of Array.isArray(producerReply) ? producerReply : [producerReply]) {
             expect(payload?.isError).not.toBe(true);
           }

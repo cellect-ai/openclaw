@@ -144,40 +144,37 @@ function appendStopCanary(
   ).toBe(true);
 }
 
-it.each([null, "stale"] as const)(
-  "typed Stop stops current work from an empty or stale view (%s)",
-  async (expectedLeafEntryId) => {
-    const test = createGuardedStopFixture();
-    const selected = test.parent;
-    appendStopCanary(selected, "current-leaf", "selected conversation");
-    await waitForSessionTranscriptProjection(selected);
-    const before = await loadTranscriptEvents(selected);
-    const active = createActiveRun(selected.sessionKey, { ...selected, runId: "parent" });
-    const queued = createActiveRun(selected.sessionKey, {
-      ...selected,
-      runId: "queued",
-      queued: true,
-    });
-    registerRpcSource("parent", active);
-    registerRpcSource("queued", queued);
-    const respond = await test.send(selected.sessionKey, {
-      expectedLeafEntryId,
-      sessionId: "previous-session",
-    });
+it("typed Stop stops the chat's current work whatever leaf or session id the sender saw", async () => {
+  const test = createGuardedStopFixture();
+  const selected = test.parent;
+  appendStopCanary(selected, "current-leaf", "selected conversation");
+  await waitForSessionTranscriptProjection(selected);
+  const before = await loadTranscriptEvents(selected);
+  const active = createActiveRun(selected.sessionKey, { ...selected, runId: "parent" });
+  const queued = createActiveRun(selected.sessionKey, {
+    ...selected,
+    runId: "queued",
+    queued: true,
+  });
+  registerRpcSource("parent", active);
+  registerRpcSource("queued", queued);
+  const respond = await test.send(selected.sessionKey, {
+    expectedLeafEntryId: "stale",
+    sessionId: "previous-session",
+  });
 
-    expect(respond).toHaveBeenCalledWith(true, {
-      ok: true,
-      aborted: true,
-      runIds: ["queued", "parent"],
-    });
-    expect(active.input.abortSignal.aborted).toBe(true);
-    expect(queued.input.abortSignal.aborted).toBe(true);
-    expect(rpcSourceTesting.has("queued")).toBe(false);
-    expect(test.otherRun.input.abortSignal.aborted).toBe(false);
-    expect(loadSessionEntryReadOnly(test.other)?.sessionId).toBe(test.other.sessionId);
-    expect(await loadTranscriptEvents(selected)).toEqual(before);
-  },
-);
+  expect(respond).toHaveBeenCalledWith(true, {
+    ok: true,
+    aborted: true,
+    runIds: ["queued", "parent"],
+  });
+  expect(active.input.abortSignal.aborted).toBe(true);
+  expect(queued.input.abortSignal.aborted).toBe(true);
+  expect(rpcSourceTesting.has("queued")).toBe(false);
+  expect(test.otherRun.input.abortSignal.aborted).toBe(false);
+  expect(loadSessionEntryReadOnly(test.other)?.sessionId).toBe(test.other.sessionId);
+  expect(await loadTranscriptEvents(selected)).toEqual(before);
+});
 
 it.each(["replacement", "branch"] as const)(
   "typed Stop does not cancel work started after it (parent %s) and settles only its captured output",

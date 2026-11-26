@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createTestAdmittedRunContext } from "../../admitted-run-context.test-support.js";
 import { createUsageAccumulator, mergeUsageIntoAccumulator } from "../usage-accumulator.js";
+import { prepareTerminalWithSettledTurnFinalization } from "./settled-turn-finalization.js";
+import { createSettledFinalizationTestInput } from "./settled-turn-finalization.test-support.js";
 import {
   assistantMessage,
   attemptResult,
@@ -15,9 +17,9 @@ vi.mock("./payloads.js", async (importOriginal) => ({
   buildEmbeddedRunPayloads: () => [],
 }));
 
-describe("prepareEmbeddedRunTerminal run stats", () => {
+describe("settled terminal run stats", () => {
   async function prepareStats(statsInput: TerminalStatsInput = {}) {
-    const { prepareEmbeddedRunTerminal } = await import("./terminal-preparation.js");
+    const admittedRunContext = createTestAdmittedRunContext("run-1");
     const provider = statsInput.provider ?? "cost-test-provider";
     const model = statsInput.model ?? "cost-model";
     const assistant = {
@@ -33,28 +35,41 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
     }
     usageAccumulator.assistantTurns = statsInput.assistantTurns ?? 0;
     usageAccumulator.bridgeCalls = statsInput.bridgeCalls;
-    return prepareEmbeddedRunTerminal(
-      createTerminalPreparationInput({
-        admittedRunContext: createTestAdmittedRunContext("run-1"),
-        runParams: {
-          sessionId: "session-1",
-          runId: "run-1",
-          ...(statsInput.config ? { config: statsInput.config as never } : {}),
-        },
-        attempt: attemptResult({
-          lastAssistant: assistant,
-          currentAttemptAssistant: assistant,
-          currentAttemptCompletedAssistant: assistant,
-          ...statsInput.attempt,
-        }),
+    const input = createTerminalPreparationInput({
+      admittedRunContext,
+      runParams: {
+        sessionId: "session-1",
+        runId: "run-1",
+        resolveReplyDelivery: async () => "delivered",
+        ...(statsInput.config ? { config: statsInput.config as never } : {}),
+      },
+      attempt: attemptResult({
+        lastAssistant: assistant,
+        currentAttemptAssistant: assistant,
         currentAttemptCompletedAssistant: assistant,
-        provider,
-        model,
-        activeErrorContext: { provider, model },
-        outerContextTokenMeta: statsInput.outerContextTokenMeta ?? {},
-        usageAccumulator,
+        ...statsInput.attempt,
       }),
-    );
+      currentAttemptCompletedAssistant: assistant,
+      provider,
+      model,
+      activeErrorContext: { provider, model },
+      outerContextTokenMeta: statsInput.outerContextTokenMeta ?? {},
+      usageAccumulator,
+    });
+    const settled = createSettledFinalizationTestInput(input.attempt, admittedRunContext);
+    return (
+      await prepareTerminalWithSettledTurnFinalization({
+        ...settled,
+        terminalBase: input,
+        initial: {
+          ...settled.initial,
+          currentAttemptCompletedAssistant: assistant,
+          sessionIdUsed: input.sessionIdUsed,
+          terminalState: input.terminalState,
+        },
+        lastRunPromptUsage: input.lastRunPromptUsage,
+      })
+    ).prepared;
   }
 
   const modelConfig = <T extends object>(fields: T) => ({
@@ -136,8 +151,8 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
       const prepared = await prepareStats({
         config: COST_CONFIG,
         attempts: [
-          { ...tokens, cost: { total: firstCost } },
-          { ...tokens, cost: { total: 0 } },
+          { ...tokens, cost: { total: firstCost }, costStatus: "complete" },
+          { ...tokens, cost: { total: 0 }, costStatus: "complete" },
         ],
       });
       expect(prepared.agentMeta.costUsd).toBe(firstCost);
@@ -146,7 +161,7 @@ describe("prepareEmbeddedRunTerminal run stats", () => {
 
   it.each`
     name                               | input
-    ${"partially priced tiered calls"} | ${{ config: modelConfig({ cost: { ...cost, tieredPricing: [{ range: [200_000], input: 2, output: 4, cacheRead: 1, cacheWrite: 8 }] } }), attempts: [{ input: 150_000, output: 100, cost: { total: 0.125 } }, { input: 150_000, output: 100 }] }}
+    ${"partially priced tiered calls"} | ${{ config: modelConfig({ cost: { ...cost, tieredPricing: [{ range: [200_000], input: 2, output: 4, cacheRead: 1, cacheWrite: 8 }] } }), attempts: [{ input: 150_000, output: 100, cost: { total: 0.125 }, costStatus: "complete" }, { input: 150_000, output: 100, costStatus: "unavailable" }] }}
     ${"unpriced model"}                | ${{ provider: "no-cost-provider", model: "uncosted-model", config: COST_CONFIG, usage: { input: 1_000_000, output: 500_000, total: 1_500_000 } }}
     ${"no usage"}                      | ${{ config: COST_CONFIG }}
   `("omits costUsd for $name", async ({ input }: { input: TerminalStatsInput }) => {

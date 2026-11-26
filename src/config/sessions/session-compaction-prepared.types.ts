@@ -1,56 +1,33 @@
+import type { CompactionResult } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
+import type { BoundedConversation } from "../../../packages/agent-core/src/harness/compaction/utils.js";
+import type { BeforeCompactionHookMetrics } from "../../agents/embedded-agent-runner/compaction-hook-metrics.types.js";
 import type {
-  CompactionFactPreparation,
-  CompactionPreparationEntryFact,
-} from "../../../packages/agent-core/src/harness/compaction/compaction-preparation.js";
-import type {
-  CompactionSettings,
-  CompactionResult,
-} from "../../../packages/agent-core/src/harness/compaction/compaction.js";
-import type {
-  ConversationMessageFact,
-  ConversationEntryDescriptor,
-  BoundedConversation,
-} from "../../../packages/agent-core/src/harness/compaction/utils.js";
-import type { PreparedCompactionMetadataFacts } from "../../agents/embedded-agent-runner/prepared-compaction-metadata.types.js";
-import type {
-  CompactionMessageSource,
-  CompactionSelections,
+  PreparedCompactionEntryFact,
   PreparedCompactionPlan,
   PreparedCompactionPlanOptions,
-  PreparedCompactionReplayMetrics,
 } from "../../agents/embedded-agent-runner/prepared-compaction-plan.types.js";
-import type {
-  ModelSnapshotState,
-  ModelSnapshotEntry,
-} from "../../agents/embedded-agent-runner/replay-session-state.types.js";
+import type { PreparedCompactionReplayOptions } from "../../agents/embedded-agent-runner/replay-history.types.js";
+import type { ModelSnapshotEntry } from "../../agents/embedded-agent-runner/replay-model-snapshot.js";
 import type { SessionHeader } from "../../agents/sessions/session-manager-types.js";
+import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
+import type { CompactionReadCounts } from "./session-compaction-read-counts.types.js";
 import type { SessionCompactionPreparation } from "./session-history-read.types.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
-import type { SessionTranscriptHydrationWorkerInput } from "./session-transcript-hydration-input.types.js";
+import type { SessionTranscriptHydrationWorkerInput } from "./session-transcript-hydration.types.js";
 
-export type PreparedCompactionEntry = CompactionPreparationEntryFact & {
-  parentId: string | null;
-  idempotencyKey?: string;
-  conversation: ConversationMessageFact<CompactionMessageSource>[];
-};
+/** Invocation-owned facts can carry Gateway preflight into planning without another extraction. */
 export type PreparedCompactionSource = {
-  entries: PreparedCompactionEntry[];
-  metadata: PreparedCompactionMetadataFacts;
-  snapshotState: ModelSnapshotState;
+  entries: PreparedCompactionEntryFact[];
   header?: SessionHeader;
   version: SessionTranscriptContextVersion;
+  expectedIdentity?: DatabaseFileIdentity;
   leafEntryId: string | null;
   boundaryCount: number;
   persistedSuffixStartSeq: number;
   transcriptMutationAt: number | null;
   eventCount: number;
 };
-export type CompactionReadCounts = {
-  extractedRows: number;
-  extractedBytes: number;
-  selectedRows: number;
-  selectedBytes: number;
-};
+
 export type SessionPreparedCompactionInput = Omit<
   SessionTranscriptHydrationWorkerInput,
   | "kind"
@@ -66,13 +43,19 @@ export type SessionPreparedCompactionInput = Omit<
     | { kind: "preflight" }
     | {
         kind: "plan";
-        settings: CompactionSettings;
-        requestState?: "unresolved";
-        work?: Omit<PreparedCompactionPlanOptions, "settings" | "requestState">;
+        options: PreparedCompactionPlanOptions;
+        replay: PreparedCompactionReplayOptions;
         source?: PreparedCompactionSource;
       }
     | {
+        kind: "render";
+        entries: PreparedCompactionPlan["selections"]["history"];
+        version: SessionTranscriptContextVersion;
+        maxChars: number;
+      }
+    | {
         kind: "finalize";
+        reportingBudget?: PreparedCompactionPlan["requestBudget"];
         version: SessionTranscriptContextVersion;
         retainedSequences: number[];
         summary: CompactionResult;
@@ -80,46 +63,51 @@ export type SessionPreparedCompactionInput = Omit<
           PreparedCompactionPlan,
           "requestBudget" | "requestTokenLimit" | "pendingEntryId"
         > & { itemId: string };
-        reportingBudget?: PreparedCompactionPlan["requestBudget"];
-      }
-    | {
-        kind: "render";
-        entries: ConversationEntryDescriptor<CompactionMessageSource>[];
-        version: SessionTranscriptContextVersion;
-        maxChars: number;
       };
 };
-export type SessionPreparedCompactionValue = {
-  kind: "compaction-preparation";
-  reads: CompactionReadCounts;
+
+type PreparedCompactionReplayMetadata = {
+  hasThinkingEntry: boolean;
   modelSnapshot?: ModelSnapshotEntry;
-} & (
-  | ({
-      status: "preflight";
-      source: PreparedCompactionSource;
-      reason?: "Already compacted" | "Nothing to compact (session too small)";
-    } & SessionCompactionPreparation)
-  | {
-      status: "prepared";
-      source: PreparedCompactionSource;
-      preparation: CompactionFactPreparation;
-      plan: PreparedCompactionPlan;
-      beforeHookMetrics: PreparedCompactionReplayMetrics;
-      hasRealConversation: boolean;
-      selections: CompactionSelections;
-    }
-  | {
-      status: "skipped";
-      source: PreparedCompactionSource;
-      beforeHookMetrics: PreparedCompactionReplayMetrics;
-      hasRealConversation: boolean;
-    }
+  needsGoogleTurnOrderingMarker: boolean;
+};
+
+type SessionPreparedCompactionBody =
+  | { status: "rendered"; conversation: BoundedConversation }
   | {
       status: "finalized";
       transcriptMutationAt: number | null;
       tokensAfter: number;
-      reportingTokensAfter: number;
+      reportingTokensAfter: number | undefined;
       messageCountAfter: number;
     }
-  | { status: "rendered"; conversation: BoundedConversation }
-);
+  | ({
+      status: "preflight";
+      source: PreparedCompactionSource;
+      eventCount: number;
+      reason?: "Already compacted" | "Nothing to compact (session too small)";
+    } & SessionCompactionPreparation)
+  | ({
+      status: "skipped";
+      reason: string;
+      beforeHookMetrics: BeforeCompactionHookMetrics;
+    } & PreparedCompactionReplayMetadata)
+  | ({
+      status: "prepared";
+      plan: PreparedCompactionPlan;
+      header: SessionHeader;
+      version: SessionTranscriptContextVersion;
+      leafEntryId: string | null;
+      boundaryCount: number;
+      persistedSuffixStartSeq: number;
+      transcriptMutationAt: number | null;
+      beforeHookMetrics: BeforeCompactionHookMetrics;
+      hasRealConversation: boolean;
+    } & PreparedCompactionReplayMetadata);
+
+export type SessionPreparedCompactionValue = {
+  kind: "compaction-preparation";
+  reads: CompactionReadCounts;
+} & SessionPreparedCompactionBody;
+
+export type SessionPreparedCompactionWireValue = SessionPreparedCompactionValue;

@@ -224,6 +224,7 @@ describe("worker deletion request authority", () => {
           entered.resolve();
           await release.promise;
           lease.signal?.throwIfAborted();
+          lease.assertCurrent?.();
           await destroy();
         },
       });

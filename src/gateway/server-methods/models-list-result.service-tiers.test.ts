@@ -23,7 +23,10 @@ import {
 } from "../server-model-catalog-auth.js";
 import { WITHOUT_OPENAI_ENV_AUTH } from "../test-helpers.env.js";
 import { buildModelsListResult, prepareModelsListResult } from "./models-list-result.js";
-import { createModelsListTestContext } from "./models-list-result.openai-routes.test-support.js";
+import {
+  createModelsListTestContext,
+  providerCatalogEntry,
+} from "./models-list-result.openai-routes.test-support.js";
 
 afterEach(() => vi.useRealTimers());
 
@@ -380,7 +383,7 @@ it("asks speed policy about the implicit OpenClaw runtime a row will use", async
   const context = createModelsListTestContext({
     pluginRegistry,
     cfg: { agents: { defaults: { model: `${provider}/${ids[0]}` } } },
-    catalog: ids.map((id) => ({ id, name: id, provider })),
+    catalog: ids.map((id) => providerCatalogEntry(provider, id)),
     preparedAuthStore: {
       version: 1,
       profiles: {

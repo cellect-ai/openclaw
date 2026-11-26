@@ -138,6 +138,8 @@ async function run(turnCount: number) {
             throw error;
           },
           diagnosticOwner: createDiagnosticEmbeddedRunOwner(attempt),
+          // This measurement fixture does not certify safe tool boundaries.
+          isToolBoundarySafe: () => false,
         });
         const stream = await activeSession.agent.streamFn(
           model,

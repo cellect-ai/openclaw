@@ -183,6 +183,8 @@ it.each(["absent", "admitted", "cold-registration"] as const)(
               get hasPendingAgents() {
                 return pending;
               },
+              registerInputRecovery() {},
+              isAgentInputRecoveryPending: () => false,
               waitForAgentPreparation() {
                 publish.resolve();
                 return opening;

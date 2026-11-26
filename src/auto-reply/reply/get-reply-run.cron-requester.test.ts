@@ -4,18 +4,9 @@ import {
   ingressInput,
   ingressMessage,
 } from "../../channels/message-access/host-ingress.test-support.js";
-import {
-  consumeCronCreatorAuthorityGrant,
-  mintCronCreatorAuthorityGrant,
-  resolveCronCreatorAuthorityGrantProvenance,
-  revokeCronCreatorAuthorityRunScope,
-} from "../../gateway/cron-creator-authority-grant.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { getCommandOwnerAuthority } from "../command-owner-authority.js";
-import {
-  createReplyCronAuthorityFactory,
-  resolveReplyCronChannelRequester,
-} from "./get-reply-run.cron-requester.js";
+import { resolveReplyCronChannelRequester } from "./get-reply-run.cron-requester.js";
 
 it.each(
   ["telegram", "discord", "slack"].flatMap((channel) =>
@@ -64,34 +55,8 @@ it.each(
         expect(
           resolveReplyCronChannelRequester(context, { ...params, channel: "other" }),
         ).toBeUndefined();
-        const factory = createReplyCronAuthorityFactory(context, params);
-        const scope = factory?.("channel-owner-test");
-        expect(scope).toBeDefined();
-        if (!scope) {
-          throw new Error("expected an authenticated creator scope");
-        }
-        try {
-          const grant = mintCronCreatorAuthorityGrant(
-            scope,
-            undefined,
-            undefined,
-            undefined,
-            "requester",
-          );
-          expect(resolveCronCreatorAuthorityGrantProvenance(grant, scope.runId)).toEqual({
-            capturesRuntimeAuthority: false,
-            channelRequester: { version: 1, channel, accountId, senderId: "123" },
-          });
-          const consumed = consumeCronCreatorAuthorityGrant(grant);
-          expect(consumed.authority).toBeUndefined();
-          consumed.assertCurrent();
-          host.retire();
-          expect(() => consumed.assertCurrent()).toThrow();
-          expect(resolveReplyCronChannelRequester(context, params)).toBeUndefined();
-          expect(createReplyCronAuthorityFactory(context, params)).toBeUndefined();
-        } finally {
-          revokeCronCreatorAuthorityRunScope(scope);
-        }
+        host.retire();
+        expect(resolveReplyCronChannelRequester(context, params)).toBeUndefined();
       } finally {
         host.retire();
       }

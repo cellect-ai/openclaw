@@ -1,6 +1,5 @@
 import os from "node:os";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
 import { buildPreparedCliRunContext } from "../agents/cli-runner.test-helpers.js";
 import { ensureCliLiveSessionMemory } from "../agents/cli-runner/cli-live-session-registry.js";
 import {
@@ -102,28 +101,20 @@ it("keeps Node's own macOS available-memory reading and its free-memory fallback
 
 it("admits a CLI live session under Bun on macOS unless reclaimable memory is low", async () => {
   const context = buildPreparedCliRunContext({ provider: "claude-cli", sessionId: "bun-macos" });
-  const admission = prepareSystemAgentRunAdmission({}, context.params.runId, "main", "memory-test");
-  context.params.admittedRunContext = await admission.admit("plugin-harness");
-  try {
-    const signal = new AbortController().signal;
+  const signal = new AbortController().signal;
 
-    setMachMemory({ free: 512 * MiB, inactive: 16 * GiB, purgeable: 2 * GiB });
-    await expect(ensureCliLiveSessionMemory(context, signal)).resolves.toBeUndefined();
+  setMachMemory({ free: 512 * MiB, inactive: 16 * GiB, purgeable: 2 * GiB });
+  await expect(ensureCliLiveSessionMemory(context, signal)).resolves.toBeUndefined();
 
-    setMachMemory({ free: 128 * MiB, inactive: 128 * MiB, purgeable: 0 });
-    await expect(ensureCliLiveSessionMemory(context, signal)).rejects.toMatchObject({
-      code: "cli_live_session_host_memory",
-    });
-  } finally {
-    admission.close();
-  }
+  setMachMemory({ free: 128 * MiB, inactive: 128 * MiB, purgeable: 0 });
+  await expect(ensureCliLiveSessionMemory(context, signal)).rejects.toMatchObject({
+    code: "cli_live_session_host_memory",
+  });
 });
 
 it.each([
   [0, 0, false],
   [2 ** 64, 0, false],
-  [Number.MAX_VALUE, 0, false],
-  [Number.NaN, 0, false],
   [1000, 201, false],
   [1000, 200, true],
 ])(

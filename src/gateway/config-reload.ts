@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
+import { runOutsideSetupCredentialAccess } from "../agents/auth-profiles/setup-access.js";
 import type { ConfigRuntimeEnvPublication } from "../config/config-env-vars.js";
 import {
   configSnapshotAuditRecordMatchesPath,
@@ -45,7 +46,9 @@ import {
   candidateApplications,
   createObservedCandidate,
   isConfigReloadSuperseded,
-  createConfigReloadTransactionRunner,
+  isDeferredPluginApplication,
+  promoteAcceptedConfigSnapshot,
+  reportConfigReloadFailure,
   runWithCandidateWaitingRoots,
   settleCandidateApplications,
   transferCandidateApplications,
@@ -70,7 +73,6 @@ import type {
   GatewayConfigReloadCandidate,
   PluginInstallRecords,
 } from "./config-reload.types.js";
-import { PluginAdmittedWorkTimeoutError } from "./server-plugin-reload-cleanup.js";
 import {
   assertConfigReloadWriteSnapshot,
   assertReloadPublicationCurrent,
@@ -144,6 +146,10 @@ export function startGatewayConfigReloader(
   const activeReloads = new Set<Promise<unknown>>();
   let pluginOperationTail: Promise<unknown> = Promise.resolve();
   let missingConfigRetries = 0;
+  // Observation, source acceptance, and runtime application advance independently.
+  // These slots own queued, running, and retry work; receipts follow candidates
+  // only while their saved values survive. A failed receipt does not undo persistence,
+  // and restart intent can outlive the write that requested it.
   let pendingInProcessConfig: GatewayConfigReloadCandidate | null = null;
   let activeConfigCandidate: GatewayConfigReloadCandidate | null = null;
   let retryCandidate: GatewayConfigReloadCandidate | null = null;
@@ -217,6 +223,9 @@ export function startGatewayConfigReloader(
     withPluginCache(createPluginCache(), loadInstalledPluginIndexInstallRecords);
   let currentPluginInstallRecords: PluginInstallRecords = {};
   let pluginDrainRetry: AbortController | undefined;
+  let deferredPluginApplication:
+    | { snapshot: ConfigFileSnapshot; error: PluginRuntimeApplicationError }
+    | undefined;
   const readPluginInstallRecords = opts.readPluginInstallRecords ?? readCurrentInstallRecords;
   const appliedRevision = createConfigAppliedRevisionTracker({
     onConfigApplied: (plan, nextConfig) =>
@@ -563,6 +572,7 @@ export function startGatewayConfigReloader(
       await commitReloadBaseline();
       pluginDrainRetry?.abort();
       pluginDrainRetry = undefined;
+      deferredPluginApplication = undefined;
       publishedSource?.commit?.();
       opts.onConfigRevisionApplied?.(nextConfigRevisionHash);
       settleRuntimeApplication();
@@ -618,8 +628,17 @@ export function startGatewayConfigReloader(
       return completeApplication();
     }
 
+    if (
+      !pluginLifecycle &&
+      pluginDrainRetry &&
+      deferredPluginApplication &&
+      configSourceSnapshotsMatch(sourceSnapshot, deferredPluginApplication.snapshot)
+    ) {
+      throw deferredPluginApplication.error;
+    }
     pluginDrainRetry?.abort();
     pluginDrainRetry = undefined;
+    deferredPluginApplication = undefined;
     // No-op plans also publish the runtime snapshot before its applied receipt.
     const applyRuntime = isNoopGatewayReloadPlan(plan) ? opts.onNoopConfigCommit : opts.onHotReload;
     await opts.onConfigChange?.(plan, nextConfig);
@@ -628,6 +647,9 @@ export function startGatewayConfigReloader(
       applicationStatus = await applyRuntime(plan, nextConfig, ownership, nextSourceConfig);
     } catch (error) {
       ownership.rollbackRuntimeEnv();
+      if (!pluginLifecycle && isDeferredPluginApplication(error)) {
+        deferredPluginApplication = { snapshot: sourceSnapshot, error };
+      }
       throw error;
     }
     await checkpoint();
@@ -641,18 +663,18 @@ export function startGatewayConfigReloader(
     return completeApplication(runtime);
   };
 
-  const promoteAcceptedSnapshot = async (snapshot: ConfigFileSnapshot, reason: string) => {
-    if (!opts.promoteSnapshot || !snapshot.exists || !snapshot.valid) {
-      return;
-    }
-    try {
-      await opts.promoteSnapshot(snapshot, reason);
-    } catch (err) {
-      opts.log.warn(`config reload last-known-good promotion failed: ${String(err)}`);
-    }
+  const runAcceptedTransaction = async (
+    run: () => Promise<void>,
+    candidate?: GatewayConfigReloadCandidate,
+  ) => {
+    // Writer continuations identify roots waiting for this receipt, not the reload's
+    // lifecycle owner. Always restore the Gateway context before borrowing those roots.
+    const runTransaction = opts.runTransaction;
+    const transaction = () => runWithCandidateWaitingRoots(run, candidate);
+    await runOutsideSetupCredentialAccess(() =>
+      runTransaction ? runTransaction(transaction) : transaction(),
+    );
   };
-
-  const runAcceptedTransaction = createConfigReloadTransactionRunner(opts.runTransaction);
 
   const acceptCurrentRuntimeEcho = async (
     transactionEpoch: number,
@@ -720,9 +742,10 @@ export function startGatewayConfigReloader(
     }
     await source.acceptPaths(snapshot.includedPaths ?? []);
     if (applied.isCurrent()) {
-      await promoteAcceptedSnapshot(
+      await promoteAcceptedConfigSnapshot(
         snapshot,
         candidate.origin === "write" ? "in-process-write" : "valid-config",
+        opts,
       );
     }
   };
@@ -847,19 +870,17 @@ export function startGatewayConfigReloader(
       }
       acceptedSourceSnapshot = undefined;
       if (!snapshot.valid) {
+        const issues = formatConfigIssueLines(snapshot.issues, "", { normalizeRoot: true });
         if (newObservedRawHash) {
           await appendExternalAudit({
             detectedBy: "watch",
             previousHash: previousObservedRawHash,
             nextHash: observedRawHash,
             valid: false,
-            issues: capConfigAuditIssues(
-              formatConfigIssueLines(snapshot.issues, "", { normalizeRoot: true }),
-            ),
+            issues: capConfigAuditIssues(issues),
           });
         }
-        const issues = formatConfigIssueLines(snapshot.issues, "").join(", ");
-        opts.log.warn(`config reload skipped (invalid config): ${issues}`);
+        opts.log.warn(`config reload skipped (invalid config): ${issues.join(", ")}`);
         await appliedRevision.flush(currentConfig);
         return;
       }
@@ -910,7 +931,7 @@ export function startGatewayConfigReloader(
           assertInvokerOwned: assertLeaseOwned,
         });
         if (applied.isCurrent()) {
-          await promoteAcceptedSnapshot(snapshot, "valid-config");
+          await promoteAcceptedConfigSnapshot(snapshot, "valid-config", opts);
         }
       }, observedCandidate ?? undefined);
       await source.acceptPaths(snapshot.includedPaths ?? []);
@@ -935,37 +956,24 @@ export function startGatewayConfigReloader(
         retryCandidate = attemptedCandidate;
         pending = true;
       }
-      if (!superseded || retryCandidate !== attemptedCandidate) {
-        settleCandidateApplications(attemptedCandidate, superseded ? "superseded" : "failed");
-      }
       if (superseded) {
+        if (retryCandidate !== attemptedCandidate) {
+          settleCandidateApplications(attemptedCandidate, "superseded");
+        }
         opts.log.info(`config reload superseded: ${String(err)}`);
-      } else if (
-        err instanceof PluginRuntimeApplicationError &&
-        err.details.phase === "drain" &&
-        !err.details.committed &&
-        err.cause instanceof PluginAdmittedWorkTimeoutError
-      ) {
-        // The failed receipt lets a writing turn finish and release its retained work.
-        pluginDrainRetry = new AbortController();
-        const retrySignal = AbortSignal.any([lifecycle.signal, pluginDrainRetry.signal]);
-        void Promise.all(
-          err.cause.instances.map((instance) => instance.waitForIdle(retrySignal)),
-        ).then(
-          () => {
-            if (!retrySignal.aborted) {
-              schedule();
-            }
-          },
-          () => {
-            // Cancellation ends this retry observation, not the serving plugin's work.
-          },
-        );
-        opts.log.info(
-          `config reload deferred: ${String(err)}; retrying automatically after admitted work and cleanup settle`,
-        );
       } else {
-        opts.log.error(`config reload failed: ${String(err)}`);
+        pluginDrainRetry = reportConfigReloadFailure({
+          error: err,
+          candidate: attemptedCandidate,
+          retry: pluginDrainRetry,
+          signal: lifecycle.signal,
+          onIdle: () => {
+            pluginDrainRetry = undefined;
+            deferredPluginApplication = undefined;
+            schedule();
+          },
+          log: opts.log,
+        });
       }
     } finally {
       if (activeConfigCandidate === attemptedCandidate) {
@@ -1147,7 +1155,7 @@ export function startGatewayConfigReloader(
         }
         await source.acceptPaths(snapshot.includedPaths ?? []);
         if (applied.isCurrent()) {
-          await promoteAcceptedSnapshot(snapshot, "plugin-lifecycle");
+          await promoteAcceptedConfigSnapshot(snapshot, "plugin-lifecycle", opts);
         }
         return applied.runtime;
       } catch (error) {
@@ -1370,6 +1378,7 @@ export function startGatewayConfigReloader(
       await ready.catch(() => {});
       // Initial reads and explicit plugin operations share the same transaction unwind.
       await Promise.all(activeReloads);
+      deferredPluginApplication = undefined;
     },
     hotReloadStatus: () => (initialized ? source.status() : undefined),
   };

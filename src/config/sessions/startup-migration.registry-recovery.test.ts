@@ -12,7 +12,7 @@ import { revokeSqliteDatabaseAdmissionsForPath } from "../../infra/sqlite-databa
 import { reconstructAgentDeletionJournal } from "../../state/agent-deletion-journal-recovery.js";
 import { publishAgentDeletionJournalStatus } from "../../state/agent-deletion-journal-status.js";
 import { completeAgentDeletionJournalInDatabase } from "../../state/agent-deletion-journal.js";
-import { assertNoOpenClawAgentDatabaseLeasesReadOnly } from "../../state/openclaw-agent-db-lease.js";
+import { assertNoOpenClawAgentDatabaseLeasesReadOnly } from "../../state/openclaw-agent-db-lease-inspection.js";
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { invalidateRegisteredAgentDatabasesMemo } from "../../state/openclaw-agent-db-registry-listing.js";
 import { unregisterOpenClawAgentDatabase } from "../../state/openclaw-agent-db-registry.js";
@@ -48,15 +48,16 @@ import {
 import { certifySessionCanonicalValidationPending } from "./session-canonical-validation-readiness.js";
 import { resolveSqliteTargetFromSessionStorePath } from "./session-sqlite-target.js";
 import { reconcileSessionTranscriptIndexes } from "./session-transcript-reconcile.js";
-import { runSessionStartupMigration } from "./startup-migration.js";
+import { runSessionStartupMigration } from "./startup-migration-runtime.js";
 import * as sessionTargets from "./targets.js";
 import { resolveAllAgentSessionStoreTargetsSync } from "./targets.js";
+import { pruneRegisteredAgentToolUsage } from "./tool-usage.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const logger = () => ({ info: vi.fn(), warn: vi.fn() });
 const mainConfig = (): OpenClawConfig => ({ agents: { entries: { main: {} } } });
 
-it("starts with a retained schema-37 agent without touching its database", async () => {
+it("starts with a retained schema-41 agent without touching its database", async () => {
   const { stateDir, env, options } = fixture("openclaw-held-old-startup-");
   const cfg = mainConfig();
   openOpenClawAgentDatabase(options);
@@ -95,7 +96,9 @@ it("starts with a retained schema-37 agent without touching its database", async
     { env },
   );
   using old = nodeSqlite.openNodeSqliteDatabase(retained.path);
-  old.exec("PRAGMA user_version=37; UPDATE schema_meta SET schema_version=37");
+  old.exec(
+    "DROP TABLE agent_tool_usage; PRAGMA user_version=41; UPDATE schema_meta SET schema_version=41",
+  );
   old.close();
   revokeSqliteDatabaseAdmissionsForPath(retained.path);
   for (const agentId of ["claude", "codex", "visitors"]) {
@@ -110,6 +113,7 @@ it("starts with a retained schema-37 agent without touching its database", async
   expect(readSessionGroupMembership(cfg, env).stores.map(({ agentId }) => agentId)).toEqual([
     "main",
   ]);
+  await pruneRegisteredAgentToolUsage({ env, now: Date.now(), assertCurrent: () => {} });
   await withEnvAsync({ OPENCLAW_STATE_DIR: stateDir }, async () => {
     expect((await listGatewayAgentsBasic(cfg)).agents.map(({ id }) => id)).toEqual(["main"]);
   });
@@ -196,7 +200,7 @@ it.each(["cold", "preexisting"] as const)(
     if (lifetime === "preexisting") {
       expect(getOpenClawAgentDatabaseIfOpen(options)).toBe(initial);
     } else {
-      expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).not.toThrow();
+      await expect(assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).resolves.toBeUndefined();
     }
   },
 );
@@ -229,7 +233,7 @@ it("reads the cold certified startup contract and session inventory once each", 
     statements.restore();
   }
   expectMainKey(options);
-  expect(() => assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).not.toThrow();
+  await expect(assertNoOpenClawAgentDatabaseLeasesReadOnly({ env })).resolves.toBeUndefined();
 });
 
 it("does not create a missing configured agent database during startup maintenance", async () => {
@@ -533,52 +537,46 @@ it("keeps copied state directories self-contained for combined gateway reads", a
   });
 });
 
-it.each(["registry", "main-key"] as const)(
-  "keeps the event loop responsive while repairing a cold %s startup contract",
-  async (repair) => {
-    const { env, options } = fixture("openclaw-startup-admission-");
-    const cfg: OpenClawConfig = {
-      agents: { entries: { main: {} } },
-      session: {},
-    };
-    const initial = openOpenClawAgentDatabase(options);
-    setCanonicalSqliteSessionMainKey(initial, repair === "main-key" ? "previous" : "main");
-    closeOpenClawAgentDatabasesForTest();
-    revokeSqliteDatabaseAdmissionsForPath(initial.path);
-    if (repair === "registry") {
-      unregisterOpenClawAgentDatabase({ ...options, path: initial.path });
-    }
-    const originalOpen = nodeSqlite.openNodeSqliteDatabase;
-    let yielded = false;
-    let tick: ReturnType<typeof setImmediate> | undefined;
-    const open = vi
-      .spyOn(nodeSqlite, "openNodeSqliteDatabase")
-      .mockImplementation((location, behavior) => {
-        const database = originalOpen(location, behavior);
-        if (location === initial.path && behavior?.readOnly !== true) {
-          // Earlier async setup cannot satisfy this admission-phase progress check.
-          tick = setImmediate(() => {
-            yielded = true;
-            cfg.session!.mainKey = "later";
-          });
-        }
-        return database;
-      });
-    const log = logger();
-    try {
-      await runSessionStartupMigration({ cfg, env, log });
-      expect(log.warn).not.toHaveBeenCalled();
-      expect(yielded).toBe(true);
-      expectMainKey(options);
-      expect(listOpenClawRegisteredAgentDatabases({ env })).toContainEqual(
-        expect.objectContaining({ agentId: "main", path: initial.path }),
-      );
-      expect(isOpenClawAgentDatabaseOpen(initial.path)).toBe(false);
-    } finally {
-      if (tick) {
-        clearImmediate(tick);
+it("keeps the event loop responsive while repairing a cold main-key startup contract", async () => {
+  const { env, options } = fixture("openclaw-startup-admission-");
+  const cfg: OpenClawConfig = {
+    agents: { entries: { main: {} } },
+    session: {},
+  };
+  const initial = openOpenClawAgentDatabase(options);
+  setCanonicalSqliteSessionMainKey(initial, "previous");
+  closeOpenClawAgentDatabasesForTest();
+  revokeSqliteDatabaseAdmissionsForPath(initial.path);
+  const originalOpen = nodeSqlite.openNodeSqliteDatabase;
+  let yielded = false;
+  let tick: ReturnType<typeof setImmediate> | undefined;
+  const open = vi
+    .spyOn(nodeSqlite, "openNodeSqliteDatabase")
+    .mockImplementation((location, behavior) => {
+      const database = originalOpen(location, behavior);
+      if (location === initial.path && behavior?.readOnly !== true) {
+        // Earlier async setup cannot satisfy this admission-phase progress check.
+        tick = setImmediate(() => {
+          yielded = true;
+          cfg.session!.mainKey = "later";
+        });
       }
-      open.mockRestore();
+      return database;
+    });
+  const log = logger();
+  try {
+    await runSessionStartupMigration({ cfg, env, log });
+    expect(log.warn).not.toHaveBeenCalled();
+    expect(yielded).toBe(true);
+    expectMainKey(options);
+    expect(listOpenClawRegisteredAgentDatabases({ env })).toContainEqual(
+      expect.objectContaining({ agentId: "main", path: initial.path }),
+    );
+    expect(isOpenClawAgentDatabaseOpen(initial.path)).toBe(false);
+  } finally {
+    if (tick) {
+      clearImmediate(tick);
     }
-  },
-);
+    open.mockRestore();
+  }
+});

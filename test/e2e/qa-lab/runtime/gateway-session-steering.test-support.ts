@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { text as readBody } from "node:stream/consumers";
 import { createQaGatewayChild } from "../../../../extensions/qa-lab/api.js";
+import type { QueueConfig } from "../../../../src/config/types.messages.js";
 import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import type { GatewayClient } from "../../../../src/gateway/client.js";
 import {
@@ -588,10 +589,7 @@ function personHeaders(email: string) {
  * Shared-token Gateways have one owner identity, so these scenarios need their own.
  */
 export async function withPeopleGateway(
-  options: {
-    allowCollaborativeSteering?: boolean;
-    collaborativeSteeringFallback?: "queue" | "reject";
-  },
+  options: Pick<QueueConfig, "allowCollaborativeSteering" | "collaborativeSteeringFallback">,
   run: (
     gateway: SteeringApi & {
       alice: GatewayClient;

@@ -15,7 +15,7 @@ import {
   replaceSessionEntrySync,
 } from "./session-accessor.js";
 import { resolveSessionWorkStartBlock } from "./session-work-start.js";
-import { runSessionStartupMigration } from "./startup-migration.js";
+import { runSessionStartupMigration } from "./startup-migration-runtime.js";
 
 it.each(["startup", "doctor"] as const)(
   "%s refuses unresolved legacy requester custody before rewriting its row or transcript",
@@ -280,7 +280,7 @@ it.each(["startup", "doctor"] as const)(
         ),
       ).toEqual(
         fixtures.map(({ scope }) =>
-          scope.agentId === "pending"
+          scope.agentId === "pending" && mode === "startup"
             ? expect.objectContaining({ tombstone: expect.any(Object) })
             : undefined,
         ),
@@ -295,7 +295,7 @@ it.each(["startup", "doctor"] as const)(
         );
         expect(Object.keys(stored).filter((key) => key.startsWith("restartRecovery"))).toEqual([]);
         expect(stored).not.toHaveProperty("activeWriterRunId");
-        if (scope.agentId === "pending") {
+        if (scope.agentId === "pending" && mode === "startup") {
           expect(stored.pendingFinalDelivery).toMatchObject({
             kind: "replayable",
             text: "Unsent final",
@@ -327,8 +327,10 @@ it.each(["startup", "doctor"] as const)(
         );
         const backupName = fs
           .readdirSync(path.dirname(database.path))
-          .find((name) =>
-            name.startsWith(`${path.basename(database.path)}.pre-startup-migration-`),
+          .find(
+            (name) =>
+              name.startsWith(`${path.basename(database.path)}.pre-startup-migration-`) &&
+              name.endsWith(".bak"),
           );
         expect(backupName).toBeDefined();
         using backup = new DatabaseSync(path.join(path.dirname(database.path), backupName!), {

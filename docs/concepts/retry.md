@@ -97,10 +97,12 @@ policy does not wrap arbitrary Git commands run by agents or setup scripts.
 ### Telegram
 
 - With the built-in transport, new text messages and rich-text messages use fresh HTTP connections, avoiding stale keep-alive sockets for initial previews, replies, and terminal errors. Polling, edits, and control requests retain connection pooling. This adds a connection handshake to each new text message.
-- These text sends could create duplicates, so they retry only when Telegram rejects the request with flood control (429) or the transport proves the request did not start. A reset, timeout, or lost response after sending remains ambiguous at the transport layer. Durable recovery may resend an ordinary final text once, as described below.
+- These text sends could create duplicates, so they retry only when Telegram rejects the request with flood control (429) or the transport proves the request did not start. A reset, timeout, or lost response after sending remains ambiguous and is not replayed.
 - Operations safe to repeat, including preview edits, can retry transient network failures and HTTP 5xx responses without replacing the existing message.
 - Uses `retry_after` when available, otherwise exponential backoff.
+- A reply, delete, or reaction held by flood control has a five-minute retry budget, counted from its first attempt and including time spent queued or waiting on Telegram's response. Once another flood wait would pass that budget, it stops waiting; an attempt already in flight can still finish after the five minutes. A final reply that Telegram refused this way is not dropped: it stays in the delivery queue and is sent again later, up to the queue's retry limit, and no "please ask again" notice is sent for it. A reply split into several messages stops at the refused part.
 - HTML/Markdown parse errors are not retried; they fall back to plain text on the first attempt.
+- When durable final-reply recovery stops after an unconfirmed resend or exhausted retries, the Gateway hands the existing uncertainty notice to lifecycle delivery without waiting for another incoming message. Notice delivery uses the same bounded durable queue and can itself fail if the channel remains unavailable.
 
 ## Configuration
 
@@ -148,6 +150,9 @@ action) is resent, once per entry, accepting a rare duplicate over a lost reply.
 If that resend is also interrupted, recovery stops and the uncertainty notice is
 sent. An unreplaced owner can record a late result without authorizing another
 send.
+The same rule applies when heartbeat renewal fails: new sends stop, but a concrete
+receipt from an already-started send can settle its unchanged claim. A replacement
+claim still rejects the old producer, and a partial batch remains with recovery.
 
 ## Related
 

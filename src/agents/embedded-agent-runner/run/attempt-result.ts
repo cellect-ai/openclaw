@@ -2,6 +2,7 @@ import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { isPlainTextToolCallAttempt } from "../../../../packages/tool-call-repair/src/index.js";
 import { freezeDiagnosticTraceContext } from "../../../infra/diagnostic-trace-context.js";
 import { isTransientNetworkError } from "../../../infra/retryable-network-errors.js";
+import type { AssistantHistoryMessage } from "../../../llm/types.js";
 import { extractAssistantTranscriptSourceText } from "../../../shared/chat-message-content.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
 import { prepareTerminalAssistantReply } from "../../assistant-terminal-reply.js";
@@ -75,7 +76,7 @@ export type EmbeddedRunAttemptWithReceiptEvidence = EmbeddedRunAttemptResult & {
  * app-server harness already does the same for its own attempts.
  */
 function resolveSettledTurnFinalizationContext(params: {
-  assistant: EmbeddedRunAttemptResult["currentAttemptCompletedAssistant"];
+  assistant: AssistantHistoryMessage | undefined;
   assistantTexts: readonly string[];
   messagesSnapshot: EmbeddedRunAttemptResult["messagesSnapshot"];
   terminal: EmbeddedRunAttemptResult["terminal"];
@@ -152,6 +153,7 @@ export function completeEmbeddedAttemptResult(
   const hookAgentId = input.setup.sessionAgentId;
   // Output hooks can reenter the runtime; project only the state settled before they run.
   const state = {
+    agentTerminal: input.state.agentTerminal,
     terminal: input.state.terminal,
     preflightRecovery: prompt.preflightRecovery,
     sessionIdUsed: prompt.sessionIdUsed,
@@ -275,6 +277,9 @@ export function completeEmbeddedAttemptResult(
   });
   const keptAnswer = evidence.keptAnswer;
   const keptReply = keptAnswer ? prepareTerminalAssistantReply(keptAnswer.assistant) : closingReply;
+  const finalPresentation = input.preparedStreamRuntime.stream.getFinalPresentation(
+    keptAnswer?.assistant ?? terminalAssistant,
+  );
   const assistant = resolveCurrentAttemptAssistant(state);
   let textToolCallAttempt = false;
   if (
@@ -306,6 +311,7 @@ export function completeEmbeddedAttemptResult(
     ...evidence,
     ...(attempt.inputAlreadyDelivered ? { inputAlreadyDelivered: true as const } : {}),
     preparedTerminalReply: keptReply,
+    ...(finalPresentation ? { finalPresentation } : {}),
     sandboxRuntime: input.setup.sandboxRuntime,
     ...(settledTurnFinalizationContext ? { settledTurnFinalizationContext } : {}),
     replayMetadata,

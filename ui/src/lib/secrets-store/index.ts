@@ -124,11 +124,10 @@ async function mutateAndReload(
     mutationError =
       bulk && saved < mutation.entries.length
         ? new Error(
-            t("secretsStore.partial", {
+            `${t("secretsStore.partial", {
               saved: String(saved),
               total: String(mutation.entries.length),
-              error: formatUiError(error),
-            }),
+            })} ${t("secretsStore.partialFailure", { error: formatUiError(error) })}`,
           )
         : error;
   }

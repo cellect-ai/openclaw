@@ -1,2 +1,2 @@
-# Stable async realtime caller authority regressions: exact adapted growth.
-237
+# Preserve async realtime SDK caller authority and model-lock admission across worker reads.
+242

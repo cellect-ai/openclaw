@@ -1,6 +1,8 @@
-import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { stripCompactionReplayCheckpoint } from "../../../../ai/src/transports/provider-compaction-checkpoint.js";
-import { getOpenClawSystemUpdateKind } from "../../operator-messages.js";
+import {
+  getOpenClawSystemUpdateKind,
+  isSystemPromptUpdateBoundary,
+} from "../../operator-messages.js";
 import type { AgentMessage } from "../../types.js";
 import {
   createBranchSummaryMessage,
@@ -8,6 +10,11 @@ import {
   createCustomMessage,
 } from "../messages.js";
 import type { SessionContext, SessionTreeEntry } from "../types.js";
+import {
+  isPendingBackgroundResultMessage,
+  projectPlacedBackgroundResultMessage,
+  readBackgroundResultPlacement,
+} from "./background-result-placement.js";
 import { selectResetKeptMessageFacts, type ToolPairingMessageFact } from "./tool-pairing-facts.js";
 import { collectToolPairingMessageFact, selectResetKeptEntries } from "./tool-result-pairing.js";
 import { isTranscriptArtifactProvider } from "./transcript-model.js";
@@ -64,18 +71,27 @@ export function projectSessionEntryMessage(entry: SessionTreeEntry): AgentMessag
   }
 }
 
+/** Payload-free context selection; invalid placements are validated only when selected. */
 export type SessionContextEntryFact = {
   id: string;
   type: SessionTreeEntry["type"];
   firstKeptEntryId?: string;
   role?: AgentMessage["role"];
   pairing?: ToolPairingMessageFact;
+  pendingBackground: boolean;
   excluded: boolean;
   promptBoundary: boolean;
   promptUpdate: boolean;
+  placementResultIds?: readonly string[] | "invalid";
 };
 
 export function collectSessionContextEntryFact(entry: SessionTreeEntry): SessionContextEntryFact {
+  let placementResultIds: SessionContextEntryFact["placementResultIds"];
+  try {
+    placementResultIds = readBackgroundResultPlacement(entry)?.resultEntryIds.slice();
+  } catch {
+    placementResultIds = "invalid";
+  }
   const message = entry.type === "message" ? entry.message : undefined;
   return {
     id: entry.id,
@@ -84,85 +100,153 @@ export function collectSessionContextEntryFact(entry: SessionTreeEntry): Session
       entry.type === "compaction" || entry.type === "reset" ? entry.firstKeptEntryId : undefined,
     role: message?.role,
     pairing: message ? collectToolPairingMessageFact(message) : undefined,
+    pendingBackground: isPendingBackgroundResultMessage(message),
     excluded:
       entry.type === "custom_message"
         ? isExcludedCustomMessage(entry)
         : Boolean(
             message && "excludeFromContext" in message && message.excludeFromContext === true,
           ),
-    promptBoundary:
-      entry.type === "custom" &&
-      entry.customType === "openclaw.system-prompt" &&
-      asOptionalRecord(entry.data)?.restart === true,
+    promptBoundary: isSystemPromptUpdateBoundary(entry),
     promptUpdate: getOpenClawSystemUpdateKind(entry) === "prompt-update",
+    placementResultIds,
   };
 }
 
 export function selectResetKeptContextEntryFacts<T extends SessionContextEntryFact>(
   entries: readonly T[],
+  identity: (entry: T) => unknown = (entry) => entry,
 ): T[] {
   return selectResetKeptMessageFacts(
     entries.flatMap((entry) =>
       entry.type === "message" && entry.role
-        ? [{ entry, role: entry.role, pairing: entry.pairing, identity: entry }]
+        ? [
+            {
+              entry,
+              role: entry.role,
+              pairing: entry.pairing,
+              identity: identity(entry),
+            },
+          ]
         : [],
     ),
   ).map(({ entry }) => entry);
 }
 
-/** The release array adapter and payload-free worker share exactly one window selector. */
+type ContextEntry = Pick<SessionContextEntryFact, "id" | "type" | "firstKeptEntryId">;
+type ContextSelectionSource<T> = {
+  promptBoundary: (entry: T) => boolean;
+  placement: (entry: T) => readonly string[] | undefined;
+  pending: (entry: T) => boolean;
+  resetKept: (entries: T[]) => ReadonlySet<ContextEntry>;
+  promptUpdate: (entry: T) => boolean;
+  excluded: (entry: T) => boolean;
+};
+
+/** Array callers preserve entry identities and lazy projection/validation timing. */
 export function* iterateSessionContextEntries<T extends SessionTreeEntry>(
   pathEntries: readonly T[],
 ) {
-  const entries = pathEntries.map((source) => ({
-    ...collectSessionContextEntryFact(source),
-    source,
-  }));
-  for (const selected of iterateContextFacts(entries, (selectedFacts) => {
-    const selectedSources = new Set(
-      selectResetKeptEntries(selectedFacts.map((fact) => fact.source)),
-    );
-    return selectedFacts.filter((fact) => selectedSources.has(fact.source));
-  })) {
-    yield { entry: selected.entry.source, context: selected.context };
-  }
+  yield* iterateContextSource(pathEntries, {
+    promptBoundary: isSystemPromptUpdateBoundary,
+    placement: (entry) => readBackgroundResultPlacement(entry)?.resultEntryIds,
+    pending: (entry) => entry.type === "message" && isPendingBackgroundResultMessage(entry.message),
+    resetKept: (entries) => new Set(selectResetKeptEntries(entries)),
+    promptUpdate: (entry) => getOpenClawSystemUpdateKind(entry) === "prompt-update",
+    excluded: (entry) =>
+      entry.type === "custom_message"
+        ? isExcludedCustomMessage(entry)
+        : entry.type === "message" &&
+          "excludeFromContext" in entry.message &&
+          entry.message.excludeFromContext === true,
+  });
 }
 
+/** Select the canonical window using only navigation and tool-pairing facts. */
 export function* iterateSessionContextEntryFacts<T extends SessionContextEntryFact>(
   pathEntries: readonly T[],
 ) {
-  yield* iterateContextFacts(pathEntries, selectResetKeptContextEntryFacts);
+  yield* iterateContextSource(pathEntries, {
+    promptBoundary: (entry) => entry.promptBoundary,
+    placement: (entry) => {
+      if (entry.placementResultIds === "invalid") {
+        throw new Error("Invalid background result placement marker");
+      }
+      return entry.placementResultIds;
+    },
+    pending: (entry) => entry.pendingBackground,
+    resetKept: (entries) => new Set(selectResetKeptContextEntryFacts(entries)),
+    promptUpdate: (entry) => entry.promptUpdate,
+    excluded: (entry) => entry.excluded,
+  });
 }
 
-function* iterateContextFacts<T extends SessionContextEntryFact>(
+function* iterateContextSource<T extends ContextEntry>(
   pathEntries: readonly T[],
-  selectReset: (entries: readonly T[]) => T[],
-): Generator<{ entry: T; context: "current" | "retained" | "reset-retained" }> {
+  source: ContextSelectionSource<T>,
+): Generator<{ entry: T; placement?: T; context: "current" | "retained" | "reset-retained" }> {
   const { boundaryIndex, firstKeptIndex } = resolveSessionContextWindow(pathEntries);
   // A rebuilt prefix retires prompt overrides; retained turns still own their runtime facts.
-  const operatorBoundaryIndex = Math.max(
-    boundaryIndex,
-    pathEntries.findLastIndex((entry) => entry.promptBoundary),
-  );
+  const operatorBoundaryIndex = pathEntries.findLastIndex(source.promptBoundary);
   const boundary = pathEntries[boundaryIndex];
+  let byId: Map<string, T> | undefined;
+  const placedEntries = (entry: T) => {
+    const placement = source.placement(entry);
+    if (!placement) {
+      return undefined;
+    }
+    const sourcesById = (byId ??= new Map(
+      pathEntries.map((candidate) => [candidate.id, candidate]),
+    ));
+    return placement.map((id) => {
+      const result = sourcesById.get(id);
+      if (result?.type !== "message" || !source.pending(result)) {
+        throw new Error(`Background result placement payload is unavailable: ${id}`);
+      }
+      return result;
+    });
+  };
   const resetKept =
     boundary?.type === "reset"
-      ? new Set(selectReset(pathEntries.slice(firstKeptIndex, boundaryIndex)))
+      ? source.resetKept(
+          pathEntries
+            .slice(firstKeptIndex, boundaryIndex)
+            .flatMap(
+              (entry) =>
+                placedEntries(entry) ??
+                (entry.type === "message" && source.pending(entry) ? [] : [entry]),
+            ),
+        )
       : undefined;
   if (boundary) {
     yield { entry: boundary, context: "current" };
   }
   let index = -1;
+  const placed = new Set<string>();
   for (const entry of pathEntries) {
     index += 1;
     const retained = index < boundaryIndex;
+    if (index === boundaryIndex || (retained && index < firstKeptIndex)) {
+      continue;
+    }
+    const context = retained ? (resetKept ? "reset-retained" : "retained") : "current";
+    const results = placedEntries(entry);
+    if (results) {
+      for (const result of results) {
+        if ((!retained || !resetKept || resetKept.has(result)) && !placed.has(result.id)) {
+          placed.add(result.id);
+          yield { entry: result, placement: entry, context };
+        }
+      }
+      continue;
+    }
     if (
-      index === boundaryIndex ||
-      (retained && (index < firstKeptIndex || (resetKept && !resetKept.has(entry))))
+      (retained && resetKept && !resetKept.has(entry)) ||
+      (entry.type === "message" && source.pending(entry))
     ) {
       continue;
     }
-    if (index < operatorBoundaryIndex && entry.promptUpdate) {
+    if (index < operatorBoundaryIndex && source.promptUpdate(entry)) {
       continue;
     }
     const hasMessage =
@@ -171,12 +255,11 @@ function* iterateContextFacts<T extends SessionContextEntryFact>(
       entry.type === "branch_summary";
     if (
       !hasMessage ||
-      (entry.type === "custom_message" && entry.excluded) ||
-      (!resetKept?.has(entry) && entry.type === "message" && entry.excluded)
+      (entry.type === "custom_message" && source.excluded(entry)) ||
+      (!resetKept?.has(entry) && entry.type === "message" && source.excluded(entry))
     ) {
       continue;
     }
-    const context = retained ? (resetKept ? "reset-retained" : "retained") : "current";
     yield { entry, context };
   }
 }
@@ -196,7 +279,11 @@ export function* iterateSessionContextMessages<T extends SessionTreeEntry>(
 
 /** Project one selected entry without changing its canonical position or retained context. */
 export function projectSessionContextMessage<T extends SessionTreeEntry>(
-  { entry, context }: { entry: T; context: "current" | "retained" | "reset-retained" },
+  {
+    entry,
+    placement,
+    context,
+  }: { entry: T; placement?: T; context: "current" | "retained" | "reset-retained" },
   readEntry: (entry: T) => SessionTreeEntry = (selected) => selected,
 ): AgentMessage | undefined {
   if (entry.type === "reset") {
@@ -208,9 +295,11 @@ export function projectSessionContextMessage<T extends SessionTreeEntry>(
   }
   // Explicit reset retention can include otherwise excluded user/assistant messages.
   let message =
-    context === "reset-retained" && hydrated.type === "message"
-      ? hydrated.message
-      : projectSessionEntryMessage(hydrated);
+    placement && hydrated.type === "message"
+      ? projectPlacedBackgroundResultMessage(hydrated.message)
+      : context === "reset-retained" && hydrated.type === "message"
+        ? hydrated.message
+        : projectSessionEntryMessage(hydrated);
   if (!message) {
     return undefined;
   }

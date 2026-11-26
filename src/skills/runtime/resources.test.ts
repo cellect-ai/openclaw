@@ -10,7 +10,6 @@ import { loggingState } from "../../logging/state.js";
 import { escapeSkillXml, formatSkillsCompactForPrompt } from "../loading/skill-contract.js";
 import { loadWorkspaceSkills } from "../loading/workspace-skill-loader.js";
 import { buildSkillSnapshot } from "../loading/workspace-skill-prompt.js";
-import { SkillResourceDeliveryLimitError } from "./resource-delivery-error.js";
 import {
   materializeSkillResources,
   prepareSkillResourceDelivery as prepareDelivery,
@@ -73,7 +72,7 @@ async function expectFile(base: string, name: string, content: string, mode?: nu
   }
 }
 
-it("accepts 8 MiB of combined resources and identifies aggregate overflow", async () => {
+it("keeps an oversized skill catalog usable with whole instructions and a delivery note", async () => {
   let lastSupport = "";
   for (const name of ["alpha", "beta"]) {
     const directory = await writeSkill(name);
@@ -88,7 +87,18 @@ it("accepts 8 MiB of combined resources and identifies aggregate overflow", asyn
   expect(delivery?.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
 
   await fs.appendFile(lastSupport, "a");
-  await expect(prepare(snapshot)).rejects.toBeInstanceOf(SkillResourceDeliveryLimitError);
+  const bounded = (await prepare(snapshot))!;
+  expect(bounded.skills.map((skill) => skill.name)).toEqual(["alpha", "beta"]);
+  expect(
+    bounded.skills
+      .flatMap((skill) => skill.files)
+      .reduce((bytes, file) => bytes + Buffer.byteLength(file.content, file.encoding ?? "utf8"), 0),
+  ).toBeLessThanOrEqual(8 * 1024 * 1024);
+  const worker = await materialize(bounded);
+  const beta = worker.snapshot.resolvedSkills.find((skill) => skill.name === "beta")!;
+  expect(await read(beta.filePath)).toContain(markdown);
+  expect(await read(beta.filePath)).toContain("Supporting files were omitted");
+  expect(existsSync(path.join(beta.baseDir, "reference-3.txt"))).toBe(false);
 });
 
 it("reserves delivery slots for prompted and explicit skills before additional discovery", async () => {

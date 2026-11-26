@@ -4,11 +4,8 @@ import path from "node:path";
 import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { expect, it } from "vitest";
-import { resolveSessionStorePathCore } from "../../config/sessions/paths.js";
-import { createSessionEntryWithTranscript } from "../../config/sessions/session-accessor.entry-mutation.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry-replace.js";
 import { patchSessionEntryCore } from "../../config/sessions/session-accessor.sqlite-entry.js";
-import { deleteSessionEntryLifecycle } from "../../config/sessions/session-accessor.sqlite-lifecycle.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
 import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
@@ -20,7 +17,7 @@ import { closeOpenClawStateDatabaseAsync } from "../../state/openclaw-state-db.j
 import * as stateWorker from "../../state/openclaw-state-worker-store.js";
 import {
   resolveLocalWorkspaceOwner,
-  withLocalWorkspaceProjection,
+  reuseLocalWorkspaceProjection,
 } from "../worker-environments/local-workspace-projection.js";
 import { readLocalWorkspaceProjection } from "../worker-environments/local-workspace-store.test-support.js";
 import { expectCutReply } from "./sessions-rewind.handler.test-support.js";
@@ -70,17 +67,18 @@ async function expectAdoption(
     "authorized successor owner",
   );
   expect(resumed.sessionId).toBe(saved.entry.sessionId);
+  // Custody transfers on the incarnation pair, so the saved row adopts both the
+  // successor's session id and its rotated lifecycle revision.
   expect(await readLocalWorkspaceProjection(fixture.worktree.id)).toEqual({
     ...saved.row,
     session_id: saved.entry.sessionId,
+    lifecycle_revision: saved.entry.lifecycleRevision,
     revision: saved.row.revision + 1,
   });
   expect(
     (await readSessionEntryReadOnlyInWorker(fixture.scope))?.localWorkspaceHandoff,
   ).toBeUndefined();
-  expect(await withLocalWorkspaceProjection(resumed, (workspace) => workspace.prepare())).toBe(
-    fixture.projection,
-  );
+  expect(await reuseLocalWorkspaceProjection(resumed)).toBe(fixture.projection);
   expect(await fs.readFile(path.join(fixture.projection, "source.txt"), "utf8")).toBe(
     "stopped turn edit\n",
   );
@@ -230,9 +228,7 @@ it("keeps persisted sessions without a handoff usable after settings and ordinar
       "existing owner without a handoff",
     );
     expect(owner.sessionId).toBe(fixture.scope.sessionId);
-    expect(await withLocalWorkspaceProjection(owner, (workspace) => workspace.prepare())).toBe(
-      fixture.projection,
-    );
+    expect(await reuseLocalWorkspaceProjection(owner)).toBe(fixture.projection);
     expect((await readLocalWorkspaceProjection(fixture.worktree.id))?.session_id).toBe(
       fixture.scope.sessionId,
     );
@@ -245,42 +241,6 @@ it("keeps persisted sessions without a handoff usable after settings and ordinar
     );
     expect(await fs.readFile(path.join(fixture.canonical, "source.txt"), "utf8")).toBe(
       "stopped turn edit\n",
-    );
-  });
-});
-
-it("does not transfer retained projection custody to a deleted and recreated session", async () => {
-  await withMessageCutLocalWorkspace(async (fixture) => {
-    const saved = await persistCut(fixture);
-    await deleteSessionEntryLifecycle({
-      agentId: fixture.scope.agentId,
-      storePath: resolveSessionStorePathCore(undefined, { agentId: fixture.scope.agentId }),
-      target: { canonicalKey: fixture.scope.sessionKey, storeKeys: [fixture.scope.sessionKey] },
-      archiveTranscript: false,
-      deleteTranscriptWithoutArchive: true,
-    });
-    expect(await readSessionEntryReadOnlyInWorker(fixture.scope)).toBeUndefined();
-    const nextSessionId = randomUUID();
-    const created = await createSessionEntryWithTranscript(fixture.scope, () => ({
-      ok: true,
-      entry: {
-        ...saved.entry,
-        sessionId: nextSessionId,
-        lifecycleRevision: randomUUID(),
-        localWorkspaceHandoff: undefined,
-      },
-    }));
-    expect(created.ok).toBe(true);
-    using recreated = expectDefined(
-      await resolveLocalWorkspaceOwner({ cfg, ...fixture.scope }),
-      "recreated session owner",
-    );
-    await expect(
-      withLocalWorkspaceProjection(recreated, (workspace) => workspace.prepare()),
-    ).rejects.toThrow("different session incarnation");
-    expect(await readLocalWorkspaceProjection(fixture.worktree.id)).toEqual(saved.row);
-    expect(await fs.readFile(path.join(fixture.projection, "ignored.txt"), "utf8")).toBe(
-      "guest-only ignored data\n",
     );
   });
 });

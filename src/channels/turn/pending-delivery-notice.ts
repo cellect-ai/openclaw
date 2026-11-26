@@ -12,7 +12,7 @@ import {
   deliveryContextKey,
   normalizeDeliveryContext,
 } from "../../utils/delivery-context.shared.js";
-import { hasActiveDirectPendingFinalDelivery } from "./direct-delivery-custody.js";
+import { hasActiveDirectPendingFinalDelivery } from "./direct-delivery-active.js";
 
 const PENDING_DELIVERY_NOTICE =
   "I couldn’t confirm whether my previous reply reached this chat, so I won’t resend it automatically. Please ask for any missing remainder.";
@@ -23,6 +23,7 @@ export async function deliverPendingDeliveryNotice(
   sessionKey: string,
   storePath: string,
   agentId?: string,
+  expectedIntentId?: string,
 ): Promise<void> {
   const resolvedAgentId = agentId ?? resolveAgentIdFromSessionKey(sessionKey);
   const scope = { agentId: resolvedAgentId, sessionKey, storePath };
@@ -45,6 +46,7 @@ export async function deliverPendingDeliveryNotice(
         !runtime ||
         !notice ||
         notice.state !== "owed" ||
+        (expectedIntentId !== undefined && notice.intentId !== expectedIntentId) ||
         !context?.channel ||
         !context.to ||
         deliveryContextKey(context) !== deliveryContextKey(deliveryContextFromSession(entry)) ||
@@ -101,14 +103,16 @@ export async function deliverPendingDeliveryNotice(
   const { entry, notice, idempotencyKey } = pending;
   const outcome = await pending.delivery;
   let delivered: boolean;
-  if (outcome) {
-    delivered = !outcome.suppressed;
+  if (outcome?.suppressed === false) {
+    delivered = true;
   } else {
+    // A retained completed intent suppresses replay after a lost ACK reply.
+    // Its receipt still permits recording the notice and clearing its debt.
     const owner = await findDeliveryIntentOwner(idempotencyKey);
-    if (owner?.status !== "completed" && owner?.status !== "failed") {
+    if (!outcome && owner?.status !== "completed" && owner?.status !== "failed") {
       return;
     }
-    delivered = owner.status === "completed";
+    delivered = owner?.status === "completed";
   }
   if (
     delivered &&

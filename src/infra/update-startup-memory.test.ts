@@ -9,7 +9,8 @@ import { createGatewayUpdateLifecycle } from "./update-check-lifecycle.js";
 const { refreshRemoteModelCatalogMock: refreshCatalog } = await vi.hoisted(
   () => import("./update-startup.test-support.js"),
 );
-const { createGatewayUpdateCheck, runGatewayUpdateCheck } = await import("./update-startup.js");
+const { createGatewayUpdateCheck } = await import("./update-startup-scheduler.js");
+const { runGatewayUpdateCheck } = await import("./update-startup.js");
 afterEach(() => vi.restoreAllMocks());
 
 it("defers low-memory scheduled update and catalog work, but not explicit checks", async () => {

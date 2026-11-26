@@ -1,12 +1,8 @@
-import { ChildProcess } from "node:child_process";
-import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { PassThrough } from "node:stream";
-import * as tar from "tar";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import * as nativeAssets from "../../scripts/lib/fs-safe-worker-native-assets.mts";
-import * as managed from "../../scripts/lib/managed-child-process.mts";
+import { resolveTestRuntime } from "../../scripts/lib/test-runtime.mts";
 import {
   copyIsolatedVitestSource as copySource,
   prepareIsolatedVitestDependencies as prepareDependencies,
@@ -71,28 +67,84 @@ const bindMount = (Source: string, Destination: string) => ({
   Destination,
   RW: true,
 });
-function containerInspection(status = "exited", exit = 0, owner = name) {
-  const create = createArgs(createOptions());
+const environment = [
+  "PATH=/opt/openclaw-vitest:/usr/local/bin:/usr/bin:/bin",
+  "HOME=/tmp/home",
+  "TMPDIR=/workspace/.openclaw/tmp",
+  "LANG=C.UTF-8",
+  "LC_ALL=C.UTF-8",
+  "CI=1",
+  "RAYON_NUM_THREADS=4",
+  "TOKIO_WORKER_THREADS=4",
+  "ROLLDOWN_WORKER_THREADS=4",
+  "GOMAXPROCS=4",
+  "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
+  "PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1",
+  "COREPACK_ENABLE_NETWORK=0",
+  "npm_config_manage_package_manager_versions=false",
+  "container=podman",
+];
+const bunEnvironment = [
+  "OPENCLAW_VITEST_RUNTIME=bun",
+  "OPENCLAW_BUN_PATH=/opt/openclaw-vitest/bun",
+];
+function containerInspection(
+  status = "exited",
+  exit = 0,
+  owner = name,
+  runtime: "node" | "bun" = "node",
+) {
   return {
     Config: {
       Labels: { [label]: owner },
       User: `${process.getuid?.()}:${process.getgid?.()}`,
-      Env: create.flatMap((arg, index) => (arg === "--env" ? [create[index + 1]!] : [])),
+      Env: [...environment, ...(runtime === "bun" ? bunEnvironment : [])],
     },
     HostConfig: { NetworkMode: "none", Privileged: false, ReadonlyRootfs: true, Init: true },
-    Mounts: [bindMount("/owned/source", "/workspace")],
+    Mounts: [
+      bindMount("/owned/source", "/workspace"),
+      ...(runtime === "bun"
+        ? [{ ...bindMount("/owned/bun", "/opt/openclaw-vitest/bun"), RW: false }]
+        : []),
+    ],
     State: { Running: status === "running", Status: status, ExitCode: exit },
   };
 }
 
 describe("isolated Vitest admission", () => {
+  it("executes the selected test runtime and its real child", () => {
+    const runtime = process.versions.bun ? "bun" : "node";
+    expect(runtime).toBe(resolveTestRuntime(process.env));
+    const child = spawnSync(
+      process.execPath,
+      ["-e", "console.log(JSON.stringify({bun:process.versions.bun??null,exe:process.execPath}))"],
+      {
+        encoding: "utf8",
+        env: { PATH: process.env.PATH },
+      },
+    );
+    expect(child.status).toBe(0);
+    expect(JSON.parse(child.stdout)).toEqual({
+      bun: process.versions.bun ?? null,
+      exe: process.execPath,
+    });
+    if (process.env.container === "podman") {
+      expect(process.execPath).toBe("/opt/openclaw-vitest/" + runtime);
+      // sysfs also contains control files such as bonding_masters, not interfaces.
+      const interfaces = fs
+        .readdirSync("/sys/class/net", { withFileTypes: true })
+        .filter((entry) => entry.isSymbolicLink())
+        .map((entry) => entry.name);
+      expect(interfaces).toEqual(["lo"]);
+    }
+  });
   it("dispatches the real wrapper before file checks, prerequisites or project delegation", async () => {
     const run = vi.spyOn(isolatedVitest, "runIsolatedVitest").mockResolvedValue(7);
     const previousExit = process.exitCode;
     const env = { PATH: "/prepared/tools" };
     try {
       await runVitest(vi.fn(), ["--isolated-image", image, "run", file], env);
-      expect(run).toHaveBeenCalledWith(expect.any(String), image, ["run", file], env);
+      expect(run).toHaveBeenCalledWith(expect.any(String), image, ["run", file], env, "node");
       expect(process.exitCode).toBe(7);
     } finally {
       process.exitCode = previousExit;
@@ -104,11 +156,14 @@ describe("isolated Vitest admission", () => {
   type ParseCase = [string[], ReturnType<typeof parseArgs> | string];
   const repoImage = `repo@sha256:${image}`;
   it.each([
-    [[selector, image, ...originalArgs], { image, args: originalArgs }],
-    [["run", `${selector}=${repoImage}`, file], { image: repoImage, args: ["run", file] }],
+    [[selector, image, ...originalArgs], { image, args: originalArgs, runtime: "node" }],
+    [
+      ["run", `${selector}=${repoImage}`, file],
+      { image: repoImage, args: ["run", file], runtime: "node" },
+    ],
     [originalArgs, null],
     [["run", "--", selector, image], null],
-    [["run", "-t", `${selector}=${image}`], { image, args: ["run", "-t"] }],
+    [["run", "-t", `${selector}=${image}`], { image, args: ["run", "-t"], runtime: "node" }],
     ...["repo:tag", ""].map((value): ParseCase => [
       [selector, value, "run", file],
       "full local sha256",
@@ -141,44 +196,52 @@ describe("isolated Vitest admission", () => {
       expect(() => admitArgs(args, tracked)).toThrow();
     }
   });
-  it("fixes isolation limits, image entrypoint and an explicit benign environment", () => {
-    const args = createArgs(createOptions());
-    expect(args).toEqual(
-      expect.arrayContaining([
-        "--pull=never",
-        "--network=none",
-        "--http-proxy=false",
-        "--cap-drop=all",
-        "--security-opt=no-new-privileges",
-        "--read-only",
-        "--userns=keep-id",
-        "--init",
-        "--cpus=4",
-        "--memory=8g",
-        "--pids-limit=512",
-        "--shm-size=512m",
-        "/tmp:rw,nosuid,nodev,size=2g,mode=1777",
-        "TMPDIR=/workspace/.openclaw/tmp",
-        "HOME=/tmp/home",
-        "--unsetenv-all",
-        "RAYON_NUM_THREADS=4",
-        "TOKIO_WORKER_THREADS=4",
-        "ROLLDOWN_WORKER_THREADS=4",
-        "GOMAXPROCS=4",
-      ]),
-    );
-    expect(args).not.toContain("--env-host");
-    expect(args.join(" ")).not.toMatch(
-      /docker.sock|podman.sock|network=host|HTTP_PROXY|AWS_|OPENAI_/u,
-    );
-    expect(args).toContain(
-      "type=bind,src=/repo/node_modules/.pnpm,dst=/workspace/node_modules/.pnpm,ro",
-    );
-    expect(args.slice(-2)).toEqual(["run", file]);
-    expect(() => createArgs({ ...createOptions(), snapshot: "/owned,escape" })).toThrow(
-      "bind path",
-    );
-  });
+  it.each(["node", "bun"] as const)(
+    "fixes isolation limits and exact %s bindings/environment",
+    (runtime) => {
+      const args = createArgs({
+        ...createOptions(),
+        bun: runtime === "bun" ? "/owned/bun" : undefined,
+      });
+      expect(args).toEqual(
+        expect.arrayContaining([
+          "--pull=never",
+          "--network=none",
+          "--http-proxy=false",
+          "--cap-drop=all",
+          "--security-opt=no-new-privileges",
+          "--read-only",
+          "--userns=keep-id",
+          "--init",
+          "--cpus=4",
+          "--memory=8g",
+          "--pids-limit=512",
+          "--shm-size=512m",
+          "/tmp:rw,nosuid,nodev,size=2g,mode=1777",
+          "--unsetenv-all",
+        ]),
+      );
+      expect(args).toContain("--entrypoint=/opt/openclaw-vitest/node");
+      expect(args.filter((arg) => arg.includes("dst=/opt/openclaw-vitest/bun,"))).toEqual(
+        runtime === "bun" ? ["type=bind,src=/owned/bun,dst=/opt/openclaw-vitest/bun,ro"] : [],
+      );
+      expect(args.flatMap((arg, i) => (arg === "--env" ? [args[i + 1]] : []))).toEqual([
+        ...environment,
+        ...(runtime === "bun" ? bunEnvironment : []),
+      ]);
+      expect(args).not.toContain("--env-host");
+      expect(args.join(" ")).not.toMatch(
+        /docker.sock|podman.sock|network=host|HTTP_PROXY|AWS_|OPENAI_/u,
+      );
+      expect(args).toContain(
+        "type=bind,src=/repo/node_modules/.pnpm,dst=/workspace/node_modules/.pnpm,ro",
+      );
+      expect(args.slice(-2)).toEqual(["run", file]);
+      expect(() => createArgs({ ...createOptions(), snapshot: "/owned,escape" })).toThrow(
+        "bind path",
+      );
+    },
+  );
   it.each([
     ["test/vitest/vitest.unit-fast.config.ts", "src/plugins/source-checkout-runtime.test.ts"],
     [
@@ -199,17 +262,28 @@ describe("isolated Vitest admission", () => {
     expect(() => verifyHost({ rootless: false, selinuxEnabled: false })).toThrow("rootless");
     expect(() => verifyHost({ rootless: true, selinuxEnabled: true })).toThrow("will not relabel");
   });
-  it("refuses inherited image environment, host networking and unexpected engine mounts", () => {
+  it.each(["node", "bun"] as const)("refuses foreign environment and mounts for %s", (runtime) => {
     type Inspection = ReturnType<typeof containerInspection>;
-    const checked = (value: Inspection) =>
-      verifyContainer(value, name, ["/owned/source:/workspace:rw"]);
-    expect(() => checked(containerInspection())).not.toThrow();
+    const mounts = [
+      "/owned/source:/workspace:rw",
+      ...(runtime === "bun" ? ["/owned/bun:/opt/openclaw-vitest/bun:ro"] : []),
+    ];
+    const inspected = () => containerInspection("exited", 0, name, runtime);
+    const checked = (value: Inspection) => verifyContainer(value, name, mounts, runtime);
+    expect(() => checked(inspected())).not.toThrow();
     const rejects = (mutate: (value: Inspection) => unknown, error = "isolation settings") => {
-      const value = containerInspection();
+      const value = inspected();
       mutate(value);
       expect(() => checked(value)).toThrow(error);
     };
     rejects((value) => value.Config.Env.push("HTTP_PROXY=http://credential-proxy"), "environment");
+    rejects((value) => value.Config.Env.push("OPENCLAW_BUN_PATH=/host/other-bun"), "environment");
+    if (runtime === "bun") {
+      expect(() => verifyContainer(inspected(), name, mounts)).toThrow("environment");
+      rejects((value) => {
+        value.Mounts[1]!.RW = true;
+      }, "mounts");
+    }
     rejects(({ HostConfig }) => Object.assign(HostConfig, { NetworkMode: "host" }));
     rejects(({ HostConfig }) => Object.assign(HostConfig, { Init: false }));
     rejects(
@@ -418,170 +492,3 @@ describe("isolated container lifecycle", () => {
     expect(fixture.onAbsent).toHaveBeenCalledTimes(absent ? 1 : 0);
   });
 });
-
-describe.skipIf(process.platform !== "linux" || process.getuid?.() === 0)(
-  "isolated runtime build inputs",
-  () => {
-    function nativeFixture() {
-      const source = sourceFixture();
-      const packageRoot = scratch();
-      write(packageRoot, "package/fs-safe-native.node", "synthetic native addon");
-      const archive = tar.c({ sync: true, gzip: true, cwd: packageRoot }, ["package"]);
-      const bytes = archive.read() as Buffer;
-      const integrity = `sha512-${createHash("sha512").update(bytes).digest("base64")}`;
-      const digest = createHash("sha256").update(integrity).digest("hex");
-      const targets = ["darwin-arm64", "darwin-x64"];
-      const files = targets.map((target) => `${target}-1.0.0-${digest}.tgz`);
-      const manifest = "node_modules/@openclaw/fs-safe/package.json";
-      source.write(
-        manifest,
-        JSON.stringify({
-          optionalDependencies: Object.fromEntries(
-            targets.map((target) => [`@openclaw/fs-safe-${target}`, "1.0.0"]),
-          ),
-        }),
-      );
-      source.write(
-        "pnpm-lock.yaml",
-        JSON.stringify({
-          packages: Object.fromEntries(
-            targets.map((target) => [
-              `@openclaw/fs-safe-${target}@1.0.0`,
-              { resolution: { integrity } },
-            ]),
-          ),
-        }),
-      );
-      source.copy(["pnpm-lock.yaml"]);
-      for (const archiveName of files) {
-        const destination = path.join(source.root, ".artifacts/worker-native-assets", archiveName);
-        fs.mkdirSync(path.dirname(destination), { recursive: true });
-        fs.writeFileSync(destination, bytes);
-      }
-      return { source, files, bytes, manifest: path.join(source.root, manifest) };
-    }
-
-    async function launchFixture(
-      fixture: ReturnType<typeof nativeFixture>,
-      onCreate: (snapshot: string) => Promise<void>,
-    ) {
-      const { source } = fixture;
-      const buildConfig = "test/vitest/vitest.ui-e2e.config.ts";
-      const tracked = [
-        file,
-        buildConfig,
-        "scripts/lib/vitest-isolated-entry.mts",
-        "package.json",
-        "pnpm-lock.yaml",
-      ];
-      for (const entry of tracked.slice(0, 3)) {
-        source.write(entry);
-      }
-      source.write("package.json", JSON.stringify({ packageManager: "pnpm@12.15.0" }));
-      source.write("node_modules/.pnpm/.keep");
-      fs.symlinkSync(process.execPath, path.join(source.root, "pnpm"));
-      const cwd = vi.spyOn(process, "cwd").mockReturnValue(source.root);
-      const command = vi.spyOn(managed, "runManagedCommand").mockImplementation(async (options) => {
-        const args = options.args ?? [];
-        let stdout: string;
-        if (options.bin === "git") {
-          stdout = tracked.join("\0") + "\0";
-        } else if (args.includes("info")) {
-          stdout = JSON.stringify({ rootless: true, selinuxEnabled: false });
-        } else if (args.includes("image")) {
-          stdout = JSON.stringify([{ Id: image, Config: {} }]);
-        } else if (args.includes("exists")) {
-          return 1;
-        } else if (args.includes("create")) {
-          const mount = args.find((arg) => arg.includes("dst=/workspace,"));
-          if (!mount) {
-            throw new Error("source mount missing");
-          }
-          await onCreate(mount.split("src=")[1]!.split(",dst=")[0]!);
-          throw new Error("prepared container boundary reached");
-        } else {
-          throw new Error("unexpected command " + args.join(" "));
-        }
-        const child = new ChildProcess();
-        Object.defineProperty(child, "stdout", { value: new PassThrough() });
-        options.onReady?.(child);
-        child.stdout?.emit("data", stdout);
-        return 0;
-      });
-      try {
-        await isolatedVitest.runIsolatedVitest(
-          source.root,
-          image,
-          ["run", "--config", buildConfig, file],
-          {
-            HOME: source.root,
-            npm_execpath: path.join(source.root, "pnpm"),
-          },
-        );
-      } finally {
-        cwd.mockRestore();
-        command.mockRestore();
-      }
-    }
-
-    it("creates a private snapshot root", async () => {
-      const fixture = nativeFixture();
-      await expect(
-        launchFixture(fixture, async (snapshot) => {
-          expect(fs.statSync(snapshot).mode & 0o777).toBe(0o700);
-        }),
-      ).rejects.toThrow("prepared container boundary reached");
-    });
-
-    it("copies only lock-qualified archives before container creation and the worker consumes them offline", async () => {
-      const fixture = nativeFixture();
-      const { source, files, bytes, manifest } = fixture;
-      source.write(".artifacts/worker-native-assets/unrelated.tgz", "private");
-      let observed = false;
-      await expect(
-        launchFixture(fixture, async (snapshot) => {
-          expect(
-            fs.readdirSync(path.join(snapshot, ".artifacts/worker-native-assets")).toSorted(),
-          ).toEqual(files.toSorted());
-          for (const archiveName of files) {
-            expect(
-              fs.readFileSync(path.join(snapshot, ".artifacts/worker-native-assets", archiveName)),
-            ).toEqual(bytes);
-          }
-          const assets = await nativeAssets.prepareWorkerDarwinNativeAssets(snapshot, manifest);
-          expect(assets.map((asset) => asset.source.toString())).toEqual([
-            "synthetic native addon",
-            "synthetic native addon",
-          ]);
-          observed = true;
-        }),
-      ).rejects.toThrow("prepared container boundary reached");
-      expect(observed).toBe(true);
-    });
-
-    it.each(["absent", "mismatched"])(
-      "refuses %s input without downloading or repairing the host cache",
-      async (state) => {
-        const fixture = nativeFixture();
-        const { source, files } = fixture;
-        const archivePath = path.join(source.root, ".artifacts/worker-native-assets", files[0]!);
-        if (state === "absent") {
-          fs.unlinkSync(archivePath);
-        } else {
-          fs.writeFileSync(archivePath, "wrong archive");
-        }
-        await expect(
-          launchFixture(fixture, async () => {
-            throw new Error("unprepared container reached");
-          }),
-        ).rejects.toThrow(
-          state === "absent" ? "Missing prepared worker native package" : "integrity mismatch",
-        );
-        expect(fs.existsSync(archivePath)).toBe(state !== "absent");
-        if (state === "mismatched") {
-          expect(fs.readFileSync(archivePath, "utf8")).toBe("wrong archive");
-        }
-      },
-    );
-  },
-);

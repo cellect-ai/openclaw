@@ -1,4 +1,5 @@
 import {
+  AgentHarnessModelRequestPolicyError,
   emitAgentEvent,
   normalizeUsage,
   onAgentEvent as onGlobalAgentEvent,
@@ -26,10 +27,63 @@ import {
   expectUsageFields,
 } from "./event-projector.test-harness.js";
 import { prepareCodexServerNotification } from "./protocol-validators.js";
-import { CodexRuntimeUpdateRequiredError, resolveCodexPromptError } from "./usage-limit-error.js";
+import { resolveCodexPromptError } from "./usage-limit-error.js";
 registerCodexEventProjectorTestLifecycle();
 
 describe("CodexAppServerEventProjector terminal errors", () => {
+  it("retains live no-answer terminal classification and native ordering without content", async () => {
+    vi.stubEnv("OPENCLAW_LIVE_TEST", "1");
+    const onAgentEvent = vi.fn();
+    const projector = await createProjector({ ...(await createParams()), onAgentEvent });
+    await projector.handleNotification(
+      forCurrentTurn("item/completed", {
+        item: {
+          id: "comment",
+          type: "agentMessage",
+          phase: "commentary",
+          text: "PRIVATE-ASSISTANT",
+        },
+      }),
+    );
+    projector.recordDynamicToolResult({
+      callId: "tool-a",
+      tool: "exec",
+      success: false,
+      contentItems: [{ type: "inputText", text: "PRIVATE-TOOL-ERROR" }],
+    });
+    await projector.handleNotification(
+      forCurrentTurn("turn/completed", { turn: { id: TURN_ID, status: "completed", items: [] } }),
+    );
+    await projector.closeProjection();
+    const result = fixture.result(projector);
+    expect(result.assistantTexts).toEqual([]);
+    const diagnostics = onAgentEvent.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.stream === "codex_app_server.diagnostic");
+    expect(diagnostics.map((event) => event.data)).toEqual([
+      expect.objectContaining({ phase: "notification", sequence: 1, method: "item/completed" }),
+      expect.objectContaining({
+        phase: "native_item",
+        itemId: "comment",
+        itemType: "agentMessage",
+        itemPhase: "commentary",
+        textLength: 17,
+      }),
+      expect.objectContaining({ phase: "notification", sequence: 2, method: "turn/completed" }),
+      expect.objectContaining({
+        phase: "no_answer",
+        runId: "run-1",
+        threadId: THREAD_ID,
+        turnId: TURN_ID,
+        nativeStatus: "completed",
+        classification: "empty",
+        terminalKind: "ok",
+        lastToolName: "exec",
+      }),
+    ]);
+    expect(JSON.stringify(diagnostics)).not.toMatch(/PRIVATE/);
+  });
+
   type Projector = Awaited<ReturnType<typeof createProjector>>;
   function fail(projector: Projector, error: Record<string, unknown>, completed = false) {
     return fixture.notify(
@@ -181,6 +235,8 @@ describe("CodexAppServerEventProjector terminal errors", () => {
           expect(terminal.promptError).toMatchObject({
             message: testCase.expected,
             nativeMessage: testCase.message,
+            // Clients key the "Start a new session" action on this host code.
+            code: "harness_update_required",
           });
         } else {
           expect(terminal.promptError).toBe(testCase.message);
@@ -225,9 +281,123 @@ describe("CodexAppServerEventProjector terminal errors", () => {
         }),
       ).toMatchObject({
         message: `gpt-6.2-sol needs a newer Codex than 0.164.0. ${instruction} Or choose another model.`,
+        code: "harness_update_required",
       });
     }
   });
+
+  const denialBody = {
+    error: "middleware_denied",
+    reason_code: "request_credential_denied",
+    layer: "l7",
+    detail: "PRIVATE-BODY",
+  };
+  const denialMessage = `unexpected status 403 Forbidden: ${JSON.stringify(denialBody)}`;
+  const denialInfo = { httpConnectionFailed: { httpStatusCode: 403 } };
+  it.each([
+    { name: "bare", message: denialMessage, info: denialInfo, denied: true },
+    {
+      name: "request id only",
+      message: `${denialMessage}, request id: PRIVATE-ID`,
+      info: denialInfo,
+      denied: true,
+    },
+    {
+      name: "brace in metadata",
+      message: `${denialMessage}, url: https://api.openai.com/v1/responses, auth error: PRIVATE-{}`,
+      info: denialInfo,
+      denied: true,
+    },
+    {
+      name: "wrong status",
+      message: denialMessage,
+      info: { httpConnectionFailed: { httpStatusCode: 401 } },
+      denied: false,
+    },
+    { name: "missing tag", message: denialMessage, info: undefined, denied: false },
+    {
+      name: "missing status",
+      message: denialMessage,
+      info: { httpConnectionFailed: {} },
+      denied: false,
+    },
+    {
+      name: "wrong variant",
+      message: denialMessage,
+      info: { responseTooManyFailedAttempts: { httpStatusCode: 403 } },
+      denied: false,
+    },
+    ...[
+      { ...denialBody, error: "other" },
+      { ...denialBody, reason_code: "other" },
+      { ...denialBody, layer: undefined },
+      { error: "invalid_api_key" },
+    ].map((body) => ({
+      name: JSON.stringify(body),
+      message: `unexpected status 403 Forbidden: ${JSON.stringify(body)}`,
+      info: denialInfo,
+      denied: false,
+    })),
+    {
+      name: "malformed",
+      message: 'unexpected status 403 Forbidden: {"error":"middleware_denied",}',
+      info: denialInfo,
+      denied: false,
+    },
+  ])("recognizes only a complete native denial: $name", async ({ message, info, denied }) => {
+    for (const completed of [false, true]) {
+      const projector = await createProjector();
+      await fail(projector, { message, codexErrorInfo: info }, completed);
+      const error = readAttemptTerminal(fixture.result(projector)).promptError;
+      expect(error instanceof AgentHarnessModelRequestPolicyError).toBe(denied);
+      if (denied) {
+        expect(error).toMatchObject({
+          status: 403,
+          code: "model_request_policy_denied",
+          message:
+            "The deployment rejected this model request. Ask the administrator to check the model access policy and request settings.",
+        });
+        expect(JSON.stringify(error)).not.toContain("PRIVATE");
+        expect((error as Error).cause).toBeUndefined();
+      } else {
+        expect(typeof error === "string" ? error : (error as Error).message).toBe(message);
+      }
+    }
+  });
+
+  it.each([
+    undefined,
+    { message: denialMessage },
+    {
+      message: "ordinary refusal",
+      codexErrorInfo: { httpConnectionFailed: { httpStatusCode: 401 } },
+    },
+  ])(
+    "retains a same-turn denial only when the failed snapshot adds no contradictory evidence: %j",
+    async (laterError) => {
+      const projector = await createProjector();
+      await fixture.delta(projector, "Partial reply");
+      await fail(projector, { message: denialMessage, codexErrorInfo: denialInfo });
+      await fixture.notify(projector, "turn/completed", {
+        turn: { id: TURN_ID, status: "failed", items: [], error: laterError },
+      });
+      const result = fixture.result(projector);
+      const error = readAttemptTerminal(result).promptError;
+      const retained = !laterError || !("codexErrorInfo" in laterError);
+      expect(error instanceof AgentHarnessModelRequestPolicyError).toBe(retained);
+      if (retained) {
+        expect(result.currentAttemptAssistant).toMatchObject({
+          stopReason: "error",
+          errorCode: "model_request_policy_denied",
+          errorMessage:
+            "The deployment rejected this model request. Ask the administrator to check the model access policy and request settings.",
+        });
+        expect(JSON.stringify(result.currentAttemptAssistant)).not.toContain("PRIVATE");
+      } else {
+        expect(error).toMatchObject({ status: 401, message: "ordinary refusal" });
+      }
+    },
+  );
 
   it.each([
     undefined,
@@ -249,11 +419,26 @@ describe("CodexAppServerEventProjector terminal errors", () => {
       await fixture.notify(projector, "turn/completed", {
         turn: { id: TURN_ID, status: "failed", items: [], error: laterError },
       });
-      expect(readAttemptTerminal(fixture.result(projector)).promptError).toBeInstanceOf(
-        CodexRuntimeUpdateRequiredError,
-      );
+      // Losing the code would drop Control UI's "Start a new session" action.
+      expect(readAttemptTerminal(fixture.result(projector)).promptError).toMatchObject({
+        code: "harness_update_required",
+      });
     },
   );
+
+  it("retires a deployment denial when a later provider refusal wins", async () => {
+    const projector = await createProjector();
+    await fail(projector, { message: denialMessage, codexErrorInfo: denialInfo });
+    const message = "This request was blocked by the provider's cyber policy.";
+    await fail(projector, { message, codexErrorInfo: "cyberPolicy" }, true);
+    const result = fixture.result(projector);
+    expectTerminal(result, null, null);
+    expect(result.currentAttemptAssistant).toMatchObject({
+      errorMessage: message,
+      diagnostics: [{ type: "provider_refusal", details: { category: "cyber" } }],
+    });
+    expect(result.currentAttemptAssistant).not.toHaveProperty("errorCode");
+  });
 
   it("keeps missing tool detail without overriding an explicit abort", async () => {
     const projector = await createProjector();

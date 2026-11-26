@@ -3,6 +3,7 @@ import { expectDefined } from "@openclaw/normalization-core/expect";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { buildAgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
+import { createAgentRunRestartAbortError } from "../../agents/run-termination.js";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { buildRequesterSettleWakeIdentity } from "../../agents/subagents/registry/subagent-requester-settle-identity.js";
 import { makeAgentAssistantMessage } from "../../agents/test-helpers/agent-message-fixtures.js";
@@ -387,6 +388,34 @@ describe("requester-settle processing survives later user turns", () => {
     },
   );
 
+  it.each([false, true])("reopens interrupted completion input (direct=%s)", async (direct) => {
+    const prepareCompletion = (overrides: Partial<TurnParams> = {}) =>
+      prepare({
+        ...(direct
+          ? {
+              settleWakeReplay: undefined,
+              subagentCompletions: [{ runId: "child", sessionKey: sourceSessionKey }],
+            }
+          : {}),
+        ...overrides,
+      });
+    const controller = new AbortController();
+    const original = await prepareCompletion({ abortSignal: controller.signal });
+    await original.recorder!.persistApproved();
+    controller.abort(createAgentRunRestartAbortError());
+    await original.recorder!.waitForPendingInputSettlement!();
+    expect(completion(original)).toMatchObject({ reason: "cancelled", stopReason: "restart" });
+    await release(original, "interrupted");
+    rotateAgentEventLifecycleGeneration();
+    const replay = await prepareCompletion();
+    expectNoReconciliation(replay);
+    await replay.recorder!.persistApproved();
+    await expectUserInputs(scope(), 1);
+    await complete(replay);
+    await release(replay);
+    await expectCompletedReplay(await loadTranscriptEvents(scope()), prepareCompletion);
+  });
+
   it("cannot publish a cancellation after losing completion authority", async () => {
     let current = true;
     const controller = new AbortController();
@@ -579,9 +608,13 @@ it("persists subagent completion handoff prompts as hidden inter-session turns",
   ]);
 });
 
-it.each(["Original requester", null])(
-  "retains accepted sender presentation after a profile rename (%s)",
-  async (originalName) => {
+it.each([
+  { originalName: "Original requester", restored: false },
+  { originalName: null, restored: false },
+  { originalName: "Original requester", restored: true },
+])(
+  "retains accepted sender presentation (name=$originalName, restored=$restored)",
+  async ({ originalName, restored }) => {
     const sessionKey = "agent:main:private-sender";
     const sessionId = "private-sender-session";
     const runId = "announce:private-sender";
@@ -597,15 +630,22 @@ it.each(["Original requester", null])(
     const rename = (name: string | null) =>
       setCanonicalUserProfileDisplayName(profile.id, name, profileOptions);
     const { profile: original } = await rename(originalName);
-    const clientFor = (displayName: string | null, profileId = profile.id) =>
+    const clientFor = (displayName: string | null, profileId = profile.id, resumed = false) =>
       createSyntheticPluginRuntimeClient({
-        authenticatedUserProfile: {
-          profileId,
-          displayName,
-          avatarRevision: "0",
-          hasAvatar: false,
-          updatedAt: original.updatedAt,
+        agentToolCaller: {
+          agentId: "main",
+          sessionKey,
+          requesterOrigin: { sessionKey, operatorProfileId: profileId },
         },
+        authenticatedUserProfile: resumed
+          ? undefined
+          : {
+              profileId,
+              displayName,
+              avatarRevision: "0",
+              hasAvatar: false,
+              updatedAt: original.updatedAt,
+            },
       });
     const params = makeTurnParams(target, "Retained private result", runId, {
       privateCompletion: true,
@@ -629,7 +669,10 @@ it.each(["Original requester", null])(
         expect(input["__openclaw"]).toHaveProperty("senderName", originalName);
       }
       const { profile: renamed } = await rename("Renamed requester");
-      const retryParams = { ...params, client: clientFor(renamed.displayName) };
+      const retryParams = {
+        ...params,
+        client: clientFor(renamed.displayName, profile.id, restored),
+      };
       expect(recorder.getPendingInputMessage?.()).toEqual(input);
       const retained = await pendingInputs.listSessionPendingInputs(target);
       expect(retained.items).toMatchObject([{ state: "queued", message: input }]);

@@ -1,5 +1,6 @@
 import { Errored, lazy, Loading, Show } from "solid-js";
 import type { SidebarAttentionElementAttributes } from "../components/sidebar-attention-element.ts";
+import { InlineAlert } from "../components/solid/inline-alert.tsx";
 import { t } from "../lib/reactive/i18n.ts";
 import { ShellComponentBoundary } from "./app-shell-component-boundary.tsx";
 import type { ApplicationContext } from "./context.ts";
@@ -50,12 +51,13 @@ export function FloatingUpdateCard(props: FloatingUpdateCardProps) {
         </ShellComponentBoundary>
       </Show>
       <Show when={!props.compact && props.refreshRequired}>
-        {/* Old builds can lose the lazy card and its CSS, so recovery uses entry styles only. */}
+        {/* A Gateway replaced by a newer build no longer serves this tab's lazy card
+            chunk or its stylesheet, so the fallback uses only entry modules and styles. */}
         <Errored
           fallback={
-            <section
-              class="callout info callout--action"
-              role="status"
+            <InlineAlert
+              tone="info"
+              title={t("connection.workspace.reload.title")}
               style={{
                 position: "fixed",
                 "z-index": 45,
@@ -66,15 +68,14 @@ export function FloatingUpdateCard(props: FloatingUpdateCardProps) {
                 background: "var(--popover)",
                 "box-shadow": "var(--shadow-md)",
               }}
+              action={
+                <button type="button" class="btn btn--sm" onClick={() => void props.onRefresh()}>
+                  {t("connection.workspace.reloadAction")}
+                </button>
+              }
             >
-              <div class="callout__content">
-                <strong>{t("connection.reload-required")}</strong>
-                <div>{t("lazyView.staleSubtitle")}</div>
-              </div>
-              <button type="button" class="btn btn--sm" onClick={() => void props.onRefresh()}>
-                {t("common.reload")}
-              </button>
-            </section>
+              {t("connection.workspace.reload.description")}
+            </InlineAlert>
           }
         >
           <Loading>

@@ -5,13 +5,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   CONFIG_COMMAND_MAX_BUFFER_BYTES,
   CONFIG_COMMAND_TIMEOUT_MS,
-  resolveScenarioConfigSteps,
   resolveUpgradeSurvivorConfigSteps as recipeSteps,
   resolveUpgradeSurvivorConfigStepsForBaseline as baselineSteps,
   resolveUpgradeSurvivorOpenClawCommand,
   runUpgradeSurvivorOpenClawStep,
 } from "../../scripts/e2e/lib/upgrade-survivor/config-recipe.mts";
-import { AgentsSchema } from "../../src/config/zod-schema.agents.js";
 import { ModelsConfigSchema } from "../../src/config/zod-schema.core.js";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 import {
@@ -30,7 +28,12 @@ const configValue = (steps: ReturnType<typeof recipeSteps>, id: string) =>
 const RECIPE_PATH = "scripts/e2e/lib/upgrade-survivor/config-recipe.mts";
 const DOCKER_RUNNER_PATH = "scripts/e2e/upgrade-survivor-docker.sh";
 
-function runRecipeFixture(params: { version: string; scenario: string; failPath?: string }) {
+function runRecipeFixture(params: {
+  version: string;
+  scenario: string;
+  failPath?: string;
+  updateRestartMode?: "auto-auth";
+}) {
   const root = tempDirs.make("openclaw-upgrade-recipe-");
   const binDir = join(root, "bin");
   const logPath = join(root, "openclaw-argv.jsonl");
@@ -74,6 +77,7 @@ process.exit(failed ? 17 : 0);
       OPENCLAW_CONFIG_PATH: join(root, "config.json"),
       OPENCLAW_UPGRADE_SURVIVOR_SCENARIO: params.scenario,
       OPENCLAW_UPGRADE_SURVIVOR_UPDATE_CHANNEL: "",
+      OPENCLAW_UPGRADE_SURVIVOR_UPDATE_RESTART_MODE: params.updateRestartMode ?? "manual",
       RECIPE_FAIL_PATH: params.failPath ?? "",
       PATH: [binDir, join(process.cwd(), "node_modules/.bin"), process.env.PATH ?? ""].join(
         delimiter,
@@ -196,6 +200,16 @@ esac
     expect(updateChannels.at(-1)).toBe("beta");
   });
 
+  it("isolates restart-auth DM principals before the candidate Doctor runs", () => {
+    const { result, loggedArgs } = runRecipeFixture({
+      scenario: "base",
+      version: "2026.11.7",
+      updateRestartMode: "auto-auth",
+    });
+    expectSuccess(result);
+    expect(loggedArgs).toContainEqual(["config", "set", "session.dmScope", "per-channel-peer"]);
+  });
+
   it("enables private integrity file logging only for the base recipe before validation", () => {
     const { result, loggedArgs, summary } = runRecipeFixture({
       scenario: "base",
@@ -241,6 +255,7 @@ esac
       ["config", "validate"],
     ]);
     expect(loggedArgs.some((args) => args[2]?.startsWith("logging.console"))).toBe(false);
+    expect(loggedArgs.some((args) => args[2] === "session.dmScope")).toBe(false);
     expect(
       recipeSteps("tilde-log-path")
         .filter((step) => step.intent === "logging")
@@ -271,20 +286,32 @@ esac
     expect(configValue(steps, "plugins").allow).toEqual(
       expect.arrayContaining(Object.keys(providers)),
     );
+
+    const stable = configValue(baselineSteps("base", "2026.10.10"), "agents").defaults;
+    const beta = configValue(baselineSteps("base", "2026.11.5-beta.1"), "agents").defaults;
+    expect(stable.heartbeat).toEqual({ every: "0m" });
+    expect(beta).not.toHaveProperty("heartbeat");
+    expect(beta.model).toEqual(stable.model);
   });
 
-  it("keeps old heartbeat disables but authors valid post-cutover rosters", () => {
-    const legacy = configValue(baselineSteps("base", "2026.11.4"), "agents");
-    expect(legacy.defaults.heartbeat).toEqual({ every: "0m" });
-    for (const version of ["2026.11.5-beta.1", "2026.11.5"]) {
-      for (const scenario of ["base", "recovery-cleanup"]) {
-        const agents = configValue(baselineSteps(scenario, version), "agents");
-        expect(agents.defaults.heartbeat).toBeUndefined();
-        expect(AgentsSchema.safeParse(agents).success).toBe(true);
-        expect(Object.keys(agents.entries)).toContain("ops");
+  it.each([
+    ["2026.10.9", true],
+    ["2026.10.5", true],
+    ["2026.10.4", false],
+  ] as const)(
+    "seeds Workshop settings only from baselines that ship them (%s)",
+    (version, seeded) => {
+      const ids = baselineSteps("base", version).map((step) => step.id);
+      expect(ids.includes("skill-workshop-settings")).toBe(seeded);
+      if (seeded) {
+        expect(ids.indexOf("skill-workshop-settings")).toBe(ids.indexOf("skills") + 1);
+        expect(configValue(baselineSteps("base", version), "skill-workshop-settings")).toEqual({
+          autonomous: { mode: "off" },
+          maxSkillBytes: 8000,
+        });
       }
-    }
-  });
+    },
+  );
 
   it("uses password auth for mobile pairing reconnect coverage", () => {
     const steps = baselineSteps("mobile-pairing-reconnect", "2026.6.34");
@@ -295,12 +322,6 @@ esac
       mode: "password",
       password: { source: "env", provider: "default", id: "GATEWAY_AUTH_PASSWORD_REF" },
     });
-  });
-
-  it("composes configured plugin installs into the SQLite volume scenario", () => {
-    expect(resolveScenarioConfigSteps("sqlite-volume")).toEqual(
-      resolveScenarioConfigSteps("configured-plugin-installs"),
-    );
   });
 
   it.each(["2026.7.1-2"])("authors one version-correct recovery roster for %s", (version) => {

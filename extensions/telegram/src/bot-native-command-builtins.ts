@@ -15,6 +15,7 @@ import {
   resolveFastModeState,
   resolveStoredModelOverrideAsync,
 } from "openclaw/plugin-sdk/command-auth-native";
+import { loadCommandArgMenuModelCatalog } from "openclaw/plugin-sdk/command-surface";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import {
   getSessionEntryAsync,
@@ -183,12 +184,21 @@ export async function executeTelegramBuiltinCommand(
         commandDefinition.key === "fast" ? "fast" : "menu",
       )
     : {};
+  // Native /think must not wait on provider discovery; persisted rows retain its metadata.
+  const menuModelCatalog =
+    commandDefinition.key === "think" && menuNeedsModelContext
+      ? await loadCommandArgMenuModelCatalog({
+          cfg: dispatch.runtimeCfg,
+          agentId: dispatch.route.agentId,
+        })
+      : undefined;
   const menu = await resolveCommandArgMenuAsync({
     command: commandDefinition,
     args: commandArgs,
     cfg: dispatch.runtimeCfg,
     session: { agentId: dispatch.route.agentId, sessionKey: dispatch.targetSessionKey },
     ...menuModelContext,
+    catalog: menuModelCatalog,
   });
   if (menu) {
     // The tracker consumes the update; a menu with no choices must leave it for the pipeline.
@@ -197,7 +207,7 @@ export async function executeTelegramBuiltinCommand(
     }
     let currentThinkingLevel: string | undefined;
     if (commandDefinition.key === "think") {
-      const catalog = menu.modelCatalog ?? [];
+      const catalog = menuModelCatalog ?? [];
       currentThinkingLevel = normalizeOptionalString(menuModelContext.thinkingLevel);
       if (!currentThinkingLevel) {
         currentThinkingLevel = normalizeOptionalString(

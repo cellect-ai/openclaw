@@ -107,11 +107,7 @@ const identityOf = async (target: string) => {
  * a filesystem without the operation reports. Throws only when the paths ended
  * in neither state, which another writer caused.
  */
-export async function exchangePaths(
-  first: string,
-  second: string,
-  assertCurrent: () => void,
-): Promise<PathExchangeResult> {
+export async function exchangePaths(first: string, second: string): Promise<PathExchangeResult> {
   let before: readonly [string, string];
   try {
     before = [await identityOf(first), await identityOf(second)];
@@ -123,8 +119,6 @@ export async function exchangePaths(
   }
   const failures: string[] = [];
   for (const route of exchangeRoutes(path.resolve(first), path.resolve(second))) {
-    // Filesystem inspection may outlive the caller's mutation authority.
-    assertCurrent();
     const failure = await runExchangeTool(route);
     const [nowFirst, nowSecond] = await Promise.all(
       [first, second].map((target) => identityOf(target).catch(() => null)),

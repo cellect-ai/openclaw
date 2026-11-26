@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { retireSessionMcpRuntime } from "../../agents/agent-bundle-mcp-tools.js";
 import type { AgentRunTerminalOutcome } from "../../agents/agent-run-terminal-outcome.js";
+import { readAgentTerminalSnapshot } from "../../agents/agent-terminal-snapshot.js";
 import { resolveDiagnosticModelResponse } from "../../agents/diagnostic-model-response.js";
 import { findErrorProperty, isFailoverError } from "../../agents/failover/error.js";
 import { withPreparedModelRuntimePluginGenerationScope } from "../../agents/prepared-model-runtime-generation-scope.js";
@@ -10,6 +11,8 @@ import {
 } from "../../agents/run-termination.js";
 import { createAgentLifecycleTerminalBackstop } from "../../auto-reply/reply/agent-lifecycle-terminal.js";
 import { cleanupBrowserSessionsForLifecycleEnd } from "../../browser-lifecycle-cleanup.js";
+import { selectLiveRuntimeConfig } from "../../config/runtime-snapshot.js";
+import type { restoreCronOperatorSource } from "../../gateway/cron-operator-source.js";
 import {
   assertAgentRunLifecycleGenerationCurrent,
   getAgentEventLifecycleGeneration,
@@ -28,6 +31,7 @@ import {
   runWithDiagnosticTraceContext,
 } from "../../infra/diagnostic-trace-context.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
+import { GatewayDispatchUnavailableError } from "../../infra/restart-recovery-errors.js";
 import {
   logMessageDispatchCompleted,
   logMessageDispatchStarted,
@@ -40,6 +44,7 @@ import { getCurrentSessionControllerOwner } from "../../sessions/session-control
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { isCronWithinActiveHours } from "../active-hours.js";
 import { isCronExecutionIdle } from "../execution-idle.js";
+import { resolveCronOwnerTransferRecoveryError } from "../human-owner.js";
 import { CronOperatorSourceError } from "../operator-source-error.js";
 import { CronSessionLifecycleClaimError } from "../run-authority.js";
 import { removeCronRunContinuationSessionIfIdle } from "../run-continuation-cleanup.js";
@@ -53,10 +58,9 @@ import {
   resolveCronAbortReasonText,
 } from "../service/execution-errors.js";
 import { isCronOneShotContinuationJob } from "../service/one-shot-schedule.js";
-import type { CronAgentExecutionPhaseUpdate } from "../types.js";
-import { resolveCronActiveRuntimeConfig } from "./run-config.js";
+import type { CronAgentExecutionPhaseUpdate, CronFailureNotificationDetail } from "../types.js";
 import type { CronRunExecutionParams } from "./run-execution.types.js";
-import { finalizeCronRun } from "./run-finalize.js";
+import { finalizeCronRun, resolveCronRecoveryClassification } from "./run-finalize.js";
 import type { RunCronAgentTurnParams } from "./run-prepare-runtime.js";
 import { prepareCronRunContext, type PreparedCronRunContext } from "./run-prepare.js";
 import type { MutableCronSession } from "./run-session-state.js";
@@ -106,6 +110,10 @@ async function runCronIsolatedAgentTurnInTrace(
   params: RunCronAgentTurnParams,
 ): Promise<RunCronAgentTurnResult> {
   params.assertCurrent?.();
+  const ownerTransferError = resolveCronOwnerTransferRecoveryError(params.job);
+  if (ownerTransferError) {
+    return { status: "error", error: ownerTransferError };
+  }
   const admittedLifecycleGeneration = getAgentEventLifecycleGeneration();
   const upstreamAbortSignal = params.abortSignal ?? params.signal;
   const lifecycleAbortController = new AbortController();
@@ -126,6 +134,15 @@ async function runCronIsolatedAgentTurnInTrace(
       runPrepared: runPreparedCronTurn,
     });
   } catch (err) {
+    if (err instanceof CronOperatorSourceError) {
+      return {
+        status: "error",
+        error: err.message,
+        errorClassification: { kind: "permanent" },
+        executionStarted: false,
+        admissionDisposition: "rejected",
+      };
+    }
     if (err instanceof CronSessionLifecycleClaimError) {
       return {
         status: "error",
@@ -174,7 +191,15 @@ async function runCronIsolatedAgentTurnInTrace(
     // Accounting, delivery, and teardown use the same metadata as inference. Keep
     // the lease open until cleanup finishes, then fence detached borrowed work.
     try {
-      return await withPreparedModelRuntimePluginGenerationScope(
+      const runTurn: typeof withPreparedModelRuntimePluginGenerationScope = (
+        generation,
+        run,
+        borrow,
+      ) =>
+        preparedRuntimeLease.run(() =>
+          withPreparedModelRuntimePluginGenerationScope(generation, run, borrow),
+        );
+      return await runTurn(
         preparedRuntimeLease.pluginGeneration,
         () =>
           withPluginRuntimeGenerationScope(preparedRuntimeLease.snapshot, async () => {
@@ -197,8 +222,10 @@ async function runCronIsolatedAgentTurnInTrace(
               executionStarted ? undefined : { executionStarted: false, providerStarted: false };
             let admissionDeferredReason: "busy" | "active-hours" | undefined;
             const ownReplyOperation = getCurrentSessionControllerOwner();
+            const resolveRecoveryClassification = () =>
+              resolveCronRecoveryClassification(ownReplyOperation);
             const resolveStartDeferral = (): "busy" | "active-hours" | undefined => {
-              const cfg = resolveCronActiveRuntimeConfig(params.cfg);
+              const cfg = selectLiveRuntimeConfig(params.cfg);
               if (
                 !isCronWithinActiveHours(
                   params.job.activeHours,
@@ -395,17 +422,34 @@ async function runCronIsolatedAgentTurnInTrace(
                 },
               );
               const { executeCronRun } = await cronExecutorRuntimeLoader.load();
-              const operator = params.job.operatorSource
-                ? await (
-                    await cronOperatorSourceLoader.load()
-                  ).restoreCronOperatorSource({
-                    job: params.job,
-                    agentId: prepared.context.agentId,
-                    sessionKey: prepared.context.runSessionKey,
-                    signal: abortSignal,
-                    deliveryAttemptFence: params.deliveryAttemptFence,
-                  })
-                : undefined;
+              let operator: Awaited<ReturnType<typeof restoreCronOperatorSource>>;
+              try {
+                operator = params.job.operatorSource
+                  ? await (
+                      await cronOperatorSourceLoader.load()
+                    ).restoreCronOperatorSource({
+                      job: params.job,
+                      target: {
+                        agentId: prepared.context.agentId,
+                        sessionKey: prepared.context.runSessionKey,
+                      },
+                      signal: abortSignal,
+                      deliveryAttemptFence: params.deliveryAttemptFence,
+                    })
+                  : undefined;
+              } catch (error) {
+                if (!(error instanceof GatewayDispatchUnavailableError) || !error.retryable) {
+                  throw error;
+                }
+                // Source recovery precedes model/tool admission. Keep its typed
+                // transient disposition so a one-shot retries the same intent.
+                return {
+                  status: "error",
+                  error: normalizeCronRunErrorText(error),
+                  executionStarted: false,
+                  errorClassification: { kind: "reason", reason: "server_error" },
+                };
+              }
               if (operator) {
                 operatorLease.defer(operator.release);
               }
@@ -421,6 +465,8 @@ async function runCronIsolatedAgentTurnInTrace(
                 lane: params.lane,
                 agentVerboseDefault: prepared.context.agentCfg?.verboseDefault,
                 persistRunContinuationSession: prepared.context.runContinuationSession?.sync,
+                recordScheduledMemoryParent:
+                  prepared.context.runContinuationSession?.recordScheduledMemoryParent,
                 abortSignal,
                 lifecycle: {
                   ...lifecycle,
@@ -480,9 +526,11 @@ async function runCronIsolatedAgentTurnInTrace(
                 automationRun.closed = true;
               }
               const finalized = await finalizeCronRun({
+                runId,
                 automationResult,
                 prepared: prepared.context,
                 execution,
+                recoveryClassification: resolveRecoveryClassification(),
                 abortReason,
                 isAborted,
                 settleUsage,
@@ -501,6 +549,10 @@ async function runCronIsolatedAgentTurnInTrace(
                 finalized.interruptedByRestart =
                   resolveAgentRunErrorLifecycleFields(undefined, abortSignal).stopReason ===
                   "restart";
+                if (finalized.interruptedByRestart) {
+                  finalized.errorClassification = { kind: "aborted" };
+                  finalized.agentTerminal = undefined;
+                }
               }
               const delayMs = consumeCronNextCheckProposal(runId, params.job.id);
               return finalized.status !== "ok" || delayMs === undefined
@@ -524,7 +576,21 @@ async function runCronIsolatedAgentTurnInTrace(
               }
               const isCronLaneTimeout =
                 isAborted() || isCommandLaneTaskTimeoutError(err, CommandLane.CronNested);
-              const error = isCronLaneTimeout ? abortReason() : normalizeCronRunErrorText(err);
+              // A watchdog-cancelled run throws a generic abort. Surface the precise
+              // recovery cause (e.g. blocked_tool_call) on the persisted error so the run
+              // history (result.error -> job.state.lastError) and the chat/webhook alert
+              // (params.error) record it instead of a cause-free literal. Restart
+              // precedence is preserved, and a rate-limited stop keeps its own recovery
+              // text instead of the mechanical watchdog reason.
+              const recoveryClassification = resolveRecoveryClassification();
+              const error =
+                recoveryClassification &&
+                recoveryClassification.trim().length > 0 &&
+                !interruptedByRestart
+                  ? recoveryClassification
+                  : isCronLaneTimeout
+                    ? abortReason()
+                    : normalizeCronRunErrorText(err);
               // Preserve the provider's closed reason before user-facing text replaces the error object.
               const errorReason = findErrorProperty(err, (candidate) =>
                 isFailoverError(candidate) ? candidate.reason : undefined,
@@ -551,6 +617,28 @@ async function runCronIsolatedAgentTurnInTrace(
               return prepared.context.withRunSession({
                 status: "error",
                 error,
+                // Project the controller-owned watchdog classification into this thrown
+                // outcome so a watchdog-cancelled CLI run (which throws instead of
+                // reaching finalizeCronRun) still records blocked_tool_call in the run
+                // history and chat alert. Restart precedence is preserved: when the
+                // failure was an interrupted restart, errorClassification already wins
+                // and we omit the stall detail.
+                ...(!interruptedByRestart &&
+                recoveryClassification &&
+                recoveryClassification.trim().length > 0
+                  ? {
+                      failureNotificationDetail: {
+                        kind: "agent-stall",
+                        classification: recoveryClassification,
+                      } satisfies CronFailureNotificationDetail,
+                    }
+                  : {}),
+                ...(!isCronLaneTimeout &&
+                !interruptedByRestart &&
+                executionStarted &&
+                !admissionDisposition
+                  ? { agentTerminal: readAgentTerminalSnapshot(err) }
+                  : {}),
                 interruptedByRestart,
                 errorClassification:
                   err instanceof CronOperatorSourceError

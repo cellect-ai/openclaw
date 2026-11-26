@@ -5,6 +5,7 @@ import {
   resetPluginRuntimeStateForTest,
 } from "../../plugins/runtime.js";
 import type { summarizeCompactionHistory } from "../compaction.js";
+import { recoverCompactionSafeguardFailure } from "../compaction-summary-refusal.js";
 import { AuthStorage } from "../sessions/auth-storage.js";
 import { ModelRegistry } from "../sessions/model-registry.js";
 import {
@@ -101,15 +102,16 @@ it.each([undefined, "unregistered-provider"])(
       turnPrefixMessages: _prefix,
       ...metadata
     } = event.preparation;
+    const preparation = {
+      ...metadata,
+      settings: { ...metadata.settings, enabled: true, keepRecentTokens: 20_000 },
+      fileOps: createFileOps(),
+    };
     const preparedResult = await executeCompactionSafeguard(
       {
         ...event,
         type: "session_before_compact",
-        preparation: {
-          ...metadata,
-          settings: { ...metadata.settings, enabled: true, keepRecentTokens: 20_000 },
-          fileOps: createFileOps(),
-        },
+        preparation,
       },
       {
         identity: createQualityGuardSessionManager({ provider }),
@@ -118,7 +120,17 @@ it.each([undefined, "unregistered-provider"])(
           AuthStorage.inMemory({ anthropic: { type: "api_key", key: "test-key" } }),
         ),
       },
-      { facts, summarize: lazy },
+      {
+        facts,
+        summarize: lazy,
+        recover: (error) =>
+          recoverCompactionSafeguardFailure(
+            error,
+            preparation,
+            event.signal,
+            createQualityGuardSessionManager({ provider }),
+          ),
+      },
     );
     expect(preparedResult).toEqual(arrayResult.result);
     expect(sources).toEqual(["history", "turnPrefix", "history", "turnPrefix"]);
@@ -150,17 +162,18 @@ it("rejects registered custom providers in prepared execution before summarizing
   const {
     messagesToSummarize: _history,
     turnPrefixMessages: _prefix,
-    ...preparation
+    ...metadata
   } = event.preparation;
+  const preparation = {
+    ...metadata,
+    settings: { ...metadata.settings, enabled: true, keepRecentTokens: 20_000 },
+    fileOps: createFileOps(),
+  };
   const result = await executeCompactionSafeguard(
     {
       ...event,
       type: "session_before_compact",
-      preparation: {
-        ...preparation,
-        settings: { ...preparation.settings, enabled: true, keepRecentTokens: 20_000 },
-        fileOps: createFileOps(),
-      },
+      preparation,
     },
     {
       identity,
@@ -179,6 +192,13 @@ it("rejects registered custom providers in prepared execution before summarizing
         turnPrefixCount: history.turnPrefixMessages.length,
       },
       summarize,
+      recover: (error) =>
+        recoverCompactionSafeguardFailure(
+          error,
+          preparation,
+          event.signal,
+          identity,
+        ),
     },
   );
   expect(result).toEqual({ cancel: true });

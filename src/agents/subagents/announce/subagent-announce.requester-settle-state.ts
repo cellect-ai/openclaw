@@ -4,65 +4,15 @@ import type {
   RequesterSettleWakeState,
   SubagentRunRecord,
 } from "../registry/subagent-registry.types.js";
-import {
-  isRequesterYieldCohortMember,
-  isSubagentObligationRetired,
-} from "../registry/subagent-requester-settle-identity.js";
+import { isSubagentObligationRetired } from "../registry/subagent-requester-settle-identity.js";
 import { isSameSubagentRun, isSameSubagentRunOwner } from "../registry/subagent-run-generation.js";
-import { hasSubagentRunEnded } from "../registry/subagent-run-liveness.js";
 import { finalizeRequesterFinalAttachment } from "../requester-final-attachment.js";
 import type { SubagentAnnounceDeliveryResult } from "./subagent-announce-dispatch.js";
 
 export type RequesterSettleWakeBatchState = Omit<RequesterSettleWakeState, "retireAfterSettle">;
 
-const REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS = 3;
-const REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS = [30_000, 120_000] as const;
-
-export function captureRequesterWakeGeneration(state: RequesterSettleWakeState) {
-  const generation = state.rearmGeneration;
-  const batchRunIds = state.requesterYieldBatch ? state.batchRunIds : undefined;
-  const hasCurrentWake = (entry: SubagentRunRecord | undefined): entry is SubagentRunRecord =>
-    entry?.requesterSettleWake !== undefined &&
-    entry.requesterSettleWake.rearmGeneration === generation &&
-    (!batchRunIds?.length || isRequesterYieldCohortMember(entry, batchRunIds, generation));
-  return { generation, hasCurrentWake };
-}
-
-export function isRequesterSettleMemberReady(entry: SubagentRunRecord): boolean {
-  return (
-    entry.execution.status !== "running" &&
-    entry.pauseReason !== "sessions_yield" &&
-    hasSubagentRunEnded(entry)
-  );
-}
-
 export function needsRequesterSettleFindings(entry: SubagentRunRecord): boolean {
   return entry.delivery?.status !== "delivered";
-}
-
-/** Delivery classification owns replay safety; every retryable result retains a bounded wake. */
-export function resolveRequesterSettleRetryState(params: {
-  state: RequesterSettleWakeBatchState;
-  delivery: SubagentAnnounceDeliveryResult;
-  attemptCount: number;
-  now: number;
-}): RequesterSettleWakeBatchState | undefined {
-  const { state, delivery, attemptCount } = params;
-  const retryDelay = REQUESTER_SETTLE_WAKE_RETRY_DELAYS_MS[attemptCount - 1];
-  if (
-    delivery.disposition !== "retryable" ||
-    attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS ||
-    retryDelay === undefined
-  ) {
-    return undefined;
-  }
-  return {
-    ...state,
-    status: "pending",
-    attemptCount,
-    nextAttemptAt: params.now + retryDelay,
-    lastError: delivery.error ?? delivery.reason ?? "undelivered",
-  };
 }
 
 type RequesterSettleWakeBatchCallbacks = {
@@ -220,8 +170,6 @@ export function resolveRequesterSettlePolicy(
   completionRows: readonly SubagentRunRecord[],
   requesterYielded: boolean,
   state: RequesterSettleWakeBatchState,
-  requester: { sessionId: string; lifecycleRevision?: string },
-  completionRowsMatchRequester: boolean,
 ) {
   // One private result makes the aggregate private; public siblings keep their own route.
   const privateRows = completionRows.filter((entry) => entry.completionTarget === "parent");
@@ -229,27 +177,10 @@ export function resolveRequesterSettlePolicy(
   const yieldedFinalDeliverable =
     hasPrivateRows && requesterYielded && state.yieldedFinalDeliverable === true;
   const parentOnly = hasPrivateRows && !yieldedFinalDeliverable;
-  // Retained public history keeps its existing admission; it cannot mint a new
-  // own-session alternative from a later reread of the requester key.
-  const bindRequester =
-    hasPrivateRows || (completionRows.length > 0 && completionRowsMatchRequester);
-  const requesterBinding = {
-    ...(parentOnly ? { completionTarget: "parent" as const } : {}),
-    ...(bindRequester
-      ? {
-          completionRequesterSessionId: requester.sessionId,
-          completionRequesterLifecycleRevision: requester.lifecycleRevision,
-        }
-      : {}),
-  };
+  const requesterBinding = parentOnly ? { completionTarget: "parent" as const } : {};
   const admissionMarker = yieldedFinalDeliverable ? { yieldedFinalDeliverable: true as const } : {};
   // A prior wake may already have consumed every result in this yielded cohort.
   const requireVisibleReply =
     requesterYielded && !hasPrivateRows && completionRows.some(needsRequesterSettleFindings);
   return { privateRows, requireVisibleReply, parentOnly, requesterBinding, admissionMarker };
-}
-
-/** The bounded dispatch budget does not limit receipt-only settlement. */
-export function hasExhaustedRequesterSettleAttempts(state: RequesterSettleWakeState): boolean {
-  return state.status === "pending" && state.attemptCount >= REQUESTER_SETTLE_WAKE_MAX_ATTEMPTS;
 }

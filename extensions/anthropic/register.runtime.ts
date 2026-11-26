@@ -16,6 +16,7 @@ import {
 } from "openclaw/plugin-sdk/provider-catalog-shared";
 import { createProviderApiKeyAuthMethod } from "openclaw/plugin-sdk/provider-entry";
 import {
+  isReleasedAdaptiveClaudeGeneration,
   buildProviderReplayFamilyHooks,
   cloneFirstTemplateModel,
   modelCostsEqual,
@@ -29,7 +30,6 @@ import {
   resolveClaudeSonnet55ModelIdentity,
   resolveClaudeSonnet5ModelIdentity,
   supportsClaude1MContext,
-  supportsClaudeAdaptiveThinking,
   supportsClaudeNativeMaxEffort,
   supportsClaudeNativeXhighEffort,
 } from "openclaw/plugin-sdk/provider-model-shared";
@@ -47,7 +47,12 @@ import {
   applyAnthropicConfigDefaults,
   normalizeAnthropicProviderConfigForProvider,
 } from "./config-defaults.js";
-import { resolveFastModeSupport } from "./fast-mode-policy.js";
+import {
+  resolveFastModeSupport,
+  setLearnedFastModeUnsupported,
+  whenFastModeAnswersLoaded,
+} from "./fast-mode-policy.js";
+import { createFastModeUnsupportedModels } from "./fast-mode-unsupported.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { createAnthropicAuthMethods, createAnthropicProvider } from "./provider-contract-api.js";
 import anthropicProviderDiscovery from "./provider-discovery.js";
@@ -284,6 +289,8 @@ function buildAnthropicForwardCompatModel(
     id: trimmedModelId,
     name: trimmedModelId,
     provider,
+    // These rows are created by the native owner, whose catalog declares one developer.
+    family: manifest.modelCatalog.providers.anthropic.family,
     ...(compat ? { compat } : {}),
     ...(manifestModel?.contextWindows
       ? {
@@ -377,7 +384,9 @@ function hasConfiguredModelOverride(
 }
 
 function matchesAnthropicModernModel(modelId: string): boolean {
-  return supportsClaudeAdaptiveThinking({ id: modelId }) || isAnthropicMythosPreviewModel(modelId);
+  return (
+    isReleasedAdaptiveClaudeGeneration({ id: modelId }) || isAnthropicMythosPreviewModel(modelId)
+  );
 }
 
 function normalizeAnthropicResolvedModel(
@@ -615,8 +624,12 @@ export function buildAnthropicProvider(): ProviderPlugin {
       (!isAnthropicMandatoryClaude5Model(modelId) ||
         normalizeLowercaseStringOrEmpty(provider) === PROVIDER_ID),
     resolveReasoningOutputMode: () => "native",
-    classifyFailoverReason: ({ code, errorType }) =>
-      classifyAnthropicFailoverDescriptor(errorType) ?? classifyAnthropicFailoverDescriptor(code),
+    // Funding refusals arrive as HTTP 429 rate_limit_error; only error.details.error_code tells them apart.
+    classifyFailoverReason: ({ code, errorType, errorMessage }) =>
+      /"error_code"\s*:\s*"credits_required"/.test(errorMessage)
+        ? "billing"
+        : (classifyAnthropicFailoverDescriptor(errorType) ??
+          classifyAnthropicFailoverDescriptor(code)),
     resolveThinkingProfile,
     wrapStreamFn: (ctx) => {
       const loadStream = createLazyRuntimeSurface(loadStreamRuntime, (runtime) =>
@@ -646,6 +659,13 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
     warn: (message) => api.logger.warn?.(message),
   });
   api.registerCliBackend(buildAnthropicCliBackend(version));
+  setLearnedFastModeUnsupported(
+    createFastModeUnsupportedModels({
+      openStore: () =>
+        api.runtime.state.openKeyedStoreV2({ namespace: "fast-mode-unsupported", maxEntries: 256 }),
+      warn: (message) => api.logger.warn?.(message),
+    }),
+  );
   api.registerProvider({
     ...buildAnthropicProvider(),
     wrapStreamFn: (ctx) => {
@@ -655,7 +675,14 @@ export function registerAnthropicPlugin(api: OpenClawPluginApi): void {
           identity,
         ),
       );
-      return async (...args) => (await loadStream())(...args);
+      // Stored "no fast mode" answers must be loaded before the fast-mode plan runs.
+      return async (...args) => {
+        const stream = await loadStream();
+        if (args[0].provider === PROVIDER_ID) {
+          await whenFastModeAnswersLoaded();
+        }
+        return stream(...args);
+      };
     },
     wrapSimpleCompletionStreamFn: (ctx) => {
       const loadStream = createLazyRuntimeSurface(loadStreamRuntime, (runtime) =>

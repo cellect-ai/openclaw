@@ -47,36 +47,18 @@ it.each([
   });
 });
 
-type HistoricalInput = Partial<GateInput> & {
-  stableSoakWaiver?: string;
-  laneWaiver?: string;
-  publishAcceptedWaivers?: Record<string, string>;
-};
 type Outcome = string[] | "any failure" | "selected-lanes";
-type PolicyRow = [string, Evidence, Outcome, HistoricalInput?];
+type PolicyRow = [string, Evidence, Outcome, Partial<GateInput>?];
 const consumers = ["publisher", "core-npm", "stable-closeout"] as const;
-const waiver = "2026.9.5 approved";
 it.each(consumers)("accepts stable evidence for %s", (consumer) => {
   checkPolicy({}, [], { expectedSha: targetSha, consumer });
 });
-const recordedWaivers = [
-  { validationInputs: { laneWaiver: waiver } },
-  { publishInputs: { stableSoakWaiver: waiver } },
+const recordedAdvisories = [
   { validationInputs: { knownFlakyJobsJson: '["checks-windows-node-test-2"]' } },
   { advisoryJobs: [{ child: "normalCi", job: "tests", conclusion: "failure" }] },
 ];
 const policyCases: PolicyRow[] = [
   ["missing performance", { controls: {}, childRuns: {} }, ["performance"]],
-  [
-    "historical waivers",
-    { releaseProfile: "beta", runReleaseSoak: "false", controls: { performanceBlocking: false } },
-    ["performance", "stable-profile", "soak"],
-    {
-      stableSoakWaiver: waiver,
-      laneWaiver: waiver,
-      publishAcceptedWaivers: { stableSoakWaiver: waiver, laneWaiver: waiver },
-    },
-  ],
   ...(["publisher", "core-npm"] as const).map((consumer): PolicyRow => [
     "deferred beta performance/" + consumer,
     { releaseProfile: "beta", controls: { performanceBlocking: false }, childRuns: {} },
@@ -101,8 +83,8 @@ const policyCases: PolicyRow[] = [
     ["workflow", "target", "profile", "rerun-group", "soak"],
     { expectedSha: targetSha, expectedReleaseProfile: "full" },
   ],
-  ...recordedWaivers.map((changes, index): PolicyRow => [
-    `recorded waiver/advisory ${index}`,
+  ...recordedAdvisories.map((changes, index): PolicyRow => [
+    `recorded advisory ${index}`,
     changes,
     "selected-lanes",
   ]),
@@ -122,7 +104,7 @@ const policyCases: PolicyRow[] = [
     "selected-lanes",
   ],
 ];
-function checkPolicy(changes: Evidence, expected: Outcome, input?: HistoricalInput) {
+function checkPolicy(changes: Evidence, expected: Outcome, input?: Partial<GateInput>) {
   const gates = evaluate(changes, input);
   if (typeof expected === "string") {
     expectGate(gates, {
@@ -149,79 +131,83 @@ it("rejects bootstrap approval for another package version", () => {
   expect(gate.status).toBe("FAIL");
 });
 
-it.each([false, true])(
-  "runs without installed dependencies and never emits waiver authority (waived=%s)",
-  (waived) => {
-    const root = tempRoots.make("release-publish-gates-");
-    const manifestPath = join(root, "manifest.json");
-    const output = join(root, "output");
-    writeFileSync(
-      manifestPath,
-      JSON.stringify({
-        ...manifest,
-        sourceAdmission: {
-          validationPurpose: "publish",
-          publicationSelection: { npmDistTag: "latest" },
-          projection: { packages: [] },
-        },
-        publishInputs: {
-          version: 1,
-          targetSha,
-          npmDistTag: "latest",
-          pluginSdkApiEvidenceDigest: "a".repeat(64),
-          pluginSdkApiAcknowledgement: "aaaaaaaa",
-          npmDecisions: [],
-          ...(waived ? { stableSoakWaiver: "2026.9.5 approved" } : {}),
-        },
-      }),
-    );
-    const script = resolve("scripts/lib/release-publish-gates.mts");
-    const result = spawnSync(
-      process.execPath,
-      [script, "--consumer", "publisher", "--manifest", manifestPath],
-      {
-        cwd: root,
-        encoding: "utf8",
-        env: {
-          PATH: process.env.PATH,
-          RELEASE_TAG: "v2026.9.5",
-          RELEASE_NPM_DIST_TAG: "latest",
-          EXPECTED_SHA: targetSha,
-          EXPECTED_RELEASE_PROFILE: "from-validation",
-          GITHUB_OUTPUT: output,
-        },
-      },
-    );
-    if (waived) {
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain("waivers are no longer supported");
-    } else {
-      expect(result.status, result.stderr).toBe(0);
-      expect(readFileSync(output, "utf8").split("\n")).toEqual([
-        "plugin_sdk_api_acknowledgement=aaaaaaaa",
-        "npm_decisions=[]",
-        "release_profile=stable",
-        "coverage_policy=full",
-        "",
-      ]);
-    }
-  },
-);
-
-it.each([
-  [76, "PASS"],
-  [77, "WARN"],
-  [90, "WARN"],
-  [91, "FAIL"],
-] as const)("checks rollback drill day %s as %s", (days, status) => {
+it("warns before rollback drill evidence reaches the 90-day limit", () => {
   const gates = evaluateStableRollbackDrill({
-    nowMs: Date.parse("2026-06-01T00:00:00.000Z") + days * 86_400_000,
+    rollbackDrillId: "rollback-drill-2026-q2",
     rollbackDrillDate: "2026-06-01",
-    rollbackDrillId: "synthetic-drill",
+    nowMs: Date.parse("2026-08-18T00:00:00Z"),
   });
+
+  expect(gates).toContainEqual({
+    id: "stable-closeout.rollback-drill-date",
+    status: "WARN",
+    message:
+      "Rollback drill expires on 2026-08-30; run the private rollback drill before stable closeout.",
+    remediation:
+      "Run the private rollback drill and record its UTC date in RELEASE_ROLLBACK_DRILL_DATE or supply rollback_drill_date to stable closeout.",
+  });
+});
+
+it("does not warn while rollback drill evidence has at least 14 days remaining", () => {
+  const gates = evaluateStableRollbackDrill({
+    rollbackDrillId: "rollback-drill-2026-q2",
+    rollbackDrillDate: "2026-06-01",
+    nowMs: Date.parse("2026-08-16T00:00:00Z"),
+  });
+
   expect(gates.find((gate) => gate.id === "stable-closeout.rollback-drill-date")?.status).toBe(
-    status,
+    "PASS",
   );
+});
+
+it("runs without installed dependencies", () => {
+  const root = tempRoots.make("release-publish-gates-");
+  const manifestPath = join(root, "manifest.json");
+  const output = join(root, "output");
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      ...manifest,
+      sourceAdmission: {
+        validationPurpose: "publish",
+        publicationSelection: { npmDistTag: "latest" },
+        projection: { packages: [] },
+      },
+      publishInputs: {
+        version: 1,
+        targetSha,
+        npmDistTag: "latest",
+        pluginSdkApiEvidenceDigest: "a".repeat(64),
+        pluginSdkApiAcknowledgement: "aaaaaaaa",
+        npmDecisions: [],
+      },
+    }),
+  );
+  const script = resolve("scripts/lib/release-publish-gates.mts");
+  const result = spawnSync(
+    process.execPath,
+    [script, "--consumer", "publisher", "--manifest", manifestPath],
+    {
+      cwd: root,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        RELEASE_TAG: "v2026.9.5",
+        RELEASE_NPM_DIST_TAG: "latest",
+        EXPECTED_SHA: targetSha,
+        EXPECTED_RELEASE_PROFILE: "from-validation",
+        GITHUB_OUTPUT: output,
+      },
+    },
+  );
+  expect(result.status, result.stderr).toBe(0);
+  expect(readFileSync(output, "utf8").split("\n")).toEqual([
+    "plugin_sdk_api_acknowledgement=aaaaaaaa",
+    "npm_decisions=[]",
+    "release_profile=stable",
+    "coverage_policy=full",
+    "",
+  ]);
 });
 
 it("uses exact Q-only grants through publisher, core-npm and release-note CLIs", () => {
@@ -247,8 +233,7 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(responsePath)}, 'utf8'));
     childRole: "normalCi",
     jobName: "synthetic Q-only leaf",
     reason: "Synthetic regression fixture",
-    aggregates: [],
-    evidence: { runId: "42", runAttempt: 2 },
+    step: "Synthetic failing step",
   };
   const writePolicy = (waivers: (typeof grant)[], corrupt = false) => {
     const bytes = Buffer.from(
@@ -268,7 +253,12 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(responsePath)}, 'utf8'));
       }),
     );
   };
-  const failedJob = { name: grant.jobName, status: "completed", conclusion: "failure" };
+  const failedJob = {
+    name: grant.jobName,
+    status: "completed",
+    conclusion: "failure",
+    firstIncompleteStep: grant.step,
+  };
   const currentManifest = {
     ...manifest,
     workflowSha: q,
@@ -338,7 +328,7 @@ process.stdout.write(fs.readFileSync(${JSON.stringify(responsePath)}, 'utf8'));
     writePolicy([grant]);
     const accepted = run(args);
     expect(accepted.status, accepted.stderr).toBe(0);
-    writePolicy([{ ...grant, evidence: { runId: "42", runAttempt: 1 } }]);
+    writePolicy([{ ...grant, step: "Wrong step" }]);
     const stale = run(args);
     expect(stale.status, stale.stderr).toBe(1);
     expect(stale.stderr).toContain("failed selected job evidence");

@@ -18,7 +18,6 @@ const authorizeSearchHitsMock = vi.hoisted(() => vi.fn(async ({ hits }) => hits)
 const createMemoryRuntimeMock = vi.hoisted(() =>
   vi.fn((_host: MemoryCoreRuntimeHost = {}) => ({
     authorizeSearchHits: authorizeSearchHitsMock,
-    closeAllMemorySearchManagers: closeAllMemorySearchManagersMock,
     getMemorySearchManager: getMemorySearchManagerMock,
   })),
 );
@@ -26,6 +25,10 @@ const createMemoryRuntimeMock = vi.hoisted(() =>
 // mock-isolation: Keep the lazy manager engine outside registration tests.
 vi.mock("./src/runtime-provider.js", () => ({
   createMemoryRuntime: createMemoryRuntimeMock,
+}));
+// mock-isolation: Observe manager cleanup; the real close skips managers this test never loaded.
+vi.mock("./src/memory/manager-runtime-loader.js", () => ({
+  closeAllMemorySearchManagers: closeAllMemorySearchManagersMock,
 }));
 
 import plugin from "./index.js";
@@ -63,7 +66,10 @@ function captureCapability(
     registerTool,
     registerService(service) {
       if (service.id === "memory-core-index") {
-        assert(service.apiVersion !== 2, "Unexpected scheduled service");
+        assert(
+          service.apiVersion !== 2 && service.apiVersion !== 3,
+          "Unexpected scheduled service",
+        );
         services.push(service);
       }
     },
@@ -378,12 +384,13 @@ describe("memory-core plugin runtime registration", () => {
       markMemoryIndexingLive("main");
       markMemoryIndexingLive("research");
       const config = indexConfig(owner);
-      const { services, backgroundTasks, context } = captureCapability({ config });
+      const { tools, services, backgroundTasks, context } = captureCapability({ config });
       for (const service of services) {
         await service.start(context);
       }
       await Promise.all(backgroundTasks);
       expect(getMemorySearchManagerMock).not.toHaveBeenCalled();
+      expect(tools.flatMap(([, options]) => options?.names ?? [])).toEqual(["intent"]);
     },
   );
 
@@ -460,6 +467,20 @@ describe("memory-core plugin runtime registration", () => {
     },
   );
 
+  it("closes index managers without first-loading the runtime provider", async () => {
+    const {
+      services: [service],
+      context,
+    } = captureCapability({ config: indexConfig() });
+    assert(service?.stop, "Expected memory index cleanup owner");
+    await service.start(context);
+    createMemoryRuntimeMock.mockClear();
+    // Gateway shutdown can run after an update replaced the provider's chunk on disk.
+    await service.stop(context);
+    expect(closeAllMemorySearchManagersMock).toHaveBeenCalledOnce();
+    expect(createMemoryRuntimeMock).not.toHaveBeenCalled();
+  });
+
   it("defers nested host runtime access until the injected operation runs", async () => {
     const acquireLocalService = vi.fn(async () => undefined);
     const openKeyedStore = vi.fn(() => ({}));
@@ -484,7 +505,11 @@ describe("memory-core plugin runtime registration", () => {
       throw new Error("expected memory-core host operations");
     }
 
-    const target = { providerId: "local", baseUrl: "http://127.0.0.1:11434" };
+    const target: Parameters<OpenClawPluginApi["runtime"]["llm"]["acquireLocalService"]>[0] = {
+      providerId: "local",
+      baseUrl: "http://127.0.0.1:11434",
+      onReadinessWait: vi.fn(),
+    };
     await injectedHost.acquireLocalService(target);
     const storeOptions = { namespace: "lazy-host", maxEntries: 1 };
     injectedHost.openKeyedStore(storeOptions);

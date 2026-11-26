@@ -8,26 +8,13 @@ const SEND_STATUS_CAPABILITY = "imessage-send-status";
 export function registerIMessageSendStatus(
   ctx: SendStatus & Pick<ChannelGatewayContextV2, "accountId" | "channelRuntime" | "abortSignal">,
 ) {
-  const registration = ctx.channelRuntime?.runtimeContexts.register({
+  return ctx.channelRuntime?.runtimeContexts.register({
     channelId: "imessage",
     accountId: ctx.accountId,
     capability: SEND_STATUS_CAPABILITY,
     context: { getStatus: ctx.getStatus, setStatus: ctx.setStatus } satisfies SendStatus,
     abortSignal: ctx.abortSignal,
   });
-  return {
-    dispose: () => registration?.dispose(),
-    setStatus: (patch: Parameters<SendStatus["setStatus"]>[0]) => {
-      const lastError = ctx.getStatus().lastError;
-      // Read readiness does not establish outbound Automation permission. Keep
-      // the account's observed warning until an accepted send clears it below.
-      ctx.setStatus(
-        patch.lastError === null && normalizeIMessageAutomationError(lastError ?? "")
-          ? { ...patch, lastError }
-          : patch,
-      );
-    },
-  };
 }
 
 function getSendStatus(accountId: string): SendStatus | undefined {

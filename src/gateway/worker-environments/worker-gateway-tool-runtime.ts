@@ -13,7 +13,7 @@ import { getAgentToolExecutionLocation } from "../../agents/agent-tool-metadata.
 import { applyEmbeddedAttemptToolsAllow } from "../../agents/embedded-agent-runner/run/attempt-tool-construction-plan.js";
 import { createAgentHarnessToolSurfaceRuntimeCore } from "../../agents/harness/tool-surface-bridge.js";
 import { consumeMcpCodeModeGuestResult } from "../../agents/mcp-content.js";
-import { projectAgentToolDefinition } from "../../agents/prepared-tool-surface.js";
+import { projectAgentToolDefinition } from "../../agents/prepared-tool-definition.js";
 import { readToolExecutionRefusal } from "../../agents/tool-effect-receipt.js";
 import { buildRunGrantedToolDirectory } from "../../agents/tool-search.js";
 import type { AnyAgentTool } from "../../agents/tools/common.js";
@@ -108,7 +108,12 @@ export function createWorkerGatewayToolRuntime(params: {
             tools: tools.map((tool, index) => {
               const location = getAgentToolExecutionLocation(tool);
               const plugin = getPluginToolMeta(tool);
-              const id = String(index);
+              // Local MCP handles also cross the node supervisor. Keep them distinct
+              // across turns on a retained worker even when catalog indices repeat.
+              const id =
+                location.kind === "placement" && plugin?.mcp?.node
+                  ? `${generation}:${index}`
+                  : String(index);
               handles.set(id, tool);
               return {
                 id,

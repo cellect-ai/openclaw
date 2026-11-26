@@ -12,11 +12,9 @@ import type { ModelAliasIndex } from "../../agents/model-selection.js";
 import { resolveSandboxRuntimeStatusAsync } from "../../agents/sandbox/runtime-status.js";
 import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import type { SessionEntry } from "../../config/sessions.js";
-import { isSessionWorkStartInvalidatedError } from "../../config/sessions/lifecycle.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { isFastTestRuntimeEnv } from "../../infra/env.js";
 import { normalizeAgentId } from "../../routing/session-key.js";
-import { ModelSelectionLockedError } from "../../sessions/model-overrides.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import {
   expandExplicitSkillReferences,
@@ -47,7 +45,11 @@ import {
   resolveReplyDirectiveCommand,
 } from "./directive-handling.parse.js";
 import { applyInlineDirectiveOverrides } from "./get-reply-directives-apply.js";
-import { clearExecInlineDirectives, clearInlineDirectives } from "./get-reply-directives-utils.js";
+import {
+  clearExecInlineDirectives,
+  clearInlineDirectives,
+  resolveModelSelectionErrorReply,
+} from "./get-reply-directives-utils.js";
 import { resolveReplyExecOverrides } from "./get-reply-exec-overrides.js";
 import { shouldUseReplyFastTestRuntime } from "./get-reply-fast-path.js";
 import type { InternalGetReplyOptions } from "./get-reply.types.js";
@@ -167,15 +169,17 @@ export async function resolveReplyDirectives(params: {
     command.isAuthorizedSender &&
     ctx.CommandInterpretationSuppressed !== true &&
     matchSlashCommandToken(command.commandBodyNormalized, "/followup") === null;
-  const configuredModelAliases = commandText.includes("/")
+  const commandTextHasSlash = commandText.includes("/");
+  const configuredModelAliases = commandTextHasSlash
     ? listModelAliasCandidates(cfg, agentId)
         .map((candidate) => candidate.alias)
         .filter(Boolean)
     : [];
+  const hasConfiguredModelAliases = configuredModelAliases.length > 0;
   const hasSkillReferences =
     canInterpretTextDirectives && hasSkillReferenceCandidate(command.commandBodyNormalized);
   const reservedCommands = new Set<string>();
-  if (configuredModelAliases.length > 0) {
+  if (hasConfiguredModelAliases) {
     const { listChatCommands } = await commandsRegistryLoader.load();
     for (const chatCommand of listChatCommands()) {
       for (const alias of chatCommand.textAliases) {
@@ -234,8 +238,9 @@ export async function resolveReplyDirectives(params: {
       reply: markCommandReplyForDelivery({ text: explicitSkillReferences.error }),
     };
   }
+  const hasExplicitSkillInvocation = Boolean(explicitSkillReferences?.skills.length);
   const canInterpretMessageDirectives =
-    startsWithSlash && canInterpretTextDirectives && !explicitSkillReferences?.skills.length;
+    startsWithSlash && canInterpretTextDirectives && !hasExplicitSkillInvocation;
 
   const configuredAliases = rawAliases.filter(
     (alias) => !reservedCommands.has(normalizeLowercaseStringOrEmpty(alias)),
@@ -574,17 +579,10 @@ export async function resolveReplyDirectives(params: {
       operatorAuthority: opts?.operatorAuthority,
     });
   } catch (error) {
-    if (
-      !(error instanceof ModelSelectionLockedError) &&
-      !isSessionWorkStartInvalidatedError(error)
-    ) {
-      throw error;
-    }
+    const { reply, preRunRejection } = resolveModelSelectionErrorReply(error);
     typing.cleanup();
-    if (error instanceof ModelSelectionLockedError) {
-      recordReplyPreRunRejection(resolveReplyOperationRunState(opts), "model-selection-locked");
-    }
-    return { kind: "reply" as const, reply: { text: error.message, isError: true } };
+    recordReplyPreRunRejection(resolveReplyOperationRunState(opts), preRunRejection);
+    return { kind: "reply" as const, reply };
   }
   ({ provider, model } = modelState);
 

@@ -29,7 +29,10 @@ import {
   loadPluginInstallRuntime,
   runInstallSourceScan,
 } from "./install-shared.js";
-import { copyPluginInstallTransactionRequest } from "./install-transaction.js";
+import {
+  copyPluginInstallTransactionRequest,
+  resolvePluginInstallTransactionRequest,
+} from "./install-transaction.js";
 import {
   PLUGIN_INSTALL_ERROR_CODE,
   type InstallPluginResult,
@@ -180,6 +183,8 @@ export async function installPluginFromNpmSpec(
     packageName: parsedSpec.name,
     requestedMode: mode,
     npmResolution,
+    forceFreshGeneration:
+      resolvePluginInstallTransactionRequest(params)?.cohort?.forceFreshGeneration,
   });
 
   const preflightPolicyResult = await withTempWorkspace(

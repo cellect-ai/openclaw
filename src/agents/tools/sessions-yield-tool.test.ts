@@ -99,8 +99,8 @@ describe("sessions_yield tool", () => {
   });
 
   it.each([
-    [undefined, "test-session", "did not pause the turn or schedule a continuation"],
-    ["message", "root", "eligible active native task"],
+    [undefined, "test-session", "Reply to the user now"],
+    ["message", "root", "No active native task registered this message wait"],
   ] as const)(
     "keeps an ineligible turn active with intent %s",
     async (waitFor, sessionId, message) => {
@@ -198,7 +198,7 @@ describe("sessions_yield tool", () => {
     const childWait = await tool.execute("child-wait", { waitFor: "message" });
     expect(childWait.details).toEqual({
       status: "yielded",
-      note: 'waitFor: "message" was not applied: this turn yielded for its own pending child completions, which resume this session. Omit waitFor when yielding for children.',
+      note: 'waitFor: "message" was not applied: this turn yielded for its own pending child completions or background commands, which resume this session. Omit waitFor when yielding for them.',
     });
     expect((await tool.execute("plain", {})).details).toEqual({ status: "yielded" });
 

@@ -13,15 +13,14 @@ import { emitSessionTranscriptUpdate } from "../../sessions/transcript-events.js
 import { createDeferredCore } from "../../shared/deferred.js";
 import { resolveSessionAgentId } from "../agent-scope.js";
 import { resolveMemorySearchIndexConfig } from "../memory-search.js";
-import type { AgentMessage } from "../runtime/index.js";
-import { estimateCompactedRequestTokens } from "../sessions/compaction/request-budget.js";
-import type { CompactionRequestBudget } from "../sessions/compaction/request-budget.types.js";
 import type { CompactEmbeddedAgentSessionParams } from "./compact.types.js";
-import {
-  estimateTokenCountSafe,
-  buildBeforeCompactionHookMetrics,
-} from "./compaction-hook-metrics.js";
+import type { buildBeforeCompactionHookMetrics } from "./compaction-hook-metrics.js";
 import { log } from "./logger.js";
+
+export {
+  buildBeforeCompactionHookMetrics,
+  estimateTokensAfterCompaction,
+} from "./compaction-hook-metrics.js";
 
 type PostCompactionSession = {
   config?: OpenClawConfig;
@@ -177,34 +176,6 @@ export async function runPostCompactionSideEffects(params: PostCompactionSession
 type CompactionHookRunner = Partial<
   Pick<HookRunner, "hasHooks" | "runBeforeCompaction" | "runAfterCompaction">
 >;
-
-export { buildBeforeCompactionHookMetrics } from "./compaction-hook-metrics.js";
-
-/** Estimates compacted-session token count and rejects impossible growth from stale estimates. */
-export function estimateTokensAfterCompaction(params: {
-  messagesAfter: AgentMessage[];
-  observedTokenCount?: number;
-  fullSessionTokensBefore: number;
-  estimateTokensFn: (message: AgentMessage) => number;
-  requestBudget?: CompactionRequestBudget;
-}) {
-  if (params.requestBudget) {
-    return estimateCompactedRequestTokens(params.messagesAfter, {
-      ...params.requestBudget,
-      pendingTokens: 0,
-    });
-  }
-  const tokensAfter = estimateTokenCountSafe(params.messagesAfter, params.estimateTokensFn);
-  if (tokensAfter === undefined) {
-    return undefined;
-  }
-  const sanityCheckBaseline = params.observedTokenCount ?? params.fullSessionTokensBefore;
-  return sanityCheckBaseline > 0 &&
-    tokensAfter >
-      (params.observedTokenCount !== undefined ? sanityCheckBaseline : sanityCheckBaseline * 1.1)
-    ? undefined
-    : tokensAfter;
-}
 
 type CompactionHookParams = {
   hookRunner?: CompactionHookRunner | null;

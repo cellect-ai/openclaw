@@ -19,7 +19,12 @@ export async function openChatDashboardMenu(scope: Page | Locator): Promise<Loca
   if ((await trigger.getAttribute("aria-expanded")) !== "true") {
     await trigger.click();
   }
-  await menu.getByRole("menu", { name: "Dashboard options", exact: true }).waitFor();
+  // The opening popover can pass DOM hit testing before pointer input stops reaching
+  // the Dashboard widget iframe underneath it.
+  await menu
+    .getByRole("menu", { name: "Dashboard options", exact: true })
+    .and(menu.locator('[data-phase="open"]'))
+    .waitFor();
   return menu;
 }
 
@@ -69,7 +74,8 @@ export async function openChatPanels(
     await mobileHeader(pane).waitFor({ state: "visible" });
     const trigger = panelsToggle(pane, true);
     if (await trigger.isVisible()) {
-      if (!(await pane.locator(".chat-mobile-host").isVisible())) {
+      // A closing sheet is already hidden while it slides out; only an open one counts.
+      if (!(await pane.locator(".chat-mobile-host:not([hidden])").isVisible())) {
         await trigger.click();
       }
       return trigger;
@@ -98,7 +104,7 @@ async function selectNativeLayoutAction(pane: Locator, name: string | RegExp): P
   await waitForPanelLayout(pane);
   const matches = (label: string) => (typeof name === "string" ? name === label : name.test(label));
   const mobile = await mobileHeader(pane).isVisible();
-  const host = pane.locator(".chat-mobile-host");
+  const host = pane.locator(".chat-mobile-host:not([hidden])");
   const side = pane.locator('[data-region-header="side"]');
   const toggle = panelsToggle(pane, mobile);
 
@@ -189,9 +195,7 @@ async function selectNativeLayoutAction(pane: Locator, name: string | RegExp): P
       await action.click();
       return;
     }
-    const dashboard = pane.locator(".chat-dashboard-menu").filter({ visible: true });
-    await button(dashboard, "Dashboard options").click();
-    await selectMenuItem(dashboard, name);
+    await selectMenuItem(await openChatDashboardMenu(pane), name);
     return;
   }
   if (matches("Focus")) {

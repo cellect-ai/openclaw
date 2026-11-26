@@ -119,13 +119,13 @@ describe("embedded session history anchors", () => {
     },
   );
 
-  it.each(["quasar"])(
+  it.each(["quasar", "会"])(
     "searches %s without inventory paging and excludes another agent's matches",
     async (query) => {
       const hidden = { agentId: "main", sessionKey: "agent:main:hidden", sessionId: "hidden" };
       replaceSessionEntrySync(hidden, { sessionId: hidden.sessionId, updatedAt: Date.now() });
-      await append("hidden-message", { role: "user", content: "quasar" }, hidden);
-      await append("visible", { role: "user", content: "quasar" });
+      await append("hidden-message", { role: "user", content: "quasar 明天下午开会讨论" }, hidden);
+      await append("visible", { role: "user", content: "quasar 明天下午开会讨论" });
       const methods: string[] = [];
       const search = createSessionsSearchTool({
         config,

@@ -47,40 +47,12 @@ function hasNoJournal(pathname: string): boolean {
   });
 }
 
-/** The caller supplies fstat from its retained descriptor; closing a new one can release SQLite locks. */
-export function readSqliteCleanCloseSeal(
-  pathname: string,
+function decodeSeal(
+  bytes: string,
   file: BigIntStats,
-  onRefusal?: (reason: SqliteCleanCloseSealRefusal) => void,
-): (SealProof & { schemaIdentity: string }) | undefined {
-  const refuse = (reason: SqliteCleanCloseSealRefusal) => {
-    onRefusal?.(reason);
-    return undefined;
-  };
-  try {
-    const sealPath = `${pathname}.seal`;
-    if (!fs.lstatSync(sealPath).isFile()) {
-      return refuse("malformed-proof");
-    }
-    return decodeSqliteCleanCloseSeal(
-      fs.readFileSync(sealPath, "utf8"),
-      file,
-      hasNoJournal(pathname),
-      refuse,
-    );
-  } catch (error) {
-    // Torn writes and unreadable seals fall back to the ordinary full validation.
-    return refuse(hasErrnoCode(error, "ENOENT") ? "no-proof" : "malformed-proof");
-  }
-}
-
-function decodeSqliteCleanCloseSeal(
-  contents: string,
-  file: BigIntStats,
-  journalFree: boolean,
   refuse: (reason: SqliteCleanCloseSealRefusal) => undefined,
 ): (SealProof & { schemaIdentity: string }) | undefined {
-  const envelope: unknown = JSON.parse(contents);
+  const envelope: unknown = JSON.parse(bytes);
   if (
     !isRecord(envelope) ||
     typeof envelope.payload !== "string" ||
@@ -107,9 +79,6 @@ function decodeSqliteCleanCloseSeal(
   if (!Object.entries(fileFields(file)).every(([key, value]) => payload[key] === value)) {
     return refuse("file-mismatch");
   }
-  if (!journalFree) {
-    return refuse("journal-present");
-  }
   return {
     schemaIdentity: payload.schemaIdentity,
     verifiedAt: payload.verifiedAt,
@@ -118,35 +87,64 @@ function decodeSqliteCleanCloseSeal(
   };
 }
 
-export async function readSqliteCleanCloseSealAsync(
+/** The caller supplies fstat from its retained descriptor; closing a new one can release SQLite locks. */
+export function readSqliteCleanCloseSeal(
   pathname: string,
   file: BigIntStats,
   onRefusal?: (reason: SqliteCleanCloseSealRefusal) => void,
-): Promise<(SealProof & { schemaIdentity: string }) | undefined> {
+): (SealProof & { schemaIdentity: string }) | undefined {
   const refuse = (reason: SqliteCleanCloseSealRefusal) => {
     onRefusal?.(reason);
     return undefined;
   };
   try {
-    const sealPath = pathname + ".seal";
+    const sealPath = `${pathname}.seal`;
+    if (!fs.lstatSync(sealPath).isFile()) {
+      return refuse("malformed-proof");
+    }
+    const proof = decodeSeal(fs.readFileSync(sealPath, "utf8"), file, refuse);
+    if (!proof) {
+      return undefined;
+    }
+    return hasNoJournal(pathname) ? proof : refuse("journal-present");
+  } catch (error) {
+    // Torn writes and unreadable seals fall back to the ordinary full validation.
+    return refuse(hasErrnoCode(error, "ENOENT") ? "no-proof" : "malformed-proof");
+  }
+}
+
+/** The descriptor remains owned by the host; only seal and journal metadata is read here. */
+export async function readSqliteCleanCloseSealAsync(
+  pathname: string,
+  file: BigIntStats,
+  onRefusal?: (reason: SqliteCleanCloseSealRefusal) => void,
+): Promise<ReturnType<typeof readSqliteCleanCloseSeal>> {
+  const refuse = (reason: SqliteCleanCloseSealRefusal) => {
+    onRefusal?.(reason);
+    return undefined;
+  };
+  try {
+    const sealPath = `${pathname}.seal`;
     if (!(await fs.promises.lstat(sealPath)).isFile()) {
       return refuse("malformed-proof");
     }
-    const contents = await fs.promises.readFile(sealPath, "utf8");
-    const journals = await Promise.all(
-      ["-wal", "-journal"].map(async (suffix) => {
-        try {
-          const journal = await fs.promises.stat(pathname + suffix, { bigint: true });
-          return journal.isFile() && journal.size === 0n;
-        } catch (error) {
-          if (hasErrnoCode(error, "ENOENT")) {
-            return true;
-          }
+    const proof = decodeSeal(await fs.promises.readFile(sealPath, "utf8"), file, refuse);
+    if (!proof) {
+      return undefined;
+    }
+    for (const suffix of ["-wal", "-journal"]) {
+      try {
+        const journal = await fs.promises.stat(`${pathname}${suffix}`, { bigint: true });
+        if (!journal.isFile() || journal.size !== 0n) {
+          return refuse("journal-present");
+        }
+      } catch (error) {
+        if (!hasErrnoCode(error, "ENOENT")) {
           throw error;
         }
-      }),
-    );
-    return decodeSqliteCleanCloseSeal(contents, file, journals.every(Boolean), refuse);
+      }
+    }
+    return proof;
   } catch (error) {
     return refuse(hasErrnoCode(error, "ENOENT") ? "no-proof" : "malformed-proof");
   }

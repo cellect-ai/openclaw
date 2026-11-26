@@ -31,7 +31,10 @@ const SkillsSearchSchema = Type.Object({
   query: Type.String({ minLength: 1, maxLength: 1000 }),
   limit: Type.Optional(Type.Integer({ minimum: 1, maximum: 20 })),
 });
-const SkillsReadSchema = Type.Object({ name: Type.String({ minLength: 1 }) });
+const SkillsReadSchema = Type.Object({
+  name: Type.String({ minLength: 1 }),
+  relativePath: Type.Optional(Type.String({ minLength: 1 })),
+});
 
 // Covers the deferred dispatch envelope that wraps this text as a JSON string.
 const DISPATCH_ENVELOPE_RESERVE_CHARS = 512;
@@ -48,13 +51,13 @@ function fitsModelOutput(text: string, budget: ToolResultBudget): boolean {
  * first lines and names the `read` call that continues it, instead of letting a
  * generic output cap remove the middle without a way to recover it.
  */
-function formatSkillInstructionsForModel(
+export function formatSkillInstructionsForModel(
   instructions: SkillInstructionResult,
   budget: ToolResultBudget | undefined,
   readCallable: boolean,
 ): { text: string; whole: boolean } {
   const text = formatSkillInstructions(instructions);
-  if (!budget || fitsModelOutput(text, budget)) {
+  if (!budget || instructions.relativePath !== undefined || fitsModelOutput(text, budget)) {
     return { text, whole: true };
   }
   const lines = instructions.content.split("\n");
@@ -135,22 +138,31 @@ export function createInstalledSkillTools(
         name: "skills_read",
         label: "Read Installed Skill",
         description:
-          "Load complete SKILL.md instructions for an exact installed skill name. Use a known name directly; search is not required first. Does not execute the skill or grant additional tool permissions.",
+          "Load complete SKILL.md instructions for an exact installed skill name; search is not required first. Optional relativePath reads a UTF-8 text companion (up to 256 KiB) inside a local skill directory. Restricted placements are instruction-only. Does not execute files or grant command permissions.",
         parameters: SkillsReadSchema,
         execute: async (_id, args, signal) => {
           const params = asToolParamsRecord(args);
           const name = readToolStringParam(params, "name", { required: true });
-          const instructions = await readInstalledSkill(skills, name, signal);
+          const relativePath = readToolStringParam(params, "relativePath", {
+            required: params.relativePath !== undefined || params.relative_path !== undefined,
+            trim: false,
+          });
+          const instructions = await readInstalledSkill(skills, name, signal, relativePath);
           const { text, whole } = formatSkillInstructionsForModel(
             instructions,
             budget,
             readCallable,
           );
+          // Details keep the complete document for Code Mode values; only model text pages.
           const result = {
             content: [{ type: "text" as const, text }],
             details: instructions,
           };
-          if (whole) {
+          if (
+            relativePath === undefined &&
+            whole &&
+            skills.find((skill) => skill.name === name)?.instructionDelivery !== "forwarded"
+          ) {
             rememberSkillInstructionDelivery(result, instructions.content);
           }
           return result;

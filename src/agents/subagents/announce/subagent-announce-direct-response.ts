@@ -125,18 +125,10 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
       directAnnounceRecord?.status === "ok" &&
       !directAnnounceResult?.meta?.error &&
       !directAnnounceResult?.meta?.aborted;
-    const requiresSettleReply = params.sourceTool === "subagent_settle";
-    const acceptsIntentionalSilentCompletion =
-      effectiveReplyExpectation !== "result-required" &&
-      !requiresSettleReply &&
-      requesterCompletedSuccessfully &&
-      hasIntentionalSilentCompletionReply &&
-      directAnnounceResult?.meta?.yielded !== true &&
-      directAnnounceResult?.meta?.continuationPending !== true;
-    const requiresAutomaticFinalReceipt =
-      shouldDeliverAgentFinal &&
-      (params.expectsCompletionMessage || params.sourceTool === "subagent_settle");
     const automaticEvidence = getAutomaticDeliveryEvidence(directAnnounceResult ?? {});
+    const hasCompletionSideEffect = Boolean(
+      directAnnounceResult && hasCommittedOutboundDeliveryEvidence(directAnnounceResult),
+    );
     const missingVisibleReplyResult = (): SubagentAnnounceDeliveryResult => {
       const terminal = resolveAgentRunWaitTerminalFacts(directAnnounceRecord ?? {});
       const outcome = terminal && classifyAgentRunTerminalOutcome(terminal);
@@ -161,6 +153,17 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
         ...(requesterCompletedSuccessfully ? { disposition: "retryable" as const } : {}),
       };
     };
+    const requiresSettleReply = params.sourceTool === "subagent_settle";
+    const acceptsIntentionalSilentCompletion =
+      effectiveReplyExpectation !== "result-required" &&
+      !requiresSettleReply &&
+      requesterCompletedSuccessfully &&
+      hasIntentionalSilentCompletionReply &&
+      directAnnounceResult?.meta?.yielded !== true &&
+      directAnnounceResult?.meta?.continuationPending !== true;
+    const requiresAutomaticFinalReceipt =
+      shouldDeliverAgentFinal &&
+      (params.expectsCompletionMessage || params.sourceTool === "subagent_settle");
     const directDeliveryFailure =
       (shouldDeliverAgentFinal || requiresMessageToolDelivery) && directAnnounceResult
         ? getAgentCommandDeliveryFailure(directAnnounceResult)
@@ -174,8 +177,9 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
       return {
         delivered: false,
         path: "direct",
-        reason: "delivery_failed",
         error: directDeliveryFailure,
+        // A completed turn's answer did not reach the requester's channel.
+        ...(requesterCompletedSuccessfully ? { finalAssistantVisibleText: "" } : {}),
         ...(automaticEvidence.mayHaveSent ? { disposition: "ambiguous" as const } : {}),
       };
     }
@@ -257,9 +261,6 @@ export function createDirectAnnounceResponseClassifier(context: DirectAnnounceRe
         };
       }
     }
-    const hasCompletionSideEffect = Boolean(
-      directAnnounceResult && hasCommittedOutboundDeliveryEvidence(directAnnounceResult),
-    );
     const hasVisibleRequiredCompletionReply =
       hasMessagingToolDelivery ||
       (!requiresMessageToolDelivery && hasVisibleNonSilentGatewayPayload);

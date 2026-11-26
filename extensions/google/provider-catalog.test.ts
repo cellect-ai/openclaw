@@ -46,12 +46,13 @@ function inventory(body: unknown): LiveModelCatalogFetchGuard {
 }
 async function discover(fetchGuard: LiveModelCatalogFetchGuard, strict = false) {
   vi.spyOn(ssrfRuntime, "fetchWithSsrFGuard").mockImplementation(fetchGuard);
-  const { provider } = await loadGoogleLiveCatalog({
-    discoveryMode: strict ? "strict" : undefined,
-    apiKey: "GEMINI_API_KEY",
-    discoveryApiKey: "resolved-google-key",
-  });
-  return provider;
+  return (
+    await loadGoogleLiveCatalog({
+      discoveryMode: strict ? "strict" : undefined,
+      apiKey: "GEMINI_API_KEY",
+      discoveryApiKey: "resolved-google-key",
+    })
+  ).provider;
 }
 
 beforeEach(() => clearLiveCatalogCacheForTests());

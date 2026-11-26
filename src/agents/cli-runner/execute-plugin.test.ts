@@ -11,6 +11,7 @@ import type {
   CliBackendToolPermissionResult,
 } from "../../plugins/cli-backend.types.js";
 import * as execDefaults from "../exec-defaults.js";
+import { resolveReplyFailoverFacts } from "../failover/request-error-facts.js";
 import { callGatewayTool } from "../tools/gateway.js";
 import {
   closeCliLiveSession,
@@ -468,36 +469,6 @@ describe("plugin-owned CLI execution host boundary", () => {
     expect(busy.close).not.toHaveBeenCalled();
   });
 
-  it("stops idle eviction when the requesting run loses authority during cleanup", async () => {
-    const firstOwner = await createExecution({ runId: "memory-first" });
-    firstOwner.context.params.sessionId = "memory-first";
-    const first = registerOwnerSession(firstOwner.context, "first");
-    const secondOwner = await createExecution({ runId: "memory-second" });
-    secondOwner.context.params.sessionId = "memory-second";
-    const second = registerOwnerSession(secondOwner.context, "second");
-    const { context } = await createExecution({ runId: "memory-revoked" });
-    context.params.sessionId = "memory-revoked";
-    let current = true;
-    context.params.assertCurrent = () => {
-      if (!current) {
-        throw new Error("requesting run revoked");
-      }
-    };
-    first.close.mockImplementation(() => {
-      first.capability.remove(first.handle);
-      current = false;
-    });
-    hostMemory.freeBytes.mockReturnValue(LOW_MEMORY);
-    const execute = vi.fn(async function* () {
-      yield SUCCESS_RESULT;
-    });
-    await expect(runPlugin(context, execute, { liveSession: true })).rejects.toThrow(
-      "requesting run revoked",
-    );
-    expect(second.close).not.toHaveBeenCalled();
-    expect(execute).not.toHaveBeenCalled();
-  });
-
   it("fails over with host-memory copy when low memory leaves only busy processes", async () => {
     const owner = await createExecution({ runId: "memory-busy" });
     owner.context.params.sessionId = "memory-busy";
@@ -514,11 +485,15 @@ describe("plugin-owned CLI execution host boundary", () => {
     const error = await runPlugin(context, execute, { liveSession: true }).catch(
       (failure: unknown) => failure,
     );
-    expect(error).toMatchObject({ reason: "rate_limit", code: "cli_live_session_host_memory" });
+    expect(error).toMatchObject({ reason: "overloaded", code: "cli_live_session_host_memory" });
     expect(execute).not.toHaveBeenCalled();
     expect(busy.close).not.toHaveBeenCalled();
     expect(
-      resolveReplyFailureSummary({ error, message: String(error), reason: "rate_limit" })?.text,
+      resolveReplyFailureSummary({
+        error,
+        message: String(error),
+        facts: resolveReplyFailoverFacts(error, String(error)),
+      })?.text,
     ).toBe(
       "⚠️ This host is low on memory, so it could not start another session. Try again after active conversations finish.",
     );

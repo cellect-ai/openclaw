@@ -16,6 +16,7 @@ import type { loadSystemAgentOverview } from "./overview.js";
 import { validateSystemAgentPluginInstallSpec } from "./plugin-install-spec.js";
 
 export type { SystemAgentOperation };
+export type { SystemAgentOperatorProposal } from "./operation-types.js";
 
 export type SystemAgentOperationResult = {
   applied: boolean;
@@ -233,6 +234,20 @@ export function secretStoreNameForConfigPath(path: string): string {
  * that does not match the anchored grammar exactly returns kind "none" so the
  * caller can route it to the system agent (or show guidance).
  */
+/** Exact config commands can use host validation and approval without model inference. */
+export function parseSystemAgentConfigCommand(input: string): SystemAgentOperation | null {
+  const operation = parseSystemAgentOperation(input);
+  return operation.kind === "config-set" ||
+    operation.kind === "config-unset" ||
+    operation.kind === "config-set-ref" ||
+    operation.kind === "config-get" ||
+    operation.kind === "config-schema" ||
+    operation.kind === "config-validate" ||
+    isInvalidConfigSetOperation(operation)
+    ? operation
+    : null;
+}
+
 export function parseSystemAgentOperation(input: string): SystemAgentOperation {
   const trimmed = input.trim();
   const lower = trimmed.toLowerCase();
@@ -420,6 +435,7 @@ export function isPersistentSystemAgentOperation(operation: SystemAgentOperation
     operation.kind === "setup" ||
     operation.kind === "plugin-install" ||
     operation.kind === "plugin-activate-artifact" ||
+    operation.kind === "template-install" ||
     operation.kind === "plugin-uninstall" ||
     operation.kind === "create-team" ||
     (operation.kind === "create-agent" &&
@@ -458,6 +474,8 @@ export function describeSystemAgentPersistentOperation(operation: SystemAgentOpe
       return "run openclaw doctor --fix on the machine running OpenClaw, with OpenClaw stopped";
     case "plugin-install":
       return `install plugin ${operation.spec}`;
+    case "template-install":
+      return `add ClawHub Template ${operation.source.packageName}@${operation.source.version} as agent ${operation.agentId} using reviewed plan ${operation.planIntegrity}`;
     case "plugin-activate-artifact":
       return `install the trusted plugin artifact ${operation.path} (SHA256 ${operation.sha256}), including its declared capabilities and native UI; restart the Gateway to load it`;
     case "plugin-uninstall":

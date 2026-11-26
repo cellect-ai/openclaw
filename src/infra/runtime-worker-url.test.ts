@@ -194,6 +194,29 @@ describe("resolveRuntimeWorkerArgv", () => {
     }
   });
 
+  it("loads a TypeScript worker thread from a foreign working directory", async () => {
+    await withTempDir("openclaw-worker-thread-cwd-", async (cwd) => {
+      const entry = path.join(cwd, "thread.mts");
+      await writeFile(
+        entry,
+        'import { parentPort } from "node:worker_threads"; enum Answer { value = 42 }; parentPort.postMessage(Answer.value);',
+      );
+      const url = pathToFileURL(entry);
+      const { stdout } = await promisify(execFile)(
+        process.execPath,
+        [
+          "--input-type=module",
+          "-e",
+          'import { Worker } from "node:worker_threads"; const worker = new Worker(new URL(process.argv[1]), { execArgv: JSON.parse(process.argv[2]) }); worker.on("message", value => console.log(value));',
+          url.href,
+          JSON.stringify(resolveRuntimeWorkerThreadExecArgv(url)),
+        ],
+        { cwd, timeout: 10_000 },
+      );
+      expect(stdout.trim()).toBe("42");
+    });
+  });
+
   it("does not preload a file loader for non-file Worker URLs", () => {
     expect(
       resolveRuntimeWorkerThreadExecArgv(new URL("data:text/javascript,postMessage(1)")),

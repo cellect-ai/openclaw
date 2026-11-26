@@ -28,6 +28,7 @@ import {
 } from "../plugins/plugin-invocation-scope.js";
 import { loadPluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
+import { inheritPreparedSyntheticAuthScope } from "../plugins/provider-synthetic-auth.js";
 import { getPluginRegistryInspectionResources } from "../plugins/registry-inspection-resources.js";
 import {
   bindPluginRegistryGatewayOwner,
@@ -137,6 +138,7 @@ function resolveAgentRuntimePluginRegistryLoad(
     // SAFETY: Typed config inputs project only the planner's plugin-policy edits onto authored config.
     activationSourceConfig = projectedSource as OpenClawConfig;
   }
+  inheritPreparedSyntheticAuthScope(params.config, plan.config);
   return {
     ...loadOptions,
     config: plan.config,
@@ -146,6 +148,7 @@ function resolveAgentRuntimePluginRegistryLoad(
     discovery: metadataSnapshot.discovery,
     installRecords: extractPluginInstallRecordsFromInstalledPluginIndex(metadataSnapshot.index),
     manifestRegistry: metadataSnapshot.manifestRegistry,
+    normalizePluginId: metadataSnapshot.normalizePluginId,
     preferBuiltPluginArtifacts: params.preferBuiltPluginArtifacts,
     onlyPluginIds: startupPluginIds === undefined ? undefined : plan.pluginIds,
     channelPluginLoadIntent: startupPluginIds === undefined ? undefined : "full",

@@ -1,6 +1,5 @@
 import { lazy } from "solid-js";
 import { Icon } from "../../components/solid/icon.tsx";
-import { warmWhenIdle } from "../../lib/idle-warmup.ts";
 import { pathDisplayName } from "../../lib/path-display.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import type { ProjectBrowserFocus } from "./draft-place-browser.ts";
@@ -11,7 +10,6 @@ import type { NewSessionPlaceControlsOptions } from "./target-controls.ts";
 const ProjectPickerContent = lazy(() => import("./project-picker-content.tsx"), {
   export: "ProjectPickerContent",
 });
-warmWhenIdle(ProjectPickerContent.preload);
 
 export type ProjectChipProps = {
   params: NewSessionPlaceControlsOptions;
@@ -35,7 +33,15 @@ export function ProjectChip(props: ProjectChipProps) {
       kind="project"
       label={`${t("newSession.what")}: ${label()}`}
       value={label()}
-      icon={<Icon name={props.params.place.browser.projectId ? "gitBranch" : "folder"} />}
+      icon={
+        <Icon
+          name={
+            props.params.place.browser.projectId || props.params.place.browser.remoteProject
+              ? "book"
+              : "folder"
+          }
+        />
+      }
       triggerAttributes={{ "data-project-id": props.params.place.browser.projectId || undefined }}
       params={props.params}
     >

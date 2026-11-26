@@ -250,15 +250,16 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
   );
 
   it.each([
-    ["session owner before captured default", undefined, "alpha", "session-owner"],
-    ["explicit job owner", "gamma", "alpha", "gamma"],
-    ["session owner without default", undefined, undefined, "session-owner"],
+    ["captured default", undefined, undefined, "alpha", "alpha"],
+    ["explicit job owner", "gamma", "agent:session-owner:main", "alpha", "gamma"],
+    ["session owner", undefined, "agent:session-owner:main", "alpha", "session-owner"],
+    ["captured absence", undefined, undefined, undefined, undefined],
   ])(
     "routes a failure alert using %s instead of the live default",
-    async (_name, jobAgentId, defaultAgentId, recipient) => {
+    async (_name, jobAgentId, sessionKey, defaultAgentId, recipient) => {
       const job = announceJob();
       job.agentId = jobAgentId;
-      job.sessionKey = "agent:session-owner:main";
+      job.sessionKey = sessionKey;
       const resolveCronAgent = vi.fn((requested?: string | null) => ({
         agentId: requested ?? "beta",
         cfg: {},
@@ -282,9 +283,17 @@ describe("dispatchGatewayCronFinishedNotifications", () => {
         routing: defaultAgentId ? { defaultAgentId } : {},
         accountId: "requested-account",
         threadId: 42,
+        target: "owner",
+        directPolicy: "block",
       });
       if (recipient) {
         await delivery;
+        expect(mocks.resolveDeliveryTarget).toHaveBeenCalledWith(
+          {},
+          recipient,
+          expect.objectContaining({ target: "owner", directPolicy: "block" }),
+          expect.anything(),
+        );
         expect(mocks.sendCronAnnouncePayloadStrict).toHaveBeenCalledWith(
           expect.objectContaining({
             agentId: recipient,

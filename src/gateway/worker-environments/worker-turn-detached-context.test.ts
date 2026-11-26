@@ -36,6 +36,8 @@ import { releaseClaimIfOwned } from "./worker-turn-admission.js";
 import {
   SESSION_ID,
   SESSION_KEY,
+  WORKER_TURN_COLD_TEST_TIMEOUT_MS,
+  allowColdWorkerTurnPublicationForTest,
   attachedEnvironment,
   cleanupWorkerTurnLauncherTest,
   createWorkerSessionTurnPlacementProvider,
@@ -223,10 +225,9 @@ async function withAsyncReadHook<T>(
   run: () => Promise<T>,
   phase: "before" | "after" = "after",
 ) {
-  const original = SessionManager.openModelContextAsync.bind(SessionManager);
-  const read = vi
-    .spyOn(SessionManager, "openModelContextAsync")
-    .mockImplementation(async (...args) => {
+  const wrap =
+    <A extends unknown[]>(original: (...args: A) => Promise<SessionManager>) =>
+    async (...args: A) => {
       if (phase === "before") {
         await hook();
       }
@@ -235,7 +236,11 @@ async function withAsyncReadHook<T>(
         await hook();
       }
       return result;
-    });
+    };
+  const openModelContextAsync = wrap(SessionManager.openModelContextAsync.bind(SessionManager));
+  const read = vi
+    .spyOn(SessionManager, "openModelContextAsync")
+    .mockImplementation(openModelContextAsync);
   try {
     return { result: await run(), calls: read.mock.calls.length };
   } finally {
@@ -282,7 +287,9 @@ describe("worker detached model-context branch parity", () => {
     [true, "openclaw.system-update"],
   ] as const)(
     "commits a fallback after the failed candidate's own output (tool activity: %s; context: %s)",
+    { timeout: WORKER_TURN_COLD_TEST_TIMEOUT_MS },
     async (withToolActivity, customType) => {
+      await allowColdWorkerTurnPublicationForTest();
       const runId = "worker-model-fallback";
       const inputRecorder = recorder();
       const committer = createWorkerTranscriptCommitter({

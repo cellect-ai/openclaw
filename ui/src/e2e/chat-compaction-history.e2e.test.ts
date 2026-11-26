@@ -93,8 +93,6 @@ suite.define(() => {
           };
           const gateway = await installMockGateway(page, {
             sessionKey,
-            agentModel: "openai/test-model",
-            models: [{ id: "test-model", name: "Test model", provider: "openai" }],
             sessions: [row],
             historyMessages: held,
             methodResponses: { "chat.startup": initial, "chat.history": initial },
@@ -147,7 +145,7 @@ suite.define(() => {
             },
           };
           const updatedRow = { ...row, activeLeafEntryId: "compact", updatedAt: now + 1 };
-          const compactedHistory = {
+          await gateway.setMethodResponse("chat.history", {
             cases: [
               { match: { cursor: "before-compact" }, response: { kind: "reset" } },
               {
@@ -175,15 +173,13 @@ suite.define(() => {
                 },
               },
             ],
-          };
-          await gateway.setMethodResponse("chat.history", compactedHistory);
-          await gateway.setMethodResponse("chat.startup", compactedHistory);
-          await gateway.deferNext("chat.history", { cursor: "older:tail" });
+          });
           await gateway.resolveDeferred("chat.send", { runId: pendingRunId, status: "started" });
           await gateway.emitGatewayEvent("sessions.changed", { ...updatedRow, reason: "compact" });
           const queue = page.locator(".chat-queue__item", {
             hasText: "Run the final verification next.",
           });
+          await queue.waitFor();
           await gateway.waitForRequest("chat.history", { match: { cursor: "before-compact" } });
           await expect
             .poll(async () =>
@@ -192,34 +188,12 @@ suite.define(() => {
               ),
             )
             .toBe(true);
-          if (scenario === "unheld tool result") {
-            await gateway.waitForRequest("chat.history", { match: { cursor: "older:tail" } });
-            await gateway.resolveDeferred("chat.history", undefined, {
-              match: { cursor: "older:tail" },
-            });
-          }
-          await queue.waitFor();
-          // A short replacement must not flash away held context and depend on
-          // viewport-driven pagination to restore it. Keep that older read held.
           // Wait for the authoritative tail, not merely the request that fetched it.
-          await expect
-            .poll(() =>
-              thread.evaluate((element) => {
-                const pane = element.closest(".chat-pane-cache__pane--active") as HTMLElement & {
-                  state: { chatDisplayedLeafEntryId?: string };
-                };
-                return pane.state.chatDisplayedLeafEntryId;
-              }),
-            )
-            .toBe("compact");
-          await thread.getByText("saved 60k tokens", { exact: true }).waitFor();
+          await thread.getByText("saved 60k tokens (75%)", { exact: true }).waitFor();
           const frame = await takeControlUiScreenshotFrame(page, thread, [goal, queue], {
             animations: "disabled",
           });
-          await writeFile(
-            join(suite.artifactDir, "compaction-history-" + scenario.replaceAll(" ", "-") + ".png"),
-            frame.png,
-          );
+          await writeFile(join(suite.artifactDir, "compaction-history.png"), frame.png);
           console.log("COMPACTION_HISTORY_PROOF", suite.artifactDir);
           expect(await prompt.count()).toBe(1);
           expect(

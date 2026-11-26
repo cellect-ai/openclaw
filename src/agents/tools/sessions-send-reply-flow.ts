@@ -1,8 +1,8 @@
-import { isRequesterParentOfBackgroundAcpSession } from "@openclaw/acp-core/session-interaction-mode";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { isGatewayProtocolResponseError } from "../../../packages/gateway-client/src/protocol-request.js";
 import { getRuntimeConfig } from "../../config/config.js";
 import { runWithoutOwnedSessionTranscriptWrites } from "../../config/sessions/transcript-write-context-store.js";
+import type { SessionAcpMeta, SessionEntry } from "../../config/sessions/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { resolveGatewaySessionStoreTargetInWorker } from "../../gateway/session-utils-store-worker.js";
 import type { GatewaySessionStoreTargetWithStore } from "../../gateway/session-utils-store.types.js";
@@ -10,6 +10,7 @@ import { formatErrorMessage } from "../../infra/errors.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { stringifyRouteThreadId } from "../../plugin-sdk/channel-route.js";
 import { runWithGatewayDetachedWorkContinuation } from "../../process/gateway-work-admission.js";
+import { chatRef } from "../../sessions/chat-ref.js";
 import { annotateInterSessionPromptText } from "../../sessions/input-provenance.js";
 import { recordSessionParticipantBestEffort } from "../../sessions/session-participant-recording.js";
 import { createDeferredCore } from "../../shared/deferred.js";
@@ -228,10 +229,10 @@ export function prepareSessionsSendReplyContext(params: {
   ownedTask: boolean;
   isIsolatedCronRequester: boolean;
   targetIsSubagent: boolean;
+  targetAcpMode?: SessionAcpMeta["mode"];
   requesterSessionKey: string;
   targetSession:
-    | (NonNullable<Parameters<typeof isRequesterParentOfBackgroundAcpSession>[0]> &
-        AgentStepSession)
+    | (AgentStepSession & Pick<SessionEntry, "spawnedBy" | "parentSessionKey">)
     | undefined;
   requesterTarget: GatewaySessionStoreTargetWithStore;
   requesterSessionId?: string;
@@ -260,20 +261,22 @@ export function prepareSessionsSendReplyContext(params: {
     : undefined;
   const requesterDeliveryGeneration =
     requesterSessionEntry && requesterSession
-      ? {
+      ? chatRef({
           agentId: params.requesterTarget.agentId,
           storePath: params.requesterTarget.storePath,
           sessionKey: params.requesterTarget.canonicalKey,
-          ...requesterSession,
-          lifecycleRevision: requesterSession.lifecycleRevision ?? null,
-        }
+        })
       : undefined;
+  const persistentParent =
+    params.targetAcpMode === "persistent" &&
+    (params.targetSession?.spawnedBy === params.requesterSessionKey ||
+      params.targetSession?.parentSessionKey === params.requesterSessionKey);
   const taskOwned =
     params.callerOwnsCompletion ||
     params.requesterIsSubagent ||
     params.ownedTask ||
     params.isIsolatedCronRequester ||
-    isRequesterParentOfBackgroundAcpSession(params.targetSession, params.requesterSessionKey);
+    persistentParent;
   return {
     ...params.context,
     requester,
@@ -407,37 +410,10 @@ export async function finishSessionsSendReply(params: {
     response: ReturnType<typeof jsonResult>,
     reply: NonNullable<typeof result> = result,
   ) => {
-    const expired = params.signal?.aborted || Date.now() >= params.deadlineAtMs;
     // A deadline can win during reply materialization; the accepted result still needs a consumer.
-    if (expired && delayedDelivery.status === "pending" && !registryCompletion) {
+    if (params.signal?.aborted && delayedDelivery.status === "pending" && !registryCompletion) {
       await startReplyFlow(true, reply);
     } else {
-      if (
-        registryCompletion &&
-        !expired &&
-        params.requesterTurnRunId &&
-        (result.status === "ok" ||
-          isTerminalAgentWaitTimeout(result) ||
-          (result.status === "error" && result.endedAt !== undefined))
-      ) {
-        if (!replyContext.requesterSessionKey) {
-          throw new Error("Inline child result is missing its requester session.");
-        }
-        const { acknowledgeSubagentResultForRequesterTurn } =
-          await import("../subagents/registry/subagent-registry-requester-claim.js");
-        await acknowledgeSubagentResultForRequesterTurn({
-          runId,
-          requesterSessionKey: replyContext.requesterSessionKey,
-          requesterAgentId,
-          requesterTurnRunId: params.requesterTurnRunId,
-          assertCurrent: () => {
-            params.signal?.throwIfAborted();
-            if (Date.now() >= params.deadlineAtMs) {
-              throw new Error("Inline child reply deadline expired before delivery.");
-            }
-          },
-        });
-      }
       completion?.close();
     }
     return response;
@@ -462,6 +438,25 @@ export async function finishSessionsSendReply(params: {
       await startReplyFlow(true);
       return accepted();
     }
+  }
+  if (
+    registryCompletion &&
+    params.requesterTurnRunId &&
+    (result.status === "ok" ||
+      isTerminalAgentWaitTimeout(result) ||
+      (result.status === "error" && result.endedAt !== undefined))
+  ) {
+    if (!replyContext.requesterSessionKey) {
+      throw new Error("Inline child result is missing its requester session.");
+    }
+    const { acknowledgeSubagentResultForRequesterTurn } =
+      await import("../subagents/registry/subagent-registry-requester-claim.js");
+    await acknowledgeSubagentResultForRequesterTurn({
+      runId,
+      requesterSessionKey: replyContext.requesterSessionKey,
+      requesterAgentId,
+      requesterTurnRunId: params.requesterTurnRunId,
+    });
   }
   if (result.status === "timeout" || result.status === "error") {
     return finishInline(

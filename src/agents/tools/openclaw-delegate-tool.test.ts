@@ -3,7 +3,6 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import {
   clearRuntimeConfigSnapshot,
-  createRuntimeConfigReader,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import type { GatewayRequestHandler } from "../../gateway/server-methods/types.js";
@@ -224,15 +223,19 @@ it.each<[string, Options, boolean]>([
       ),
   );
   expect(tool.description).toContain("Changes wait for the user to approve");
+  if (options.agentChannel === "telegram") {
+    expect(tool.description).toContain("approve in this chat");
+  }
   expect(callGateway.mock.calls[0]?.[1]).not.toHaveProperty("fullPermission");
   expect(callGateway.mock.calls[0]?.[1].delegation).not.toHaveProperty("fullPermission");
   expect(callerScope.getGatewayToolCallerIdentity()).toBeUndefined();
 });
 
-it("points telegram runs to in-chat approvals", () => {
-  expect(
-    delegate({ agentChannel: "telegram", execSession: { permissionMode: "guarded" } }).description,
-  ).toContain("approve in this chat");
+it("keeps setup self-delegation unavailable even when the configured user agent collides", () => {
+  const config = { agents: { entries: { openclaw: { tools: { alsoAllow: ["openclaw"] } } } } };
+  expect(createTools({ sessionAgentId: "openclaw", config })).toEqual([]);
+  expect(createTools({ sessionAgentId: "openclaw" })).toEqual([]);
+  expect(callGateway).not.toHaveBeenCalled();
 });
 
 it.each([true, undefined])(
@@ -357,23 +360,3 @@ it.each(["hook", "trusted"] as const)(
     });
   },
 );
-
-it("retains an admitted policy reader when model configuration stays pinned", async () => {
-  const config = { tools: { openclaw: { autoApproveChanges: true } } };
-  setRuntimeConfigSnapshot(config);
-  const readDelegationConfig = createRuntimeConfigReader(config);
-  setRuntimeConfigSnapshot({ ...config, logging: { level: "debug" } });
-  try {
-    const tool = delegate({ config: structuredClone(config), readDelegationConfig });
-    callGateway.mockImplementation(async () => {
-      const caller = callerScope.getGatewayToolCallerIdentity();
-      expect(caller?.fullPermission).toBe(true);
-      setRuntimeConfigSnapshot({ tools: { openclaw: { autoApproveChanges: false } } });
-      expect(() => caller?.assertAutoApproveChangesCurrent?.()).toThrow("autoApproveChanges");
-      return { reply: "Approval required." };
-    });
-    await tool.execute("pinned-policy", { message: "Change logging." });
-  } finally {
-    clearRuntimeConfigSnapshot();
-  }
-});

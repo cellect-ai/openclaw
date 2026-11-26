@@ -5,6 +5,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { expectBytesEqual } from "../../test/helpers/file-snapshots.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { writeFixtureJsonSync } from "../cli/cli-fixtures.test-support.js";
 import { automaticallyCleanUpdateRecovery } from "../cli/update-cli/automatic-cleanup.js";
@@ -32,6 +33,7 @@ import {
   getUpdateRun,
   recordUpdateRunPhase,
   recordUpdateRunStep,
+  recordUpdateRunVerification,
 } from "../infra/update-run-ledger.js";
 import type { UpdateRunPhase, UpdateRunRecord } from "../infra/update-run-record.js";
 import * as updateRunWrites from "../infra/update-run-write.async.js";
@@ -156,7 +158,7 @@ function originalBytes(fixture: Awaited<ReturnType<typeof recoveryFixture>>) {
 function expectOriginals(originals: Map<string, Buffer>) {
   for (const [file, contents] of originals) {
     expect(fs.existsSync(file), file).toBe(true);
-    expect(fs.readFileSync(file)).toEqual(contents);
+    expectBytesEqual(fs.readFileSync(file), contents, file);
   }
 }
 function warning(detail: string) {
@@ -246,7 +248,7 @@ async function cleanUp() {
   await closeOpenClawStateDatabaseAsync();
   const report = await retireSessionSqliteRecovery({
     env,
-    preview: inspectSessionSqliteRecovery({ cfg: {}, env }),
+    preview: await inspectSessionSqliteRecovery({ cfg: {}, env }),
     readConfig: async () => ({}),
     confirm: async () => true,
   });
@@ -287,7 +289,6 @@ it.each(["archive", "interrupted claim"] as const)(
   "manual cleanup retires a pre-reboot original from its %s",
   async (witness) => {
     const { backup, source, manifestPath } = await migrationOriginal(true);
-
     writeAfterReboot(source);
     // An earlier run durably claimed the original, then stopped at the destination check.
     const retained =
@@ -315,7 +316,7 @@ it("keeps a pre-reboot original when its destination was restored as a new file"
     outcome: "blocked",
     reason: "destination-verification-failed",
   });
-  expect(fs.readFileSync(backup)).toEqual(original);
+  expectBytesEqual(fs.readFileSync(backup), original, backup);
   const recorded = readSessionSqliteMigrationManifest(manifestPath)!.targets[0]!.databaseIdentity!;
   expect(recorded.dev).not.toBe(String(fs.statSync(source, { bigint: true }).dev));
 });
@@ -337,7 +338,7 @@ it("keeps an original when its destination reports another volume than the origi
   const { runId } = capturedRun(now + 60_000);
   const result = await complete(runId, now + 61_000);
   expect(result.steps.at(-1)?.advisory?.message).toContain("destination-verification-failed");
-  expect(fs.readFileSync(backup)).toEqual(original);
+  expectBytesEqual(fs.readFileSync(backup), original, backup);
 });
 
 it.each([true, false])(
@@ -477,9 +478,9 @@ it("allows its current Gateway owner to mutate a recovery destination during ret
       expect(fs.existsSync(file), file).toBe(false);
     }
     for (const [file, contents] of protectedOriginals) {
-      expect(fs.readFileSync(file), file).toEqual(contents);
+      expectBytesEqual(fs.readFileSync(file), contents, file);
     }
-    expect(fs.readFileSync(fixture.store.configPath)).toEqual(configBefore);
+    expectBytesEqual(fs.readFileSync(fixture.store.configPath), configBefore, "Gateway config");
     using database = new DatabaseSync(fixture.target.sqlitePath, { readOnly: true });
     expect(database.prepare("SELECT * FROM session_nodes ORDER BY session_key").all()).toEqual(
       sessionsBefore,
@@ -572,7 +573,7 @@ it("stops owned retirement when its recovery destination file is replaced", asyn
       }
     });
     expect(replaced).toBe(true);
-    expect(result?.advisory?.message).toContain("stage=file-stat, ownedMutation=true");
+    expect(result?.advisory?.message).toContain("Recovery destination database changed");
     for (const [file, contents] of originals) {
       const move = readSessionSqliteMigrationManifest(
         fixture.manifestPath,
@@ -584,7 +585,7 @@ it("stops owned retirement when its recovery destination file is replaced", asyn
           ? disposal.claimPath
           : undefined;
       expect(retained, file).toBeDefined();
-      expect(fs.readFileSync(retained!)).toEqual(contents);
+      expectBytesEqual(fs.readFileSync(retained!), contents, file);
     }
   } finally {
     owner.release();
@@ -655,7 +656,7 @@ it.each(["before-first-effect", "claim-publication", "first-unlink"] as const)(
       const retained = remaining();
       expect(retained).toHaveLength(phase === "first-unlink" ? 1 : 2);
       for (const { original, retained: file } of retained) {
-        expect(fs.readFileSync(file)).toEqual(originals.get(original));
+        expectBytesEqual(fs.readFileSync(file), originals.get(original)!, file);
       }
       if (phase !== "first-unlink") {
         expectOriginals(originals);
@@ -708,8 +709,10 @@ it("does not retire artifacts when another process owns live state", async () =>
         throw new Error("Foreign owner exited before acquiring its lock");
       }),
     ]);
+    vi.spyOn(performance, "now").mockReturnValueOnce(5).mockReturnValue(29);
     const result = await automaticallyCleanUpdateRecovery(second, env);
     expect(result?.advisory?.message).toMatch(/owner|ownership|Gateway/);
+    expect(result?.durationMs).toBe(24);
     expect(fs.existsSync(original)).toBe(true);
     expect(getUpdateRun(second, { env })?.status).toBe("succeeded");
   } finally {
@@ -764,6 +767,36 @@ it("retires a failed update's own capture only when it never activated", async (
     expect.objectContaining({ step: "recovery-artifact-cleanup", status: "completed" }),
   );
 });
+
+it.each([true, false])(
+  "retires an update's own copies once its Gateway is verified healthy (verified: %s)",
+  async (verified) => {
+    const runId = start(now - 1_000);
+    const directory = capture(runId);
+    // Activation's Doctor migration completes inside the run.
+    const { backup } = await migrationOriginal();
+    if (verified) {
+      recordUpdateRunVerification(
+        runId,
+        {
+          serviceRunning: true,
+          versionMatch: true,
+          settled: true,
+          readyz: true,
+          channelsReady: true,
+          coreReady: true,
+          pluginErrors: [],
+        },
+        { env },
+      );
+    }
+    const result = await complete(runId, now + 60_000);
+    expect([directory, backup].map(fs.existsSync)).toEqual([!verified, !verified]);
+    const cleanup = result.steps.at(-1);
+    expect(cleanup).toMatchObject({ name: "recovery-artifact-cleanup", exitCode: 0 });
+    expect(cleanup?.advisory).toBeUndefined();
+  },
+);
 
 it("keeps the triggering update's capture when the wall clock moves backward", async () => {
   const { runId, directory: current } = capturedRun(now + 60_000);

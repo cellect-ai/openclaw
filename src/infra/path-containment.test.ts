@@ -1,13 +1,17 @@
-// Containment canonicalization is shared by plugin install and cleanup checks.
+// Containment canonicalization is shared by media, sandbox, plugin, config, and cleanup checks.
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
-import { realpathViaExistingPrefix, realpathViaExistingPrefixSync } from "./path-containment.js";
+import {
+  canonicalizeForContainment,
+  realpathViaExistingPrefixSync,
+  respellUnderRoot,
+} from "./path-containment.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-describe.runIf(process.platform !== "win32")("realpathViaExistingPrefix", () => {
+describe.runIf(process.platform !== "win32")("canonicalizeForContainment", () => {
   async function layout() {
     const base = await fs.realpath(tempDirs.make("ocl-path-containment-"));
     const real = path.join(base, "real");
@@ -16,20 +20,58 @@ describe.runIf(process.platform !== "win32")("realpathViaExistingPrefix", () => 
     await fs.symlink(path.join(real, "later"), path.join(real, "dangling"));
     await fs.symlink(path.join(real, "loop-b"), path.join(real, "loop-a"));
     await fs.symlink(path.join(real, "loop-a"), path.join(real, "loop-b"));
-    return base;
+    return { base, real };
   }
 
   it.each([
-    ["missing tail under an alias", "alias/dir/new/p.png", "real/dir/new/p.png"],
-    ["dangling link followed to its target", "alias/dangling/p.png", "real/later/p.png"],
-    [".. through an existing folder", "alias/dir/../dir/p.png", "real/dir/p.png"],
-    [".. after a missing folder", "alias/gone/../dir/p.png", undefined],
-    ["looping links", "alias/loop-a/p.png", undefined],
+    [
+      "missing tail under an alias",
+      "alias/dir/new/p.png",
+      { kind: "resolved", path: "real/dir/new/p.png" },
+    ],
+    [
+      "dangling link followed to its target",
+      "alias/dangling/p.png",
+      { kind: "resolved", path: "real/later/p.png", danglingLink: "alias/dangling" },
+    ],
+    [
+      ".. through an existing folder",
+      "alias/dir/../dir/p.png",
+      { kind: "resolved", path: "real/dir/p.png" },
+    ],
+    [
+      ".. after a missing folder",
+      "alias/gone/../dir/p.png",
+      { kind: "unresolved", reason: "parent-after-missing" },
+    ],
+    ["looping links", "alias/loop-a/p.png", { kind: "unresolved", reason: "link-loop" }],
   ] as const)("%s (sync and async agree)", async (_name, relative, expected) => {
-    const base = await layout();
+    const { base } = await layout();
     const candidate = `${base}/${relative}`;
-    const want = expected === undefined ? undefined : path.join(base, expected);
-    expect(await realpathViaExistingPrefix(candidate)).toBe(want);
-    expect(realpathViaExistingPrefixSync(candidate)).toBe(want);
+    const absolute = (value: unknown) =>
+      typeof value === "string" ? path.join(base, value) : value;
+    const want =
+      expected.kind === "resolved"
+        ? Object.fromEntries(
+            Object.entries(expected).map(([key, value]) => [
+              key,
+              key === "kind" ? value : absolute(value),
+            ]),
+          )
+        : expect.objectContaining(expected);
+    expect(await canonicalizeForContainment(candidate)).toEqual(want);
+    expect(realpathViaExistingPrefixSync(candidate)).toBe(
+      expected.kind === "resolved" ? absolute(expected.path) : undefined,
+    );
+  });
+
+  it("re-spells a canonical candidate under the caller's root spelling", async () => {
+    const { base, real } = await layout();
+    await expect(respellUnderRoot(`${base}/alias`, `${real}/dir/p.png`)).resolves.toBe(
+      `${base}/alias/dir/p.png`,
+    );
+    await expect(
+      respellUnderRoot(`${base}/alias`, `${base}/elsewhere/p.png`),
+    ).resolves.toBeUndefined();
   });
 });

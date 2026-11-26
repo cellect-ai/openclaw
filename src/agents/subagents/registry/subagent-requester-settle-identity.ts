@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { subagentCompletionForOutcome } from "../../../shared/subagent-completion.js";
 import { buildAnnounceIdempotencyKey } from "../../announce-idempotency.js";
 import { SUBAGENT_ENDED_REASON_KILLED } from "./subagent-lifecycle-events.js";
 import type { RequesterSettleWakeState, SubagentRunRecord } from "./subagent-registry.types.js";
@@ -128,8 +129,6 @@ export function captureRequesterSettleRunIdentity(entry: SubagentRunRecord) {
     controllerSessionKey: entry.controllerSessionKey,
     controllerStorePath: entry.controllerStorePath,
     requesterTurnRunId: entry.requesterTurnRunId,
-    completionRequesterSessionId: entry.completionRequesterSessionId,
-    completionRequesterLifecycleRevision: entry.completionRequesterLifecycleRevision,
   };
 }
 
@@ -315,20 +314,14 @@ export function isRequesterYieldCohortMember(
   );
 }
 
-/** One in-flight evaluation per owed continuation; members of one cohort share it. */
-export function requesterSettleWakeScope(entry: SubagentRunRecord): string {
-  const wake = entry.requesterSettleWake;
-  const owner = `${entry.requesterStorePath ?? ""}\0${entry.requesterAgentId ?? ""}\0${entry.requesterSessionKey}`;
-  if (entry.pauseReason === "sessions_yield" && wake?.pauseNotice) {
-    return `${owner}\0pause\0${entry.runId}\0${wake.rearmGeneration ?? ""}`;
-  }
-  return `${owner}\0${wake?.batchRunIds?.toSorted().join(",") ?? ""}\0${wake?.rearmGeneration ?? ""}`;
-}
-
-export function awaitsStoppedPauseRetirement(entry: SubagentRunRecord): boolean {
-  return (
-    entry.pauseReason !== "sessions_yield" &&
-    entry.requesterSettleWake?.pauseNotice !== undefined &&
-    isSubagentObligationRetired(entry)
-  );
+/** Completion rows for a settled batch: one finished, failed, timed-out or stopped row per child. */
+export function settledCompletions(rows: readonly SubagentRunRecord[]) {
+  return rows.flatMap((entry) => {
+    const completion = subagentCompletionForOutcome(
+      { runId: entry.runId, sessionKey: entry.childSessionKey, label: entry.label },
+      entry.execution.outcome?.status,
+      entry.endedReason === SUBAGENT_ENDED_REASON_KILLED,
+    );
+    return completion ? [completion] : [];
+  });
 }

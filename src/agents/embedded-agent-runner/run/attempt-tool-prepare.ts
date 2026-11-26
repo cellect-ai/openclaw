@@ -34,16 +34,15 @@ import {
 import { resolveModelAuthModeAsync } from "../../model-auth.js";
 import { supportsModelTools } from "../../model-tool-support.js";
 import { resolveNativeWebSearchRoute } from "../../native-web-search.js";
-import { getPreparedModelRuntimePolicyConfigReader } from "../../prepared-model-runtime-auth.js";
 import { recordAgentCleanupFailure, runOwnedAgentCleanup } from "../../run-cleanup-timeout.js";
 import { resolveSessionPlacementComputer } from "../../session-placement-computer.js";
 import {
   resolveSessionPermissionExecMode,
   type PreparedSessionPermissionPolicy,
 } from "../../tool-fs-policy.js";
-import { resolveToolLoopDetectionConfig } from "../../tool-loop-detection-config.js";
+import { isToolExecutionAllowed } from "../../tool-policy-shared.js";
 import { toolPolicyRestrictsTools } from "../../tool-policy.js";
-import { TOOL_SEARCH_CONTROL_TOOL_NAMES } from "../../tool-search-types.js";
+import { TOOL_SEARCH_CONTROL_TOOL_NAMES } from "../../tool-search-protocol.js";
 import type { ToolSearchCatalogToolExecutor } from "../../tool-search.js";
 import type { ComputerContextEpoch } from "../../tools/computer-tool.js";
 import type {
@@ -233,6 +232,7 @@ export async function prepareEmbeddedAttemptToolBase(params: {
     messageChannel: attempt.messageChannel,
     modelProvider: attempt.provider,
     modelId: attempt.modelId,
+    modelAuthProfileId: attempt.authProfileId,
     modelApi: attempt.model.api,
     modelBaseUrl: attempt.model.baseUrl,
     modelParams: attempt.model.params,
@@ -264,6 +264,16 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       toolNames: [name],
       warn: () => undefined,
     }).length === 1;
+  const resolveWebSearchRoute = () =>
+    resolveNativeWebSearchRoute({
+      ...buildConversationContext(),
+      agentId: params.setup.sessionAgentId,
+      webSearchEnabled: attempt.toolOverrides?.webSearch !== false,
+      sandboxToolPolicy: params.setup.sandbox?.tools,
+      authStore: attempt.authProfileStore,
+      preparedRequesterPolicy: runtimeCapabilityProfile.policy,
+      pluginMetadataSnapshot: attempt.preparedModelRuntime?.metadataSnapshot,
+    });
   const computerAllowed = shouldConstructTools && allowsConversationTool("computer");
   const pairedNodeComputerUse = (
     await loadPairedComputerUseAvailabilityForSurface({
@@ -340,9 +350,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
         codeModeSkills,
         installedSkills: params.installedSkills,
         preparedModelRuntime: attempt.preparedModelRuntime,
-        readDelegationConfig: getPreparedModelRuntimePolicyConfigReader(
-          attempt.preparedModelRuntime,
-        ),
         requireWorkspaceOnly: attempt.requireWorkspaceOnly,
         sessionReadScopeKey: attempt.sessionReadScopeKey,
         sessionConfigSource: attempt.oneShotCliRun ? "pinned" : "runtime",
@@ -351,23 +358,13 @@ export async function prepareEmbeddedAttemptToolBase(params: {
           webSearchUnconfigured =
             !configured &&
             allowsConversationTool("web_search") &&
-            resolveNativeWebSearchRoute({
-              ...buildConversationContext(),
-              agentId: params.setup.sessionAgentId,
-              webSearchEnabled: attempt.toolOverrides?.webSearch !== false,
-              sandboxToolPolicy: params.setup.sandbox?.tools,
-              authStore: attempt.authProfileStore,
-              preparedRequesterPolicy: runtimeCapabilityProfile.policy,
-              pluginMetadataSnapshot: attempt.preparedModelRuntime?.metadataSnapshot,
-            }).kind === "managed";
+            resolveWebSearchRoute().kind === "managed";
         },
         githubPublicationAvailable: attempt.githubPublicationAvailable,
+        githubPublicationConfigurationAware:
+          !isRawModelRun && attempt.operation !== "settled-tool-finalization" ? true : undefined,
         abortSignal,
-        skillWorkshop: {
-          ...(attempt.skillWorkshopReviewOf ? { reviewOf: attempt.skillWorkshopReviewOf } : {}),
-          libraryAuthoring: attempt.skillLibraryAuthoring,
-          workspaceAuthoring: attempt.skillWorkshopWorkspaceAuthoring,
-        },
+        skillLibraryAuthoring: attempt.skillLibraryAuthoring,
         modelCompat: extractModelCompat(attempt.model),
         delegationCapability: attempt.delegationCapability,
         modelAuthMode: await resolveModelAuthModeAsync(
@@ -491,10 +488,6 @@ export async function prepareEmbeddedAttemptToolBase(params: {
           ...(attempt.memberRoleIds?.length ? { roleIds: [...attempt.memberRoleIds] } : {}),
         },
         trace: params.runTrace,
-        loopDetection: resolveToolLoopDetectionConfig({
-          cfg: attempt.config,
-          agentId: params.setup.sessionAgentId,
-        }),
         onToolOutcome: attempt.onToolOutcome,
         allocateToolOutcomeOrdinal: attempt.allocateToolOutcomeOrdinal,
       },
@@ -525,6 +518,15 @@ export async function prepareEmbeddedAttemptToolBase(params: {
       },
       get webSearchUnconfigured() {
         return webSearchUnconfigured;
+      },
+      get hasNativeWebSearch() {
+        return (
+          toolConstructionPlan.constructTools &&
+          allowsConversationTool("web_search") &&
+          (!attempt.toolExecutionAllow ||
+            isToolExecutionAllowed(attempt.toolExecutionAllow, "web_search")) &&
+          resolveWebSearchRoute().kind === "native"
+        );
       },
       codeModeControlsEnabledForRun,
       codeModeSkills,

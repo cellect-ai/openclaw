@@ -287,7 +287,7 @@ export function appendVoiceTranscript(
                       }
                     },
                     physicalSource?.key === writer.identity.key &&
-                      physicalSource.birthtime === writer.identity.birthtime,
+                      physicalSource?.birthtime === writer.identity.birthtime,
                   );
                 },
               );

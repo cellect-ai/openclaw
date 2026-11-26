@@ -1,6 +1,5 @@
 import fs from "node:fs";
 import path from "node:path";
-import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, expect, it } from "vitest";
 import { runNodeScript } from "../../test/helpers/run-node-script.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -73,7 +72,7 @@ it("prioritizes Gateway bootstrap over an already waiting CLI schema writer", as
       {
         onReady(childProcess, readOutput) {
           childPid = childProcess.pid;
-          expectDefined(childProcess.stdout, "child stdout").on("data", () => {
+          childProcess.stdout!.on("data", () => {
             if (!reservation && readOutput().stdout.includes("waiting\n")) {
               reservation = reserveGatewayStateRestoration(databasePath, owner.assertCurrent);
               owner.release();
@@ -92,14 +91,14 @@ it("prioritizes Gateway bootstrap over an already waiting CLI schema writer", as
         unrelated: "acquired",
       }),
     );
-    const heldReservation = expectDefined(reservation, "restoration reservation");
-    heldReservation.assertCurrent();
+    expect(reservation).toBeDefined();
+    reservation!.assertCurrent();
     const local = acquireStateDatabaseSchemaLease(databasePath);
     local.release();
     const reservationPath = `${owner.path}.gateway-restoration`;
     const record = parseGatewayLockPayload(fs.readFileSync(reservationPath, "utf8"));
-    heldReservation.release();
-    expect(() => heldReservation.assertCurrent()).toThrow("no longer current");
+    reservation!.release();
+    expect(() => reservation!.assertCurrent()).toThrow("no longer current");
     expect(() => reserveGatewayStateRestoration(databasePath, owner.assertCurrent)).toThrow(
       "no longer current",
     );

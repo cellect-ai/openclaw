@@ -61,7 +61,9 @@ env:
 jobs:
   discover:
     name: Find trusted release candidate
-    runs-on: &linux_runner_ubuntu ubuntu-24.04
+    runs-on: &linux_runner_ubuntu >-
+      ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}',
+      toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
     timeout-minutes: 10
     outputs:
       state: ${{ steps.discover.outputs.state }}
@@ -125,7 +127,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/openclaw-live-and-e2e-checks-reusable.yml
     with:
-      use_github_hosted_runners: true
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       ref: ${{ inputs.ref }}
       prepared_npm_bundle_json: ${{ inputs.prepared_npm_bundle_json }}
       prepare_only: true

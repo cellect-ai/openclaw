@@ -1,31 +1,44 @@
 import type { WorkerTaskControl } from "@openclaw/worker-runtime/worker";
-import { getMessageFromEntryForCompaction } from "../../../packages/agent-core/src/harness/compaction/compaction-cut-point.js";
+import { estimateTokens } from "../../../packages/agent-core/src/harness/compaction/compaction-cut-point.js";
 import {
-  collectCompactionPreparationEntryFact,
   prepareCompactionEntryFacts,
+  estimateContextTokens,
 } from "../../../packages/agent-core/src/harness/compaction/compaction-preparation.js";
-import { collectConversationMessageFact } from "../../../packages/agent-core/src/harness/compaction/utils.js";
-import { convertToLlm } from "../../../packages/agent-core/src/harness/messages.js";
 import { iterateSessionContextEntryFacts } from "../../../packages/agent-core/src/harness/session/session.js";
-import { sanitizeCompactionMessages } from "../../agents/compaction-planning.js";
+import { sanitizeCompactionReplayMessages } from "../../agents/compaction-replay.js";
+import { estimateCompactionMessageTokens } from "../../agents/embedded-agent-runner/compaction-hook-metrics.js";
 import {
+  collectExactReplaySourceFact,
+  resolveExactReplaySourcePolicy,
+  collectExactReplayMediaFacts,
+  compareExactReplayRows,
+  prepareExactCompactionReplay,
+} from "../../agents/embedded-agent-runner/exact-compaction-replay.js";
+import {
+  collectPreparedCompactionEntryFact,
   prepareCompactionPlan,
-  finalizePreparedCompaction,
+  readPreparedCompactionMessage,
 } from "../../agents/embedded-agent-runner/prepared-compaction-plan.js";
-import { prepareNativeCompactionReplay } from "../../agents/embedded-agent-runner/prepared-compaction-replay.js";
-import { readModelSnapshotStateFromEntries } from "../../agents/embedded-agent-runner/replay-model-snapshot.js";
+import type {
+  PreparedCompactionEntryFact,
+  PreparedCompactionMessageSource,
+} from "../../agents/embedded-agent-runner/prepared-compaction-plan.types.js";
+import {
+  isSameModelSnapshot,
+  readModelSnapshotStateFromEntries,
+  MODEL_SNAPSHOT_CUSTOM_TYPE,
+} from "../../agents/embedded-agent-runner/replay-model-snapshot.js";
+import { createCompactionReplacementProjector } from "../../agents/sessions/compaction/preparation.js";
+import { estimateCompactedRequestTokens } from "../../agents/sessions/compaction/request-budget.js";
 import type { SessionEntry, SessionHeader } from "../../agents/sessions/session-manager-types.js";
-import { iterateSqliteQuerySync } from "../../infra/kysely-sync.js";
-import { readSessionTranscriptCompactionPlan } from "./session-accessor.sqlite-active-context.js";
-import { iterateUnindexedActiveTranscriptNavigation } from "./session-accessor.sqlite-history-navigation.js";
+import { assertOpenClawAgentDatabaseIdentity } from "../../state/openclaw-agent-db-identity.js";
+import { readSessionTranscriptCompactionPlanInTransaction } from "./session-accessor.sqlite-active-context-read.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
-import { selectActiveTranscriptIdentityRows } from "./session-accessor.sqlite-projection-read.js";
 import { readTranscriptContextVersionInTransaction } from "./session-accessor.sqlite-transcript-state.js";
 import type {
-  PreparedCompactionEntry,
   PreparedCompactionSource,
   SessionPreparedCompactionInput,
-  SessionPreparedCompactionValue,
+  SessionPreparedCompactionWireValue,
 } from "./session-compaction-prepared.types.js";
 import {
   renderPreparedSessionCompaction,
@@ -41,13 +54,12 @@ import {
   resolveSessionCanonicalParentId,
 } from "./session-entry-navigation.js";
 import { readSessionCompactionPreparation } from "./session-transcript-hydration.worker.js";
-import { resolveSqliteSessionTranscriptReadFence } from "./session-transcript-read-fence.js";
 
-/** Extract facts in the baseline native cursor; no facts table or payload graph survives. */
+/** One extraction pass; no model, credential, writer, or resident worker across inference. */
 export async function readPreparedSessionCompaction(
   request: SessionPreparedCompactionInput,
   control: WorkerTaskControl,
-): Promise<SessionPreparedCompactionValue> {
+): Promise<SessionPreparedCompactionWireValue> {
   const { operation } = request;
   if (operation.kind === "render") {
     const { value: conversation, reads } = await renderPreparedSessionCompaction(
@@ -57,114 +69,109 @@ export async function readPreparedSessionCompaction(
     return { kind: "compaction-preparation", status: "rendered", conversation, reads };
   }
   if (operation.kind === "finalize") {
-    const { value, reads } = await withCompactionSourceRows(
+    const { value: finalizedSource, reads } = await withCompactionSourceRows(
       request,
       control,
-      ({ database, readEntry, readEntriesAfter }) => {
-        const retained = [
+      ({ database, readEntry, readEntriesAfter }) => ({
+        // Prefix validation admits only an active-path suffix; planned dependencies remain retained.
+        retained: [
           ...operation.retainedSequences.map(readEntry),
           ...readEntriesAfter(operation.version.rawSeq ?? 0),
-        ];
-        return {
-          transcriptMutationAt: readTranscriptContextVersionInTransaction(
-            database,
-            request.resolvedScope.sessionId,
-          ).updatedAt,
-          ...finalizePreparedCompaction(
-            retained,
-            operation.summary,
-            operation.work,
-            operation.reportingBudget,
-          ),
-        };
-      },
+        ],
+        transcriptMutationAt: readTranscriptContextVersionInTransaction(
+          database,
+          request.resolvedScope.sessionId,
+        ).updatedAt,
+      }),
     );
-    return { kind: "compaction-preparation", status: "finalized", ...value, reads };
+    const { retained, transcriptMutationAt } = finalizedSource;
+    const first = retained.findIndex((entry) => entry.id === operation.summary.firstKeptEntryId);
+    const pending = operation.work.pendingEntryId;
+    if (
+      pending !== undefined &&
+      (first < 0 || first > retained.findIndex((entry) => entry.id === pending))
+    ) {
+      throw new Error("Compaction must retain the unprocessed pending user request.");
+    }
+    const replacement = createCompactionReplacementProjector(retained, operation.work.itemId)(
+      operation.summary,
+      operation.summary.summary,
+    );
+    const budget = operation.work.requestBudget;
+    if (
+      budget &&
+      operation.work.requestTokenLimit !== undefined &&
+      estimateCompactedRequestTokens(replacement, budget) > operation.work.requestTokenLimit
+    ) {
+      throw new Error(
+        "The finalized compaction exceeds the foreground request budget. Reduce the request or select a larger context window.",
+      );
+    }
+    const messages = sanitizeCompactionReplayMessages(replacement);
+    const tokensAfter = budget
+      ? estimateCompactedRequestTokens(messages, { ...budget, pendingTokens: 0 })
+      : estimateContextTokens(messages).tokens;
+    control.throwIfCancelled();
+    return {
+      kind: "compaction-preparation",
+      status: "finalized",
+      transcriptMutationAt,
+      tokensAfter,
+      reportingTokensAfter: operation.reportingBudget
+        ? estimateCompactedRequestTokens(messages, {
+            ...operation.reportingBudget,
+            pendingTokens: 0,
+          })
+        : estimateCompactionMessageTokens(messages, estimateTokens),
+      messageCountAfter: messages.length,
+      reads,
+    };
   }
-  const { value, reads } = await withCompactionSourceRows(
+  const { value: captured, reads } = await withCompactionSourceRows(
     request,
     control,
-    ({ database, readEntry, reads: sourceReads }) => {
+    ({ database, reads: extracted }) => {
       let source: PreparedCompactionSource;
       if (operation.kind === "plan" && operation.source) {
         source = operation.source;
+        if (source.expectedIdentity) {
+          assertOpenClawAgentDatabaseIdentity(database, source.expectedIdentity);
+        }
         validateSessionTranscriptContextInDatabase(database, request.resolvedScope, {
           version: source.version,
           admission: request.admission,
         });
       } else {
-        const facts = new Map<number, PreparedCompactionEntry>();
+        const facts = new Map<number, PreparedCompactionEntryFact>();
         let header: SessionHeader | undefined;
         let selected: number[] = [];
-        let branchMetadata: SessionEntry[] = [];
-        const snapshot = readSessionTranscriptCompactionPlan(request.target, {
-          compaction: true,
-          readOnly: true,
-          resolvedScope: request.resolvedScope,
-          transaction: database,
-          onEntry: (event, row) => {
-            control.throwIfCancelled();
-            sourceReads.extractedRows++;
-            sourceReads.extractedBytes += row.serializedBytes;
-            if (isIndexedSessionEntry(event)) {
-              const message = getMessageFromEntryForCompaction(event);
-              facts.set(row.rawSeq, {
-                ...collectCompactionPreparationEntryFact(event, row.rawSeq),
-                parentId: event.parentId,
-                idempotencyKey:
-                  event.type === "message" &&
-                  event.message.role === "user" &&
-                  "idempotencyKey" in event.message &&
-                  typeof event.message.idempotencyKey === "string"
-                    ? event.message.idempotencyKey
-                    : undefined,
-                conversation: message
-                  ? convertToLlm(sanitizeCompactionMessages([message])).map((projected, index) =>
-                      collectConversationMessageFact(projected, { seq: row.rawSeq, index }),
-                    )
-                  : [],
-              });
-            } else {
-              header ??= findSessionTranscriptHeader([event]);
-            }
-          },
-          onRead: (projection, rows) => {
-            selected = rows.map((row) => row.rawSeq);
-            const fence = resolveSqliteSessionTranscriptReadFence({
-              database,
-              ...request.resolvedScope,
-            });
-            // SDK initialization inspects the whole active branch, not only the retained suffix.
-            const metadataRows = Array.from(
-              iterateSqliteQuerySync(
-                database.db,
-                selectActiveTranscriptIdentityRows(database)
-                  .select(["identity.seq", "active.active_position"])
-                  .where("identity.session_id", "=", request.resolvedScope.sessionId)
-                  .where("identity.event_type", "in", ["thinking_level_change", "custom"])
-                  .$if(fence !== undefined, (query) =>
-                    query.where("identity.seq", "<", fence!.beforeRawSeq),
+        const snapshot = readSessionTranscriptCompactionPlanInTransaction(
+          database,
+          request.resolvedScope,
+          {
+            compaction: true,
+            onEntry: (event, row) => {
+              control.throwIfCancelled();
+              extracted.extractedRows += 1;
+              extracted.extractedBytes += row.serializedBytes;
+              if (isIndexedSessionEntry(event)) {
+                facts.set(
+                  row.rawSeq,
+                  collectPreparedCompactionEntryFact(
+                    event,
+                    row.rawSeq,
+                    operation.kind === "plan" ? operation.replay : undefined,
                   ),
-              ),
-            );
-            for (const row of iterateUnindexedActiveTranscriptNavigation(projection, {
-              maxRawSeq: fence ? fence.beforeRawSeq - 1 : undefined,
-            })) {
-              if (row.event.type === "thinking_level_change" || row.event.type === "custom") {
-                metadataRows.push({ seq: row.event_seq, active_position: row.active_position });
+                );
+              } else {
+                header ??= findSessionTranscriptHeader([event]);
               }
-            }
-            branchMetadata = metadataRows
-              .toSorted((a, b) => a.active_position - b.active_position)
-              .flatMap((row) => {
-                const entry = readEntry(row.seq);
-                return entry.type === "thinking_level_change" ||
-                  (entry.type === "custom" && entry.customType === "model-snapshot")
-                  ? [entry]
-                  : [];
-              });
+            },
+            onRead: (_projection, rows) => {
+              selected = rows.map((row) => row.rawSeq);
+            },
           },
-        });
+        );
         if (header) {
           assertCurrentSessionTranscriptHeader(header);
         }
@@ -181,7 +188,7 @@ export async function readPreparedSessionCompaction(
             selected
               .slice(range.startIndex, range.endIndex)
               .map((seq) => facts.get(seq)?.id)
-              .find((entryId) => entryId !== undefined) ?? id,
+              .find((value) => value !== undefined) ?? id,
           );
         }
         const entries = readSessionEntryBranch(snapshot.activeLeafEntryId, (id) => {
@@ -189,9 +196,7 @@ export async function readPreparedSessionCompaction(
           if (!entry) {
             return { parentId: snapshot.opaqueParents.get(id) ?? null };
           }
-          const parent = snapshot.parents.has(id)
-            ? (snapshot.parents.get(id) ?? null)
-            : entry.parentId;
+          const parent = snapshot.parents.has(id) ? snapshot.parents.get(id)! : entry.parentId;
           const canonical = resolveSessionCanonicalParentId(parent, byId, snapshot.opaqueParents);
           const parentId = canonical === id ? null : canonical;
           const boundary = firstKept.get(id);
@@ -206,16 +211,8 @@ export async function readPreparedSessionCompaction(
         });
         source = {
           entries,
-          metadata: {
-            hasExistingSession: !iterateSessionContextEntryFacts(entries).next().done,
-            hasThinkingEntry: branchMetadata.some(
-              (entry) => entry.type === "thinking_level_change",
-            ),
-            leafEntryId: snapshot.activeLeafEntryId,
-            lastModelSnapshot: readModelSnapshotStateFromEntries(branchMetadata).lastSnapshot,
-          },
-          snapshotState: readModelSnapshotStateFromEntries(branchMetadata),
           header,
+          expectedIdentity: request.expectedIdentity,
           version: snapshot.version,
           leafEntryId: snapshot.activeLeafEntryId,
           boundaryCount: snapshot.boundaryCount,
@@ -226,83 +223,153 @@ export async function readPreparedSessionCompaction(
       }
       return {
         source,
-        planned:
-          operation.kind === "plan"
-            ? prepareCompactionPlan(
-                source.entries,
-                {
-                  ...operation.work,
-                  settings: operation.settings,
-                  requestState: operation.requestState,
-                },
-                readEntry,
-              )
-            : undefined,
-        replayEntries:
-          operation.kind === "plan" && operation.work?.replay
-            ? source.entries.map((entry) => readEntry(entry.sourceIndex))
-            : undefined,
-        metadata:
+        preparation:
           operation.kind === "preflight"
             ? readSessionCompactionPreparation(database, request)
             : undefined,
       };
     },
   );
-  const { source } = value;
-  if (operation.kind === "plan") {
-    const replay =
-      value.replayEntries && operation.work?.replay
-        ? await prepareNativeCompactionReplay(
-            value.replayEntries,
-            operation.work.replay,
-            source.snapshotState,
-          )
-        : undefined;
-    control.throwIfCancelled();
-    const planned = value.planned && { ...value.planned, ...replay };
-    if (!planned) {
-      throw new Error("Compaction plan is missing");
-    }
-    if (planned.status === "skipped") {
-      return { kind: "compaction-preparation", source, reads, ...planned };
-    }
-    return {
-      kind: "compaction-preparation",
-      source,
-      reads,
-      ...planned,
-      preparation: planned.plan.preparation,
-      selections: planned.plan.selections,
-    };
-  }
-  const prepared = prepareCompactionEntryFacts(source.entries, {
-    enabled: true,
-    reserveTokens: 0,
-    keepRecentTokens: 0,
-  });
-  if (!prepared.ok) {
-    throw prepared.error;
-  }
+  const { source } = captured;
   if (operation.kind === "preflight") {
-    if (!value.metadata) {
-      throw new Error("Compaction preflight metadata is missing");
-    }
+    const prepared = prepareCompactionEntryFacts(source.entries, {
+      enabled: true,
+      reserveTokens: 0,
+      keepRecentTokens: 0,
+    });
+    // Malformed preparation still reaches the normal execution error owner.
+    const reason =
+      prepared.ok && !prepared.value
+        ? source.entries.at(-1)?.type === "compaction"
+          ? ("Already compacted" as const)
+          : ("Nothing to compact (session too small)" as const)
+        : undefined;
     return {
       kind: "compaction-preparation",
       status: "preflight",
-      ...value.metadata,
+      ...captured.preparation!,
       source,
-      ...(prepared.value
-        ? {}
-        : {
-            reason:
-              source.entries.at(-1)?.type === "compaction"
-                ? "Already compacted"
-                : "Nothing to compact (session too small)",
-          }),
+      eventCount: source.eventCount,
+      reason,
       reads,
     };
   }
-  throw new Error("Unknown compaction operation");
+  const selectedRead = async <T>(consume: (readEntry: (seq: number) => SessionEntry) => T) => {
+    const selected = await withCompactionSourceRows(
+      request,
+      control,
+      ({ readEntry }) => consume(readEntry),
+      source.version,
+    );
+    reads.selectedRows += selected.reads.selectedRows;
+    reads.selectedBytes += selected.reads.selectedBytes;
+    return selected.value;
+  };
+  const readProjected = async (locator: PreparedCompactionMessageSource) => {
+    const message = await selectedRead((readEntry) =>
+      readPreparedCompactionMessage(locator, readEntry),
+    );
+    if (!message) {
+      throw new Error("Exact replay source no longer contains its projected message");
+    }
+    return message;
+  };
+  const facts = [];
+  for (const { entry, context } of iterateSessionContextEntryFacts(source.entries)) {
+    const fact = entry.contextReplay[context];
+    if (!fact) {
+      continue;
+    }
+    // Only provider-owned envelopes need the selected model to validate their opaque state.
+    facts.push(
+      fact.deferredCheckpoint
+        ? collectExactReplaySourceFact(
+            await readProjected(fact.source),
+            fact.source,
+            operation.replay,
+          )
+        : resolveExactReplaySourcePolicy(fact, operation.replay),
+    );
+  }
+  const snapshot = readModelSnapshotStateFromEntries(
+    source.entries.map((entry) => ({
+      type: "custom",
+      customType: MODEL_SNAPSHOT_CUSTOM_TYPE,
+      data: entry.markers.modelSnapshot,
+    })),
+  );
+  const model = operation.replay.model;
+  const latestModelSwitchTimestamp =
+    snapshot.lastSnapshot &&
+    !isSameModelSnapshot(snapshot.lastSnapshot, {
+      timestamp: 0,
+      provider: model.provider,
+      modelApi: model.api,
+      modelId: model.id,
+    })
+      ? Date.now()
+      : snapshot.latestSwitchTimestamp;
+  const replay = await prepareExactCompactionReplay(
+    facts,
+    operation.replay,
+    {
+      latestModelSwitchTimestamp,
+      builtinGoogleReplay: operation.replay.builtinGoogleReplay ?? false,
+      googleMarkerPresent: source.entries.some((entry) => entry.markers.googleTurnOrdering),
+    },
+    {
+      readMedia: async (locator, indexes) =>
+        collectExactReplayMediaFacts(
+          await readProjected(locator),
+          locator,
+          indexes,
+          operation.replay,
+        ),
+      compareRows: (comparison) => compareExactReplayRows(comparison, readProjected),
+    },
+  );
+  const metadata = {
+    hasThinkingEntry: source.entries.some((entry) => entry.markers.thinkingLevel !== undefined),
+    modelSnapshot: snapshot.lastSnapshot ?? undefined,
+    needsGoogleTurnOrderingMarker: replay.needsGoogleTurnOrderingMarker,
+  };
+  if (!replay.hasRealConversation) {
+    return {
+      kind: "compaction-preparation",
+      status: "skipped",
+      reason: "no real conversation messages",
+      beforeHookMetrics: replay.beforeHookMetrics,
+      ...metadata,
+      reads,
+    };
+  }
+  if (!source.header) {
+    throw new Error("Compaction source is missing its session header");
+  }
+  const plan = await selectedRead((readEntry) =>
+    prepareCompactionPlan(source.entries, operation.options, { readEntry }),
+  );
+  if (plan.status === "skipped") {
+    return {
+      kind: "compaction-preparation",
+      ...plan,
+      beforeHookMetrics: replay.beforeHookMetrics,
+      ...metadata,
+      reads,
+    };
+  }
+  control.throwIfCancelled();
+  return {
+    kind: "compaction-preparation",
+    ...plan,
+    header: source.header,
+    version: source.version,
+    leafEntryId: source.leafEntryId,
+    boundaryCount: source.boundaryCount,
+    persistedSuffixStartSeq: source.persistedSuffixStartSeq,
+    transcriptMutationAt: source.transcriptMutationAt,
+    ...replay,
+    ...metadata,
+    reads,
+  };
 }

@@ -3,6 +3,7 @@ import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { gunzipSync } from "node:zlib";
 import { afterEach, expect, it, vi } from "vitest";
+import { expectFamilyEqual, expectFilesEqual } from "../../test/helpers/file-snapshots.js";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { revokeSqliteDatabaseAdmissionsForPath } from "../infra/sqlite-database-admission.js";
@@ -29,6 +30,8 @@ import {
   preflightOpenClawStateDatabasePath,
 } from "./openclaw-database-preflight.js";
 import {
+  expectLiveReadSourceFamily,
+  expectLiveReadSourceManifest,
   snapshotPreflightSourceManifest,
   snapshotSourceFamily,
 } from "./openclaw-database-preflight.test-support.js";
@@ -137,14 +140,14 @@ function createReleasedStateDatabase() {
   return fixture;
 }
 
-it("refuses released legacy audit state before changing any persistent artifact", async () => {
+it("refuses released legacy audit state without changing stored data", async () => {
   const { dir: stateDir, statePath, ready } = createReleasedStateDatabase();
   const before = snapshotPreflightSourceManifest(stateDir);
-  await expect(ready()).rejects.toBeInstanceOf(OpenClawStateDatabaseSchemaMigrationRequiredError);
-  expect(snapshotPreflightSourceManifest(stateDir)).toEqual(before);
   await expect(preflightOpenClawStateDatabasePath(statePath)).resolves.toMatchObject({
     foundVersion: 1,
   });
+  await expect(ready()).rejects.toBeInstanceOf(OpenClawStateDatabaseSchemaMigrationRequiredError);
+  expectLiveReadSourceManifest(stateDir, before, statePath);
 });
 
 it("refuses a configured legacy agent database without mutating its WAL or creating stores", async () => {
@@ -162,7 +165,7 @@ it("refuses a configured legacy agent database without mutating its WAL or creat
   await expect(fixture.ready(config)).rejects.toBeInstanceOf(
     OpenClawAgentDatabaseMediaMigrationRequiredError,
   );
-  expect(snapshotPreflightSourceManifest(stateDir, agentPath)).toEqual(before);
+  expectLiveReadSourceManifest(stateDir, before, fixture.statePath, agentPath);
 });
 
 it("rejects a canonical configured agent path owned by another agent before writes", async () => {
@@ -178,7 +181,7 @@ it("rejects a canonical configured agent path owned by another agent before writ
   await expect(fixture.ready({ session: { store } })).rejects.toThrow(
     "belongs to agent beta; requested agent alpha",
   );
-  expect(snapshotPreflightSourceManifest(root)).toEqual(before);
+  expectLiveReadSourceManifest(root, before, fixture.statePath);
 });
 
 it("admits supported forward state migration with backup custody after the Doctor-owned audit repair", async () => {
@@ -190,7 +193,7 @@ it("admits supported forward state migration with backup custody after the Docto
   }
   const before = snapshotPreflightSourceManifest(stateDir);
   await expect(fixture.ready()).resolves.toBeUndefined();
-  expect(snapshotPreflightSourceManifest(stateDir)).toEqual(before);
+  expectLiveReadSourceManifest(stateDir, before, statePath);
   await withStateMigrationBackupForTest({ env: fixture.env }, () => fixture.state());
   const migrated = fixture.state();
   expect(migrated.db.prepare("PRAGMA user_version").get()).toEqual({
@@ -224,6 +227,7 @@ it.each([false, true])(
     }
     const before = snapshotSourceFamily(statePath);
     const result = await fixture.inspect({ verifyCurrentSchemaShape: true });
+    expectFamilyEqual(snapshotSourceFamily(statePath), before);
     const indeterminate = damaged
       ? [
           expect.objectContaining({
@@ -244,6 +248,14 @@ it.each([false, true])(
       }),
     ]);
     expect(result.indeterminate).toEqual(indeterminate);
+    if (!damaged) {
+      await expect(preflightOpenClawStateDatabasePath(statePath)).resolves.toMatchObject({
+        status: "exact",
+        foundVersion: supportedVersions.state - 1,
+        contentVersion: supportedVersions.state,
+        deferredPublication: expect.objectContaining({ runId: run.runId }),
+      });
+    }
     const olderTarget = await fixture.inspect(
       {
         verifyCurrentSchemaShape: true,
@@ -258,7 +270,7 @@ it.each([false, true])(
       expect.objectContaining({ foundVersion: supportedVersions.state - 1 }),
     ]);
     expect(olderTarget.indeterminate).toEqual(indeterminate);
-    expect(snapshotSourceFamily(statePath)).toEqual(before);
+    expectLiveReadSourceFamily(statePath, before);
     if (damaged) {
       await expect(fixture.ready(undefined, "gateway-restart")).rejects.toThrow(
         /Gateway refused restart.*column definitions differ for worktrees/su,
@@ -273,12 +285,6 @@ it.each([false, true])(
         }),
       ).resolves.toMatchObject({
         incompatible: [expect.objectContaining({ foundVersion: supportedVersions.state })],
-      });
-      await expect(preflightOpenClawStateDatabasePath(statePath)).resolves.toMatchObject({
-        status: "exact",
-        foundVersion: supportedVersions.state - 1,
-        contentVersion: supportedVersions.state,
-        deferredPublication: expect.objectContaining({ runId: run.runId }),
       });
     }
   },
@@ -322,7 +328,7 @@ it("holds an unregistered store without deletion history or creating shared stat
       }),
     }),
   );
-  expect(snapshotSourceFamily(agent.path)).toEqual(before);
+  expectFamilyEqual(snapshotSourceFamily(agent.path), before);
   expect(fs.existsSync(statePath)).toBe(false);
 });
 
@@ -406,14 +412,14 @@ it("admits a dangling Workshop index only for Doctor without mutating the source
     fs
       .readdirSync(sourceDir)
       .toSorted()
-      .map((name) => [name, fs.readFileSync(path.join(sourceDir, name))]);
+      .map((name) => ({ name, bytes: fs.readFileSync(path.join(sourceDir, name)) }));
   const before = snapshot();
 
   const runtime = await fixture.inspect({ scope: "state" });
   expect(runtime.indeterminate).toEqual([
     expect.objectContaining({ reason: expect.stringMatching(/openclaw doctor --fix/) }),
   ]);
-  expect(snapshot()).toEqual(before);
+  expectFilesEqual(snapshot(), before);
 
   await expect(
     fixture.inspect({
@@ -422,7 +428,7 @@ it("admits a dangling Workshop index only for Doctor without mutating the source
       supportedVersions,
     }),
   ).resolves.toEqual(compatible);
-  expect(snapshot()).toEqual(before);
+  expectFilesEqual(snapshot(), before);
 });
 
 it.each([

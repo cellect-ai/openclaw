@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { execFile } from "node:child_process";
+import childProcess from "node:child_process";
 import {
   appendFileSync,
   mkdirSync,
@@ -14,9 +14,12 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import process from "node:process";
 import { pathToFileURL } from "node:url";
-import { promisify, stripVTControlCharacters } from "node:util";
+import { isDeepStrictEqual, promisify, stripVTControlCharacters } from "node:util";
 import { parse as parseYaml } from "yaml";
-import { validateArtifactProducerRun } from "./full-release-artifacts.mjs";
+import {
+  selectPublicationArtifactSource,
+  validateArtifactProducerRun,
+} from "./full-release-artifacts.mjs";
 import {
   publicationAdmissionContract,
   publicationSourceContract,
@@ -27,6 +30,7 @@ import {
   classifyReleaseGhTransportError,
   composeReleaseAttemptJobs,
   composeReleaseChildAttemptEvidence,
+  resolveReleaseAttemptJobs,
   formatReleaseStateOutcome,
   GHOST_JOBS_ADVICE,
   isReleaseGhArtifactMissingError,
@@ -34,6 +38,7 @@ import {
   MAX_RELEASE_ARTIFACT_BYTES,
   planReleaseChildRerun,
   readReleaseJobListing,
+  releaseWatcherJobName,
   releaseChildSpec,
   releaseChildSpecs,
   releaseGhRateLimitRetryAt,
@@ -62,6 +67,7 @@ import {
 import {
   decodeReleaseValidationSource,
   evaluateReleaseChildPolicy,
+  isWaived,
   readReleaseValidationWaiversAsync,
   RELEASE_VALIDATION_WAIVERS_PATH,
 } from "./lib/release-validation-waivers.mjs";
@@ -74,7 +80,7 @@ import {
   tryReadReleaseDecisionArtifact,
 } from "./release-ci-summary.mjs";
 
-const execFileAsync = promisify(execFile);
+const execFileAsync = promisify(childProcess.execFile);
 const DEFAULT_REPOSITORY = "openclaw/openclaw";
 const DEFAULT_POLL_MS = 30_000;
 const DEFAULT_TIMEOUT_MS = 12 * 60 * 60_000;
@@ -597,7 +603,15 @@ async function recheckArtifactProducers(
 const ARTIFACT_PRODUCER_STAGES = new Set(["npm", "docker", "candidate", "plugin-npm"]);
 const ARTIFACT_RECOVERY_STAGES = new Set(["npm", "docker", "plugin-npm"]);
 
-async function legacyNpmRecoveryProducers(plan, parentJobs, client, repository, workflow, options) {
+async function legacyNpmRecoveryProducers(
+  plan,
+  parentJobs,
+  client,
+  repository,
+  workflow,
+  options,
+  retainedArtifacts,
+) {
   if (!workflow.includes("node scripts/full-release-artifacts.mjs resolve")) {
     return { pending: false, producers: [] };
   }
@@ -622,6 +636,22 @@ async function legacyNpmRecoveryProducers(plan, parentJobs, client, repository, 
       /(?:^|\n)(?:\d{4}-\d\d-\d\dT\S+ )?Dispatched full-release-artifacts\.yml: https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/([1-9][0-9]*) \(attempt ([1-9][0-9]*)\)\r?(?=\n|$)/gu,
     ),
   ];
+  if (retainedArtifacts) {
+    const jobs = Object.values(parseYaml(workflow).jobs ?? {}).filter(
+      (entry) => entry.name === job.name,
+    );
+    if (
+      dispatches.length !== 0 ||
+      job.conclusion !== "success" ||
+      jobs.length !== 1 ||
+      !jobs[0].steps?.some(
+        (step) => step.id === "reused" && step.if === "env.PUBLICATION_ARTIFACTS_REUSED == 'true'",
+      )
+    ) {
+      throw new Error("Retained npm artifact recovery identity is unavailable or ambiguous");
+    }
+    return { pending: false, producers: [] };
+  }
   if (
     dispatches.length !== 1 ||
     dispatches[0][1] !== repository ||
@@ -704,7 +734,15 @@ function artifactRecoveryJobs(workflow) {
   return producers;
 }
 
-async function artifactRecoveryProducers(plan, parentJobs, client, repository, workflow, options) {
+async function artifactRecoveryProducers(
+  plan,
+  parentJobs,
+  client,
+  repository,
+  workflow,
+  options,
+  retainedArtifacts,
+) {
   let source;
   try {
     source = parseYaml(workflow);
@@ -713,7 +751,15 @@ async function artifactRecoveryProducers(plan, parentJobs, client, repository, w
   }
   const recoveryContract = source?.env?.FULL_RELEASE_ARTIFACT_RECOVERY_CONTRACT;
   if (!["1", "2"].includes(recoveryContract)) {
-    return legacyNpmRecoveryProducers(plan, parentJobs, client, repository, workflow, options);
+    return legacyNpmRecoveryProducers(
+      plan,
+      parentJobs,
+      client,
+      repository,
+      workflow,
+      options,
+      retainedArtifacts,
+    );
   }
   const producers = [];
   let pending = false;
@@ -766,6 +812,12 @@ async function artifactRecoveryProducers(plan, parentJobs, client, repository, w
             /(?:^|\n)(?:\d{4}-\d\d-\d\dT\S+ )?Artifact dispatch (npm|docker) target ([a-f0-9]{40}): https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/actions\/runs\/([1-9][0-9]*) \(attempt ([1-9][0-9]*)\)\r?(?=\n|$)/gu,
           ),
         ];
+    if (retainedArtifacts) {
+      if (dispatches.length !== 0 || !allowsReuse || job.conclusion !== "success") {
+        throw new Error(`Retained ${stage} artifact recovery identity is unavailable or ambiguous`);
+      }
+      continue;
+    }
     if (
       dispatches.length === 0 &&
       plan.evidenceReuse?.requested === true &&
@@ -888,9 +940,14 @@ export async function preflightContinuation(
       "parent-owned publication artifacts do not survive parent reruns; start a fresh all-group FRV",
     );
   }
-  const missingChildren = selectedChildren(plan)
+  const waiverPolicy = await readReleaseWaiverPolicy(plan, client);
+  const scope = { targetVersion: plan.targetVersion, targetSha: plan.targetSha };
+  const children = selectedChildren(plan).filter(
+    ({ key }) => !isWaived({ ...scope, childRole: key }, waiverPolicy),
+  );
+  const missingChildren = children
     .filter((child) => !hasExactChildRunIdentity(child))
-    .map((child) => child.key)
+    .map(({ key }) => key)
     .toSorted();
   if (missingChildren.length > 0) {
     throw new Error(
@@ -955,6 +1012,36 @@ export async function preflightContinuation(
       throw new Error("continuation differs from the authenticated original publication plan");
     }
   }
+  // Explicit byte reuse is independent of whole-verdict reuse. Authenticate it
+  // through the selection owner; retained producers belong to the original parent.
+  const selection = sourceAdmission?.coverage.publication_artifact_source_json;
+  if (selection) {
+    const selected = await selectPublicationArtifactSource(
+      JSON.parse(selection),
+      {
+        GH_TOKEN: process.env.GH_TOKEN,
+        GITHUB_REPOSITORY: repository,
+        GITHUB_RUN_ID: String(rootRunId),
+        GITHUB_RUN_ATTEMPT: String(plan.parentRunAttempt),
+        TARGET_SHA: plan.targetSha,
+        PARENT_WORKFLOW_SHA: plan.workflowSha,
+        SOURCE_ADMISSION_JSON: JSON.stringify(sourceAdmission),
+        CANDIDATE_REQUEST_JSON: JSON.stringify(plan.candidateRequest),
+        PLUGIN_NPM_REQUIRED: String(
+          sourceAdmission.publicationSelection?.pluginPublishScope !== "none",
+        ),
+      },
+      evidenceClient,
+    );
+    if (
+      !isDeepStrictEqual(selected.source, plan.publicationArtifactSource) ||
+      !isDeepStrictEqual(selected.candidate, plan.candidate)
+    ) {
+      throw new Error("Retained publication artifacts differ from the authenticated original plan");
+    }
+  } else if (plan.publicationArtifactSource) {
+    throw new Error("Historical publication artifacts require explicit admitted selection");
+  }
   const artifactRecovery = await artifactRecoveryProducers(
     plan,
     parentJobs,
@@ -962,9 +1049,10 @@ export async function preflightContinuation(
     repository,
     workflow,
     options,
+    Boolean(selection),
   );
   const childObservations = await Promise.all(
-    selectedChildren(plan).map(async (child) => {
+    children.map(async (child) => {
       const sourceParentAttempt = child.sourceParentAttempt ?? source.sourceRunAttempt;
       const parentJob = exactParentJob(parentJobs, child, sourceParentAttempt);
       const [childRun, parentLog] = await Promise.all([
@@ -1074,7 +1162,7 @@ async function readChildAttemptEvidence(child, client, options) {
       return { run, evidence, activeJobs };
     } catch (error) {
       // GitHub briefly returns overlapping job identities while a new attempt
-      // materializes. Never normalize those rows into accepted evidence.
+      // materializes. Retry only identities the shared execution owner cannot resolve.
       if (
         error?.code !== "FRV_DUPLICATE_JOB_IDENTITY" ||
         error.runAttempt !== effectiveRunAttempt ||
@@ -1112,7 +1200,11 @@ export async function inspectContinuation(plan, client, options = {}) {
   const waiverPolicy = await readReleaseWaiverPolicy(plan, client);
   const children = await Promise.all(
     selectedChildren(plan).map(async (child) => {
-      if (!hasExactChildRunIdentity(child)) {
+      const waived = isWaived(
+        { childRole: child.key, targetSha: plan.targetSha, targetVersion: plan.targetVersion },
+        waiverPolicy,
+      );
+      if (waived || !hasExactChildRunIdentity(child)) {
         return {
           compositeJobsSha256: "",
           conclusion: "",
@@ -1121,7 +1213,7 @@ export async function inspectContinuation(plan, client, options = {}) {
           passed: false,
           plannedRunAttempt: child.runAttempt ?? null,
           runId: String(child.runId ?? ""),
-          status: "missing",
+          status: waived ? "waived" : "missing",
           url: String(child.url ?? ""),
         };
       }
@@ -1246,7 +1338,9 @@ async function inspectQualificationStatus(plan, runId, client) {
     ...parentJobBlockers(currentJobs, parent.run_attempt),
     ...childJobBlockers(status.children),
   ];
-  const drainJobs = currentJobs.filter((job) => job.name === "Diagnostic Drain");
+  const drainJobs = currentJobs.filter(
+    (job) => releaseWatcherJobName(job.name) === "Diagnostic Drain",
+  );
   const drainJob = drainJobs.length === 1 ? drainJobs[0] : undefined;
   const drain = {
     status: drainJob?.status ?? "unknown",
@@ -1268,7 +1362,10 @@ async function inspectQualificationStatus(plan, runId, client) {
       decision = validateReleaseStateArtifact(artifact, { executionPlan: plan }, "decision");
     } else if (
       parent.status === "completed" ||
-      currentJobs.some((job) => job.name === "Release Decision" && job.status === "completed")
+      currentJobs.some(
+        (job) =>
+          releaseWatcherJobName(job.name) === "Release Decision" && job.status === "completed",
+      )
     ) {
       observationErrors.push("Decision evidence unavailable");
     }
@@ -1697,7 +1794,9 @@ async function selectedRerunJob(child, target, client, operationDeadline) {
   const jobs = await client.getAttemptJobs(child.runId, accepted.acceptedRunAttempt, {
     operationDeadline,
   });
-  const matches = jobs.filter((job) => job.name === target.name && job.conclusion !== "skipped");
+  const matches = resolveReleaseAttemptJobs(jobs, accepted.acceptedRunAttempt).filter(
+    (job) => job.name === target.name,
+  );
   if (matches.length !== 1) {
     throw new Error(
       `job identity changed before rerun dispatch: ${target.childKey}:${target.name}`,
@@ -1708,10 +1807,11 @@ async function selectedRerunJob(child, target, client, operationDeadline) {
   if (
     job.status !== accepted.status ||
     job.conclusion !== accepted.conclusion ||
-    String(job.html_url ?? "") !== accepted.url ||
-    String(job.started_at ?? "") !== accepted.startedAt ||
-    String(job.completed_at ?? "") !== accepted.completedAt ||
-    (job.run_id !== undefined && String(job.run_id) !== child.runId) ||
+    (job.html_url ?? "") !== accepted.url ||
+    (job.started_at ?? "") !== accepted.startedAt ||
+    (job.completed_at ?? "") !== accepted.completedAt ||
+    (job.run_id !== undefined &&
+      String(positiveInteger(job.run_id, "job run id")) !== child.runId) ||
     (job.run_attempt !== undefined && Number(job.run_attempt) !== accepted.acceptedRunAttempt)
   ) {
     throw new Error(
@@ -2035,19 +2135,19 @@ function reportChildRerun(child, rerun, log) {
   log(`[frv]   OPENCLAW_CI_RUNNER_BACKEND=${rerun.runnerBackend || "(unset)"}`);
 }
 
-function duplicateJobNames(jobs) {
-  const seen = new Set();
-  const duplicates = new Set();
-  for (const job of jobs) {
-    if (!(job.status === "completed" && job.conclusion === "skipped")) {
-      (seen.has(job.name) ? duplicates : seen).add(job.name);
+function duplicateJobNames(jobs, runAttempt, allowRunning = false) {
+  try {
+    resolveReleaseAttemptJobs(jobs, runAttempt, { allowRunning });
+    return [];
+  } catch (error) {
+    if (error?.code !== "FRV_DUPLICATE_JOB_IDENTITY") {
+      throw error;
     }
+    return error.jobNames;
   }
-  return [...duplicates].toSorted((left, right) => left.localeCompare(right));
 }
 
-// Any rerun request (single-job or batched) can leave duplicate queued jobs without
-// runners in the new attempt; such an attempt can never seal.
+// Wait for unresolved identities, not runnerless copies beside one real execution.
 async function verifyRerunAttemptJobs(child, runAttempt, client, operationDeadline) {
   const deadline = Math.min(
     operationDeadline,
@@ -2056,7 +2156,7 @@ async function verifyRerunAttemptJobs(child, runAttempt, client, operationDeadli
   );
   while (true) {
     const jobs = await client.getAttemptJobs(child.runId, runAttempt, { operationDeadline });
-    const duplicates = duplicateJobNames(jobs);
+    const duplicates = duplicateJobNames(jobs, runAttempt, true);
     if (jobs.length > 0 && duplicates.length === 0) {
       return;
     }
@@ -2451,9 +2551,6 @@ export async function continueFailed(plan, rootRunId, reader, options = {}) {
       operationDeadline,
       (run) => report(run, true),
       async () => {
-        await recheckArtifactProducers(artifactProducers, status, client, false, {
-          operationDeadline,
-        });
         const retryParent = exactTerminalRunState(
           await client.getRun(rootRunId, { operationDeadline }),
           rootRunId,
@@ -3298,9 +3395,15 @@ async function inspectPublicationStatus(options) {
         );
         if (terminal.state === "available") {
           const nativeJobs = await reader.getAttemptJobs(String(run.id), run.run_attempt);
+          // Keep pre-split published runs readable through their artifact retention window.
+          const evidenceOwner = nativeJobs.some(
+            (job) => job.name === "Record detached Windows outcome",
+          )
+            ? "Record detached Windows outcome"
+            : "Promote signed Windows installers";
           const nativeOwner = requireArtifactUploadJob(
             nativeJobs,
-            "Promote signed Windows installers",
+            evidenceOwner,
             "Upload Windows promotion evidence",
           );
           observeWindowsMarker(
@@ -3693,7 +3796,9 @@ async function pollRelease(state, client, pending, observation, readOptions) {
           const jobs = await readJobs(attempt);
           if (
             !jobs?.length ||
-            (attempt < current && jobs.some((job) => job.status !== "completed"))
+            (attempt < current &&
+              duplicateJobNames(jobs, attempt).length === 0 &&
+              resolveReleaseAttemptJobs(jobs, attempt).some((job) => job.status !== "completed"))
           ) {
             return false;
           }
@@ -3724,17 +3829,9 @@ async function pollRelease(state, client, pending, observation, readOptions) {
             waiverPolicy: observation.waiverPolicy ?? [],
           }).blockingJobs) {
             const raw = attempts[job.acceptedRunAttempt - 1].jobs.find(
-              (row) => row.name === job.name && row.conclusion !== "skipped",
+              (row) => row.name === job.name && row.html_url === job.url,
             );
-            let sourceAttempt = Number(raw.run_attempt ?? job.acceptedRunAttempt);
-            // GitHub also restamps retained executions with a new attempt and ID.
-            for (const previous of attempts.slice(0, job.acceptedRunAttempt - 1)) {
-              if (
-                previous.jobs.some((row) => row.name === job.name && sameJobExecution(row, raw))
-              ) {
-                sourceAttempt = Math.min(sourceAttempt, previous.runAttempt);
-              }
-            }
+            const sourceAttempt = job.acceptedRunAttempt;
             if (currentProducer || sourceAttempt < current) {
               reportFailure(
                 failedJobEvent(child.key, raw, current, runId, sourceAttempt),
@@ -3755,11 +3852,14 @@ async function pollRelease(state, client, pending, observation, readOptions) {
         if (!jobs) {
           return false;
         }
-        // A relay snapshot can lag the run; only an all-terminal job list is final.
+        const duplicates = duplicateJobNames(jobs, attempt, !done && attempt === current);
+        // Only resolved, terminal executions settle an inventory.
         const final =
           (attempt < current || done) &&
           jobs.length > 0 &&
-          jobs.every((job) => job.status === "completed");
+          (jobs.every((job) => job.status === "completed") ||
+            (duplicates.length === 0 &&
+              resolveReleaseAttemptJobs(jobs, attempt).every((job) => job.status === "completed")));
         scansComplete &&= final;
         for (const job of jobs) {
           const failure = failedJobEvent(
@@ -3773,7 +3873,6 @@ async function pollRelease(state, client, pending, observation, readOptions) {
             report(...failure);
           }
         }
-        const duplicates = duplicateJobNames(jobs);
         // Attempts briefly list overlapping jobs while GitHub materializes them; only a
         // final attempt that still holds duplicates is unsealable ghost-job evidence.
         if (duplicates.length > 0 && (final || pending.has(scanned))) {
@@ -4063,6 +4162,16 @@ async function main() {
     const evidence = await client.verify(options.runId, plan, createOperationDeadline());
     console.log(evidence);
     await releaseSealedPriority(client, options.runId);
+    if (!options.json) {
+      console.log(`VERIFIED: Full Release Validation run ${options.runId}`);
+      console.log(`Qualification tooling (Q): ${plan.trustedWorkflow.sha}`);
+      console.log(
+        `Candidate inputs: --target-sha ${plan.targetSha} --full-release-validation-run-id ${options.runId} --release-profile ${String(plan.releaseProfile)} --skip-dispatch`,
+      );
+      console.log(
+        "Supply independently pinned publication tooling (P) via --workflow-sha <P> or --publish-workflow-ref <tag>, plus the release tag, channel, route, and any required SDK acknowledgement; these are not inferred from verification.",
+      );
+    }
     return;
   }
   const loaded = await loadPlanForCommand(options, client);

@@ -28,7 +28,10 @@ import type { GroupToolPolicyConfig } from "../config/types.tools.js";
 import type { CronScheduledToolCallerOrigin } from "../cron/scheduled-tool-policy.js";
 import type { AgentRunDelegatedAuthority } from "../infra/agent-run-registry.js";
 import type { ExecMode } from "../infra/exec-approvals.js";
-import type { PluginHookChannelContext } from "../plugins/hook-types.js";
+import type {
+  PluginHookChannelContext,
+  PluginHookToolRequesterContext,
+} from "../plugins/hook-types.js";
 import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import { getPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.types.js";
@@ -36,13 +39,15 @@ import type { InputProvenance } from "../sessions/input-provenance.js";
 import type { ReplyTurnParticipants } from "../sessions/session-controller.contracts.js";
 import { resolveGlobalMap } from "../shared/global-singleton.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
-import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop/workspace-authoring.types.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop-host/workspace-authoring.types.js";
 import type { CronCreatorAuthorityGrant } from "./cron-creator-authority-grant.types.js";
 
 /** Set by MCP authentication; caller-token conversation headers cannot select a binding. */
 export type McpCurrentConversationOrigin = "run-bound-grant" | "server-session" | "caller-token";
 
 export type McpLoopbackRequestContext = {
+  /** Host-captured tool-policy identity; never supplied by MCP clients. */
+  requester?: PluginHookToolRequesterContext;
   /** Host-captured requester facts; child MCP input cannot supply or replace them. */
   requesterOrigin?: RequesterOrigin;
   operatorProfileId?: string;
@@ -67,6 +72,7 @@ export type McpLoopbackRequestContext = {
   cwd?: string;
   modelProvider?: string;
   modelId?: string;
+  webSearchModelSelection?: import("../plugins/web-provider-types.js").WebSearchProviderToolExecutionContext["modelSelection"];
   /** Prepared current-turn identity supplied only by the Gateway-launched run owner. */
   requesterModel?: ProviderModelRef;
   modelHasVision?: boolean;
@@ -100,6 +106,11 @@ export type McpLoopbackRequestContext = {
   webSearchDisabled?: true;
   /** Canonical observed native authority; null awaits this turn's initialization. */
   nativeCronCreatorToolAllowlist?: string[] | null;
+  /**
+   * Host-minted for native control operations (manual compaction): the grant lists the
+   * session's tools so the request prefix matches its turns, but no tool call runs.
+   */
+  toolCallsRefused?: true;
   /**
    * Attempt-local authority to start or redirect delegated work, stamped into
    * the grant so a fallback completion-report turn running on a CLI backend
@@ -156,7 +167,13 @@ type McpLoopbackToolAuth = {
   store: AuthProfileStore;
 };
 
+type McpLoopbackClientGrantOwner = { bearerToken: string };
+
+// The minted turn keeps its identity when a warm process keeps the bearer.
+const mintedClientGrantOwners = new WeakMap<McpLoopbackClientGrant, McpLoopbackClientGrantOwner>();
+
 type StoredMcpLoopbackClientGrant = McpLoopbackClientGrant & {
+  owner: McpLoopbackClientGrantOwner;
   runtimeOwnerToken: string;
   /** Prepared execution configuration, retained only in the host-owned grant. */
   toolPolicyConfig: OpenClawConfig;
@@ -296,7 +313,7 @@ function sweepExpiredAttachGrants(nowMs: number = Date.now()): void {
 export function mintMcpLoopbackClientGrant(
   params: Omit<
     StoredMcpLoopbackClientGrant,
-    "token" | "activeCaptureKey" | "assertCaptureCurrent" | "toolPolicyConfig"
+    "token" | "owner" | "activeCaptureKey" | "assertCaptureCurrent" | "toolPolicyConfig"
   > & { toolPolicyConfig?: OpenClawConfig },
 ): McpLoopbackClientGrant {
   const sessionKey = params.context.sessionKey.trim();
@@ -307,8 +324,10 @@ export function mintMcpLoopbackClientGrant(
   if (!runtimeOwnerToken) {
     throw new Error("mintMcpLoopbackClientGrant: runtimeOwnerToken is required");
   }
+  const owner = { bearerToken: crypto.randomBytes(32).toString("hex") };
   const grant: StoredMcpLoopbackClientGrant = {
-    token: crypto.randomBytes(32).toString("hex"),
+    token: owner.bearerToken,
+    owner,
     context: structuredClone({ ...params.context, sessionKey }),
     runtimeOwnerToken,
     toolPolicyConfig: captureRuntimeConfig(params.toolPolicyConfig ?? readRuntimeConfig()),
@@ -330,10 +349,9 @@ export function mintMcpLoopbackClientGrant(
     ...(params.toolAuth ? { toolAuth: structuredClone(params.toolAuth) } : {}),
   };
   clientGrantsByToken.set(grant.token, grant);
-  return structuredClone({
-    token: grant.token,
-    context: grant.context,
-  });
+  const minted = structuredClone({ token: grant.token, context: grant.context });
+  mintedClientGrantOwners.set(minted, owner);
+  return minted;
 }
 
 function replaceMcpLoopbackClientGrant(grant: StoredMcpLoopbackClientGrant): void {
@@ -493,6 +511,7 @@ export function transferMcpLoopbackClientGrant(params: {
     token: params.targetToken,
   });
   clientGrantsByToken.delete(params.sourceToken);
+  source.owner.bearerToken = params.targetToken;
   // Both tokens may own cached server projections. Evict them only after the
   // map swap so a request can observe either the old grant or the new grant,
   // never a partially updated authority.
@@ -605,6 +624,16 @@ export function registerMcpLoopbackClientGrantRevocationListener(
 ): () => void {
   clientGrantRevocationListeners.add(listener);
   return () => clientGrantRevocationListeners.delete(listener);
+}
+
+/** Revoke only this minted turn, including after transfer to a warm process. */
+export function revokeMintedMcpLoopbackClientGrant(grant: McpLoopbackClientGrant): boolean {
+  const owner = mintedClientGrantOwners.get(grant);
+  // A delayed predecessor cleanup must never revoke the next turn on the same bearer.
+  if (!owner || clientGrantsByToken.get(owner.bearerToken)?.owner !== owner) {
+    return false;
+  }
+  return revokeMcpLoopbackClientGrant(owner.bearerToken);
 }
 
 export function revokeMcpLoopbackClientGrant(token: string): boolean {

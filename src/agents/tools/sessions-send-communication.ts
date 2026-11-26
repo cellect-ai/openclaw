@@ -29,7 +29,6 @@ import {
 import { registerActiveEmbeddedRunHumanInputWait } from "../embedded-agent-runner/run-state.js";
 import { resolveSandboxRuntimeStatus } from "../sandbox/runtime-status.js";
 import { getLatestLiveSubagentRunByChildSessionKey } from "../subagents/registry/subagent-registry-read.js";
-import { isSameSubagentRunOwner } from "../subagents/registry/subagent-run-generation.js";
 import {
   captureGatewayToolCallerAssertion,
   getGatewayToolCallerIdentity,
@@ -79,7 +78,8 @@ export async function prepareSessionsSendCommunication(params: {
   /** Creates empty metadata through the caller's existing creation owner, never model input. */
   ensureTarget?: (assertCurrent: () => void) => Promise<CommunicationEndpoint>;
   signal?: AbortSignal;
-  expectedTask?: import("./sessions-send-tool.types.js").SessionsSendToolOptions["expectedTargetRun"];
+  /** A retained send whose target had a task refuses once that task has ended. */
+  expectTask?: boolean;
   /** Recovery cannot ask for fresh consent on behalf of an ended sender turn. */
   allowApproval?: boolean;
   assertSourceCurrent?: () => void;
@@ -88,7 +88,9 @@ export async function prepareSessionsSendCommunication(params: {
   acceptedReply?: SessionSendReplyAdmission;
   callGateway: AgentToolGatewayRequestCaller;
 }) {
-  const dispatchMessage = params.dispatchMessage ?? params.message;
+  const message = params.message;
+  const dispatchMessage = params.dispatchMessage ?? message;
+  const inputProvenance = params.inputProvenance;
   const targetAgentId = params.target.agentId;
   const targetSessionKey = params.target.sessionKey;
   const targetsThread = Boolean(resolveSessionThreadInfo(targetSessionKey).threadId);
@@ -231,7 +233,11 @@ export async function prepareSessionsSendCommunication(params: {
       endpoint,
       assertCurrent: assertSource,
     });
-  let task = getLatestLiveSubagentRunByChildSessionKey(targetSessionKey, undefined, targetAgentId);
+  const task = getLatestLiveSubagentRunByChildSessionKey(
+    params.target.sessionKey,
+    undefined,
+    params.target.agentId,
+  );
   const ownedTask = Boolean(
     caller &&
     caller.agentId === params.source.agentId &&
@@ -240,27 +246,13 @@ export async function prepareSessionsSendCommunication(params: {
     task.requesterSessionKey === params.source.sessionKey &&
     task.requesterAgentId === params.source.agentId &&
     (!task.controllerSessionKey || task.controllerSessionKey === params.source.sessionKey) &&
-    (!task.execution?.transcriptTarget ||
-      task.execution.transcriptTarget.sessionId === params.target.entry?.sessionId) &&
     params.target.entry?.spawnedBy === params.source.sessionKey &&
-    params.target.entry.parentSessionId === params.source.entry?.sessionId &&
     !task.killIntent &&
     !task.killReconciliation &&
     task.cleanupCompletedAt === undefined,
   );
-  if (
-    params.expectedTask !== undefined &&
-    (params.expectedTask === null
-      ? task !== null
-      : !task ||
-        (task.taskRunId ?? task.runId) !==
-          (params.expectedTask.taskRunId ?? params.expectedTask.runId))
-  ) {
-    unsubscribe();
-    throw new Error("Retained send target task changed before admission.");
-  }
-  let taskRunId = task?.runId;
-  let taskGeneration = task?.generation;
+  // The chat key addresses the task: it continues whichever run is current.
+  // Only an ended or cancelled task, or a new controller, refuses the send.
   const assertTask = () => {
     if (
       params.access?.controllerOnly &&
@@ -270,41 +262,27 @@ export async function prepareSessionsSendCommunication(params: {
     ) {
       throw new SessionCommunicationDeniedError("Child controller access changed before delivery.");
     }
-    if (!ownedTask && params.expectedTask === undefined) {
+    if (!ownedTask && !params.expectTask) {
       return;
     }
-    const currentTask = getLatestLiveSubagentRunByChildSessionKey(
+    const current = getLatestLiveSubagentRunByChildSessionKey(
       targetSessionKey,
       undefined,
       targetAgentId,
     );
-    // A task can advance to another execution while this send is prepared. Its
-    // current controller and cancellation state still own admission; a replacement
-    // of the same execution's runtime authority is not a task continuation.
-    const sameTaskSuccessor =
-      task &&
-      currentTask &&
-      currentTask.runId !== task.runId &&
-      (currentTask.taskRunId ?? currentTask.runId) === (task.taskRunId ?? task.runId) &&
-      currentTask.requesterSessionKey === task.requesterSessionKey &&
-      currentTask.requesterAgentId === task.requesterAgentId;
     if (
-      (!sameTaskSuccessor &&
-        ((currentTask !== task && !isSameSubagentRunOwner(currentTask, task)) ||
-          currentTask?.runId !== taskRunId ||
-          currentTask?.generation !== taskGeneration)) ||
-      (currentTask?.controllerSessionKey &&
-        currentTask.controllerSessionKey !== params.source.sessionKey) ||
-      currentTask?.killIntent ||
-      currentTask?.killReconciliation ||
-      (ownedTask && currentTask?.cleanupCompletedAt !== undefined)
+      !current ||
+      current.killIntent ||
+      current.killReconciliation ||
+      (ownedTask && current.cleanupCompletedAt !== undefined)
     ) {
-      throw new Error("Owned task communication authority changed.");
+      throw new Error("The target task ended or was cancelled; no message was sent.");
     }
-    // Fence subsequent checks against this accepted execution, not its predecessor.
-    task = currentTask;
-    taskRunId = currentTask?.runId;
-    taskGeneration = currentTask?.generation;
+    if (current.controllerSessionKey && current.controllerSessionKey !== params.source.sessionKey) {
+      throw new SessionCommunicationDeniedError(
+        "The target task is controlled by another session.",
+      );
+    }
   };
   const close = () => {
     if (!closed) {
@@ -431,7 +409,7 @@ export async function prepareSessionsSendCommunication(params: {
         approval,
         source: params.source,
         target: target[0]!,
-        message: params.message,
+        message,
         assertCurrent: () => {
           assertSource();
           assertTask();
@@ -554,7 +532,7 @@ export async function prepareSessionsSendCommunication(params: {
         request.params.sessionKey !== targetSessionKey ||
         request.params.agentId !== targetAgentId ||
         request.params.message !== dispatchMessage ||
-        !isDeepStrictEqual(request.params.inputProvenance, params.inputProvenance)
+        !isDeepStrictEqual(request.params.inputProvenance, inputProvenance)
       ) {
         throw new Error("Communication approval cannot be redirected to another session.");
       }
@@ -562,30 +540,9 @@ export async function prepareSessionsSendCommunication(params: {
       const runId = request.params.idempotencyKey;
       const hasRunId = typeof runId === "string";
       const resume = readInProcessSubagentResume(request);
-      // Resume's private binding must name the current execution, not the one
-      // observed before a retained send waited. Gateway admission revalidates it.
-      if ((ownedTask || params.expectedTask !== undefined) && resume && hasRunId) {
-        const currentTask = getLatestLiveSubagentRunByChildSessionKey(
-          targetSessionKey,
-          undefined,
-          targetAgentId,
-        );
-        if (
-          resume.childSessionKey !== targetSessionKey ||
-          resume.childSessionId !== target[0]!.entry?.sessionId ||
-          resume.previousRunId !== currentTask?.runId ||
-          resume.generation !== currentTask?.generation
-        ) {
-          throw new Error("Task resume differs from the captured communication owner.");
-        }
-      }
       const endpoint = target[0]!;
-      if (
-        !endpoint.entry ||
-        (request.params.expectedExistingSessionId !== undefined &&
-          request.params.expectedExistingSessionId !== endpoint.entry.sessionId)
-      ) {
-        throw new Error("Communication target incarnation changed before admission.");
+      if (!endpoint.entry) {
+        throw new Error("The target session was deleted; no message was sent.");
       }
       let input: Record<string, unknown> = {
         ...request.params,
@@ -645,7 +602,7 @@ export async function prepareSessionsSendCommunication(params: {
         !resume &&
         sender.entry &&
         hasRunId &&
-        params.inputProvenance?.sourceTool === "sessions_send"
+        inputProvenance?.sourceTool === "sessions_send"
       ) {
         return withSessionSendDelivery(
           {

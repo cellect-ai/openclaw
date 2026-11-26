@@ -17,12 +17,13 @@ const moduleUrl = (entry: Parameters<typeof resolveRuntimeWorkerUrl>[0]) =>
   JSON.stringify(resolveRuntimeWorkerUrl(entry).href);
 
 const childScript = `
-  import fs, { promises as fsPromises } from "node:fs";
+  import fs from "node:fs";
   import http from "node:http";
   import { runGatewayLoop } from ${moduleUrl(gatewayDirectStopEntrypoints.runLoop)};
+  import { runCliWithExitFinalization } from ${moduleUrl(cliMessageExitEntrypoints.oneShotExit)};
   import { setGatewayRestartPolicy } from ${moduleUrl(gatewayDirectStopEntrypoints.restartPolicy)};
   import { PluginRuntimeCloseRetainedError } from ${JSON.stringify(new URL("../../plugins/runtime-close-error.ts", import.meta.url).href)};
-  const [faultPath, closeFailure, logFile] = process.argv.slice(1);
+  const [faultPath, closeFailure] = process.argv.slice(1);
   setGatewayRestartPolicy({ allowExternal: true });
   let starts = 0;
   try {
@@ -46,14 +47,6 @@ const childScript = `
           startupSettled: Promise.resolve(),
           close: async () => {
             if (closeFailure === "pending") {
-              const openFile = fsPromises.open.bind(fsPromises);
-              fsPromises.open = (...args) => {
-                if (args[0] === logFile) {
-                  process.stdout.write("append:pending\\n");
-                  return new Promise(() => {});
-                }
-                return openFile(...args);
-              };
               return new Promise(() => {});
             }
             await new Promise((resolve, reject) => {
@@ -61,7 +54,7 @@ const childScript = `
             });
             if (closeFailure) {
               const error = new TypeError("fixture close owner failed");
-              if (closeFailure === "retained") setInterval(() => {}, 1000);
+              if (closeFailure === "retained" || closeFailure === "rejected-idle") setInterval(() => {}, 1000);
               throw closeFailure === "retained" ? new PluginRuntimeCloseRetainedError(error) : error;
             }
           },
@@ -69,6 +62,7 @@ const childScript = `
       },
     });
     process.stdout.write("loop-returned:" + process.exitCode + "\\n");
+    await runCliWithExitFinalization({ run: async () => {}, onError: error => { throw error; } });
   } catch (error) {
     console.error(error);
     process.exitCode = 1;
@@ -99,7 +93,7 @@ function startFixture(initialFailure = false, closeFailure = "", executable = pr
   const moduleArgs = ["--import", "tsx", "--input-type=module", "--eval"];
   const child = spawn(
     executable,
-    ["--inspect-port=127.0.0.1:0", ...moduleArgs, childScript, faultPath, closeFailure, logFile],
+    ["--inspect-port=127.0.0.1:0", ...moduleArgs, childScript, faultPath, closeFailure],
     {
       env: {
         PATH: pendingClose ? `${bin}${path.delimiter}${process.env.PATH ?? ""}` : process.env.PATH,
@@ -164,11 +158,11 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
 
   posixIt.each(
     process.platform === "darwin"
-      ? ["pending", "rejected", "retained", "retained-stop"]
-      : ["rejected"],
+      ? ["pending", "rejected", "rejected-idle", "retained", "retained-stop"]
+      : ["rejected", "rejected-idle"],
   )("terminates failed native cleanup (%s)", async (mode) => {
     const pending = mode === "pending";
-    const stop = pending || mode === "retained-stop";
+    const stop = pending || mode === "retained-stop" || mode === "rejected-idle";
     const retained = mode.startsWith("retained");
     const fixture = startFixture(false, retained ? "retained" : mode);
     await fixture.waitForOutput("ready:1");
@@ -180,7 +174,9 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
       expect(fixture.output()).toContain("resources remain");
       return;
     }
-    expect(exited, fixture.output()).toEqual(mode === "rejected" ? [1, null] : [null, "SIGKILL"]);
+    expect(exited, fixture.output()).toEqual(
+      pending ? [null, "SIGKILL"] : mode === "rejected-idle" ? [null, "SIGUSR2"] : [1, null],
+    );
     expect(fixture.output().includes("natural-exit")).toBe(mode === "rejected");
     const reason = pending
       ? "gateway.stop_shutdown_timeout"
@@ -191,7 +187,6 @@ describe("runGatewayLoop failed-restart process lifetime", { timeout: 60_000 }, 
     expect(bundle.reason).toBe(reason);
     if (pending) {
       expect(fixture.output()).not.toContain("loop-returned:");
-      expect(fixture.output()).toContain("append:pending");
     } else {
       expect(bundle.evidence.shutdown.step).toBe("gateway-server-close");
     }

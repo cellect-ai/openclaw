@@ -62,7 +62,7 @@ it("releases an invalidated prepared source after its last watcher leaves", asyn
 }) => {
   const { spyOnSessionPrLoader, createTestSessionPrReadSource } =
     await import("./control-ui-session-pr-subscriptions.test-support.js");
-  const { expectLiveObjects } = await import("../test-utils/retention.js");
+  const { expectCollected } = await import("../test-utils/retention.js");
   const scheduler = createTestGatewayScheduler();
   const readSource = createTestSessionPrReadSource(onTestFinished);
   let selected: ControlUiSessionPrTarget | undefined;
@@ -89,7 +89,7 @@ it("releases an invalidated prepared source after its last watcher leaves", asyn
     return retired;
   }
   try {
-    await expectLiveObjects([await retireWatchedSource()], 0);
+    await expectCollected(await retireWatchedSource());
   } finally {
     await owner.stop();
     await scheduler.stop();

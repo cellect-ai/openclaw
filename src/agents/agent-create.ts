@@ -122,12 +122,16 @@ type CreateAgentParams = {
   transformConfig?: typeof transformConfigFileWithRetry;
   /** Revalidate delegated authority before each new persistent effect. */
   beforePersistentApply?: () => void;
+  /** Revalidate prepared config before publication replaces its source snapshot. */
+  assertBeforePublish?: () => void;
   /** Doctor may restore only the backed-up stores selected by its recovery policy. */
   restorePaths?: readonly string[];
   /** Admit new identity input until its first successful publication. */
   assertIdentityInputAllowed?: () => void;
   /** Prepare guided staged state at the last reversible edge before config publication. */
-  prepareConfigCommit?: () => Promise<ConfigCommitReceipt | void>;
+  prepareConfigCommit?: (config: OpenClawConfig) => Promise<ConfigCommitReceipt | void>;
+  /** Publish ordinary identity/chat; a trusted initializer owns bootstrap and proactive setup. */
+  deferInitialization?: true;
   /** Observe published config before post-commit bookkeeping that may still fail. */
   onCommitted?: (result: CreateAgentSuccess & { config: OpenClawConfig }) => void;
   /** Provider cadence resolved from staged onboarding before config publication. */
@@ -389,6 +393,10 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
             params.stagedConfig?.writeSnapshot.writeOptions.assertConfigPathForWrite?.();
             beforePersistentApply();
           },
+          assertBeforePublish: () => {
+            params.stagedConfig?.writeSnapshot.writeOptions.assertBeforePublish?.();
+            params.assertBeforePublish?.();
+          },
         },
         transform: async (currentConfig, context) => {
           if (
@@ -550,6 +558,26 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
             assertCurrent: beforePersistentApply,
           });
 
+          await assertRetainedPostgresAgentStores({
+            config: nextConfig,
+            agentId,
+            assertCurrent: beforePersistentApply,
+          });
+          if (restoringRetained) {
+            await migrateRetainedAgentStores({
+              agentId,
+              allowRestore: !automaticBootstrap,
+              paths:
+                recoveryPaths.length > 0
+                  ? recoveryPaths
+                  : resolveConfiguredAgentDatabaseTargets(nextConfig, {
+                      env: process.env,
+                      agentId,
+                    }).map((target) => target.path),
+              assertCurrent: beforePersistentApply,
+            });
+          }
+
           // The outer lock makes this result-bearing transform single-attempt: setup
           // finishes before the final entry becomes visible to readers or delete flows.
           const skipBootstrap = template
@@ -563,7 +591,7 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
           const workspace = await ensureAgentWorkspace({
             dir: workspaceDir,
             guard: { assertHost, recoveryHoldPredicate: recoveryHoldPredicate() },
-            ensureBootstrapFiles: !skipBootstrap,
+            ensureBootstrapFiles: !skipBootstrap && !params.deferInitialization,
             purpose: params.purpose,
             ...(template
               ? {
@@ -603,7 +631,12 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
           await fs.mkdir(resolveSessionTranscriptsDirForAgent(agentId), { recursive: true });
           // A creation-time name is config, not proof that the fresh workspace hatched.
           // Keep IDENTITY.md templated until BOOTSTRAP completes its first-turn ceremony.
-          if (!template && !workspace.bootstrapPending && !skipBootstrap) {
+          if (
+            !template &&
+            !workspace.bootstrapPending &&
+            !skipBootstrap &&
+            !params.deferInitialization
+          ) {
             await writeIdentityFile({
               workspaceDir: workspace.dir,
               identity,
@@ -617,7 +650,7 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
           // Capture the receipt before settlement so a failed close still reaches rollback.
           beforePersistentApply();
           await withCreationClaim(async () => {
-            configCommitReceipt = (await params.prepareConfigCommit?.()) ?? undefined;
+            configCommitReceipt = (await params.prepareConfigCommit?.(nextConfig)) ?? undefined;
             beforePersistentApply();
             await prepareOpenClawAgentDatabaseExecution(
               { agentId, path: resolveAuthProfileDatabasePath(agentDir) },
@@ -666,12 +699,14 @@ export async function createAgent(params: CreateAgentParams): Promise<CreateAgen
       }
       if (result.status === "created") {
         await recordAgentProvenance(agentId, params.provenance ?? { createdVia: "operator" });
-        const { provisionDefaultProactiveJob } = await import("../cron/default-proactive-job.js");
-        await provisionDefaultProactiveJob(result.config, agentId, {
-          cadenceMs: params.proactiveCadenceMs,
-          commitGuard: assertHost,
-          recoveryHoldPredicate: recoveryHoldPredicate(),
-        });
+        if (!params.deferInitialization) {
+          const { provisionDefaultProactiveJob } = await import("../cron/default-proactive-job.js");
+          await provisionDefaultProactiveJob(result.config, agentId, {
+            cadenceMs: params.proactiveCadenceMs,
+            commitGuard: assertHost,
+            recoveryHoldPredicate: recoveryHoldPredicate(),
+          });
+        }
       }
       if (recoveryPaths.length > 0) {
         assertRecoveryCurrent();

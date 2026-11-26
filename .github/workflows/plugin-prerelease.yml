@@ -87,8 +87,8 @@ jobs:
     name: Resolve target ref
     if: github.event_name != 'schedule' || (github.repository == 'openclaw/openclaw' && github.ref == 'refs/heads/main')
     runs-on: &linux_runner_ubuntu >-
-      ${{ !inputs.full_release_validation && vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}',
-      toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('ubuntu-24.04'))) || ('ubuntu-24.04') }}
+      ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}',
+      toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('blacksmith-2vcpu-ubuntu-2404'))) || ('blacksmith-2vcpu-ubuntu-2404') }}
     timeout-minutes: 5
     outputs:
       checkout_revision: ${{ steps.resolve.outputs.sha }}
@@ -208,6 +208,7 @@ jobs:
           path: .frv-tooling
           sparse-checkout: |
             scripts/frv-test-exclusions.mjs
+            scripts/lib/ci-blacksmith-capacity.mjs
             scripts/lib/release-upgrade-baseline.mjs
             scripts/lib/release-version.mjs
             scripts/lib/canonical-json.mjs
@@ -275,7 +276,14 @@ jobs:
           import { appendFileSync, existsSync, globSync } from "node:fs";
           import path from "node:path";
 
-          const createMatrix = (include) => ({ include });
+          import { blacksmithRunnerLabel } from "./.frv-tooling/scripts/lib/ci-blacksmith-capacity.mjs";
+
+          const createMatrix = (include) => ({
+            include: include.map((row) => {
+              const label = row.runner_label ?? blacksmithRunnerLabel(row.runner);
+              return label ? { ...row, runner_label: label } : row;
+            }),
+          });
           const outputPath = process.env.GITHUB_OUTPUT;
           const fullReleaseValidation = process.env.FULL_RELEASE_VALIDATION === "true";
           const hourly = process.env.GITHUB_EVENT_NAME === "schedule";
@@ -296,6 +304,7 @@ jobs:
             "extension-test-plan": "./scripts/lib/extension-test-plan.mts",
             "bundled-plugin-source-utils": "./scripts/lib/bundled-plugin-source-utils.mts",
             "ci-node-test-plan": "./scripts/lib/ci-node-test-plan.mts",
+            "vitest-build-prerequisites": "./scripts/lib/vitest-build-prerequisites.mts",
           };
           const targetPlanPath = (name) => {
             const mtsPath = targetPlanPaths[name];
@@ -333,6 +342,10 @@ jobs:
 
           try {
             const planner = await import(targetPlanPath("extension-test-plan"));
+            const buildPrerequisitesPath = targetPlanPath("vitest-build-prerequisites");
+            const buildPrerequisites = existsSync(buildPrerequisitesPath)
+              ? await import(buildPrerequisitesPath)
+              : undefined;
             const extensionVitestArgs = JSON.parse(
               process.env.EXTENSION_TEST_EXCLUDE_PATTERNS_JSON || "[]",
             ).map((file) => `--exclude=${file}`);
@@ -459,6 +472,9 @@ jobs:
                   extensions_csv: [...new Set(includePatterns.map((file) => file.split("/")[1]))].join(","),
                   includePatterns,
                   vitest_config: group.config,
+                  pretest_build_mode: buildPrerequisites?.resolveVitestPretestBuildMode?.([
+                    { configs: [group.config], includePatterns },
+                  ]),
                   exclusion_configs: [{ config: group.config, includePatterns }],
                   vitest_max_workers: 1,
                   runner: "blacksmith-8vcpu-ubuntu-2404",
@@ -503,6 +519,10 @@ jobs:
                 configs: shard.configs,
                 includePatterns: shard.includePatterns,
                 runner: shard.runner,
+                runner_label: blacksmithRunnerLabel(
+                  shard.runner,
+                  Math.max(0, ...(shard.groups ?? []).map((group) => group.minTotalMemoryBytes ?? 0)),
+                ),
               }));
           } catch (error) {
             const errorCode =
@@ -580,7 +600,7 @@ jobs:
     name: ${{ matrix.check_name || 'plugin-prerelease-static-shard' }}
     needs: [resolve_target, preflight]
     if: needs.preflight.outputs.run_plugin_prerelease_static == 'true'
-    runs-on: ${{ !inputs.full_release_validation && vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON(github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404'))) || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || 'blacksmith-8vcpu-ubuntu-2404') }}
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON('blacksmith-8vcpu-ubuntu-2404'))) || ('blacksmith-8vcpu-ubuntu-2404') }}
     timeout-minutes: 45
     strategy:
       fail-fast: false
@@ -617,7 +637,7 @@ jobs:
     name: ${{ matrix.check_name || 'plugin-prerelease-node-shard' }}
     needs: [resolve_target, preflight]
     if: needs.preflight.outputs.run_plugin_prerelease_node == 'true'
-    runs-on: ${{ !inputs.full_release_validation && vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON(github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (matrix.runner || 'ubuntu-24.04')))) || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || (matrix.runner || 'ubuntu-24.04')) }}
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON((matrix.runner_label || matrix.runner || 'blacksmith-2vcpu-ubuntu-2404')))) || ((matrix.runner_label || matrix.runner || 'blacksmith-2vcpu-ubuntu-2404')) }}
     timeout-minutes: 60
     strategy:
       fail-fast: false
@@ -703,7 +723,7 @@ jobs:
     name: ${{ matrix.check_name || 'plugin-prerelease-extension-shard' }}
     needs: [resolve_target, preflight]
     if: needs.preflight.outputs.run_plugin_prerelease_extensions == 'true'
-    runs-on: ${{ !inputs.full_release_validation && vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON(github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || matrix.runner))) || (github.event_name == 'workflow_dispatch' && 'ubuntu-24.04' || matrix.runner) }}
+    runs-on: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP != '' && fromJSON(format('{{"group":{0},"labels":{1}}}', toJSON(vars.OPENCLAW_RELEASE_RUNNER_GROUP), toJSON((matrix.runner_label || matrix.runner)))) || ((matrix.runner_label || matrix.runner)) }}
     timeout-minutes: ${{ !matrix.test_runtime && matrix.test_runtime_policy == 'dual-all' && 120 || 60 }}
     strategy:
       fail-fast: false
@@ -730,6 +750,14 @@ jobs:
         uses: ./.github/actions/setup-test-bun
 
       - *checkout_exclusion_tooling
+
+      - name: Build extension test runtime
+        if: matrix.pretest_build_mode != null
+        env:
+          NODE_OPTIONS: --max-old-space-size=8192
+          OPENCLAW_BUILD_PRIVATE_QA: ${{ matrix.pretest_build_mode == 'private-qa' && '1' || '0' }}
+          VITEST: "1"
+        run: pnpm build qaRuntime
 
       - name: Run extension shard
         env:
@@ -972,7 +1000,7 @@ jobs:
       pull-requests: read
     uses: ./.github/workflows/openclaw-live-and-e2e-checks-reusable.yml
     with:
-      use_github_hosted_runners: true
+      runner_group: ${{ vars.OPENCLAW_RELEASE_RUNNER_GROUP }}
       ref: ${{ needs.resolve_target.outputs.checkout_revision }}
       include_repo_e2e: false
       include_release_path_suites: false

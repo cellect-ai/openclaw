@@ -2,33 +2,18 @@
 // default changed; it never rewrites the saved value.
 import { describe, expect, it } from "vitest";
 import { createTestRuntime } from "../commands/test-runtime-config-helpers.js";
-import { validateConfigObjectRaw } from "../config/validation-core.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { CORE_HEALTH_CHECKS } from "./doctor-core-checks.js";
 
 const CHECK_ID = "core/doctor/legacy-output-cap";
 
-async function detect(
-  providers: Record<string, { models: unknown[]; baseUrl?: string; maxTokens?: number }>,
-) {
+async function detect(providers: Record<string, unknown>) {
   const check = CORE_HEALTH_CHECKS.find((entry) => entry.id === CHECK_ID);
   if (!check) {
     throw new Error("missing registered legacy output cap check");
   }
   expect(typeof check.repair).toBe("undefined");
-  const parsed = validateConfigObjectRaw({
-    models: {
-      providers: Object.fromEntries(
-        Object.entries(providers).map(([id, provider]) => [
-          id,
-          { baseUrl: "http://llm.example/v1", ...provider },
-        ]),
-      ),
-    },
-  });
-  if (!parsed.ok) {
-    throw new Error(JSON.stringify(parsed.issues));
-  }
-  const cfg = parsed.config;
+  const cfg = { models: { providers } } as unknown as OpenClawConfig;
   const before = structuredClone(cfg);
   const findings = await check.detect({ mode: "lint", runtime: createTestRuntime(), cfg });
   expect(cfg).toEqual(before);
@@ -118,5 +103,11 @@ describe(CHECK_ID, () => {
       expect(text).not.toContain("\u001b");
       expect(text).not.toContain("\n");
     }
+  });
+
+  it("ignores malformed providers and rows", async () => {
+    expect(
+      await detect({ broken: "nope", rows: { models: ["x", null, { maxTokens: "4096" }] } }),
+    ).toEqual([]);
   });
 });

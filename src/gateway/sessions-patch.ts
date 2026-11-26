@@ -18,12 +18,9 @@ import {
   requiresAgentHarnessPluginSelection,
   resolveAgentHarnessOwnerPluginIds,
 } from "../agents/harness/runtime-plugin-load-plan.js";
+import { findModelCatalogEntry } from "../agents/model-catalog-lookup.js";
 import { selectModelCatalogRuntimeEntry } from "../agents/model-catalog-view.js";
-import {
-  findModelCatalogEntry,
-  type ModelCatalogEntry,
-  type ModelCatalogSnapshot,
-} from "../agents/model-catalog.js";
+import type { ModelCatalogEntry, ModelCatalogSnapshot } from "../agents/model-catalog.types.js";
 import { splitTrailingAuthProfile } from "../agents/model-ref-profile.js";
 import {
   type ModelRef,
@@ -69,7 +66,7 @@ import {
   SESSION_AGENT_STATUS_MAX_TTL_MINUTES,
 } from "../sessions/session-agent-status.js";
 import { isUserModelAuthProfileId } from "../state/user-model-account-id.js";
-import { isSessionUnreadAckOnlyPatch } from "./server-methods/session-unread-ack.js";
+import { isReadMarkerOnly } from "./server-methods/session-unread-ack.js";
 import {
   createSessionAccessProgramValidation,
   prepareSessionPatchModelSelection,
@@ -123,12 +120,13 @@ export async function prepareSessionsPatchEntry(
     : undefined;
   const pinnedProfile =
     "model" in params.patch && params.existingEntry?.authProfileOverride?.trim();
-  const recordedProvider = pinnedProfile
-    ? await prepareAuthProfileProvider({
-        agentDir: resolveAgentDir(params.cfg, sessionAgentId),
-        profileId: pinnedProfile,
-      })
-    : undefined;
+  const recordedProvider =
+    pinnedProfile && !splitTrailingAuthProfile(params.patch.model ?? "").profile
+      ? await prepareAuthProfileProvider({
+          agentDir: resolveAgentDir(params.cfg, sessionAgentId),
+          profileId: pinnedProfile,
+        })
+      : undefined;
   const projection = projectSessionPatchSteps(params, acpMeta, recordedProvider);
   const first = projection.next();
   if (first.done) {
@@ -169,9 +167,8 @@ function* projectSessionPatchSteps(
 ): Generator<void, SessionPatchProjectionResult, ModelCatalogSnapshot | undefined> {
   const { cfg, storeKey, patch, creation } = params;
   const now = Date.now();
-  const parsedAgent = parseAgentSessionKey(storeKey);
   const sessionAgentId = normalizeAgentId(
-    params.agentId ?? parsedAgent?.agentId ?? resolveDefaultAgentId(cfg),
+    params.agentId ?? parseAgentSessionKey(storeKey)?.agentId ?? resolveDefaultAgentId(cfg),
   );
   let resolvedDefault: ModelRef | undefined;
   const getResolvedDefault = () =>
@@ -238,9 +235,9 @@ function* projectSessionPatchSteps(
   }
 
   const existing = params.existingEntry && projectCanonicalSessionEntryShape(params.existingEntry);
-  // A read acknowledgement or an icon/color change is not session activity: ageing the
+  // Marking read/unread or changing the icon/color is not session activity: ageing the
   // row here would move the session to the top of recency order, so only the patch commits.
-  const recencyNeutral = isSessionUnreadAckOnlyPatch(patch) || isSessionIconColorOnlyPatch(patch);
+  const recencyNeutral = isReadMarkerOnly(patch) || isSessionIconColorOnlyPatch(patch);
   const nextUpdatedAt = recencyNeutral
     ? (existing?.updatedAt ?? now)
     : Math.max(existing?.updatedAt ?? 0, now);

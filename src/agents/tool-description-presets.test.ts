@@ -22,6 +22,10 @@ it("keeps ask_user native-control requirements visible to the model", () => {
   expect(description).toContain("unresolved material decision");
   expect(description).toContain("consent remain unanswered");
   expect(description).not.toContain("continue with best judgment");
+  expect(description).toContain("observed external prerequisite");
+  expect(description).toContain("Do not invent approval or manual prerequisites");
+  expect(description).toContain("not the current user-requested turn");
+  expect(description).toContain("finish the turn first");
 });
 
 it("distinguishes secret config references from egress permission without offering plaintext", () => {

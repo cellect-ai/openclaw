@@ -9,6 +9,10 @@ import type {
   SessionTranscriptContextSnapshot,
 } from "../../config/sessions/session-history-read.types.js";
 import { readSessionTranscriptModelContextAsync } from "../../config/sessions/session-transcript-context-read.js";
+import {
+  withSessionTranscriptHydrationCaller,
+  type SessionTranscriptHydrationCaller,
+} from "../../config/sessions/session-transcript-hydration-caller.js";
 import { prepareSessionTranscriptHydration } from "../../config/sessions/session-transcript-hydration.js";
 import {
   resolveSessionTranscriptReadFence,
@@ -69,6 +73,7 @@ export function readSessionManagerActorTranscript(
 export function prepareSessionManagerHydration(
   source: SessionTranscriptRuntimeTarget,
   options: {
+    caller?: SessionTranscriptHydrationCaller;
     limits?: SessionTranscriptContextSelection;
     signal?: AbortSignal;
     manager?: object;
@@ -80,7 +85,12 @@ export function prepareSessionManagerHydration(
   const target = captureSessionTranscriptTargetBinding(source);
   const incognitoBinding = captureSessionManagerIncognitoBinding(target, manager, retarget);
   if (!incognitoBinding) {
-    return { ...prepareSessionTranscriptHydration(target, limits, signal, lane), incognitoBinding };
+    const prepare = () => prepareSessionTranscriptHydration(target, limits, signal, lane);
+    const caller = limits && "compaction" in limits ? "compaction" : options.caller;
+    return {
+      ...(caller ? withSessionTranscriptHydrationCaller(caller, prepare) : prepare()),
+      incognitoBinding,
+    };
   }
   return {
     ...prepareSessionManagerMemoryHydration(incognitoBinding, limits, signal),

@@ -16,24 +16,24 @@ const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 // Match the real npm toolchain probe budget in the package E2E fixture.
 const PACK_TIMEOUT_MS = 30_000;
 
-async function fixture() {
+async function fixture(name = "fixture-bundle") {
   const root = tempDirs.make("openclaw-bundle-links-");
   const source = path.join(root, "checkout");
   const store = path.join(root, "store");
   const packed = path.join(root, "package");
   const modules = path.join(source, "node_modules");
-  const bundle = path.join(modules, "fixture-bundle");
-  const destination = path.join(packed, "node_modules", "fixture-bundle");
+  const bundle = path.join(modules, name);
+  const destination = path.join(packed, "node_modules", name);
   await fs.mkdir(modules, { recursive: true });
   await fs.mkdir(store);
   await fs.mkdir(packed);
-  const manifest = JSON.stringify({ name: "fixture-bundle", version: "1.0.0" });
+  const manifest = JSON.stringify({ name, version: "1.0.0" });
   const payload = "#!/usr/bin/env node\nconsole.log('patched payload');\n";
   await fs.writeFile(path.join(store, "package.json"), manifest);
   await fs.writeFile(path.join(store, "cli.js"), payload, { mode: 0o755 });
   await fs.writeFile(
     path.join(packed, "package.json"),
-    '{"bundleDependencies":["fixture-bundle"]}',
+    JSON.stringify({ bundleDependencies: [name] }),
   );
   // The final packed manifest owns declarations, even after source restoration.
   await fs.writeFile(path.join(source, "package.json"), "{}");
@@ -59,7 +59,7 @@ async function fixture() {
     expect(await fs.readFile(path.join(store, "cli.js"), "utf8")).toBe(payload);
     expect((await fs.stat(path.join(store, "cli.js"))).mode).toBe(originalCliMode);
     expect(await fs.readlink(path.join(modules, "unbundled"))).toBe(link);
-    expect((await fs.readdir(modules)).toSorted()).toEqual(["fixture-bundle", "unbundled"]);
+    expect((await fs.readdir(modules)).toSorted()).toEqual([name, "unbundled"]);
   };
   return {
     source,
@@ -76,109 +76,39 @@ async function fixture() {
 }
 
 describe("bundled dependency links", () => {
-  it.each(["shared", "patched", "reserved", "declared", "shadowed"])(
-    "shares complete dependency closures without replacing %s sources",
-    async (mode) => {
-      const f = await fixture();
-      const makePackage = async (
-        name: string,
-        dependencies: Record<string, string>,
-        code: string,
-      ) => {
-        const root = path.join(f.source, "packages", name);
-        await fs.mkdir(path.join(root, "node_modules"), { recursive: true });
-        await f.writeManifest(root, { name, version: "1.0.0", main: "index.js", dependencies });
-        await fs.writeFile(path.join(root, "index.js"), code);
-        return root;
-      };
-      const link = (owner: string, name: string, source: string) =>
-        fs.symlink(source, path.join(owner, "node_modules", name), "junction");
-      const helper = await makePackage(
-        "helper",
-        { leaf: "1.0.0" },
-        'exports.value = "original"; exports.leaf = require("leaf");',
-      );
-      const leaf = await makePackage(
-        "leaf",
-        { helper: "1.0.0" },
-        'module.exports = require.resolve("helper");',
-      );
-      await link(helper, "leaf", leaf);
-      await link(leaf, "helper", helper);
-      const patched = await makePackage(
-        "patched",
-        { leaf: "1.0.0" },
-        'exports.value = "patched"; exports.leaf = require("leaf");',
-      );
-      await f.writeManifest(patched, {
-        name: "helper",
-        version: "1.0.0",
-        main: "index.js",
-        dependencies: { leaf: "1.0.0" },
-      });
-      await link(patched, "leaf", leaf);
-      const second = await makePackage(
-        "second",
-        { helper: "1.0.0" },
-        'module.exports = require("helper");',
-      );
-      const differentSource = mode === "patched" || mode === "shadowed";
-      await link(second, "helper", differentSource ? patched : helper);
-      await link(f.source, "second", second);
-      await fs.mkdir(path.join(f.store, "node_modules"));
-      await link(f.store, "helper", helper);
-      await f.writeManifest(f.store, {
-        name: "fixture-bundle",
-        version: "1.0.0",
-        main: "index.js",
-        dependencies: { helper: "1.0.0" },
-      });
-      await fs.writeFile(path.join(f.store, "index.js"), 'module.exports = require("helper");');
-      const bundles = ["fixture-bundle", "second"];
-      const owners = new Map<string, string>();
-      if (mode === "reserved") {
-        // A later plugin-owned bundle must not replace a dependency hoisted by an earlier one.
-        bundles.push("helper");
-        const plugin = await makePackage("plugin", {}, "");
-        await link(plugin, "helper", patched);
-        owners.set("helper", plugin);
-      }
-      await f.writeManifest(f.packed, {
-        bundleDependencies: bundles,
-        ...(mode === "declared" ? { dependencies: { helper: "1.0.0" } } : {}),
-        ...(mode === "shadowed" ? { optionalDependencies: { leaf: "1.0.0" } } : {}),
-      });
-      await materializeMissingBundledDependencies(f.source, f.packed, PACK_TIMEOUT_MS, owners);
-      const load = (name: string) => createRequire(path.join(f.packed, "package.json"))(name);
-      expect(load("fixture-bundle").value).toBe("original");
-      expect(load("second").value).toBe(differentSource ? "patched" : "original");
-      const rootHelper = path.join(f.packed, "node_modules/helper");
-      if (mode === "reserved") {
-        expect(load("helper").value).toBe("patched");
-      } else if (mode === "declared") {
-        await expect(fs.lstat(rootHelper)).rejects.toMatchObject({ code: "ENOENT" });
-      } else {
-        expect(load("fixture-bundle").leaf).toBe(path.join(rootHelper, "index.js"));
-        await expect(
-          fs.lstat(path.join(f.destination, "node_modules/helper")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-      }
-      if (mode === "shadowed") {
-        // A nearer same-version patch must not satisfy the leaf needing original bytes.
-        const original = path.join(
-          f.packed,
-          "node_modules/second/node_modules/helper/node_modules/leaf/node_modules/helper/index.js",
-        );
-        expect(load("second").leaf).toBe(original);
-        expect(createRequire(path.join(f.packed, "package.json"))(original).value).toBe("original");
-      }
-      if (mode === "shared") {
-        await expect(
-          fs.lstat(path.join(f.packed, "node_modules/second/node_modules/helper")),
-        ).rejects.toMatchObject({ code: "ENOENT" });
-      }
-    },
-  );
+  it("stages a builtin-name npm package cycle once and runs it from the relocated archive", async () => {
+    const f = await fixture("string_decoder");
+    const helper = path.join(f.store, "node_modules", "fixture-helper");
+    await fs.mkdir(path.join(helper, "node_modules"), { recursive: true });
+    await f.writeManifest(f.store, {
+      name: "string_decoder",
+      version: "1.1.1",
+      main: "index.js",
+      dependencies: { "fixture-helper": "1.0.0" },
+    });
+    await fs.writeFile(
+      path.join(f.store, "index.js"),
+      'exports.label = "npm decoder"; exports.run = () => require("fixture-helper");',
+    );
+    await f.writeManifest(helper, {
+      name: "fixture-helper",
+      version: "1.0.0",
+      main: "index.js",
+      dependencies: { string_decoder: "1.1.1" },
+    });
+    await fs.writeFile(
+      path.join(helper, "index.js"),
+      'module.exports = require("string_decoder/").label + ":helper";',
+    );
+    await fs.symlink(f.store, path.join(helper, "node_modules", "string_decoder"), "junction");
+    await f.stage();
+    const require = createRequire(path.join(f.destination, "package.json"));
+    expect(require("./").run()).toBe("npm decoder:helper");
+    await expect(
+      fs.stat(path.join(f.destination, "node_modules/fixture-helper/node_modules/string_decoder")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    await f.assertSourceUnchanged();
+  });
 
   it.each([true, false])(
     "respects publishable file selection with files allowlist=%s",

@@ -10,6 +10,7 @@ import type {
   GenerationWorkerInput,
   GenerationWorkerReply,
 } from "./plugin-generation-worker-contract.js";
+import { resolvePluginPreparationExecArgv } from "./plugin-preparation-exec-argv.js";
 
 type PreparationPool = Awaited<ReturnType<typeof createPreparationPool>>;
 type PreparationOwner = {
@@ -27,6 +28,7 @@ export async function createPreparationPool(nativeSource: RetainedNativeWorkerSo
       service(): void;
       releaseRoot(): Promise<void>;
       registerNativeRoot: ReturnType<typeof createPluginGenerationNativeRoots>["allocate"];
+      retainNativeRoot: ReturnType<typeof createPluginGenerationNativeRoots>["retainByDirectory"];
     }
   >();
   const captures = await createPluginCaptureOwner(nativeSource, {
@@ -47,7 +49,7 @@ export async function createPreparationPool(nativeSource: RetainedNativeWorkerSo
       idleTimeoutMs: 0,
       restartOnError: false,
       prepareWorker: () => ({
-        options: {},
+        options: { execArgv: resolvePluginPreparationExecArgv(workerUrl) },
         releaseResources: async () => {
           retired = true;
           // Captured handles cannot migrate to a replacement isolate. Stop queued

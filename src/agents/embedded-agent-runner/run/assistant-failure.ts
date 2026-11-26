@@ -7,6 +7,7 @@ import {
   type ProviderCatalogOutcome,
 } from "../../../plugins/provider-catalog-outcome.js";
 import { projectAgentRunAttemptTerminal } from "../../agent-run-terminal-outcome.js";
+import { withAgentTerminalSnapshot } from "../../agent-terminal-snapshot.js";
 import type { AuthProfileFailureReason } from "../../auth-profiles.js";
 import {
   buildAssistantFailoverSignal,
@@ -208,7 +209,7 @@ export async function handleEmbeddedAssistantFailure(input: {
     ? buildAssistantFailoverSignal(failedAssistant)
     : undefined;
   const assistantStatus = assistantSignal?.status;
-  // Only this credential’s listing proves the model exists.
+  // Only this credential's listing proves the model exists; otherwise it stays model-not-found.
   const listedModelRejection =
     assistantSignal !== undefined &&
     isListedModelChatRejection(inferSignalStatus(assistantSignal), assistantSignal.message ?? "") &&
@@ -331,6 +332,7 @@ export async function handleEmbeddedAssistantFailure(input: {
       fallbackConfigured: runInput.fallbackConfigured,
       failoverFailure,
       failoverReason: assistantFailoverReason,
+      errorMessage: failedAssistant?.errorMessage,
       harnessOwnsTransport: runtime.pluginHarnessOwnsTransport,
       listedModelRejected: listedModelRejection,
       profileRotated,
@@ -384,7 +386,10 @@ export async function handleEmbeddedAssistantFailure(input: {
         failedModel: error.model ?? modelId,
       });
     }
-    throw error;
+    throw withAgentTerminalSnapshot(
+      error,
+      !terminalInterrupted && failedAssistant ? attempt.agentTerminal : undefined,
+    );
   };
 
   if (decision.action === "rotate_profile") {
@@ -542,6 +547,10 @@ export async function handleEmbeddedAssistantFailure(input: {
         {
           reason,
           rateLimitRetriesExhausted: input.rateLimitRetriesExhausted,
+          rateLimitResetAt:
+            assistantSignal?.retryAfterMs === undefined
+              ? undefined
+              : Date.now() + assistantSignal.retryAfterMs,
           provider: activeErrorContext.provider,
           model: activeErrorContext.model,
           profileId: runtime.lastProfileId,

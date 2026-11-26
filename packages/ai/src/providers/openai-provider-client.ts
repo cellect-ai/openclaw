@@ -50,6 +50,22 @@ export function createOpenAIProviderClient(
   });
 }
 
+export function createOpenAIResponsesClient(
+  model: Model,
+  apiKey: string,
+  defaultHeaders: ModelRequestHeaders,
+  fetchOverride?: typeof globalThis.fetch,
+) {
+  return new OpenAI({
+    apiKey,
+    baseURL: resolveOpenAIClientBaseUrl(model),
+    dangerouslyAllowBrowser: true,
+    defaultHeaders,
+    fetch: fetchOverride ?? buildGuardedModelFetch(model),
+    ...buildOpenAISdkClientOptions(model),
+  });
+}
+
 export function createAzureOpenAIClient(
   model: Model,
   apiKey: string,

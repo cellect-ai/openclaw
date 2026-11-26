@@ -1,4 +1,5 @@
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
+import { ToolInterruptedByUser } from "../../packages/agent-core/src/tool-interruption.js";
 import { resolveStateDir } from "../config/paths.js";
 import { createAbortError } from "../infra/abort-signal.js";
 import {
@@ -25,23 +26,28 @@ import { createDeferredCore } from "../shared/deferred.js";
 import { captureOpenClawStateReadWorkerContext } from "../state/openclaw-state-worker-context.js";
 import { bindAgentToolAvailability } from "./agent-tool-availability.js";
 import { captureAgentToolSourceExecutionGuard } from "./agent-tool-source-execution-guard.js";
+import { reserveServiceSlot } from "./bash-process-adopted.js";
+import { listActiveProcessSessionReferences } from "./bash-process-references.js";
 import { markBackgrounded } from "./bash-process-registry.js";
 import { describeExecTool } from "./bash-tools.descriptions.js";
 import { processGatewayAllowlist } from "./bash-tools.exec-host-gateway.js";
 import { executeNodeHostCommand } from "./bash-tools.exec-host-node.js";
 import { ExecProcessPreflightError } from "./bash-tools.exec-launch.js";
 import {
-  buildExecRuntimeErrorOutcome,
   buildBackgroundExecFollowUp,
+  buildExecRuntimeErrorOutcome,
+  MAX_EXEC_YIELD_MS,
 } from "./bash-tools.exec-output.js";
 import {
   assertSupportedExecParams,
+  assertDurableExecAvailable,
   createExecRequestPreparation,
   type ExecToolArgs,
   resolveExecPreparedRunEnvironment,
   resolveExecNotificationDefaults,
   resolvePreparedExecEnvironment,
 } from "./bash-tools.exec-request-preparation.js";
+import type { ExecToolApprovalReview, ExecToolDetails } from "./bash-tools.exec-result.types.js";
 import {
   DEFAULT_MAX_OUTPUT,
   DEFAULT_PENDING_MAX_OUTPUT,
@@ -59,18 +65,18 @@ import {
   buildExecForegroundResult,
   resolveExecReviewerDefaults,
 } from "./bash-tools.exec-support.js";
-import { resolveExecElevatedMode, resolveExecHost } from "./bash-tools.exec-target.js";
-import type {
-  ExecToolApprovalReview,
-  ExecToolDefaults,
-  ExecToolDetails,
-} from "./bash-tools.exec-types.js";
+import {
+  canInterruptExec,
+  resolveExecElevatedMode,
+  resolveExecHost,
+} from "./bash-tools.exec-target.js";
+import type { ExecToolDefaults } from "./bash-tools.exec-types.js";
 import { formatUnavailableWorkdirFailure, resolveExecWorkdir } from "./bash-tools.exec-workdir.js";
 import { createExecSchema, execSchema } from "./bash-tools.schemas.js";
 import { clampWithDefault, readEnvInt } from "./bash-tools.shared.js";
 import {
   createExecToolExecutionTimeoutResolver,
-  resolveExecDefaultTimeoutSec,
+  resolveExecTimeoutDefaults,
 } from "./exec-tool-timeout.js";
 import { resolveStoredSubagentCapabilities } from "./subagents/spawn/subagent-capabilities.js";
 import { withPreparedSessionCapabilityRead } from "./subagents/spawn/subagent-session-store.js";
@@ -122,36 +128,13 @@ export function createExecTool(defaults?: ExecToolDefaults) {
     defaults?.backgroundMs ?? readEnvInt("OPENCLAW_BASH_YIELD_MS", "PI_BASH_YIELD_MS"),
     10_000,
     10,
-    120_000,
+    MAX_EXEC_YIELD_MS,
   );
   const backgroundAvailable =
     defaults?.processToolAvailabilityRef?.value ?? defaults?.allowBackground ?? true;
-  const defaultTimeoutSec = resolveExecDefaultTimeoutSec(defaults?.timeoutSec);
+  const [defaultTimeoutSec, serviceTimeoutSec] = resolveExecTimeoutDefaults(defaults);
   const defaultPathPrepend = normalizePathPrepend(defaults?.pathPrepend);
-  const {
-    safeBins,
-    safeBinProfiles,
-    trustedSafeBinDirs,
-    unprofiledSafeBins,
-    unprofiledInterpreterSafeBins,
-  } = resolveExecSafeBinRuntimePolicy({
-    local: {
-      safeBins: defaults?.safeBins,
-      safeBinTrustedDirs: defaults?.safeBinTrustedDirs,
-      safeBinProfiles: defaults?.safeBinProfiles,
-    },
-    onWarning: logInfo,
-  });
-  if (unprofiledSafeBins.length > 0) {
-    logInfo(
-      `exec: ignoring unprofiled safeBins entries (${unprofiledSafeBins.toSorted().join(", ")}); use allowlist or define tools.exec.safeBinProfiles.<bin>`,
-    );
-  }
-  if (unprofiledInterpreterSafeBins.length > 0) {
-    logInfo(
-      `exec: interpreter/runtime binaries in safeBins (${unprofiledInterpreterSafeBins.join(", ")}) are unsafe without explicit hardened profiles; prefer allowlist entries`,
-    );
-  }
+  let safeBinPolicy: ReturnType<typeof resolveExecSafeBinRuntimePolicy> | undefined;
   const {
     notifyOnExit,
     notifyOnExitEmptySuccess,
@@ -159,26 +142,13 @@ export function createExecTool(defaults?: ExecToolDefaults) {
     resolveSubagentSession,
     notifyDeliveryContext,
   } = resolveExecNotificationDefaults(defaults);
+  const durableNotifications = { notifyOnExit, notifyOnExitEmptySuccess };
   const approvalRunningNoticeMs = resolveApprovalRunningNoticeMs(defaults?.approvalRunningNoticeMs);
   // Derive agentId only when sessionKey is an agent session key.
   const parsedAgentSession = parseAgentSessionKey(defaults?.sessionKey);
   const agentId =
     defaults?.agentId ??
     (parsedAgentSession ? resolveAgentIdFromSessionKey(defaults?.sessionKey) : undefined);
-  const buildUnavailableWorkdirResult = (params: {
-    cwd: string;
-    startedAt?: number;
-    warningText?: string;
-  }) =>
-    buildExecForegroundResult({
-      outcome: buildExecRuntimeErrorOutcome({
-        error: formatUnavailableWorkdirFailure(params.cwd),
-        aggregated: "",
-        durationMs: params.startedAt ? Date.now() - params.startedAt : 0,
-      }),
-      cwd: params.cwd,
-      warningText: params.warningText,
-    });
   const requestPreparation = createExecRequestPreparation({
     defaults,
     agentId,
@@ -195,6 +165,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
       });
     },
     parameters: createExecSchema(defaults),
+    interruptible: (args) => canInterruptExec(args, defaults),
     getExecutionTimeoutMs: createExecToolExecutionTimeoutResolver(defaults),
     prepareBeforeToolCallParams: requestPreparation.prepareBeforeToolCallParams,
     finalizeBeforeToolCallParams: requestPreparation.finalizeBeforeToolCallParams,
@@ -203,6 +174,28 @@ export function createExecTool(defaults?: ExecToolDefaults) {
       const approvalTransport = defaults?.createApprovalTransport?.(toolCallId, signal);
       const assertSourceActive = captureAgentToolSourceExecutionGuard(signal);
       assertSupportedExecParams(args);
+      const { safeBins, safeBinProfiles, trustedSafeBinDirs } = await (safeBinPolicy ??=
+        resolveExecSafeBinRuntimePolicy({
+          local: {
+            safeBins: defaults?.safeBins,
+            safeBinTrustedDirs: defaults?.safeBinTrustedDirs,
+            safeBinProfiles: defaults?.safeBinProfiles,
+          },
+          onWarning: logInfo,
+        }).then((policy) => {
+          if (policy.unprofiledSafeBins.length > 0) {
+            logInfo(
+              `exec: ignoring unprofiled safeBins entries (${policy.unprofiledSafeBins.join(", ")}); use allowlist or define tools.exec.safeBinProfiles.<bin>`,
+            );
+          }
+          if (policy.unprofiledInterpreterSafeBins.length > 0) {
+            logInfo(
+              `exec: interpreter/runtime binaries in safeBins (${policy.unprofiledInterpreterSafeBins.join(", ")}) are unsafe without explicit hardened profiles; prefer allowlist entries`,
+            );
+          }
+          return policy;
+        }));
+      assertSourceActive();
       // Capture settings and cancellation per execution; unused reviewers must not load model runtime.
       let autoReviewer: ExecAutoReviewer | undefined = defaults?.autoReviewer;
       if (!autoReviewer) {
@@ -249,7 +242,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
               params.yieldMs ?? defaultBackgroundMs,
               defaultBackgroundMs,
               10,
-              120_000,
+              MAX_EXEC_YIELD_MS,
             )
         : null;
       const elevatedDefaults = defaults?.elevated;
@@ -285,6 +278,11 @@ export function createExecTool(defaults?: ExecToolDefaults) {
         );
       }
       const host = resolveExecHost(params, defaults);
+      assertDurableExecAvailable(params, host, allowBackground);
+      // host=node ignores background and runs synchronously: it keeps ordinary timeouts.
+      const startsService = allowBackground && params.background === true && host !== "node";
+      // Hold a service slot through approval and startup; a running session then counts itself.
+      using _ = reserveServiceSlot(defaults?.scopeKey, startsService);
       const foregroundFallbackWarning =
         (host === "node" || !backgroundAvailable) &&
         (params.background === true || typeof params.yieldMs === "number")
@@ -368,9 +366,13 @@ export function createExecTool(defaults?: ExecToolDefaults) {
               sandbox,
             });
       if (workdirResolution.kind === "unavailable") {
-        return buildUnavailableWorkdirResult({
+        return buildExecForegroundResult({
+          outcome: buildExecRuntimeErrorOutcome({
+            error: formatUnavailableWorkdirFailure(workdirResolution.requestedCwd),
+            aggregated: "",
+            durationMs: Date.now() - startedAt,
+          }),
           cwd: workdirResolution.requestedCwd,
-          startedAt,
           warningText: warnings.join("\n"),
         });
       }
@@ -398,7 +400,6 @@ export function createExecTool(defaults?: ExecToolDefaults) {
       }
       let run: ExecProcessHandle;
       let settled = false;
-      const effectiveTimeout = params.timeoutSeconds ?? defaultTimeoutSec;
       try {
         if (elevatedRequested) {
           logInfo("exec: elevated command");
@@ -413,23 +414,21 @@ export function createExecTool(defaults?: ExecToolDefaults) {
         const storeEnv = await resolveStoreEnv();
         const subagentExecution = await resolveSubagentExecution();
         assertSourceActive();
-        // The proxy is loopback-owned by the Gateway. Sandbox and node hosts
-        // cannot use its sentinels, so both sides of the contract stay absent.
-        const useSecretEgress = secretEgressEnabled && host === "gateway";
-        if (useSecretEgress) {
-          if (!defaults?.operationalRunInstance) {
-            throw new Error("Secret egress proxy requires an admitted agent run instance");
-          }
-          assertSourceActive();
+        const storeBindings = storeEnv.secretEgressBindings ?? [];
+        const useSecretEgress = secretEgressEnabled && host === "gateway" && !params.durable;
+        const secretEgressBindings = useSecretEgress ? storeBindings : undefined;
+        if (secretEgressEnabled && params.durable && storeBindings.length) {
+          warnings.push(
+            `Durable execution starts without ${storeBindings.length} secret-store credential${storeBindings.length === 1 ? "" : "s"}: secret-egress grants end when the Gateway restarts. Use the managed GitHub identity, the command's own configuration, or non-durable background execution for commands that need them.`,
+          );
         }
-        const secretEgressBindings = useSecretEgress
-          ? (storeEnv.secretEgressBindings ?? [])
-          : undefined;
+        if (useSecretEgress && !defaults?.operationalRunInstance) {
+          throw new Error("Secret egress proxy requires an admitted agent run instance");
+        }
         const { env, requestedEnv, executionContext } = resolvePreparedExecEnvironment({
           execParams: params,
           host,
           sandbox,
-          containerWorkdir,
           channelContext: defaults?.channelContext,
           subagentExecution,
           defaultPathPrepend,
@@ -437,6 +436,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           storeEnv: host === "gateway" ? storeEnv.env : undefined,
           storeSecretEnv: useSecretEgress ? storeEnv.secretSentinels : undefined,
           ...preparedRunEnvironment,
+          scratchEnv: await requestPreparation.prepareScratchEnv(host),
           warnings,
         });
 
@@ -454,7 +454,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           nonInteractiveApproval: defaults?.nonInteractiveApproval,
           approvalFollowupMode: defaults?.approvalFollowupMode,
           turnSourceChannel: defaults?.messageProvider,
-          turnSourceTo: defaults?.currentChannelId,
+          turnSourceTo: defaults?.currentMessagingTarget ?? defaults?.currentChannelId,
           turnSourceAccountId: defaults?.accountId,
           turnSourceThreadId: defaults?.currentThreadTs,
           agentId,
@@ -468,7 +468,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           commandHighlighting: defaults?.commandHighlighting,
           trigger: defaults?.trigger,
           timeoutSec: params.timeoutSeconds,
-          defaultTimeoutSec,
+          defaultTimeoutSec: startsService ? (serviceTimeoutSec(false) ?? 0) : defaultTimeoutSec,
           approvalRunningNoticeMs,
           warnings,
           notifySessionKey,
@@ -503,6 +503,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
             ...hostApprovalParams(),
             workdir,
             secretEgressBindings,
+            durable: params.durable ? durableNotifications : undefined,
             githubProfileDir,
             pathPrepend: defaultPathPrepend,
             pty: params.pty === true && !sandbox,
@@ -560,6 +561,8 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           workdir,
           env,
           secretEgressBindings,
+          durable: params.durable ? durableNotifications : undefined,
+          sessionId: defaults?.sessionId,
           githubProfileDir,
           pathPrepend: defaultPathPrepend,
           sandbox,
@@ -571,15 +574,19 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           cleanupMs,
           notifyOnExit,
           subagentSession,
+          sessionsYieldAvailable: defaults?.sessionsYieldAvailabilityRef?.value === true,
           notifyOnExitEmptySuccess,
           requestOwners: params.background === true ? undefined : requestOwners,
+          independentService: params.background === true,
           scopeKey: defaults?.scopeKey,
           sessionKey: notifySessionKey,
           agentId,
           eventRouting: defaults?.eventRouting,
           notifyDeliveryContext,
           ...requestPreparation.executionCustody(params, toolCallId, hookContext),
-          timeoutSec: effectiveTimeout,
+          timeoutSec:
+            params.timeoutSeconds ??
+            (startsService ? serviceTimeoutSec(subagentSession) : defaultTimeoutSec),
           processContinuationAvailable: allowBackground,
           startupSignal: signal,
           onUpdate,
@@ -592,8 +599,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
             settled = true;
           },
         });
-        // Completion wakes need the backgrounding below, so this precedes any wake.
-        run.session.originRunId = defaults?.runId;
+        run.session.startedByRunId = defaults?.runId;
         discardPreparedSandboxWorkdir = null;
       } catch (error) {
         gatewayApproval?.releaseSpawn?.();
@@ -601,7 +607,6 @@ export function createExecTool(defaults?: ExecToolDefaults) {
         return attachExecApprovalReview(ExecProcessPreflightError.unwrap(error), approvalReview);
       }
 
-      const backgroundFollowUp = buildBackgroundExecFollowUp(run.session, params.yieldMs, []);
       let yielded = false;
       let yieldTimer: NodeJS.Timeout | null = null;
       let registeredAbortSignal: AbortSignal | null = null;
@@ -680,9 +685,18 @@ export function createExecTool(defaults?: ExecToolDefaults) {
           }
         }
         const completed = await result;
-        if (toolAborted) {
+        if (toolAborted && !(signal?.reason instanceof ToolInterruptedByUser)) {
           throw createAbortError("Tool execution was aborted", { cause: signal?.reason });
         }
+        // Waiters started earlier in this turn are not in the turn-start snapshot.
+        const otherRunning = listActiveProcessSessionReferences({ scopeKey: run.session.scopeKey })
+          .filter((other) => other.sessionId !== run.session.id)
+          .map((other) => `${other.sessionId} (${other.name})`);
+        const backgroundFollowUp = buildBackgroundExecFollowUp(
+          run.session,
+          params.yieldMs,
+          otherRunning,
+        );
         const deadlineAtMs = run.session.processActivity?.deadlineAtMs;
         const deadline =
           deadlineAtMs === undefined
@@ -694,8 +708,7 @@ export function createExecTool(defaults?: ExecToolDefaults) {
                 outcome: completed.outcome,
                 cwd: run.session.cwd,
                 warningText: getWarningText(),
-                aggregateOutputDropped:
-                  run.session.totalOutputChars > run.session.aggregated.length,
+                session: run.session,
               })
             : {
                 content: [

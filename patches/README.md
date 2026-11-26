@@ -2,6 +2,40 @@
 
 Keep existing insertion anchors when extending these patches: pnpm 12 can apply a zero-context, zero-length insertion one line early. After regeneration and installation, verify installed files against the patch's target blob hashes before testing.
 
+`acorn@8.19.0` has an approved optional-member token-context patch. Keywords
+and contextual names (`of` and generator `yield`) after `?.` end a property
+access, just as after `.`, so a following slash remains division. Both published
+module formats are regenerated from upstream commit
+`0e0ece7cc7202624d4aca531be4b515b0114b5d0`. In `acorn/src/tokencontext.js`,
+extend the keyword property's `tt.dot` condition to `tt.questionDot`, and exclude
+`tt.questionDot` alongside `tt.dot` in `tt.name.updateContext`. In
+`acorn/src/expression.js`, keep `parseIdentNode` from popping a `class`/`function`
+context after either member operator, since neither now pushes one. Run upstream's
+`npm run build:main` with its locked Rollup 4.60.1 and
+`@rollup/plugin-buble@1.0.3`, copy the two generated runtime files into a
+`pnpm patch acorn@8.19.0` edit directory, then use `pnpm patch-commit`.
+The unmodified build reproduces the published runtime hashes below exactly.
+
+The published integrity is
+`sha512-oJlA3XiRm7Cyk6qFD2Jn8ak9B7jSy0qy00ADO3+8dpT0LSjFihQYv4C02LFCSYJV3Q37xYwwRy5m+IpIiUzqWw==`;
+the patch SHA-256 is
+`2abf815a7e66bb39548d0a14081a6fde06f22eb1f6b5bd5f242d4c11a66db77a`.
+
+| Target | Published SHA-256 | Patched SHA-256 |
+| --- | --- | --- |
+| `dist/acorn.js` | `b95392d79457d0357555c5ed3e56302d074b92dff119bcf3b44179500b10e9df` | `31913109325741386772ce3470877ba1ecc3d0ffb95211e34cab7c9a504c8543` |
+| `dist/acorn.mjs` | `76254fc76529713b4dfd2532972d17a991ffd9aafeebb1f977445b5506b9fb0b` | `d6ec452ae1a66ac40815ddf44bb88d0c46389c14cc0d48766772f0f058a02451` |
+
+The root package bundles Acorn so npm installations retain the patched runtime.
+Codex explicitly bundles only Acorn while retaining its native-heavy full-closure
+opt-out; the shared npm/ClawHub packaging owner preserves that selected patch.
+Remove this patch, its registration, Acorn bundle entries, and exact-version guard when
+an upstream release passes `src/agents/code-mode-engine-parity.test.ts` and the
+existing syntax/module-access controls without the patch. Upstream commit
+`e4516ce0f49aea06b98ae1a551644119958ed4e1` still has both ordinary-dot-only guards.
+Acorn's contribution policy excludes AI-written code; do not submit this patch
+upstream as a generated contribution.
+
 `@solidjs/web@2.0.0-rc.18` has an approved retention patch in its production,
 development, and observe browser builds. The lazy select-insertion callback is
 declared at module scope so it cannot retain the first value-bound select through
@@ -44,11 +78,11 @@ The root package bundles this patched dependency so npm installations preserve t
 
 Remove the noVNC patch, its registration, and its exact-version guard exception when an upstream version passes the Desktop panel and document browser suites (`test/vitest/vitest.ui-e2e.config.ts`) and the live view-only selection/type stress check. The regression uses the real noVNC parser, covers coalesced and fragmented payload delivery, and requires the next framebuffer update without a reconnect.
 
-`matrix-js-sdk@43.0.0` has an approved temporary patch for saved-sync verification replay. Classic sync propagates its existing cache provenance through ordinary client events, and the crypto listener ignores restored events. This preserves room history, sync cursors, ordinary event listeners, fresh verification events, and to-device processing while preventing cached verification requests from restarting after a clean client shutdown. Version 43.0.0 still routes restored events into crypto, so the patch remains necessary.
+`matrix-js-sdk@44.0.0` has an approved temporary patch for saved-sync verification replay. Classic sync propagates its existing cache provenance through ordinary client events, and the crypto listener ignores restored events. This preserves room history, sync cursors, ordinary event listeners, fresh verification events, and to-device processing while preventing cached verification requests from restarting after a clean client shutdown. Version 44.0.0 still routes restored events into crypto, so the patch remains necessary.
 
-The published integrity is `sha512-d2w/VPJoMgE9g015sAsHFqODe+B7KJ8zdm077i8luKTwG4PQrchCd74r65IiPqR5t97ZYz/8FZyujvamgB/7qQ==`; the patch SHA-256 is `c8c41f4878fd28f84cb35e69f77273b87dc8691c05e3ca25fd2cd054c0d38a09`.
+The published integrity is `sha512-5wjcYMIX1aqhJC9hSUGjfSW+7SWEaLC8NUaek0xH5KGXqAO11M4Z5Mk7Voodsk+16Jm9PYB8/wMtyqIKFm0VAQ==`; the patch SHA-256 is `c3ad7f3afbd9ded4643fbfa31f5862d48d4e05d198cb438efbb4fcdaa845b0cc`.
 
-Remove the Matrix patch, its registration, and its exact-version guard exception when an upstream release passes `node scripts/run-vitest.mjs extensions/matrix/src/matrix/sdk/matrix-js-sdk-patch.sdk.test.ts` and the full Matrix QA catalog, including the original DM SAS-to-QR sequence. The two installed-SDK regression tests verify that request deadlines are unreferenced and that a rejected in-room verification handler is reported instead of becoming an unhandled rejection. They do not prove SQLite sync-store hydration, saved-sync replay, or native DM verification; those validation gaps remain until the corresponding Matrix QA proof is completed.
+Remove the Matrix patch, its registration, and its exact-version guard exception when an upstream release passes `node scripts/run-vitest.mjs extensions/matrix/src/matrix/client/file-sync-store.test.ts` and the full Matrix QA catalog, including the original DM SAS-to-QR sequence. The regression exercises the real SQLite sync store, SDK cache hydration, and crypto event wiring; it observes crypto input rather than substituting for native verification proof.
 
 `vitest@5.0.5` has one approved exact-version pnpm patch. Vitest 5 bundles the
 runner, and `@vitest/runner@5.0.0` is not published, so no standalone runner
@@ -217,9 +251,9 @@ Upstream follow-up: offer the native-source-map entry and per-responder logger t
 [homebridge/ciao](https://github.com/homebridge/ciao). Remove the patch and its
 registration when an upstream release supports both contracts and passes
 `extensions/bonjour/src/ciao-runtime.test.ts` and `advertiser.test.ts` without the
-patch. The root and Bonjour plugin packages bundle the patched dependency so npm
-installs and installed plugin artifacts retain the same entry and logger behavior
-as source installs.
+patch. The root and Bonjour packages bundle the patched dependency so npm installs
+and installed plugin artifacts retain the same entry and logger behavior as source
+installs.
 
 `proper-lockfile@4.1.2`, used by Crabline's recorder, uses native `node:fs` and
 installs its own exit/signal listeners only while locks are held. Importing it
@@ -269,79 +303,3 @@ Upstream follow-up: port the generated fixed checks and request-scoped compiler
 hook to [openclaw/lobster](https://github.com/openclaw/lobster), then remove this
 patch and its exact-version guard when a published version passes the Lobster
 runner validation suite and the AOT/codegen-ban probe without the patch.
-
-## Zod 3.25.76 early collection bounds
-
-zod@3.25.76.patch is a local Zod-3 adaptation of the early upper-size rejection
-behavior in Colin McDonnell's upstream Zod commit
-a0ebf970f2d752e5f58527cd2942ff48be4f46bd (colinhacks/zod#6652).
-It is not an upstream Zod-3 release, a cherry-pick, or an A2UI/Zod-4 migration.
-The implementation changes three branches in each of src/v3/types.ts,
-v3/types.js, and v3/types.cjs: oversized array max/exact length and set max
-return the existing aborted result before visiting elements. Set exact size
-already delegates to max/min. No declaration, export, A2UI source, license or
-Zod-4 implementation is replaced.
-
-This mitigates collection traversal only where an upper bound is declared.
-A2UI was retired from this branch by #182109; do not restore it for this fix.
-The remaining Zod 3 graph is resolved through the Discord SDK, while the
-SDK's separately embedded parser requires its own patch. This does
-not add protocol-wide message limits or protect unbounded arrays.
-
-An oversized collection now aborts instead of returning dirty: element and
-outer refinements do not run, and a failing union may report invalid_union
-instead of the dirty branch's too_big. Valid transforms, preprocessing,
-lower-bound failures and wrong-type rejection are covered by regressions.
-The exact-version patch affects consumers resolving the Zod 3.25.76 v3
-implementation. In this graph, zod-to-json-schema resolves Zod 4 and is not
-affected. The separate parser embedded in Discord's SDK and the package's v4
-subpath are not changed. No global advisory clearance is claimed. Keep source attribution and original copyright notices intact.
-
-Run node --test test/scripts/zod3-bounds.regression.mjs and
-node scripts/run-vitest.mjs test/scripts/discord-sdk-zod.test.ts.
-
-The package-patch guard registers only zod@3.25.76 at
-patches/zod@3.25.76.patch. Other versions, paths and package-local patch
-registrations remain rejected; no guard or blanket exception is disabled.
-Remove this registration and patch when a maintained upstream release retains
-Zod 3 public contracts and passes the same baseline/fixed Zod regressions,
-public declaration checks and Canvas bundle checks. Independent full-context
-review and required hosted checks still gate readiness.
-
-Patch SHA-256: 2f14d2000a3645bf519c1a1cc4848a71d55185327a9a976a4f033e7d507b727d
-
-`@discord/embedded-app-sdk@2.5.0` vendors Zod 3 in both `output/lib/zod/lib/index.mjs`
-and `index.cjs`; changing the separately installed Zod package does not repair
-the browser SDK. This patch is a local Zod-3 adaptation of the early upper-size
-guard in Colin McDonnell's upstream Zod commit
-`a0ebf970f2d752e5f58527cd2942ff48be4f46bd`
-([colinhacks/zod#6652](https://github.com/colinhacks/zod/pull/6652)), referenced by
-[GHSA-mrhx-c7xc-m3w5](https://github.com/advisories/GHSA-mrhx-c7xc-m3w5).
-It is not a cherry-pick, a Zod version upgrade, or a claim that all installed
-Zod copies are fixed. Only the bundled array `.max()` / oversized `.length()`
-and set `.max()` / oversized `.size()` branches change: return the existing
-invalid result before iterating elements or invoking outer refinements.
-The bundled Zod-3 map API has no upper-size constraint. Valid values, lower
-limits, individual bound messages, enum fallback handling, declarations, and
-exports stay on the existing API. Early rejection intentionally omits element
-and refinement issues; unions may report an `invalid_union` wrapper rather than
-the previous direct bound issue.
-
-As checked on 2026-10-29, the maintained SDK stable release is still 2.5.0 and
-3.0.0-beta.3 still depends on Zod 3. Upstream's Zod-4 migration
-([discord/embedded-app-sdk#318](https://github.com/discord/embedded-app-sdk/pull/318),
-authored by `renovate-bot`, head `81e49dfa871e935641d9b9591ed789e837dc89e1`)
-is open, not an available compatible stable fix. This six-branch adapter avoids
-replacing the entire embedded parser and changing the public schema major.
-Remove the patch and its exact-version registration when a published SDK
-passes `test/scripts/discord-sdk-zod.test.ts` without it, including the
-production browser build. Keep the root dependency-advisory disposition
-separate; this patch deliberately does not suppress audit findings.
-
-The patch SHA-256 is
-`016b529034315344702f9c7ac79ce5538b0934cf55381229946597b54343fdfd`.
-
-| Target | Published SHA-256 | Patched SHA-256 |
-| --- | --- | --- |
-| `output/lib/zod/lib/index.mjs` | `3030e5b032805870bb4a8674e36fd916885552832e52c6a0f2465a929ecec231` | `c520fe1f39ce21e24425fdfc49ab7905e23a2be049450eb549649ef87faabe75` |
-| `output/lib/zod/lib/index.cjs` | `feb2389d716ac303c1e7df76df1d7c4c4d7fb35d5aef3456d43718b68cf46aa1` | `a7ad12c2c2f0cf5b5435d7b4232f4c78adc19812ec9c4ddada333518e06cd92a` |

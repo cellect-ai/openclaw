@@ -171,7 +171,8 @@ are rejected; they do not suppress validation of later options.
 
 A schema-valid but unset authorable path explains that the runtime default applies and suggests
 `openclaw config set`. For automatically managed metadata, such as `meta.lastTouchedVersion`,
-`meta.migrations.modelPolicyAllowlist`, and `meta.migrations.utilityModelSeparation`, the message
+`meta.migrations.modelPolicyAllowlist`, `meta.migrations.utilityModelSeparation`,
+`meta.migrations.skillWorkshopPlugin`, and `meta.migrations.skillLibraryToolSplit`, the message
 instead explains that OpenClaw manages the values on config writes. Reading their unset parent
 paths (`meta` or `meta.migrations`) gives the same explanation, not a refused set command.
 An unknown path suggests `openclaw config schema`. With `--json`, unset and unknown paths use
@@ -384,6 +385,8 @@ Batch parsing always uses the batch payload (`--batch-json`/`--batch-file`) as t
 
 Supplying either batch option selects batch mode. Empty or whitespace-only values are rejected; omit both options to use positional `<path> <value>` mode.
 
+Supplying any `--ref-*` or `--provider-*` option selects that builder mode, even when its value is empty. Builder modes do not accept a positional `<value>`; omit builder options to use value mode.
+
 `--batch-file` and `config patch --file` use the exact file path you provide, including leading or trailing spaces. Quote paths that contain spaces in your shell.
 
 Batch assignments apply in order, then validation checks the final config. A SecretRef replaced by a later assignment is not resolved or counted in dry-run output, even with `--allow-exec`. Providers that remain in a changed provider collection still receive command-path trust checks.
@@ -426,7 +429,7 @@ Provider builder targets must use `secrets.providers.<alias>` as the path.
     - `--provider-no-output-timeout-ms <ms>`
     - `--provider-max-output-bytes <bytes>`
     - `--provider-json-only`
-    - `--provider-env <KEY=VALUE>` (repeatable)
+    - `--provider-env <KEY=VALUE>` (repeatable; keys `__proto__`, `constructor`, and `prototype` are reserved)
     - `--provider-pass-env <ENV_VAR>` (repeatable)
     - `--provider-trusted-dir <path>` (repeatable)
 
@@ -706,6 +709,23 @@ openclaw config validate
 ```
 
 Direct editor writes are still allowed, but the running Gateway treats them as untrusted until they validate. Startup validates config without rewriting legacy keys. Invalid direct edits stop startup; hot reload skips invalid edits without rewriting `openclaw.json`. Run `openclaw doctor --fix` for legacy-key repair, prefixed/clobbered config, or last-known-good recovery. See [Gateway troubleshooting](/gateway/troubleshooting#gateway-rejected-invalid-config).
+
+### Agent-assisted recovery
+
+The agent's `openclaw` tool accepts exact config commands in its `message`, including
+`config set <path> <value>`, `config unset <path>`, `config get <path>`,
+`config schema <path>`, and `config validate`. These commands use the existing config
+executor and approval checks without requiring a working setup-helper model.
+Natural-language setup requests still require working inference. A permission-policy
+change still requires its exact human approval; a helper outage does not grant it.
+
+If broken config or an unavailable setup tool prevents an explicitly requested local
+repair, an agent may use its available file or exec tools under their existing
+permissions. Prefer validated CLI edits. If the CLI cannot load the config, inspect
+the actual file, preserve a rollback copy, make the narrow repair, then validate and
+read back. This is not a way to override an approval decision, readonly config,
+containment, or disabled tools, or to change access, approval, or ownership policies.
+Gateway updates, restarts, and service control still use supervised maintenance.
 
 Ordinary recovery can restore an eligible, valid current backup verbatim. Backups that need legacy transformations must be recovered through Doctor. Plugin schema changes or `minHostVersion` skew stay loud instead of rolling back unrelated user settings such as models, providers, auth profiles, channels, gateway exposure, tools, memory, browser, or cron config.
 

@@ -98,7 +98,7 @@ it.each(["wrapped", "adapted"] as const)(
     const execute = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "ok" }] });
     const selectedTool = { name: "diffs", execute } as unknown as AnyAgentTool;
     setPluginToolMeta(selectedTool, { pluginId: "diffs", optional: false });
-    const context = { agentId: "main", sessionKey: "main", loopDetection: { enabled: false } };
+    const context = { agentId: "main", sessionKey: "main" };
     if (path === "wrapped") {
       await wrapToolWithBeforeToolCallHook(selectedTool, context).execute("call-diffs", {});
     } else {
@@ -258,7 +258,6 @@ it.each([
       await wrapToolWithBeforeToolCallHook(selectedTool, {
         agentId: "main",
         sessionKey: "main",
-        loopDetection: { enabled: false },
       }).execute("call-business", {}, undefined, undefined);
     });
     expect(observed?.approvalOrigin).toBe(expected ? "plugin" : undefined);

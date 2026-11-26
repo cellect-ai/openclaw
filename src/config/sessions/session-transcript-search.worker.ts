@@ -1,7 +1,9 @@
-import { sql, type Compilable, type InferResult } from "kysely";
+import { expressionBuilder, sql, type Compilable, type InferResult } from "kysely";
 import { admitStoreSearch } from "../../infra/database-engine/adapters.js";
 import { DatabaseSearchCapabilityUnavailableError } from "../../infra/database-engine/capability-unavailable.js";
 import { engineUnboundedRowLimit } from "../../infra/database-engine/row-limit.js";
+import { engineStringPosition } from "../../infra/database-engine/scalar.js";
+import { hasFullTextWordTokens } from "../../infra/database-engine/text-tokens.worker.js";
 import {
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
@@ -140,7 +142,7 @@ function* readSessionTranscriptSearch(
     throw new DatabaseSearchCapabilityUnavailableError("fullText", search.diagnostics.join("; "));
   }
   const textIndex = search.text.transcript!;
-  const literalQuery = sessionTranscriptSearchFtsQuery(query, params.match);
+  const fullQuery = sessionTranscriptSearchFtsQuery(query, params.match);
   const agentPrefix = toAgentStoreSessionKey({
     agentId: params.agentId,
     requestKey: "*",
@@ -190,10 +192,36 @@ function* readSessionTranscriptSearch(
         cold.select((eb) => eb.fn.countAll<number>().as("count")),
       )?.count ?? 0;
   }
+  let substringTerms: string[] = [];
   let hits: SessionTranscriptSearchResult["hits"];
-  {
+  do {
+    const literalQuery = {
+      ...fullQuery,
+      clauses: fullQuery.clauses.filter((clause) => !substringTerms.includes(clause.text)),
+    };
+    const useFts =
+      literalQuery.clauses.length > 0 &&
+      (substringTerms.length === 0 ||
+        hasFullTextWordTokens(
+          database.db,
+          literalQuery.clauses.map((clause) => clause.text).join(" "),
+        ));
     const ranking = fullText.rank(textIndex, literalQuery);
-    const match = fullText.match(textIndex, literalQuery);
+    const expression = expressionBuilder<DB, "session_transcript_fts">();
+    const match = expression.and([
+      ...(useFts ? [fullText.match(textIndex, literalQuery)] : []),
+      ...substringTerms.map((term) =>
+        expression(
+          engineStringPosition(
+            database.db,
+            expression.fn<string>("lower", ["text"]),
+            expression.val(term.toLowerCase()),
+          ),
+          ">",
+          0,
+        ),
+      ),
+    ]);
     const order =
       params.order === "recent"
         ? sql`session_transcript_fts.timestamp desc, fts_rowid desc`
@@ -203,11 +231,18 @@ function* readSessionTranscriptSearch(
     // are excluded: their rows may still hold rewound-away branch text that
     // sessions_history no longer exposes, so they stay hidden until reconcile
     // rebuilds them (indexing=true tells the caller to retry).
-    // MATCH drives indexed reads before message metadata is decoded.
-    const candidates = db
-      .selectFrom("session_transcript_fts")
-      .crossJoin("session_transcript_fts_rows as mapped")
-      .crossJoin(selectedWindows.as("window"))
+    // MATCH drives indexed reads; substring scans scope map rows before reading text.
+    const candidates = (
+      useFts
+        ? db
+            .selectFrom("session_transcript_fts")
+            .crossJoin("session_transcript_fts_rows as mapped")
+            .crossJoin(selectedWindows.as("window"))
+        : db
+            .selectFrom("session_transcript_fts_rows as mapped")
+            .crossJoin(selectedWindows.as("window"))
+            .crossJoin("session_transcript_fts")
+    )
       .where("mapped.id", "=", fullText.identity(textIndex))
       .whereRef("window.session_id", "=", "mapped.session_id")
       .where(match)
@@ -238,7 +273,8 @@ function* readSessionTranscriptSearch(
       .select([
         "window.session_key",
         fullText.identity(textIndex).as("fts_rowid"),
-        ranking.value.as("rank"),
+        // A numeric literal keeps PostgreSQL's fallback score numeric; an untyped bind returns text.
+        useFts ? ranking.value.as("rank") : sql.lit(0).as("rank"),
       ]);
     const ordered = candidates
       .select([
@@ -247,13 +283,17 @@ function* readSessionTranscriptSearch(
         "session_transcript_fts.role",
         "session_transcript_fts.timestamp",
       ])
-      .orderBy(order)
-      .orderBy(fullText.identity(textIndex));
-    const snippet = fullText.snippet(textIndex, "text", 48, literalQuery).as("snippet");
+      .$if(useFts || postgres, (builder) =>
+        builder.orderBy(order).orderBy(fullText.identity(textIndex)),
+      );
+    const snippet = substringTerms.length
+      ? expression.ref("text").as("snippet")
+      : fullText.snippet(textIndex, "text", 48, literalQuery).as("snippet");
     const stream =
-      filtered && !isPostgresSqlConnection(database.db)
+      filtered && !postgres && useFts && substringTerms.length === 0
         ? db
-            // OFFSET prevents flattening, so snippets are evaluated only for consumed hits.
+            // OFFSET prevents flattening: SQLite sorts metadata in a coroutine,
+            // then computes snippets only as the visibility cursor consumes hits.
             .selectFrom(ordered.limit(engineUnboundedRowLimit(database.db)).offset(0).as("ordered"))
             .crossJoin("session_transcript_fts")
             .where((eb) => eb(fullText.identity(textIndex), "=", eb.ref("ordered.fts_rowid")))
@@ -280,7 +320,7 @@ function* readSessionTranscriptSearch(
         messageId: row.message_id,
         role: row.role,
         timestamp: Number.isFinite(timestamp) ? timestamp : 0,
-        snippet: boundSessionTranscriptSearchSnippet(row.snippet),
+        snippet: boundSessionTranscriptSearchSnippet(row.snippet, substringTerms[0]),
         score: ranking.toRank(row.rank),
       };
     };
@@ -303,7 +343,10 @@ function* readSessionTranscriptSearch(
           }
         }
       }
-      // Retain one authorization batch and limit+1 ordered hits, independent of corpus size.
+      // Short-CJK substring fallback must finish one text pass even after finding hits:
+      // timestamps are unindexed, so later rows can enter the exact newest-first top-N.
+      // Only one authorization batch and limit+1 ordered hits are retained (the extra hit
+      // preserves truncated); insertion keeps memory bounded independently of corpus size.
       for (const row of iterateRows(stream)) {
         const hit = decode(row);
         if (!hit) {
@@ -311,6 +354,7 @@ function* readSessionTranscriptSearch(
         }
         const last = hits[limit];
         if (
+          (useFts || postgres) &&
           last &&
           (hit.score < last.score || (hit.score === last.score && hit.timestamp < last.timestamp))
         ) {
@@ -327,7 +371,7 @@ function* readSessionTranscriptSearch(
       }
     } else {
       const selectedHits =
-        params.order === "recent"
+        params.order === "recent" || !useFts
           ? candidates.orderBy(order).limit(limit + 1)
           : db
               .with(
@@ -368,7 +412,9 @@ function* readSessionTranscriptSearch(
             "role",
             "timestamp",
             "hits.rank as rank",
-            fullText.snippet(textIndex, "text", 48, literalQuery).as("snippet"),
+            substringTerms.length
+              ? expression.ref("text").as("snippet")
+              : fullText.snippet(textIndex, "text", 48, literalQuery).as("snippet"),
           ])
           .orderBy(order),
       ).rows;
@@ -377,7 +423,17 @@ function* readSessionTranscriptSearch(
         return hit ? [hit] : [];
       });
     }
-  }
+    if (hits.length > 0 || substringTerms.length > 0) {
+      break;
+    }
+    // unicode61 cannot address interior CJK text. Retry only misses; changing
+    // the persisted tokenizer would rebuild every existing transcript index.
+    substringTerms = fullQuery.clauses
+      .map((clause) => clause.text)
+      .filter((term) =>
+        /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u.test(term),
+      );
+  } while (substringTerms.length > 0);
   return {
     found: true,
     hits: hits.slice(0, limit),

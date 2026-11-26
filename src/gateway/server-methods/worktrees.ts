@@ -16,7 +16,8 @@ import {
 } from "../../../packages/gateway-protocol/src/index.js";
 import { managedWorktrees, WorktreeSnapshotError } from "../../agents/worktrees/service.js";
 import type { ManagedWorktreeRecord } from "../../agents/worktrees/types.js";
-import { resolveRecordedProjectRoot } from "../../projects/project-registry.js";
+import { runGitReadOperation } from "../../infra/git-read-cache.js";
+import { resolveRecordedProjectByRoot } from "../../projects/project-registry.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
 import { requestGatewayWorktreeMaintenance } from "../worktree-maintenance.js";
 import {
@@ -93,7 +94,8 @@ async function resolveAuthorizedRepoRoot(
     opts.context.getRuntimeConfig(),
   );
   // A stored project row authorizes its canonical repo root for write-scoped clients.
-  const authorizedRoot = containment?.path ?? (await resolveRecordedProjectRoot(repoRoot));
+  const authorizedRoot =
+    containment?.path ?? (await resolveRecordedProjectByRoot(repoRoot))?.repoRoot;
   if (authorizedRoot) {
     return authorizedRoot;
   }
@@ -248,12 +250,37 @@ export const worktreesHandlers: GatewayRequestHandlers = {
     if (!repoRoot) {
       return;
     }
-    const result = params.includeRepositoryStatus
-      ? await managedWorktrees.listRepositoryBranches(repoRoot, {
-          includeRepositoryStatus: true,
-        })
-      : await managedWorktrees.listRepositoryBranches(repoRoot);
-    respond(true, result, undefined);
+    const cfg = opts.context.getRuntimeConfig();
+    const branches = runGitReadOperation(
+      {
+        type: "repository.branches",
+        input: { repoRoot, includeRepositoryStatus: params.includeRepositoryStatus },
+      },
+      {
+        snapshot: true,
+        signal: opts.signal,
+        onRefresh: () => {
+          if (
+            opts.client?.connId &&
+            opts.hasCurrentClientAuthority?.() !== false &&
+            opts.context.getRuntimeConfig() === cfg
+          ) {
+            opts.context.broadcastToConnIds(
+              "worktrees.branches.changed",
+              { repoRoot: params.repoRoot },
+              new Set([opts.client.connId]),
+            );
+          }
+        },
+      },
+    );
+    const [result, clone] = await Promise.all([
+      branches,
+      params.includeRepositoryStatus
+        ? resolveRecordedProjectByRoot(repoRoot, { source: "cloned" })
+        : undefined,
+    ]);
+    respond(true, clone ? { ...result, requiresWorktree: true } : result, undefined);
   }),
   "worktrees.gc": worktreeHandler(validateWorktreesGcParams, async (opts, params) => {
     const { respond, context } = opts;

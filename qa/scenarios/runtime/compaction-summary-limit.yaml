@@ -27,7 +27,7 @@ scenario:
     - docs/concepts/compaction.md
   codeRefs:
     - src/agents/agent-hooks/compaction-safeguard.ts
-    - src/agents/agent-hooks/compaction-safeguard-quality.ts
+    - src/agents/agent-hooks/compaction-safeguard-budget.ts
     - extensions/qa-lab/src/providers/mock-openai/mock-openai-compaction-summaries.ts
   execution:
     kind: flow
@@ -37,6 +37,7 @@ scenario:
       priorityMarker: QA-COMPACTION-SUMMARY-LIMIT
       bodyEndMarker: QA-SUMMARY-PRIORITY-BODY-END
       truncatedMarker: "[Compaction summary truncated to fit budget]"
+      omittedNote: more chars omitted at compaction
       finalMarker: QA-COMPACTION-PRIORITY-FINAL-OK
       summaryCap: 64000
 
@@ -122,9 +123,9 @@ flow:
             message:
               expr: "`generated summary body was cut: ${JSON.stringify({ length: summary.length, hasBodyEnd: summary.includes(config.bodyEndMarker), tail: summary.slice(-1200) })}`"
         - assert:
-            expr: "summary.includes('## Recent turns preserved verbatim') && summary.includes('Tool result (read)') && !summary.includes('t'.repeat(601))"
+            expr: "summary.includes('## Recent turns preserved verbatim') && summary.includes(config.omittedNote) && !summary.includes('t'.repeat(600))"
             message:
-              expr: "`preserved tool output did not retain the release excerpt bound: ${summary.slice(summary.indexOf('## Recent turns'), summary.indexOf('## Recent turns') + 1500)}`"
+              expr: "`preserved tool output was not excerpted: ${summary.slice(summary.indexOf('## Recent turns'), summary.indexOf('## Recent turns') + 1500)}`"
         - assert:
             expr: "String(transcript.finalText ?? '').trim() === config.finalMarker"
             message:

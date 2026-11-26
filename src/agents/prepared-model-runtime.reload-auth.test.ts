@@ -6,18 +6,18 @@ import {
 } from "./prepared-model-runtime.test-harness.js";
 import { isDeepStrictEqual } from "node:util";
 import { describe, expect, it, vi } from "vitest";
-import { createDeferred } from "../../test/helpers/promise.js";
+import { createDeferred, withinTest } from "../../test/helpers/promise.js";
 import { createChannelIngressDrainOwner } from "../channels/message/ingress-drain.js";
 import {
   createTestIngressQueue,
   withTempState,
 } from "../channels/message/ingress-drain.test-helpers.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import { PluginInstance } from "../plugins/plugin-instance.js";
-import { PluginInvocationScope } from "../plugins/plugin-invocation-scope.js";
+import { deferGatewayRestartUntilIdle } from "../infra/restart.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
 import { getPluginLoaderCacheState } from "../plugins/registry-lifecycle.js";
 import { createPluginRecord } from "../plugins/status.test-helpers.js";
+import { isGatewayRestartDraining } from "../process/gateway-work-admission.js";
 import {
   beginPreparedModelRuntimePluginDrain,
   acquireAgentRunPreparedModelRuntime,
@@ -129,67 +129,6 @@ function observePhases() {
 }
 
 describe("prepared model runtime reload auth adoption", () => {
-  it("owns queued auth publication after the emitting invocation closes", async () => {
-    await start();
-    const input = fixture.agentInput("default", {});
-    const original = await prepareModelRuntimeSnapshot(input);
-    const instance = new PluginInstance("auth-publication-fixture");
-    const invocation = new PluginInvocationScope(createEmptyPluginRegistry(), [instance]);
-    const credentialDiscovery = vi.fn(() => ({}));
-    const discoverCredentials = instance.wrap(credentialDiscovery);
-    const retainedCallback = invocation.wrap(discoverCredentials);
-    const drain = beginPreparedModelRuntimePluginDrain();
-    const events: string[] = [];
-    const unregister = registerPreparedModelRuntimePublicationListener((event) => {
-      if (
-        event.phase === "invalidated" ||
-        event.phase === "published" ||
-        event.phase === "failed"
-      ) {
-        events.push(event.phase);
-      }
-    });
-    // Keep the real plugin call boundary while fixing external credential discovery.
-    mocks.resolveAmbientCredentials.mockImplementation(() => discoverCredentials());
-    let read: ReturnType<typeof prepareModelRuntimeSnapshot> | undefined;
-    try {
-      invocation.run(() => mutate());
-      invocation.release();
-      expect(() => retainedCallback()).toThrow("Plugin invocation scope is closed");
-      expect(original.isCurrent()).toBe(false);
-      expect(credentialDiscovery).not.toHaveBeenCalled();
-
-      read = prepareModelRuntimeSnapshot(input);
-      void read.catch(() => undefined);
-      drain.release();
-      const refreshed = await read.catch((error: unknown) => {
-        throw new Error(
-          `Auth publication failed; warnings: ${JSON.stringify(mocks.warn.mock.calls)}`,
-          {
-            cause: error,
-          },
-        );
-      });
-      expect(refreshed).not.toBe(original);
-      expect(refreshed.isCurrent()).toBe(true);
-      expect(original.isCurrent()).toBe(false);
-      expect(credentialDiscovery).toHaveBeenCalled();
-      expect(await loadDispatch({ agentId: "default" })).toMatchObject({
-        agentId: "default",
-        agentDir: input.agentDir,
-      });
-      expect(events).toEqual(["invalidated", "published"]);
-      expect(mocks.warn).not.toHaveBeenCalled();
-      expect(() => retainedCallback()).toThrow("Plugin invocation scope is closed");
-    } finally {
-      invocation.release();
-      drain.release();
-      await Promise.allSettled([read]);
-      unregister();
-      await instance.dispose();
-    }
-  });
-
   it("republishes a failed auth owner on the next inbound dispatch", async () => {
     await start();
     const failure = new Error("configured model publication timed out");
@@ -276,6 +215,85 @@ describe("prepared model runtime reload auth adoption", () => {
       });
     },
   );
+
+  it("preserves inbound recovery attempts while restart preparation is live and resumes after cancellation", async ({
+    signal,
+  }) => {
+    let now = 10_000;
+    using _ = vi.spyOn(Date, "now").mockImplementation(() => now);
+    await start();
+    const failure = new Error("configured model publication unavailable");
+    mocks.resolveAmbientCredentials.mockRejectedValue(failure);
+    mutate();
+    await expect(dispatch()).rejects.toBe(failure);
+    mocks.resolveAmbientCredentials.mockClear();
+
+    const preparing = createDeferred();
+    const releasePreparation = createDeferred();
+    const prepared = createDeferred();
+    const emitRestart = vi.fn(() => ({ status: "emitted" as const }));
+    const restart = deferGatewayRestartUntilIdle({
+      getPendingCount: () => 0,
+      prepareEmission: async () => {
+        preparing.resolve();
+        try {
+          await releasePreparation.promise;
+        } finally {
+          prepared.resolve();
+        }
+      },
+      emitHooks: { emitRestart },
+    });
+    try {
+      await withinTest(preparing.promise, signal);
+      expect(isGatewayRestartDraining()).toBe(false);
+      await withTempState(async (stateDir) => {
+        const queue = createTestIngressQueue(stateDir, { now: () => now });
+        await queue.enqueue("unavailable", { text: "retained during restart preparation" });
+        const drain = createChannelIngressDrainOwner({
+          queue,
+          now: () => now,
+          dispatchClaimedEvent: async () => {
+            await dispatch();
+          },
+        });
+        try {
+          for (const eligibleAt of [10_000, 15_000]) {
+            now = eligibleAt;
+            expect(await drain.drainOnce()).toEqual({ started: 1 });
+            await drain.waitForIdle();
+            expect(mocks.resolveAmbientCredentials).not.toHaveBeenCalled();
+            expect(await queue.listPending()).toMatchObject([{ id: "unavailable", attempts: 0 }]);
+            expect(await queue.listFailed?.()).toEqual([]);
+          }
+          expect(isGatewayRestartDraining()).toBe(false);
+          restart.cancel();
+          releasePreparation.resolve();
+          await withinTest(prepared.promise, signal);
+          for (const [eligibleAt, attempts] of [
+            [20_000, 1],
+            [25_000, 2],
+          ] as const) {
+            now = eligibleAt;
+            expect(await drain.drainOnce()).toEqual({ started: 1 });
+            await drain.waitForIdle();
+            expect(mocks.resolveAmbientCredentials).toHaveBeenCalledTimes(attempts);
+          }
+          expect(await queue.listPending()).toEqual([]);
+          expect(await queue.listFailed?.()).toMatchObject([
+            { id: "unavailable", reason: "runtime-recovery-failed" },
+          ]);
+          expect(emitRestart).not.toHaveBeenCalled();
+        } finally {
+          drain.dispose();
+        }
+      });
+    } finally {
+      restart.cancel();
+      releasePreparation.resolve();
+      await withinTest(prepared.promise, signal);
+    }
+  });
 
   it("does not record an obsolete catalog attempt after its owner is superseded", async () => {
     const snapshot = await staticSnapshot();

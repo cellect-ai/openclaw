@@ -13,6 +13,8 @@ const editMessageMatrixMock = vi.hoisted(() => vi.fn(async () => "$edited"));
 const sendSingleTextMessageMatrixMock = vi.hoisted(() =>
   vi.fn(async () => ({ messageId: "$draft1", roomId: "!room" })),
 );
+const forwardSourceReply = vi.hoisted(() => vi.fn(async () => {}));
+vi.mock("../bound-source-reply.js", () => ({ deliverBoundSourceReply: forwardSourceReply }));
 vi.mock("../send.js", () => ({
   editMessageMatrix: editMessageMatrixMock,
   prepareMatrixSingleText: vi.fn((text: string) => ({
@@ -41,6 +43,7 @@ async function dispatcher(
   streaming: "off" | "partial",
   letMeKnowTriggerEventId?: string,
   durableProjection = false,
+  sourceReply?: { sessionKey: string; eventId: string },
 ) {
   const draftController = await createMatrixDraftController({
     ...context,
@@ -60,7 +63,8 @@ async function dispatcher(
     runtime: { log: vi.fn(), error: vi.fn(), exit: vi.fn() },
     mediaLocalRoots: [],
     durableProjection,
-    ...(durableProjection ? { threadTarget: "$root" } : {}),
+    ...(sourceReply ? { sourceReply } : {}),
+    ...(durableProjection || sourceReply ? { threadTarget: "$root" } : {}),
     ...(letMeKnowTriggerEventId ? { letMeKnowTriggerEventId } : {}),
   });
   return { ...replies, draftController };
@@ -71,6 +75,7 @@ describe("Matrix let-me-know answer marking", () => {
     installMatrixMonitorTestRuntime();
     editMessageMatrixMock.mockClear();
     sendSingleTextMessageMatrixMock.mockClear();
+    forwardSourceReply.mockClear();
     sendMessageMatrixMock.mockReset().mockImplementation(async (_room, text, options) => {
       const result = {
         messageId: "$reply",
@@ -179,5 +184,57 @@ describe("Matrix let-me-know answer marking", () => {
       await draftStream.discardPending();
       draftController.cancelProgressDraft();
     }
+  });
+
+  it("queues a source-bound final for its Matrix thread and mirrors only after visible delivery", async () => {
+    const sourceReply = {
+      sessionKey: "agent:ops:slack:channel:c123:thread:1700000000.000001",
+      eventId: "$original-request",
+    };
+    const { preparePayload, durable, onDelivered } = await dispatcher(
+      "off",
+      undefined,
+      false,
+      sourceReply,
+    );
+    const info = { kind: "final" } as const;
+    const reply = (await preparePayload(
+      {
+        text: "Verified the draft.",
+        channelData: {
+          matrix: {
+            extraContent: {
+              "com.openclaw.stream_phase": "answer",
+              "ai.cellect.reply_to_trigger": { version: 1, triggerEventId: "$forged" },
+            },
+          },
+        },
+      },
+      info,
+    ))!;
+    expect(reply.channelData?.matrix).toMatchObject({
+      extraContent: { "com.openclaw.stream_phase": "answer" },
+    });
+    expect(JSON.stringify(reply.channelData)).not.toContain("$forged");
+    expect(durable(reply, info)).toMatchObject({
+      to: `room:${context.roomId}`,
+      threadId: "$root",
+      noDirectFallback: true,
+      requiredCapabilities: { payload: true, reconcileUnknownSend: true },
+    });
+    expect(durable(reply, { kind: "block" })).toBe(false);
+    expect(sendMessageMatrixMock).not.toHaveBeenCalled();
+    expect(forwardSourceReply).not.toHaveBeenCalled();
+    await onDelivered(reply, info, { visibleReplySent: false });
+    expect(forwardSourceReply).not.toHaveBeenCalled();
+    await onDelivered(reply, info, { visibleReplySent: true });
+    expect(forwardSourceReply).toHaveBeenCalledExactlyOnceWith({
+      matrixAccountId: context.accountId,
+      roomId: context.roomId,
+      sessionKey: sourceReply.sessionKey,
+      triggerEventId: sourceReply.eventId,
+      partIndex: 0,
+      text: "Verified the draft.",
+    });
   });
 });

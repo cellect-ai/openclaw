@@ -34,15 +34,13 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-// mock-isolation: Exercise routing with synthetic tools; capability filtering uses its real owner.
-vi.mock("./openclaw-tools.js", () => {
-  return {
-    createOpenClawTools: (options: unknown) => {
-      mocks.createOpenClawToolsOptions(options);
-      return [AUTOMATIONS_TOOL_NAME, "gateway"].map(mocks.stubTool);
-    },
-  };
-});
+// mock-isolation: Construction routing uses synthetic tools while the real client-capability filter stays unmocked.
+vi.mock("./openclaw-tools.js", () => ({
+  createOpenClawTools: (options: unknown) => {
+    mocks.createOpenClawToolsOptions(options);
+    return [AUTOMATIONS_TOOL_NAME, "gateway"].map(mocks.stubTool);
+  },
+}));
 
 import "./test-helpers/fast-bash-tools.js";
 import "./test-helpers/fast-coding-tools.js";

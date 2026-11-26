@@ -7,6 +7,7 @@ import {
 import { createEmptyPluginMetadataSnapshot } from "../../plugins/plugin-metadata-empty.test-support.js";
 import type { PluginMetadataSnapshot } from "../../plugins/plugin-metadata-snapshot.types.js";
 import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.types.js";
+import type { AuthProfileStore } from "../auth-profiles/types.js";
 import type {
   PreparedModelRuntimeInput,
   PreparedModelRuntimeLeaseOptions,
@@ -89,27 +90,25 @@ export async function acquireCompactHooksPreparedModelRuntime(
   input: PreparedModelRuntimeInput,
   _options?: PreparedModelRuntimeLeaseOptions,
 ) {
-  return {
-    snapshot: withEmptyRuntimeStores({
-      isCurrent: () => true,
-      agentId: input.agentId,
-      agentDir: input.agentDir,
-      config: input.config,
-      workspaceDir: input.workspaceDir,
-      metadataSnapshot: { ...emptyPluginMetadataSnapshot, workspaceDir: input.workspaceDir },
-    }),
-    [Symbol.asyncDispose]: vi.fn(async () => {}),
-  };
+  return createCompactHooksPreparedModelRuntimeLease({
+    agentId: input.agentId,
+    agentDir: input.agentDir,
+    config: input.config,
+    workspaceDir: input.workspaceDir,
+    metadataSnapshot: { ...emptyPluginMetadataSnapshot, workspaceDir: input.workspaceDir },
+  });
 }
 
-export function createCompactHooksPreparedModelRuntime(
-  input: Required<
-    Pick<PreparedModelRuntimeInput, "agentId" | "agentDir" | "config" | "workspaceDir">
-  > & {
+export function createCompactHooksPreparedModelRuntimeLease(
+  input: Pick<PreparedModelRuntimeInput, "agentId" | "agentDir" | "config" | "workspaceDir"> & {
     metadataSnapshot: PluginMetadataSnapshot;
   },
 ) {
-  return withEmptyRuntimeStores(input);
+  return {
+    snapshot: withEmptyRuntimeStores({ isCurrent: () => true, ...input }),
+    run: <T>(run: () => T): T => run(),
+    [Symbol.asyncDispose]: vi.fn(async () => {}),
+  };
 }
 
 export function createCompactHooksResolvedModel(
@@ -157,3 +156,8 @@ export type MockResolvedModel = {
   authStorage: Pick<AuthStorage, "setRuntimeApiKey" | "getApiKey">;
   modelRegistry: Record<string, never> | import("../sessions/model-registry.js").ModelRegistry;
 };
+
+export function createDefaultCompactionAuthStore(): AuthProfileStore {
+  const profile = { type: "api_key", provider: "openai", key: "test" } as const;
+  return { version: 1, profiles: { "openai:test": profile }, order: { openai: ["openai:test"] } };
+}

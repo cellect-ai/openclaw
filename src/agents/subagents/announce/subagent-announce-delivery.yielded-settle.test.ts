@@ -44,7 +44,7 @@ const partial = (meta: Record<string, unknown>) =>
 type SettleCase = {
   response: unknown;
   expected: Record<string, unknown>;
-  options?: { public?: boolean; group?: boolean; replaced?: boolean };
+  options?: { public?: boolean; group?: boolean };
 };
 
 it.each`
@@ -72,7 +72,7 @@ it.each`
     const to = options.group ? "channel:room-1" : "dm:U123";
     const sessionKey = `agent:main:discord:${to}`;
     const origin = { channel: "discord", to, accountId: "acct-1" };
-    const current = options.replaced ? "replacement-parent" : "requester-session-dm";
+    const current = "requester-session-dm";
     const dispatch = vi.fn<
       typeof import("./subagent-announce.runtime.js").dispatchGatewayMethodInProcess
     >(async <T>() => response as T);
@@ -106,22 +106,16 @@ it.each`
       sourceTool: "subagent_settle",
       requesterIsSubagent: false,
       expectsCompletionMessage: false,
-      ...(options.public
-        ? { requireVisibleReply: true }
-        : { completionRequesterSessionId: "requester-session-dm" }),
+      ...(options.public ? { requireVisibleReply: true } : {}),
       directIdempotencyKey: "announce:requester-settle:private",
     });
     expect(result).toMatchObject(expected);
-    if (options.replaced) {
-      expect(dispatch).not.toHaveBeenCalled();
-    } else {
-      expect(dispatch.mock.calls[0]?.slice(1)).toMatchObject([
-        options.public ? {} : { expectedExistingSessionId: "requester-session-dm" },
-        { replyExpectation: options.public ? "required" : "optional" },
-      ]);
-      // The conversation's configured reply policy decides, not this handoff.
-      expect(dispatch.mock.calls[0]?.[1]).not.toHaveProperty("sourceReplyDeliveryMode");
-    }
+    expect(dispatch.mock.calls[0]?.slice(1)).toMatchObject([
+      { expectedExistingSessionId: "requester-session-dm" },
+      { replyExpectation: options.public ? "required" : "optional" },
+    ]);
+    // The conversation's configured reply policy decides, not this handoff.
+    expect(dispatch.mock.calls[0]?.[1]).not.toHaveProperty("sourceReplyDeliveryMode");
     expect(send).not.toHaveBeenCalled();
   },
 );

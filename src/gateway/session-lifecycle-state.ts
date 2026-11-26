@@ -1,4 +1,5 @@
 import { normalizeOptionalString as normalizeLifecycleRunId } from "@openclaw/normalization-core/string-coerce";
+import { subagentRuns } from "../agents/subagents/registry/subagent-registry-memory.js";
 import { getRuntimeConfig } from "../config/io.js";
 import { applySessionEntryTargetOperation } from "../config/sessions/session-accessor.sqlite-entry.js";
 import {
@@ -10,7 +11,9 @@ import {
 } from "../config/sessions/session-run-lifecycle-projection.js";
 import { composeSessionSourceAssertion } from "../config/sessions/session-source-authority.js";
 import { withOwnedSessionTranscriptWrites } from "../config/sessions/transcript-write-context.js";
+import { isTerminalSessionStatus } from "../config/sessions/types.js";
 import { getAgentEventLifecycleGeneration } from "../infra/agent-events.js";
+import { getGatewayRestartDrainSignal } from "../process/gateway-work-admission.js";
 import { readAgentRunProviderReview } from "../sessions/provider-review-terminal.js";
 import {
   AgentDeletionPendingError,
@@ -39,23 +42,19 @@ type GatewaySessionLifecycleEventParams = {
   };
 };
 
-// Retention transfers ownership to deletion; it does not certify a committed receipt.
-type LifecyclePersistenceOutcome = void | "failure-notice-recorded" | "terminal-retained";
-
 export async function persistGatewaySessionLifecycleEvent(
   params: GatewaySessionLifecycleEventParams,
-): Promise<LifecyclePersistenceOutcome> {
-  return runOutsideAsyncWorkScope(() => prepareGatewaySessionLifecycleEvent(params)());
+): Promise<void> {
+  await runOutsideAsyncWorkScope(() => prepareGatewaySessionLifecycleEvent(params)());
 }
 
 /** Capture lookup custody before the lifecycle owner waits for an earlier event. */
-export function prepareGatewaySessionLifecycleEvent(
-  params: GatewaySessionLifecycleEventParams,
-): () => Promise<LifecyclePersistenceOutcome> {
+export function prepareGatewaySessionLifecycleEvent(params: GatewaySessionLifecycleEventParams) {
   const phase = resolveLifecyclePhase(params.event);
   if (!phase) {
     return async () => {};
   }
+  const gatewayShutdown = getGatewayRestartDrainSignal().aborted ? true : undefined;
   const prepared = loadGatewaySessionEntryReadOnlyInWorker({
     cfg: getRuntimeConfig(),
     key: params.sessionKey,
@@ -67,7 +66,12 @@ export function prepareGatewaySessionLifecycleEvent(
   return async () => {
     const sessionEntry = await prepared;
     try {
-      return await persistPreparedGatewaySessionLifecycleEvent(params, phase, sessionEntry);
+      await persistPreparedGatewaySessionLifecycleEvent(
+        params,
+        phase,
+        sessionEntry,
+        gatewayShutdown,
+      );
     } catch (error) {
       // Drain settlement transfers the outcome to deletion, not to a successful write.
       if (
@@ -81,19 +85,18 @@ export function prepareGatewaySessionLifecycleEvent(
               path: sessionEntry.storePath,
             },
             // The run has drained. Deletion now owns replay of this captured outcome.
-            persist: async (assertCommitAllowed) => {
-              await persistPreparedGatewaySessionLifecycleEvent(
+            persist: (assertCommitAllowed) =>
+              persistPreparedGatewaySessionLifecycleEvent(
                 { ...params, assertCommitAllowed },
                 phase,
                 sessionEntry,
-              );
-            },
+                gatewayShutdown,
+              ),
           },
         )
       ) {
         throw error;
       }
-      return "terminal-retained";
     }
   };
 }
@@ -102,7 +105,8 @@ async function persistPreparedGatewaySessionLifecycleEvent(
   params: GatewaySessionLifecycleEventParams,
   phase: LifecyclePhase,
   sessionEntry: Awaited<ReturnType<typeof loadGatewaySessionEntryReadOnlyInWorker>>,
-): Promise<LifecyclePersistenceOutcome> {
+  gatewayShutdown?: true,
+): Promise<void> {
   if (!sessionEntry.entry) {
     return;
   }
@@ -170,6 +174,7 @@ async function persistPreparedGatewaySessionLifecycleEvent(
         canonicalKey: sessionEntry.canonicalKey,
         lifecycleRevision,
         exactCronRun: parseCronRunScopeSuffix(sessionEntry.canonicalKey).runId !== undefined,
+        gatewayShutdown,
         expectedWriter: params.expectedWriter,
         providerReview: providerReview
           ? {
@@ -191,8 +196,15 @@ async function persistPreparedGatewaySessionLifecycleEvent(
         ]),
       },
       ...(providerReview ? { providerReviewMutation: true } : {}),
-      onCommitted: (_entry, _predicate, lifecycleEffects) => {
+      onCommitted: (entry, _predicate, lifecycleEffects) => {
         effects = lifecycleEffects;
+        if (isTerminalSessionStatus(entry.status) && entry.lastRunId) {
+          subagentRuns.recordRequesterCompletion(
+            sessionEntry.canonicalKey,
+            sessionEntry.agentId,
+            entry.lastRunId,
+          );
+        }
         sessionChanges.emit({
           sessionKey: sessionEntry.canonicalKey,
           agentId: sessionEntry.agentId,
@@ -206,7 +218,15 @@ async function persistPreparedGatewaySessionLifecycleEvent(
   );
   const { failedRun } = effects ?? {};
   if (persisted && failedRun) {
-    const { runId, error, errorKind, suppressErrorNotice, notice } = failedRun;
+    const {
+      runId,
+      error,
+      errorKind,
+      suppressErrorNotice,
+      notice,
+      desktopNotice,
+      errorObservation,
+    } = failedRun;
     // Only accepted errors pay for branch navigation; assistant detection and
     // report deduplication share the appender's authoritative write snapshot.
     const receipt = {
@@ -223,6 +243,8 @@ async function persistPreparedGatewaySessionLifecycleEvent(
       errorKind,
       suppressErrorNotice,
       notice,
+      desktopNotice,
+      errorObservation,
       assertCommitAllowed: params.assertCommitAllowed,
     };
     // An accepted terminal owns its receipt, independently of an ambient requester turn.
@@ -234,6 +256,5 @@ async function persistPreparedGatewaySessionLifecycleEvent(
       },
       () => recordGatewaySessionRunFailure(receipt),
     );
-    return "failure-notice-recorded";
   }
 }

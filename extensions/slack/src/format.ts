@@ -172,7 +172,8 @@ function makeSlackEmphasisStylesSafe(ir: MarkdownIR): MarkdownIR {
       !isUnsafeSlackEmphasisBoundary(getCodePointAt(ir.text, span.end))
     );
   });
-  return styles.length === ir.styles.length ? ir : { ...ir, styles };
+  ir.styles = styles;
+  return ir;
 }
 
 const SLACK_FORMAT_PROFILE = FormatCapabilityProfile.define({
@@ -391,6 +392,7 @@ function protectSlackAssistantTranscriptRoleHeaders(text: string): string {
 
 function buildSlackRenderOptions({ enclosingStyle, mentions }: SlackMarkdownOptions = {}) {
   return {
+    blockquotePrefix: "> ",
     annotationMarkers: {
       assistant_transcript_role: {
         open: "`",
@@ -418,7 +420,6 @@ function prepareSlackMarkdownIR(markdown: string, options: SlackMarkdownOptions)
       linkify: false,
       autolink: false,
       headingStyle: "rich",
-      blockquotePrefix: "> ",
       tableMode: options.tableMode,
     }),
   );

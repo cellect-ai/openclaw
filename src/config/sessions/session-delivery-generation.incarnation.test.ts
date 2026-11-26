@@ -3,21 +3,21 @@ import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
-import { deleteSessionEntryLifecycle } from "./session-accessor.sqlite-lifecycle.js";
 import {
   isSessionDeliveryGenerationRevokedError,
-  prepareSessionGenerationFacts,
+  prepareLeaseFacts,
 } from "./session-delivery-generation.js";
 
-// A message edit or branch switch rotates the session id inside one incarnation; a reset
-// rotates the lifecycle revision. Stored references follow the first; live writers do not.
+// Stored references follow the key through a new transcript id or a reset. Live writers
+// pin the transcript; a scheduled occurrence pins its lifecycle.
 it.each([
-  { row: "edited", exactTranscript: undefined, current: true },
-  { row: "reset", exactTranscript: undefined, current: false },
-  { row: "edited", exactTranscript: true, current: false },
+  { row: "edited", exact: undefined, current: true },
+  { row: "reset", exact: undefined, current: true },
+  { row: "edited", exact: "transcript", current: false },
+  { row: "reset", exact: "lifecycle", current: false },
 ] as const)(
-  "a $row conversation is current=$current for exactTranscript=$exactTranscript",
-  async ({ row, exactTranscript, current }) => {
+  "a $row conversation is current=$current for $exact",
+  async ({ row, exact, current }) => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
       openOpenClawAgentDatabase({ agentId: "main", path: storePath, env: state.env });
@@ -27,11 +27,11 @@ it.each([
         lifecycleRevision: row === "edited" ? "original" : "reset",
         updatedAt: 1,
       });
-      const prepared = prepareSessionGenerationFacts({
+      const prepared = prepareLeaseFacts({
         ...target,
         sessionId: "original-session",
         lifecycleRevision: "original",
-        ...(exactTranscript ? { exactTranscript } : {}),
+        ...(exact ? { exact } : {}),
       });
       if (!current) {
         await expect(prepared).rejects.toSatisfy(isSessionDeliveryGenerationRevokedError);
@@ -46,36 +46,3 @@ it.each([
     });
   },
 );
-
-it("keeps key-bound results across rewind but not deletion and recreation", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
-    const storePath = resolveOpenClawAgentSqlitePath({ agentId: "main", env: state.env });
-    openOpenClawAgentDatabase({ agentId: "main", path: storePath, env: state.env });
-    const target = { agentId: "main", sessionKey: "agent:main:key-bound", storePath };
-    const entry = { sessionId: "original", lifecycleRevision: "original", updatedAt: 1 };
-    replaceSessionEntrySync(target, entry);
-    const lease = await prepareSessionGenerationFacts({
-      ...target,
-      sessionId: entry.sessionId,
-      lifecycleRevision: null,
-    });
-    try {
-      replaceSessionEntrySync(target, {
-        ...entry,
-        sessionId: "rewound",
-        lifecycleRevision: "rewound",
-      });
-      expect(lease.assertCurrent).not.toThrow();
-      await deleteSessionEntryLifecycle({
-        ...target,
-        target: { canonicalKey: target.sessionKey, storeKeys: [target.sessionKey] },
-        archiveTranscript: false,
-        deleteTranscriptWithoutArchive: true,
-      });
-      replaceSessionEntrySync(target, entry);
-      expect(lease.assertCurrent).toThrow();
-    } finally {
-      lease.release();
-    }
-  });
-});

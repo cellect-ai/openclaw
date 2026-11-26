@@ -8,8 +8,8 @@ import { createSessionsSearchTool } from "../agents/tools/sessions-search-tool.j
 import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
 import {
-  persistSessionTranscriptTurn,
   deleteSessionEntryLifecycle,
+  persistSessionTranscriptTurn,
   replaceSessionEntry,
   replaceSessionEntrySync,
 } from "../config/sessions/session-accessor.js";
@@ -328,7 +328,7 @@ test("refreshes cached lists after placement readiness and refuses disposed resp
   });
 });
 
-test("shares concurrent list selection across row modes and refilters only published partitions", async () => {
+test.each([true, false])("shares unchanged list selection (wire=%s)", async (wire) => {
   await withStateDirEnv("openclaw-list-selection-repeat-", async () => {
     const cfg = initialize();
     const alice = viewer("alice");
@@ -355,7 +355,7 @@ test("shares concurrent list selection across row modes and refilters only publi
       listProjectedSessions({
         projection,
         client,
-        acceptsSerializedJson: true,
+        acceptsSerializedJson: wire,
         opts: { limit, activeMinutes: 1, rowMode },
       });
     try {
@@ -384,9 +384,11 @@ test("shares concurrent list selection across row modes and refilters only publi
           const encodings = stringify.mock.calls.length;
           expect(result.totalCount).toBe(128);
           // Fixed request preparation may encode facts; additional warm rows must not.
-          expect(encodings, `warm ${rowMode} serialization scales with row count`).toBe(
-            smallPageEncodings,
-          );
+          if (wire) {
+            expect(encodings, `warm ${rowMode} serialization scales with row count`).toBe(
+              smallPageEncodings,
+            );
+          }
           const rows = expandSessionRowFacts(result.sessions, result.sharedFacts);
           expect(rows.every((row) => row.rowMode === rowMode)).toBe(true);
           expect(rows.find((row) => row.sessionId === "s127")?.sharingRole).toBe(
@@ -400,6 +402,19 @@ test("shares concurrent list selection across row modes and refilters only publi
       expect(present).not.toHaveBeenCalled();
       stringify.mockRestore();
       present.mockRestore();
+      const people = () =>
+        listProjectedSessions({
+          projection,
+          client: alice,
+          acceptsSerializedJson: true,
+          opts: { limit: 2, includePeople: true },
+        });
+      const beforeUsage = await people();
+      owner.mockClear();
+      patchEntry(store, "agent:main:selection-0", { inputTokens: 123 });
+      await read("compact", bob);
+      expect((await people()).people).toEqual(beforeUsage.people);
+      expect(owner).not.toHaveBeenCalled();
       owner.mockClear();
       patchEntry(store, "agent:main:selection-0", { updatedAt: now + 200, visibility: "draft" });
       expectPage(await read("compact"), ["s0", "s127"], 128);
@@ -418,61 +433,6 @@ test("shares concurrent list selection across row modes and refilters only publi
           ?.label,
       ).toBe("Renamed Alice");
     } finally {
-      projection.dispose();
-      release();
-    }
-  });
-});
-
-test("indexed recall reaches an old match without paging the unrelated inventory", async () => {
-  await withStateDirEnv("openclaw-recall-bounded-", async () => {
-    const cfg = initialize({
-      agents: { entries: { main: {} } },
-      tools: { sessions: { visibility: "all" } },
-    });
-    const key = "agent:main:old-match";
-    writeResidentEntries(
-      Object.fromEntries(
-        Array.from({ length: 205 }, (_, index) => [
-          "agent:main:unrelated-" + index,
-          { sessionId: "unrelated-" + index, updatedAt: index + 2 },
-        ]),
-      ),
-    );
-    writeListEntry(key, { sessionId: "old-match", updatedAt: 1 });
-    await persistSessionTranscriptTurn(
-      { agentId: "main", sessionKey: key, sessionId: "old-match" },
-      {
-        cwd: "/fixture",
-        updateMode: "none",
-        messages: [{ message: { role: "user", content: "recallneedle" }, now: 1 }],
-      },
-    );
-    const release = retainSessionListForegroundWork();
-    const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
-    const unbind = bindEmbeddedSessionRowProjection(Promise.resolve(projection));
-    const gateway = createEmbeddedCallGateway();
-    let listed = 0;
-    try {
-      const tool = createSessionsSearchTool({
-        config: cfg,
-        agentId: "main",
-        agentSessionKey: "agent:main:requester",
-        callGateway: async <T>(request: Parameters<typeof gateway>[0]) => {
-          const result = await gateway<T>(request);
-          if (request.method === "sessions.list") {
-            listed += (result as { sessions: unknown[] }).sessions.length;
-          }
-          return result;
-        },
-      });
-      const result = await tool.execute("recall", { query: "recallneedle" });
-      expect(result.details).toMatchObject({
-        results: [{ sessionKey: key, snippet: "recallneedle" }],
-      });
-      expect(listed).toBe(0);
-    } finally {
-      unbind();
       projection.dispose();
       release();
     }

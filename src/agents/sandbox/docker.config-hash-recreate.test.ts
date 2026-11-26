@@ -130,7 +130,7 @@ describe("ensureSandboxContainer recreation and managed mounts", () => {
       });
       registryMocks.readRegistryEntry.mockResolvedValue(published);
       const second = await createSandboxBackend(params);
-      expect(calls("info")).toHaveLength(backendId === "podman" ? 2 : 0);
+      expect(calls("info")).toHaveLength(backendId === "podman" ? 1 : 0);
       expect(second.runtimeId).toBe(first.runtimeId);
       expect(registryMocks.updateRegistry).toHaveBeenCalledTimes(2);
       expect(calls("create")).toHaveLength(1);
@@ -342,6 +342,7 @@ describe("ensureSandboxContainer recreation and managed mounts", () => {
     ).toBe(false);
     expect(registryMocks.updateRegistry).toHaveBeenCalledWith(
       expect.objectContaining({ runtimeState: "pending" }),
+      undefined,
     );
     expect(registryMocks.completeSandboxRegistryReservation).not.toHaveBeenCalled();
     expect(registryMocks.removeRegistryEntry).not.toHaveBeenCalled();
@@ -469,12 +470,16 @@ describe("ensureSandboxContainer recreation and managed mounts", () => {
       const operation = ensure(podmanParams());
       const createCall = expect.objectContaining({
         command: "podman",
-        globalArgs: [],
+        globalArgs: ["--remote=false"],
         args: expect.arrayContaining(["create", "--name", containerName]),
       });
       if (state === "missing") {
         await expect(operation).resolves.toMatchObject(allocatedContainer(containerName));
-        expect(registryMocks.removeRegistryEntry).toHaveBeenCalledWith(containerName);
+        expect(registryMocks.removeRegistryEntry).toHaveBeenCalledWith(
+          containerName,
+          {},
+          undefined,
+        );
         expect(spawnState.calls).toContainEqual(createCall);
       } else {
         await expect(operation).rejects.toThrow(
@@ -487,7 +492,7 @@ describe("ensureSandboxContainer recreation and managed mounts", () => {
           state === "changed"
             ? expect.objectContaining({
                 command: "podman",
-                globalArgs: [],
+                globalArgs: ["--remote=false"],
                 args: expect.arrayContaining(["inspect"]),
               })
             : createCall,

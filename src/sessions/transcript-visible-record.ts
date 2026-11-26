@@ -7,6 +7,7 @@ import {
   isSilentAssistantTranscriptMessage,
   readTerminalSourceReplyDeliveryMirror,
 } from "../shared/chat-message-content.js";
+import { MODEL_FALLBACK_NOTICE_KIND } from "../shared/model-fallback-notice.js";
 import { isOpenClawDeliveryMirrorAssistantMessage } from "../shared/transcript-only-openclaw-assistant.js";
 import { readNestedToolActivity } from "./nested-tool-activity.js";
 import {
@@ -39,7 +40,11 @@ export function isAssistantResultEventForRun(event: unknown, runId: string): boo
     return false;
   }
   const mirror = event.message.openclawDeliveryMirror;
-  if (isRecord(mirror) && mirror.kind === "message-tool-source-reply" && mirror.final !== true) {
+  if (
+    isRecord(mirror) &&
+    (mirror.kind === MODEL_FALLBACK_NOTICE_KIND ||
+      (mirror.kind === "message-tool-source-reply" && mirror.final !== true))
+  ) {
     return false;
   }
   return true;
@@ -105,6 +110,10 @@ export function matchesTranscriptEvent(
   match: SessionTranscriptEventMatch,
   projection?: "navigation",
 ): boolean {
+  if (match.kind === "custom-entry") {
+    const record = asOptionalRecord(event);
+    return record?.type === "custom" && record.customType === match.customType;
+  }
   if (match.kind === "latest") {
     return true;
   }

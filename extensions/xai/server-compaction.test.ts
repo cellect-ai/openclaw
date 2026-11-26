@@ -8,7 +8,7 @@ import { omitNullRequestHeaders } from "openclaw/plugin-sdk/provider-request-hea
 import { makeAgentAssistantMessage } from "openclaw/plugin-sdk/test-fixtures";
 import { beforeEach, expect, it, vi } from "vitest";
 import { wrapXaiProviderStream } from "./stream.js";
-import { captureXaiRequest, xaiModel } from "./test-helpers.js";
+import { xaiModel } from "./test-helpers.js";
 
 const sdkState = vi.hoisted(() => {
   const clients: Array<{ defaultHeaders?: ModelRequestHeaders }> = [];
@@ -130,12 +130,6 @@ it("uses the same OAuth proxy headers as a normal turn", async () => {
     "x-grok-model-override": target.id,
     "X-XAI-Token-Auth": "xai-grok-cli",
   };
-  const captured = captureXaiRequest(target, {
-    extraParams: { tool_stream: false },
-    headers: { "X-XAI-Token-Auth": "operator-value", "X-Existing": "kept", "x-delete": null },
-  });
-  expect(captured.modelId).toBe(target.id);
-  expect(captured.headers).toEqual({ "X-Existing": "kept", "x-delete": null, ...contract });
   const requests = prepareRequests(
     { messages: [{ role: "user", content: "hello", timestamp: 1 }] },
     target,

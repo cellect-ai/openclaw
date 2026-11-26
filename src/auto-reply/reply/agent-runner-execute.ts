@@ -28,7 +28,6 @@ import {
 } from "./pending-final-delivery.js";
 import { claimNextQueuedFollowupRequestFrom, enqueueFollowupRun } from "./queue.js";
 import { admitFollowupRunLifecycle } from "./queue/lifecycle.js";
-import { isFollowupOperatorAuthorityCurrent } from "./queue/types.js";
 import type { PendingReplyDelivery } from "./reply-input-admission.js";
 import {
   isReplyOperationSuperseded,
@@ -76,7 +75,11 @@ export function continueStalledReplyTurn({
   ) {
     return false;
   }
-  if (!isFollowupOperatorAuthorityCurrent(followupRun)) {
+  try {
+    followupRun.operatorAuthority?.signal?.throwIfAborted();
+    followupRun.operatorAuthority?.assertCurrent();
+  } catch {
+    // Refusing this continuation does not revoke or settle any queued source.
     return false;
   }
   const queuedRequest = !guidance && claimNextQueuedFollowupRequestFrom(queueKey, followupRun);
@@ -228,10 +231,11 @@ async function executePreparedReplyAgentRunWithCompletion(
 
   replyOperation.setPhase("running");
   const runStartedAt = Date.now();
-  await admitUserTurn(followupRun.userTurnTranscriptRecorder);
+  // Reauthorize queued input before persistence transfers its receipt to execution.
+  await admitFollowupRunLifecycle(followupRun, () =>
+    admitUserTurn(followupRun.userTurnTranscriptRecorder),
+  );
   activeSessionEntry = getActiveSessionEntry();
-  // Adoption transfers the accepted input into ordinary execution custody.
-  await admitFollowupRunLifecycle(followupRun);
   const runWithGoalReturn = createGoalContinuationReturn(
     sessionKey &&
       storePath &&

@@ -94,10 +94,10 @@ describe("update-cli", () => {
       }
     };
     const validate = requireValue(
-      mocks.candidateValidation.getMockImplementation(),
+      mocks.candidateCheck.getMockImplementation(),
       "candidate validation",
     );
-    mocks.candidateValidation.mockImplementation(async (...args) => {
+    mocks.candidateCheck.mockImplementation(async (...args) => {
       assertRootsOwned();
       return await validate(...args);
     });
@@ -319,7 +319,7 @@ describe("update-cli", () => {
     },
   );
 
-  it("refuses an incompatible protected service Node despite a compatible shell Node", async () => {
+  it("refuses an incompatible service Node before using a compatible shell Node", async () => {
     const servicePrefix = setup.tempDirs.make("openclaw-service-prefix-");
     const { nodeModules, root, serviceNode, serviceNpm, serviceNpmReal, entrypoint } =
       await setup.setupServicePackageAtPrefix({ prefix: servicePrefix });
@@ -330,7 +330,7 @@ describe("update-cli", () => {
     mocks.serviceLoaded.mockResolvedValue(true);
     mocks.serviceDefinitionMutationCapability.mockResolvedValue({
       kind: "sealed",
-      reason: "operator-managed launcher",
+      reason: "sealed-mount",
     });
     setup.primeNpmChannelTag("latest", "2026.7.1");
     vi.mocked(modules.fetchNpmPackageTargetStatus).mockResolvedValue(

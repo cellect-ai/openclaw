@@ -22,6 +22,7 @@ import {
   OPENCLAW_TRANSCRIPT_ARTIFACT_PROVIDER,
   type SUBAGENT_COMPLETION_RESULT_KIND,
 } from "../shared/transcript-only-openclaw-assistant.js";
+import { isSessionControllerWorkActive } from "./session-controller.lifecycle-observation.js";
 import { captureSessionTarget, runSessionMutation } from "./session-controller.lifecycle.js";
 
 type BackgroundSessionResultCommit = { ok: true } | { ok: false; reason: string };
@@ -41,6 +42,11 @@ export async function commitBackgroundResultToSession(params: {
   onMessageCommitted?: SessionTranscriptTurnPersistOptions["onMessageCommitted"];
   idempotencyKey: string;
   provenance?: BackgroundSessionResultProvenance;
+  /**
+   * The producing turn ran in this conversation, so its own reply already holds the text in
+   * model context. The row is then for display only and is never placed into model context.
+   */
+  displayOnly?: true;
   config: OpenClawConfig;
   signal?: AbortSignal;
   /** Revalidate the producer after preparation and inside the transcript commit. */
@@ -106,10 +112,12 @@ export async function commitBackgroundResultToSession(params: {
           };
           // A retry owns the original committed payload, including its managed-media IDs.
           // Restaging media would conflict with the transcript's exact replay contract.
-          const prior = await findTranscriptEvent(scope, {
-            kind: "idempotency",
-            key: idempotencyKey,
-          });
+          const prior = await findTranscriptEvent(
+            scope,
+            { kind: "idempotency", key: idempotencyKey },
+            undefined,
+            "background-result",
+          );
           const priorMessage = prior && readTranscriptEventMessage(prior.event);
           const priorId = prior && readTranscriptEventId(prior.event);
           if (prior && (!priorMessage || !priorId)) {
@@ -129,10 +137,16 @@ export async function commitBackgroundResultToSession(params: {
             stopReason: "stop",
             timestamp: Date.now(),
             idempotencyKey,
+            ...(params.displayOnly
+              ? { excludeFromContext: true }
+              : isSessionControllerWorkActive(storePath, [sessionKey, sessionId], params.agentId)
+                ? { excludeFromContext: true, openclawModelPlacement: "pending" as const }
+                : {}),
             ...(params.provenance ? { openclawAutomation: params.provenance } : {}),
           } satisfies SessionTranscriptAssistantMessage & {
             idempotencyKey: string;
             openclawAutomation?: BackgroundSessionResultProvenance;
+            openclawModelPlacement?: "pending";
           };
           owner.assertCurrent();
           params.assertCurrent?.();

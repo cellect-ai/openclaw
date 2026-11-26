@@ -42,7 +42,15 @@ function transactionFixture() {
 }
 
 function transportFixture(
-  initialMode: "normal" | "spurious" | "mismatched" | "missing" | "timeout" | "service-death",
+  initialMode:
+    | "normal"
+    | "spurious"
+    | "mismatched"
+    | "missing"
+    | "timeout"
+    | "service-death"
+    | "delayed",
+  options?: ConstructorParameters<typeof PostgresSyncConnection>[4],
 ) {
   let mode = initialMode;
   let command: string | undefined;
@@ -52,7 +60,7 @@ function transportFixture(
   control.set([1, 1]);
   const service = new Int32Array(new SharedArrayBuffer(8));
   // Exercise the connection over real ports; live tests cover worker startup and admission.
-  const db = harness.connection();
+  const db = harness.connection(options);
   Object.assign(db, {
     bridge: { port: port1, control, service, requestId: 1 },
   });
@@ -79,6 +87,11 @@ function transportFixture(
     const query = pending.operation === "query" ? pending : undefined;
     if (query) {
       waits.push({ observed, timeout });
+      if (mode === "delayed") {
+        mode = "normal";
+        now += 121_000;
+        return "timed-out";
+      }
       if (mode === "spurious" && wakes++ === 0) {
         Atomics.notify(control, index);
         now += 1;
@@ -136,15 +149,20 @@ function transportFixture(
     db,
     sent,
     waits,
+    elapse: (ms: number) => {
+      now += ms;
+      wallNow += ms;
+    },
     suspend: (ms: number) => (wallNow += ms),
     normal: () => (mode = "normal"),
     dropReplies: () => (mode = "missing"),
+    delayNextReply: () => (mode = "delayed"),
     command: (value: string) => (command = value),
     rejectQuery: (error: PostgresErrorData) => (queryError = error),
   };
 }
 
-it("reuses a returned transport for another schema without checkout or release messages", () => {
+it.each([0, 999, 1000, 1001])("validates reuse after %d idle ms", (idleMs) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const fixture = transportFixture("normal");
   const params = {
@@ -164,6 +182,7 @@ it("reuses a returned transport for another schema without checkout or release m
     withEngineStoreAdmission(() => fixture.db.prepare("SELECT 7 AS value").get());
     fixture.sent.mockClear();
     fixture.db.releaseIdleTransport();
+    fixture.elapse(idleMs);
     const reader = withEngineStoreAdmission(
       () =>
         new PostgresSyncConnection(params.url, "schema_b", harness.nativeDatabase(), "store_b", {
@@ -173,12 +192,8 @@ it("reuses a returned transport for another schema without checkout or release m
     next = reader;
     expect(create).not.toHaveBeenCalled();
     expect(fixture.sent).not.toHaveBeenCalled();
-    expect(withEngineStoreAdmission(() => reader.prepare("SELECT 7 AS value").get())).toEqual({
-      value: 7,
-    });
-    expect(withEngineStoreAdmission(() => reader.prepare("SELECT 7 AS value").get())).toEqual({
-      value: 7,
-    });
+    const read = () => withEngineStoreAdmission(() => reader.prepare("SELECT 7 AS value").get());
+    expect([read(), read()]).toEqual([{ value: 7 }, { value: 7 }]);
     expect(fixture.sent.mock.calls.map(([request]) => request)).toEqual([
       {
         operation: "query",
@@ -186,8 +201,9 @@ it("reuses a returned transport for another schema without checkout or release m
         sql: "SELECT 7 AS value",
         parameters: [],
         reconnectIfIdle: true,
-        validateIfIdle: true,
+        ...(idleMs >= 1000 ? { validateIfIdle: true } : {}),
         id: 3,
+        deadlineMs: 120_000,
       },
       {
         operation: "query",
@@ -196,6 +212,7 @@ it("reuses a returned transport for another schema without checkout or release m
         parameters: [],
         reconnectIfIdle: true,
         id: 4,
+        deadlineMs: 120_000,
       },
     ]);
   } finally {
@@ -204,6 +221,53 @@ it("reuses a returned transport for another schema without checkout or release m
     vi.useRealTimers();
   }
 });
+
+it("lets maintenance finish beyond the runtime deadline, then restores runtime liveness", () => {
+  const fixture = transportFixture("normal");
+  fixture.command("COMMIT");
+  const result = fixture.db.runTransaction(
+    () => {
+      fixture.delayNextReply();
+      return fixture.db.prepare("SELECT 7 AS value").get();
+    },
+    { maintenance: true },
+  );
+  expect(result).toEqual({ value: 7 });
+  expect(fixture.db.isTransaction).toBe(false);
+  fixture.delayNextReply();
+  expect(() => fixture.db.exec("SELECT 7")).toThrow("PostgreSQL connection lost");
+  expect(fixture.db.isOpen).toBe(false);
+});
+
+it.each([undefined, 2000])(
+  "forwards the maintenance deadline and restores runtime budget (%s)",
+  (statementTimeoutMs) => {
+    const fixture = transportFixture("normal", { statementTimeoutMs });
+    fixture.command("COMMIT");
+    fixture.db.exec("SELECT before_maintenance");
+    fixture.db.runTransaction(
+      () => {
+        fixture.db.runTransaction(() => fixture.db.exec("SELECT nested_maintenance"));
+      },
+      {
+        maintenance: true,
+        withCommit(commit) {
+          fixture.db.exec("SELECT before_commit");
+          commit();
+        },
+      },
+    );
+    fixture.db.exec("SELECT after_maintenance");
+    const requests = fixture.sent.mock.calls.map(([request]) => request);
+    expect(requests[0]).toMatchObject({ deadlineMs: (statementTimeoutMs ?? 90_000) + 30_000 });
+    expect(requests.at(-1)).toMatchObject({ deadlineMs: (statementTimeoutMs ?? 90_000) + 30_000 });
+    expect(requests.slice(1, -1).length).toBeGreaterThan(0);
+    for (const request of requests.slice(1, -1)) {
+      expect(request).toMatchObject({ deadlineMs: 3_630_000 });
+    }
+    expect(requests.map((request) => request.sql)).toContain("SELECT before_commit");
+  },
+);
 
 it("validates retained idle connections after suspended wall time, never inside a transaction", () => {
   const fixture = transportFixture("normal");
@@ -243,7 +307,7 @@ it("checks transport status after a query error instead of reusing an earlier id
     fixture.sent.mockClear();
     fixture.db.releaseIdleTransport();
     expect(fixture.sent.mock.calls.map(([request]) => request)).toEqual([
-      { operation: "release", id: 4 },
+      { operation: "release", id: 4, deadlineMs: 120_000 },
     ]);
   } finally {
     vi.advanceTimersByTime(3 * 60_000);

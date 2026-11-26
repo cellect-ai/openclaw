@@ -143,9 +143,9 @@ precedence. Both settings are ignored for the English-only `flux-general-en` mod
 The bundled `deepgram` plugin also registers a realtime transcription provider
 for the Voice Call plugin.
 
-The saved auth profile is used only when Deepgram is the named provider, for example
-`streaming.provider: "deepgram"`. Automatic selection counts only the config and
-environment keys.
+Realtime transcription WebSockets honor the Gateway's `HTTPS_PROXY` / `https_proxy`
+and `NO_PROXY` / `no_proxy` settings, including CIDR bypasses. Configured debug
+capture proxies take precedence; TLS certificate verification remains enabled.
 
 | Setting         | Config path                                                             | Default                                                                |
 | --------------- | ----------------------------------------------------------------------- | ---------------------------------------------------------------------- |
@@ -157,6 +157,10 @@ environment keys.
 | Sample rate     | `...deepgram.sampleRate`                                                | `8000`                                                                 |
 | Endpointing     | `...deepgram.endpointingMs`                                             | `800`                                                                  |
 | Interim results | `...deepgram.interimResults`                                            | `true`                                                                 |
+
+The saved auth profile is used only when Deepgram is the named provider, for example
+`streaming.provider: "deepgram"`. Automatic selection counts only the config and
+environment keys.
 
 With interim results enabled and endpointing at most 5000 ms, a provider-detected
 word gap also completes confirmed speech when background noise prevents endpointing.

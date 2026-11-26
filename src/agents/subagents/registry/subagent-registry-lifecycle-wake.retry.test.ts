@@ -1,7 +1,10 @@
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/helpers/promise.js";
-import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
+import {
+  loadTranscriptEvents,
+  upsertSessionEntryCore,
+} from "../../../config/sessions/session-accessor.js";
 import type { SqliteWorkerCommand } from "../../../infra/sqlite-worker-contract.js";
 import { sqliteWorkerOwnerProbe as probe } from "../../../infra/sqlite-worker-owner-probe.test-support.js";
 import { resetGatewayWorkAdmission } from "../../../process/gateway-work-admission.js";
@@ -23,11 +26,6 @@ import {
   seedSubagentCompletionOwner,
   withSubagentCompletionWorkerState,
 } from "../completion/subagent-completion-admission.test-helpers.js";
-import {
-  registerRequesterFinalAttachment,
-  promoteRequesterFinalAttachment,
-  finalizeRequesterFinalAttachment,
-} from "../requester-final-attachment.js";
 import { scheduleRequesterSettleWake } from "./subagent-registry-lifecycle-wake.js";
 import { mutateSubagentRuns } from "./subagent-registry-persistence.js";
 import { loadSubagentRegistryFromSqlite } from "./subagent-registry-state.fixture.test-support.js";
@@ -58,54 +56,6 @@ function isSubagentCompletionMutation(
 }
 
 describe("requester settle retry lifetime", () => {
-  it("retires only one member of a partitioned requester attachment", async () => {
-    await withSubagentCompletionWorkerState(async (database) => {
-      const input = armRequesterWake(records());
-      input.subagent.completionRequesterSessionId = "partition-requester-session";
-      const retired = input.subagent.runId;
-      const sibling = "surviving-partition";
-      input.subagent.requesterSettleWake!.requesterYieldBatch = true;
-      input.subagent.requesterSettleWake!.batchRunIds = [retired, sibling];
-      const append = vi.fn(() => true);
-      const owner = {
-        requesterAgentId: input.subagent.requesterAgentId!,
-        requesterSessionKey: input.subagent.requesterSessionKey,
-        requesterSessionId: input.subagent.completionRequesterSessionId!,
-      };
-      const registration = registerRequesterFinalAttachment({
-        ...owner,
-        requesterTurnRunId: "partition-requester",
-        lifecycleGeneration: getAgentEventLifecycleGeneration(),
-        timeoutMs: 60_000,
-        append,
-      });
-      promoteRequesterFinalAttachment({
-        ...owner,
-        requesterTurnRunId: "partition-requester",
-        batchRunIds: [retired, sibling],
-        rearmGeneration: input.subagent.requesterSettleWake!.rearmGeneration!,
-      });
-      using driver = seedDriver(database, input);
-      try {
-        await driver.controller.retireSubagentObligations(currentCompletionRun(input), () => {}, {
-          requesterNotified: true,
-        });
-        finalizeRequesterFinalAttachment({
-          ...owner,
-          batchRunIds: [sibling],
-          rearmGeneration: input.subagent.requesterSettleWake!.rearmGeneration!,
-          requesterYieldBatch: true,
-          pause: false,
-          delivered: true,
-          finalAssistantVisibleText: "surviving final",
-        });
-        expect(append).toHaveBeenCalledExactlyOnceWith("surviving final");
-      } finally {
-        registration.revoke();
-      }
-    });
-  });
-
   it.each(["same", "other", "unbound"] as const)(
     "suppresses a stop notification only for its physically admitted requester (%s store)",
     async (store) => {
@@ -186,6 +136,57 @@ describe("requester settle retry lifetime", () => {
       } finally {
         release.resolve();
         await running;
+        driver.controller.clearRuntimeState();
+      }
+    });
+  });
+
+  it("reports a lost-run batch failure in the requester's current transcript", async () => {
+    await withSubagentCompletionWorkerState(async (database) => {
+      const input = armRequesterWake(records());
+      const requester = {
+        agentId: "main",
+        sessionKey: input.subagent.requesterSessionKey,
+        storePath: path.join(
+          path.dirname(database.path),
+          "agents",
+          "main",
+          "sessions",
+          "sessions.json",
+        ),
+      };
+      // A compaction successor replaced the transcript that admitted the yield.
+      await upsertSessionEntryCore(requester, {
+        sessionId: "successor",
+        lifecycleRevision: "rev-2",
+        updatedAt: Date.now(),
+      });
+      Object.assign(input.subagent, {
+        requesterStorePath: requester.storePath,
+        completionRequesterSessionId: "predecessor",
+        completionRequesterLifecycleRevision: "rev-1",
+      });
+      input.subagent.requesterSettleWake!.requesterYieldBatch = true;
+      const driver = seedDriver(database, input);
+      driver.wake.mockImplementation(async (params) => {
+        await params.completeBatch([params.settledEntry], 1, {
+          delivered: false,
+          path: "direct",
+          error: "requester turn failed",
+        });
+        return true;
+      });
+      try {
+        await driver.run();
+        const events = await loadTranscriptEvents({ ...requester, sessionId: "successor" });
+        expect(events).toContainEqual(
+          expect.objectContaining({
+            type: "custom_message",
+            customType: "run-failed-before-reply",
+            details: expect.objectContaining({ error: "requester turn failed" }),
+          }),
+        );
+      } finally {
         driver.controller.clearRuntimeState();
       }
     });

@@ -20,6 +20,7 @@ import {
   composeSessionSourceAssertion,
   type SessionSourceAssertion,
 } from "../../config/sessions/session-source-authority.js";
+import { withSessionTranscriptHydrationCaller } from "../../config/sessions/session-transcript-hydration-caller.js";
 import { withoutSessionTranscriptReadFence } from "../../config/sessions/session-transcript-read-fence.js";
 import { withSessionTranscriptWriteAssertion } from "../../config/sessions/transcript-write-context.js";
 import { buildAgentHookContextChannelFields } from "../../plugins/hook-agent-context.js";
@@ -37,13 +38,17 @@ export async function persistWorkerTurnUserMessage(params: {
     "prompt" | "transcriptPrompt" | "media" | "onUserMessagePersisted"
   >;
   manager: SessionManager;
+  timestamp: number;
   transcriptTarget: BoundAgentRunSessionTarget;
   media: Pick<Awaited<ReturnType<typeof prepareWorkerTurnMedia>>, "images" | "imageFactIndexes">;
   assertRunCurrent?: () => void;
   isAuthorized: () => boolean;
+  /** Model-only text for this user row; display content stays the user's own text. */
+  modelPromptProjection?: string;
 }): Promise<string | null> {
   const { turn, manager, transcriptTarget, media } = params;
   const canonical = buildPersistedUserTurnMessage({
+    timestamp: params.timestamp,
     text: turn.transcriptPrompt ?? turn.prompt,
     media: turn.media,
     mediaImageLayout: {
@@ -62,6 +67,9 @@ export async function persistWorkerTurnUserMessage(params: {
     __openclaw: {
       ...canonical["__openclaw"],
       mediaImageBlockFactIndexes: media.imageFactIndexes,
+      ...(params.modelPromptProjection === undefined
+        ? {}
+        : { modelPromptProjection: { version: 1, text: params.modelPromptProjection } }),
     },
   };
   const assertCurrent = () => {
@@ -125,6 +133,13 @@ export async function persistWorkerTurnInput(
 ) {
   await persistWorkerTurnRecordedInput(params);
   const recorder = params.turn.userTurnTranscriptRecorder;
+  const projection = params.modelPromptProjection;
+  const capture = recorder?.captureModelPromptProjection;
+  if (capture && projection !== undefined) {
+    await withSessionTranscriptWriteAssertion(params.transcriptTarget, params.assertCurrent, () =>
+      capture(projection, params.assertCurrent),
+    );
+  }
   if (recorder && !params.userMessageAlreadyPersisted) {
     return recorder.getAdmissionReceipt()?.entryId ?? params.baseLeafId;
   }
@@ -251,11 +266,8 @@ export async function gateWorkerTurnInput(
         turn.onUserMessagePersisted?.(persisted.message);
       }
     } else {
-      const manager = await SessionManager.openAsync(
-        transcriptTarget,
-        undefined,
-        undefined,
-        turn.abortSignal,
+      const manager = await withSessionTranscriptHydrationCaller("worker-input", () =>
+        SessionManager.openAsync(transcriptTarget, undefined, undefined, turn.abortSignal),
       );
       assertCurrent();
       await withSessionManagerWrite(manager, () => manager.appendMessageAsync(message));
@@ -299,7 +311,9 @@ export async function readWorkerTurnInputContext(params: WorkerTurnInputParams) 
           admission,
           signal: turn.abortSignal,
         })
-      : await SessionManager.openAsync(transcriptTarget, undefined, undefined, turn.abortSignal);
+      : await withSessionTranscriptHydrationCaller("worker-input", () =>
+          SessionManager.openAsync(transcriptTarget, undefined, undefined, turn.abortSignal),
+        );
   assertCurrent();
   let baseLeafId = admission?.entryId ?? manager.getLeafId();
   // Reuse the fenced read's source watermark. Later writes still face the commit fence.

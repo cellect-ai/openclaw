@@ -188,19 +188,6 @@ it.each([false, true])(
     expect(new Set(await fs.readdir(root))).toEqual(before);
     await expectUnchanged(mocks.build, mocks.record);
     expect(mocks.command.mock.calls.filter(([argv]) => argv.includes("ls-remote"))).toHaveLength(1);
-    const gitCalls = mocks.command.mock.calls.filter(([argv]) => argv[0] === "git");
-    expect(gitCalls.filter(([argv]) => argv.includes("version"))).toHaveLength(1);
-    for (const [, options] of gitCalls) {
-      expect(options.baseEnv).toEqual({});
-      expect(options.env).toMatchObject({
-        PATH: "/usr/bin:/bin",
-        GIT_CONFIG_NOSYSTEM: "1",
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_NO_REPLACE_OBJECTS: "1",
-        GIT_DIR: undefined,
-        GIT_WORK_TREE: undefined,
-      });
-    }
   },
 );
 

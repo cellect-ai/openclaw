@@ -93,13 +93,35 @@ describe("secrets store state", () => {
       ]);
       expect(result).toEqual(complete ? { saved: 2, warningCount: 2 } : null);
       expect(state.loaded).toBe(!complete);
-      expect(state.error).toBe(complete ? "Inventory unavailable" : "1/2: Second write refused");
+      expect(state.error).toBe(
+        complete
+          ? "Inventory unavailable"
+          : "Confirmed saves before the error: 1 of 2. Couldn’t finish the import. Reload the list to check what was saved.\nSecond write refused",
+      );
       expect(state.busy).toBe(false);
       expect(request.mock.calls.filter(([method]) => method === "secrets.store.set")).toHaveLength(
         2,
       );
     },
   );
+
+  it("separates the saved count from the failure detail after a partial bulk save", async () => {
+    const { state, request } = storeWithSnapshots([]);
+    request
+      .mockResolvedValueOnce({ ok: true, reloaded: false })
+      .mockRejectedValueOnce(new Error("Store unavailable"))
+      .mockResolvedValueOnce({ entries: [] });
+    expect(
+      await bulkSetSecretsStoreEntries(state, [
+        { name: "FIRST", value: "one", kind: "env" },
+        { name: "SECOND", value: "two", kind: "env" },
+      ]),
+    ).toBeNull();
+    expect(state.error).toBe(
+      "Confirmed saves before the error: 1 of 2. Couldn’t finish the import. Reload the list to check what was saved.\nStore unavailable",
+    );
+    expect(state.busy).toBe(false);
+  });
 
   it("parses quoted multiline dotenv values and classifies sensitive names", () => {
     const parsed = parseSecretsStoreBulkInput(

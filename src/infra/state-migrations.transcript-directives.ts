@@ -5,10 +5,8 @@ import { updateSqliteTranscriptEventJsonInTransaction } from "../config/sessions
 import { OPENCLAW_AGENT_SCHEMA_VERSION } from "../state/openclaw-agent-db-contract.js";
 import type { OpenClawAgentDatabase } from "../state/openclaw-agent-db-contract.js";
 import { agentEngineInput } from "../state/openclaw-agent-db-engine.js";
-import {
-  OpenClawAgentDatabaseLeaseActiveError,
-  assertNoOpenClawAgentDatabaseLeasesReadOnly,
-} from "../state/openclaw-agent-db-lease.js";
+import { assertNoOpenClawAgentDatabaseLeasesReadOnly } from "../state/openclaw-agent-db-lease-inspection.js";
+import { OpenClawAgentDatabaseLeaseActiveError } from "../state/openclaw-agent-db-lease.js";
 import { assertAgentDatabaseMaintenanceAuthority } from "../state/openclaw-agent-db-maintenance-authority.js";
 import { withAgentDatabaseMaintenanceLease } from "../state/openclaw-agent-db-maintenance-lease.js";
 import {
@@ -29,7 +27,7 @@ import {
 import { openNodeSqliteDatabase } from "./node-sqlite.js";
 import { isPostgresSqlConnection, type EngineConnection } from "./sql-connection.js";
 import { backupDoctorSqliteRepair } from "./sqlite-index-recovery.js";
-import { resolveSqliteInspectionSignal } from "./sqlite-readonly-worker.js";
+import { resolveSqliteInspectionSignal } from "./sqlite-readonly-worker-context.js";
 import { admitSqliteSchema } from "./sqlite-schema-facts.js";
 import { runSqliteImmediateTransactionSync } from "./sqlite-transaction.js";
 import { createMigrationDatabaseHandle } from "./state-migrations.agent-database.js";
@@ -235,9 +233,9 @@ function createArchiveLineTransform(
   };
 }
 
-function hasActiveAgentDatabaseLease(env: NodeJS.ProcessEnv): boolean {
+async function hasActiveAgentDatabaseLease(env: NodeJS.ProcessEnv): Promise<boolean> {
   try {
-    assertNoOpenClawAgentDatabaseLeasesReadOnly({ env });
+    await assertNoOpenClawAgentDatabaseLeasesReadOnly({ env });
     return false;
   } catch (error) {
     if (error instanceof OpenClawAgentDatabaseLeaseActiveError) {
@@ -255,7 +253,7 @@ async function migrateTranscriptSessions(params: {
   pathname: string;
   resolveMaskedProvider: MaskedProviderResolver;
   start: Extract<MigrationCursor, { phase: "transcripts" }>;
-  backupBeforeDirectiveRewrite: () => void;
+  backupBeforeDirectiveRewrite: () => Promise<void>;
 }): Promise<number> {
   const { scope } = params.start;
   let rewrittenSessions = 0;
@@ -279,7 +277,7 @@ async function migrateTranscriptSessions(params: {
         .filter((row) => row.maskedProvider === "restored")
         .map((row) => row.seq);
       if (directivesChanged) {
-        params.backupBeforeDirectiveRewrite();
+        await params.backupBeforeDirectiveRewrite();
       }
       if (complete || changedRows.length > 0) {
         runSqliteImmediateTransactionSync(
@@ -397,9 +395,10 @@ async function migrateAgentDatabase(
     let preserved = false;
     // Directive edits keep the full pre-repair backup; provider restores are undone from
     // their recorded rows.
-    const backupBeforeDirectiveRewrite = () => {
+    const backupBeforeDirectiveRewrite = async () => {
       if (!preserved) {
-        const backup = backupDoctorSqliteRepair(params.pathname, "transcript-directives");
+        const backup = await backupDoctorSqliteRepair(params.pathname, "transcript-directives");
+        maintenance.assertOwned();
         preserved = true;
         params.changes.push(`Saved pre-repair SQLite backup: ${backup}`);
       }
@@ -426,11 +425,13 @@ async function migrateAgentDatabase(
             pathname: params.pathname,
             signal: maintenance.signal,
             start: archiveCursor,
+            prepareRewrite: async () => {
+              if (archiveObservations.directivesChanged) {
+                await backupBeforeDirectiveRewrite();
+              }
+            },
             // Runs inside each archive rewrite transaction, after its batch was planned.
             beforeRewrite: () => {
-              if (archiveObservations.directivesChanged) {
-                backupBeforeDirectiveRewrite();
-              }
               const lines = [...archiveObservations.unrecordedRestoredLines];
               if (lines.length > 0) {
                 recordRestoredProviders(database, params.agentId, (record) => {
@@ -571,7 +572,7 @@ export async function migrateHistoricalTranscriptDirectives(
     const hasActiveWriter =
       discovery.targets.length > 0 &&
       agentEngineInput() === undefined &&
-      hasActiveAgentDatabaseLease(env);
+      (await hasActiveAgentDatabaseLease(env));
     const targets: AgentDatabaseMigrationTarget[] = [];
     for (const target of discovery.targets) {
       try {

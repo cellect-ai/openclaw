@@ -28,6 +28,11 @@ import {
   createSandboxReadOperations,
 } from "./agent-tools.read.operations.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
+import {
+  type ApplyPatchContainmentSource,
+  isSandboxRootEscapeError,
+  withWorkspaceRecoveryHint,
+} from "./apply-patch-containment-hint.js";
 import { collectTextContentBlocks } from "./content-blocks.js";
 import { writeHostFile } from "./host-file-write.js";
 import type { ImageSanitizationLimits } from "./image-sanitization.js";
@@ -434,20 +439,6 @@ function normalizeReadResultDetails(
   return { ...result, details: { kind: "text", content: displayText } };
 }
 
-function isSandboxRootEscapeError(error: unknown): error is Error {
-  return error instanceof Error && /^Path escapes sandbox root \(/i.test(error.message);
-}
-
-function withWorkspaceSafeTempHint(error: unknown): unknown {
-  if (!isSandboxRootEscapeError(error)) {
-    return error;
-  }
-  const message = error.message.includes(".openclaw/tmp/")
-    ? error.message
-    : `${error.message}. Use a relative path under \`.openclaw/tmp/\` inside the workspace for scratch/temp/meta files that file tools need to read or write later.`;
-  return new Error(message, { cause: error });
-}
-
 async function assertSandboxPathWithinAnyRoot(params: {
   cwd?: string;
   filePath: string;
@@ -500,6 +491,7 @@ export function wrapToolWorkspaceRootGuardWithOptions<TDetails>(
     pathParamKeys?: readonly string[];
     normalizeGuardedPathParams?: boolean;
     resolutionCwd?: string;
+    containmentSource?: ApplyPatchContainmentSource;
     bridge?: SandboxFsBridge;
     readPathValidation?: "bridge";
   },
@@ -570,7 +562,11 @@ export function wrapToolWorkspaceRootGuardWithOptions<TDetails>(
             });
           }
         } catch (error) {
-          throw withWorkspaceSafeTempHint(error);
+          throw withWorkspaceRecoveryHint(
+            error,
+            !options?.bridge && mounts.length === 0,
+            options?.containmentSource,
+          );
         }
         if (options?.normalizeGuardedPathParams && record) {
           normalizedRecord ??= { ...record };
@@ -733,7 +729,9 @@ export function createOpenClawReadTool(
         typeof normalizedRecord?.path === "string" ? normalizedRecord.path : "<unknown>";
       // Daily journals may not exist yet; let the concrete reader own filesystem errors.
       const implicitlyOptional =
-        normalizedRecord?.optional === undefined && isDailyMemoryReadPath(filePath);
+        normalizedRecord &&
+        !Object.hasOwn(normalizedRecord, "optional") &&
+        isDailyMemoryReadPath(filePath);
       const result = await executeReadWithAdaptivePaging({
         base,
         toolCallId,

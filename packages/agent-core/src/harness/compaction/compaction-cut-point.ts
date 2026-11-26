@@ -38,7 +38,7 @@ function countCompactionContentChars(
   return countCompactionContentCharsFromParts(estimateStringChars(text), images, omissionText);
 }
 
-function countCompactionContentCharsFromParts(
+export function countCompactionContentCharsFromParts(
   textChars: number,
   images: number,
   omissionText?: string,
@@ -50,7 +50,7 @@ function countCompactionContentCharsFromParts(
 }
 
 /** Unrounded contribution; callers merging turns must round only after merging. */
-function estimateCompactionChars(message: AgentMessage): number {
+export function estimateCompactionChars(message: AgentMessage): number {
   if ("excludeFromContext" in message && message.excludeFromContext === true) {
     return 0;
   }
@@ -362,6 +362,13 @@ export function findCutPointFromFacts(
     }
     cutIndex = fittingCut;
   }
+  // Decide the split from the selected message, before retaining the metadata in front of it:
+  // a bootstrap marker before a user message must not make the previous turn a split-turn prefix.
+  const cutEntry = entries[cutIndex];
+  if (!cutEntry) {
+    throw new Error("compaction cut point does not reference a session entry");
+  }
+  const startsTurn = cutEntry.isTurnStart;
   while (cutIndex > startIndex) {
     const prevEntry = entries[cutIndex - 1];
     if (!prevEntry) {
@@ -376,11 +383,6 @@ export function findCutPointFromFacts(
     }
     cutIndex--;
   }
-  const cutEntry = entries[cutIndex];
-  if (!cutEntry) {
-    throw new Error("compaction cut point does not reference a session entry");
-  }
-  const startsTurn = cutEntry.isTurnStart;
   const turnStartIndex = startsTurn
     ? -1
     : findPreviousTurnStart(cutIndex, startIndex, (index) => entries[index]?.isTurnStart === true);

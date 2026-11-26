@@ -1,3 +1,4 @@
+import { isDeepStrictEqual } from "node:util";
 import { normalizeSortedUniqueTrimmedStringList } from "@openclaw/normalization-core/string-normalization";
 import { normalizeDeviceAuthScopes } from "../shared/device-auth.js";
 import { roleScopesAllow } from "../shared/operator-scope-compat.js";
@@ -114,6 +115,7 @@ export function reusablePairedDeviceToken(
     scopes: string[];
     allowedAgentIds?: string[];
     issuer?: DeviceAuthToken["issuer"];
+    approval?: DeviceAuthToken["approval"];
   },
 ): DeviceAuthToken | null {
   const role = params.role.trim();
@@ -136,6 +138,7 @@ export function reusablePairedDeviceToken(
     }) &&
     scopesWithinApprovedDeviceBaseline({ role, scopes: existing.scopes, approvedScopes }) &&
     deviceTokenIssuerMatches(existing, params.issuer) &&
+    (!params.approval || isDeepStrictEqual(existing.approval, params.approval)) &&
     roleScopesAllow({
       role,
       requestedScopes,

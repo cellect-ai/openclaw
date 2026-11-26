@@ -65,20 +65,8 @@ suite.define(() => {
                 Math.max(...controls.map((control) => control.getBoundingClientRect().right))
               );
             });
-          let capturedClearance = false;
           const expectButtonClearance = async () => {
             await waitForControlUiFrameLayout([composer]);
-            if (label === "desktop-mode-ipad" && !capturedClearance) {
-              const frame = await takeControlUiScreenshotFrame(page, composer, [textarea], {
-                animations: "disabled",
-              });
-              await writeFile(
-                path.join(suite.artifactDir, "ipad-clearance-before-assert.png"),
-                frame.png,
-              );
-              console.info("iPad clearance frame", suite.artifactDir);
-              capturedClearance = true;
-            }
             const buttonWidth = await composer
               .locator(".agent-chat__composer-actions .chat-send-btn:visible")
               .last()

@@ -1563,7 +1563,6 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
     expect(sendMessageFeishuMock).toHaveBeenCalledTimes(1);
     const fallbackText = String(firstMockArg(sendMessageFeishuMock, "message send params").text);
     expect(fallbackText).toBe("spoken reply\n\nMedia upload failed. Please try again.");
-    expect(fallbackText).not.toContain(mediaPath);
   });
 
   it.each([
@@ -1838,7 +1837,7 @@ describe("createFeishuReplyDispatcher streaming behavior", () => {
   it("backs off streaming retries after start() throws (HTTP 400)", async () => {
     const errorMock = vi.fn();
     let shouldFailStart = true;
-    const nowSpy = vi.spyOn(Date, "now").mockReturnValue(1_000);
+    const nowSpy = vi.spyOn(performance, "now").mockReturnValue(1_000);
     const origPush = streamingInstances.push.bind(streamingInstances);
     streamingInstances.push = (...args: StreamingSessionStub[]) => {
       const firstInstance = args[0];

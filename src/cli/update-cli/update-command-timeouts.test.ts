@@ -225,7 +225,7 @@ it.each(["validating", "activating"] as const)(
       }
       throw new Error("Unready Gateways must not complete successfully");
     });
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
     const output = vi.mocked(defaultRuntime.writeJson);
     const running = runUpdate({ timeout: "60" }).catch((error: unknown) => error);
     try {
@@ -256,9 +256,9 @@ it.each(["validating", "activating"] as const)(
   },
 );
 
-it.each(["monotonic"] as const)(
+it.each(["timer", "monotonic"] as const)(
   "blocks a delayed forward effect after %s preparation expiry while retaining terminal bookkeeping",
-  async () => {
+  async (expiration) => {
     const record = prepareTimedUpdate();
     const observing = createDeferredCore();
     const resume = createDeferredCore();
@@ -276,6 +276,7 @@ it.each(["monotonic"] as const)(
       fs.writeFileSync(effect, "forward mutation");
       return null;
     });
+    vi.useFakeTimers({ toFake: ["performance", "setTimeout", "clearTimeout"] });
     const running = runUpdate({ timeout: "60" }).catch((error: unknown) => error);
     try {
       await awaitGateBeforeSettlement(
@@ -283,7 +284,11 @@ it.each(["monotonic"] as const)(
         running,
         "Update settled before the delayed forward effect",
       );
-      vi.spyOn(performance, "now").mockReturnValue(deadlineMs!);
+      if (expiration === "timer") {
+        await vi.advanceTimersByTimeAsync(60_000);
+      } else {
+        vi.spyOn(performance, "now").mockReturnValue(deadlineMs!);
+      }
     } finally {
       resume.resolve();
       await running;

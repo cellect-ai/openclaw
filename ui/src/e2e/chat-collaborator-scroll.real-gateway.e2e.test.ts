@@ -254,30 +254,14 @@ async function waitForDelta(observed: Observation, text: string, expectedSession
     .toBe(true);
 }
 async function waitForSettlement(page: Page) {
-  await page
-    .getByRole("button", { name: "Stop generating", exact: true })
-    .waitFor({ state: "detached" });
+  await page.getByRole("button", { name: "Stop", exact: true }).waitFor({ state: "detached" });
 }
 async function wheel(page: Page, delta: number) {
   await page.locator(".chat-pane-cache__pane--active .chat-thread").hover();
   await page.mouse.wheel(0, delta);
+  // Wheel dispatch can finish before native scrolling begins.
+  await expect.poll(() => chatThreadDistanceFromBottom(page)).toBeGreaterThan(8);
   await waitForChatScrollIdle(page);
-}
-
-async function waitForChatFollow(page: Page, renderedText: string, message: string) {
-  // A quiet viewport can precede streamed DOM growth. Wait for the rendered
-  // paragraph before measuring smooth follow, then verify its settled position.
-  await expect
-    .poll(() => page.locator(".chat-pane-cache__pane--active .chat-thread").textContent(), {
-      message,
-      timeout: 15_000,
-    })
-    .toContain(renderedText);
-  await expect
-    .poll(() => chatThreadDistanceFromBottom(page), { message, timeout: 15_000 })
-    .toBeLessThanOrEqual(8);
-  await waitForChatScrollIdle(page);
-  expect(await chatThreadDistanceFromBottom(page), message).toBeLessThanOrEqual(8);
 }
 
 suite.define(() => {
@@ -381,11 +365,8 @@ suite.define(() => {
               await expect.poll(provider.requests).toBe(turn.index);
               await turn.append(paragraphs(mode));
               await waitForDelta(a, mode + " paragraph 14.", sessionKey);
-              await waitForChatFollow(
-                reader,
-                mode + " paragraph 14.",
-                mode + ": own submit follows its assistant stream",
-              );
+              await waitForChatScrollIdle(reader);
+              await expect.poll(() => chatThreadDistanceFromBottom(reader)).toBeLessThanOrEqual(8);
               if (reading) {
                 const delta =
                   mode === "near-bottom"
@@ -399,7 +380,10 @@ suite.define(() => {
                 await wheel(reader, delta);
               }
               const before = await startScrollProbe(reader);
-              expect(reading ? before.distance > 8 : before.distance <= 8).toBe(true);
+              expect(
+                reading ? before.distance > 8 : before.distance <= 8,
+                `${mode}: ${JSON.stringify(before)}`,
+              ).toBe(true);
               if (mode === "older-history") {
                 expect(before.anchorText).not.toContain(mode + " paragraph");
               }
@@ -416,11 +400,30 @@ suite.define(() => {
                       // the presence packet against its queued-custody replacement.
                       await expect
                         .poll(() =>
-                          reader
-                            .locator('.chat-virtual-row[data-virtual-row-key="presence:typing"]')
-                            .textContent(),
+                          a.received.some((frame) => {
+                            if (frame.type !== "event" || frame.event !== "session.typing") {
+                              return false;
+                            }
+                            const payload = record(frame.payload);
+                            return (
+                              payload?.sessionKey === sessionKey &&
+                              payload?.typing === true &&
+                              payload?.preview === remotePrompt &&
+                              record(payload?.actor)?.id === profileIds[1]
+                            );
+                          }),
                         )
-                        .toContain(remotePrompt);
+                        .toBe(true);
+                      // The transcript tail renders only while the reader is there.
+                      if (!reading) {
+                        await expect
+                          .poll(() =>
+                            reader
+                              .locator('.chat-virtual-row[data-virtual-row-key="presence:typing"]')
+                              .textContent(),
+                          )
+                          .toContain(remotePrompt);
+                      }
                     }
                   : undefined,
               );
@@ -489,11 +492,13 @@ suite.define(() => {
             await expect.poll(() => chatThreadDistanceFromBottom(reader)).toBeLessThanOrEqual(8);
             await expect.poll(provider.requests).toBe(local.index);
             await local.append(paragraphs("local-resume", 3));
-            await waitForChatFollow(
-              reader,
-              "local-resume paragraph 3.",
-              "local submit follows its assistant stream",
-            );
+            await waitForDelta(a, "local-resume paragraph 3.", sessionKey);
+            await waitForChatScrollIdle(reader);
+            await expect
+              .poll(() => chatThreadDistanceFromBottom(reader), {
+                message: "local submit follows its assistant stream",
+              })
+              .toBeLessThanOrEqual(8);
             await local.finish();
             for (const page of pages) {
               await waitForSettlement(page);

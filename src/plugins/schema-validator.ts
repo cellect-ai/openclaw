@@ -146,27 +146,24 @@ function relaxConditionalRequiredKeywords(
   schema: JsonSchemaValue,
   insideConditionalBranch = false,
 ): JsonSchemaValue {
-  if (Array.isArray(schema)) {
-    return schema.map((entry) =>
-      relaxConditionalRequiredKeywords(entry as JsonSchemaValue, insideConditionalBranch),
-    ) as never;
-  }
-  if (!schema || typeof schema !== "object") {
+  if (typeof schema === "boolean") {
     return schema;
   }
   return Object.fromEntries(
     Object.entries(schema)
       .filter(([key]) => !(insideConditionalBranch && key === "required"))
-      .map(([key, value]) => [
-        key,
-        typeof value === "boolean" || (value && typeof value === "object")
-          ? relaxConditionalRequiredKeywords(
-              value as JsonSchemaValue,
-              insideConditionalBranch || key === "then" || key === "else",
-            )
-          : value,
-      ]),
-  ) as JsonSchemaValue;
+      .map(([key, value]) => {
+        const inBranch = insideConditionalBranch || key === "then" || key === "else";
+        const relaxValue = (entry: unknown): unknown => {
+          if (Array.isArray(entry)) {
+            return entry.map(relaxValue);
+          }
+          const object = asOptionalObjectRecord(entry);
+          return object ? relaxConditionalRequiredKeywords(object, inBranch) : entry;
+        };
+        return [key, relaxValue(value)];
+      }),
+  );
 }
 
 function checkSchema(validate: SchemaValidator, value: unknown): TypeBoxValidationError[] | null {
@@ -469,7 +466,6 @@ export function validatePluginConfig(params: {
 }): Result<Record<string, unknown> | undefined, string[]> {
   const { schema, value } = params;
   if (!schema) {
-    // SAFETY: Production callers supply normalized plugin-entry config (a record or undefined).
     return ok(value as Record<string, unknown> | undefined);
   }
   if (params.sourceValue === undefined && isEmptyPluginConfigJsonSchema(schema)) {
@@ -495,11 +491,9 @@ export function validatePluginConfig(params: {
     sourceValue: params.sourceValue,
     applyDefaults: true,
   });
-  if (!result.ok) {
-    return resultError(result.errors.map((error) => error.text));
-  }
-  // SAFETY: Validation preserves the normalized config record, only cloning or adding defaults.
-  return ok(result.value as Record<string, unknown> | undefined);
+  return result.ok
+    ? ok(result.value as Record<string, unknown> | undefined)
+    : resultError(result.errors.map((error) => error.text));
 }
 
 // The empty-config shortcut answers without compiling the schema, so it is only sound for

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { parseDateFirstTimestampMs } from "@openclaw/normalization-core/number-coercion";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -19,7 +20,6 @@ import {
 } from "../../state/openclaw-agent-db.js";
 import type {
   LatestTranscriptAssistantText,
-  SqliteTranscriptSnapshotRow,
   SessionTranscriptReadScope,
   SessionTranscriptEventRow,
   SessionTranscriptStats,
@@ -48,7 +48,10 @@ import {
 import { readTranscriptStatsFromDatabase } from "./session-accessor.sqlite-transcript-stats.js";
 import { readSessionActorTransactionState } from "./session-actor-transaction.js";
 import { readHotSessionTranscriptSnapshot } from "./session-cold-storage-state.js";
-import type { SessionTranscriptReadSnapshot } from "./session-history-read.types.js";
+import type {
+  SessionTranscriptMatchDiagnostics,
+  SessionTranscriptReadSnapshot,
+} from "./session-history-read.types.js";
 import { SqliteTranscriptMutationConflictError } from "./session-mutation-conflict-error.js";
 import { SessionTranscriptColdError } from "./session-transcript-cold-error.js";
 import { SessionTranscriptStorageUnavailableError } from "./session-transcript-projection-error.js";
@@ -57,13 +60,17 @@ import {
   captureSessionTranscriptQuestionAnswers,
   resolveSqliteSessionTranscriptReadFence,
 } from "./session-transcript-read-fence.js";
-import { visitTranscriptEventRows } from "./session-transcript-snapshot-digest.js";
 import {
   readTranscriptPayload,
   transcriptEventJsonSql,
   transcriptEventNavigationSql,
   transcriptEventResetNavigationSql,
 } from "./transcript-payload.js";
+
+export type SqliteTranscriptSnapshotRow = {
+  eventJson: string;
+  seq: number;
+};
 
 export type SqliteTranscriptSnapshotState =
   | { kind: "current"; rows: SqliteTranscriptSnapshotRow[] }
@@ -363,10 +370,61 @@ export function readTranscriptSnapshot(
 export function readTranscriptEventRows(
   database: Pick<OpenClawAgentDatabase, "db">,
   sessionId: string,
+  afterSeq?: number,
 ): SqliteTranscriptSnapshotRow[] {
   const rows: SqliteTranscriptSnapshotRow[] = [];
-  visitTranscriptEventRows(database, sessionId, (row) => rows.push(row));
+  visitTranscriptEventRows(database, sessionId, (row) => rows.push(row), afterSeq);
   return rows;
+}
+
+function visitTranscriptEventRows(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  visit: (row: SqliteTranscriptSnapshotRow) => void,
+  afterSeq?: number,
+): void {
+  readHotSessionTranscriptSnapshot(database, sessionId, "raw rows", () => {
+    let query = getSessionKysely(database.db)
+      .selectFrom("transcript_events")
+      .select(["event_json", "event_zstd", "event_utf8_bytes", "seq"])
+      .where("session_id", "=", sessionId)
+      .orderBy("seq", "asc");
+    if (afterSeq !== undefined) {
+      query = query.where("seq", ">", afterSeq);
+    }
+    for (const row of iterateSqliteQuerySync(database.db, query)) {
+      visit({ eventJson: readTranscriptPayload(row), seq: sqliteNumber(row.seq) });
+    }
+  });
+}
+
+export type SqliteTranscriptSnapshotDigest = { count: number; sha256: string };
+
+/** Keep byte/sequence stale-write checks without retaining the discarded transcript. */
+export function readTranscriptEventRowsDigest(
+  database: Pick<OpenClawAgentDatabase, "db">,
+  sessionId: string,
+  visit?: (row: SqliteTranscriptSnapshotRow) => void,
+): SqliteTranscriptSnapshotDigest {
+  const hash = createHash("sha256");
+  let count = 0;
+  visitTranscriptEventRows(database, sessionId, (row) => {
+    hash.update(JSON.stringify([row.seq, row.eventJson]));
+    count++;
+    visit?.(row);
+  });
+  return { count, sha256: hash.digest("hex") };
+}
+
+export function assertSqliteTranscriptDigestUnchanged(
+  database: OpenClawAgentDatabase,
+  sessionId: string,
+  expected: SqliteTranscriptSnapshotDigest,
+): void {
+  const current = readTranscriptEventRowsDigest(database, sessionId);
+  if (current.count !== expected.count || current.sha256 !== expected.sha256) {
+    throw new SqliteTranscriptMutationConflictError(sessionId);
+  }
 }
 
 /** Reads exact transcript storage rows for guarded doctor rewrites. */
@@ -411,7 +469,10 @@ export function findTranscriptEventInDatabase(
   sessionId: string,
   match: (event: TranscriptEvent) => boolean,
   navigationMatch?: (event: TranscriptEvent) => boolean,
-  { malformed = "skip" }: { malformed?: "skip" | "throw" } = {},
+  {
+    malformed = "skip",
+    diagnostics,
+  }: { malformed?: "skip" | "throw"; diagnostics?: SessionTranscriptMatchDiagnostics } = {},
 ): { event: TranscriptEvent } | undefined {
   return readHotSessionTranscriptSnapshot(database, sessionId, "match", () => {
     const events = getSessionKysely(database.db)
@@ -427,6 +488,14 @@ export function findTranscriptEventInDatabase(
         .select((eb) => eb("navigation_json", "is not", null).as("projected"))
         .orderBy("seq", "desc"),
     )) {
+      if (diagnostics) {
+        diagnostics.rowsVisited++;
+        if (row.projected) {
+          diagnostics.projectedRows++;
+        } else {
+          diagnostics.identityRows++;
+        }
+      }
       const prefilter = row.projected ? navigationMatch : undefined;
       if (prefilter && !findTranscriptEventInRows([row], prefilter)) {
         continue;

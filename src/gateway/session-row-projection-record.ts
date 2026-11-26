@@ -145,7 +145,10 @@ export type SelectionChange =
       id: string;
       key: string;
       agentId: string;
+      storePath: string;
       row: SelectionRow | undefined;
+      /** Display-only replacements still update indexed entry references. */
+      factsChanged?: boolean;
       /** Synchronous internal publication scope; deferred refreshes have no causal label. */
       scope?: string;
     };
@@ -196,11 +199,13 @@ export type Query = {
 export type Inputs = Parameters<typeof rowProjection.readSessionRowInputs>[0];
 export type SnapshotOptions = Pick<Inputs, "now" | "excludedChildKeys"> & {
   childActivity?: SessionChildActivity;
+  backgroundProcessCount?: number;
   includeDerivedTitles?: boolean;
   includeLastMessage?: boolean;
   active?: boolean;
   subagentRuns?: SessionListRowContext["subagentRuns"];
   preparedFacts?: ReturnType<NonNullable<Row["facts"]>["present"]>;
+  preparedRunState?: Parameters<typeof rowProjection.presentSessionRow>[1]["preparedRunState"];
 };
 export type Lookup = { agentId: string; key: string; storePath?: string };
 type RowTarget = Pick<Row, "agentId" | "key" | "storeTarget">;
@@ -505,16 +510,17 @@ export function present(
     activeModel: active ? (live ?? undefined) : record.fallbackModel,
     excludedChildKeys: options.excludedChildKeys,
     childActivity: options.childActivity,
+    backgroundProcessCount: options.backgroundProcessCount,
+    preparedRunState: options.preparedRunState,
   });
   Object.assign(row, options.preparedFacts ?? record.facts?.present());
   row.hasBoard = record.hasBoard;
   // Naming belongs to the in-flight owner, not persisted or materialized row state.
-  row.titlePending =
-    sessionTitleRequests.get({
-      storePath: record.storeTarget.storePath,
-      sessionKey: record.key,
-      sessionId: record.entry.sessionId,
-    }) !== undefined;
+  row.titlePending = sessionTitleRequests.isPending({
+    storePath: record.storeTarget.storePath,
+    sessionKey: record.key,
+    sessionId: record.entry.sessionId,
+  });
   // Undefined omits wire fields without converting each presented row to dictionary storage.
   if (!options.includeDerivedTitles) {
     row.derivedTitle = undefined;
@@ -549,9 +555,9 @@ export function isPrivateSourceCurrent(source: NonNullable<Row["privateSource"]>
 export function isCurrentGeneration(row: Row, current: Row | undefined): boolean {
   return (
     current?.generation === row.generation &&
-    (!isIncognitoSessionKey(row.key) ||
-      (current.entry?.sessionId === row.entry?.sessionId &&
-        current.entry?.lifecycleRevision === row.entry?.lifecycleRevision))
+    ((current.entry?.sessionId === row.entry?.sessionId &&
+      current.entry?.lifecycleRevision === row.entry?.lifecycleRevision) ||
+      !isIncognitoSessionKey(row.key))
   );
 }
 

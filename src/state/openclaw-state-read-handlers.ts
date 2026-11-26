@@ -1,11 +1,8 @@
 import type { ExecutionIdentityInspectionOutcome } from "../audit/execution-identity-inspection.types.js";
 import { isChannelIngressReadCommand } from "../channels/message/ingress-queue-read-contract.js";
-import {
-  isCronStateReadCommand,
-  readCronStateCommandInDatabase,
-} from "../cron/store/read-command.js";
 import { isWorkspaceJournalReadCommand } from "../gateway/worker-environments/placement-workspace-journal.types.js";
 import type { EngineConnection } from "../infra/sql-connection.js";
+import { isUpdateRunAdmissionReadCommand } from "../infra/update-run-admission.types.js";
 import { isPluginStateReadCommand } from "../plugin-state/plugin-state-worker-contract.js";
 import { isTuiLastSessionReadCommand } from "../tui/tui-last-session.contract.js";
 import {
@@ -27,14 +24,6 @@ export async function prepareOpenClawStateRead(
     const { readTemplateStateCommandInDatabase } =
       await import("../templates/state-read.kernel.js");
     return (db: EngineConnection) => readTemplateStateCommandInDatabase(db, command);
-  }
-  if (command.type === "agentDatabaseDeletion.snapshot") {
-    const { readAgentDatabaseDeletionWorkerSnapshot } =
-      await import("./agent-deletion-journal.snapshot.worker.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      snapshot: readAgentDatabaseDeletionWorkerSnapshot(db, input.databasePath, command.purpose),
-    });
   }
   if (command.type === "deliveryQueue.outbound") {
     const { assertOpenClawStateWriteAllowed } = await import("./openclaw-state-ownership.js");
@@ -111,7 +100,13 @@ export async function prepareOpenClawStateRead(
     const { readBackupRunsInDatabase } = await import("./backup-run-records.kernel.js");
     return (db: EngineConnection) => ({ type: command.type, runs: readBackupRunsInDatabase(db) });
   }
-  if (isCronStateReadCommand(command)) {
+  if (
+    command.type === "cron.currentReceipt" ||
+    command.type === "cron.scratch" ||
+    command.type === "cron.jobNames" ||
+    command.type === "cron.quarantine"
+  ) {
+    const { readCronStateCommandInDatabase } = await import("../cron/store/read-command.js");
     return (db: EngineConnection) => readCronStateCommandInDatabase(db, command);
   }
   if (
@@ -230,28 +225,9 @@ export async function prepareOpenClawStateRead(
       runs: readUpdateRuns(db, command.input),
     });
   }
-  if (command.type === "updateRuns.reconciliationCandidates") {
-    const { readUpdateRunReconciliationCandidates } =
-      await import("../infra/update-run-reconciliation.read.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      candidates: readUpdateRunReconciliationCandidates(db, command.input),
-    });
-  }
-  if (command.type === "updateRuns.reconciliationCandidate") {
-    const { tableExists } = await import("./openclaw-state-db-schema-helpers.js");
-    const { readUpdateRunRecord } = await import("../infra/update-run-read.kernel.js");
-    const { inspectUpdateRunReconciliation } =
-      await import("../infra/update-run-reconciliation.read.js");
-    return (db: EngineConnection) => {
-      const run = tableExists(db, "update_runs")
-        ? readUpdateRunRecord(db, command.runId)
-        : undefined;
-      return {
-        type: command.type,
-        candidate: run ? inspectUpdateRunReconciliation(db, run, {}) : undefined,
-      };
-    };
+  if (isUpdateRunAdmissionReadCommand(command)) {
+    const { readUpdateRunAdmissionCommand } = await import("../infra/update-run-admission.read.js");
+    return (db: EngineConnection) => readUpdateRunAdmissionCommand(db, command);
   }
   if (command.type === "updateRuns.status") {
     const { runSqliteReadSnapshotSync } = await import("../infra/sqlite-transaction.js");
@@ -275,6 +251,24 @@ export async function prepareOpenClawStateRead(
     return (db: EngineConnection) => ({
       type: command.type,
       run: readInterruptedUpdateCandidate(db),
+    });
+  }
+  if (command.type === "updateRuns.pluginCohortRecoveries") {
+    const { runSqliteReadSnapshotSync } = await import("../infra/sqlite-transaction.js");
+    const { inspectPluginCohortRecoveryRows } =
+      await import("../infra/update-run-recovery-store.js");
+    return (db: EngineConnection) => ({
+      type: command.type,
+      pairs: runSqliteReadSnapshotSync(db, () => inspectPluginCohortRecoveryRows(db)),
+    });
+  }
+  if (command.type === "updateRuns.pluginSnapshotCollection") {
+    const { runSqliteReadSnapshotSync } = await import("../infra/sqlite-transaction.js");
+    const { canCollectPluginSourceSnapshotsInDatabase } =
+      await import("../infra/update-run-recovery-store.js");
+    return (db: EngineConnection) => ({
+      type: command.type,
+      allowed: runSqliteReadSnapshotSync(db, () => canCollectPluginSourceSnapshotsInDatabase(db)),
     });
   }
   if (command.type === "exec-approvals.read") {
@@ -520,14 +514,6 @@ export async function prepareOpenClawStateRead(
       await import("../gateway/worker-environments/placement-workspace-journal.js");
     return (db: EngineConnection) => readWorkspaceJournalInDatabase(db, command);
   }
-  if (command.type === "workers.placementRecoveryCandidates") {
-    const { readWorkerPlacementRecoveryCandidatesInDatabase } =
-      await import("../gateway/worker-environments/placement-read-projection.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      candidates: readWorkerPlacementRecoveryCandidatesInDatabase(db),
-    });
-  }
   if (command.type === "workers.placementPreservation") {
     const { readWorkerPlacementsForReconcileInDatabase } =
       await import("../gateway/worker-environments/placement-row-codec.js");
@@ -568,23 +554,6 @@ export async function prepareOpenClawStateRead(
     const { readTuiLastSessionCommand } = await import("../tui/tui-last-session.kernel.js");
     return (db: EngineConnection) => readTuiLastSessionCommand(db, command);
   }
-  if (command.type === "preparedPoolPresence.read") {
-    const { readPreparedPoolPresenceDemandInDatabase } =
-      await import("../gateway/worker-environments/prepared-pool-presence-store.worker.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      demand: readPreparedPoolPresenceDemandInDatabase(db),
-    });
-  }
-  if (command.type === "workerEnvironments.snapshot") {
-    const { runSqliteReadSnapshotSync } = await import("../infra/sqlite-transaction.js");
-    const { readWorkerEnvironmentFacts } =
-      await import("../gateway/worker-environments/store-row-codec.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      facts: runSqliteReadSnapshotSync(db, () => readWorkerEnvironmentFacts(db, command.ids)),
-    });
-  }
   if (command.type === "agentDeletionJournal.status") {
     const { readAgentDeletionJournalStatusInDatabase } =
       await import("./agent-deletion-journal.read.js");
@@ -599,37 +568,6 @@ export async function prepareOpenClawStateRead(
     return (db: EngineConnection) => ({
       type: command.type,
       agentIds: readRetainedAgentDeletionIds(db),
-    });
-  }
-  if (command.type === "sandboxRegistry.list") {
-    const { readSandboxRegistryInDatabase } = await import("../agents/sandbox/registry.kernel.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      entries: readSandboxRegistryInDatabase(db, command.workspaceDir),
-    });
-  }
-  if (command.type === "sandboxRegistry.get") {
-    const { readSandboxRegistryEntryInDatabase } =
-      await import("../agents/sandbox/registry.kernel.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      entry: readSandboxRegistryEntryInDatabase(db, command.containerName),
-    });
-  }
-  if (command.type === "sandboxRegistry.runtimeIds") {
-    const { readSandboxRuntimeIdsInDatabase } =
-      await import("../agents/sandbox/registry.kernel.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      runtimeIds: readSandboxRuntimeIdsInDatabase(db, command),
-    });
-  }
-  if (command.type === "sandboxRegistry.browsers") {
-    const { readSandboxBrowserRegistryInDatabase } =
-      await import("../agents/sandbox/registry.kernel.js");
-    return (db: EngineConnection) => ({
-      type: command.type,
-      entries: readSandboxBrowserRegistryInDatabase(db, command.workspaceDir),
     });
   }
   if (command.type === "worktrees.cleanupState") {

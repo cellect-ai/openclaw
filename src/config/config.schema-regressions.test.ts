@@ -19,6 +19,26 @@ function validateBinding(agentId: string, entries: Record<string, unknown>) {
 }
 
 describe("config schema regressions", () => {
+  it.each([false, true])("preserves the instructions cache capability %s", (cachesInstructions) => {
+    const result = validateConfigObject({
+      models: {
+        providers: {
+          openai: {
+            models: [
+              { id: "fixture-model", name: "Fixture Model", compat: { cachesInstructions } },
+            ],
+          },
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.config.models?.providers?.openai?.models[0]?.compat?.cachesInstructions).toBe(
+        cachesInstructions,
+      );
+    }
+  });
+
   it("accepts and preserves mixed extra memory path entries", () => {
     const extraPaths = [
       "../team-notes",
@@ -50,6 +70,30 @@ describe("config schema regressions", () => {
         true,
       );
     }
+  });
+  it.each(["clawson", "A", "0_team-name", "a".repeat(64)])(
+    "accepts repository branch prefix %j through canonical config validation",
+    (repositoryBranchPrefix) => {
+      const result = validateConfigObject({ repositoryBranchPrefix });
+      expect(result.ok).toBe(true);
+      if (result.ok) {
+        expect(result.config.repositoryBranchPrefix).toBe(repositoryBranchPrefix);
+      }
+    },
+  );
+
+  it.each([
+    "",
+    "../other",
+    "refs/heads",
+    "-option",
+    "has space",
+    " clawson",
+    "clawson\n",
+    "é",
+    "a".repeat(65),
+  ])("rejects unsafe repository branch prefix %j", (repositoryBranchPrefix) => {
+    expect(validateConfigObject({ repositoryBranchPrefix }).ok).toBe(false);
   });
 
   it.each([["ops"], ["ops-*"], [], ["*"]].map((send) => ({ send })))(

@@ -20,8 +20,49 @@ import {
   POST_CORE_UPDATE_RESULT_PATH_ENV,
 } from "./update-post-core-context.js";
 
+it.each([false, true])(
+  "validates the internal retirement-only hint (%s)",
+  async (retirementOnly) => {
+    const doctor = vi.fn();
+    // mock-isolation: Observe the private wire contract without running host maintenance.
+    vi.doMock("../flows/doctor-health.js", () => ({ runDoctorHealthFlow: doctor }));
+    process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH = "/synthetic/doctor.json";
+    try {
+      await runWorker(
+        {
+          executor: {},
+          runId: "synthetic-run",
+          root: "/synthetic",
+          configInputHash: "hash",
+          repair: true,
+          retirementOnly,
+        },
+        "--doctor",
+      );
+    } finally {
+      delete process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH;
+      vi.doUnmock("../flows/doctor-health.js");
+    }
+
+    if (retirementOnly) {
+      expect(fixture.stopService).toHaveBeenCalledOnce();
+      expect(doctor).toHaveBeenCalledExactlyOnceWith(
+        expect.anything(),
+        expect.anything(),
+        expect.objectContaining({ retirementOnly: true }),
+      );
+      expect(process.exitCode).toBe(originalExitCode);
+    } else {
+      expect(fixture.stopService).not.toHaveBeenCalled();
+      expect(doctor).not.toHaveBeenCalled();
+      expect(fixture.activation).not.toHaveBeenCalled();
+      expect(process.exitCode).toBe(1);
+      expect(stderr.join("")).toContain("retirementOnly");
+    }
+  },
+);
+
 const fixture = vi.hoisted(() => ({
-  engineActive: false,
   close: vi.fn<() => Promise<void>>(),
   closeNative: vi.fn<() => Promise<void>>(),
   closePostgres: vi.fn<() => Promise<void>>(),
@@ -44,16 +85,9 @@ vi.mock("./database-engine/admission-scope.js", async (importOriginal) => {
   return { ...actual, installDatabaseProcessRole: vi.fn(actual.installDatabaseProcessRole) };
 });
 
-// mock-isolation: Observe database scope through finalization without opening a real engine.
+// mock-isolation: Wire/cleanup fixtures leave real storage selection to the PostgreSQL process test.
 vi.mock("../cli/update-cli/update-command-database-engine.js", () => ({
-  withUpdateDatabaseEngine: async (_env: NodeJS.ProcessEnv, run: () => Promise<unknown>) => {
-    fixture.engineActive = true;
-    try {
-      return await run();
-    } finally {
-      fixture.engineActive = false;
-    }
-  },
+  withUpdateDatabaseEngine: async (_env: NodeJS.ProcessEnv, run: () => Promise<unknown>) => run(),
 }));
 
 // Exercise the executable's output boundary without update, service, or database effects.
@@ -133,7 +167,7 @@ vi.mock("./update-run-ledger.js", () => ({
 vi.mock("./update-run-write.async.js", () => ({ recordUpdateRunStepAsync: fixture.recordStep }));
 
 const originalArgv = process.argv;
-const originalExitCode = process.exitCode;
+const originalExitCode = process.exitCode ?? 0;
 const originalRouting = loggingState.forceConsoleToStderr;
 const originalConsole = loggingState.rawConsole;
 const stdout: string[] = [];
@@ -182,6 +216,7 @@ function expectResultFile(
 }
 
 beforeEach(() => {
+  process.exitCode = originalExitCode;
   vi.resetModules();
   vi.clearAllMocks();
   fixture.stopService.mockReset().mockResolvedValue({ stopped: false });
@@ -364,7 +399,6 @@ it.each(["json", "human", "check"] as const)(
       return 300_000;
     });
     fixture.finish.mockImplementation(async () => {
-      expect(fixture.engineActive).toBe(true);
       if (mode === "json") {
         defaultRuntime.writeJson(result);
       } else {
@@ -373,7 +407,6 @@ it.each(["json", "human", "check"] as const)(
       return result;
     });
     fixture.terminal.mockImplementation(() => {
-      expect(fixture.engineActive).toBe(true);
       log.debug("terminal snapshot diagnostic");
       return { runId: "synthetic-run", status: "ok" };
     });
@@ -401,7 +434,11 @@ it.each(["json", "human", "check"] as const)(
       expect(JSON.parse(stdout.join(""))).toMatchObject(
         mode === "json"
           ? result
-          : { executorDelegation: "pid-start-v1", postCoreExecutor: "stdin-pid-start-v1" },
+          : {
+              executorDelegation: "pid-start-v1",
+              postCoreExecutor: "stdin-pid-start-v1",
+              pluginCohortSettlement: true,
+            },
       );
       expect(stderr.join("")).toContain("cleanup diagnostic");
       if (mode === "json") {

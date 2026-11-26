@@ -1,4 +1,5 @@
 import { clearPreparedEmbeddedAgentSettings } from "../../agents/agent-project-settings.js";
+import { stopSessionExecProcesses } from "../../agents/bash-process-control.js";
 import { clearPromptCacheObservations } from "../../agents/embedded-agent-runner/prompt-cache-observability.js";
 import { clearEmbeddedSessionPromptStates } from "../../agents/embedded-agent-runner/session-prompt-state.js";
 import { killSessionSubagentRuns } from "../../agents/subagents/registry/subagent-control-kill.js";
@@ -32,6 +33,12 @@ import { clearSessionQueues } from "./queue/cleanup.js";
 
 export class SessionResetCleanupError extends Error {}
 
+export class SessionResetCleanupConflictError extends SessionResetCleanupError {
+  constructor() {
+    super("Reset did not complete because the session changed before cleanup. Retry /reset.");
+  }
+}
+
 /** Prepare parent facts once; cleanup observes the entry writer's in-process receipts. */
 export async function prepareSessionResetCleanupGuard(params: {
   agentId: string;
@@ -49,9 +56,7 @@ export async function prepareSessionResetCleanupGuard(params: {
       current?.sessionId !== params.expectedSession?.sessionId ||
       current?.lifecycleRevision !== params.expectedSession?.lifecycleRevision
     ) {
-      throw new SessionResetCleanupError(
-        "Reset did not complete because the session changed before cleanup. Retry /reset.",
-      );
+      throw new SessionResetCleanupConflictError();
     }
   };
   if (memory) {
@@ -83,9 +88,7 @@ export async function prepareSessionResetCleanupGuard(params: {
         assertCurrent: () => {
           const current = retained.readCurrent();
           if (current === undefined) {
-            throw new SessionResetCleanupError(
-              "Reset did not complete because the session changed before cleanup. Retry /reset.",
-            );
+            throw new SessionResetCleanupConflictError();
           }
           assertEntry(current);
         },
@@ -121,6 +124,45 @@ export async function stopSessionResetSubagents(
       { cause },
     );
   }
+}
+
+/**
+ * Every reset path (chat `/new` and `/reset`, Gateway reset and delete) stops the
+ * session's exec processes here, before the replacement conversation is committed:
+ * in-flight commands, `background: true` services and adopted survivors. After a
+ * reset nothing would manage them. Durable processes are kept.
+ */
+export async function stopSessionResetProcesses(params: {
+  scopeKeys: Array<string | undefined>;
+  assertCurrent: () => void;
+}): Promise<void> {
+  try {
+    params.assertCurrent();
+    await stopSessionExecProcesses(
+      params.scopeKeys.filter((key): key is string => Boolean(key)),
+      params.assertCurrent,
+    );
+  } catch (cause) {
+    if (cause instanceof SessionResetCleanupError) {
+      throw cause;
+    }
+    throw new SessionResetCleanupError(
+      "Reset did not complete because some session processes could not be confirmed stopped. Inspect them with process list and retry /reset.",
+      { cause },
+    );
+  }
+}
+
+/** Chat reset: stop the session's subagents, then (with the parent stopped) its processes. */
+export async function stopSessionResetWork(
+  params: Parameters<typeof stopSessionResetSubagents>[0],
+): Promise<{ stopped: number; failed: number }> {
+  const stopped = await stopSessionResetSubagents(params);
+  await stopSessionResetProcesses({
+    scopeKeys: [params.sessionKey],
+    assertCurrent: params.assertCurrent,
+  });
+  return stopped;
 }
 
 export function clearCommittedSessionResetRuntimeState(params: {
@@ -172,13 +214,7 @@ export function clearSessionResetRuntimeState(
     clearPromptCacheObservations(opts.activeReplySessionId);
   }
   const cleared = clearSessionQueues(keys, opts.controllerTarget, undefined, opts.assertCurrent);
-  if (opts.controllerTarget) {
-    opts.assertCurrent();
-    stopRetainedSessionSends(
-      { agentId: opts.agentId, storePath: opts.controllerTarget.storeScope, sessionKeys: cleared },
-      opts.cause,
-    );
-  }
+  stopRetainedSessionSends({ agentId: opts.agentId, sessionKeys: cleared }, opts.cause);
   for (const key of cleared) {
     opts.assertCurrent();
     const owner = parseAgentSessionKey(key)?.agentId;

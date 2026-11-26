@@ -39,6 +39,7 @@ export async function startGatewayEarlyRuntime(params: {
   nodeRegistry: Parameters<typeof import("../skills/runtime/remote.js").setSkillsRemoteRegistry>[0];
   swapDiscovery: (next: GatewayDiscovery | null) => GatewayDiscovery | null;
   pluginRegistry?: PluginRegistry;
+  getPluginMetadataSnapshot: () => PluginMetadataSnapshot | undefined;
   broadcast: GatewayMaintenanceParams["broadcast"];
   maintenance: Omit<
     GatewayMaintenanceParams,
@@ -51,7 +52,6 @@ export async function startGatewayEarlyRuntime(params: {
     | "runDeliveryQueueMediaGc"
   >;
   getRuntimeConfig: () => OpenClawConfig;
-  getPluginMetadataSnapshot: () => PluginMetadataSnapshot | undefined;
   startupTrace?: GatewayStartupTrace;
 }) {
   await setSessionMcpRuntimeScheduler(params.scheduler);

@@ -147,9 +147,7 @@ export function registerCompletedFollowupAuthorityTests({
           await releaseSubagentRun(entry.runId);
           await releaseSubagentRun(successor.runId);
           expect(original.authority.assertCurrent).toThrow();
-          expect(() => subagentRuns.runWithCompletionAuthority(entry, () => "stale")).toThrow(
-            /authority/,
-          );
+          expect(subagentRuns.runWithCompletionAuthority(entry, () => "baseline")).toBe("baseline");
         } finally {
           original.release();
           followup?.release();

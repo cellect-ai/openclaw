@@ -2,15 +2,16 @@
 import { expect, it, vi } from "vitest";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { bindChatPageSession } from "../pages/chat/chat-state-route.ts";
-import "../test-helpers/app-sidebar-suite.ts";
 import {
   other,
   ownedSession,
   viewer,
   withOwnerSidebar,
 } from "../test-helpers/agent-sidebar.test-support.ts";
+import "../test-helpers/app-sidebar-suite.ts";
 import { selectSessionMenuValue } from "../test-helpers/app-sidebar-menu.ts";
 import { settleLitElement } from "../test-helpers/lit-settle.ts";
+import { storeSidebarSessionOwnerFilter } from "./app-sidebar-session-types.ts";
 
 it("intersects selected owners with each agent and opens an unloaded agent's Home", async () => {
   const rows: GatewaySessionRow[] = [
@@ -29,6 +30,11 @@ it("intersects selected owners with each agent and opens an unloaded agent's Hom
       status: "running",
     }),
   ];
+  // This flow follows a saved My sessions choice across agents.
+  storeSidebarSessionOwnerFilter("ws://gateway.test", viewer.id, {
+    ownerId: viewer.id,
+    involvingMe: false,
+  });
   await withOwnerSidebar(rows, [viewer, other], "personal", async ({ sidebar, context }) => {
     const visit = async (row: GatewaySessionRow, refresh = true) => {
       bindChatPageSession(context, row.key);
@@ -72,6 +78,7 @@ it("intersects selected owners with each agent and opens an unloaded agent's Hom
     const researchMenuItem = sidebar.querySelector<HTMLElement>(
       '.sidebar-agent-menu [data-value="agent:research"]',
     )!;
+    // The other agent has no loaded window under this owner/status selection.
     expect.soft(researchMenuItem.querySelector('[aria-label="Unread"]')).toBeNull();
     researchMenuItem.click();
     await vi.waitFor(() =>

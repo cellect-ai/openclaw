@@ -1,14 +1,16 @@
-import { asOptionalRecord, filterStringRecord } from "@openclaw/normalization-core/record-coerce";
+import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import {
-  normalizeLowercaseStringOrEmpty,
-  normalizeOptionalString,
-} from "@openclaw/normalization-core/string-coerce";
-import { type TalkCatalogParams } from "../../../../packages/gateway-protocol/src/index.js";
+  ErrorCodes,
+  errorShape,
+  missingScopeErrorShape,
+  type TalkCatalogParams,
+  validateTalkCatalogParams,
+} from "../../../../packages/gateway-protocol/src/index.js";
+import { AgentSelectionRequiredError } from "../../../agents/agent-scope.js";
 import { getRuntimeAuthProfileStoreCredentialsRevision } from "../../../agents/auth-profiles/runtime-snapshots.js";
 import { getRuntimeConfigSnapshotMetadata } from "../../../config/runtime-snapshot.js";
 import { resolveActiveTalkProviderConfig } from "../../../config/talk.js";
-import type { TalkProviderConfig } from "../../../config/types.gateway.js";
-import type { OpenClawConfig, TtsConfig, TtsProviderConfigMap } from "../../../config/types.js";
+import type { OpenClawConfig } from "../../../config/types.js";
 import { resolveProviderRawConfig } from "../../../plugin-sdk/provider-selection-runtime.js";
 import { getCurrentPluginMetadataSnapshot } from "../../../plugins/current-plugin-metadata-snapshot.js";
 import { getPluginRegistryVersion } from "../../../plugins/runtime-state.js";
@@ -27,8 +29,9 @@ import {
 } from "../../../secrets/runtime-degraded-state.js";
 import { getActiveSecretsRuntimeSnapshotRevisionState } from "../../../secrets/runtime-state.js";
 import { runInDetachedAsyncContext } from "../../../shared/detached-async-context.js";
+import { operatorScopeSatisfied } from "../../../shared/operator-scope-compat.js";
 import { resolveTalkSessionAgentId } from "../../../talk/agent-target.js";
-import { type InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
+import type { InternalRealtimeVoiceProviderCapabilities } from "../../../talk/provider-internal.js";
 import {
   canonicalizeRealtimeVoiceProviderId,
   listRealtimeVoiceProviders,
@@ -40,139 +43,35 @@ import {
 } from "../../../talk/provider-resolver.js";
 import {
   canonicalizeSpeechProviderId,
-  getSpeechProvider,
   listSpeechProviders,
 } from "../../../tts/provider-registry.js";
-import {
-  withSpeakerSelectionCompat,
-  withSpeakerSelectionFallbackCompat,
-} from "../../../tts/speaker.js";
 import { isTtsProviderConfiguredAsync, resolveTtsConfig } from "../../../tts/tts.js";
-import { providerMatchesId } from "../../../tts/voice-models.js";
-import type { GatewayRequestContext } from "../../server-methods/types.js";
+import { READ_SCOPE } from "../../operator-scopes.js";
+import type { GatewayRequestContext, GatewayRequestHandler } from "../../server-methods/types.js";
+import { assertValidParams } from "../../server-methods/validation.js";
+import { getSessionRowProjection } from "../../session-row-projection-access.js";
+import { withPreparedSessionResolve } from "../../sessions-resolve.js";
+import { formatForLog } from "../../ws-log.js";
 import { buildTalkRealtimeConfig } from "../session-config.js";
 import {
   buildTalkTranscriptionCatalog,
   resolveCatalogProviderSelection,
   settleTalkCatalogTasks,
 } from "./provider-catalog.js";
+import { buildTalkTtsConfig } from "./speech-config.js";
 
-export function resolveTalkVoiceId(
-  providerConfig: TalkProviderConfig,
-  requested: string | undefined,
-): string | undefined {
-  if (!requested) {
-    return undefined;
-  }
-  const aliases = filterStringRecord(providerConfig.voiceAliases);
-  if (!aliases) {
-    return requested;
-  }
-  const normalizedRequested = normalizeLowercaseStringOrEmpty(requested);
-  for (const [alias, voiceId] of Object.entries(aliases)) {
-    if (normalizeLowercaseStringOrEmpty(alias) === normalizedRequested) {
-      return voiceId;
-    }
-  }
-  return requested;
-}
-
-export function withTalkBaseTtsSpeakerSelectionCompat(
-  baseTts: Record<string, unknown>,
-  talkProvider?: { provider: { id: string; aliases?: readonly string[] }; apiKey?: unknown },
-): Record<string, unknown> {
-  const next = withSpeakerSelectionCompat(baseTts);
-  const providers = asOptionalRecord(baseTts.providers);
-  if (providers) {
-    next.providers = Object.fromEntries(
-      Object.entries(providers).map(([providerId, providerConfig]) => {
-        const normalized = withSpeakerSelectionCompat(asOptionalRecord(providerConfig) ?? {});
-        // Talk-owned overrides must shield provider normalization from a cold global TTS ref.
-        if (
-          typeof talkProvider?.apiKey === "string" &&
-          providerMatchesId(talkProvider.provider, providerId) &&
-          typeof normalized.apiKey === "object"
-        ) {
-          normalized.apiKey = talkProvider.apiKey;
-        }
-        return [providerId, normalized];
-      }),
-    );
-  }
-  return next;
-}
-
-export function buildTalkTtsConfig(
-  config: OpenClawConfig,
-):
-  | { cfg: OpenClawConfig; provider: string; providerConfig: TalkProviderConfig }
-  | { error: string; reason: TalkSpeakReason } {
-  const resolved = resolveActiveTalkProviderConfig(config.talk);
-  const provider = canonicalizeSpeechProviderId(resolved?.provider, config);
-  if (!resolved || !provider) {
-    return {
-      error: "talk.speak unavailable: talk provider not configured",
-      reason: "talk_unconfigured",
-    };
-  }
-  assertSecretOwnerAvailable("capability", "talk:speech");
-
-  const speechProvider = getSpeechProvider(provider, config);
-  if (!speechProvider) {
-    return {
-      error: `talk.speak unavailable: speech provider "${provider}" does not support Talk mode`,
-      reason: "talk_provider_unsupported",
-    };
-  }
-
-  const providerConfig = withSpeakerSelectionFallbackCompat(resolved.config);
-  const baseTts = withTalkBaseTtsSpeakerSelectionCompat(asOptionalRecord(config.tts) ?? {}, {
-    provider: speechProvider,
-    apiKey: providerConfig.apiKey,
-  }) as TtsConfig;
-  const resolvedProviderConfig =
-    speechProvider.resolveTalkConfig?.({
-      cfg: config,
-      baseTtsConfig: baseTts as Record<string, unknown>,
-      talkProviderConfig: providerConfig,
-      timeoutMs: baseTts.timeoutMs ?? 30_000,
-    }) ?? providerConfig;
-  const talkTts: TtsConfig = {
-    ...baseTts,
-    auto: "always",
-    provider,
-    providers: {
-      ...((asOptionalRecord(baseTts.providers) ?? {}) as TtsProviderConfigMap),
-      [provider]: resolvedProviderConfig,
-    },
-  };
-
-  return {
-    provider,
-    providerConfig,
-    cfg: {
-      ...config,
-      tts: talkTts,
-    },
-  };
-}
-
-export type TalkCatalogSnapshot = Awaited<ReturnType<typeof buildTalkCatalog>>;
-
-export type TalkCatalogEntry = {
+type TalkCatalogSnapshot = Awaited<ReturnType<typeof buildTalkCatalog>>;
+type TalkCatalogEntry = {
   snapshot?: TalkCatalogSnapshot;
   revision?: readonly unknown[];
   refreshAfter: number;
   pending?: Promise<void>;
 };
+const talkCatalogs = new WeakMap<object, Map<string, TalkCatalogEntry>>();
+const CATALOG_REFRESH_MS = 30_000;
+const CATALOG_REFRESH_DEADLINE_MS = 5_000;
 
-export const talkCatalogs = new WeakMap<object, Map<string, TalkCatalogEntry>>();
-
-export const CATALOG_REFRESH_MS = 30_000;
-
-export const CATALOG_REFRESH_DEADLINE_MS = 5_000;
-
-export function readTalkCatalog(
+function readTalkCatalog(
   context: GatewayRequestContext,
   config: OpenClawConfig,
   params: TalkCatalogParams,
@@ -305,7 +204,7 @@ export function readTalkCatalog(
   return entry.snapshot;
 }
 
-export async function buildTalkCatalog(
+async function buildTalkCatalog(
   config: OpenClawConfig,
   params: TalkCatalogParams,
   measure: <T>(phase: string, run: () => Promise<T>) => Promise<T>,
@@ -340,7 +239,6 @@ export async function buildTalkCatalog(
       ? { autoRespondToAudio: realtimeConfig.consultRouting !== "force-agent-consult" }
       : {}),
   } as const;
-
   // Mirror talk.client.create's resolution inputs (agent scope + top-level model
   // override) so catalog readiness matches what session creation will actually do;
   // diverging here previously reported GPT-Live over OAuth as unconfigured.
@@ -549,9 +447,114 @@ export async function buildTalkCatalog(
     },
   };
 }
-export type TalkSpeakReason =
-  | "talk_unconfigured"
-  | "talk_provider_unsupported"
-  | "method_unavailable"
-  | "synthesis_failed"
-  | "invalid_audio_result";
+
+export const talkCatalogHandler: GatewayRequestHandler = async ({
+  params,
+  respond,
+  context,
+  client,
+}) => {
+  const catalogParams = params ?? {};
+  if (!assertValidParams(catalogParams, validateTalkCatalogParams, "talk.catalog", respond)) {
+    return;
+  }
+
+  try {
+    const config = context.getRuntimeConfig();
+    const respondCatalog = (resolvedParams: TalkCatalogParams) => {
+      const catalog = readTalkCatalog(context, config, resolvedParams);
+      if (catalog) {
+        // Session callers need availability, not provider inventory or configuration.
+        respond(
+          true,
+          operatorScopeSatisfied("operator.read", client?.connect.scopes ?? [])
+            ? catalog
+            : {
+                modes: ["transcription"],
+                transports: ["gateway-relay"],
+                brains: ["none"],
+                speech: { ready: false, providers: [] },
+                realtime: { ready: false, providers: [] },
+                transcription: { ready: catalog.transcription.ready, providers: [] },
+              },
+          undefined,
+        );
+      } else {
+        respond(
+          false,
+          undefined,
+          errorShape(ErrorCodes.UNAVAILABLE, "Talk catalog is warming; retry shortly", {
+            retryable: true,
+            retryAfterMs: 250,
+            details: { reason: "talk-catalog-warming" },
+          }),
+        );
+      }
+    };
+    if (!catalogParams.sessionKey) {
+      if (!operatorScopeSatisfied("operator.read", client?.connect.scopes ?? [])) {
+        respond(
+          false,
+          undefined,
+          missingScopeErrorShape({ missingScope: READ_SCOPE, requiredScopes: [READ_SCOPE] }),
+        );
+        return;
+      }
+      respondCatalog(catalogParams);
+      return;
+    }
+    const projection = getSessionRowProjection(context);
+    if (!projection) {
+      respond(
+        false,
+        undefined,
+        errorShape(ErrorCodes.INVALID_REQUEST, "Session rows are initializing; try again"),
+      );
+      return;
+    }
+    const agentId = resolveTalkSessionAgentId(config, catalogParams.sessionKey);
+    const resolveStarted = Date.now();
+    await withPreparedSessionResolve(
+      {
+        projection,
+        client,
+        isCurrent: () => getSessionRowProjection(context) === projection,
+        p: {
+          key: catalogParams.sessionKey,
+          agentId,
+          includeGlobal: true,
+          includeUnknown: true,
+        },
+      },
+      (session) => {
+        if (!session.ok) {
+          respond(false, undefined, session.error);
+        } else if ("missing" in session || "ambiguous" in session) {
+          respond(
+            false,
+            undefined,
+            errorShape(ErrorCodes.INVALID_REQUEST, `No session found: ${catalogParams.sessionKey}`),
+          );
+        } else {
+          // Disclosure stays inside the projection's live authorization callback.
+          respondCatalog({ ...catalogParams, sessionKey: session.key });
+        }
+      },
+    );
+    const resolveMs = Date.now() - resolveStarted;
+    if (resolveMs >= 1_000) {
+      context.logGateway?.warn(`talk.catalog sessionResolve elapsedMs=${resolveMs}`);
+    }
+  } catch (err) {
+    respond(
+      false,
+      undefined,
+      errorShape(
+        err instanceof AgentSelectionRequiredError
+          ? ErrorCodes.INVALID_REQUEST
+          : ErrorCodes.UNAVAILABLE,
+        err instanceof AgentSelectionRequiredError ? err.message : formatForLog(err),
+      ),
+    );
+  }
+};

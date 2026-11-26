@@ -2,7 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { visibleWidth } from "../../packages/terminal-core/src/ansi.js";
-import { ExpectedCliError } from "../cli/failure-output.js";
+import { ExpectedCliError } from "../cli/expected-cli-error.js";
 import { getMockCallOutput } from "../cli/test-runtime-capture.js";
 import {
   replaceSessionEntrySync,
@@ -277,8 +277,10 @@ describe("sessionsTailCommand", () => {
     ["explicit key", ["older"]],
     ["different session id", ["latest"]],
     ["rejected", []],
+    ["interrupted", []],
   ])("selects trajectory sessions with a %s Gateway source", async (mode, expected, notice) => {
     storePath = path.join(tmpDir, "state", "agents", "main", "agent", "openclaw-agent.sqlite");
+    const work = new AsyncWorkScope();
     const entries = ["older", "concurrent", "latest", "queued"].map((label, index) => ({
       label,
       key: index === 0 ? sessionKey : `agent:main:${label}`,
@@ -312,6 +314,8 @@ describe("sessionsTailCommand", () => {
       );
     } else if (mode === "rejected") {
       mocks.callGatewayFromCliWithTransport.mockRejectedValue(new Error("missing scope"));
+    } else if (mode === "interrupted") {
+      mocks.callGatewayFromCliWithTransport.mockImplementation(async () => work.beginClose());
     }
 
     const auditProjection = ["reachable", "explicit store", "explicit key"].includes(mode);
@@ -338,11 +342,13 @@ describe("sessionsTailCommand", () => {
     const parse = vi.spyOn(JSON, "parse");
     onTestFinished(() => parse.mockRestore());
 
-    const selection = tail({
-      agent: "main",
-      store: mode === "explicit store" ? storePath : undefined,
-      sessionKey: mode === "explicit key" ? sessionKey : undefined,
-    });
+    const selection = work.run(() =>
+      tail({
+        agent: "main",
+        store: mode === "explicit store" ? storePath : undefined,
+        sessionKey: mode === "explicit key" ? sessionKey : undefined,
+      }),
+    );
     if (mode === "rejected") {
       await expect(selection).rejects.toThrow("missing scope");
     } else {
@@ -361,15 +367,8 @@ describe("sessionsTailCommand", () => {
     for (const entry of entries) {
       expect(output.includes(`${entry.label} ok`)).toBe(expected.includes(entry.label));
     }
-    expect(
-      vi
-        .mocked(runtime.log)
-        .mock.calls.filter(
-          ([line]) =>
-            String(line).startsWith("Gateway unreachable:") ||
-            String(line).startsWith("explicit store:"),
-        ),
-    ).toEqual(notice ? [[notice]] : []);
+    const notices = output.match(/^(Gateway unreachable|explicit store):.*$/gm) ?? [];
+    expect(notices).toEqual(notice ? [notice] : []);
     if (mode === "explicit store" || mode === "explicit key") {
       expect(mocks.callGatewayFromCliWithTransport).not.toHaveBeenCalled();
     }

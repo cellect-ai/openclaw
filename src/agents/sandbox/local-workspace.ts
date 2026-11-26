@@ -4,12 +4,14 @@ import { localWorkspaceProjectionPath } from "../../gateway/worker-environments/
 import {
   checkpointLocalWorkspace,
   resolveLocalWorkspaceOwner,
+  reuseLocalWorkspaceProjection,
+  withLocalWorkspacePreparation,
   withLocalWorkspaceProjection,
 } from "../../gateway/worker-environments/local-workspace-projection.js";
 import { observeDiagnosticsTimelinePhases } from "../../infra/diagnostics-timeline.js";
 import {
-  withWorktreeMutationLease,
   waitForWorktreeCapacity,
+  withWorktreeMutationLease,
   WORKTREE_CREATE_LEASE_WAIT_MS,
 } from "../worktrees/allocation.js";
 import { WorktreeCapacityContentionError } from "../worktrees/capacity.js";
@@ -24,6 +26,7 @@ import {
   getSandboxPersistentExecCapability,
 } from "./persistent-exec.types.js";
 import { acquireSandboxRuntimeUse } from "./registry-lifecycle.js";
+import type { SandboxStateOwnerPath } from "./state-owner-path.js";
 import type { SandboxConfig, SandboxContext } from "./types.js";
 
 export function assertLocalSandboxWorkspaceBackend(backend: SandboxConfig["backend"]) {
@@ -44,6 +47,7 @@ export async function prepareLocalSandboxWorkspace(params: {
   signal?: AbortSignal;
   assertCurrent?: () => void;
   assertHost?: () => void;
+  stateOwnerPath?: SandboxStateOwnerPath;
 }) {
   using phases = observeDiagnosticsTimelinePhases(
     "attempt.setup.sandbox.workspace_selection.owner",
@@ -87,92 +91,96 @@ export async function prepareLocalSandboxWorkspace(params: {
     assertCurrent,
     workerAuthority: { ...owner.workerAuthority, assertCurrent },
   };
-  const checkpoint = () => checkpointLocalWorkspace(owner);
+  const checkpoint = (options?: { knownMutation?: true }) =>
+    checkpointLocalWorkspace(owner, options);
   try {
-    lifetime.use(
-      await acquireSandboxRuntimeUse({ workspaceDir: localWorkspaceProjectionPath(owner) }),
-    );
+    const projectionPath = await localWorkspaceProjectionPath(owner);
+    assertCurrent();
+    lifetime.use(await acquireSandboxRuntimeUse({ workspaceDir: projectionPath }));
     assertCurrent();
     markManagedWorktreePreparation();
     assertLocalSandboxWorkspaceBackend(params.sandbox.backend);
     phases.mark("attempt.setup.sandbox.workspace_selection.reuse.acquire");
-    const existing = await withLocalWorkspaceProjection(
+    const workspaceDir = await withLocalWorkspacePreparation(
       executionOwner,
-      async (state) => {
-        phases.mark("attempt.setup.sandbox.workspace_selection.reuse.reconcile");
+      {
+        sandbox: params.sandbox,
+        acceleration: params.cfg.worktreeAcceleration !== false,
+        signal: params.signal,
+      },
+      async (beginCapture) => {
+        const existing = await reuseLocalWorkspaceProjection(
+          executionOwner,
+          params.signal,
+          beginCapture,
+        );
+        if (existing) {
+          setWorktreePreparationTemplate("reused");
+          return existing;
+        }
+        if (params.cfg.worktreeAcceleration === false) {
+          phases.mark("attempt.setup.sandbox.workspace_selection.prepare.acquire");
+          return await withLocalWorkspaceProjection(
+            executionOwner,
+            async (state) => {
+              beginCapture();
+              phases.mark("attempt.setup.sandbox.workspace_selection.prepare.reconcile");
+              try {
+                return await state.prepare();
+              } finally {
+                phases.mark("attempt.setup.sandbox.workspace_selection.prepare.release");
+              }
+            },
+            { signal: params.signal },
+          );
+        }
+        phases.mark("attempt.setup.sandbox.workspace_selection.allocation");
+        const allocated = startWorktreePreparationPhase("allocate");
+        const custody = {
+          env: owner.env ?? process.env,
+          id: owner.worktree.id,
+          signal: params.signal,
+          commitGuard: assertCurrent,
+          workerAuthority: executionOwner.workerAuthority,
+          waitBudget: { remainingMs: WORKTREE_CREATE_LEASE_WAIT_MS },
+        };
         try {
-          return await state.reuse();
+          for (;;) {
+            try {
+              return await withWorktreeMutationLease(custody, (allocation) => {
+                allocated();
+                phases.mark("attempt.setup.sandbox.workspace_selection.prepare.acquire");
+                return withLocalWorkspaceProjection(
+                  {
+                    ...executionOwner,
+                    assertCurrent: allocation.commitGuard,
+                    workerAuthority: allocation.workerAuthority,
+                  },
+                  async (state) => {
+                    beginCapture();
+                    phases.mark("attempt.setup.sandbox.workspace_selection.prepare.reconcile");
+                    try {
+                      return await state.prepare({ sandbox: params.sandbox, allocation });
+                    } finally {
+                      phases.mark("attempt.setup.sandbox.workspace_selection.prepare.release");
+                    }
+                  },
+                  { signal: params.signal },
+                );
+              });
+            } catch (error) {
+              if (!(error instanceof WorktreeCapacityContentionError)) {
+                throw error;
+              }
+              // Release checkout and projection custody before the disk reservation can settle.
+              await waitForWorktreeCapacity(error, custody);
+            }
+          }
         } finally {
-          phases.mark("attempt.setup.sandbox.workspace_selection.reuse.release");
+          allocated();
         }
       },
-      { signal: params.signal },
     );
-    let workspaceDir: string;
-    if (existing) {
-      setWorktreePreparationTemplate("reused");
-      workspaceDir = existing;
-    } else if (params.cfg.worktreeAcceleration === false) {
-      phases.mark("attempt.setup.sandbox.workspace_selection.prepare.acquire");
-      workspaceDir = await withLocalWorkspaceProjection(
-        executionOwner,
-        async (state) => {
-          phases.mark("attempt.setup.sandbox.workspace_selection.prepare.reconcile");
-          try {
-            return await state.prepare();
-          } finally {
-            phases.mark("attempt.setup.sandbox.workspace_selection.prepare.release");
-          }
-        },
-        { signal: params.signal },
-      );
-    } else {
-      phases.mark("attempt.setup.sandbox.workspace_selection.allocation");
-      const allocated = startWorktreePreparationPhase("allocate");
-      const custody = {
-        env: owner.env ?? process.env,
-        id: owner.worktree.id,
-        signal: params.signal,
-        commitGuard: assertCurrent,
-        workerAuthority: executionOwner.workerAuthority,
-        waitBudget: { remainingMs: WORKTREE_CREATE_LEASE_WAIT_MS },
-      };
-      try {
-        for (;;) {
-          try {
-            workspaceDir = await withWorktreeMutationLease(custody, (allocation) => {
-              allocated();
-              phases.mark("attempt.setup.sandbox.workspace_selection.prepare.acquire");
-              return withLocalWorkspaceProjection(
-                {
-                  ...executionOwner,
-                  assertCurrent: allocation.commitGuard,
-                  workerAuthority: allocation.workerAuthority,
-                },
-                async (state) => {
-                  phases.mark("attempt.setup.sandbox.workspace_selection.prepare.reconcile");
-                  try {
-                    return await state.prepare({ sandbox: params.sandbox, allocation });
-                  } finally {
-                    phases.mark("attempt.setup.sandbox.workspace_selection.prepare.release");
-                  }
-                },
-                { signal: params.signal },
-              );
-            });
-            break;
-          } catch (error) {
-            if (!(error instanceof WorktreeCapacityContentionError)) {
-              throw error;
-            }
-            // Release checkout and projection custody before the disk reservation can settle.
-            await waitForWorktreeCapacity(error, custody);
-          }
-        }
-      } finally {
-        allocated();
-      }
-    }
     assertCurrent();
     return {
       workspaceDir,

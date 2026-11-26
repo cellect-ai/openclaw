@@ -49,6 +49,8 @@ export type GatewayClient = Pick<
   | "allowedAgentIds"
   | "authenticatedUserId"
   | "authenticatedFactoryGitHubAccountId"
+  | "authenticatedGitHubAccountId"
+  | "authenticatedRepositoryCredentialSource"
   | "authenticatedUserIsTailscaleProvider"
   | "authenticatedGitHubIdentitySync"
   | "preparedSessionProfile"
@@ -81,7 +83,6 @@ export type GatewayClient = Pick<
     approvalRuntime?: boolean;
     /** Host-bound owner for one plugin approval request, without reviewer authority. */
     pluginApprovalRequestOwnerId?: string;
-    cronRunContinuation?: boolean;
     pluginRuntimeOwnerId?: string;
     /** Host-attested session provenance for a trusted official plugin node invocation. */
     nodeInvokeApprovalSessionKey?: string;

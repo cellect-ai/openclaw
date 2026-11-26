@@ -679,18 +679,12 @@ describe("Gateway state ownership", () => {
             expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
               StateDatabaseOfflineMaintenanceError,
             );
-            expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
-              "ownerKind=process",
-            );
             fs.writeFileSync(
               pathname,
               JSON.stringify({ ...record, role, stateOwnerKind: "schema" }),
             );
             expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
               StateDatabaseAdmissionPendingError,
-            );
-            expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
-              "ownerKind=schema",
             );
             fs.writeFileSync(pathname, raw);
           } else {
@@ -801,7 +795,7 @@ describe("Gateway state ownership", () => {
           for (const role of ["sqlite-maintenance", "skill-workshop-apply"] as const) {
             fs.writeFileSync(pathname, JSON.stringify({ ...record, role }));
             expect(() => assertStateDatabaseAccessAllowed(databasePath)).toThrow(
-              `offline maintenance by ${role} process ${record.pid} (ownerKind=process); retry when it finishes. For update progress, run \`openclaw update status --json\``,
+              `offline maintenance by ${role} process ${record.pid}, started ${record.createdAt}; retry when it finishes. For update progress, run \`openclaw update status --json\``,
             );
           }
           for (const raw of ["{", JSON.stringify({ ...record, role: "unknown" })]) {

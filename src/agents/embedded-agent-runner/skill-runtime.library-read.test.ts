@@ -348,8 +348,8 @@ describe("manual library resources through embedded and host-bound reads", () =>
           { sessionId: "manual-parent-id", updatedAt: Date.now(), skillLibrarySelections: pins },
         );
         const child = await createInitialSubagentSession({
-          projectRequester: { kind: "internal" },
           cfg: config,
+          projectRequester: { kind: "internal" },
           requesterAgentId: "main",
           targetAgentId: "main",
           childSessionKey: childKey,
@@ -431,10 +431,10 @@ describe("manual library resources through embedded and host-bound reads", () =>
           await expect(read.execute("symlink-escape", { path: escapeLink })).rejects.toThrow(
             /symlink|sandbox|outside|escape/i,
           );
-          // Final symlinks are rejected even within an allowed root; the code is the stable contract.
-          await expect(
-            read.execute("contained-link", { path: containedLink }),
-          ).rejects.toMatchObject({ code: "symlink" });
+          // Both symlink validation and regular-file admission reject links within an allowed root.
+          await expect(read.execute("contained-link", { path: containedLink })).rejects.toThrow(
+            /symlink|regular file/i,
+          );
         }
         if (toolOwner !== "embedded") {
           hosts[0]!.closeHost();

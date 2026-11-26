@@ -16,14 +16,16 @@ import {
 import {
   collectConversationMessageFact,
   collectConversationRangeDescriptors,
-  serializeConversationEntry,
-  serializeConversationWithinBudget,
+  collectFileOperationMessageFact,
   computeFileLists,
   createFileOps,
-  extractFileOpsFromMessage,
+  extractFileOpsFromMessages,
+  extractFileOpsFromFacts,
   formatFileOperations,
   mergeSummaryFileOperations,
   serializeConversation,
+  serializeConversationEntry,
+  serializeConversationWithinBudget,
 } from "./utils.js";
 
 function serializationFixture(): Message[] {
@@ -82,8 +84,9 @@ it("rebases arbitrary source ranges without another payload collection pass", ()
 
 it("renders row descriptors lazily with exact pre-refactor text, gaps and trim counts", () => {
   const messages = serializationFixture();
-  const facts = messages.map((message, source) => collectConversationMessageFact(message, source));
-  const descriptors = collectConversationRangeDescriptors(facts);
+  const descriptors = collectConversationRangeDescriptors(
+    messages.map((message, source) => collectConversationMessageFact(message, source)),
+  );
   expect(descriptors).toHaveLength(165);
   expect(
     descriptors.filter(({ source }) => source === 1).map(({ partIndex }) => partIndex),
@@ -133,15 +136,21 @@ function serializeToolResult(text: string): string {
 
 function fileLists(messages: AgentMessage[]) {
   const fileOps = createFileOps();
-  for (const message of messages) {
-    extractFileOpsFromMessage(message, fileOps);
-  }
+  extractFileOpsFromMessages(messages, fileOps);
+  const factOps = createFileOps();
+  extractFileOpsFromFacts(
+    messages.map((message) => collectFileOperationMessageFact(message)),
+    factOps,
+  );
+  expect(factOps).toEqual(fileOps);
   return computeFileLists(fileOps);
 }
-it("extracts namespaced tool names", () => {
-  const call = (name: string, path: string) => toolCall(name, { path });
-  const calls = [call("mcp__files__READ", "r.ts"), call("files__edit", "e.ts")];
-  expect(fileLists([assistant(calls)])).toEqual({ readFiles: ["r.ts"], modifiedFiles: ["e.ts"] });
+it.each([false, true, undefined])("extracts namespaced outcomes: %s", (changed) => {
+  const read = toolCall("mcp__files__READ", { path: "r.ts" }, "r.ts");
+  const edit = toolCall("files__edit", { path: "e.ts" }, "e.ts");
+  const result = toolResult("", { toolName: "edit", toolCallId: "e.ts", details: { changed } });
+  const expected = { readFiles: ["r.ts"], modifiedFiles: changed === false ? [] : ["e.ts"] };
+  expect(fileLists([assistant([read, edit]), result])).toEqual(expected);
 });
 it("extracts top-level and nested apply_patch result summaries", () => {
   const details = (added: string[], modified: string[], deleted: string[]) => ({

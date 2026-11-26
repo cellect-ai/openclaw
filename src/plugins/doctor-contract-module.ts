@@ -49,7 +49,7 @@ export type PluginDoctorStateMigrationContext = {
   repairCronJobs?: (
     inventory: PluginDoctorCronInventory,
     changes: readonly PluginDoctorCronChange[],
-  ) => Promise<{ changed: number; backupPath?: string }>;
+  ) => Promise<{ changed: number; backupPath?: string; warnings?: string[] }>;
   /** Non-creating canonical ACP claims for this backend, including incomplete evidence. */
   inspectAcpSessionClaims?: () => Promise<{
     claims: PluginDoctorAcpSessionClaim[];
@@ -343,20 +343,6 @@ function isPluginDoctorRecoveryCliRegistrar(
   value: unknown,
 ): value is PluginDoctorRecoveryCliRegistrar {
   return typeof value === "function";
-}
-
-export type PluginDoctorContractSurface = keyof PluginManifestDoctorContract;
-
-export function declaresPluginDoctorContractSurface(
-  declaration: PluginManifestDoctorContract | undefined,
-  surface: PluginDoctorContractSurface,
-): boolean {
-  const value = declaration?.[surface];
-  return (
-    value === true ||
-    (surface === "stateMigrations" && Array.isArray(value)) ||
-    (surface === "recoveryCli" && Array.isArray(value) && value.length > 0)
-  );
 }
 
 /** Coerce a loaded doctor contract once for both registry use and declaration validation. */

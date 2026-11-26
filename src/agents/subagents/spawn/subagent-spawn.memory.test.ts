@@ -71,7 +71,7 @@ it.each([
     const create = () =>
       createInitialSubagentSession({
         cfg: {},
-        projectRequester: { kind: "internal" as const },
+        projectRequester: { kind: "internal" },
         requesterAgentId: "main",
         targetAgentId,
         requesterInternalKey: parentKey,

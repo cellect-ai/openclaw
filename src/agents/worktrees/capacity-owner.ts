@@ -37,13 +37,13 @@ export function createWorktreeCapacityOwner({
   env,
   getConfig = getRuntimeConfig,
 }: {
-  env: NodeJS.ProcessEnv;
+  env?: NodeJS.ProcessEnv;
   getConfig?: () => OpenClawConfig;
 }) {
   const configuredMaxCount = () => getConfig().worktreeMaxCount ?? DEFAULT_WORKTREE_MAX_COUNT;
   // The creation/restore owner retains source custody through native settlement.
   async function admit(guard: WorktreeAllocationGuard): Promise<void> {
-    const occupied = await readWorktreeSlotCount(env);
+    const occupied = await readWorktreeSlotCount(env ?? process.env);
     guard.commitGuard();
     const maxCount = configuredMaxCount();
     if (occupied < maxCount) {
@@ -72,7 +72,9 @@ export function createWorktreeCapacityOwner({
   async function makeRoom(guard: WorktreeCapacityGuard): Promise<void> {
     const maxCount = configuredMaxCount();
     // A pending creator can publish during planning; retain its wait/retry target.
-    const pending = (await readPendingWorktrees(env)).find(({ state }) => state === "pending");
+    const pending = (await readPendingWorktrees(env ?? process.env)).find(
+      ({ state }) => state === "pending",
+    );
     const progress = new WorktreeGcProgress();
     const ranked = new Map<string, WorktreeEvictionCandidate>();
     const repositories = new Map<string, RepositoryInventory>();
@@ -84,7 +86,9 @@ export function createWorktreeCapacityOwner({
       if (pending) {
         throw new WorktreePendingContentionError(pending.record.id);
       }
-      const { records: remainingRecords, leases } = await readWorktreeCleanupState(env);
+      const { records: remainingRecords, leases } = await readWorktreeCleanupState(
+        env ?? process.env,
+      );
       const live = new Set(leases.liveScopes);
       const owners = remainingRecords
         .filter(
@@ -111,7 +115,7 @@ export function createWorktreeCapacityOwner({
     const started = performance.now();
     let attempted = 0;
     let yielded = false;
-    const { leases } = await readWorktreeCleanupState(env);
+    const { leases } = await readWorktreeCleanupState(env ?? process.env);
     const live = new Set(leases.liveScopes);
     const cached =
       <T>(
@@ -127,10 +131,10 @@ export function createWorktreeCapacityOwner({
         }
         return records.map((record) => cache.get(record.id + worktreeGcRevision(record))!);
       };
-    const records = await readRegistryWorktrees(env, { liveOnly: true });
+    const records = await readRegistryWorktrees(env ?? process.env, { liveOnly: true });
     const refresh = async () => {
-      const liveIds = new Set(await readLiveRegistryWorktreeIds(env));
-      return { liveIds, exceeded: (await readWorktreeSlotCount(env)) > maxCount };
+      const liveIds = new Set(await readLiveRegistryWorktreeIds(env ?? process.env));
+      return { liveIds, exceeded: (await readWorktreeSlotCount(env ?? process.env)) > maxCount };
     };
     let state = await refresh();
     if (!state.exceeded) {
@@ -206,10 +210,10 @@ export function createWorktreeCapacityOwner({
           progress.result.eligibleCount += 1;
           attempted += 1;
           const disposition = await withWorktreeMutationLease(
-            { ...guard, env, id: record.id },
+            { ...guard, env: env ?? process.env, id: record.id },
             (checkout) =>
               evictManagedWorktree({
-                env,
+                env: env ?? process.env,
                 record,
                 reason: reasons.get(record.id) ?? "idle-age",
                 guard: checkout,
@@ -320,7 +324,7 @@ export function createWorktreeCapacityOwner({
     const { records, progress, guard, checkpoint } = params;
     const result = progress.result;
     const maxCount = configuredMaxCount();
-    if ((await readWorktreeSlotCount(env)) <= maxCount) {
+    if ((await readWorktreeSlotCount(env ?? process.env)) <= maxCount) {
       result.limitsSatisfied = true;
       return;
     }

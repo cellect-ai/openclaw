@@ -26,6 +26,7 @@ import {
 } from "./update-runner-git-runtime.js";
 import {
   runGitActivationBranchCheckStep,
+  prepareGitUpdateCheckout,
   runGitCleanCheckStep,
   readGitRollbackPreservation,
   runGitRollbackSteps,
@@ -55,7 +56,8 @@ export async function updateGitCheckout(params: {
   timeoutMs: number;
   startedAt: number;
 }): Promise<UpdateRunResult> {
-  const { opts, defaultCommandEnv, timeoutMs, startedAt } = params;
+  const { opts, timeoutMs, startedAt } = params;
+  const defaultCommandEnv = resolveGitUpdateCommandEnv(params.defaultCommandEnv);
   let gitRoot = params.gitRoot;
   const runCommand: CommandRunner = (argv, options) =>
     params.runCommand(argv, {
@@ -417,7 +419,7 @@ export async function updateGitCheckout(params: {
         beforeGitStaging: opts.beforeGitStaging,
         needsCheckoutMain,
         timeoutMs,
-        defaultCommandEnv: resolveGitUpdateCommandEnv(defaultCommandEnv),
+        defaultCommandEnv,
         steps,
         beforeCandidate: inspectTarget,
         validateCandidate: opts.validateCandidate,
@@ -511,20 +513,18 @@ export async function updateGitCheckout(params: {
       return buildError(sourceChanged.reason, sourceChanged.status);
     }
     await prepareMutation(preflight.candidateSha);
-    sourceMutationStarted = true;
-    const checkout = await runStep(
-      workStep(
-        "git-checkout",
-        activateBranch
-          ? ["git", "-C", gitRoot, "checkout", "-B", DEV_BRANCH, preflight.candidateSha]
-          : ["git", "-C", gitRoot, "checkout", "--detach", preflight.candidateSha],
-        gitRoot,
-      ),
+    const checkoutArgs = await prepareGitUpdateCheckout(
+      step("git-preserve-local-main", [], gitRoot),
+      preflight.candidateSha,
+      activateBranch,
     );
+    sourceMutationStarted = true;
+    const checkout = await runStep(workStep("git-checkout", checkoutArgs, gitRoot));
     if (isFailedUpdateStep(checkout)) {
       return await rollbackError("checkout-failed");
     }
-    createdDevBranchDuringUpdate = activateBranch && preflight.localDevBranchExists === false;
+    createdDevBranchDuringUpdate =
+      checkoutArgs.includes("-B") && preflight.localDevBranchExists === false;
     if (createdDevBranchDuringUpdate) {
       const upstreamStep = await runGitUpstreamSteps(
         workStep("git-set-upstream", [], gitRoot),
@@ -560,12 +560,12 @@ export async function updateGitCheckout(params: {
         }
       };
       runtimeRetained = true;
-      const promotion = promotedRuntime;
       await opts.onTransaction(
         createGitRuntimeTransaction({
           root: gitRoot,
+          activation: { sha: preflight.candidateSha, previousBuildId: beforeBuildId },
           promotion: {
-            backupRoot: promotion.backupRoot,
+            backupRoot: promotedRuntime.backupRoot,
             cleanup: async (assertCurrent) => {
               if (!(await cleanupCandidateRuntime(assertCurrent))) {
                 return steps.findLast(
@@ -575,7 +575,7 @@ export async function updateGitCheckout(params: {
                       cleanupStep.name === "git-target-inspection-cleanup"),
                 );
               }
-              return await promotion.cleanup(assertCurrent);
+              return await promotedRuntime.cleanup(assertCurrent);
             },
           },
           assertRollbackSafe,

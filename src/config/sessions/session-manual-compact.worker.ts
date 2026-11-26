@@ -11,6 +11,11 @@ import {
   readSessionEntryRow,
   writeSessionEntry,
 } from "./session-accessor.sqlite-entry-store.js";
+import {
+  readTranscriptEventRowsDigest,
+  assertSqliteTranscriptDigestUnchanged,
+  type SqliteTranscriptSnapshotDigest,
+} from "./session-accessor.sqlite-read.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-publication.js";
 import type { ResolvedTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { replaceSqliteTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
@@ -19,7 +24,10 @@ import {
   prepareSessionColdSourceGuard,
   type SessionColdSourceMatches,
 } from "./session-cold-storage-source-guard.worker.js";
-import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
+import {
+  assertSessionTranscriptHot,
+  readHotSessionTranscriptSnapshot,
+} from "./session-cold-storage-state.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
 import { projectManuallyCompactedSessionEntry } from "./session-manual-compact-entry.js";
 import { selectManualCompactTranscriptLines } from "./session-manual-compact-selection.js";
@@ -28,11 +36,6 @@ import type {
   SessionSourceValidation,
 } from "./session-source-authority.js";
 import { createSessionSourceConversationMatches } from "./session-source-conversation-matches.js";
-import {
-  readTranscriptEventRowsDigest,
-  assertSqliteTranscriptDigestUnchanged,
-  type SqliteTranscriptSnapshotDigest,
-} from "./session-transcript-snapshot-digest.js";
 
 /** Compare the retained user data before replacing its transcript and accounting together. */
 function applyManualCompactInTransaction(
@@ -103,10 +106,18 @@ export function compactManualTranscript(
   const entries =
     input.entries ?? readSessionEntrySelectionSnapshot(database, input.scope.sessionKey, true);
   // Decode and normalize before acquiring the write transaction; commit rechecks their byte/sequence fingerprint.
-  const selected = selectManualCompactTranscriptLines(
-    (visit) =>
-      readTranscriptEventRowsDigest(database, input.scope.sessionId, (row) => visit(row.eventJson)),
-    input.maxLines,
+  const selected = readHotSessionTranscriptSnapshot(
+    database,
+    input.scope.sessionId,
+    "raw rows",
+    () =>
+      selectManualCompactTranscriptLines(
+        (visit) =>
+          readTranscriptEventRowsDigest(database, input.scope.sessionId, (row) =>
+            visit(row.eventJson),
+          ),
+        input.maxLines,
+      ),
   );
   const events = selected.result.compacted
     ? selected.lines.map((line): TranscriptEvent => JSON.parse(line))

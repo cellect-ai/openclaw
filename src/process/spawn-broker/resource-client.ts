@@ -24,6 +24,7 @@ export function attachBrokerNativeResource(
   const initialized = createDeferredCore();
   void initialized.promise.catch(() => {});
   let transport: ReturnType<typeof createBrokerResourceSocket> | undefined;
+  let socket: Socket | undefined;
   let retryTimer: NodeJS.Timeout | undefined;
   let closeSequence = 0;
   let ready = false;
@@ -84,6 +85,7 @@ export function attachBrokerNativeResource(
       clearTimeout(startupTimer);
     } else if (response.type === "resource-created") {
       initializedOwner = true;
+      socket?.unref();
       initialized.resolve();
     } else if (response.type === "resource-closed") {
       closed = true;
@@ -119,14 +121,13 @@ export function attachBrokerNativeResource(
     let candidate: Socket;
     try {
       candidate = connect(attachment.endpoint);
-      // The native lease owns liveness, including startup and unsettled work.
-      candidate.unref();
     } catch (error) {
       // An invalid endpoint throws before any socket exists. Report it like an asynchronous
       // connection failure, after the caller has installed this attachment's owner.
       queueMicrotask(() => lose(toErrorObject(error, "Native resource attachment failed")));
       return;
     }
+    socket = candidate;
     let connected = false;
     let connectionError: Error | undefined;
     candidate.once("error", (error) => {
@@ -190,6 +191,7 @@ export function attachBrokerNativeResource(
           (error: unknown) => failDelivery(error, "Native resource input delivery failed"),
         );
       });
+      // The domain caller owns active requests; this relay only retains custody.
       target.unref();
     },
     () => {},
@@ -222,6 +224,7 @@ export function attachBrokerNativeResource(
         return;
       }
       assertCleanupAvailable();
+      socket?.ref();
       const pending = closing ?? { id: ++closeSequence, completion: createDeferredCore() };
       if (!closing) {
         closing = pending;

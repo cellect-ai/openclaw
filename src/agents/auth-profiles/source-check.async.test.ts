@@ -7,6 +7,7 @@ import { SqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import { writeConfigMachineState } from "../../state/config-machine-state-write.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
+import { observeMainThreadFs } from "../../test-utils/main-thread-fs-spies.test-support.js";
 import { observeMainThreadSql } from "../../test-utils/main-thread-sql-spies.test-support.js";
 import {
   withOpenClawTestState,
@@ -14,11 +15,13 @@ import {
 } from "../../test-utils/openclaw-test-state.js";
 import { noteCommittedSharedAuthStoreOwnership } from "./path-resolve.js";
 import { resolveSessionAuthSelection } from "./session-override.js";
-import { hasAnyAuthProfileStoreSourceAsync as hasSource } from "./source-check.js";
+import {
+  hasAnyAuthProfileStoreSourceAsync as hasSource,
+  hasLocalAuthProfileStoreSourceAsync,
+} from "./source-check.js";
 import { writeAuthProfileJsonCell } from "./sqlite-json-write.js";
 import { SHARED_AUTH_STORE_STATE_KEY } from "./sqlite-json.js";
 import * as readers from "./sqlite-read.js";
-import * as sqlite from "./sqlite.js";
 import { resolveAuthProfileDatabasePath } from "./sqlite.js";
 
 async function prepareSourceCohort(state: State) {
@@ -98,6 +101,7 @@ it("retains read failure classification when cleanup fails", () =>
     vi.spyOn(readers, "prepareAgentAuthProfileRowsRead").mockResolvedValue({
       agentId: "main",
       identity: undefined,
+      databaseIdentity: undefined,
       source: { kind: "shared-state", databasePath: "/fixture/shared.sqlite" },
       captureCredentialAuthority: () => undefined,
       read: () => Promise.reject(failure),
@@ -144,14 +148,14 @@ it("refreshes absent and malformed rows through the cohort", () =>
     ).toHaveLength(0);
   }));
 
-it("checks session auth sources through the admitted identity without reverse discovery", () =>
+it("checks session auth sources through its admitted cohort without synchronous filesystem work", () =>
   withState(async (state) => {
     noteCommittedSharedAuthStoreOwnership({ location: "legacy-main" }, state.env);
     await using cohort = await prepareSourceCohort(state);
     const { reader } = cohort;
     const sessionEntry = { sessionId: "auth-source", updatedAt: 1 };
     using readCohort = vi.spyOn(reader, "withRead");
-    using reverseOwner = vi.spyOn(sqlite, "resolveAuthProfileDatabaseOwnerId");
+    using filesystem = observeMainThreadFs();
     expect(
       await resolveSessionAuthSelection({
         cfg: {},
@@ -167,7 +171,9 @@ it("checks session auth sources through the admitted identity without reverse di
       }),
     ).toBeUndefined();
     expect(readCohort).toHaveBeenCalled();
-    expect(reverseOwner).not.toHaveBeenCalled();
+    expect(
+      filesystem.stacks().filter(({ stack }) => /auth-profiles[/\\]source-check\.ts:/.test(stack)),
+    ).toEqual([]);
   }));
 
 it("rejects cohort path, agent owner, and state root mismatches", () =>
@@ -220,6 +226,7 @@ it("keeps the captured shared root after a local read yields", () =>
     noteCommittedSharedAuthStoreOwnership({ location: "state-db" }, state.env);
     const shared = openOpenClawStateDatabase();
     writeAuthProfileJsonCell(shared.db, "store", "shared-state", { version: 1, profiles: {} });
+    expect(await hasLocalAuthProfileStoreSourceAsync(state.agentDir("absent"))).toBe(false);
     const original = readers.prepareAgentAuthProfileRowsRead;
     vi.spyOn(readers, "prepareAgentAuthProfileRowsRead").mockImplementation(async (input) => {
       const reader = await original(input);

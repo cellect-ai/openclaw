@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { performance } from "node:perf_hooks";
 import { setTimeout as delay } from "node:timers/promises";
 import { BroadcastChannel } from "node:worker_threads";
-import { isAbortError } from "../../infra/abort-signal.js";
+import { isAbortError, waitForAbortSignal } from "../../infra/abort-signal.js";
 import {
   beginGatewayRootWorkAdmissionWhenOpen,
   GatewayDrainingError,
@@ -25,6 +25,7 @@ import { locked } from "./locked.js";
 import { registerCronSchedulerRefresh } from "./run-queue-wake.js";
 import {
   adoptCronRunRequests,
+  drainCronRunQueue,
   getCronRunQueueRequests,
   launchCronRunQueueResult,
 } from "./run-queue.js";
@@ -162,8 +163,10 @@ export async function startCronScheduler(
     pending: Promise.resolve(),
   };
   connections.set(state, connection);
-  connection.releaseRefresh = registerCronSchedulerRefresh(state, () =>
-    refreshCronScheduler(state),
+  connection.releaseRefresh = registerCronSchedulerRefresh(
+    state,
+    () => refreshCronScheduler(state),
+    () => drainCronRunQueue(state),
   );
   connection.unregister = registerOpenClawStateDatabaseAsyncResource({
     async close(identity) {
@@ -300,14 +303,10 @@ function recoverCronScheduler(state: CronServiceState): void {
       };
       await (state.deps.runSchedulerOwned ? state.deps.runSchedulerOwned(run) : run());
       if (current()) {
-        try {
-          await delay(retryMs, undefined, { ref: false, signal: state.schedulerScope.signal });
-        } catch (error) {
-          if (!isAbortError(error)) {
-            throw error;
-          }
-          return;
-        }
+        await waitForAbortSignal(
+          state.schedulerScope.signal,
+          delay(retryMs, undefined, { ref: false }),
+        );
       }
     }
   })

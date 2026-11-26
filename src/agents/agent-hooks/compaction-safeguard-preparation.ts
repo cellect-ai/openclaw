@@ -1,5 +1,5 @@
 /** Pure safeguard input policy shared by array hooks and worker-local preparation. */
-import { formatRequiredAskContext } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
+import { formatRequiredAskContext } from "../../../packages/agent-core/src/harness/compaction/compaction-assembly.js";
 import type { CompactionPreparation } from "../../../packages/agent-core/src/harness/compaction/compaction.js";
 import {
   computeFileLists,
@@ -11,7 +11,6 @@ import { buildSessionContext } from "../../../packages/agent-core/src/harness/se
 import type { SessionTreeEntry } from "../../../packages/agent-core/src/harness/types.js";
 import type { AgentMessage } from "../../../packages/agent-core/src/types.js";
 import { isRealConversationMessage } from "../compaction-real-conversation.js";
-import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "../copilot-dynamic-headers.js";
 import { stripRuntimeContextCustomMessages } from "../internal-runtime-context.js";
 import {
   buildPreservedTurnsSection,
@@ -19,31 +18,15 @@ import {
   resolveRecentTurnsPreserve,
   splitPreservedRecentTurns,
 } from "./compaction-safeguard-context.js";
-import type {
-  CompactionSafeguardSummary,
-  PreparedCompactionSafeguardFacts,
-} from "./compaction-safeguard-prepared.types.js";
 import {
   extractOpaqueIdentifiers,
-  nestRequiredSummaryHeadings,
+  extractOpaqueIdentifiersFromFacts,
+  normalizeLegacySplitTurnSummary,
 } from "./compaction-safeguard-quality.js";
 import {
   collectToolFailures,
   formatToolFailuresSection,
 } from "./compaction-safeguard-tool-failures.js";
-
-const SPLIT_TURN_SECTION_HEADING = "**Turn Context (split turn):**";
-
-function normalizeLegacySplitTurnSummary(summary: string | undefined): string | undefined {
-  const splitTurnStart = summary?.indexOf(SPLIT_TURN_SECTION_HEADING) ?? -1;
-  if (!summary || splitTurnStart < 0) {
-    return summary;
-  }
-  const splitTurnContentStart = splitTurnStart + SPLIT_TURN_SECTION_HEADING.length;
-  // Shipped safeguard summaries nested a second complete summary after this owned boundary.
-  // Demote its headings only in the next model input; the persisted old boundary stays untouched.
-  return `${summary.slice(0, splitTurnContentStart)}${nestRequiredSummaryHeadings(summary.slice(splitTurnContentStart))}`;
-}
 
 export type CompactionSafeguardMessages = {
   previousSummary: string | undefined;
@@ -51,8 +34,10 @@ export type CompactionSafeguardMessages = {
   turnPrefixMessages: AgentMessage[];
 };
 
-export type CompactionSafeguardHistory = CompactionSafeguardMessages &
-  PreparedCompactionSafeguardFacts["history"];
+export type CompactionSafeguardHistory = CompactionSafeguardMessages & {
+  hasRealConversation: boolean;
+  usedPreparationRange: boolean;
+};
 
 function containsRealConversation(messages: AgentMessage[]): boolean {
   return messages.some((message, index, allMessages) =>
@@ -134,14 +119,10 @@ export function prepareCompactionSafeguardHistory(params: {
 export function prepareCompactionSafeguardSections(params: {
   fileOps: CompactionPreparation["fileOps"];
   history: CompactionSafeguardHistory;
-}): PreparedCompactionSafeguardFacts["sections"] {
+}) {
   const { readFiles, modifiedFiles } = computeFileLists(params.fileOps);
   const { messagesToSummarize, turnPrefixMessages } = params.history;
   return {
-    copilotHeaders: buildCopilotDynamicHeaders({
-      messages: messagesToSummarize,
-      hasImages: hasCopilotVisionInput(messagesToSummarize),
-    }),
     readFiles,
     modifiedFiles,
     fileOpsSummary: formatFileOperations(readFiles, modifiedFiles),
@@ -156,7 +137,7 @@ export function prepareCompactionSafeguardSections(params: {
 }
 
 /** Kept separate so a custom provider still runs before any recent-turn splitting. */
-function prepareCompactionSafeguardContext(params: {
+export function prepareCompactionSafeguardContext(params: {
   messagesToSummarize: AgentMessage[];
   recentTurnsPreserve?: number;
   splitTurnContextChars: number;
@@ -179,8 +160,32 @@ function prepareCompactionSafeguardContext(params: {
   };
 }
 
+/** Undefined is a non-user; false is an independent input that stops ask lookup. */
+export function collectCompactionSafeguardAskFact(message: AgentMessage): boolean | undefined {
+  return message.role === "user"
+    ? extractCurrentCompactionUserRequest([message], () => "") !== null
+    : undefined;
+}
+
+/** Return a selected-sequence locator; reread only that row for the exact, uncapped ask. */
+export function selectCompactionSafeguardAskIndex(
+  facts: readonly (boolean | undefined)[],
+): number | null {
+  for (let index = facts.length - 1; index >= 0; index--) {
+    if (facts[index] !== undefined) {
+      return facts[index] ? index : null;
+    }
+  }
+  return null;
+}
+
+function readSelectedAsk(messages: AgentMessage[]): string | null {
+  const index = selectCompactionSafeguardAskIndex(messages.map(collectCompactionSafeguardAskFact));
+  return index === null ? null : extractMessageText(messages[index]!);
+}
+
 /** Final scalar policy shared by array preparation and a selected compaction view. */
-function prepareCompactionSafeguardSummaryFacts(params: {
+export function prepareCompactionSafeguardSummaryFacts(params: {
   previousSummary: string | undefined;
   requestSelection: CompactionPreparation["requestSelection"];
   latestUnresolvedUserRequest: string | undefined;
@@ -228,15 +233,17 @@ export function prepareCompactionSafeguardSummary(params: {
   recentTurnsPreserve?: number;
   splitTurnContextChars: number;
   qualityGuardEnabled: boolean;
-}): CompactionSafeguardSummary {
+}) {
   const { messagesToSummarize, turnPrefixMessages, previousSummary } = params.history;
   const { requestSelection, latestUnresolvedUserRequest } = params.preparation;
   const oracleMessages =
     turnPrefixMessages.length > 0
       ? [...messagesToSummarize, ...turnPrefixMessages]
       : messagesToSummarize;
-  const identifiers = extractOpaqueIdentifiers(
-    oracleMessages.slice(-10).map(extractMessageText).filter(Boolean).join("\n"),
+  const identifiers = extractOpaqueIdentifiersFromFacts(
+    oracleMessages
+      .slice(-10)
+      .map((message) => extractOpaqueIdentifiers(extractMessageText(message))),
   );
   const context = prepareCompactionSafeguardContext({
     messagesToSummarize,
@@ -247,13 +254,9 @@ export function prepareCompactionSafeguardSummary(params: {
     previousSummary,
     requestSelection,
     latestUnresolvedUserRequest,
-    oracleAsk: requestSelection
-      ? null
-      : extractCurrentCompactionUserRequest(oracleMessages, extractMessageText),
-    splitUserAsk: params.preparation.isSplitTurn
-      ? extractCurrentCompactionUserRequest(turnPrefixMessages, extractMessageText)
-      : null,
-    latestPreparedAsk: extractCurrentCompactionUserRequest(messagesToSummarize, extractMessageText),
+    oracleAsk: requestSelection ? null : readSelectedAsk(oracleMessages),
+    splitUserAsk: params.preparation.isSplitTurn ? readSelectedAsk(turnPrefixMessages) : null,
+    latestPreparedAsk: readSelectedAsk(messagesToSummarize),
     preservedTurnsText: context.preservedTurnsSection.text,
     summarizableMessageCount: context.summarizableMessages.length,
     turnPrefixMessageCount: turnPrefixMessages.length,

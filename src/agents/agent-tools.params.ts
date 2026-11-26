@@ -72,7 +72,7 @@ function isValidEditReplacement(value: unknown): boolean {
   const record = value as Record<string, unknown>;
   return (
     typeof record.oldText === "string" &&
-    record.oldText.trim().length > 0 &&
+    record.oldText.length > 0 &&
     typeof record.newText === "string"
   );
 }
@@ -100,9 +100,9 @@ export function prepareReadToolParams(args: unknown): unknown {
   if (record?.optional !== false) {
     return args;
   }
-  const required = { ...record };
-  delete required.optional;
-  return required;
+  // Preserve explicit required intent as a present field through validation.
+  // Unlike omission, this must not enable the implicit daily-journal default.
+  return { ...record, optional: undefined };
 }
 
 /** Canonical daily-memory journals, which a read without `optional` treats as optional. */

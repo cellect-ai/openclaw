@@ -259,7 +259,7 @@ async function adoptProgressDraft(
   // The retained draft now owns the card. Detach it from this turn so final
   // cleanup and late lane callbacks cannot edit or delete it.
   turn.answerLane.stream = undefined;
-  turn.progressContinuationAdopted = true;
+  turn.finalHandoff = "progress-continuation";
   resetLaneState(turn, turn.answerLane);
   resetReasoningStepState(turn);
   turn.deliveryState.markDelivered();
@@ -441,6 +441,17 @@ async function deliverReplyWithNormalization(
       await prepareAnswerLaneForToolProgress(turn);
     }
 
+    if (
+      turn.streamMode === "progress" &&
+      info.kind === "block" &&
+      effectivePayload.isCompactionNotice === true
+    ) {
+      // Compaction notices are standalone messages. Held as an interim answer, the
+      // final would replace them; let past the hold, they would stream into the
+      // progress card and be deleted with it.
+      const delivery = await sendPayload(turn, effectivePayload);
+      return toTelegramReplyDeliveryResult(turn, delivery.visibleReplySent);
+    }
     const ownedByQueuedRotation = isQueuedAnswerBlock(
       turn,
       lanePayload,

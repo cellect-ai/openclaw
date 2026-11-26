@@ -4,6 +4,8 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { sanitizeTerminalText } from "../../packages/terminal-core/src/safe-text.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
+import { getSpawnBroker } from "../process/spawn-broker/context-state.js";
+import { restoreExecaResult } from "../process/spawn-broker/execa-protocol.js";
 import { runInDetachedAsyncContext } from "../shared/detached-async-context.js";
 import { resolveGlobalSingleton } from "../shared/global-singleton.js";
 import { hasErrnoCode } from "./errno.js";
@@ -22,13 +24,11 @@ const runtime = resolveGlobalSingleton(
   (): {
     initialPath: string;
     initialIdentity?: string;
-    observations: Map<string, Promise<boolean>>;
     execPath?: string;
     failure?: Error;
     recoveryStarted?: boolean;
     recover?: () => Promise<ChildRuntimeRecovery>;
   } => ({
-    observations: new Map(),
     initialPath: process.execPath,
     initialIdentity: executableIdentity(process.execPath),
   }),
@@ -63,7 +63,7 @@ export function getRecordedChildRuntimeViability(): ChildRuntimeViability {
   return publishRuntimeViability(process.execPath);
 }
 
-/** Retained for existing synchronous OOM and SQLite callers. */
+/** Retained for the public synchronous readiness, OOM and SQLite contracts. */
 export function readChildRuntimeViability(params?: { execPath?: string }): ChildRuntimeViability {
   const execPath = params?.execPath ?? process.execPath;
   if (runtime.execPath === execPath && runtime.failure) {
@@ -82,26 +82,21 @@ export async function prepareChildRuntimeViability(params?: {
   execPath?: string;
 }): Promise<{ publish: () => ChildRuntimeViability }> {
   const execPath = params?.execPath ?? process.execPath;
-  let observation = runtime.observations.get(execPath);
-  if (!observation) {
-    // Request cancellation does not own the shared native probe. Retain only
-    // pending work; the next request after settlement observes replacement anew.
-    observation = (async () => {
-      let available = !(runtime.execPath === execPath && runtime.failure);
-      if (available) {
-        try {
-          const probe = await probeChildRuntimeExecutable(execPath);
-          const identity = await fs.stat(execPath).then(formatExecutableIdentity, () => undefined);
-          available = !classifyRuntimeProbe(execPath, probe, identity, probe.error);
-        } catch (error) {
-          available = publishRuntimeViability(execPath, error).available;
-        }
-      }
-      return available;
-    })().finally(() => runtime.observations.delete(execPath));
-    runtime.observations.set(execPath, observation);
+  let available = !(runtime.execPath === execPath && runtime.failure);
+  if (available) {
+    try {
+      const probe = await probeChildRuntimeExecutable(execPath);
+      const identity = await fs.stat(execPath).then(formatExecutableIdentity, () => undefined);
+      available = !classifyRuntimeProbe(execPath, probe, identity, probe.error);
+    } catch (error) {
+      // A failed broker transport must not hide a runtime removed during restart.
+      const cause = await fs.stat(execPath).then(
+        () => error,
+        (statError: unknown) => statError,
+      );
+      available = publishRuntimeViability(execPath, cause).available;
+    }
   }
-  const available = await observation;
   return {
     publish: () => ({
       execPath,
@@ -159,11 +154,33 @@ function runtimeProbeOptions(options: { env?: NodeJS.ProcessEnv; cwd?: string } 
   };
 }
 
-/** Native launch avoids recursing into the command owner's runtime diagnosis. */
-export function probeChildRuntimeExecutable(
+/** Direct transport launch avoids recursing into the command owner's runtime diagnosis. */
+export async function probeChildRuntimeExecutable(
   execPath: string,
   options: { env?: NodeJS.ProcessEnv; cwd?: string } = {},
 ): Promise<RuntimeProbe> {
+  const broker = getSpawnBroker();
+  if (broker) {
+    const remote = broker.spawnExeca([execPath, "--version"], {
+      ...runtimeProbeOptions(options),
+      extendEnv: false,
+      stripFinalNewline: false,
+      stdin: "ignore",
+    });
+    remote.child.once("spawn", () => {
+      remote.child.stdout?.resume();
+      remote.child.stderr?.resume();
+    });
+    const result = restoreExecaResult(await remote.result);
+    await remote.child.waitForClose();
+    return {
+      stdout: typeof result.stdout === "string" ? result.stdout : "",
+      stderr: typeof result.stderr === "string" ? result.stderr : "",
+      error: result instanceof Error ? result : undefined,
+      status: result.exitCode ?? null,
+      signal: result.signal ?? null,
+    };
+  }
   return new Promise((resolve) => {
     execFile(execPath, ["--version"], runtimeProbeOptions(options), (error, stdout, stderr) =>
       resolve({
@@ -312,7 +329,7 @@ export async function prepareChildRuntimeFailure(
 export function observeChildRuntime(
   child: ChildProcess,
   execPath = process.execPath,
-): () => Error | undefined {
+): () => Promise<Error | undefined> {
   let started = false;
   let error: unknown;
   let stderr = "";
@@ -329,16 +346,16 @@ export function observeChildRuntime(
     }
   };
   child.stderr?.on("data", captureStderr);
-  return () =>
+  return async () =>
     child.exitCode === 0 && !error
       ? undefined
-      : classifyChildRuntimeFailure({ execPath, error, stderr, signal: child.signalCode, started });
+      : prepareChildRuntimeFailure({ execPath, error, stderr, signal: child.signalCode, started });
 }
 
 /** Missing commands and missing working directories are not runtime failures. */
-export function formatChildRuntimeSpawnWarning(error: unknown): string | undefined {
+export async function formatChildRuntimeSpawnWarning(error: unknown): Promise<string | undefined> {
   if (error instanceof Error && "path" in error && error.path === process.execPath) {
-    return classifyChildRuntimeFailure({ error })?.message;
+    return (await prepareChildRuntimeFailure({ error }))?.message;
   }
   return undefined;
 }

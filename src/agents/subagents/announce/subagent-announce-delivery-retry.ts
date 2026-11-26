@@ -3,7 +3,7 @@ import { clampTimerTimeoutMs } from "@openclaw/normalization-core/number-coercio
 import { asOptionalObjectRecord } from "@openclaw/normalization-core/record-coerce";
 import { WorkerTaskError } from "@openclaw/worker-runtime";
 import { GatewayProtocolRequestError } from "../../../../packages/gateway-client/src/protocol-request.js";
-import { ErrorCodes } from "../../../../packages/gateway-protocol/src/index.js";
+import { ErrorCodes } from "../../../../packages/gateway-protocol/src/schema/error-codes.js";
 import { isSessionWorkStartInvalidatedError } from "../../../config/sessions/work-start-error.js";
 import type { OpenClawConfig } from "../../../config/types.openclaw.js";
 import { resolveDeliveryNotSentRetryability } from "../../../infra/delivery-recovery.shared.js";
@@ -48,7 +48,6 @@ export function summarizeDeliveryError(error: unknown): string {
 }
 
 const PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
-  /^managed worktree was removed: .+$/,
   /unsupported channel/i,
   /unknown channel/i,
   /chat not found/i,
@@ -58,7 +57,23 @@ const PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS: readonly RegExp[] = [
   /forbidden: bot was kicked/i,
   /recipient is not a valid/i,
   /outbound not configured for channel/i,
+  /Session "[^"]+" is archived\. Restore it before starting new work\./i,
+  /^managed worktree was removed: .+$/,
 ];
+
+// The Gateway refused the request itself; resending the same handoff gets the same answer.
+const PERMANENT_GATEWAY_REQUEST_ERROR_CODES: ReadonlySet<string> = new Set([
+  ErrorCodes.INVALID_REQUEST,
+  ErrorCodes.FORBIDDEN,
+]);
+
+function isPermanentGatewayRequestRefusal(candidate: unknown): boolean {
+  return (
+    candidate instanceof GatewayProtocolRequestError &&
+    !candidate.retryable &&
+    PERMANENT_GATEWAY_REQUEST_ERROR_CODES.has(candidate.gatewayCode)
+  );
+}
 
 function hasAnnounceErrorMatch(error: unknown, matches: (candidate: unknown) => boolean): boolean {
   return collectErrorGraphCandidates(error, (candidate) => [
@@ -73,6 +88,7 @@ function hasPermanentAnnounceError(error: unknown): boolean {
     error,
     (candidate) =>
       isPlatformMessageRejectedError(candidate) ||
+      isPermanentGatewayRequestRefusal(candidate) ||
       isSessionTranscriptTurnMismatchErrorMessage(summarizeDeliveryError(candidate)) ||
       PERMANENT_ANNOUNCE_DELIVERY_ERROR_PATTERNS.some((pattern) =>
         pattern.test(summarizeDeliveryError(candidate)),

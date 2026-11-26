@@ -79,6 +79,7 @@ export async function resolveFollowupDeliveryDecision(params: {
     | "usage"
     | "preserveUserFacingSessionState"
     | "replyUsageState"
+    | "preparePricing"
   > & {
     compactionNotice?: ReplyPayload;
     diagnosticsPayload?: ReplyPayload;
@@ -358,9 +359,9 @@ export async function resolveFollowupDeliveryDecision(params: {
   if (accounting.diagnosticsPayload && payloads.length > 0) {
     payloads.push(...preparePayloads([accounting.diagnosticsPayload]));
   }
-  const responseUsageLine = resolveResponseUsageLine({
+  const responseUsageLine = await resolveResponseUsageLine({
+    preparePricing: accounting.preparePricing,
     config: turn.config,
-    agentDir: turn.queued.run.agentDir,
     sessionRaw: turn.session.current()?.responseUsage,
     channel: resolveOriginMessageProvider({
       originatingChannel: turn.queued.originatingChannel,

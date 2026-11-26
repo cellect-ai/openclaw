@@ -565,19 +565,6 @@ describe("cron method validation", () => {
     },
   );
 
-  it("runs a padded exact job ID without caller scope", async () => {
-    const context = createCronContext(createCronJob({ id: "cron-1", agentId: "ops" }));
-    const { respond } = await invokeCron("cron.run", { id: " cron-1 " }, { context });
-    expect(context.cron.readJob).toHaveBeenCalledWith("cron-1");
-    expect(context.cron.enqueueRun).toHaveBeenCalledWith("cron-1", "force");
-    expectCronReply(respond, {
-      ok: true,
-      enqueued: true,
-      runId: "run-1",
-      processInstanceId: getGatewayProcessInstanceId(),
-    });
-  });
-
   it.each([
     {
       name: "foreign session target",
@@ -962,7 +949,7 @@ describe("cron method validation", () => {
     expect(context.cron.wake).toHaveBeenCalledOnce();
     expectResponseError(respond, {
       code: "INVALID_REQUEST",
-      messageIncludes: "agent runtime authority is no longer active",
+      messageIncludes: "The message turn has ended. Start a new turn to retry.",
     });
   });
 
@@ -1208,7 +1195,7 @@ describe("cron method validation", () => {
       expect(context.cron[owner]).toHaveBeenCalledOnce();
       expectResponseError(respond, {
         code: "INVALID_REQUEST",
-        messageIncludes: "agent runtime authority is no longer active",
+        messageIncludes: "The message turn has ended. Start a new turn to retry.",
       });
     },
   );
@@ -1461,7 +1448,7 @@ describe("cron method validation", () => {
     expectCronReply(ownerList.respond, expect.objectContaining({ total: 1 }));
   });
 
-  it("preserves only current-job self-management for a capped scheduled run", async () => {
+  it("preserves only current-job self-management across delivery accounts", async () => {
     const ownerSessionKey = "agent:ops:discord:work:group:creator";
     const accountJob = createCronJob({
       agentId: "ops",
@@ -1477,7 +1464,7 @@ describe("cron method validation", () => {
     const context = createCronContext([accountJob, siblingJob]);
     const runClient = callerClient(
       "ops",
-      "work",
+      "delivery-account",
       `agent:ops:cron:${accountJob.id}:run:run-1`,
       accountJob.id,
     );

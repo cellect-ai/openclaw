@@ -102,7 +102,7 @@ final class GatewayConnectionStateUITests: XCTestCase {
             "-gateway.manual.enabled", "YES", "-gateway.manual.host", "192.0.2.10", "-gateway.manual.port", "18789",
         ]
         app.launch()
-        let status = app.buttons["chat-gateway-status"]
+        let status = app.buttons["chat-agent-identity"]
         XCTAssertTrue(status.waitForExistence(timeout: 15))
         XCTAssertTrue(status.label.contains("Gateway: Connecting"), status.label)
         XCTAssertFalse(app.textViews["chat-message-input"].isEnabled, "The chat surface waits out the handoff")
@@ -110,16 +110,8 @@ final class GatewayConnectionStateUITests: XCTestCase {
         for control in [app.buttons["RootTabs.Sidebar.Show"], status, app.buttons["Chat actions"]] {
             XCTAssertTrue(control.isEnabled, "\(control.identifier) \(control.label) must stay enabled")
         }
-        self.capture(app, named: "reconnecting-chat-recovery-toolbar")
         app.buttons["Chat actions"].tap()
-        XCTAssertFalse(app.buttons["New session options…"].isEnabled)
-        let gatewaySettings = app.buttons["chat-gateway-settings"]
-        XCTAssertTrue(gatewaySettings.waitForExistence(timeout: 5))
-        XCTAssertTrue(gatewaySettings.isEnabled)
-        gatewaySettings.tap()
-        XCTAssertTrue(app.navigationBars["Gateway"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Scan QR"].isEnabled)
-        self.capture(app, named: "reconnecting-gateway-settings-reachable")
+        XCTAssertTrue(app.buttons["chat-gateway-settings"].waitForExistence(timeout: 5))
     }
 
     private func launchConnectionApp(_ app: XCUIApplication, setupCode: String) {

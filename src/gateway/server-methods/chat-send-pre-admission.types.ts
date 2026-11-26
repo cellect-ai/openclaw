@@ -20,6 +20,7 @@ export type ChatSendAdmissionParams = ChatSendPreAdmissionParams & {
   assertDelegatedAdmission?: () => void;
   diagnostics?: ChatSendDiagnostics;
   session: PreparedChatSendSession;
+  sessionMutationAuthorization?: SessionMutationAuthorization;
   withPreparedCurrent?: SessionMutationAuthorization["withPreparedCurrent"];
   followRegistration?: SessionMutationAuthorization["followRegistration"];
   hasCurrentClientAuthority?: GatewayRequestHandlerOptions["hasCurrentClientAuthority"];

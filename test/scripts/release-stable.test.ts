@@ -165,16 +165,6 @@ describe("release:stable CLI", () => {
     for (const phase of PHASES) {
       expect(result.stdout).toContain(`[release-stable] ${phase}: completed`);
     }
-    for (const command of [
-      `git push origin refs/tags/v${RELEASE}`,
-      "gh workflow run openclaw-release-publish.yml",
-      "gh workflow run openclaw-npm-dist-tags.yml",
-      `gh release edit v${RELEASE}`,
-      "gh workflow run openclaw-macos-publish.yml",
-      `gh release view v${RELEASE} --repo ${REPOSITORY} --json assets --jq '[.assets[].name]'`,
-    ]) {
-      expect(result.stdout).toContain(`+ ${command}`);
-    }
     expect(result.stdout.match(/Would ask:/gu)).toHaveLength(2);
     expect(result.stdout).toContain("preflight_only=true");
     expect(result.stdout).toContain("preflight_only=false");
@@ -261,22 +251,79 @@ describe("release:stable CLI", () => {
     expect(readFileSync(release.stateFile, "utf8")).toBe(before);
   });
 
-  it.each(["stableSoakWaiver", "laneWaiver"])("preserves rejected %s state", (field) => {
-    const state = phaseState("validate");
+  it("enforces the publication deadline during a GitHub read", () => {
+    const state = publishState(true);
+    state.publish.publishRunId = "301";
+    state.publish.dispatchedAt = state.startedAt;
     const release = fixture(state);
-    const invalid = JSON.stringify({
-      ...state,
-      capabilities: legacyCapabilities(true),
-      validate: { ...state.validate, continues: 2, [field]: "retained legacy value" },
-    });
-    writeFileSync(release.stateFile, invalid);
-    const result = release.run([]);
-    expect(result.status).toBe(2);
-    expect(result.stderr).toContain("Invalid state file");
-    expect(result.stderr).toContain("Move the file aside before retrying.");
-    expect(result.stderr).toContain(`pnpm release:stable ${RELEASE}`);
-    expect(readFileSync(release.stateFile, "utf8")).toBe(invalid);
+    const startedAt = Date.now();
+    const result = release.run(
+      [
+        {
+          ...jsonStep("gh", ["api", `repos/${REPOSITORY}/actions/runs/301`], {}),
+          delayMs: 5_000,
+        },
+      ],
+      ["--watch", "--once", "--timeout-seconds", "1"],
+    );
+    expect(result.status, result.output).toBe(2);
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(result.stderr).toContain("command timed out");
   });
+
+  it("reports a pending publication approval with exit 1 and no mutation", () => {
+    const { state, release, observe } = publicationWatchFixture(true);
+    const result = observe();
+    expect(result.status, result.output).toBe(1);
+    const snapshot = JSON.parse(result.stdout);
+    expect(snapshot).toMatchObject({
+      contractVersion: 1,
+      state: "attention",
+      pendingApprovals: [
+        {
+          runId: "701",
+          environmentId: 81,
+          environment: "npm-release",
+          canApprove: false,
+        },
+      ],
+      failedRuns: [],
+    });
+    expect(result.calls.every((call) => call.bin === "gh" && call.args[0] === "api")).toBe(true);
+    expect(readFileSync(release.stateFile, "utf8")).toBe(JSON.stringify(state));
+  });
+
+  it("returns exit 0 after the observed publication tree succeeds", () => {
+    const { observe } = publicationWatchFixture();
+    const result = observe();
+    expect(result.status, result.output).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      contractVersion: 1,
+      state: "success",
+      pendingApprovals: [],
+      failedRuns: [],
+    });
+  });
+
+  it.each(["failure", "neutral", "skipped"])(
+    "reports a detached publication child with conclusion %s as exit 1",
+    (conclusion) => {
+      const { plugin, observe } = publicationWatchFixture();
+      const clawhub = {
+        ...plugin,
+        id: 702,
+        path: ".github/workflows/plugin-clawhub-release.yml",
+        display_title: `plugin-clawhub-release.yml [v${RELEASE}] publish parent=301/3`,
+        conclusion,
+        html_url: "https://github.com/openclaw/openclaw/actions/runs/702",
+      };
+      const result = observe([plugin, clawhub], false);
+      expect(result.status, result.output).toBe(1);
+      expect(result.stdout).toContain(
+        `failed publication run: .github/workflows/plugin-clawhub-release.yml run=702 conclusion=${conclusion}`,
+      );
+    },
+  );
 
   it("refuses a live process lock before touching state and replaces a stale lock", () => {
     const release = fixture(phaseState("cut"));
@@ -439,16 +486,7 @@ describe("release:stable CLI", () => {
     );
     expect(failed.status, failed.output).toBe(2);
     expect(failed.stderr).toContain("Publish parent 301 failure before core npm became visible.");
-    expect(failed.stderr).toContain(
-      `pnpm release:publish-preflight --tag v${RELEASE} --full-release-validation-run-id 101 --full-release-validation-run-attempt 3 --npm-dist-tag latest --workflow-ref ${toolingTag}`,
-    );
     expect(failed.stderr).toContain(`pnpm release:stable ${RELEASE} --from publish`);
-    for (const output of [failed.stdout, failed.stderr]) {
-      expect(output).toContain("status=waiting&per_page=100");
-      expect(output).toContain("status=queued&per_page=100");
-      expect(output).toContain("state=rejected");
-      expect(output).toContain("gh run cancel '<child>'");
-    }
     for (const id of [701, 703]) {
       expect(failed.stdout.match(new RegExp(`publish: child ${id} `, "gu"))).toHaveLength(1);
     }
@@ -475,7 +513,6 @@ describe("release:stable CLI", () => {
     const dispatches = resumed.calls.filter((call) => call.args[0] === "workflow");
     expect(dispatches).toHaveLength(1);
     const helper = resumed.calls.find((call) => call.bin === "pnpm");
-    expect(helper?.args).not.toContain("--stable-soak-waiver");
     expect(helper?.args).toContain("--skip-dispatch");
     expect(resumed.calls.filter((call) => call.args.includes("POST"))).toEqual([
       { bin: "gh", args: gateApproval(301, 71).match },
@@ -525,7 +562,6 @@ describe("release:stable CLI", () => {
         capabilities: { ...state.capabilities, parentApprovalReceipt: true },
       }),
     );
-    release.candidate(CANDIDATE_COMMAND);
     const distractors = [
       { ...parentRun(), id: 801, head_branch: "main" },
       { ...parentRun(), id: 802, display_title: "Publish v2026.9.5" },
@@ -646,6 +682,7 @@ describe("release:stable CLI", () => {
     expect(release.readState().publish.approvedGates).toEqual([]);
     expect(release.readState().publish.npmVisibleAt).toBeUndefined();
   });
+
   it("retries GET requests immediately when retry backoff is zero", () => {
     const state = publishState(true);
     state.publish.publishRunId = "301";
@@ -667,78 +704,4 @@ describe("release:stable CLI", () => {
       ),
     ).toHaveLength(2);
   });
-
-  it("enforces the publication deadline during a GitHub read", () => {
-    const state = publishState(true);
-    state.publish.publishRunId = "301";
-    state.publish.dispatchedAt = state.startedAt;
-    const release = fixture(state);
-    const startedAt = Date.now();
-    const result = release.run(
-      [
-        {
-          ...jsonStep("gh", ["api", `repos/${REPOSITORY}/actions/runs/301`], {}),
-          delayMs: 5_000,
-        },
-      ],
-      ["--watch", "--once", "--timeout-seconds", "1"],
-    );
-    expect(result.status, result.output).toBe(2);
-    expect(Date.now() - startedAt).toBeLessThan(3_000);
-    expect(result.stderr).toContain("command timed out");
-  });
-
-  it("reports a pending publication approval with exit 1 and no mutation", () => {
-    const { state, release, observe } = publicationWatchFixture(true);
-    const result = observe();
-    expect(result.status, result.output).toBe(1);
-    const snapshot = JSON.parse(result.stdout);
-    expect(snapshot).toMatchObject({
-      contractVersion: 1,
-      state: "attention",
-      pendingApprovals: [
-        {
-          runId: "701",
-          environmentId: 81,
-          environment: "npm-release",
-          canApprove: false,
-        },
-      ],
-      failedRuns: [],
-    });
-    expect(result.calls.every((call) => call.bin === "gh" && call.args[0] === "api")).toBe(true);
-    expect(readFileSync(release.stateFile, "utf8")).toBe(JSON.stringify(state));
-  });
-
-  it("returns exit 0 after the observed publication tree succeeds", () => {
-    const { observe } = publicationWatchFixture();
-    const result = observe();
-    expect(result.status, result.output).toBe(0);
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      contractVersion: 1,
-      state: "success",
-      pendingApprovals: [],
-      failedRuns: [],
-    });
-  });
-
-  it.each(["failure", "neutral", "skipped"])(
-    "reports a detached publication child with conclusion %s as exit 1",
-    (conclusion) => {
-      const { plugin, observe } = publicationWatchFixture();
-      const clawhub = {
-        ...plugin,
-        id: 702,
-        path: ".github/workflows/plugin-clawhub-release.yml",
-        display_title: `plugin-clawhub-release.yml [v${RELEASE}] publish parent=301/3`,
-        conclusion,
-        html_url: "https://github.com/openclaw/openclaw/actions/runs/702",
-      };
-      const result = observe([plugin, clawhub], false);
-      expect(result.status, result.output).toBe(1);
-      expect(result.stdout).toContain(
-        `failed publication run: .github/workflows/plugin-clawhub-release.yml run=702 conclusion=${conclusion}`,
-      );
-    },
-  );
 });

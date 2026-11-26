@@ -1,14 +1,7 @@
-import { createPluginRuntimeMock } from "openclaw/plugin-sdk/plugin-test-runtime";
-import {
-  chunkMarkdownTextWithMode,
-  resolveChunkMode,
-  resolveTextChunkLimit,
-} from "openclaw/plugin-sdk/reply-chunking";
 import { createReplyDispatcher } from "openclaw/plugin-sdk/reply-runtime";
-import { createPluginRuntimeStore, type PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
-import { convertMarkdownTables } from "openclaw/plugin-sdk/text-chunking";
 import { afterAll, afterEach, beforeAll, expect, it, vi } from "vitest";
 import { createFeishuReplyDispatcher } from "./reply-dispatcher.js";
+import { installReplyRuntime } from "./reply-dispatcher.test-support.js";
 import { getFeishuRuntime } from "./runtime.js";
 
 const { createMessage, uploadImage } = vi.hoisted(() => ({
@@ -25,27 +18,7 @@ vi.mock("./client.js", async (importOriginal) => ({
 
 let restoreRuntime: () => void;
 beforeAll(() => {
-  const store = createPluginRuntimeStore<PluginRuntime>({
-    pluginId: "feishu",
-    errorMessage: "Feishu runtime not initialized",
-  });
-  const previous = store.tryGetRuntime();
-  const runtime = createPluginRuntimeMock();
-  Object.assign(runtime.channel.text, {
-    resolveTextChunkLimit,
-    resolveChunkMode,
-    chunkMarkdownTextWithMode,
-    convertMarkdownTables,
-    resolveMarkdownTableMode: () => "preserve",
-  });
-  store.setRuntime(runtime);
-  restoreRuntime = () => {
-    if (previous) {
-      store.setRuntime(previous);
-    } else {
-      store.clearRuntime();
-    }
-  };
+  restoreRuntime = installReplyRuntime();
 });
 afterEach(() => {
   vi.restoreAllMocks();

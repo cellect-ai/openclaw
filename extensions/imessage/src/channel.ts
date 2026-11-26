@@ -402,14 +402,9 @@ export const imessagePlugin: ChannelPlugin<ResolvedIMessageAccount, IMessageProb
           });
           const sendStatus = registerIMessageSendStatus(ctx);
           try {
-            return await (
-              await loadIMessageChannelRuntime()
-            ).startIMessageGatewayAccount({
-              ...ctx,
-              setStatus: sendStatus.setStatus,
-            });
+            return await (await loadIMessageChannelRuntime()).startIMessageGatewayAccount(ctx);
           } finally {
-            sendStatus.dispose();
+            sendStatus?.dispose();
             conversationBindings.stop();
           }
         },

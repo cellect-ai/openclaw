@@ -36,6 +36,7 @@ import {
   type AgentEventStream,
 } from "../infra/agent-events.js";
 import { onDiagnosticEvent, type DiagnosticEventPayload } from "../infra/diagnostic-events.js";
+import { throwIfSettledRejected } from "../infra/error-graph-internal.js";
 import { withSessionTurn } from "../sessions/session-controller.admission.js";
 import {
   captureSessionControllerSettlement,
@@ -85,6 +86,7 @@ import {
 import {
   createDirectChatSessionStoreFixture,
   futureFixtureUpdatedAt,
+  holdSessionMutation,
   prepareMainHistoryHarness,
   writeMainSessionStore,
   writeStoredMainSession,
@@ -191,6 +193,8 @@ type HistoryPage = {
   nextOffset?: number;
   offset?: number;
   hasMore?: boolean;
+  olderCursor?: string;
+  newerCursor?: string;
   totalMessages?: number;
 };
 
@@ -286,27 +290,6 @@ function historyPage<T extends Record<string, unknown> = HistoryPage>(
   params: Record<string, unknown> = {},
 ) {
   return rpcReq<T>(ws, "chat.history", makeMainSessionParams(params));
-}
-
-async function holdSessionMutation(
-  scope: string,
-  release: ReturnType<typeof createDeferred<void>>,
-  options: {
-    kind?: Parameters<typeof runSessionMutation>[0]["kind"];
-    identities: Iterable<string | undefined>;
-  } = { identities: ["sess-main"] },
-) {
-  const started = createDeferred();
-  const mutation = runSessionMutation({
-    scope,
-    ...options,
-    run: async () => {
-      started.resolve();
-      await release.promise;
-    },
-  });
-  await started.promise;
-  return { mutation };
 }
 
 function readOpenClawSeq(message: unknown): number | undefined {
@@ -1624,11 +1607,13 @@ describe("gateway server chat", () => {
   });
 
   test("chat.send runs an admission-owned callback for only one concurrent retry", async () => {
-    openDirectChatSession();
+    const { storePath } = openDirectChatSession();
+    const releaseMutation = createDeferred();
     const dispatchRelease = createDeferred();
     const runId = "idem-concurrent-admission-owner";
     try {
       await writeStoredMainSession(makeDoneSessionEntry());
+      const { mutation } = await holdSessionMutation(storePath, releaseMutation);
       const context = createDirectChatContext();
       dispatchInboundMessageMock.mockImplementationOnce(async () => dispatchRelease.promise);
       const firstAdmission = vi.fn(async () => true);
@@ -1643,7 +1628,22 @@ describe("gateway server chat", () => {
           respond: captureChatResponse(responses),
         });
 
-      await Promise.all([send(firstAdmission), send(secondAdmission)]);
+      // Keep the retry in pending admission, before the first input is accepted.
+      const outcomes = await Promise.allSettled([
+        send(firstAdmission),
+        (async () => {
+          try {
+            await waitForFast(() => {
+              expect(context.dedupe.has(pendingChatSendDedupeKey(runId))).toBe(true);
+            }, FAST_WAIT_OPTS);
+            await send(secondAdmission);
+          } finally {
+            releaseMutation.resolve();
+          }
+        })(),
+        mutation,
+      ]);
+      throwIfSettledRejected(outcomes, "Concurrent chat admission failed");
 
       expect(firstAdmission.mock.calls.length + secondAdmission.mock.calls.length).toBe(1);
       expect(responses).toHaveLength(2);
@@ -1666,6 +1666,7 @@ describe("gateway server chat", () => {
       expect(dispatchInboundMessageMock).toHaveBeenCalledTimes(1);
       expect(context.removeChatRun).toHaveBeenCalledTimes(1);
     } finally {
+      releaseMutation.resolve();
       dispatchRelease.resolve(undefined);
       await resetDirectChatSession();
     }
@@ -1981,15 +1982,17 @@ describe("gateway server chat", () => {
           broadcast.mock.calls.flatMap(([event, payload]) =>
             event === "chat" && (payload as { runId?: string }).runId === runId ? [payload] : [],
           );
-        try {
-          await callDirectChat("chat.send", {
-            id: "queued-followup",
+        const sendQueuedInput = (id: string, respond: RespondFn) =>
+          callDirectChat("chat.send", {
+            id,
             params: makeChatSendParams({ message: "queued prompt", idempotencyKey: runId }),
             client: makeTuiClient(),
             isWebchatConnect: () => true,
-            respond: vi.fn() as RespondFn,
+            respond,
             context,
           });
+        try {
+          await sendQueuedInput("queued-followup", vi.fn() as RespondFn);
           await withinTest(dispatchStarted.promise, signal);
           expect(options?.turnAdoptionLifecycle?.ownerKey).toBe("connection:conn-tui");
           expect(chatEvents()).toEqual([]);
@@ -2008,14 +2011,7 @@ describe("gateway server chat", () => {
           // Live queued identity still fences replay if its receipt has been evicted.
           context.dedupe.delete(`chat:${runId}`);
           const replayRespond = vi.fn() as RespondFn;
-          await callDirectChat("chat.send", {
-            id: "queued-followup-replay",
-            params: makeChatSendParams({ message: "queued prompt", idempotencyKey: runId }),
-            client: makeTuiClient(),
-            isWebchatConnect: () => true,
-            respond: replayRespond,
-            context,
-          });
+          await sendQueuedInput("queued-followup-replay", replayRespond);
           expect(replayRespond).toHaveBeenCalledWith(
             true,
             { runId, status: "in_flight" },
@@ -2063,7 +2059,11 @@ describe("gateway server chat", () => {
             expect.objectContaining({
               runId,
               ...(settlement === "dropped"
-                ? { state: "error", errorMessage: "Queued input was dropped (queue-cap-old)." }
+                ? {
+                    state: "error",
+                    errorMessage:
+                      "Your queued message was dropped because the session queue is full.",
+                  }
                 : {
                     state: "final",
                     message: expect.objectContaining({
@@ -2867,10 +2867,7 @@ describe("gateway server chat", () => {
         JSON.stringify({ type: "model_change", provider: "mock", modelId: "mock" }),
         JSON.stringify({ type: "thinking_level_change", thinkingLevel: "off" }),
       ]);
-      const storePath = testState.sessionStorePath;
-      if (!storePath) {
-        throw new Error("session store path was not initialized");
-      }
+      const storePath = expectDefined(testState.sessionStorePath, "session store path");
       for (let index = 0; index < 7; index += 1) {
         await appendTranscriptMessage(makeMainSessionScope(storePath), {
           eventId: `message-${index + 1}`,
@@ -2881,10 +2878,8 @@ describe("gateway server chat", () => {
           },
         });
       }
-      await waitForSessionTranscriptIndexReconcile({
-        agentId: "main",
-        path: path.join(sessionDir, "openclaw-agent.sqlite"),
-      });
+      const databasePath = path.join(sessionDir, "openclaw-agent.sqlite");
+      await waitForSessionTranscriptIndexReconcile({ agentId: "main", path: databasePath });
 
       const history = await historyPage(ws, {
         limit: 3,
@@ -2898,6 +2893,8 @@ describe("gateway server chat", () => {
       expect(history.payload?.offset).toBeUndefined();
       expect(history.payload?.nextOffset).toBeUndefined();
       expect(history.payload?.hasMore).toBeUndefined();
+      expect(history.payload?.olderCursor).toEqual(expect.any(String));
+      expect(history.payload?.newerCursor).toEqual(expect.any(String));
       expect(history.payload?.totalMessages).toBeUndefined();
     });
   });

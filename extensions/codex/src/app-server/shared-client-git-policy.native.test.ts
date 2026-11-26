@@ -70,7 +70,7 @@ it(
         "thread/start",
         {
           cwd: native.cwd,
-          model: "gpt-5.6-luna",
+          model: "git-policy-fixture-model",
           modelProvider: "git-policy-fixture",
           approvalPolicy: "never",
           sandbox: "danger-full-access",

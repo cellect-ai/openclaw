@@ -29,9 +29,9 @@ it.each([
       label: "setup-cold-catalog",
       env: {
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
-        // Keep synthetic loopback traffic local without changing external proxy routing.
-        NO_PROXY: [process.env.NO_PROXY, "127.0.0.1", "localhost", "::1"].filter(Boolean).join(","),
-        no_proxy: [process.env.no_proxy, "127.0.0.1", "localhost", "::1"].filter(Boolean).join(","),
+        // The synthetic provider is local, not a request through the host proxy.
+        NO_PROXY: "127.0.0.1,localhost",
+        no_proxy: "127.0.0.1,localhost",
       },
     },
     async (state) => {
@@ -199,7 +199,7 @@ it.each([
             runtime,
           );
           if (succeeds) {
-            expect(exits, lines.join("\n")).not.toContain(1);
+            expect(exits, JSON.stringify({ lines, requests, inferenceBodies })).not.toContain(1);
           } else {
             expect(exits).toContain(1);
             expect(lines.join("\n")).toContain("Unknown model: setup-provider/account-only-model");

@@ -8,6 +8,7 @@ import type {
   ComposerDictationSession,
   placeComposerDictation,
 } from "./composer-dictation-session.ts";
+import type { RealtimeTalkLevelSignal } from "./talk/level.ts";
 
 const HOLD_ARM_DELAY_MS = 150,
   HOLD_PROGRESS_MS = 350;
@@ -22,6 +23,7 @@ type ComposerDictationFailure = {
 type ComposerDictationOwnerOptions = {
   client: GatewayBrowserClient | null;
   sessionKey?: string;
+  prepareSession?: () => Promise<string | undefined>;
   draftKey?: string;
   connected: boolean;
   enabled: boolean;
@@ -76,18 +78,24 @@ export class ComposerDictationOwner extends EventTarget {
     return this.phase === "stopping";
   }
 
+  // Stop releases the microphone and typing lock before the final text arrives.
   get transcribing(): boolean {
     return Boolean(this.commits?.size);
   }
 
+  get locksComposer(): boolean {
+    return this.phase !== "idle";
+  }
+
+  /** Places a transcript in a draft; there is nothing to place before capture loads. */
   placeTranscript(
     ...args: Parameters<typeof placeComposerDictation>
   ): ReturnType<typeof placeComposerDictation> | undefined {
     return this.commits?.place(...args);
   }
 
-  get locksComposer(): boolean {
-    return this.phase !== "idle";
+  get inputLevel(): RealtimeTalkLevelSignal | undefined {
+    return this.session?.inputLevel;
   }
 
   get transcript(): string {
@@ -267,16 +275,19 @@ export class ComposerDictationOwner extends EventTarget {
     this.cancel();
   };
 
-  // Permission prompts blur the window while microphone access is pending.
-  // A hidden page still ends capture; switching apps during startup can keep
-  // that startup pending until permission settles.
+  // Leaving the window interrupts capture but keeps dictated text in the draft.
+  // The browser's microphone permission prompt (Safari, Chrome) blurs the window
+  // while the microphone is still opening, so a blur waits until listening: Allow
+  // then starts listening and a denial reports its error. A hidden page still ends
+  // dictation at any point.
   private readonly handleWindowLeave = (event: Event): void => {
     if (
       event.type === "visibilitychange" ? document.visibilityState !== "hidden" : this.connecting
     ) {
       return;
     }
-    this.cancel();
+    this.clearClickSuppression();
+    void this.finishActive();
   };
 
   private canHold(): boolean {
@@ -294,7 +305,7 @@ export class ComposerDictationOwner extends EventTarget {
       await this.stop({ commit: false });
       return;
     }
-    if (this.options.dictationAvailable === false) {
+    if (this.options.dictationAvailable === false && !this.options.prepareSession) {
       this.clearPointerGesture();
       this.setPhase("idle");
       this.options.onDictationUnavailable?.();
@@ -318,6 +329,9 @@ export class ComposerDictationOwner extends EventTarget {
     try {
       // Preserve Safari playback activation before the lazy capture module loads.
       this.playback.prepare(client, () => this.cancel());
+      const sessionKey = this.options.prepareSession
+        ? await this.options.prepareSession()
+        : this.options.sessionKey;
       const { ComposerDictationSession, ComposerDictationCommits, describeDictationStartError } =
         await import("./composer-dictation-session.ts");
       if (
@@ -354,7 +368,7 @@ export class ComposerDictationOwner extends EventTarget {
             }
           },
         },
-        { sessionKey: this.options.sessionKey },
+        { sessionKey },
       );
       this.session = session;
       await session.start();

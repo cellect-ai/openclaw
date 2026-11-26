@@ -19,8 +19,11 @@ import {
   gateTask,
   history,
   runWithLiveSubagentGateway,
-  until,
 } from "../subagents/announce/subagent-challenges.live.test-support.js";
+import {
+  isTerminalExecutorOutcome,
+  observeHeldExecutor,
+} from "../subagents/announce/subagent-external-gate.test-support.js";
 import { subagentRuns } from "../subagents/registry/subagent-registry-memory.js";
 import { mutateSubagentRuns } from "../subagents/registry/subagent-registry-persistence.js";
 import { registerSubagentRun } from "../subagents/registry/subagent-registry.js";
@@ -32,10 +35,10 @@ const describeLive = enabled ? describe : describe.skip;
 describeLive("retained native child continuation", () => {
   it(
     "continues the same child through sessions_send after display retention expires",
-    async () => {
+    async (testContext) => {
       await runWithLiveSubagentGateway(
         { additionalTools: ["sessions_send"], sessionVisibility: "tree" },
-        async ({ gateway, gates, start, record, waitForDescendantSettlement }) => {
+        async ({ gateway, gates, start, record, waitForDescendantSettlement, until }) => {
           const id = randomUUID().replaceAll("-", "");
           const parent = "agent:main:dashboard:retained-parent-" + id;
           const first = "INITIAL_" + id;
@@ -287,9 +290,13 @@ describeLive("retained native child continuation", () => {
                   expectsCompletionMessage: false,
                 });
                 await until("foreign child executor is actually live", () =>
-                  isSubagentRunLive(subagentRuns.get(running.runId)) && held.snapshot().waiting > 0
-                    ? true
-                    : undefined,
+                  observeHeldExecutor({
+                    isHeldAndLive: () =>
+                      isSubagentRunLive(subagentRuns.get(running.runId)) &&
+                      held.snapshot().waiting > 0,
+                    waitForRun: () =>
+                      gateway.request("agent.wait", { runId: running.runId, timeoutMs: 100 }),
+                  }),
                 );
                 const current = await gateway.request<{
                   session: { controlOwnerSessionKey?: string };
@@ -385,11 +392,15 @@ describeLive("retained native child continuation", () => {
               held.release("FOREIGN_COMPLETE");
               if (foreignRunId) {
                 await until("foreign execution settles", async () => {
-                  const ended = await gateway.request<{ status: string }>("agent.wait", {
-                    runId: foreignRunId,
-                    timeoutMs: 1000,
-                  });
-                  return ended.status === "ok" ? true : undefined;
+                  const ended = await gateway.request<{ status: string; endedAt?: number }>(
+                    "agent.wait",
+                    {
+                      runId: foreignRunId,
+                      timeoutMs: 1000,
+                    },
+                  );
+                  // Cleanup joins terminal failure too; it is not a success assertion.
+                  return isTerminalExecutorOutcome(ended) ? true : undefined;
                 });
               }
             }
@@ -495,6 +506,7 @@ describeLive("retained native child continuation", () => {
             details: watchedSend?.details,
           });
         },
+        testContext,
       );
     },
     10 * 60_000,

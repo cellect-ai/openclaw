@@ -241,6 +241,8 @@ describe.skipIf(process.platform !== "linux")(
           await fs.readFile(path.join(REPO_ROOT, "extensions/codex/package.json"), "utf8"),
         ) as { dependencies: { "@openai/codex": string } };
         const expectedCodexVersion = `codex-cli ${codexManifest.dependencies["@openai/codex"]}`;
+        const require = createRequire(path.join(REPO_ROOT, "extensions/codex/package.json"));
+        const codexLauncher = require.resolve("@openai/codex/bin/codex.js");
         const root = tempDirs.make("openclaw-native-hook-pressure-");
         const pluginDir = path.join(root, "plugin");
         await fs.mkdir(pluginDir);
@@ -326,6 +328,10 @@ export default {
           const pending = Array.from({ length: current.count }, (_, i) => i).filter(
             (i) => !acknowledged.has(`call_${current.id}_${i}`),
           );
+          // Standalone context or another tool output cannot acknowledge this cohort.
+          if (current.failedResponses > 0 && pending.length === current.count) {
+            current.unacknowledgedRetries++;
+          }
           // Retry only missing calls; constructing or sending a response does not prove execution.
           if (pending.length > 0) {
             const native = tools.find(({ tool }) =>
@@ -441,14 +447,11 @@ export default {
               plugins.load = { paths: [pluginDir] };
               plugins.entries = {
                 ...plugins.entries,
-                // Keep the sandbox; isolate policy work from optional loop detection.
                 codex: {
                   enabled: true,
+                  // This pressure proof attests the shipped binary, not a newer PATH install.
                   config: {
-                    appServer: {
-                      sandbox: "workspace-write",
-                      loopDetectionPreToolUseRelay: false,
-                    },
+                    appServer: { command: codexLauncher, sandbox: "workspace-write" },
                   },
                 },
                 [PLUGIN_ID]: { enabled: true },

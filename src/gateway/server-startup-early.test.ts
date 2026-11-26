@@ -183,6 +183,7 @@ describe("startGatewayEarlyRuntime", () => {
     });
     expect(mocks.refreshSkillsDiscovery).not.toHaveBeenCalled();
     expect(mocks.registerSkillsChangeListener).toHaveBeenCalledOnce();
+    // Delayed discovery reads the current owner, not early-startup metadata.
     metadata = createEmptyPluginMetadataSnapshot("/replacement");
     const starting = earlyRuntime.startMaintenance({});
     await scanStarted.promise;

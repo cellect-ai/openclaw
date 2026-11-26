@@ -19,7 +19,6 @@ import { tryDispatchAcpReplyHook } from "../plugin-sdk/acpx.js";
 import { captureSessionControllerSettlement } from "../sessions/session-controller.lifecycle.js";
 import { readAssistantDisplayContent } from "../shared/assistant-display-content.js";
 import { extractFirstTextBlock } from "../shared/chat-message-content.js";
-import type { Deferred } from "../shared/deferred.js";
 import { useSessionStoreTempDirs } from "../test-utils/session-state-cleanup.js";
 import { widgetResult } from "./server-chat.agent-events.test-harness.js";
 import {
@@ -35,7 +34,12 @@ const runtime = vi.hoisted(() => ({
   runTurn: vi.fn(),
   rejectTranscript: false,
   terminalBarrier: undefined as
-    | { runId: string; entered: Deferred; joined: Deferred; release: Deferred }
+    | {
+        runId: string;
+        entered: ReturnType<typeof createDeferred<void>>;
+        joined: ReturnType<typeof createDeferred<void>>;
+        release: ReturnType<typeof createDeferred<void>>;
+      }
     | undefined,
 }));
 
@@ -407,7 +411,8 @@ describe("Gateway ACP completion ownership", () => {
         const barrier = runtime.terminalBarrier;
         if (barrier) {
           await withinTest(Promise.all([barrier.entered.promise, barrier.joined.promise]), signal);
-          // Hold the real lifecycle writer before commit; replay must remain pending.
+          // The real lifecycle writer is held after capture, before its durable commit.
+          // Even once dispatch has joined that receipt, neither RPC may expose completion.
           const pendingReplay = await rpcReq(ws, "chat.send", sendParameters);
           expect.soft(pendingReplay.payload).toMatchObject({ runId, status: "in_flight" });
           const pendingWait = await rpcReq(ws, "agent.wait", { runId, timeoutMs: 0 });

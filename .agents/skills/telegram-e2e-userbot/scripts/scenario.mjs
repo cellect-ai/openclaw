@@ -39,6 +39,16 @@ const ACTION_KEYS = {
   followupDrainRelease: new Set(["type", "atMs", "timeoutMs"]),
 };
 
+function resetMode(action, label) {
+  if (!["before-forward", "after-forward", "hang"].includes(action.reset)) {
+    throw new Error(`${label}.reset must be "before-forward", "after-forward", or "hang".`);
+  }
+  if (action.retryAfter !== undefined) {
+    throw new Error(`${label} cannot combine reset and retryAfter.`);
+  }
+  return action.reset;
+}
+
 function assertObject(value, label) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${label} must be an object.`);
@@ -219,6 +229,7 @@ export function parseScenario(value) {
               ...(action.retryAfter !== undefined
                 ? { retryAfter: nonNegativeInteger(action.retryAfter, `${label}.retryAfter`) }
                 : {}),
+              ...(action.reset !== undefined ? { reset: resetMode(action, label) } : {}),
             }
           : {}),
       };

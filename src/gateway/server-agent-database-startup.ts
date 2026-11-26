@@ -17,6 +17,8 @@ import {
   type getAgentDatabaseStartupAdmission,
 } from "../state/agent-database-startup.js";
 import { isSameOpenClawAgentDatabasePath } from "../state/openclaw-agent-db.paths.js";
+import type { GatewayRequestContext } from "./server-methods/types.js";
+import type { GatewaySessionFactsBackfillScheduler } from "./server-startup-session-migration.js";
 
 function assertAgentDatabaseConfiguration(
   cfg: OpenClawConfig,
@@ -33,8 +35,10 @@ function assertAgentDatabaseConfiguration(
 /** Finish only the deferred agent's preparation before its admission owner recovers it. */
 export function activateGatewayAgentDatabaseStartup(params: {
   admission: ReturnType<typeof getAgentDatabaseStartupAdmission>;
+  context: GatewayRequestContext;
   preparationReady: Promise<void>;
   waitForPostReadyWork: () => Promise<void>;
+  scheduleSessionFactsBackfill?: GatewaySessionFactsBackfillScheduler;
   getConfig: () => OpenClawConfig;
   getPluginRegistry: () => PluginRegistry;
   getPluginMetadataSnapshot: () => PluginMetadataSnapshot | undefined;
@@ -66,6 +70,23 @@ export function activateGatewayAgentDatabaseStartup(params: {
   params.admission?.activate({
     isCurrent: params.isCurrent,
     preparationReady: params.preparationReady,
+    verifyIntegrity: (input) =>
+      runWithSpawnBroker(broker, async () => {
+        const { verifyAgentDatabaseStartupIntegrity } =
+          await import("../state/agent-database-startup-verification.js");
+        await verifyAgentDatabaseStartupIntegrity({
+          ...input,
+          assertCurrent: input.configurationBound
+            ? createPreparationGuard(
+                input.agentId,
+                input.paths,
+                input.env,
+                input.signal,
+                input.assertCurrent,
+              )
+            : input.assertCurrent,
+        });
+      }),
     captureReadAdmission: ({ agentId, paths, env, signal, assertCurrent }) =>
       createPreparationGuard(agentId, paths, env, signal, assertCurrent),
     openAgent: ({ agentId, paths, env, signal, assertCurrent }) =>
@@ -112,7 +133,17 @@ export function activateGatewayAgentDatabaseStartup(params: {
           log: params.log,
         });
         assertMigrationCurrent();
+        const { prepareAgentRestartRecovery } = await import("./session-restart-resume.js");
+        const recoverInputs = await prepareAgentRestartRecovery({
+          context: params.context,
+          agentId,
+          env,
+          signal,
+          assertCurrent: assertMigrationCurrent,
+          log: params.log,
+        });
         return {
+          recoverInputs,
           maintain: () =>
             runWithSpawnBroker(broker, async () => {
               await params.waitForPostReadyWork();
@@ -126,6 +157,8 @@ export function activateGatewayAgentDatabaseStartup(params: {
                 ),
                 log: params.log,
               });
+              signal.throwIfAborted();
+              params.scheduleSessionFactsBackfill?.(databases);
             }),
         };
       }),

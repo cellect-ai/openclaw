@@ -7,7 +7,7 @@ import {
 import "../../agents/test-helpers/fast-coding-tools.js";
 import { setRuntimeConfigSnapshot } from "../../config/config.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop/collection-review-prompt.js";
+import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop-host/collection-review-prompt.js";
 import { makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
@@ -19,8 +19,8 @@ import {
   runWithModelFallbackMock,
 } from "./run.test-harness.js";
 const library = vi.hoisted(() => ({ list: vi.fn() }));
-vi.mock("../../skills/workshop/library.js", async (original) => ({
-  ...(await original<typeof import("../../skills/workshop/library.js")>()),
+vi.mock("../../skills/workshop-host/library.js", async (original) => ({
+  ...(await original<typeof import("../../skills/workshop-host/library.js")>()),
   listWorkshopSkills: library.list,
 }));
 const run = await loadRunCronIsolatedAgentTurn();

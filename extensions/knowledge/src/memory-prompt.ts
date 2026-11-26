@@ -16,8 +16,8 @@ export const buildKnowledgeMemoryPrompt: Prompt = (params) => {
     return [];
   }
   const searchStep = grep
-    ? "run knowledge_grep once on each entity it names, not only the first"
-    : "look each one up with knowledge_lookup";
+    ? "run knowledge_grep({ query }) once on each entity it names, not only the first"
+    : "look each one up with knowledge_lookup({ query })";
   const readStep = record ? ", and read the best matching pages with knowledge_record" : "";
   const pages =
     record &&
@@ -42,7 +42,7 @@ export const buildKnowledgeMemoryPrompt: Prompt = (params) => {
   }
   if (lookup && grep) {
     lines.push(
-      "Use knowledge_lookup only for an exact record ID, full title or declared alias; if it returns missing, use knowledge_grep before concluding that no relevant record exists.",
+      "Use knowledge_lookup({ query }) only for an exact record ID, full title or declared alias; if it returns missing, use knowledge_grep before concluding that no relevant record exists.",
     );
   }
   if (recall) {
@@ -55,7 +55,7 @@ export const buildKnowledgeMemoryPrompt: Prompt = (params) => {
   }
   if (tools.has("knowledge_remember")) {
     lines.push(
-      `Unprompted and silently, save decisions with rationale, preferences, corrections to your work, commitments, project-state changes and explicit remember requests with knowledge_remember: before your final reply on a task where one occurred, one call with a fresh requestId (a new UUID), a short attribution, the supporting conversation excerpt, and an items array (not claims) holding one claim per item, each worded no more broadly than its excerpt supports, with the subject's exact page title or alias when you know it (otherwise omit it; one named entity page is inferred), and an about naming what each claim concerns in your own words, without looking anything up. It is the fast path for one-off information: no search or readback first, and no page is needed. Its published receipt is the save. Skip transient details, guesses, secrets, and anything marked ‘don’t save.’ ${pages ? "Record your own findings on pages instead (below)." : "Skip your own inference."} Recording a commitment does not execute it.`,
+      `Unprompted and silently, save decisions with rationale, preferences, corrections to your work, commitments, project-state changes and explicit remember requests with knowledge_remember: before your final reply on a task where one occurred, one call shaped knowledge_remember({ requestId, attribution, excerpt, items: [{ kind: "fact" | "preference" | "decision" | "commitment" | "event" | "belief", text, subject?, about? }] }): requestId a fresh lowercase UUID, a short attribution, the supporting conversation excerpt, one claim per item worded no more broadly than its excerpt supports, subject the exact page title or alias when you know it (otherwise omit it; one named entity page is inferred), and about naming what the claim concerns in your own words, without looking anything up. It is the fast path for one-off information: no search or readback first, and the claim needs no page. Its published receipt is the save. Skip transient details, guesses, secrets, and anything marked ‘don’t save.’ ${pages ? "Record your own findings on pages instead (below)." : "Skip your own inference."} Recording a commitment does not execute it.`,
     );
   }
   // Path-only keys name a directory, not a project; markup-shaped keys never reach the prompt.
@@ -76,7 +76,7 @@ export const buildKnowledgeMemoryPrompt: Prompt = (params) => {
       ? ", then pass its exact title as the knowledge_remember subject"
       : "";
     lines.push(
-      `Entity pages: work that spans several turns or that the user will return to belongs on its subject's page (a project, person, company, concept or other ontology type), and so does each person, organization or project the user discusses as significant to them. Passing mentions stay as remembered claims. Use the page recall found; if none exists, create it now, without waiting to see whether the work continues, through knowledge-entities${subjectStep}. Keep the page's current state, results and next steps accurate through knowledge-capture as they change, and record your own findings there, labelled as your analysis rather than source fact. Use knowledge-capture to revise a page's prose or to save a note or lesson that is not a discrete claim.`,
+      `Entity pages: work that spans several turns or that the user will return to belongs on its subject's page (a project, person, company, concept or other ontology type), and so does each person, organization or project the user discusses as significant to them. Passing mentions stay as remembered claims. Use the page recall found; if none exists, create it now, without waiting to see whether the work continues, through knowledge-entities${subjectStep}. Keep the page's current state, results and next steps accurate through knowledge-capture as they change: when a remembered decision, outcome or status change alters what an existing page's State says, also rewrite that State in place before your final reply, since claims alone leave it stale. Record your own findings there, labelled as your analysis rather than source fact. Use knowledge-capture to revise a page's prose or to save a note or lesson that is not a discrete claim.`,
     );
     if (repoKey) {
       lines.push(

@@ -9,6 +9,10 @@ vi.mock("@anthropic-ai/sdk", () => {
   throw new Error("Shared Anthropic helpers must not initialize the Anthropic SDK");
 });
 
+vi.mock("openai", () => {
+  throw new Error("Generic transport helpers must not initialize the OpenAI SDK");
+});
+
 vi.mock("openai/resources/responses/ws.js", () => {
   throw new Error("Generic transport helpers must not initialize the WebSocket SDK");
 });
@@ -19,9 +23,8 @@ vi.mock("./utils/reasoning-tag-text-partitioner.js", () => {
 });
 
 it("loads generic transports without initializing a provider SDK", async () => {
-  await expect(import("./transports.js")).resolves.toHaveProperty(
-    "createTransportAwareStreamFnForModel",
-    expect.any(Function),
+  expect((await import("./transports.js")).createTransportAwareStreamFnForModel).toBeTypeOf(
+    "function",
   );
 });
 
@@ -33,8 +36,7 @@ it("loads generic runtime helpers without initializing provider reasoning parsin
 });
 
 it("defers the Anthropic client SDK and contains a first-use import failure", async () => {
-  const { isDirectAnthropicModel, streamAnthropic } = await import("./internal/anthropic.js");
-  expect(isDirectAnthropicModel).toEqual(expect.any(Function));
+  const { streamAnthropic } = await import("./internal/anthropic.js");
   const onPayload = vi.fn();
   const stream = streamAnthropic(
     makeProviderModel("anthropic-messages", "anthropic", "synthetic"),

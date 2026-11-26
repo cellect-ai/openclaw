@@ -1,11 +1,10 @@
 import { randomUUID } from "node:crypto";
 import type { AssistantMessage, Model, ModelRequestHeaders, StreamFn } from "@openclaw/llm-core";
-import OpenAI from "openai";
+import type OpenAI from "openai";
 import { getEnvApiKey } from "../env-api-keys.js";
 import { getAiTransportHost } from "../host.js";
 import { codeModeToolSurfaceObserver } from "../provider-options.js";
 import { resolveAzureDeploymentNameFromMap } from "../providers/azure-deployment-map.js";
-import { createAzureOpenAIClient } from "../providers/openai-provider-client.js";
 import { applyResponsesServiceTierPricing } from "../providers/openai-responses-shared.js";
 import { notifyLlmRequestActivity } from "../utils/llm-request-activity.js";
 import {
@@ -65,7 +64,6 @@ import {
 } from "./openai-responses-replay-internal.js";
 import { createResponsesRequestFetch } from "./openai-responses-request-fetch.js";
 import {
-  independentResponsesRequest,
   responsesRequestLifecycle,
   withResponsesRequestAcceptance,
 } from "./openai-responses-request-lifecycle.js";
@@ -85,7 +83,6 @@ import { createRecoverableResponsesWebSocketStream } from "./openai-responses-we
 import {
   assertCodeModeResponsesToolSurface,
   buildOpenAIClientHeaders,
-  buildOpenAISdkClientOptions,
   buildOpenAISdkRequestOptions,
   enforceCodeModeResponsesToolSurface,
   resolveCodeModeResponsesVisibleToolNames,
@@ -94,7 +91,6 @@ import {
   createResponseModelTracker,
   createOpenAIProviderAcceptanceHook,
   log,
-  resolveOpenAIClientBaseUrl,
   withOpenAIErrorResponseHook,
 } from "./openai-transport-shared.js";
 import {
@@ -103,6 +99,7 @@ import {
 } from "./provider-transport-turn-state.js";
 import { sanitizeResponsesImagePayload } from "./responses-image-payload-sanitizer.js";
 import {
+  awaitProviderLifecycleCallback,
   createWritableTransportEventStream,
   failTransportStream,
   finalizeTransportStream,
@@ -110,22 +107,6 @@ import {
   withProviderResponseHook,
 } from "./transport-stream-shared.js";
 import { redactIdentifier } from "./transport-utils.js";
-
-export function createOpenAIResponsesClient(
-  model: Model,
-  apiKey: string,
-  defaultHeaders: ModelRequestHeaders,
-  fetchOverride?: typeof globalThis.fetch,
-) {
-  return new OpenAI({
-    apiKey,
-    baseURL: resolveOpenAIClientBaseUrl(model),
-    dangerouslyAllowBrowser: true,
-    defaultHeaders,
-    fetch: fetchOverride ?? buildGuardedModelFetch(model),
-    ...buildOpenAISdkClientOptions(model),
-  });
-}
 
 type ResponsesStreamParams = Parameters<typeof createResponsesStreamWithRecovery>[0] & {
   requestOptions: ReturnType<typeof buildOpenAISdkRequestOptions>;
@@ -136,7 +117,12 @@ function createResponsesTransportExecutor(config: {
   firstEventTimeoutMs?: number;
   streamRequest?: boolean;
   httpContinuation?: boolean;
-  createClient: typeof createOpenAIResponsesClient;
+  createClient: (
+    model: Model,
+    apiKey: string,
+    defaultHeaders: ModelRequestHeaders,
+    fetchOverride?: typeof globalThis.fetch,
+  ) => Promise<OpenAI>;
   buildRequest: typeof buildOpenAIResponsesParams;
   pricingOptions?: (
     options: OpenAIResponsesOptions | undefined,
@@ -148,7 +134,6 @@ function createResponsesTransportExecutor(config: {
 }): StreamFn {
   return (model, context, options) => {
     const responsesOptions = options as OpenAIResponsesOptions | undefined;
-    const independent = independentResponsesRequest.has(options);
     const compactRequest = claimResponsesCompactRequest(responsesOptions);
     const v2Compaction =
       compactRequest?.mode === "v2"
@@ -169,9 +154,10 @@ function createResponsesTransportExecutor(config: {
           );
         }
         const apiKey = options?.apiKey || getEnvApiKey(model.provider) || "";
-        const websocketMode = independent
-          ? undefined
-          : resolveNativeOpenAIResponsesWebSocketMode(model, responsesOptions?.transport);
+        const websocketMode = resolveNativeOpenAIResponsesWebSocketMode(
+          model,
+          responsesOptions?.transport,
+        );
         const encodeBody = prepareModelRequestBody(
           websocketMode || compactRequest?.mode === "endpoint" ? undefined : options,
         );
@@ -222,7 +208,7 @@ function createResponsesTransportExecutor(config: {
           options?.onResponse,
           model,
         );
-        const client = config.createClient(model, apiKey, httpHeaders, fetchOverride);
+        const client = await config.createClient(model, apiKey, httpHeaders, fetchOverride);
         const nativeAstra =
           model.id === "gpt-6-astra" && supportsNativeOpenAIResponsesEndpoint(model);
         const asyncToolExecutionEligible =
@@ -232,7 +218,10 @@ function createResponsesTransportExecutor(config: {
         const prepareRequest = async (request: ReturnType<typeof config.buildRequest>) => {
           let params = request;
           const preserveUsers = v2Compaction?.preserveUsers(request.input ?? []);
-          const nextParams = await options?.onPayload?.(params, model);
+          const nextParams = await awaitProviderLifecycleCallback(
+            options?.onPayload ? () => options.onPayload?.(params, model) : undefined,
+            options?.signal,
+          );
           if (nextParams !== undefined) {
             params = nextParams as typeof params;
           }
@@ -247,9 +236,7 @@ function createResponsesTransportExecutor(config: {
             model,
             params as Record<string, unknown>,
           ) as typeof params;
-          params = v2Compaction
-            ? v2Compaction.sanitizeImages(params)
-            : sanitizeResponsesImagePayload(params);
+          params = sanitizeResponsesImagePayload(params);
           if (responsesOptions?.openclawCodeModeToolSurface === true) {
             const visibleToolNames = resolveCodeModeResponsesVisibleToolNames(context);
             const allowedHostedToolTypes = responsesOptions?.openclawCodeModeAllowedHostedToolTypes;
@@ -293,6 +280,7 @@ function createResponsesTransportExecutor(config: {
               replayMode,
               Boolean(v2Compaction),
               itemRecovery.applied,
+              compactRequest?.mode === "endpoint" && supportsNativeOpenAIResponsesEndpoint(model),
             ),
           );
         const buildItemConflictRequest = () => itemRecovery.retry(buildRequest);
@@ -320,7 +308,6 @@ function createResponsesTransportExecutor(config: {
         const httpContinuationEligible =
           config.httpContinuation &&
           !compactRequest &&
-          !independent &&
           !websocketMode &&
           !getAiTransportHost().requiresManagedTransport(model) &&
           (supportsNativeOpenAIResponsesEndpoint(model) ||
@@ -581,9 +568,7 @@ function createResponsesTransportExecutor(config: {
             // Keep the provider's terminal fact; the catch-side projection would overwrite it.
             throw new Error(output.errorMessage ?? "An unknown error occurred");
           }
-          // Independent side requests never update the parent's reasoning or context state.
-          const admitted =
-            !independent && (transport === "websocket" ? websocketBaseline : continuationBaseline);
+          const admitted = transport === "websocket" ? websocketBaseline : continuationBaseline;
           if (v2Compaction && compactRequest) {
             const compacted = v2Compaction.finish({
               terminal,
@@ -668,7 +653,11 @@ export function createOpenAIResponsesTransportStreamFn(): StreamFn {
   return createResponsesTransportExecutor({
     streamRequest: true,
     httpContinuation: true,
-    createClient: createOpenAIResponsesClient,
+    createClient: async (...args) => {
+      const { createOpenAIResponsesClient } =
+        await import("../providers/openai-provider-client.js");
+      return createOpenAIResponsesClient(...args);
+    },
     buildRequest: buildOpenAIResponsesParams,
     pricingOptions: (options, model) => ({
       serviceTier: options?.serviceTier,
@@ -684,7 +673,10 @@ export function createAzureOpenAIResponsesTransportStreamFn(): StreamFn {
   return createResponsesTransportExecutor({
     outputApi: "azure-openai-responses",
     firstEventTimeoutMs: AZURE_RESPONSES_FIRST_EVENT_TIMEOUT_MS,
-    createClient: createAzureOpenAIClient,
+    createClient: async (...args) => {
+      const { createAzureOpenAIClient } = await import("../providers/openai-provider-client.js");
+      return createAzureOpenAIClient(...args);
+    },
     buildRequest: (model, context, options, metadata, replayMode, retainUsers, onItemRecovery) => {
       const deploymentName = resolveAzureDeploymentNameFromMap({
         modelId: model.id,

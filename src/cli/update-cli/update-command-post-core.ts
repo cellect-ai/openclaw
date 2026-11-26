@@ -17,6 +17,7 @@ import { ignoreMissingPath } from "../../infra/errno.js";
 import { formatErrorMessage, hasErrnoCode } from "../../infra/errors.js";
 import { resolveExecutablePath } from "../../infra/executable-path.js";
 import { readJsonIfExists, writeJson } from "../../infra/json-files.js";
+import { compareSemverStrings } from "../../infra/npm-registry-spec.js";
 import { mergeProcessEnv } from "../../infra/process-env.js";
 import { runtimeProcessEntrypoints } from "../../infra/runtime-process-entrypoints.js";
 import {
@@ -24,7 +25,6 @@ import {
   resolveRuntimeWorkerUrl,
 } from "../../infra/runtime-worker-url.js";
 import type { UpdateChannel } from "../../infra/update-channels.js";
-import { compareSemverStrings } from "../../infra/update-check.js";
 import {
   CONTROL_PLANE_UPDATE_SENTINEL_META_ENV,
   readControlPlaneUpdateSentinelMeta,
@@ -329,6 +329,10 @@ export async function continuePostCoreUpdateInFreshProcess(params: {
       params.opts.fullIntegrityCheck && options.has("--full-integrity-check"),
     );
   }
+  // The fresh process runs Doctor repair and cannot copy itself. Once it will launch, and
+  // before its tentative plugin index, copy the originals (a no-op if this run already did).
+  await params.opts.run?.captureOriginal?.();
+  authority.assertCurrent();
 
   const argv = [
     entryPath,

@@ -335,7 +335,7 @@ describe("sessions.files for managed-worktree sessions", () => {
     });
   });
 
-  it("refuses the read when the session moves to another worktree during settlement", async () => {
+  it("refuses the read when the session moves to another worktree during read preparation", async () => {
     await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
       const entry = await seedWorktreeSession(state.workspaceDir);
       hooks.duringReadPreparation = async () => {

@@ -73,7 +73,10 @@ import {
   runUpdateDoctorProcess,
   withUpdateDoctorChild,
 } from "./update-command-doctor-child.js";
-import type { PluginUpdateWarning } from "./update-command-plugins-internals.js";
+import {
+  createOwedPluginStepWarning,
+  type PluginUpdateWarning,
+} from "./update-command-plugins-internals.js";
 import type { PostCorePluginUpdateResult } from "./update-command-plugins.js";
 import { validatePostPluginConfigInFreshProcess } from "./update-command-post-plugin-config-check.js";
 import { applyPostPluginUpdateReadiness } from "./update-command-post-plugin-readiness.js";
@@ -114,7 +117,8 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
   runId?: string;
   opts?: UpdateCommandOptions;
   /** Only local candidate code may supply its known native Doctor contract. */
-  doctorConfigWrites?: true;
+  doctorCapabilities?: { doctorConfigWrites: true; doctorRetirementOnly: true };
+  retirementOnly?: true;
   databaseBackup?: UpdateDatabaseBackup;
   onDoctorStep?: (step: UpdateStepResult) => void;
   yes: boolean;
@@ -213,9 +217,8 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
       root: params.root,
     });
     const workerCommand = [workerRuntime, ...resolveRuntimeWorkerArgv(workerUrl, workerRuntime)];
-    const doctorConfigWrites =
-      run &&
-      (params.doctorConfigWrites ??
+    const doctorCapabilities = run
+      ? (params.doctorCapabilities ??
         (await inspectUpdateDoctorChildSupport(
           { workerUrl, argv: workerCommand },
           {
@@ -225,7 +228,9 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
             env: commandOptions.env,
           },
           assertCurrent,
-        )));
+        )))
+      : undefined;
+    const doctorConfigWrites = doctorCapabilities?.doctorConfigWrites;
     // The capability check above stays untraced; only the Doctor reports its sections.
     const doctorOptions: CommandOptions = {
       ...commandOptions,
@@ -273,7 +278,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
       assertCurrent();
       if (params.databaseBackup) {
         await observeUpdateParentDatabaseWrites(params.databaseBackup, {
-          env: run?.env ?? baseEnv,
+          env: baseEnv,
           root: params.root,
           assertCurrent,
         });
@@ -294,6 +299,9 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
             configInputHash: snapshot.hash,
             originalRecoveryCapture: run?.originalRecoveryCapture,
             repair: true,
+            ...(params.retirementOnly && doctorCapabilities?.doctorRetirementOnly
+              ? { retirementOnly: true as const }
+              : {}),
             fullIntegrityCheck: params.opts?.fullIntegrityCheck,
             databaseGenerations:
               params.databaseBackup?.migration?.to ?? params.databaseBackup?.sourceGenerations,
@@ -542,7 +550,7 @@ export async function runUpdateFinalizationDoctorInFreshProcess(params: {
 export async function completePostCorePluginUpdate(
   params: Omit<
     Parameters<typeof runUpdateFinalizationDoctorInFreshProcess>[0],
-    "phase" | "workspaceSuggestions" | "entryPath" | "onAuthorityRefused"
+    "phase" | "workspaceSuggestions" | "entryPath" | "onAuthorityRefused" | "retirementOnly"
   > & {
     pluginUpdate: PostCorePluginUpdateResult;
     beforeDoctor?: () => Promise<void>;
@@ -566,6 +574,7 @@ export async function completePostCorePluginUpdate(
   let entryPath: string | undefined;
   let freshConfigValidation: PostPluginConfigValidation | undefined;
   let includeOptionalInspections = false;
+  let doctorStarted = false;
   if (pluginUpdate.status !== "error") {
     try {
       entryPath = await resolveGatewayInstallEntrypoint(params.root);
@@ -583,9 +592,11 @@ export async function completePostCorePluginUpdate(
       assertCurrent();
       if (freshDoctorRequired) {
         await params.beforeDoctor?.();
+        doctorStarted = true;
         let inspectionCheckIds: string[] | null | undefined;
         const warning = await runUpdateFinalizationDoctorInFreshProcess({
           ...params,
+          ...(!pluginUpdate.changed ? { retirementOnly: true as const } : {}),
           onDoctorStep: (step) => {
             if (step.deferredInspectionCheckIds !== undefined) {
               inspectionCheckIds = step.deferredInspectionCheckIds;
@@ -647,18 +658,24 @@ export async function completePostCorePluginUpdate(
       const failedUpdate = params.pluginUpdate;
       const reason = String(err);
       const failureFacts = collectUpdateDoctorFailureFacts(err);
+      // Doctor's own named failure, a missing entrypoint and a Gateway that could not be parked
+      // leave the installation unverified. Any other failure around a started Doctor is owed;
+      // the config and readiness checks below still decide whether the Gateway may start.
+      const owed = doctorStarted && failureFacts.length === 0;
       pluginUpdate = {
         ...failedUpdate,
-        status: "error",
-        reason: POST_PLUGIN_DOCTOR_EXECUTION_FAILED_REASON,
+        status: owed ? "warning" : "error",
+        ...(owed ? {} : { reason: POST_PLUGIN_DOCTOR_EXECUTION_FAILED_REASON }),
         ...(failureFacts.length ? { failureFacts } : {}),
         warnings: [
           ...(failedUpdate.warnings ?? []),
-          {
-            reason,
-            message: `Post-update plugin Doctor did not complete: ${reason}`,
-            guidance: ["Run `openclaw update repair` to retry post-update plugin repair."],
-          },
+          owed
+            ? createOwedPluginStepWarning("post-plugin-doctor", err)
+            : {
+                reason,
+                message: `Post-update plugin Doctor did not complete: ${reason}`,
+                guidance: ["Run `openclaw update repair` to retry post-update plugin repair."],
+              },
         ],
       };
     }

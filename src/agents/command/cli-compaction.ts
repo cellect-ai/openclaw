@@ -340,9 +340,8 @@ export async function runCliTurnCompactionLifecycle(
                 params.pluginGeneration ? { pluginGeneration: params.pluginGeneration } : {},
               );
               const preparedModelRuntime = preparedRuntimeLease.snapshot;
-              nativeResult = await withPluginRuntimeGenerationScope(
-                preparedModelRuntime,
-                async () => {
+              nativeResult = await preparedRuntimeLease.run(() =>
+                withPluginRuntimeGenerationScope(preparedModelRuntime, async () => {
                   await ensureSelectedAgentHarnessPlugin({
                     provider: params.provider,
                     modelId: params.model,
@@ -381,7 +380,7 @@ export async function runCliTurnCompactionLifecycle(
                     },
                     { preparedModelRuntime, sourceAuthority: { assertActive, operatorAuthority } },
                   );
-                },
+                }),
               );
             } catch (error) {
               const reason = coerceErrorMessage(error);

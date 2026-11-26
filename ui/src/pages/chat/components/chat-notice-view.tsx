@@ -5,18 +5,24 @@ import { ChatRunFailureNotice } from "./chat-run-failure-notice.tsx";
 function FailureNotice(props: ChatNoticeProps) {
   const failure = () => props.item.runError!;
   const actions = createMemo(() => {
-    const runId = failure().runId;
+    // Bind the displayed failure: an open confirmation must not retarget a newer run.
+    const initialRunId = failure().runId;
+    const initialSummary = failure().summary;
     const recovery = props.recovery;
     if (
       !recovery ||
-      runId !== recovery.failureActionsRunId ||
+      initialRunId !== recovery.failureActionsRunId ||
       recovery.runActive ||
       recovery.runWorking
     ) {
       return undefined;
     }
     return {
-      onRetry: recovery.onRetryRun ? () => recovery.onRetryRun?.(runId) : undefined,
+      onRetry: recovery.onRetryRun ? () => recovery.onRetryRun?.(initialRunId) : undefined,
+      onStartNewSession: recovery.onStartNewSession
+        ? () => recovery.onStartNewSession?.(initialRunId, initialSummary)
+        : undefined,
+      editSource: recovery.failedMessageEditSource,
     };
   });
   return (
@@ -27,8 +33,12 @@ function FailureNotice(props: ChatNoticeProps) {
     >
       <ChatRunFailureNotice
         summary={failure().summary}
+        cause={failure().cause}
         repeatCount={props.item.repeatCount}
         onRetry={actions()?.onRetry}
+        onStartNewSession={actions()?.onStartNewSession}
+        editSource={actions()?.editSource}
+        onFocusComposer={props.recovery?.onFocusComposer}
       />
     </div>
   );

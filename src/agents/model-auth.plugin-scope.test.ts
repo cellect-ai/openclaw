@@ -41,6 +41,9 @@ vi.mock("../plugins/provider-hook-runtime.js", async () => {
       loadOpenClawPlugins: () => {
         throw new Error("cold plugin load");
       },
+      acquirePluginRegistryForInspection: async () => {
+        throw new Error("cold plugin inspection");
+      },
       resolveRuntimePluginRegistry: () => undefined,
       isPluginRegistryLoadInFlight: () => false,
     }),
@@ -419,7 +422,10 @@ test(
 test.each(["literal", "SecretRef"])(
   "uses plugin auth over %s model keys and saved facts",
   async (_keyKind, f) => {
-    restorePreparedSyntheticAuthFacts(f.cfg, [{ providerRef: id, result: staleAuth }]);
+    restorePreparedSyntheticAuthFacts(
+      [{ providerRef: id, result: staleAuth }],
+      [{ config: f.cfg }],
+    );
     expect(await resolveApiKeyForProviderCore(f.params)).toMatchObject(pluginAuth);
     expect(authRuntime.hasRuntimeAvailableProviderAuth(f.params)).toBe(true);
     expect(await authRuntime.prepareRuntimeAvailableProviderAuth(f.params)).toBe(true);

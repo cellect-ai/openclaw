@@ -1,7 +1,5 @@
 import path from "node:path";
-import { initializeGlobalHookRunner } from "openclaw/plugin-sdk/hook-runtime";
-import { createMockPluginRegistry } from "openclaw/plugin-sdk/plugin-test-runtime";
-import { expect, it, vi } from "vitest";
+import { expect, it } from "vitest";
 import { resolveCodexAppServerHomeDir } from "./auth-start-options.js";
 import {
   isCodexAppServerLiveThreadProtected,
@@ -29,12 +27,9 @@ it("retains a protected parent through private completion and owner reentry", as
   const codexHome = resolveCodexAppServerHomeDir(agentDir);
   const rolloutPath = path.join(codexHome, "sessions", "continuity-parent.jsonl");
   let creationPolicy = "";
+  let creationBase = "";
   const policy = "Persistent synthetic operator policy.";
   let recorded: unknown;
-  const llmInput = vi.fn();
-  initializeGlobalHookRunner(
-    createMockPluginRegistry([{ hookName: "llm_input", handler: llmInput }]),
-  );
   const harness = createStartedThreadHarness(
     async (method, request) => {
       if (method === "account/read") {
@@ -44,6 +39,7 @@ it("retains a protected parent through private completion and owner reentry", as
         expect(request).toHaveProperty(["config", "hooks.PreToolUse", 0]);
         creationPolicy =
           typeof request.developerInstructions === "string" ? request.developerInstructions : "";
+        creationBase = typeof request.baseInstructions === "string" ? request.baseInstructions : "";
         await writeNativeCatalogFixture(rolloutPath, "thread-1", request.dynamicTools);
         const result = threadStartResult("thread-1");
         return { ...result, thread: { ...result.thread, path: rolloutPath } };
@@ -90,17 +86,19 @@ it("retains a protected parent through private completion and owner reentry", as
       expect((await readCodexAppServerBinding(sessionFile))?.threadId).toBe("thread-1");
       const request = harness.requests.findLast(({ method }) => method === "turn/start")?.params;
       const instructions = continuity.readManagedInstructions(harness.client, request);
-      expect(instructions).toContain(
-        text ?? "No additional conversation instructions for this turn.",
-      );
+      const conversation = instructions.match(
+        /## OpenClaw conversation instructions\n\n[^\n]+\n\n<conversation_instructions>\n\n([\s\S]*?)\n\n### Tool Bindings\n\nCurrent OpenClaw tool bindings for this turn[^\n]*\n\n<\/conversation_instructions>$/,
+      )?.[1];
+      expect(conversation).toBe(text ?? "No additional conversation instructions for this turn.");
       expect(instructions).not.toContain(
         index === 2 ? "Owner conversation context." : "Private completion context.",
       );
       await harness.completeTurn({ threadId: "thread-1", turnId: "turn-1" });
       const result = await run;
-      const expected = instructions.replace("Native model-owned policy", creationPolicy);
+      // Reports count the OpenClaw base pinned at creation ahead of the developer carrier.
+      expect(creationBase).toContain("## Codex Runtime");
+      const expected = `${creationBase}\n\n${instructions.replace("Native model-owned policy", creationPolicy)}`;
       expect(recorded).toHaveProperty("systemPrompt", expected);
-      expect(llmInput.mock.calls.at(-1)?.[0]).toMatchObject({ systemPrompt: expected });
       expect(result.systemPromptReport?.systemPrompt.chars).toBe(expected.length);
     }
     const changed = createParams(sessionFile, tempDir, { runId: "changed-policy" });
@@ -112,12 +110,11 @@ it("retains a protected parent through private completion and owner reentry", as
         "Codex thread thread-1 still has background work after waiting for cleanup; stop its running work and retry.",
     });
     expect(isCodexAppServerLiveThreadProtected(harness.client, "thread-1")).toBe(true);
-    expect(harness.requests.filter(({ method }) => method === "thread/unsubscribe")).toEqual([]);
-    expect(
-      harness.requests
-        .filter(({ method }) => ["thread/start", "thread/resume"].includes(method))
-        .map(({ method }) => method),
-    ).toEqual(["thread/start"]);
+    const methods = harness.requests.map(({ method }) => method);
+    expect(methods).not.toContain("thread/unsubscribe");
+    expect(methods.filter((method) => ["thread/start", "thread/resume"].includes(method))).toEqual([
+      "thread/start",
+    ]);
   } finally {
     release();
     harness.close();

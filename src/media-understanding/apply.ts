@@ -5,10 +5,16 @@ import {
   formatAudioTranscripts,
   formatMediaUnderstandingBody,
 } from "../../packages/media-understanding-common/src/format.js";
+import type {
+  MediaUnderstandingCapability,
+  MediaUnderstandingDecision,
+  MediaUnderstandingOutput,
+} from "../../packages/media-understanding-common/src/types.js";
 import { finalizeInboundContext } from "../auto-reply/reply/inbound-context.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { logVerbose, shouldLogVerbose } from "../globals.js";
+import { normalizeMediaFacts } from "../media/media-facts.js";
 import { resolveAttachmentKind } from "./attachments.normalize.js";
 import { selectAttachments } from "./attachments.select.js";
 import { DEFAULT_ECHO_TRANSCRIPT_FORMAT, sendTranscriptEcho } from "./echo-transcript.js";
@@ -21,15 +27,10 @@ import {
   renderMediaAttachmentDisposition,
 } from "./media-attachment-outcomes.js";
 import { assertMediaExecutionCurrent, type MediaExecutionContext } from "./provider-execution.js";
+import type { MediaUnderstandingProvider } from "./provider-types.js";
 import { resolveConcurrency } from "./resolve.js";
 import { createScopedMediaAttachmentCache } from "./runner.attachments.js";
 import { buildProviderRegistry, normalizeMediaAttachments, runCapability } from "./runner.js";
-import type {
-  MediaUnderstandingCapability,
-  MediaUnderstandingDecision,
-  MediaUnderstandingOutput,
-  MediaUnderstandingProvider,
-} from "./types.js";
 
 export type ApplyMediaUnderstandingResult = {
   extractedFileImages: ExtractedFileImage[];
@@ -68,6 +69,7 @@ export async function applyMediaUnderstanding(params: {
     .map((value) => normalizeOptionalString(value))
     .find(Boolean);
 
+  const media = normalizeMediaFacts(ctx.media);
   const attachments = normalizeMediaAttachments(ctx);
   // Built on first read, at most once per turn: the native-vision skip never reads it.
   // A build failure is memoized and rethrown after the capabilities run, so it still
@@ -200,11 +202,14 @@ export async function applyMediaUnderstanding(params: {
         }
         // Echo transcript back to chat before agent processing, if configured.
         const audioCfg = cfg.tools?.media?.audio;
-        if (audioCfg?.echoTranscript && transcript) {
+        const echoTranscript = formatAudioTranscripts(
+          audioOutputs.filter((output) => media[output.attachmentIndex]?.source !== "quote"),
+        );
+        if (audioCfg?.echoTranscript && echoTranscript) {
           await sendTranscriptEcho({
             ctx,
             cfg,
-            transcript,
+            transcript: echoTranscript,
             format: audioCfg.echoFormat ?? DEFAULT_ECHO_TRANSCRIPT_FORMAT,
           });
         }

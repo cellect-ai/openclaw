@@ -47,6 +47,7 @@ export type Job = {
   createAdmission?: SqliteWorkerAdmissionFactory;
   operationAdmission?: { admission: SqliteWorkerOperationAdmission; releaseService(): void };
   settleNative?: (settlement: SqliteWorkerOperationSettlement) => void;
+  finishing?: true;
   assertCurrent?: () => void;
   inputTransfer?: {
     id: number;
@@ -191,6 +192,15 @@ export type PreparedSqliteWorkerOpen = {
 export type SqliteWorkerAdmissionCleanup = {
   readonly pending: boolean;
   close(): Promise<void>;
+};
+
+export type SqliteWorkerClientBinding = Pick<
+  PreparedSqliteWorkerOpen,
+  "maintenanceScope" | "cleanupAccess" | "retireIdle"
+> & {
+  releasePaths: () => void;
+  databaseIdentity: Extract<RequestBody, { type: "execute" }>["databaseIdentity"];
+  resumeScheduledMaintenance: (() => void) | undefined;
 };
 
 export type SqliteWorkerOpenCustody = Pick<

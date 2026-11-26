@@ -117,11 +117,12 @@ it.for([
       await expectFiles({ [`${configPath}.bak`]: predecessor });
     }
     if (candidate === "observed-repeated-truncation") {
-      await io.readConfigFileSnapshot();
+      const reobserved = await io.readConfigFileSnapshot();
+      // The target health owner carries metadata-obscured loss on the output hash.
       expect(
         readConfigHealthStateFromStore({ env: process.env, homedir: () => home, logger: console })
           .entries?.[configPath]?.lastObservedSuspiciousSignature,
-      ).toContain("size-drop-vs-last-good");
+      ).toBe(reobserved.hash + ":inherited-config-anomaly");
     }
     if (candidate === "newer-backup") {
       // The health owner witnessed this newer backup before the loss was inherited.

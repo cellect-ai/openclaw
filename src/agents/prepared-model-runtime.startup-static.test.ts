@@ -1,7 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { createMockSubsystemLogger } from "../../test/helpers/mock-subsystem-logger.js";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
-import { createTempDirTracker } from "../../test/helpers/temp-dir.js";
 import type { ModelProviderConfig } from "../config/types.models.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
@@ -14,7 +12,6 @@ import {
 } from "../plugins/plugin-cache.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
-import { registerResolvedAgentDir, unregisterResolvedAgentDir } from "./agent-dir-registry.js";
 import type { AuthProfileStore } from "./auth-profiles/types.js";
 import type * as ModelCatalog from "./model-catalog.js";
 import type { ModelCatalogSnapshot } from "./model-catalog.types.js";
@@ -90,7 +87,6 @@ const mocks = await vi.hoisted(async () => {
     mode: "api-key",
   }));
   return {
-    agentDir: "",
     model,
     authStorage,
     modelRegistry,
@@ -218,15 +214,14 @@ vi.mock("../plugins/synthetic-auth.runtime.js", async (importOriginal) => ({
   resolveRuntimeSyntheticAuthProviderRefs: () => [],
 }));
 
-vi.mock("./legacy-inherited-auth-dir.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./legacy-inherited-auth-dir.js")>()),
-  resolveLegacyInheritedAuthDir: () => mocks.agentDir,
+vi.mock("./legacy-inherited-auth-dir.js", () => ({
+  resolveLegacyInheritedAuthDir: () => "/tmp/prepared-static-agent",
 }));
 
 vi.mock("./agent-scope-config.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./agent-scope-config.js")>()),
   listAgentIds: () => ["default"],
-  resolveAgentDir: () => mocks.agentDir,
+  resolveAgentDir: () => "/tmp/prepared-static-agent",
   resolveAgentWorkspaceDir: () => "/tmp/prepared-static-workspace",
 }));
 
@@ -243,6 +238,11 @@ vi.mock("./model-catalog.js", async () => ({
   loadManifestModelCatalog: (await vi.importActual<typeof ModelCatalog>("./model-catalog.js"))
     .loadManifestModelCatalog,
   buildPreparedModelCatalogSnapshot: mocks.buildPreparedModelCatalogSnapshot,
+}));
+
+vi.mock("../state/openclaw-agent-execution.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../state/openclaw-agent-execution.js")>()),
+  prepareOpenClawAgentDatabaseExecution: async () => {},
 }));
 
 // mock-isolation: Static startup fixtures keep model planning and publication persistence unloaded.
@@ -268,9 +268,8 @@ vi.mock("./embedded-agent-runner/model.static-catalog.js", async (importOriginal
   createBundledStaticCatalogModelResolver: () => mocks.resolveStaticCatalogModel,
 }));
 
-vi.mock("../logging/subsystem.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../logging/subsystem.js")>()),
-  createSubsystemLogger: createMockSubsystemLogger,
+vi.mock("../logging/subsystem.js", () => ({
+  createSubsystemLogger: () => ({ warn: vi.fn() }),
 }));
 
 const { getPreparedModelRuntimeSnapshot, refreshPreparedModelRuntimeSnapshots } =
@@ -285,13 +284,13 @@ const { resolveThinkingProfile } = await import("../auto-reply/thinking.js");
 const inputFor = (config: OpenClawConfig) => ({
   agentId: "default",
   config,
-  agentDir: mocks.agentDir,
+  agentDir: "/tmp/prepared-static-agent",
   workspaceDir: "/tmp/prepared-static-workspace",
 });
 const snapshotFor = (config: OpenClawConfig) =>
   getPreparedModelRuntimeSnapshot({
     ...inputFor(config),
-    inheritedAuthDir: mocks.agentDir,
+    inheritedAuthDir: "/tmp/prepared-static-agent",
   });
 const refresh = (config: OpenClawConfig) =>
   refreshPreparedModelRuntimeSnapshots(config, {
@@ -314,12 +313,8 @@ async function withScopedCatalogCache<T>(read: () => Promise<T>): Promise<T> {
   }
 }
 
-const tempDirs = createTempDirTracker();
 beforeEach(async () => {
   await resetPreparedModelRuntimeSnapshotsForTest();
-  mocks.agentDir = tempDirs.make("openclaw-prepared-static-agent-");
-  // The resolver mock must publish the reverse ownership mapping its real counterpart owns.
-  registerResolvedAgentDir({ agentId: "default", agentDir: mocks.agentDir });
   bindPluginMetadataSnapshotCache(mocks.metadataSnapshot, getPluginCache());
   mocks.loadAgentRuntimePluginRegistryHandle
     .mockReset()
@@ -328,11 +323,6 @@ beforeEach(async () => {
   mocks.modelRegistry.find.mockReset();
   mocks.resolveStaticCatalogModel.mockReturnValue(undefined);
   mocks.resolveProviderPolicySurface.mockReset().mockReturnValue(null);
-});
-afterEach(async () => {
-  await resetPreparedModelRuntimeSnapshotsForTest();
-  unregisterResolvedAgentDir({ agentId: "default", agentDir: mocks.agentDir });
-  tempDirs.cleanup();
 });
 
 describe("prepared model runtime Gateway catalog mode", () => {
@@ -455,10 +445,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
     mocks.prepareStaticCatalog.mockImplementationOnce(async (...args: unknown[]) => {
       started.resolve();
       await finish.promise;
-      if (!defaultPrepareStaticCatalog) {
-        throw new Error("expected default static catalog implementation");
-      }
-      return await defaultPrepareStaticCatalog(...args);
+      return await defaultPrepareStaticCatalog!(...args);
     });
 
     const stale = refresh(staleConfig);
@@ -481,12 +468,15 @@ describe("prepared model runtime Gateway catalog mode", () => {
     const provider = "fixture-provider";
     const modelId = "fixture-model-2026-08-09";
     const registry = createEmptyPluginRegistry();
-    const resolveDynamicModel = vi.fn((context: { provider: string; modelId: string }) =>
-      mocks.model(context.provider, context.modelId, "Fixture dated model"),
-    );
+    const prepareDynamicModel = vi.fn(async () => {});
+    const resolveDynamicModel = vi.fn((context: { provider: string; modelId: string }) => ({
+      ...mocks.model(context.provider, context.modelId, "Fixture dated model"),
+      reasoning: prepareDynamicModel.mock.calls.length > 0,
+    }));
+    const hooks = { resolveDynamicModel, prepareDynamicModel };
     registry.providers.push({
       pluginId: provider,
-      provider: { id: provider, label: "Fixture provider", auth: [], resolveDynamicModel },
+      provider: { id: provider, label: "Fixture provider", auth: [], ...hooks },
       source: "test",
     });
     mocks.loadAgentRuntimePluginRegistryHandle.mockReturnValue(registry);
@@ -536,7 +526,7 @@ describe("prepared model runtime Gateway catalog mode", () => {
         (configured) => `${configured.provider}/${configured.modelId}`,
       ),
     ).toEqual([`${provider}/${modelId}`, "openai/gpt-5.5"]);
-    expect(snapshot?.configuredRuntimeModels[0]?.model.id).toBe(modelId);
+    expect(snapshot?.configuredRuntimeModels[0]?.model.reasoning).toBe(true);
     for (const entries of [snapshot?.modelCatalog.entries, snapshot?.modelCatalog.routeVariants]) {
       expect(entries?.map((entry) => `${entry.provider}/${entry.id}`)).toEqual([
         `${provider}/${modelId}`,

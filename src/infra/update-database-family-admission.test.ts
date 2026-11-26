@@ -48,6 +48,7 @@ it.each(["legacy", "global-postgres", "family-refusal", "family-compatible"])(
     );
     const before = await fs.readFile(source);
     let activated = false;
+    const opts = { json: true };
     const familyAdmission = createUpdateDatabaseFamilyAdmission({
       root,
       updateInstallKind: "package",
@@ -55,8 +56,8 @@ it.each(["legacy", "global-postgres", "family-refusal", "family-compatible"])(
       channel: "stable",
       tag: version,
       packageInstallSpec: null,
-      opts: { json: true },
-      executionGuards: createUpdateCommandExecutionGuards({ json: true }, root),
+      opts,
+      executionGuards: createUpdateCommandExecutionGuards(opts, root),
       shouldRestart: false,
     });
     const env = { OPENCLAW_CONFIG_PATH: source, OPENCLAW_STATE_DIR: root };

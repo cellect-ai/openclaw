@@ -88,6 +88,14 @@ export class BrokerResourceClaims {
           claim.ownerMessages.size > 0),
     );
   }
+  // Physical custody outlives execution. Only unsettled work pins the host process.
+  get needsReference() {
+    return [...this.claims.values()].some(
+      (claim) =>
+        !claim.closed &&
+        (!claim.created || Boolean(claim.failure || claim.pending) || claim.ownerMessages.size > 0),
+    );
+  }
   get admissionClosed() {
     return this.failure !== undefined || this.sealed;
   }
@@ -207,6 +215,7 @@ export class BrokerResourceClaims {
         })().catch((error: unknown) => {
           if (claim.pending?.requestId === requestId) {
             claim.pending = undefined;
+            this.host.refreshReference();
             completion.reject(toErrorObject(error, "Native resource close delivery failed"));
           }
         });
@@ -255,6 +264,7 @@ export class BrokerResourceClaims {
         return;
       }
       claim.created = true;
+      this.host.refreshReference();
     } else if (
       response.type === "resource-owner-received" ||
       response.type === "resource-owner-rejected"
@@ -265,15 +275,16 @@ export class BrokerResourceClaims {
         this.bufferedBytes -= pending.size;
         this.bufferedMessages--;
         if (response.type === "resource-owner-rejected") {
+          claim.settling = true;
+        }
+        this.host.refreshReference();
+        if (response.type === "resource-owner-rejected") {
           const error = toErrorObject(
             decodeNativeWorkerFailure(response.error),
             "Native resource owner callback failed",
           );
-          claim.settling = true;
-          this.host.refreshReference();
           claim.inContext(() => claim.callbacks.failed(error));
         }
-        this.host.refreshReference();
       }
       return;
     } else if (response.type === "resource-owner") {
@@ -292,10 +303,12 @@ export class BrokerResourceClaims {
       this.clearOwnerMessages(claim);
       claim.pending?.completion.resolve();
       claim.pending = undefined;
+      this.host.refreshReference();
     } else if (response.type === "resource-close-error") {
       if (claim.pending?.requestId === response.requestId) {
         const pending = claim.pending;
         claim.pending = undefined;
+        this.host.refreshReference();
         pending.completion.reject(
           response.resourceError
             ? new BrokerNativeResourceCloseError(response.error)
@@ -316,7 +329,6 @@ export class BrokerResourceClaims {
       claim.inContext(() => claim.callbacks.failed(error));
       return;
     }
-    this.host.refreshReference();
     claim.inContext(() => claim.callbacks.message(response));
   }
 

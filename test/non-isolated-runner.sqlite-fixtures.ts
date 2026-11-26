@@ -96,7 +96,6 @@ it("retains a real shared-state owner after host admission is refused", async ()
     expect(retained.drains).toBe(0);
     await Promise.resolve();
     retained.drains++;
-    // This one-shot fixture is settled; later broker drainage must not retain it.
     unregister();
   } });
 });

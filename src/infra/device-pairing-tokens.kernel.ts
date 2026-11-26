@@ -63,6 +63,7 @@ export function ensureDeviceTokenInWorker(params: {
   scopes: string[];
   allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
+  approval?: DeviceAuthToken["approval"];
   nowMs: number;
 }): DeviceAuthToken | null {
   return updatePairedDeviceInTransaction<DeviceAuthToken | null>(params.deviceId, (paired) => {
@@ -100,6 +101,7 @@ export function ensureDeviceTokenInWorker(params: {
       scopes: requestedScopes,
       ...(requestedAllowedAgentIds ? { allowedAgentIds: requestedAllowedAgentIds } : {}),
       issuer: params.issuer,
+      approval: params.approval,
       existing,
       now,
       rotatedAtMs: existing ? now : undefined,

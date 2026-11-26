@@ -67,9 +67,9 @@ it("keeps current-schema held agents unavailable until explicit live restoration
         openOpenClawAgentDatabase({ agentId: "retired", path: heldPath, env: state.env }),
       ).toThrow("held for explicit restoration");
       expect(await recovery.readBytes()).toEqual(recovery.bytes);
-      await expect(createAgent({ name: "retired", skipBootstrap: true })).resolves.toMatchObject({
-        status: "existing",
-      });
+      await expect(
+        createAgent({ name: "retired", skipBootstrap: true, deferInitialization: true }),
+      ).resolves.toMatchObject({ status: "existing" });
       expect(readAgentDatabaseAdmissionRefusal("retired", { env: state.env })).toBeUndefined();
       expect(readAgentDatabaseAdmissionRefusal("main", { env: state.env })).toBeUndefined();
       expect(recovery.readHolds()).toEqual(recovery.held.slice(1));
@@ -106,7 +106,7 @@ it.each(["recovery-hold", "retained-deletion"] as const)(
       gateway: { mode: "local" },
     });
     await prepareRecoveryHolds(state, agentId, [target]);
-    const params = { name: agentId, skipBootstrap: true };
+    const params = { name: agentId, skipBootstrap: true, deferInitialization: true as const };
     if (kind === "recovery-hold") {
       {
         using database = openNodeSqliteDatabase(pathname);
@@ -127,7 +127,9 @@ it.each(["recovery-hold", "retained-deletion"] as const)(
     }
     {
       using database = openNodeSqliteDatabase(pathname);
-      database.exec("PRAGMA user_version=37; UPDATE schema_meta SET schema_version=37");
+      database.exec(
+        "DROP TABLE agent_tool_usage; PRAGMA user_version=41; UPDATE schema_meta SET schema_version=41",
+      );
     }
     const original = await fs.readFile(pathname);
     if (kind === "retained-deletion") {
@@ -154,7 +156,7 @@ it.each(["recovery-hold", "retained-deletion"] as const)(
     });
     {
       using database = openNodeSqliteDatabase(pathname, { readOnly: true });
-      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 38 });
+      expect(database.prepare("PRAGMA user_version").get()).toEqual({ user_version: 42 });
     }
     expect(await fs.readFile(pathname)).not.toEqual(original);
     expect(await readAgentDeletionRecoveryHoldsInWorker()).toEqual([]);

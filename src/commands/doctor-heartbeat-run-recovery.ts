@@ -1,3 +1,4 @@
+import { resolveDefaultAgentId } from "../agents/agent-scope-config.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { cloneCronJobForMutation } from "../cron/service/jobs-mutation.js";
 import type { DeferredCronNotifications } from "../cron/service/state.js";
@@ -77,6 +78,7 @@ export function recoverDoctorHeartbeatRun(params: {
             deps: {
               nowMs: () => nowMs,
               cronConfig: cfg.cron,
+              defaultAgentId: resolveDefaultAgentId(cfg),
               log: createCronMutationLogger(logs),
             },
           },

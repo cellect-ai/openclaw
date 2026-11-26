@@ -91,8 +91,3 @@ export function retireUpdateTarget(
     campaign?.clear();
   }
 }
-
-export function resetUpdateStatusState(): void {
-  updateAvailableCache = null;
-  updateScheduleCache = null;
-}

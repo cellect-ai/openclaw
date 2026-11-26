@@ -194,7 +194,8 @@ export function listModelCatalogObservedRoutes(
   return variants.map(({ api, baseUrl }) => ({ api, baseUrl }));
 }
 
-export type ModelCatalogViewFacts = {
+/** Projects captured catalog facts while keeping native observations revocable. */
+export function prepareModelCatalogView(params: {
   cfg: OpenClawConfig;
   agentId: string;
   agentDir?: string;
@@ -210,10 +211,7 @@ export type ModelCatalogViewFacts = {
   view?: ModelCatalogBrowseView;
   retainedModel?: ModelRef;
   resolveOpenAIProviderRoutes?: ReturnType<typeof createProviderModelRoutesResolver>;
-};
-
-/** Projects captured catalog facts while keeping native observations revocable. */
-export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
+}) {
   let preparedOpenAIProviderRoutes = params.resolveOpenAIProviderRoutes;
   const defaultModel = resolveNativeModelPrimary(params.cfg, params.agentId);
   const agentDir = params.agentDir ?? resolveAgentDir(params.cfg, params.agentId);
@@ -239,12 +237,22 @@ export function prepareModelCatalogView(params: ModelCatalogViewFacts) {
           id: params.retainedModel.model,
         })
       : undefined;
+    // Accepted account discovery replaces fallback membership for its provider.
+    let discovered: Set<string> | undefined;
+    if (params.view === "default" && params.snapshot.acceptedDiscoveryOrigins) {
+      for (const { provider } of params.snapshot.acceptedDiscoveryOrigins) {
+        (discovered ??= new Set<string>()).add(normalizeProviderId(provider));
+      }
+    }
     for (const entry of params.snapshot.staticEntries) {
       const key = keyOf(entry);
+      const explicit = policy.configuredKeys.has(key) || key === retainedKey;
       const include =
         params.view === "configured"
-          ? policy.configuredKeys.has(key) || key === retainedKey
-          : policy.allows({ provider: entry.provider, model: entry.id });
+          ? explicit
+          : explicit ||
+            (!discovered?.has(normalizeProviderId(entry.provider)) &&
+              policy.allows({ provider: entry.provider, model: entry.id }));
       if (!seen.has(key) && include) {
         seen.add(key);
         catalog.push(entry);

@@ -16,6 +16,7 @@ import { chatMessageGetHandlers } from "./chat-message-get-handler.js";
 import { chatPendingInputsDismissHandlers } from "./chat-pending-inputs-dismiss-handler.js";
 import { chatPredictionHandlers } from "./chat-prediction-handler.js";
 import { handleConversationContinue } from "./conversation-continue-handler.js";
+import { chatSteerNowHandlers } from "./chat-steer-now-handler.js";
 import type { GatewayRequestHandlerOptions, GatewayRequestHandlers } from "./types.js";
 import { assertValidParams } from "./validation.js";
 
@@ -27,6 +28,7 @@ export const chatHandlers: GatewayRequestHandlers = {
   "chat.handoff.arm": handleChatHandoffArm,
   "chat.handoff.seen": handleChatHandoffSeen,
   "conversation.continue": handleConversationContinue,
+  ...chatSteerNowHandlers,
   "chat.toolTitles": async ({ params, respond }) => {
     if (!assertValidParams(params, validateChatToolTitlesParams, "chat.toolTitles", respond)) {
       return;

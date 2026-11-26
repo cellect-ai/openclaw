@@ -8,6 +8,7 @@ import {
   createOxlintShards,
   filterOxlintShards,
   parseShardRunnerArgs,
+  resolveOxlintShardConcurrency,
 } from "../../scripts/run-oxlint-shards.mts";
 import { useAutoCleanupTempDirTracker } from "../helpers/temp-dir.js";
 
@@ -20,7 +21,6 @@ type Step = {
   env?: Record<string, string>;
   if?: string;
   name?: string;
-  uses?: string;
   run?: string;
   with?: Record<string, string>;
 };
@@ -111,7 +111,7 @@ it.each([
 ])("rejects retired alpha at npm publication and preflight boundaries: %j", (overrides) => {
   for (const [path, job, name] of [
     [workflowPath, "publish_openclaw_npm", "Validate tag input format"],
-    [preflightWorkflowPath, "check_openclaw_npm_stage", "Validate release ref input format"],
+    [preflightWorkflowPath, "validate_npm_request", "Validate release ref input format"],
   ] as const) {
     const env = {
       ...process.env,
@@ -158,17 +158,26 @@ it("bounds every git fetch operation", () => {
   ).toBe(true);
 });
 
+it("serializes source-check oxlint shards on the delivered 32-class host", () => {
+  // The 2026-09-01 probe and 2026.11.5-beta.1 logs both report 8 CPUs/31 GiB.
+  const env = { ...sourceStep("Check source, test types, and architecture").env, CI: "true" };
+  expect(
+    resolveOxlintShardConcurrency({
+      env,
+      platform: "linux",
+      hostResources: { logicalCpuCount: 8, totalMemoryBytes: 31 * 1024 ** 3 },
+    }),
+  ).toBe(1);
+});
+
 it("routes source history through the trusted ancestry owner", () => {
   const sourceAncestry = sourceStep("Establish source ancestry with main");
   const sourceCheck = sourceStep("Check source, test types, and architecture");
-  const ripgrep = sourceStep("Install ripgrep for baseline ratchets");
   const pluginCompatibility = sourceStep("Enforce plugin compatibility release readiness");
   const trustedCheckout = sourceStep("Checkout trusted package source preflight");
   const metadata = step(preflight.jobs?.check_dependencies_npm, "Validate release metadata").run;
 
   expect(trustedCheckout.with?.["sparse-checkout"]).toContain(".github/actions/git-owner");
-  expect(trustedCheckout.with?.["sparse-checkout"]).toContain(".github/actions/setup-ripgrep");
-  expect(ripgrep.uses).toBe("./.release-harness/.github/actions/setup-ripgrep");
   expect(sourceAncestry.env).toMatchObject({
     RELEASE_ANCESTRY_MODE: "merge-base",
     RELEASE_ANCESTRY_SOURCE_REF:
@@ -197,8 +206,6 @@ it("routes source history through the trusted ancestry owner", () => {
   const sourceSteps = preflight.jobs?.check_openclaw_npm_stage?.steps ?? [];
   expect(sourceSteps.indexOf(trustedCheckout)).toBeLessThan(sourceSteps.indexOf(sourceAncestry));
   expect(sourceSteps.indexOf(sourceAncestry)).toBeLessThan(sourceSteps.indexOf(sourceCheck));
-  expect(sourceSteps.indexOf(trustedCheckout)).toBeLessThan(sourceSteps.indexOf(ripgrep));
-  expect(sourceSteps.indexOf(ripgrep)).toBeLessThan(sourceSteps.indexOf(sourceCheck));
   expect(sourceSteps.indexOf(sourceCheck)).toBeLessThan(sourceSteps.indexOf(pluginCompatibility));
 });
 
@@ -643,7 +650,7 @@ it("keeps one aggregate receipt producer and requires every isolated worker", ()
     "${{ matrix.stage == 'guards' }}",
   );
   expect(aggregate?.name).toBe("Check npm release source");
-  expect(aggregate?.needs).toEqual(["check_openclaw_npm_stage"]);
+  expect(aggregate?.needs).toEqual(["validate_npm_request", "check_openclaw_npm_stage"]);
   expect(aggregate?.if).toContain("always() && !cancelled()");
   expect(aggregate?.outputs).toEqual({
     source_check_json: "${{ steps.source_evidence.outputs.bundle_json }}",

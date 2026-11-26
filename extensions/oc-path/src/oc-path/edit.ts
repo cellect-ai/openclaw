@@ -62,6 +62,9 @@ export function setMdOcPath(ast: MdAst, path: OcPath, newValue: string): MdAst {
   if (item.kv.key.toLowerCase() !== unquoteSeg(path.field).toLowerCase()) {
     throw new OcPathEditError("unresolved");
   }
+  if (newValue.trim() === "") {
+    throw new OcPathEditError("parse-error", "Markdown item fields require a nonblank value");
+  }
   if (item.textLine === null) {
     throw new OcPathEditError("not-writable");
   }

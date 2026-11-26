@@ -1,8 +1,8 @@
 import {
-  hasNonEmptyString,
   normalizeOptionalLowercaseString,
   normalizeOptionalString,
 } from "@openclaw/normalization-core/string-coerce";
+import { resolveModelResponsePrefixContext } from "../../auto-reply/reply/response-prefix-template.js";
 import { isScheduledMessageWriteAction } from "../../channels/plugins/message-action-dispatch.js";
 import type { ChannelMessageActionName } from "../../channels/plugins/types.public.js";
 import { resolveCommandSecretRefsViaGateway } from "../../cli/command-secret-gateway.js";
@@ -71,6 +71,7 @@ import {
   enforceTrustedTurnExplicitAccount,
   resolveMatrixSlackReadAccount,
 } from "./message-tool-source-policy.js";
+import { buildMessageToolThreadingContext } from "./message-tool-threading-context.js";
 import {
   hasSanitizedSendPayloadContent,
   sanitizeMessageToolVisiblePayload,
@@ -504,32 +505,11 @@ function* createMessageToolSteps(
         });
       }
 
-      const toolContext =
-        effectiveCurrentChannel.currentChannelId ||
-        effectiveCurrentChannel.currentChatType ||
-        effectiveCurrentChannel.currentChannelProvider ||
-        effectiveCurrentChannel.currentMessagingTarget ||
-        currentThreadTs ||
-        typeof options?.currentMessageId === "number" ||
-        hasNonEmptyString(options?.currentMessageId) ||
-        replyToMode ||
-        options?.hasRepliedRef ||
-        options?.sameChannelThreadRequired
-          ? {
-              currentChannelId: effectiveCurrentChannel.currentChannelId,
-              currentChatType: effectiveCurrentChannel.currentChatType,
-              currentMessagingTarget: effectiveCurrentChannel.currentMessagingTarget,
-              currentChannelProvider: effectiveCurrentChannel.currentChannelProvider,
-              currentThreadTs,
-              currentMessageId: options?.currentMessageId,
-              replyToMode,
-              hasRepliedRef: options?.hasRepliedRef,
-              sameChannelThreadRequired: options?.sameChannelThreadRequired,
-              // Direct tool invocations should not add cross-context decoration.
-              // The agent is composing a message, not forwarding from another chat.
-              skipCrossContextDecoration: true,
-            }
-          : undefined;
+      const toolContext = buildMessageToolThreadingContext(
+        effectiveCurrentChannel,
+        { currentThreadTs, replyToMode },
+        options,
+      );
       const groupThread = prepareMessageToolGroupThread(params, {
         action,
         channel: scope.channel,
@@ -573,6 +553,14 @@ function* createMessageToolSteps(
                   action,
                   params: actionParams,
                   actionOrigin: "message-tool",
+                  responsePrefixContext:
+                    options?.modelProvider && options.modelId
+                      ? resolveModelResponsePrefixContext({
+                          provider: options.modelProvider,
+                          model: options.modelId,
+                          thinkLevel: options.requesterThinkingLevel,
+                        })
+                      : undefined,
                   defaultAccountId: accountId ?? undefined,
                   ...messageActionTurnCapability.selectMessageActionRequesterIdentity(
                     trustedTurnContext,

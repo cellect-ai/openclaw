@@ -223,19 +223,22 @@ it.each([undefined, 0])("pages across a dense silent gap from offset %s", async 
   });
 });
 
-it("terminates an ordinary all-hidden tail without manufacturing a continuation", async () => {
+it.each([false, true])("terminates a hidden prefix with tool-only tail=%s", async (toolOnly) => {
   await withHistoryState(async () => {
-    const { read } = await seedHistory(
-      Array.from({ length: 50 }, () => makeMessage("Hidden", { display: false })),
-    );
-    expect(await read({ limit: 1 })).toMatchObject({ messages: [], hasMore: false });
-    const tail = await read({ limit: 1, offset: 0 });
-    expect(tail.messages).toEqual([]);
-    expect([tail.olderCursor, tail.newerCursor, tail.nextOffset]).toEqual([
-      undefined,
-      undefined,
-      undefined,
+    const { read } = await seedHistory([
+      ...Array.from({ length: 50 }, () => makeMessage("Hidden", { display: false })),
+      ...(toolOnly ? [makeMessage("Synthetic file contents", { role: "toolResult" })] : []),
     ]);
+    for (const params of [{ limit: 2 }, { limit: 2, offset: 0 }]) {
+      const tail = await read(params);
+      expect(tail).toMatchObject({ hasMore: false });
+      expect(tail.messages).toHaveLength(toolOnly ? 1 : 0);
+      expect([tail.olderCursor, tail.newerCursor, tail.nextOffset]).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
+    }
   });
 });
 

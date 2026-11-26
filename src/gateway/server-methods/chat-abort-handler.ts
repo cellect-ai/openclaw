@@ -4,7 +4,6 @@ import {
   validateChatAbortParams,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { captureExecRequestCancellation } from "../../agents/bash-process-control.js";
-import { createAgentRunDirectAbortError } from "../../agents/run-termination.js";
 import { discardSessionPendingInput } from "../../config/sessions/session-pending-input-withdrawal.js";
 import { formatErrorMessage } from "../../infra/errors.js";
 import {
@@ -34,6 +33,7 @@ import {
   waitForChatAbortTerminalPersistence,
 } from "../chat-abort-lifecycle-internal.js";
 import { captureWorkerInferenceForSession, createChatAbortOps } from "../chat-abort-ops.js";
+import { createChatAbortSignalReason } from "../chat-abort.js";
 import { formatStopRequest } from "../control-plane-audit.js";
 import {
   captureGatewayScopeMatcher,
@@ -157,12 +157,16 @@ export async function handleChatAbortRequestWithLifecycle(
         stopReason: "rpc",
         stopActor,
         preservePendingInputs: lifecycle.preservePendingInputs,
+        userInitiated: params.userInitiated,
         stopSource: "client-session",
         hookContext: stopHookContext,
         requester,
         assertCurrent,
         preserveSideRuns,
         cascadeDescendants: lifecycle.cascadeDescendants,
+        // Plain chat.abort is the user-facing Stop. Queued-input discard and maintenance
+        // aborts stay unmarked; the exact-run branch bridges its accepted Stop separately.
+        announceRunStopped: true,
         yieldedRequesterRunId: lifecycle.yieldedRequesterRunId,
       },
       prepareAbortSession,
@@ -228,7 +232,7 @@ export async function handleChatAbortRequestWithLifecycle(
     // descendants, workers, or command hooks selected by the caller's placeholder key.
     const stopped = cancelCapturedSessionControllerSource(
       captureSessionControllerStop({ inputs: [reservedCandidate] }),
-      { assertCurrent, reason: createAgentRunDirectAbortError() },
+      { assertCurrent, reason: createChatAbortSignalReason("rpc", params.userInitiated) },
     );
     const failure = stopped.failures[0];
     if (failure) {
@@ -464,9 +468,13 @@ export async function handleChatAbortRequestWithLifecycle(
         source: "client-run",
         capture: captureSessionControllerStop({ inputs: [reserved] }),
         assertCurrent: assertReserved,
-        reason: createAgentRunDirectAbortError(
-          true,
-          matchesVerifiedRunStopActor(stopActor, activeIdentity) ? stopActor : undefined,
+        reason: createChatAbortSignalReason(
+          "rpc",
+          params.userInitiated === false
+            ? false
+            : matchesVerifiedRunStopActor(stopActor, activeIdentity)
+              ? stopActor
+              : params.userInitiated,
         ),
         preservePendingInputs: lifecycle.preservePendingInputs,
         hookContext: {
@@ -596,6 +604,7 @@ export async function handleChatAbortRequestWithLifecycle(
     cfg: abortCfg,
     runId,
     active,
+    userInitiated: params.userInitiated,
     lifecycleRevision:
       selectedSession.ok && selectedSession.value.entry?.sessionId === sessionId
         ? selectedSession.value.entry.lifecycleRevision
@@ -603,6 +612,9 @@ export async function handleChatAbortRequestWithLifecycle(
     assertCurrent: assertActive,
     hookContext: stopHookContext,
     afterParent: cancelWorker,
+    // Control UI and native chat clients Stop ordinary local runs with an exact runId; that
+    // accepted Stop is announced exactly like a session Stop.
+    stoppedSession: { agentId: agentId ?? abortAgentId, sessionKey },
     onAborted: () => {
       activeCancellationCommitted = true;
       lifecycle.onExactRunAborted?.(runId);

@@ -1,7 +1,8 @@
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import {
-  readDatabasePathIdentitySync,
   assertExistingDatabaseIdentity,
+  readDatabasePathIdentity,
+  readDatabasePathIdentitySync,
   type DatabasePathIdentity,
 } from "../infra/sqlite-worker-identity.js";
 import { getAgentDeletionDatabaseCleanup } from "./agent-deletion-cleanup.js";
@@ -19,6 +20,7 @@ import {
   isIncognitoOpenClawAgentSqlitePath,
   resolveOpenClawAgentSqlitePath,
 } from "./openclaw-agent-db.paths.js";
+import type { AgentDatabaseRequestExecutionSource } from "./openclaw-agent-execution-admission-contract.js";
 import type { AgentDatabaseExecutionFileIdentity } from "./openclaw-agent-execution-contract.js";
 import {
   getOpenClawDatabaseMaintenanceScope,
@@ -54,9 +56,9 @@ export type AgentDatabaseExecutionPreparedTarget = {
   pathname: string;
   identity: DatabasePathIdentity;
   initialIdentity?: AgentDatabaseExecutionFileIdentity;
-  observedIdentity?: DatabasePathIdentity;
   expectedCreationIdentity?: DatabasePathIdentity;
   requestedPath?: string;
+  observedIdentity?: DatabasePathIdentity;
 };
 
 export function assertAgentDatabaseExecutionSharedState(
@@ -202,21 +204,81 @@ export function assertBorrowedAgentDatabaseFileIdentity({
   }
 }
 
-/** Compare a prepared observation with custody; sync callers retain their immediate path check. */
-export function assertAgentDatabaseBorrowTarget(
-  pathname: string,
-  file: AgentDatabaseExecutionFileIdentity | undefined,
-  observed: DatabasePathIdentity | undefined,
-): void {
-  if (!file) {
-    return;
+/** Lexical capture ends at first admission; retained borrowers follow their native owner. */
+export function captureBorrowedAgentDatabaseFile(
+  target: Omit<
+    Parameters<typeof assertBorrowedAgentDatabaseFileIdentity>[0],
+    "fileIdentity" | "nativeIdentity"
+  > & {
+    fileIdentity: () => AgentDatabaseExecutionFileIdentity | undefined;
+  },
+) {
+  const { borrowedPath, identity, creatingTarget, observedIdentity } = target;
+  const file = target.fileIdentity();
+  if (!observedIdentity && file && (creatingTarget || borrowedPath !== identity.canonicalPath)) {
+    assertExistingDatabaseIdentity(borrowedPath, `file:${file.physicalIdentity}`, file.birthtime);
   }
-  if (!observed) {
-    assertExistingDatabaseIdentity(pathname, "file:" + file.physicalIdentity, file.birthtime);
-  } else if (
-    observed.key !== "file:" + file.physicalIdentity ||
-    (file.birthtime !== undefined && observed.birthtime !== file.birthtime)
-  ) {
-    throw new Error("Agent database borrower belongs to another physical file");
-  }
+  let admitted = file !== undefined;
+  const assertCurrent = (nativeIdentity?: AgentDatabaseExecutionFileIdentity) =>
+    assertBorrowedAgentDatabaseFileIdentity({
+      ...target,
+      fileIdentity: target.fileIdentity(),
+      nativeIdentity,
+    });
+  const qualify = async (after: boolean) => {
+    const current = await readDatabasePathIdentity(borrowedPath);
+    assertBorrowedAgentDatabaseFileIdentity({
+      ...target,
+      fileIdentity: after ? undefined : target.fileIdentity(),
+      nativeIdentity: undefined,
+      observedIdentity: current,
+    });
+    if (after) {
+      admitted = true;
+    }
+  };
+  return {
+    assertCurrent,
+    bindSource(source: AgentDatabaseRequestExecutionSource): AgentDatabaseRequestExecutionSource {
+      return observedIdentity && !admitted
+        ? {
+            ...source,
+            readCustody: [
+              {
+                sourcePath: borrowedPath,
+                candidates: [{ path: borrowedPath, physicalPath: observedIdentity.canonicalPath }],
+              },
+              ...(source.readCustody ?? []),
+            ],
+          }
+        : source;
+    },
+    prepare(after: boolean): Promise<void> | undefined {
+      if (observedIdentity && !admitted && (after || !target.fileIdentity())) {
+        return qualify(after);
+      }
+      if (after) {
+        admitted = true;
+      }
+      return undefined;
+    },
+    admit() {
+      admitted = true;
+    },
+    async isPhysicalFileCurrent(): Promise<boolean> {
+      const captured = target.fileIdentity();
+      if (!captured) {
+        return true;
+      }
+      try {
+        const observed = await readDatabasePathIdentity(captured.nativeLocation);
+        return (
+          observed.key === `file:${captured.physicalIdentity}` &&
+          (captured.birthtime === undefined || observed.birthtime === captured.birthtime)
+        );
+      } catch {
+        return false;
+      }
+    },
+  };
 }

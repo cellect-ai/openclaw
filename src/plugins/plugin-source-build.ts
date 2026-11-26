@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import Module, { createRequire } from "node:module";
 import path from "node:path";
@@ -8,6 +9,7 @@ import { stringifyNonErrorCause } from "@openclaw/normalization-core/error-coerc
 import { isPathInside } from "../infra/path-guards.js";
 import { createJiti } from "./jiti-factory.js";
 import { useNodeModuleHooks } from "./native-module-require.js";
+import { markPluginSourceAcquisitionError } from "./plugin-instance-error.js";
 
 const require = createRequire(import.meta.url);
 
@@ -53,17 +55,32 @@ export function buildPluginTypeScriptSource(
       throw new Error("Plugin source bytes are unavailable");
     }
     const mode = sources.get(destination)?.mode;
-    const transformOptions = {
-      sourcefile: input,
-      loader: input.endsWith(".jsx") ? "jsx" : input.endsWith("x") ? "tsx" : "ts",
-      target: "es2022",
-      supported: { "import-attributes": true },
-      platform: "node",
-      jsx: jsx ? "transform" : "preserve",
-      tsconfigRaw: {
-        compilerOptions: { experimentalDecorators: true, useDefineForClassFields: true },
-      },
-    } satisfies import("esbuild").TransformOptions;
+    const binary = require.resolve("esbuild/bin/esbuild");
+    const [command, ...args] = process.platform === "win32" ? [process.execPath, binary] : [binary];
+    const transformSource = (source: string, sourcefile = input, fmt?: "esm" | "cjs") =>
+      execFileSync(
+        command,
+        [
+          ...args,
+          `--sourcefile=${sourcefile}`,
+          `--loader=${input.endsWith(".jsx") ? "jsx" : input.endsWith("x") ? "tsx" : "ts"}`,
+          "--target=es2022",
+          "--supported:import-attributes=true",
+          "--platform=node",
+          `--jsx=${jsx ? "transform" : "preserve"}`,
+          '--tsconfig-raw={"compilerOptions":{"experimentalDecorators":true,"useDefineForClassFields":true}}',
+          "--log-level=error",
+          "--color=false",
+          ...(fmt ? [`--format=${fmt}`] : []),
+        ],
+        {
+          input: source,
+          encoding: "utf8",
+          maxBuffer: Infinity,
+          windowsHide: true,
+          stdio: "pipe",
+        },
+      );
     const createImportHelper = () => {
       const helper = path.join(path.dirname(destination), `.import-meta-${randomUUID()}.mjs`);
       const contents = `import { createRequire } from "node:module";
@@ -157,12 +174,13 @@ export const resolve = (specifier, options) => {
       const error: unknown = result.error;
       if (error) {
         // Keep the existing source-relative syntax diagnostic, only on a failed Jiti transform.
-        const { transformSync }: typeof import("esbuild") = require("esbuild");
-        transformSync(sourceText, { ...transformOptions, sourcefile: path.relative(root, input) });
-        throw new SyntaxError(
-          (error instanceof Error ? error.message : stringifyNonErrorCause(error)).replaceAll(
-            input,
-            path.relative(root, input),
+        transformSource(sourceText, path.relative(root, input));
+        throw markPluginSourceAcquisitionError(
+          new SyntaxError(
+            (error instanceof Error ? error.message : stringifyNonErrorCause(error)).replaceAll(
+              input,
+              path.relative(root, input),
+            ),
           ),
         );
       }
@@ -231,12 +249,8 @@ export { value as "openclaw:async-commonjs" };`
       });
       return;
     }
-    const { transformSync }: typeof import("esbuild") = require("esbuild");
     // Analyze runtime JavaScript so erased types, legacy syntax and value scopes share one owner.
-    const analysis = transformSync(sourceText, {
-      ...transformOptions,
-      sourcefile: path.relative(root, input),
-    }).code;
+    const analysis = transformSource(sourceText, path.relative(root, input));
     let parsed: ReturnType<typeof parse>;
     try {
       parsed = parse(analysis, {
@@ -248,9 +262,11 @@ export { value as "openclaw:async-commonjs" };`
       });
     } catch (error) {
       if (error instanceof SyntaxError) {
-        throw new SyntaxError(`${path.relative(root, input)}: ${error.message}`, {
-          cause: error,
-        });
+        throw markPluginSourceAcquisitionError(
+          new SyntaxError(`${path.relative(root, input)}: ${error.message}`, {
+            cause: error,
+          }),
+        );
       }
       throw error;
     }
@@ -343,11 +359,8 @@ export { value as "openclaw:async-commonjs" };`
         );
       }
     }
-    const emitted = transformSync(generate(parsed).code, {
-      ...transformOptions,
-      format: esm ? "esm" : "cjs",
-    });
-    compiled.set(destination, { format: esm ? "module" : "commonjs", source: emitted.code });
+    const emitted = transformSource(generate(parsed).code, input, esm ? "esm" : "cjs");
+    compiled.set(destination, { format: esm ? "module" : "commonjs", source: emitted });
   };
   // The capture owner resolves inputs; this hook only compiles and labels owned outputs.
   const hooks = Module.registerHooks({

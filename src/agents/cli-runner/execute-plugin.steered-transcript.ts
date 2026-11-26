@@ -22,7 +22,7 @@ export function createSteeredCliMessageInjection(params: {
   signal: AbortSignal;
   assertCurrent: SessionSourceAssertion;
   cwd: string;
-  /** Reset reply tracking only after native accepts the new input. */
+  /** Native owns the steered input; reset only this input's reply state. */
   onInputSubmitted?: () => void;
 }): ReplyBackendMessageInjectionV2 {
   const queueMessage = async (

@@ -29,6 +29,41 @@ function dispatches(fixture: ReturnType<typeof createDispatchFixture>) {
 }
 
 describe("candidate-owned full release dispatch entry point", () => {
+  it("admits repaired P while retaining existing Q, original artifacts, and baselines", () => {
+    const f = createDispatchFixture({ candidateOwned: true, advanceMainBeforeAdmission: 1 });
+    const artifacts = { runId: "51", runAttempt: 1 };
+    const result = f.run([
+      "--workflow-sha",
+      f.workflowSha,
+      "-f",
+      "validation_purpose=publish",
+      "-f",
+      "publication_selection_json=" + JSON.stringify(publicationSelectionFixture()),
+      "-f",
+      "qualification_baselines_json=" + JSON.stringify(frozenBaselines),
+      "-f",
+      "publication_artifact_source_json=" + JSON.stringify(artifacts),
+      "-f",
+      "reuse_evidence=true",
+      "-f",
+      "rerun_group=all",
+      "-f",
+      "fail_fast=false",
+    ]);
+    expect(result.status, result.stderr).toBe(0);
+    expect(dispatches(f)).toEqual([P, Q]);
+    const repairedP = runGit(f.origin, ["rev-parse", "refs/heads/main"]);
+    expect(repairedP).not.toBe(f.workflowSha);
+    const retained = f.record();
+    expect(retained.admission.workflowSha).toBe(repairedP);
+    expect(retained.request.workflowSha).toBe(f.workflowSha);
+    expect(retained.request.targetSha).toBe(f.targetSha);
+    const envelope = JSON.parse(f.readPayload().body.inputs.trusted_workflow_json!);
+    expect(envelope.qualificationAdmission.workflowSha).toBe(repairedP);
+    expect(envelope.trustedWorkflow.sha).toBe(f.workflowSha);
+    expect(JSON.parse(envelope.laneInputs.qualification_baselines_json)).toEqual(frozenBaselines);
+    expect(JSON.parse(envelope.laneInputs.publication_artifact_source_json)).toEqual(artifacts);
+  });
   it("admits explicit Q without substituting the frozen candidate", () => {
     const f = createDispatchFixture({ candidateOwned: true, advanceMainAfterAdmission: true });
     const result = f.run([
@@ -240,6 +275,7 @@ describe("candidate-owned full release dispatch entry point", () => {
     const advancedP = runGit(f.origin, ["rev-parse", "refs/heads/main"]);
     expect(advancedP).not.toBe(f.workflowSha);
     expect(result.stdout.match(/Admission P advanced with main/gu)).toHaveLength(3);
+    expect(result.stdout).not.toContain("WARNING: Cross-revision diagnostics");
     const retained = f.record();
     expect(retained.admission.workflowSha).toBe(advancedP);
     expect(retained.request.workflowSha).toBe(f.targetSha);
@@ -353,6 +389,42 @@ describe("candidate-owned full release dispatch entry point", () => {
     expect(reads.some((endpoint) => endpoint.includes("/compare/" + f.targetSha))).toBe(false);
     expect(readFileSync(f.pathGhCallsPath, "utf8")).toBe("");
     expect(readFileSync(f.fetchCallsPath, "utf8")).toBe("");
+  });
+
+  it("admits the explicit original baseline tuple and retains it after npm advances", () => {
+    const f = createDispatchFixture({ candidateOwned: true, stopAfterAccepted: "admission" });
+    const selected = {
+      upgradeBaseline: "openclaw@2026.7.9",
+      upgradeSurvivorBaselines: ["openclaw@2026.6.34", "openclaw@2026.7.8", "openclaw@2026.7.9"],
+    };
+    const result = f.run(["-f", "qualification_baselines_json=" + JSON.stringify(selected)]);
+    expect(result.status, result.stderr).toBe(78);
+    const admitted = JSON.parse(readFileSync(f.admissionReceiptPath, "utf8"));
+    expect(
+      JSON.parse(
+        JSON.parse(admitted.request.inputs.trusted_workflow_json).laneInputs
+          .qualification_baselines_json,
+      ),
+    ).toEqual(selected);
+    writeFileSync(f.publishedVersionsPath, JSON.stringify(["2027.1.1"]));
+    const resumed = f.run(["--resume-request", f.requestPath()], true);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    const envelope = JSON.parse(f.readPayload().body.inputs.trusted_workflow_json!);
+    expect(JSON.parse(envelope.laneInputs.qualification_baselines_json)).toEqual(selected);
+    expect(dispatches(f)).toEqual([P, Q]);
+    expect(f.readCalls(f.npmCallsPath)).toEqual([npmVersionsArgs]);
+  });
+
+  it.each([
+    { upgradeBaseline: "openclaw@2026.7.7", upgradeSurvivorBaselines: ["openclaw@2026.7.7"] },
+    { upgradeBaseline: "openclaw@2026.9.6", upgradeSurvivorBaselines: ["openclaw@2026.9.6"] },
+    { upgradeBaseline: "openclaw@latest", upgradeSurvivorBaselines: ["openclaw@latest"] },
+  ])("rejects an unpublished, future or nonexact baseline before admission: %j", (selected) => {
+    const f = createDispatchFixture({ candidateOwned: true });
+    expect(f.run(["-f", "qualification_baselines_json=" + JSON.stringify(selected)]).status).toBe(
+      1,
+    );
+    expect(dispatches(f)).toEqual([]);
   });
 
   it("waits for the candidate witness without redispatch or baseline resolution", () => {
@@ -480,6 +552,154 @@ describe("candidate-owned full release dispatch entry point", () => {
     ).toEqual([]);
     expect(f.refs()).toEqual([]);
     expect(readFileSync(f.requestPath(), "utf8")).toBe(before);
+  });
+
+  it("resumes an accepted ref creation after its verification read failed", () => {
+    const f = createDispatchFixture({ candidateOwned: true, qualificationRefReadFailure: true });
+    expectDispatchFailure(f.run(), "gh: Bad credentials (HTTP 401)");
+    const pending = f.record();
+    expect(pending).toMatchObject({ phase: "prepared", refs: { workflow: "uncertain" } });
+    expect(f.refs()).toEqual([`refs/heads/${pending.request.workflowRef}`]);
+    expect(dispatches(f)).toEqual([P]);
+    const before = readFileSync(f.requestPath(), "utf8");
+    const reconcileStart = f.calls().length;
+    const gitStart = f.gitCalls().length;
+    const reconcile = f.run(["--reconcile-request", f.requestPath()], true);
+    expect(reconcile.status, reconcile.stderr).toBe(0);
+    expect(
+      f
+        .calls()
+        .slice(reconcileStart)
+        .every((args) => ghApiMethod(args) === "GET"),
+    ).toBe(true);
+    expect(
+      f
+        .gitCalls()
+        .slice(gitStart)
+        .some((args) => args.includes("fetch")),
+    ).toBe(false);
+    expect(readFileSync(f.requestPath(), "utf8")).toBe(before);
+    const start = f.calls().length;
+    const resumed = f.run(["--resume-request", f.requestPath()], true);
+    expect(resumed.status, resumed.stderr).toBe(0);
+    expect(reconcile.stdout).toContain("resume will reuse it without another ref POST");
+    expect(dispatches(f)).toEqual([P, Q]);
+    expect(f.record()).toMatchObject({
+      phase: "observed",
+      request: pending.request,
+      admission: pending.admission,
+      run: { id: 123, attempt: 1 },
+    });
+    const observedBytes = readFileSync(f.requestPath(), "utf8");
+    const observedRefs = f.refs();
+    const secondStart = f.calls().length;
+    const second = f.run(["--resume-request", f.requestPath()], true);
+    expect(second.status, second.stderr).toBe(0);
+    expect(
+      f
+        .calls()
+        .slice(secondStart)
+        .every((args) => ghApiMethod(args) === "GET"),
+    ).toBe(true);
+    expect(readFileSync(f.requestPath(), "utf8")).toBe(observedBytes);
+    expect(f.refs()).toEqual(observedRefs);
+    const calls = f.calls();
+    expect(
+      calls.filter(
+        (args) => ghApiMethod(args) === "POST" && ghApiEndpoint(args).endsWith("/git/refs"),
+      ),
+    ).toHaveLength(1);
+    const resumedCalls = calls.slice(start);
+    const post = resumedCalls.findIndex(isWorkflowDispatch);
+    expect(ghApiEndpoint(resumedCalls[post - 1]!)).toBe(
+      `repos/openclaw/openclaw/git/ref/heads/${pending.request.workflowRef}`,
+    );
+  });
+
+  it.each([
+    "missing",
+    "moved",
+    "existing run",
+    "ambiguous runs",
+    "incomplete inventory",
+    "revoked operator",
+    "revoked signer",
+  ])("refuses prepared transport recovery with %s", (failure) => {
+    const f = createDispatchFixture({
+      candidateOwned: true,
+      qualificationRefReadFailure: true,
+      candidateAuthorityActor: "candidate-signer",
+      duplicateOnSecondPage: ["ambiguous runs", "incomplete inventory"].includes(failure),
+      incompletePagination: failure === "incomplete inventory",
+      admissionRevokedActor: failure === "revoked operator",
+      candidateAuthorityRevoked: failure === "revoked signer",
+    });
+    const publication = [
+      "-f",
+      "validation_purpose=publish",
+      "-f",
+      `publication_selection_json=${JSON.stringify(publicationSelectionFixture())}`,
+    ];
+    expectDispatchFailure(f.run(publication), "gh: Bad credentials (HTTP 401)");
+    const pending = f.record();
+    const ref = `refs/heads/${pending.request.workflowRef}`;
+    if (failure === "missing") {
+      runGit(f.origin, ["update-ref", "-d", ref]);
+    }
+    if (failure === "moved") {
+      runGit(f.origin, ["update-ref", ref, f.workflowSha]);
+    }
+    if (["existing run", "ambiguous runs", "incomplete inventory"].includes(failure)) {
+      writeFileSync(
+        f.acceptedRunPath,
+        JSON.stringify({
+          ref: pending.request.workflowRef,
+          inputs: pending.request.wireInputs,
+        }),
+      );
+    }
+    const before = readFileSync(f.requestPath(), "utf8");
+    const refsBefore = runGit(f.origin, ["for-each-ref", "--format=%(refname) %(objectname)"]);
+    // Revoke during the resume inventory, after its initial authority checks.
+    if (!failure.startsWith("revoked")) {
+      const reconcile = f.run(["--reconcile-request", f.requestPath()], true);
+      expect(reconcile.status).toBe(1);
+      expect(reconcile.stdout).not.toContain("Continue the same retained request");
+    }
+    expect(readFileSync(f.requestPath(), "utf8")).toBe(before);
+    const resumed = f.run(["--resume-request", f.requestPath()], true);
+    expect(resumed.status).toBe(1);
+    expect(resumed.stderr).not.toContain("unexpected gh call");
+    if (failure === "missing") {
+      expect(resumed.stderr).toContain("unknown revision");
+    }
+    if (failure === "moved") {
+      expect(resumed.stderr).toContain("transport ref moved");
+    }
+    if (["existing run", "ambiguous runs"].includes(failure)) {
+      expect(resumed.stderr).toContain("already has workflow runs");
+    }
+    if (failure === "incomplete inventory") {
+      expect(resumed.stderr).toContain("inventory omitted its next page");
+    }
+    if (failure === "revoked operator") {
+      expect(resumed.stderr).toContain("no longer has repository qualification authority");
+    }
+    if (failure === "revoked signer") {
+      expect(resumed.stderr).toContain("lacks maintain/admin access");
+    }
+    expect(readFileSync(f.requestPath(), "utf8")).toBe(before);
+    expect(runGit(f.origin, ["for-each-ref", "--format=%(refname) %(objectname)"])).toBe(
+      refsBefore,
+    );
+    expect(dispatches(f)).toEqual([P]);
+    expect(
+      f
+        .calls()
+        .filter(
+          (args) => ghApiMethod(args) === "POST" && ghApiEndpoint(args).endsWith("/git/refs"),
+        ),
+    ).toHaveLength(1);
   });
 
   it("refuses publication resume when the retained candidate actor lost authority", () => {
@@ -691,7 +911,7 @@ describe("candidate-owned full release dispatch entry point", () => {
     expect(record.request.wireInputs).not.toHaveProperty("publication_selection_json");
     expect(record.request.wireInputs).not.toHaveProperty("extension_test_exclude_patterns_json");
     expect(record.request.wireInputs).not.toHaveProperty("known_flaky_jobs_json");
-    expect(Object.keys(fixture.readPayload().body.inputs)).toHaveLength(24);
+    expect(Object.keys(fixture.readPayload().body.inputs)).toHaveLength(25);
     const before = readFileSync(fixture.requestPath());
     const callsBefore = fixture.readCalls(fixture.ghCallsPath).length;
     const reopened = fixture.run(
@@ -773,10 +993,10 @@ describe("candidate-owned full release dispatch entry point", () => {
     }
   });
 
-  it("refuses publish qualification when the candidate changelog thanks an internal handle", () => {
+  it("refuses publish qualification when the candidate changelog thanks a bot", () => {
     const fixture = createDispatchFixture({
       candidateOwned: true,
-      releaseNotes: "- Fixes: keep replies threaded. Thanks @steipete-oai.",
+      releaseNotes: "- Fixes: keep replies threaded. Thanks @steipete and @codex.",
     });
     try {
       const result = fixture.run([
@@ -789,7 +1009,7 @@ describe("candidate-owned full release dispatch entry point", () => {
       ]);
       expectDispatchFailure(
         result,
-        "Forbidden changelog thanks attribution (pnpm check:changelog-attributions): CHANGELOG.md:3 uses Thanks @steipete-oai. Use verified human GitHub credits",
+        "Forbidden changelog thanks attribution (pnpm check:changelog-attributions): CHANGELOG.md:3 uses Thanks @codex. Use verified human GitHub credits",
       );
       expect(
         fixture.readCalls(fixture.ghCallsPath).filter((args) => ghApiMethod(args) !== "GET"),

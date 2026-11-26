@@ -28,7 +28,10 @@ import {
   refreshProjectClone,
 } from "../../projects/project-clone.js";
 import { parseConfiguredProjectGitUrl } from "../../projects/project-git-url.runtime.js";
-import { resolveProjectDirectory } from "../../projects/project-registry.js";
+import {
+  resolveProjectDirectory,
+  resolveRecordedProjectByRoot,
+} from "../../projects/project-registry.js";
 import {
   getRpcSourceIdentity,
   getRpcSourceLifecycleGeneration,
@@ -38,17 +41,14 @@ import {
 } from "../../sessions/session-controller.rpc-sources.js";
 import { ensureSessionDiffBaseline } from "../../sessions/session-diff-baseline.js";
 import { createDeferredCore } from "../../shared/deferred.js";
-import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
-import { runOpenClawStateWorkerOperation } from "../../state/openclaw-state-worker-store.js";
-import { getSessionRepositoryWorkspaceStore } from "../../state/session-repository-workspaces.js";
 import { githubApiToken } from "../github-public-api.js";
 import { ADMIN_SCOPE } from "../operator-scopes.js";
-import { resolveRequesterProject, type ProjectRequester } from "../project-access.js";
+import {
+  canRequesterUseProject,
+  projectRequesterForClient,
+  resolveRequesterProject,
+} from "../project-access.js";
 import { prepareGatewayProjectGitHubIdentity } from "../project-github-identity.js";
-import type {
-  PrepareGatewaySessionLifecycle,
-  PreparedGatewaySessionLifecycle,
-} from "../session-create-service.types.js";
 import { commitPreparedSessionWorkspace } from "../session-lifecycle-preparation.js";
 import { resolveSessionProjectRootForRecord } from "../session-project-source.js";
 import { invalidSessionRequest } from "../session-request-error.js";
@@ -60,6 +60,7 @@ import {
 import { hasActiveAgentRuntimeAuthority } from "./agent-runtime-authority.js";
 import type { AdmittedChatSend } from "./chat-send-admission.js";
 import type { PreparedChatSendSession } from "./chat-send-session.js";
+import type { GatewayClient } from "./client-types.js";
 import { emitSessionsChanged } from "./session-change-event.js";
 import type { GatewayRequestHandlerOptions } from "./types.js";
 
@@ -69,23 +70,44 @@ const workspacePreparations = new KeyedAsyncQueue();
 
 type RepositorySource = NonNullable<SessionsCreateParams["repository"]>;
 
+/** A hidden registry project reads as an unknown id to restricted requesters. */
 export async function resolveRequestedSessionProject(
   cfg: OpenClawConfig,
   params: Pick<SessionsCreateParams, "projectId" | "worktree">,
-  requester: ProjectRequester,
-): Promise<Result<{ root?: string; worktree: boolean }, ErrorShape>> {
+  client: GatewayClient | null,
+  {
+    cwd,
+    existingTargetEntry,
+  }: {
+    cwd?: string;
+    existingTargetEntry?: Pick<InternalSessionEntry, "projectId">;
+  } = {},
+): Promise<Result<{ projectId?: string; root?: string; worktree: boolean }, ErrorShape>> {
   const projectId = normalizeOptionalString(params.projectId);
-  if (!projectId) {
-    return ok({ worktree: params.worktree === true });
-  }
-  const project = await resolveRequesterProject(cfg, projectId, requester, { fresh: true });
+  const requester = projectRequesterForClient(client);
+  // A saved folder selection can still name the shared clone's root. Reuse its project binding.
+  // Do not reinterpret the source of a previously accepted direct checkout.
+  const clone =
+    !projectId &&
+    cwd &&
+    (!existingTargetEntry || existingTargetEntry.projectId || params.worktree === true)
+      ? await resolveRecordedProjectByRoot(cwd, { source: "cloned" })
+      : undefined;
+  const project = projectId
+    ? await resolveRequesterProject(cfg, projectId, requester, { fresh: true })
+    : clone;
   if (!project) {
-    return invalidSessionRequest(`unknown project id: ${projectId}`);
+    return projectId
+      ? invalidSessionRequest(`unknown project id: ${projectId}`)
+      : ok({ worktree: params.worktree === true });
+  }
+  if (clone && !(await canRequesterUseProject(cfg, clone, requester, { fresh: true }))) {
+    return invalidSessionRequest("requested working directory is unavailable");
   }
   // Product-owned clones are maintenance sources, never session checkouts.
   const worktree = project.source === "cloned" || params.worktree === true;
   const root = await resolveSessionProjectRootForRecord(project, worktree);
-  return root.ok ? ok({ root: root.value, worktree }) : root;
+  return root.ok ? ok({ projectId: project.id, root: root.value, worktree }) : root;
 }
 
 export function resolveSessionRepositoryCreation(
@@ -122,77 +144,6 @@ export function resolveSessionRepositoryCreation(
     );
   }
   return ok({ url, ...(ref ? { ref } : {}) });
-}
-
-export function prepareSessionRepositoryWorkspace(
-  repository: RepositorySource,
-  options: { runSetupScript: boolean; assertCurrent: () => void },
-): PrepareGatewaySessionLifecycle {
-  const { assertCurrent } = options;
-  return async (target) => {
-    const store = getSessionRepositoryWorkspaceStore();
-    const source = captureOpenClawStateWorkerContext({ path: store.path });
-    const assertSourceCurrent = () => {
-      source.admission.assertCurrent();
-      assertCurrent();
-    };
-    const existing = await store.find({ agentId: target.agentId, sessionKey: target.key });
-    if (
-      target.entry &&
-      (!target.entry.repositoryWorkspaceId ||
-        target.entry.repositoryWorkspaceId !== existing?.workspaceId)
-    ) {
-      return invalidSessionRequest("repository source requires a new repository session");
-    }
-    if (
-      existing &&
-      (existing.url !== repository.url || existing.requestedRef !== (repository.ref ?? null))
-    ) {
-      return invalidSessionRequest("session repository source cannot be changed");
-    }
-    assertSourceCurrent();
-    const workspace = await store.create({
-      agentId: target.agentId,
-      sessionKey: target.key,
-      url: repository.url,
-      requestedRef: repository.ref,
-      runSetupScript: options.runSetupScript,
-      assertCurrent: assertSourceCurrent,
-    });
-    const withCommit: NonNullable<PreparedGatewaySessionLifecycle["withCommit"]> = (run) =>
-      runOpenClawStateWorkerOperation(source, () => run(assertSourceCurrent), {
-        assertCurrent: assertSourceCurrent,
-      });
-    return ok({
-      repositoryWorkspaceId: workspace.workspaceId,
-      withCommit,
-      ...(!existing
-        ? {
-            rollback: async () => {
-              // Creation still holds the session lifecycle lock. Cleanup owns only the
-              // untouched row it allocated, even when the initiating caller has gone away.
-              source.admission.assertCurrent();
-              const prepared = await store.prepare(workspace.workspaceId);
-              await store.delete({
-                workspaceId: workspace.workspaceId,
-                assertCurrent: () => {
-                  source.admission.assertCurrent();
-                  const current = prepared.current();
-                  if (
-                    current &&
-                    (current.agentId !== target.agentId ||
-                      current.sessionKey !== target.key ||
-                      current.revision !== workspace.revision)
-                  ) {
-                    throw new Error("Repository preparation changed before rollback");
-                  }
-                },
-              });
-            },
-          }
-        : {}),
-    });
-  };
 }
 
 export function validateSessionWorktreeSelection(
@@ -495,13 +446,11 @@ export async function prepareSessionWorkspaceForRun(params: {
       // A pending repository URL also owns a managed checkout, including retries
       // saved before project sessions stopped binding directly to the shared clone.
       pending ??= { titleSource: "" };
-      let next: typeof pending | undefined;
-      if (project?.source === "cloned" && !pending.baseRef && !pending.baseCommit) {
-        status("preparing_worktree_base");
-        const base = await prepareProjectCloneDefaultBase(project, cloneOptions);
-        assertProjectCurrent();
-        next = { ...pending, ...base };
-      } else if (pending.baseRef && !pending.baseCommit) {
+      let acceptedBase: { baseRef?: string; baseCommit: string } | undefined;
+      if (!pending.baseCommit && !pending.baseRef && project?.source === "cloned") {
+        acceptedBase = await prepareProjectCloneDefaultBase(project, cloneOptions);
+      }
+      if (pending.baseRef && !pending.baseCommit) {
         let resolved = await resolveSessionWorktreeBase(directory, pending.baseRef, signal);
         if (
           !resolved.ok &&
@@ -516,11 +465,12 @@ export async function prepareSessionWorkspaceForRun(params: {
         if (!resolved.ok) {
           throw new Error(resolved.error.message);
         }
+        acceptedBase = { baseCommit: resolved.value };
+      }
+      if (acceptedBase) {
         // Accept once, before setup can fail: retries keep the commit while the
         // original ref remains publication metadata, never a fallback selection.
-        next = { ...pending, baseCommit: resolved.value };
-      }
-      if (next) {
+        const next = { ...pending, ...acceptedBase };
         const updated = await patchSessionEntryCore(
           target,
           (current) => {

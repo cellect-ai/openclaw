@@ -243,7 +243,6 @@ export async function executeQueuedContextEngineCompaction(input: {
             rawBytes: undefined,
             maxBytes: maxActiveTranscriptBytes,
             runtime: preparedParams,
-            contextTokenBudget,
             signal: params.abortSignal,
           });
           assertCallerActive();
@@ -319,6 +318,9 @@ export async function executeQueuedContextEngineCompaction(input: {
                 hostOwnsCompactionLifecycle: engineOwnsCompaction,
                 requestBudget: host.requestBudget,
                 pendingUserEntryId: host.pendingUserEntryId,
+                ...(params.preflightRequired === true
+                  ? { requestRequiresCompaction: true as const }
+                  : {}),
                 preparedSession:
                   contextEngine.info.id === "legacy" ? host.preparedSession : undefined,
                 withCompactionPersistenceAsync:

@@ -32,7 +32,7 @@ let unsubscribeDatabaseLifecycle: (() => void) | undefined;
 
 async function sweep(signal: AbortSignal, getCronStorePath: () => string) {
   if (isConstrainedProcessLowOnMemory()) {
-    // Retention is best effort; retry without allocating workers under pressure.
+    // Retention is best effort; leave scarce memory to requests before opening its workers.
     const now = scope?.now() ?? Date.now();
     if (nextHistorySweepAtMs <= now) {
       nextHistorySweepAtMs = now + 60_000;

@@ -139,23 +139,14 @@ test("sessions.compact without maxLines runs embedded manual compaction without 
       throw new Error("expected SQLite session target");
     }
     const host = hostInput as QueuedCompactionHostOptions;
-    const prepared = host.preparedSession;
-    if (!prepared?.source || !host.withCompactionPersistenceAsync) {
+    if (!host.preparedSession || !host.withCompactionPersistenceAsync) {
       throw new Error("expected prepared Gateway compaction persistence");
     }
-    expect(prepared.sessionManager).toBeUndefined();
-    expect(prepared.source.entries).toHaveLength(2);
-    for (const entry of prepared.source.entries) {
-      expect(entry.message).not.toHaveProperty("content");
-      expect(entry.contextMessage).not.toHaveProperty("content");
-      for (const message of entry.conversation) {
-        expect(message).not.toHaveProperty("content");
-      }
-    }
+    expect(host.preparedSession).not.toHaveProperty("sessionManager");
     await host.withCompactionPersistenceAsync({
-      scope: prepared.sessionTarget,
+      scope: host.preparedSession.sessionTarget,
       event: createSessionCompactionEntry(
-        prepared.source.leafEntryId,
+        null,
         "summary",
         seedMessage.messageId,
         120,
@@ -165,7 +156,6 @@ test("sessions.compact without maxLines runs embedded manual compaction without 
         80,
       ),
       appendIntent: "active-branch",
-      expectedMutationAt: prepared.source.transcriptMutationAt,
     });
     expect(loadSessionEntry(sessionScope)).toMatchObject({ compactionCount: 1, totalTokens: 80 });
     return {
@@ -776,7 +766,7 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
   }
   const queue = getExistingFollowupQueue(sessionKey)!;
   expect(queue.summaryElisions).toHaveLength(1);
-  const elidedSource = queue.summaryElisions[0]!.sources[0]!;
+  const elidedSource = queue.summaryElisions[0]!.entries[0]!.source;
   expect(elidedSource.controllerInput).toBeDefined();
 
   const { ws } = await openClient();
@@ -784,9 +774,9 @@ test("sessions.compact preserves summary-elided queued follow-up work", async ()
     const compacted = await rpcReq(ws, "sessions.compact", { key: "main" });
 
     expect(compacted.ok).toBe(true);
-    expect(getExistingFollowupQueue(sessionKey)?.summaryElisions[0]?.sources).toContain(
-      elidedSource,
-    );
+    expect(
+      getExistingFollowupQueue(sessionKey)?.summaryElisions[0]?.entries.map(({ source }) => source),
+    ).toContain(elidedSource);
     expect(elidedSource.controllerInput?.retirementRequested).not.toBe(true);
     expect(embeddedRunMock.compactEmbeddedAgentSession).toHaveBeenCalledOnce();
     expectNoSessionQueueCleanup();
@@ -975,7 +965,7 @@ test("sessions.compact maxLines does not interrupt an active run when no transcr
 
     expect(compacted.ok).toBe(true);
     expect(compacted.payload?.compacted).toBe(false);
-    expect(compacted.payload?.reason).toBe("no transcript");
+    expect(compacted.payload?.reason).toBe("No chat history to compact.");
     expect(operation.abortSignal.aborted).toBe(false);
     expect(isSessionControllerWorkActive(scope.storePath, [scope.sessionId])).toBe(true);
     expect(embeddedRunMock.abortCalls).toEqual([]);

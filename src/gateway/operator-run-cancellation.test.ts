@@ -147,8 +147,10 @@ async function createCancellationFixture(cfg: OpenClawConfig, stateDir: string) 
     }
     return {
       ...registration,
-      retain: (client?: Parameters<typeof retainGatewayOperatorRun>[0]["client"]) =>
-        retain(runId, registration.entry, client),
+      retain: (
+        invocationAuthority?: Parameters<typeof retainGatewayOperatorRun>[0]["invocationAuthority"],
+        client?: Parameters<typeof retainGatewayOperatorRun>[0]["client"],
+      ) => retain(runId, registration.entry, invocationAuthority, client),
       expectCurrent: () => {
         expect(registration.controller.signal.aborted).toBe(false);
         expect(rpcSourceTesting.get(runId)).toBe(registration.entry);
@@ -158,6 +160,7 @@ async function createCancellationFixture(cfg: OpenClawConfig, stateDir: string) 
   const retain = async (
     runId: string,
     entry: RpcSourceRef,
+    invocationAuthority?: Parameters<typeof retainGatewayOperatorRun>[0]["invocationAuthority"],
     client?: Parameters<typeof retainGatewayOperatorRun>[0]["client"],
   ) => {
     const { signal } = source;
@@ -172,6 +175,7 @@ async function createCancellationFixture(cfg: OpenClawConfig, stateDir: string) 
       sourceAuthority: client
         ? undefined
         : { signal, assertCurrent: () => signal.throwIfAborted() },
+      invocationAuthority,
     });
     if (!retained.authority) {
       throw new Error("fixture operator source was not retained");
@@ -186,8 +190,8 @@ async function createCancellationFixture(cfg: OpenClawConfig, stateDir: string) 
     );
   return {
     source,
-    stateDir,
     scope,
+    stateDir,
     context,
     execution,
     settle,
@@ -247,22 +251,43 @@ describe("operator access cancellation", () => {
         });
         const target = await f.register("sent-turn");
         f.context.resolveGatewayContext = () => occurrence.context;
-        const retained = await target.retain(client);
+        const retained = await target.retain(undefined, client);
         retained.armCancellation();
         occurrence.retire();
-        expect(restored.authority.assertCurrent).toThrow();
         expect(restored.authority.signal?.aborted).toBe(false);
+        expect(restored.authority.assertCurrent).toThrow();
+        // Permanent refusal aborts the occurrence, not its independently accepted turn.
+        expect(restored.authority.signal?.aborted).toBe(true);
         expect(retained.authority!.assertCurrent).not.toThrow();
         expect(retained.authority!.signal?.aborted).not.toBe(true);
         target.expectCurrent();
         // The accepted turn still enforces the sender's device, profile and role.
         invalidateGatewayDeviceRevocation(occurrence.context, "recovery-device", "operator");
         expect(retained.authority!.assertCurrent).toThrow();
+        expect(retained.authority!.signal?.aborted).toBe(true);
       } finally {
         restored.release();
       }
     }),
   );
+
+  it("keeps invocation custody until the final retained operator releases it", async () => {
+    await withCancellationFixture(async (f) => {
+      const guest = await f.register("retained-invocation");
+      const release = vi.fn();
+      const retained = await guest.retain({ assertCurrent: () => {}, release });
+      const releaseChild = retained.authority!.retain!();
+      try {
+        retained.release();
+        expect(release).not.toHaveBeenCalled();
+        expect(retained.authority!.assertCurrent).not.toThrow();
+      } finally {
+        releaseChild();
+        retained.release();
+      }
+      expect(release).toHaveBeenCalledOnce();
+    });
+  });
 
   it.each([false, true])(
     "stops only its run and settles persistence (hidden progress refresh: %s)",

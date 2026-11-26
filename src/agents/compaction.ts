@@ -5,14 +5,17 @@ import {
   CompactionError,
   SummaryOutputBudgetError,
 } from "../../packages/agent-core/src/harness/types.js";
-import type { AgentCompactionIdentifierPolicy } from "../config/types.agent-defaults.js";
 import { isAbortError } from "../infra/abort-signal.js";
 import { sleepWithAbort } from "../infra/backoff.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import { retryAsync } from "../infra/retry.js";
-import type { ModelRequestHeaders } from "../llm/types.js";
+import type { Model, ModelRequestHeaders } from "../llm/types.js";
 import { sanitizeCompactionMessages } from "./compaction-planning.js";
+import { isCompactionSummaryRefusal } from "./compaction-summary-refusal.js";
+import type { CompactionSummarizationInstructions } from "./compaction-summary.types.js";
+import { describeCompactionFailure } from "./embedded-agent-runner/compact-reasons.js";
 import { isTimeoutError } from "./failover-error.js";
+import { isRetryableProviderHttpStatus } from "./failover/retry-evidence.js";
 import type {
   AgentMessage,
   CompactionSummaryPrompt,
@@ -20,10 +23,9 @@ import type {
   ThinkingLevel,
 } from "./runtime/index.js";
 import { unwrapCoreResult } from "./sessions/agent-session-utils.js";
+import { generateSummary } from "./sessions/compaction/compaction.js";
 import { createCompactionRuntime } from "./sessions/compaction/runtime.js";
 import type { SessionModelUsageSink } from "./sessions/compaction/runtime.js";
-import type { ExtensionContext } from "./sessions/index.js";
-import { generateSummary } from "./sessions/index.js";
 export { estimateMessagesTokens } from "./compaction-planning.js";
 
 const DEFAULT_SUMMARY_FALLBACK = "No prior history.";
@@ -31,14 +33,9 @@ const IDENTIFIER_PRESERVATION_INSTRUCTIONS =
   "Preserve all opaque identifiers exactly as written (no shortening or reconstruction), " +
   "including UUIDs, hashes, IDs, hostnames, IPs, ports, URLs, and file names.";
 
-export type CompactionSummarizationInstructions = {
-  identifierPolicy?: AgentCompactionIdentifierPolicy | "custom";
-  identifierInstructions?: string;
-};
-
 type CompactionSummaryParams = {
   messages: AgentMessage[];
-  model: NonNullable<ExtensionContext["model"]>;
+  model: Model;
   apiKey: string;
   headers?: ModelRequestHeaders;
   signal: AbortSignal;
@@ -78,7 +75,7 @@ function buildCompactionSummarizationInstructions(
 export async function summarizeCompactionHistory(params: CompactionSummaryParams): Promise<string> {
   // SECURITY: toolResult.details and runtime-context entries never reach the summarizer.
   const messages = sanitizeCompactionMessages(params.messages);
-  return summarizeCompactionSource(params, messages.length, (instructions) =>
+  return await summarizeCompactionSource(params, messages.length, (instructions) =>
     generateSummary(
       messages,
       params.model,
@@ -96,12 +93,12 @@ export async function summarizeCompactionHistory(params: CompactionSummaryParams
   );
 }
 
-/** Renders bounded input on demand, sharing retry and error policy with array summaries. */
+/** @internal Prepared sources rerender the original captured rows at each requested budget. */
 export async function summarizePreparedCompactionHistory(
   params: Omit<CompactionSummaryParams, "messages"> & { messageCount: number },
   serialize: (maxChars: number) => Promise<BoundedConversation>,
 ): Promise<string> {
-  return summarizeCompactionSource(params, params.messageCount, async (instructions) =>
+  return await summarizeCompactionSource(params, params.messageCount, async (instructions) =>
     unwrapCoreResult(
       await runSummarizationCompletionFromSource(
         {
@@ -151,10 +148,17 @@ async function summarizeCompactionSource(
       sleep: (ms) => sleepWithAbort(ms, params.signal),
       // Caller aborts and transport timeouts are terminal; provider-side
       // AbortErrors without caller cancellation remain retryable.
-      shouldRetry: (err) =>
-        !params.signal.aborted &&
-        !(err instanceof SummaryOutputBudgetError) &&
-        (isAbortError(err) || !isTimeoutError(err)),
+      shouldRetry: (err) => {
+        const { status, reason } = describeCompactionFailure(err);
+        return (
+          !params.signal.aborted &&
+          reason !== "format" &&
+          (status === undefined || isRetryableProviderHttpStatus(status)) &&
+          !isCompactionSummaryRefusal(err) &&
+          !(err instanceof SummaryOutputBudgetError) &&
+          (isAbortError(err) || !isTimeoutError(err))
+        );
+      },
     });
   } catch (err) {
     if (params.signal.aborted) {

@@ -32,7 +32,10 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
-import type { InternalSessionEntry as SessionEntry } from "../../config/sessions.js";
+import {
+  SESSION_TOTAL_TOKENS_VERSION,
+  type InternalSessionEntry as SessionEntry,
+} from "../../config/sessions.js";
 import {
   appendTranscriptEvent,
   loadSessionEntry,
@@ -52,6 +55,7 @@ import {
 } from "../../plugins/memory-state.test-fixtures.js";
 import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { setActivePluginRegistry } from "../../plugins/runtime.js";
+import type { ReplyOperation } from "../../sessions/session-controller.js";
 import { getReplyOperationSessionReader } from "../../sessions/session-controller.state.js";
 import { waitForReplyRunSuccessorAdmission } from "../../sessions/session-controller.wait.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../state/openclaw-agent-db.js";
@@ -72,8 +76,6 @@ import {
 } from "./agent-runner-memory.js";
 import {
   createMemoryFlushPlan,
-  createReplyOperation,
-  createCompactionLifecycle,
   createModifiedMemoryFlushPlan,
   createMemoryRunEntryMockImplementation,
   modelRoutingProvenance,
@@ -90,6 +92,7 @@ import {
 } from "./agent-runner.test-fixtures.js";
 import { admitReplyTurn } from "./reply-turn-admission.js";
 import { createSourceReplyDeliveryRuntime } from "./source-reply-delivery-runtime.js";
+import { createMockReplyOperation } from "./test-helpers.js";
 
 const {
   compactEmbeddedAgentSessionMock,
@@ -160,6 +163,28 @@ async function runSessionCompactionIfNeeded(params: PreflightCompactionTestParam
   const cfg = withTestModelContextTokens({ ...runParams, contextTokens: modelContextTokens });
   setRuntimeConfigSnapshot(cfg);
   return await runSessionCompactionIfNeededRaw({ ...runParams, cfg });
+}
+
+type TestReplyOperation = ReplyOperation & {
+  setPhase: ReturnType<typeof vi.fn<ReplyOperation["setPhase"]>>;
+  updateSessionId: ReturnType<typeof vi.fn<ReplyOperation["updateSessionId"]>>;
+};
+
+function createReplyOperation(): TestReplyOperation {
+  const { replyOperation } = createMockReplyOperation({ key: "test" });
+  return Object.assign(replyOperation, {
+    phase: "queued" as const,
+    setPhase: vi.fn<ReplyOperation["setPhase"]>(),
+    updateSessionId: vi.fn<ReplyOperation["updateSessionId"]>(),
+  });
+}
+
+function createCompactionLifecycle(replyOperation: ReplyOperation) {
+  return {
+    abortSignal: replyOperation.abortSignal,
+    onCompactionStart: () => replyOperation.setPhase("preflight_compacting"),
+    onSessionIdChanged: (sessionId: string) => replyOperation.updateSessionId(sessionId),
+  };
 }
 
 function requireCompactEmbeddedAgentSessionCall(index = 0) {
@@ -491,9 +516,7 @@ describe("runMemoryFlushIfNeeded", () => {
       );
       expect(hostAccounting).not.toHaveBeenCalled();
       if (customTail === 0) {
-        expect(loadSessionEntry({ sessionKey, storePath })?.totalTokens).toBeGreaterThanOrEqual(
-          78_000,
-        );
+        expect(loadSessionEntry({ sessionKey, storePath })?.totalTokens).toBeUndefined();
       }
     },
   );
@@ -723,23 +746,6 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
   });
 
-  it.each(["guard_blocked", "Compaction timed out after 180000ms"])(
-    "continues a fitting preflight after failed soft maintenance: %s",
-    async (reason) => {
-      const { sessionEntry, run } = await createRequiredPreflight({ totalTokens: 80 });
-      registerMemoryFlushPlanResolverForTest(() =>
-        createModifiedMemoryFlushPlan({ softThresholdTokens: 1, reserveTokensFloor: 50 }),
-      );
-      compactEmbeddedAgentSessionMock.mockResolvedValueOnce({
-        ok: false,
-        compacted: false,
-        reason,
-      });
-      await expect(run()).resolves.toBe(sessionEntry);
-      expect(compactEmbeddedAgentSessionMock).toHaveBeenCalledOnce();
-    },
-  );
-
   it.each([
     { reason: "already under target", ok: true, rejects: false },
     { reason: "no real conversation messages", ok: false, rejects: true },
@@ -785,7 +791,8 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(refreshQueuedFollowupSessionMock).not.toHaveBeenCalled();
   });
 
-  it("passes persisted policy and hydrated turn skills to preflight compaction", async () => {
+  it("passes persisted session policy, runtime policy key and turn skills to preflight compaction", async () => {
+    // The stored snapshot drops runtime catalogs; compaction must reuse this turn's hydrated one.
     const persistedSkills = { prompt: "selected", skills: [{ name: "selected" }] };
     const turnSkills = { ...persistedSkills, resolvedSkills: [] };
     const { sessionEntry, run } = await createRequiredPreflight({
@@ -798,8 +805,8 @@ describe("runMemoryFlushIfNeeded", () => {
         sessionId: "session",
         sessionKey: "agent:main:main",
         cwd: "/tmp/task-repo",
-        skillsSnapshot: turnSkills,
         runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
+        skillsSnapshot: turnSkills,
       }),
       runtimePolicySessionKey: "agent:main:telegram:default:direct:12345",
     });
@@ -1100,7 +1107,7 @@ describe("runMemoryFlushIfNeeded", () => {
     },
   );
 
-  it("ignores unversioned fresh state and legacy CLI usage on the first upgraded turn", async () => {
+  it("ignores prompt-only version 1 state and legacy CLI usage on the first upgraded turn", async () => {
     const sessionKey = "agent:main:main";
     const storePath = path.join(rootDir, "sessions.json");
     const legacyCli = usageEvent(
@@ -1112,6 +1119,7 @@ describe("runMemoryFlushIfNeeded", () => {
     const sessionEntry = createSessionEntry({
       totalTokens: 1_124_767,
       totalTokensFresh: true,
+      totalTokensVersion: 1,
       compactionCount: 0,
     });
     const sessionStore = { [sessionKey]: sessionEntry };
@@ -1154,7 +1162,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(requireCompactEmbeddedAgentSessionCall().currentTokenCount).toBe(88_876);
   });
-  it("keeps nonzero unavailable output as growth after the previous exact snapshot", async () => {
+  it("does not combine a fresh owner snapshot with unrelated transcript output", async () => {
     await writeTranscript([
       usageEvent("large answer", {
         input: 128_814,
@@ -1168,9 +1176,7 @@ describe("runMemoryFlushIfNeeded", () => {
 
     await runDefaultPreflight(sessionEntry, { promptForEstimate: "continue" });
 
-    expect(requireCompactEmbeddedAgentSessionCall().currentTokenCount).toBeGreaterThanOrEqual(
-      82_000,
-    );
+    expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
   it("does not add unavailable output twice when full-message estimation already includes it", async () => {
@@ -1195,7 +1201,7 @@ describe("runMemoryFlushIfNeeded", () => {
     expect(compactEmbeddedAgentSessionMock).not.toHaveBeenCalled();
   });
 
-  it("includes appended transcript growth before persisting fresh usage", async () => {
+  it("uses appended transcript growth without overwriting the request owner's usage", async () => {
     const storePath = path.join(rootDir, "sessions.json");
     await writeTranscript([
       usageEvent("small answer", { input: 40_000, output: 2_000 }),
@@ -1219,8 +1225,8 @@ describe("runMemoryFlushIfNeeded", () => {
 
     expect(flushResult.outcome).toBe("skipped");
     const persistedAfterFlush = loadMainSessionEntry(storePath);
-    expect(persistedAfterFlush.totalTokensFresh).toBe(true);
-    expect(persistedAfterFlush.totalTokens).toBeGreaterThan(80_000);
+    expect(persistedAfterFlush.totalTokensFresh).toBe(false);
+    expect(persistedAfterFlush.totalTokens).toBeUndefined();
 
     await runDefaultPreflight(persistedAfterFlush, { storePath });
 
@@ -1355,7 +1361,7 @@ describe("runMemoryFlushIfNeeded", () => {
       ...loadMainSessionEntry(fixture.storePath),
       totalTokens: 90_000,
       totalTokensFresh: true,
-      totalTokensVersion: 1,
+      totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
     };
     await fixture.run(tokenHeavyEntry);
 
@@ -1422,7 +1428,7 @@ describe("runMemoryFlushIfNeeded", () => {
       updatedAt: 1,
       totalTokens: 95_000,
       totalTokensFresh: true,
-      totalTokensVersion: 1,
+      totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
       compactionCount: 0,
       activeWriterRunId: "preflight",
     });

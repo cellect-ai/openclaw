@@ -56,7 +56,7 @@ import { captureRuntimeConfig } from "../../config/runtime-source-projection.js"
 import { resolveProviderModelCatalogId } from "../../plugins/provider-model-routes.js";
 import { withPluginRuntimeRegistryScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { withCurrentReadAuthority } from "../../shared/current-read-authority.js";
-import { loadDeferredCatalog, readPreparedCatalog } from "../server-model-catalog-auth.js";
+import { loadDeferredCatalog } from "../server-model-catalog-auth.js";
 import { resolveGatewayModelThinkingProfile } from "../session-utils-model.js";
 import { projectWorkerPlacementAgentRuntime } from "../worker-environments/placement-session-runtime.js";
 import { prepareChatAccountSelection } from "./chat-account-selection.js";
@@ -64,16 +64,21 @@ import type { ChatMetadataSessionEntry } from "./chat-metadata-contract.js";
 import { resolveSessionCatalogProfiles } from "./chat-metadata-session-projection.js";
 import { resolveModelProviderCapabilities } from "./model-provider-capabilities.js";
 import { createModelsListProviderFilter, listDecisionModels } from "./models-list-capabilities.js";
+import { readModelsListCatalog } from "./models-list-catalog.js";
 import type { BuildModelsListResultParams } from "./models-list-context.js";
 import {
   buildPublicModelProjection,
+  projectModelCatalogRefreshStatus,
   projectModelServiceTiers,
   projectProviderCatalogOutcomes,
+  retainModelChoiceAccountPin,
 } from "./models-list-public-projection.js";
 import { resolveDefaultModelsPreview } from "./models-list-result.default-models.js";
 import { prepareModelPickerRuntimeChoices } from "./models-list-runtime-choices.js";
 
-type StatedRuntimeModelChoice = ModelChoice & Required<Pick<ModelChoice, "agentRuntime">>;
+type StatedRuntimeModelChoice = ModelChoice & {
+  agentRuntime: NonNullable<ModelChoice["agentRuntime"]>;
+};
 
 type PreparedModelsListResult = {
   read: () => ModelsListResult;
@@ -143,7 +148,7 @@ export async function prepareModelsListResult({
   }
   const ownerSnapshot =
     source.kind === "gateway" && !usedPreloadedCatalog
-      ? await readPreparedCatalog(source.context, initialAgentId)
+      ? await readModelsListCatalog(source.context, initialAgentId, authority)
       : undefined;
   await withCurrentReadAuthority(authority, () => {});
   if (!publishedOwner && !usedPreloadedCatalog && !ownerSnapshot) {
@@ -190,6 +195,7 @@ export async function prepareModelsListResult({
     const availableDecisionModels = listDecisionModels({
       config: cfg,
       snapshot: metadataSnapshot,
+      catalog: snapshot.entries,
     });
     const selectedModel = resolveSessionModelRef(cfg, scope?.sessionEntry, agentId, {
       allowPluginNormalization: false,
@@ -212,8 +218,6 @@ export async function prepareModelsListResult({
       observationConfig: preparedProjectionOwner?.observationConfig,
     });
     const { defaultModel } = preparedCatalog;
-    const preparedRuntimeAuthModes = preparedProjectionOwner?.authModes;
-    const preparedRuntimeAuthMaterializations = preparedProjectionOwner?.authMaterializations;
     // Capture authority again after acquisition and before hydrating a personal projection.
     draft?.assertCurrent();
     const decisionOwner = () => ({
@@ -222,8 +226,8 @@ export async function prepareModelsListResult({
       metadataSnapshot,
       preparedAuthStore,
       accountCatalog: preparedProjectionOwner?.accountCatalog,
-      preparedRuntimeAuthModes,
-      preparedRuntimeAuthMaterializations,
+      preparedRuntimeAuthModes: preparedProjectionOwner?.authModes,
+      preparedRuntimeAuthMaterializations: preparedProjectionOwner?.authMaterializations,
       pluginRegistry: preparedPluginRegistry,
       isCurrent,
       observationConfig: preparedProjectionOwner?.observationConfig,
@@ -277,10 +281,9 @@ export async function prepareModelsListResult({
       );
     }
     await withCurrentReadAuthority(authority, () => {});
-    const catalog = dedupeModelCatalogEntries([
-      ...preparedCatalog.catalog,
-      ...projector.snapshot.entries,
-    ]).filter((entry) => entry.inference?.chat !== false);
+    const { routeVariants, providerOutcomes, entries: snapshotEntries } = projector.snapshot;
+    const allRows = dedupeModelCatalogEntries([...preparedCatalog.catalog, ...snapshotEntries]);
+    const catalog = allRows.filter((entry) => entry.inference?.chat !== false);
     const { evaluateNative } = projector;
     const { normalizeProvider, providerFilter, matchesProvider } = createModelsListProviderFilter({
       config: cfg,
@@ -289,11 +292,11 @@ export async function prepareModelsListResult({
       provider: params.params.provider,
     });
     const decisionModels = availableDecisionModels.filter(matchesProvider);
-    const { routeVariants, providerOutcomes } = projector.snapshot;
     const publicProviderOutcomes = projectProviderCatalogOutcomes(providerOutcomes);
     const visibilityPolicy = createModelVisibilityPolicy({
       cfg,
-      catalog,
+      // The policy needs typed-only rows to tell them from refs no catalog knows.
+      catalog: allRows,
       defaultProvider: DEFAULT_PROVIDER,
       defaultModel,
       agentId,
@@ -301,26 +304,24 @@ export async function prepareModelsListResult({
       manifestPlugins: metadataSnapshot,
     });
     draft?.assertCurrent();
-    const defaultModels =
-      (params.params.includeDefaultModels ??
-      (view === "configured" && !params.params.sessionKey && !params.params.authProfileId))
-        ? await resolveDefaultModelsPreview({
-            cfg,
-            agentId,
-            agentDir: sourceOwner?.agentDir,
-            workspaceDir,
-            metadataSnapshot,
-            preparedAuthStore,
-            preparedRuntimeAuthModes: preparedProjectionOwner?.authModes,
-            preparedRuntimeAuthMaterializations: preparedProjectionOwner?.authMaterializations,
-            pluginRegistry: preparedPluginRegistry,
-            snapshot,
-            isCurrent,
-          })
-        : undefined;
+    const modelPreviews = await resolveDefaultModelsPreview({
+      cfg,
+      agentId,
+      agentDir: sourceOwner?.agentDir,
+      workspaceDir,
+      metadataSnapshot,
+      preparedAuthStore,
+      preparedRuntimeAuthModes: preparedProjectionOwner?.authModes,
+      preparedRuntimeAuthMaterializations: preparedProjectionOwner?.authMaterializations,
+      pluginRegistry: preparedPluginRegistry,
+      snapshot,
+      isCurrent,
+      request: params.params,
+      view,
+    });
     draft?.assertCurrent();
     const outcomeProjection = {
-      ...(defaultModels ? { defaultModels } : {}),
+      ...modelPreviews,
       ...(publicProviderOutcomes?.length ? { providerOutcomes: publicProviderOutcomes } : {}),
     };
     const readAccountSelection =
@@ -337,23 +338,24 @@ export async function prepareModelsListResult({
     await withCurrentReadAuthority(authority, () => {});
     const readOutcomeProjection = () => {
       const accountSelection = readAccountSelection?.();
-      const pendingProviders = projector.snapshot.pendingProviders?.filter(
-        (provider) =>
-          (!providerFilter || normalizeProvider(provider) === providerFilter) &&
-          (view === "all" ||
-            view === "provider-config" ||
-            visibilityPolicy.allowAny ||
-            [...visibilityPolicy.allowedKeys].some((key) => key.startsWith(`${provider}/`))),
-      );
+      const isVisibleProvider = (provider: string) =>
+        (!providerFilter || normalizeProvider(provider) === providerFilter) &&
+        (["all", "provider-config"].includes(view) ||
+          visibilityPolicy.allowAny ||
+          [...visibilityPolicy.allowedKeys].some((key) => key.startsWith(`${provider}/`)));
       return {
-        ...(pendingProviders?.length ? { pendingProviders } : {}),
         ...outcomeProjection,
-        ...(snapshot.refreshFailed ? { refreshFailed: true } : {}),
+        ...projectModelCatalogRefreshStatus({
+          snapshot,
+          pendingProviders: projector.snapshot.pendingProviders,
+          isVisibleProvider,
+        }),
         ...(accountSelection ? { accountSelection } : {}),
         ...(decisionModels.length ? { decisionModels } : {}),
       };
     };
-    const capableProviders = params.params.includeProviderCapabilities
+    const includeProviderCapabilities = params.params.includeProviderCapabilities === true;
+    const capableProviders = includeProviderCapabilities
       ? resolveModelProviderCapabilities({ config: cfg, metadataSnapshot, workspaceDir })
       : undefined;
     const apiKeyProviders = new Map(
@@ -414,6 +416,8 @@ export async function prepareModelsListResult({
               ? Object.assign({}, entry, { alias })
               : entry;
           const capabilityProvider = capableProviders?.resolveProvider(entry.provider);
+          // Every row states its runtime, including the implicit built-in one, so
+          // clients read placement and runtime facts instead of interpreting omission.
           const selectedRuntime = runtimeChoice
             ? { id: runtimeChoice, source: "model" as const }
             : (resolveCatalogDecisionRuntime({
@@ -492,7 +496,7 @@ export async function prepareModelsListResult({
           snapshot: projectionSnapshot,
           entry,
           evaluation,
-          runtimeId: preparedEntry.agentRuntime?.id ?? "openclaw",
+          runtimeId,
           modelServiceTiers: speedPolicy.serviceTiers,
           isCurrent: projectionIsCurrent,
         });
@@ -508,12 +512,12 @@ export async function prepareModelsListResult({
             ? accountCatalog?.readServiceTierObservations({
                 identityKey: credential.identityKey,
                 modelId: entry.id,
-                runtimeId: preparedEntry.agentRuntime?.id ?? "openclaw",
+                runtimeId,
                 api: route.api,
                 baseUrl: route.baseUrl,
               })
             : undefined;
-        return {
+        const choice: ModelChoice = {
           ...preparedEntry,
           ...(supportsFastMode === undefined ? {} : { supportsFastMode }),
           ...(speedPolicy.supportsServiceTierRecovery === true
@@ -528,7 +532,7 @@ export async function prepareModelsListResult({
                 snapshot: projectionSnapshot,
                 entry,
                 evaluation,
-                runtimeId: preparedEntry.agentRuntime?.id ?? "openclaw",
+                runtimeId,
                 isCurrent: projectionIsCurrent,
               })),
           ...(serviceTierObservations?.length
@@ -549,6 +553,7 @@ export async function prepareModelsListResult({
               }
             : {}),
         };
+        return retainModelChoiceAccountPin(choice, decisions.hasPinnedAccount(entry));
       };
     };
 
@@ -584,7 +589,6 @@ export async function prepareModelsListResult({
         }),
       };
     }
-    const { evaluateEntry } = projector;
     const evaluations = new Map<string, ModelAuthAvailabilityEvaluation>();
     const runtimeChoiceReaders = new Map<string, () => ModelRuntimeChoice[]>();
     const twinRoutes = new Map<string, CliRuntimeTwinRoute>();
@@ -646,7 +650,7 @@ export async function prepareModelsListResult({
                 resolveOpenAIProviderRoutes: projector.resolveOpenAIProviderRoutes,
               }).runtime
             : undefined;
-          const preparedHost = evaluateEntry(entry, variants, baseRuntime);
+          const preparedHost = projector.evaluateEntry(entry, variants, baseRuntime);
           // Picker alternatives never change the configured row when a session selects a sibling.
           const host = baseRuntime
             ? { ...preparedHost, requestedRuntimeId: undefined }
@@ -670,9 +674,8 @@ export async function prepareModelsListResult({
           return () => {
             const evaluation = evaluateNative(entry, host);
             evaluations.set(key, evaluation);
-            const routeManaged = evaluation.routeResolution !== null;
             const syntheticLocal =
-              !routeManaged &&
+              evaluation.routeResolution === null &&
               normalizeProviderId(entry.provider) !== "openai" &&
               evaluation.availability === undefined &&
               evaluation.evidence === "synthetic";

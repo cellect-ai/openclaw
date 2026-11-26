@@ -34,6 +34,8 @@ const lock = ".artifacts/dist-artifacts.lock/owner.json";
 const packageCaches = [
   ".openclaw/tmp/toolchain/node/bin/node",
   ".local/share/pnpm/store/v11/files/10/package-content",
+  "artifacts/task-environment/local/share/pnpm/store/v11/files/10/package-content",
+  ".openclaw/.pnpm-store/v11/files/10/package-content",
   ".cache/openclaw/bun/pinned/linux-x64/bin/bun",
   ".cache/ms-playwright/chromium-1248/chrome-linux64/chrome",
   ".cache/bun-transpiler/compiled.pile",
@@ -135,9 +137,7 @@ export async function proveNestedGitWorkspaceRecovery(owner: LocalWorkspaceOwner
   const commit = await runGit(["commit-tree", resultTree], message(after.ref));
   await runGit(["update-ref", ref, commit]);
   expect(await readStagedWorkerWorkspaceResult(canonical, ref)).toMatchObject({
-    baseManifestRaw: before.raw,
     baseManifestRef: before.ref,
-    currentManifestRaw: after.raw,
     currentManifestRef: after.ref,
   });
   const invalid = workerWorkspaceResultRef(`historical-nested-git-v${version}-bad-digest`);
@@ -243,7 +243,10 @@ export async function proveGeneratedWorkspaceRecovery(owner: LocalWorkspaceOwner
   }
   const row = (await readLocalWorkspaceProjection(owner.worktree.id))!;
   // Old captures can retain a cache ancestor that has since disappeared on the host.
-  await writeWorkspaceFiles(projection, { [retainedWorker]: "previous compiler output\n" });
+  await writeWorkspaceFiles(projection, {
+    [retainedWorker]: "previous compiler output\n",
+    ...cacheFiles(packageCaches, "previous dependency cache\n"),
+  });
   const base = { ...(await manifestFor(projection)), baseCommit: row.base_commit };
   const before = legacyManifest(base);
   await setBaseline(owner, before);
@@ -416,4 +419,55 @@ export async function proveGitIgnoredWorkspaceOutputs(owner: LocalWorkspaceOwner
     await missing(canonical, relative);
     await expectText(projection, relative, "disposable output\n");
   }
+}
+
+export async function proveLegacyGitIgnoredWorkspaceOutputs(owner: LocalWorkspaceOwner) {
+  const { prepareLocalWorkspaceArchiveFixture } =
+    await import("./local-workspace-incremental.test-support.js");
+  const { service } = await prepareLocalWorkspaceArchiveFixture(owner);
+  const canonical = owner.worktree.path;
+  await fs.writeFile(
+    path.join(canonical, ".gitignore"),
+    ".env.local\ndist/\n.cache/openclaw-bun/\n",
+  );
+  await requireGit(canonical, ["add", ".gitignore"]);
+  await requireGit(canonical, ["commit", "--quiet", "-m", "ignore build outputs"]);
+  const projection = await withLocalWorkspaceProjection(owner, (state) => state.prepare());
+  const outputs = ["dist/worker/main.js", ".cache/openclaw-bun/bin/bun"];
+  for (const root of [canonical, projection]) {
+    await writeWorkspaceFiles(root, cacheFiles(outputs, "previous build\n"));
+  }
+  const row = (await readLocalWorkspaceProjection(owner.worktree.id))!;
+  const legacy = legacyManifest({
+    ...(await manifestFor(projection)),
+    baseCommit: row.base_commit,
+  });
+  await updateProjection(owner, {
+    baseline_json: legacy.raw,
+    baseline_ref: legacy.ref,
+    tree_root_digest: null,
+    pending_ref: workerWorkspaceResultRef("legacy-unstaged-build-output"),
+    pending_target: "canonical",
+    checkpoint_json: null,
+  });
+  await writeWorkspaceFiles(projection, {
+    ...cacheFiles(outputs, "new build output\n"),
+    "source.txt": "saved source edit\n",
+  });
+  await withLocalWorkspaceProjection(owner, (state) => state.synchronize("canonical"));
+  await expectWorkspaceFiles(canonical, {
+    ...cacheFiles(outputs, "previous build\n"),
+    "source.txt": "saved source edit\n",
+  });
+  await expectWorkspaceFiles(projection, cacheFiles(outputs, "new build output\n"));
+  const accepted = await withLocalWorkspaceProjection(owner, (state) => state.baselineDocument());
+  expect(
+    parseWorkerWorkspaceManifest(accepted.rawManifest, accepted.manifestRef).entries.map(
+      (entry) => entry.path,
+    ),
+  ).toEqual([".gitignore", "source.txt"]);
+  expect((await service.gc({ readOwnerState: () => "idle" })).removed).toContain(owner.worktree.id);
+  const restored = await service.restore({ id: owner.worktree.id });
+  await expectWorkspaceFiles(restored.path, { "source.txt": "saved source edit\n" });
+  await expectWorkspaceFiles(projection, cacheFiles(outputs, "new build output\n"));
 }

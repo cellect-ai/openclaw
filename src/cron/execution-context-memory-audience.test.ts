@@ -6,7 +6,8 @@ import {
   setRuntimeConfigSnapshot,
 } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
-import type { MemoryAudience, MemoryProviderHandle } from "../plugins/memory-provider-types.js";
+import type { MemoryProviderHandle } from "../plugins/memory-provider-runtime-types.js";
+import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import { cronTestJob } from "./service.fixture-builders.test-support.js";
 import type { CronStoredJob } from "./types.js";
 

@@ -1,10 +1,12 @@
 import { createMemo, Loading, onSettled } from "solid-js";
 import type { AgentSelectElement } from "../../components/agent-select.tsx";
+import { Icon } from "../../components/solid/icon.tsx";
 import type { PopoverHandle } from "../../components/solid/popover.tsx";
 import { registerNewSessionSetupEnglish } from "../../i18n/locales/en-new-session-setup.ts";
 import { normalizeAgentTargetLabel } from "../../lib/agents/display.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import { liveValue } from "../../lib/reactive/live-value.ts";
+import { createMediaQuery } from "../../lib/reactive/platform.ts";
 import { normalizeAgentId } from "../../lib/sessions/session-key.ts";
 import * as catalog from "./catalog-target.ts";
 import { CheckoutChip } from "./checkout-chip.tsx";
@@ -19,6 +21,39 @@ import { WhereChip } from "./where-chip.tsx";
 
 registerNewSessionSetupEnglish();
 
+function CheckoutLoadingRow() {
+  const stacked = createMediaQuery("(max-width: 768px)");
+  const motion = createMediaQuery("(prefers-reduced-motion: no-preference)");
+  return (
+    <>
+      {stacked() ? (
+        <span class="new-session-page__select">
+          <span
+            class="new-session-page__trigger new-session-page__checkout-skeleton"
+            role="status"
+            aria-label={t("common.loading")}
+            style={{ "pointer-events": "none" }}
+          >
+            <span class="new-session-page__target-icon" aria-hidden="true">
+              <Icon name="gitBranch" />
+            </span>
+            <span
+              class="new-session-page__skeleton-bar"
+              aria-hidden="true"
+              style={{
+                width: "80px",
+                animation: motion()
+                  ? "new-session-placeholder-pulse 1.4s ease-in-out infinite"
+                  : undefined,
+              }}
+            />
+          </span>
+        </span>
+      ) : undefined}
+    </>
+  );
+}
+
 export function AgentSelect(props: {
   params: AgentSelectOptions;
   ref?: (node: HTMLSpanElement) => void;
@@ -31,6 +66,8 @@ export function AgentSelect(props: {
           element.focusTargetsRef = props.focusTargetsRef;
         }}
         prop:variant={props.params.variant ?? "compact"}
+        prop:identityTargetsRef={props.params.identityTargetsRef}
+        prop:onIdentityTargetsChange={props.params.onIdentityTargetsChange}
         prop:options={props.params.agents.map((agent) => ({
           value: normalizeAgentId(agent.id),
           label: normalizeAgentTargetLabel(agent, props.params.agentIdentity?.get(agent.id)),
@@ -47,8 +84,6 @@ export function AgentSelect(props: {
         prop:menuLabel={t("newSession.agents")}
         prop:disabled={props.params.disabled}
         prop:onSelect={props.params.onSelect}
-        onOverlay-show={() => props.params.onOpenChange(true)}
-        onOverlay-hide={() => props.params.onOpenChange(false)}
       />
     </span>
   );
@@ -189,14 +224,7 @@ export function NewSessionPlaceControls(props: {
             ref={(element) => {
               workspace = element;
             }}
-            class={[
-              "new-session-page__workspace",
-              {
-                "new-session-page__workspace--checkout":
-                  props.params.place.checkoutVisible &&
-                  !(view().nativeTerminal && props.params.place.terminalOnNode),
-              },
-            ]}
+            class="new-session-page__workspace"
           >
             {props.params.place.hostedEnvironment ? (
               <span
@@ -225,7 +253,11 @@ export function NewSessionPlaceControls(props: {
             )}
             {props.params.place.checkoutVisible &&
             !(view().nativeTerminal && props.params.place.terminalOnNode) ? (
-              <CheckoutChip params={props.params} folderLabel={view().projectState.label} />
+              props.params.place.repositoryState.checkoutPending ? (
+                <CheckoutLoadingRow />
+              ) : (
+                <CheckoutChip params={props.params} folderLabel={view().projectState.label} />
+              )
             ) : undefined}
           </div>
           {props.params.place.deviceFolder ? (

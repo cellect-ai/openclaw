@@ -161,6 +161,8 @@ async function scenario(
     publishWithoutPathExchange();
     const fixture = await createPackageSwapFixture(base);
     const rename = fs.rename.bind(fs);
+    // The denied move is the backup move of a publication without an exchange.
+    const exchange = publishWithoutPathExchange();
     const effect = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
       if (String(args[0]) === fixture.packageRoot) {
         setupInjected = true;
@@ -172,6 +174,7 @@ async function scenario(
       swap = await publishSwap(fixture, "failed");
     } finally {
       effect.mockRestore();
+      exchange.mockRestore();
     }
   } else if (["link-retained", "link-changed", "transient-read"].includes(kind)) {
     const fixture = await createPackageSwapFixture(base);
@@ -220,7 +223,13 @@ async function scenario(
     });
   }
   const run: NonNullable<UpdateCommandOptions["run"]> = {
-    runId: createUpdateRun({ trigger: "cli" }, { env: process.env }).runId,
+    runId: createUpdateRun(
+      {
+        trigger: "cli",
+        ...(preparedRecovery ? { origin: { sessionKey: "agent:main:terminal-recovery" } } : {}),
+      },
+      { env: process.env },
+    ).runId,
     env: { ...process.env },
   };
   const retainedState = async () => ({
@@ -263,14 +272,13 @@ async function scenario(
   };
   let injected = setupInjected;
   let failNextLeaseRead = false;
-  let failNextStateRead = false;
+  let stateReadUnavailable = false;
   const lstat = syncFs.lstatSync.bind(syncFs);
   vi.spyOn(syncFs, "lstatSync").mockImplementation((...args) => {
     if (
-      failNextStateRead &&
+      stateReadUnavailable &&
       String(args[0]) === path.join(base, "state", "state", "openclaw.sqlite")
     ) {
-      failNextStateRead = false;
       injected = true;
       throw Object.assign(new Error("fixture update reporting identity read failed"), {
         code: "EIO",
@@ -365,7 +373,9 @@ async function scenario(
           recordUpdateRunVerification(run.runId, verification, { env: run.env });
           result.verification = verification;
           closeOpenClawStateDatabaseForTest();
-          failNextStateRead = true;
+          // State stays unavailable through reporting; cohort settlement can read
+          // it before the terminal row, so a single failing metadata call is insufficient.
+          stateReadUnavailable = true;
           return "ok";
         });
       }
@@ -466,6 +476,7 @@ async function scenario(
   } finally {
     cleanup?.release.resolve();
     reportSnapshotFailure?.mockRestore();
+    stateReadUnavailable = false;
   }
   if (
     (kind === "revoked" || kind === "foreign-revoked") &&
@@ -524,8 +535,7 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.launcher).toBe("candidate launcher\n");
     expect(value.retainedExists).toBe(true);
     expect(value.exitCode).toBe(1);
-    expect(value.history?.status).not.toBe("succeeded");
-    expect(value.history?.status).not.toBe("rolled-back");
+    expect(["succeeded", "rolled-back"]).not.toContain(value.history?.status);
   });
   it("publishes the Gateway's completed row after real executor release", async () => {
     const value = await scenario("healthy");
@@ -533,6 +543,12 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.lease).toBe("absent");
     expect(value.retainedExists).toBe(false);
     expect(value.observedResults).toEqual([expect.objectContaining({ status: "ok" })]);
+    // Verified retirement is recorded with its wall time, not only on warnings.
+    for (const name of ["package-backup-retention", "post-update-maintenance-timing"]) {
+      expect(value.observedResults[0]?.steps).toContainEqual(
+        expect.objectContaining({ name, exitCode: 0, durationMs: expect.any(Number) }),
+      );
+    }
     expect(value.observationLeases).toEqual(["absent"]);
     expect(value.humanOutput.join("\n").toLowerCase()).toContain("updated");
     expect(value.errorOutput).not.toContain(
@@ -544,8 +560,7 @@ describe("composed cleanup and terminal outcome", () => {
     expect(value.injected).toBe(true);
     expect(value).toMatchObject({ exitCode: 1, history: { status: "succeeded" } });
     expect(value.lease).toBe("current");
-    expect(value.observedResults).toEqual([]);
-    expect(value.jsonOutput).toEqual([]);
+    expect([value.observedResults, value.jsonOutput]).toEqual([[], []]);
   });
   it("reports revoked authority from captured facts without changing retained state", async () => {
     const value = await scenario("revoked");

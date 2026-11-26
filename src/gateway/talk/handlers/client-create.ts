@@ -22,15 +22,12 @@ import { REALTIME_VOICE_AGENT_CONTROL_TOOL } from "../../../talk/agent-run-contr
 import { withClientVoiceSessionSettlement } from "../../../talk/client-voice-session-lifecycle.js";
 import {
   captureClientVoiceSessionSource,
-  type ClientVoiceSessionSource,
-} from "../../../talk/client-voice-session-source.js";
-import {
   captureClientVoiceSessionWriter,
-  ensureClientVoiceAgentSessionEntry,
+  type ClientVoiceSessionSource,
   type ClientVoiceSessionWriter,
-} from "../../../talk/client-voice-session-write.js";
+} from "../../../talk/client-voice-session-source.js";
+import { ensureClientVoiceAgentSessionEntry } from "../../../talk/client-voice-session-write.js";
 import {
-  appendClientVoiceTranscript,
   closeClientVoiceSession,
   closeStaleClientVoiceSessions,
   createOrResumeClientVoiceSession,
@@ -57,6 +54,7 @@ import {
   type TalkClientRunAuthority,
 } from "../client-run-authority.js";
 import { resolveTalkAgentConsultAuthority } from "../client-tool-authority.js";
+import { appendTalkClientTranscript } from "../client-transcript.js";
 import { talkRequestError } from "../request-error.js";
 import {
   assertTalkClientSessionEntryDeadline,
@@ -345,7 +343,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           closingFailure
             ? Promise.reject(toErrorObject(closingFailure.error, "Voice session close failed"))
             : withVoiceWriter((writer) =>
-                appendClientVoiceTranscript(
+                appendTalkClientTranscript(
                   {
                     agentId,
                     sessionKey,
@@ -357,6 +355,7 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
                     providerOwned: controlSource === "delegation",
                     config: runtimeConfig,
                   },
+                  context,
                   writer,
                 ),
               ),
@@ -530,6 +529,11 @@ export const createTalkClient: GatewayRequestHandler = async (request) => {
           replacement?.assertCurrent(target);
           gatewayControlOwner.assertOpen();
           const initialVoiceSource = captureClientVoiceSessionSource(agentId);
+          await initialVoiceSource.prepare();
+          sessionMutationCommitGuard?.();
+          sessionMutationAuthorization?.assertTargetCurrent({ ...sessionTarget, ensuredSessionId });
+          replacement?.assertCurrent(target);
+          gatewayControlOwner.assertOpen();
           voiceSessionSource = initialVoiceSource;
           // Recovering 6h-abandoned calls (and retrying their digests) is not on the
           // start path; running it inline would delay use of time-sensitive provider

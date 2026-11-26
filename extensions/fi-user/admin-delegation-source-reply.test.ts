@@ -99,7 +99,11 @@ describe("a Matrix reply to a Slack source session", () => {
       elevated: false,
       env: { FI_DELEGATED_USER_TOKEN: TOKEN },
     });
-    expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
+    expect(mintBody()).toEqual({
+      requesterMatrixUserId: ADMIN,
+      agentId: "cellect-fi-admin",
+      turn: { roomId: ROOM, eventId: "$reply" },
+    });
   });
 
   it("carries an ingress admission to a separately registered agent instance", async () => {
@@ -297,7 +301,11 @@ describe("a Matrix reply to a Slack source session the host labels as Slack", ()
     await turn.arrive(message.arrive);
     await turn.start(message.start);
     expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
-    expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
+    expect(mintBody()).toEqual({
+      requesterMatrixUserId: ADMIN,
+      agentId: "cellect-fi-admin",
+      turn: { roomId: ROOM, eventId: "$reply" },
+    });
   });
 
   it("mints when the dispatch itself is labelled with the Slack session's channel", async () => {
@@ -307,7 +315,11 @@ describe("a Matrix reply to a Slack source session the host labels as Slack", ()
     await turn.arrive({ ...message.arrive, channel: "slack" });
     await turn.start(message.start);
     expect((await turn.exec(message.exec))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(TOKEN);
-    expect(mintBody()).toEqual({ requesterMatrixUserId: ADMIN, agentId: "cellect-fi-admin" });
+    expect(mintBody()).toEqual({
+      requesterMatrixUserId: ADMIN,
+      agentId: "cellect-fi-admin",
+      turn: { roomId: ROOM, eventId: "$reply" },
+    });
   });
 
   it("does not mint for a Slack sender starting a run on the Matrix event", async () => {

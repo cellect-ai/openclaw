@@ -6,6 +6,7 @@ import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { getDatabaseEngineInput } from "../../infra/database-engine/context.js";
 import { captureSqliteAuthSchema } from "../../infra/sqlite-readonly-auth-schema.js";
 import { runSqliteReadOnlyWorker } from "../../infra/sqlite-readonly-worker.js";
+import { getArtifactPreservingSqliteRead } from "../../infra/sqlite-snapshot-source.js";
 import {
   inspectDatabasePathIdentity,
   type DatabasePathIdentity,
@@ -15,11 +16,11 @@ import {
   registerOpenClawAgentDatabaseAsyncResource,
   registerOpenClawAgentDatabaseReadCandidateResource,
 } from "../../state/openclaw-agent-db-resources.js";
-import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
+import { captureOpenClawAgentDatabaseExecutionAsync } from "../../state/openclaw-agent-execution.js";
 import { registerOpenClawStateDatabaseAsyncResource } from "../../state/openclaw-state-db-cache.js";
 import {
   executeExistingOpenClawStateRead,
-  getActiveOpenClawStateDatabaseReadSnapshot,
+  hasActiveOpenClawStateDatabaseReadSnapshot,
   isArtifactPreservingStateRead,
 } from "../../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
@@ -86,6 +87,7 @@ export async function prepareAgentAuthProfileRowsRead(options: {
 }): Promise<{
   readonly agentId: string;
   identity: string | undefined;
+  readonly databaseIdentity: DatabasePathIdentity | undefined;
   source: AuthProfileReadSource;
   captureCredentialAuthority: (
     profileId: string | undefined,
@@ -203,17 +205,18 @@ export async function prepareAgentAuthProfileRowsRead(options: {
     if (!identity.key.startsWith("file:")) {
       return missing;
     }
+    const inspection = getArtifactPreservingSqliteRead(databasePath);
     const rows = postgres
       ? await readAgentAuthProfileRows(
           { databasePath, agentId, env },
           assertCurrent,
           controller.signal,
         )
-      : await runSqliteReadOnlyWorker(databasePath, {
+      : await runSqliteReadOnlyWorker(inspection?.canonicalPath ?? databasePath, {
           mode: "auth-profile-rows",
-          source: "canonical",
-          expectedIdentity: identity.key,
-          expectedBirthtime: identity.birthtime,
+          source: inspection ? "snapshot" : "canonical",
+          expectedIdentity: inspection?.key ?? identity.key,
+          expectedBirthtime: inspection ? inspection.birthtime : identity.birthtime,
           env,
           signal: controller.signal,
         });
@@ -268,7 +271,7 @@ export async function prepareAgentAuthProfileRowsRead(options: {
     !revoked &&
     isMainThread &&
     !uncached &&
-    !getActiveOpenClawStateDatabaseReadSnapshot({ env })
+    !hasActiveOpenClawStateDatabaseReadSnapshot({ env })
       ? runtimeAuthProfileRowsCache.prepare(
           databasePath,
           {
@@ -288,6 +291,7 @@ export async function prepareAgentAuthProfileRowsRead(options: {
   return {
     agentId,
     identity: identity && `${identity.key}:${identity.birthtime ?? ""}`,
+    databaseIdentity: identity,
     get source() {
       return (source ??= {
         kind: "agent",
@@ -325,7 +329,7 @@ async function readAgentAuthProfileRows(
   assertCurrent: () => void,
   signal: AbortSignal,
 ): Promise<AuthProfileRowRead> {
-  const execution = captureOpenClawAgentDatabaseExecution({
+  const execution = await captureOpenClawAgentDatabaseExecutionAsync({
     agentId: options.agentId,
     path: options.databasePath,
     env: options.env,
@@ -416,7 +420,7 @@ export async function readSharedAuthProfileRows(
     !isMainThread ||
     artifactPreserving ||
     context.maintenanceScope ||
-    getActiveOpenClawStateDatabaseReadSnapshot({ env: context.environment })
+    hasActiveOpenClawStateDatabaseReadSnapshot({ env: context.environment })
   ) {
     return read();
   }

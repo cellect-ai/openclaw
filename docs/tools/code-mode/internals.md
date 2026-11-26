@@ -64,6 +64,11 @@ preserving: active agent id, session id and key, sender and channel context,
 sandbox policy, approval policy, plugin `before_tool_call` hooks, abort
 signal, streaming updates where available, and trajectory/audit events.
 
+In-process catalog calls bind the run's watchdog owner even when a tool already
+has a hook wrapper. The reply watchdog honors the deadline published by the
+tool's execution owner, so a silent command can reach its own exec timeout and
+return its error to guest code without losing the reply at the quiet-tool window.
+
 Completed nested calls persist as bounded display-only activity, retaining
 their original parent and invocation ids across history reloads. Provider replay
 contains only the actual model calls; child activity adds no synthetic model turns.
@@ -134,6 +139,21 @@ raise memory, snapshot, time, or headless total tool-call limits, or bypass
 cancellation and policy checks.
 
 ## Run and snapshot lifecycle
+
+Catalog descriptors and their rendered prompts are shared across attempts, runs,
+and sessions when the finalized tool definitions match. The process retains at
+most 32 prepared catalogs, limited to 1 Mi characters of schema and key per catalog
+and 4 Mi characters across the cache. Native and published schemas use the same
+content fingerprint. The cache shares immutable
+data. Changes to tool selection, descriptions, or projected schemas select a
+different catalog; unchanged inputs preserve identical prompt bytes. Unpublished
+remote schemas remain opaque and do not enter the shared cache.
+Client projections share only their metadata; their advertised input remains
+`unknown`, and the live schema stays with the current run's describe/call path.
+
+Executable tools, hooks, abort signals, counters, and result stores remain owned
+by the current run. Terminal cleanup releases those bindings; cached descriptors
+never keep a completed run executable.
 
 Every new `exec` starts a fresh JavaScript context. Variables, functions, and
 imports never carry over between cells; `wait` continues the original cell.
@@ -222,13 +242,23 @@ than the live manager's bounded hydration window. An unmatched leaf fails the
 operation rather than exposing a different branch. Subsequent operations use
 the projection, applying this run's own commits without rescanning the branch.
 
-Across admitted runs, core reuses a validated projection only when a fresh read
-matches the physical session identity, transcript rewrite generation, and ordered
-store-entry IDs. The cache retains at most 16 sessions and 8 MiB of accounted
-JSON and metadata; histories above 4,096 entries or 1,024 live keys are not cached.
-Session removal and database shutdown discard retained projections. Store writes,
-branch changes, and rewrites select a new projection through the same replay and
-budget checks. Loaded values remain detached copies, and persisted bytes do not change.
+Across admitted runs, core retains the projection's transcript rewrite generation,
+leaf, and admitted raw sequence. The worker reads only the appended suffix when
+it forms a direct branch extension, bounded to 256 events and 1 MiB. An unchanged
+suffix returns no writes. Divergent branches, rewrites, and larger or non-linear
+suffixes use the canonical branch selector. Both paths validate historical
+shapes, keys, and provenance in the reader, then return only each key's final
+write or delete. Cold replay folds each selected store payload before reading the
+next, so superseded snapshots do not accumulate in the reader. The main thread
+applies that compact result in the attributed
+`sessions.transcript-maintenance:apply` task; superseded values never cross the
+worker boundary.
+
+The existing replay cache retains at most 16 sessions, 1,024 live keys per
+session, and 8 MiB of accounted JSON and metadata. Session removal and database
+shutdown discard retained projections. Replay encodes only surviving values and
+checks the final projection's budget; commit admission owns historical budget
+checks. Loaded values remain detached copies, and persisted bytes do not change.
 
 Only a cell that settles `completed` commits its non-empty write set. Core
 appends one `custom` entry with type `openclaw.code-mode-store` through
@@ -302,7 +332,10 @@ outputs stay `unknown`, and declarations do not grant access to additional tools
 Executable cells are plain JavaScript. Code Mode does not load a TypeScript
 compiler, strip annotations, or typecheck the program. The selected engine parses and runs
 the JavaScript directly. Tool calls still use the existing runtime input and
-output validation, policy, and approval owners. A later call can fail after
+output validation, policy, and approval owners. Local input validation keeps the
+tool's provider-neutral contract when a provider requires a projected schema;
+an explicit tool-owner execution contract still takes precedence.
+A later call can fail after
 earlier calls have produced effects, so follow the
 [recovery guidance](/tools/code-mode/quickstart#recover-from-tool-errors) before
 retrying a failed cell.

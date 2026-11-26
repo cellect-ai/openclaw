@@ -58,6 +58,8 @@ the result and the earlier blocked-delivery notice are kept.
 A suspended delivery expires after seven days. The warning records its run and
 session identifiers, original delivery error, and suspension time. Expiry ends
 automatic delivery; it does not turn a successful child execution into a failure.
+A required parent completion that expires also records the visible failure notice
+in the requester conversation, so ending delivery is never silent.
 For a retained run, `/subagents info <runId>` shows the captured result, discarded
 delivery status, and original error, even after the run leaves the recent list.
 Inspect that result or available child session history and ask the requester to
@@ -86,41 +88,65 @@ metadata does not keep the child running.
 A graceful Gateway shutdown records the top-level requesters of running children,
 then cancels the children through the ordinary abort path. Children that owe a
 completion retain their error outcome for delivery after startup, including when
-their requester already finished its turn. Shutdown is not intentional requester
-cancellation. Root requesters with interrupted work receive the standard resume
-input; children are not independently resumed.
+their requester has already finished its turn. A shutdown interruption does not count as
+an intentional cancellation by the requester. Root requesters with interrupted work
+receive the standard resume input; children are not independently resumed.
+Recorded spawn ancestry includes visible spawned coordinators and workers: their
+running descendants contribute to the original root even after its own turn ends.
+An ordinary conversation contacted through `sessions_send` keeps its own restart
+recovery; receiving a message does not make it a spawned child.
+
+Startup also repairs pending `Gateway stopped` completions written by older
+Gateways as quiet kills. These interrupted runs retain an error notice for the
+requester; an explicit Stop or an already delivered outcome is not reopened.
 
 Completion turns retain processing receipts so a transient failure before the
-requester consumes the outcome can retry. Intentional Stop and completed receipts
-still prevent replay.
+requester consumes the outcome can retry. An intentional Stop or a completed
+receipt still prevents replay.
 
 The parent uses its transcript and the existing sub-agent tools to inspect prior
 work, then can send a fresh instruction to a retained child or spawn a replacement.
 Check whether files or external actions already changed before repeating work.
 New execution uses current authority and the session's current tool policy.
 
-A changed session-store path alone does not discard finished results. Completion
-uses live compatible custody or a System write-only baseline, while temporary
-access-policy unavailability leaves delivery owed for retry. Explicit cancellation,
-requester incarnation checks, and consumed-result receipts remain authoritative.
+Finished results route to the current requester agent and session key, even if the
+recorded session store path changed. Delivery retains live same-source operator
+custody when available; missing, revoked, or mixed custody uses the System
+write-only baseline instead of refusing the result. A temporary Gateway
+access-policy outage still leaves delivery owed for retry. Explicit Stop and
+requester deletion still retire the selected completion obligations.
 
 If a requester wake is refused because the child's completion owner changed,
 that attempt yields to the current owner. The completion stays owed and the registry
 re-evaluates its retained wake. The same requester and wake generation can still
-record a result already delivered after child cleanup. The registry owns recovery
-of unconsumed requester-settle results instead of starting a competing requester
-turn under the old run's operator authority. Once the result is committed to the
-requester transcript, the Gateway owns restarting that interrupted turn from its
-saved conversation; the registry does not submit the completion input again.
-A requester that deliberately yielded remains parked for its children.
+record a result already delivered after child cleanup. A yielded
+child's pause notice also settles if a resumed sibling changes the batch's run IDs;
+the notice belongs to that child, while the batch still waits for final results.
+The registry owns recovery of unconsumed requester-settle results, including markers
+for an earlier cohort or retry. Startup clears those restart markers instead of
+starting a competing requester turn under the old run's operator authority. Once
+the result is committed to the requester transcript, the Gateway owns restarting
+that interrupted turn from its saved conversation; the registry does not replay
+the completion input.
 
-A crash or `SIGKILL` cannot write a shutdown marker. Children do not resume
-independently. A child that was still running in the previous Gateway is recorded
-as failed with an interruption error, and its requester receives that failure
-through the normal completion path rather than waiting indefinitely. Inspect its
-saved work before retrying; if the root cannot resume, send a new message to
-continue. Reversible suspension does not mark or cancel children. See
-[Restart recovery](/gateway/restart-recovery).
+Completions from different operator invocations use separate settle wakes, each
+with its own retained authority. Sandbox setup failures and an unavailable Gateway
+leave uncommitted results owed for retry. Results already committed to the
+requester transcript are not replayed.
+
+A crash or `SIGKILL` cannot write a shutdown marker. Startup can still resume an
+eligible root requester from its persisted run identity in the immediately preceding
+Gateway lifetime. Children do not resume independently. After any restart, a child
+that was still running in the previous Gateway is recorded as failed with an
+interruption error, and its requester receives that failure through the normal
+completion path, so a waiting parent wakes instead of waiting indefinitely.
+The terminal notice waits for fresh requester authority after startup; it cannot
+use the previous Gateway's retired custody. Inspect their saved work
+before sending a fresh instruction to the same retained child session. A stopped
+execution is not a yielded pause, and a replacement does not inherit workspace or
+publication ownership. If the root cannot resume, send a new message to continue.
+Reversible suspension does not mark or cancel children.
+See [Restart recovery](/gateway/restart-recovery).
 
 Registry hydration, resource cleanup, and normal retention remain separate from
 execution resumption. Persisted records alone do not prove a live executor, grant
@@ -130,6 +156,10 @@ media keep their delivery queue.
 When shutdown begins, an active retention sweep finishes its current cleanup
 instead of draining the entire expired backlog. Remaining run records stay saved
 for cleanup after restart, including partially cleaned collector groups.
+
+Large eligible backlogs yield to other Gateway work between batches of runs.
+Each run's ownership is rechecked before acting; completion, cancellation, and
+retention decisions keep their normal order and deadlines.
 
 When a detached cleanup attempt logs `subagent cleanup finalize failed`, its
 retries use bounded backoff in the current Gateway process. If those retries are

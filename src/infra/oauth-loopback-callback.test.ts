@@ -297,8 +297,8 @@ describe("OAuth loopback callback server", () => {
     lookup.resolve([{ address: "127.0.0.1", family: 4 }]);
   });
 
-  it("binds every loopback address resolved for localhost", async () => {
-    const port = await getClaimedPort();
+  it.each([false, true])("binds every localhost address (dynamic port: %s)", async (dynamic) => {
+    const requestedPort = dynamic ? 0 : await getClaimedPort();
     const addresses = [
       ...new Set(
         (await dnsPromises.lookup("localhost", { all: true, verbatim: true })).map(
@@ -307,10 +307,16 @@ describe("OAuth loopback callback server", () => {
       ),
     ];
     const callback = await openCallback({
-      redirectUrl: `http://localhost:${port}/oauth/callback`,
-      bindHostname: "127.0.0.1",
+      redirectUrl: `http://localhost:${requestedPort}/oauth/callback`,
+      bindHostname: dynamic ? undefined : "127.0.0.1",
     });
-
+    const redirect = new URL(callback.redirectUrl);
+    const port = Number(redirect.port);
+    expect(port).toBeGreaterThan(0);
+    expect(redirect.hostname).toBe("localhost");
+    if (!dynamic) {
+      expect(port).toBe(requestedPort);
+    }
     for (const address of addresses) {
       await expectResponse(fetch(callbackUrl(address, port, "?code=bad&state=wrong")), 400);
     }

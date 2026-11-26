@@ -315,7 +315,7 @@ async function forgetWorkspaceMemory(
       (entry.artifactKind === "archive-artifact" &&
         (!entry.sessionKind || entry.sessionKind === "unknown"))
     ) {
-      // Read provenance without materializing rendered text; legacy observations settle per entry.
+      // Summaries carry provenance and observe messages without retaining the export.
       const parsed = await streamSessionEntry(entry.sessionFile, {
         generatedByDreamingNarrative: entry.generatedByDreamingNarrative === true,
         generatedByCronRun: entry.generatedByCronRun === true,

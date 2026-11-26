@@ -1,24 +1,39 @@
+import type { CodeModeStoreWrites } from "../../agents/code-mode-session-store-replay.js";
+import type { DatabaseFileIdentity } from "../../infra/sqlite-worker-identity.js";
+import type { UserTurnTranscriptAdmissionReceipt } from "../../sessions/user-turn-transcript.types.js";
 import type {
   SessionTranscriptContextVersion,
+  SessionTranscriptReadScope,
   SessionTranscriptWriteScope,
   TranscriptEvent,
 } from "./session-accessor.sqlite-contract.js";
 import type { SessionTranscriptMessageEvent } from "./session-accessor.sqlite-projection-read.js";
+import type { ResolvedTranscriptReadScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
-import type {
-  SessionPreparedCompactionInput,
-  SessionPreparedCompactionValue,
-} from "./session-compaction-prepared.types.js";
+import type { SessionEntryCohortRequest } from "./session-entry-read.types.js";
 import type {
   PreparedSessionTranscriptHydration,
+  SessionTranscriptContextSelection,
   SessionTranscriptReadSnapshot,
 } from "./session-history-read.types.js";
-import type { SessionTranscriptHydrationWorkerInput } from "./session-transcript-hydration-input.types.js";
+import type { SessionTranscriptAnchorEntry } from "./session-transcript-anchor-read.types.js";
+import type { SessionTranscriptHydrationCaller } from "./session-transcript-hydration-caller.js";
 import type { TranscriptEntryAnchor } from "./transcript-entry-anchor.js";
 
 export type { PreparedSessionTranscriptHydration } from "./session-history-read.types.js";
 
+export type SessionTranscriptMaintenanceCheckpoint = {
+  generation: string;
+  rawSeq: number;
+  leafEntryId: string | null;
+};
+
 export type SessionTranscriptMaintenanceRead =
+  | {
+      operation: "code-mode-store";
+      leafEntryId: string | null;
+      checkpoint?: SessionTranscriptMaintenanceCheckpoint;
+    }
   | { operation: "previous"; beforeSeq: number }
   | { operation: "identity"; eventId: string }
   | { operation: "version" }
@@ -45,6 +60,7 @@ export type SessionTranscriptMaintenanceFacts = {
   appendParentId?: string | null;
   lifecycleRevision?: SessionTranscriptWriteScope["expectedLifecycleRevision"];
   events?: TranscriptEvent[];
+  store?: { writes: CodeModeStoreWrites; incremental: boolean };
 };
 
 export type SessionTranscriptHydrationWorkerResult =
@@ -88,9 +104,25 @@ export type SessionTranscriptCurrentTurnEntryRequest = {
   includeEntry: boolean;
 };
 
+export type SessionTranscriptHydrationWorkerInput = {
+  kind: "transcript-hydration";
+  caller?: SessionTranscriptHydrationCaller;
+  database: { agentId: string; path: string };
+  target: SessionTranscriptReadScope;
+  resolvedScope: ResolvedTranscriptReadScope;
+  expectedIdentity?: DatabaseFileIdentity;
+  afterSeq?: number;
+  includeEventJson?: boolean;
+  compaction?: true;
+  limits?: SessionTranscriptContextSelection;
+  transcript?: SessionEntryCohortRequest["transcript"];
+  preparedEntry?: SessionTranscriptAnchorEntry;
+  admission?: UserTurnTranscriptAdmissionReceipt;
+};
+
 type SessionTranscriptRuntimeHydrationInput = Omit<
   SessionTranscriptHydrationWorkerInput,
-  "kind" | "limits" | "target" | "expectedIdentity"
+  "kind" | "caller" | "limits" | "target" | "expectedIdentity"
 > & { target: SessionTranscriptRuntimeTarget & { env?: NodeJS.ProcessEnv } };
 
 export type SessionTranscriptCurrentTurnEntryWorkerInput = SessionTranscriptRuntimeHydrationInput &
@@ -113,7 +145,6 @@ export type SessionTranscriptMaintenanceWorkerInput = SessionTranscriptRuntimeHy
 };
 
 export type SessionTranscriptHydrationWorkerRequest =
-  | SessionPreparedCompactionInput
   | SessionTranscriptHydrationWorkerInput
   | SessionTranscriptMaintenanceWorkerInput
   | SessionTranscriptCurrentTurnEntryWorkerInput
@@ -121,7 +152,6 @@ export type SessionTranscriptHydrationWorkerRequest =
   | SessionTranscriptLatestActiveMessageWorkerInput;
 
 export type SessionTranscriptHydrationWorkerValues = {
-  "compaction-preparation": SessionPreparedCompactionValue;
   "transcript-hydration": SessionTranscriptHydrationWorkerResult;
   "transcript-maintenance": SessionTranscriptMaintenanceFacts;
   "current-turn-entry": SessionTranscriptCurrentTurnEntryRead;
@@ -133,10 +163,6 @@ export type SessionTranscriptHydrationWorkerValues = {
 };
 
 export type SessionTranscriptHydrationReaders = {
-  readCompaction: (
-    input: Omit<SessionPreparedCompactionInput, "kind" | "database">,
-    signal?: AbortSignal,
-  ) => Promise<SessionPreparedCompactionValue>;
   readTranscript: (
     input: Omit<SessionTranscriptHydrationWorkerInput, "kind" | "database">,
     signal?: AbortSignal,

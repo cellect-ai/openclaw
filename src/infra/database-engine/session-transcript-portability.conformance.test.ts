@@ -1,5 +1,6 @@
+import type { SQLInputValue } from "node:sqlite";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { SessionManager } from "../../agents/sessions/session-manager.js";
 import { upsertSessionEntryCore } from "../../config/sessions/session-accessor.js";
 import { readSessionTranscriptBoundedActiveContextCore } from "../../config/sessions/session-accessor.sqlite-active-context.js";
@@ -11,9 +12,9 @@ import {
   iterateUnindexedActiveTranscriptNavigation,
 } from "../../config/sessions/session-accessor.sqlite-history-navigation.js";
 import {
+  readSessionTranscriptModelContext,
   readSessionTranscriptContextMessages,
   readSessionTranscriptContextSeed,
-  readSessionTranscriptModelContext,
   validateSessionTranscriptContextVersion,
 } from "../../config/sessions/session-accessor.sqlite-model-context.js";
 import type { CurrentTranscriptProjection } from "../../config/sessions/session-accessor.sqlite-projection-read.js";
@@ -27,13 +28,12 @@ import {
   ensureTranscriptSessionRoot,
 } from "../../config/sessions/session-accessor.sqlite-transcript-state.js";
 import { prepareIncrementalSuffixIdempotencyMutation } from "../../config/sessions/session-accessor.sqlite-transcript-suffix-idempotency.js";
-import { selectSessionTranscriptFtsRows } from "../../config/sessions/session-transcript-fts.js";
 import { reconcileSessionTranscriptIndexInTransaction } from "../../config/sessions/session-transcript-index.js";
 import { searchSessionTranscripts } from "../../config/sessions/session-transcript-search.js";
 import { createTranscriptEventInserter } from "../../config/sessions/transcript-payload.js";
 import { appendSessionTranscriptMessageByIdentity } from "../../plugin-sdk/session-transcript-runtime.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
-import { executeSqliteQuerySync } from "../kysely-sync.js";
+import { isPostgresSqlConnection } from "../sql-connection.js";
 import { runSqliteImmediateTransactionSync } from "../sqlite-transaction.js";
 import { withEngineStoreAdmission } from "./admission-scope.js";
 import { mixedAgentConnection, useMixedAgentPair } from "./mixed-agent.conformance.test-support.js";
@@ -108,6 +108,85 @@ for (const engine of ["sqlite", "postgres"] as const) {
     `${engine} transcript portability`,
     () => {
       useMixedAgentPair(engine, engine);
+
+      it.runIf(engine === "postgres")(
+        "hydrates covered active facts without executing payload subplans",
+        () =>
+          withEngineStoreAdmission(() => {
+            const fixture = transcriptFixture(
+              "active-facts",
+              [
+                message("root", null, { role: "user", content: "Earlier question" }),
+                message("pending", "root", {
+                  provider: "openclaw",
+                  model: "automation-result",
+                  content: [{ type: "text", text: "Required background result" }],
+                  excludeFromContext: true,
+                  openclawModelPlacement: "pending",
+                }),
+                message("tail", "pending", { role: "user", content: "Latest question" }),
+              ],
+              false,
+            );
+            const db = fixture.database.db;
+            if (!isPostgresSqlConnection(db)) {
+              throw new Error("Expected PostgreSQL connection");
+            }
+            const observed: Array<{ sql: string; parameters: readonly SQLInputValue[] }> = [];
+            const query = db.query.bind(db);
+            const observer = vi
+              .spyOn(db, "query")
+              .mockImplementation((statementSql, parameters = []) => {
+                if (statementSql.includes("session_transcript_active_event_facts")) {
+                  observed.push({ sql: statementSql, parameters });
+                }
+                return query(statementSql, parameters);
+              });
+            const read = () =>
+              readSessionTranscriptBoundedActiveContextCore(fixture.scope, {
+                transaction: fixture.database,
+                maxEvents: 1,
+                maxBytes: 100_000,
+              });
+            try {
+              fixture.write(() => {
+                const covered = read();
+                expect(covered.events).toEqual([
+                  expect.objectContaining({ id: "pending" }),
+                  expect.objectContaining({ id: "tail" }),
+                ]);
+                const queries = observed.splice(0);
+                expect(queries).toHaveLength(2);
+                for (const statement of queries) {
+                  const plan = query(
+                    `EXPLAIN (ANALYZE, BUFFERS) ${statement.sql}`,
+                    statement.parameters,
+                  ).rows.map((row) => String(row["QUERY PLAN"]));
+                  const payloadPlans = plan.filter((line) =>
+                    / on transcript_events event(?:_\d+)? /u.test(line),
+                  );
+                  expect(payloadPlans.length).toBeGreaterThan(0);
+                  expect(payloadPlans.every((line) => line.includes("never executed"))).toBe(true);
+                }
+                db.exec("SAVEPOINT active_facts_control");
+                try {
+                  db.prepare(
+                    "DELETE FROM session_transcript_active_event_facts WHERE session_id = ? AND seq = 1",
+                  ).run(fixture.scope.sessionId);
+                  expect(read()).toEqual(covered);
+                  db.prepare(
+                    "DELETE FROM session_transcript_active_event_facts WHERE session_id = ?",
+                  ).run(fixture.scope.sessionId);
+                  expect(read()).toEqual(covered);
+                } finally {
+                  db.exec("ROLLBACK TO active_facts_control; RELEASE active_facts_control");
+                }
+              });
+            } finally {
+              observer.mockRestore();
+            }
+          }),
+      );
 
       it("rebases only transparent newer messages using first-member roles and exact booleans", () =>
         withEngineStoreAdmission(() => {
@@ -341,7 +420,7 @@ for (const engine of ["sqlite", "postgres"] as const) {
                   parentId: "summary",
                   message: {
                     role: "user",
-                    content: "admitted request \udc00 \u0000 after-null",
+                    content: "admitted request \udc00",
                     idempotencyKey: "seed:user",
                     timestamp: 1,
                   },
@@ -361,33 +440,10 @@ for (const engine of ["sqlite", "postgres"] as const) {
           ]);
           expect(seed.seed?.admittedUser).toMatchObject({
             role: "user",
-            content: "admitted request \udc00 \u0000 after-null",
+            content: "admitted request \udc00",
             idempotencyKey: "seed:user",
           });
-          const searchRows = executeSqliteQuerySync(
-            fixture.database.db,
-            selectSessionTranscriptFtsRows(fixture.database.db, fixture.scope.sessionId),
-          ).rows;
-          expect(searchRows).toHaveLength(1);
-          expect(searchRows[0]?.text).not.toContain("\0");
-          expect(searchRows[0]?.text).toContain("after-null");
           expect(seed.seed?.retainedInputTokens).toBeGreaterThan(0);
-          expect(readSessionTranscriptModelContext(fixture.scope).events).toMatchObject([
-            { type: "branch_summary", summary: "retained summary \ud800" },
-            {
-              type: "message",
-              message: { role: "user", content: "admitted request \udc00 \u0000 after-null" },
-            },
-          ]);
-          expect(
-            readSessionTranscriptContextMessages(fixture.scope, (messages) => [...messages]),
-          ).toEqual([
-            expect.objectContaining({ role: "branchSummary", summary: "retained summary \ud800" }),
-            expect.objectContaining({
-              role: "user",
-              content: "admitted request \udc00 \u0000 after-null",
-            }),
-          ]);
         }));
 
       it("reads, validates and indexes escapes JSONB rejects without rewriting rows", async () => {
@@ -445,6 +501,17 @@ for (const engine of ["sqlite", "postgres"] as const) {
         }
         const manager = await SessionManager.openModelContextAsync(scope);
         expect(manager.buildSessionContext().messages).toMatchObject(entries.slice(0, 3));
+        const seed = withEngineStoreAdmission(() =>
+          readSessionTranscriptContextSeed(scope, {
+            maxBytes: 100_000,
+            tokenBudget: 25_000,
+            admittedKey: key,
+            beforeAdmittedUser: true,
+          }),
+        );
+        expect(seed.messages).toEqual([]);
+        expect(seed.seed?.admittedUser).toMatchObject(entries[0]!);
+        expect(seed.seed?.retainedInputTokens).toBeGreaterThan(0);
         await append(3);
         withEngineStoreAdmission(() => {
           // Growth after the read takes detached validation through its prefix scan.

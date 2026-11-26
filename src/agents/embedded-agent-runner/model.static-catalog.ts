@@ -341,6 +341,7 @@ function resolveBundledProviderStaticCatalogPluginIds(
       ? {
           registry: params.metadataSnapshot.index,
           manifestRegistry: params.metadataSnapshot.manifestRegistry,
+          normalizePluginId: params.metadataSnapshot.normalizePluginId,
         }
       : {}),
   });
@@ -662,4 +663,23 @@ export async function resolveBundledProviderStaticCatalogModel(
   params: BundledStaticCatalogLookup & Partial<BundledStaticCatalogParams>,
 ): Promise<ProviderRuntimeModel | undefined> {
   return createScopedBundledProviderStaticCatalogModelResolver(params)(params);
+}
+
+/**
+ * Lists bundled first-party rows: rows of a provider whose manifest family names the provider
+ * itself (the model's vendor). Other routes look up model facts here by canonical model key.
+ */
+export function listBundledVendorCatalogRows(): Array<{ provider: string; id: string }> {
+  const params = { env: process.env };
+  const plugins = resolveBundledStaticCatalogState(
+    params,
+    resolveBundledStaticCatalogMetadataSnapshot(params),
+  ).plugins;
+  return plugins.flatMap((plugin) =>
+    Object.entries(plugin.modelCatalog?.providers ?? {}).flatMap(([provider, catalog]) =>
+      catalog.family && normalizeProviderId(catalog.family) === normalizeProviderId(provider)
+        ? (catalog.models ?? []).map((model) => ({ provider, id: model.id }))
+        : [],
+    ),
+  );
 }

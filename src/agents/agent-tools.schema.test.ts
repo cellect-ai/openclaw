@@ -288,7 +288,6 @@ describe("finalized tool parameter schemas", () => {
     const tool = wrapToolWithBeforeToolCallHook(normalized, {
       agentId: "main",
       sessionKey: "e2e-null-args",
-      loopDetection: { enabled: true },
     });
     const { messages, events, streamCalls } = await runToolCall(
       tool,
@@ -333,9 +332,17 @@ describe("finalized tool parameter schemas", () => {
       isError: false,
       content: [{ type: "text", text: "present" }],
     });
-    const missing = await resultFor("missing.md");
-    expect(missing).toMatchObject({ isError: true });
-    expect(JSON.stringify(missing)).toContain("File not found");
+    const dailyPath = "memory/2099-12-31.md";
+    const implicit = (await runToolCall(read, { path: dailyPath }, "implicit-daily")).messages.find(
+      (message) => message.role === "toolResult",
+    );
+    expect(implicit).toMatchObject({ isError: false });
+    expect(JSON.stringify(implicit)).toContain("Optional file not found");
+    for (const file of ["missing.md", dailyPath]) {
+      const missing = await resultFor(file);
+      expect(missing).toMatchObject({ isError: true });
+      expect(JSON.stringify(missing)).toContain("File not found");
+    }
   });
 });
 
@@ -361,11 +368,11 @@ describe("assertRequiredParams", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("preserves edit replacement payloads while cleaning the path", async () => {
+  it("preserves whitespace edit payloads while cleaning the path", async () => {
     const execute = vi.fn(async (_id, args) => args);
     const tool = makeValidatedFileTool("edit", execute);
 
-    const edits = [{ oldText: "literal old</arg_value>>", newText: "literal new</arg_value>>" }];
+    const edits = [{ oldText: "\n\n\n\n", newText: "literal new</arg_value>>" }];
     await tool.execute("id", { path: "notes.docxodex</arg_value>>>", edits });
 
     expect(execute).toHaveBeenCalledWith("id", { path: "notes.docx", edits }, undefined, undefined);

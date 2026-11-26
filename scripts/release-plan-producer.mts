@@ -31,10 +31,10 @@ const TOOLING_MODULE_PATHS = [
   "packages/normalization-core/src/string-coerce.ts",
   "packages/plugin-package-contract/src/categories.ts",
   "packages/plugin-package-contract/src/index.ts",
+  "packages/plugin-package-contract/src/recommended-prompts.ts",
   "scripts/lib/actions-artifact-archive.mjs",
   "scripts/lib/bounded-response.mjs",
   "scripts/lib/canonical-json.mjs",
-  "scripts/lib/ci-node-test-evidence.mjs",
   "scripts/lib/full-release-child-request.mjs",
   "scripts/lib/npm-publish-plan.mjs",
   "scripts/lib/plain-gh.mjs",
@@ -130,7 +130,10 @@ type SerializableSource = Omit<ReleasePlanSourceBase, "runGh" | "downloadArchive
 type ProducerRequest =
   | { operation: "produce" | "produce-lock"; params: SerializableSource }
   | {
-      operation: "produce-inventory" | "verify-inventory-identity";
+      operation:
+        | "produce-inventory"
+        | "verify-inventory-identity"
+        | "inventory-supporting-evidence";
       params: Omit<ReleaseInventorySource, "runGh" | "downloadArchive">;
     }
   | { operation: "verify-lock"; lockJson: string; params: SerializableSource };
@@ -273,10 +276,7 @@ function verifyRemoteTooling(
   return [[JSON.stringify(args), raw]] as Array<[string, string]>;
 }
 
-function captureQualificationIdentity(
-  params: ReleaseInventorySource,
-  runGh: RunGh,
-): Array<[string, string | Uint8Array]> {
+function captureQualificationIdentity(params: ReleaseInventorySource, runGh: RunGh) {
   const descriptor = params.qualificationAdmission;
   if (descriptor === null || typeof descriptor !== "object" || Array.isArray(descriptor)) {
     throw new Error("Invalid inventory admission descriptor");
@@ -356,15 +356,30 @@ function captureQualificationIdentity(
       throw new Error("Invalid admission run");
     }
     const runFields = new Map<string, unknown>(Object.entries(run));
+    const capturedOperators = new Set<string>();
     for (const actor of [runFields.get("actor"), runFields.get("triggering_actor")]) {
       if (actor === null || typeof actor !== "object" || Array.isArray(actor)) {
         throw new Error("Invalid admission actor");
       }
-      const login = new Map<string, unknown>(Object.entries(actor)).get("login");
-      if (typeof login !== "string" || !/^[A-Za-z0-9-]{1,39}$/u.test(login)) {
+      const operatorFields = new Map<string, unknown>(Object.entries(actor));
+      const login = operatorFields.get("login");
+      const id = operatorFields.get("id");
+      if (
+        typeof login !== "string" ||
+        !/^[A-Za-z0-9-]{1,39}$/u.test(login) ||
+        typeof id !== "number" ||
+        !Number.isSafeInteger(id) ||
+        id <= 0
+      ) {
         throw new Error("Invalid admission actor");
       }
-      api("collaborators/" + login + "/permission");
+      // The verified child consumes one live grant for matching ID/login roles.
+      // Keep the sealed replay exact without sharing grants across observations.
+      const identity = `${id}:${login}`;
+      if (!capturedOperators.has(identity)) {
+        api("collaborators/" + login + "/permission");
+        capturedOperators.add(identity);
+      }
     }
   };
   api("contents/.github/workflows/openclaw-release-prepare.yml?ref=" + workflowSha);
@@ -373,9 +388,56 @@ function captureQualificationIdentity(
   api("actions/runs/" + runId + "/attempts/" + runAttempt + "/jobs?per_page=100");
   api("actions/artifacts/" + artifactId + "/zip", true);
   api("contents/scripts/lib/release-validation-waivers.json?ref=" + params.toolingSha);
+  const finalAuthorityStart = responses.length;
   api("actions/artifacts/" + artifactId);
   producer();
-  return responses;
+  return {
+    responses,
+    captureSupportingEvidence(evidence: unknown) {
+      if (!Array.isArray(evidence) || evidence.length > 32) {
+        throw new Error("Invalid inventory supporting evidence locators");
+      }
+      // Replace the final authority observations after historical acquisition.
+      if (evidence.length) {
+        responses.splice(finalAuthorityStart);
+      }
+      const locators: unknown[] = evidence;
+      for (const locator of locators) {
+        if (locator === null || typeof locator !== "object" || Array.isArray(locator)) {
+          throw new Error("Invalid inventory supporting evidence locator");
+        }
+        const evidenceFields = new Map<string, unknown>(Object.entries(locator));
+        const historicalRunId = evidenceFields.get("runId"),
+          historicalRunAttempt = evidenceFields.get("runAttempt"),
+          historicalArtifactId = evidenceFields.get("artifactId"),
+          parentId = evidenceFields.get("sourceParentRunId"),
+          parentAttempt = evidenceFields.get("sourceParentAttempt");
+        if (
+          !positiveId(historicalRunId) ||
+          !positiveId(historicalRunAttempt) ||
+          !positiveId(historicalArtifactId) ||
+          !positiveId(parentAttempt) ||
+          typeof parentId !== "string" ||
+          !/^[1-9][0-9]{0,19}$/u.test(parentId)
+        ) {
+          throw new Error("Invalid inventory supporting evidence locator");
+        }
+        // The child returns data, never arbitrary requests. Keep acquisition to
+        // these exact same-repository historical evidence endpoints and bounds.
+        const runPath = "actions/runs/" + historicalRunId;
+        api(runPath);
+        api("actions/artifacts/" + historicalArtifactId);
+        api("actions/artifacts/" + historicalArtifactId + "/zip", true);
+        api(runPath + "/attempts/" + historicalRunAttempt + "/jobs?per_page=100");
+        api("actions/runs/" + parentId + "/attempts/" + parentAttempt);
+        api(runPath);
+      }
+      if (evidence.length) {
+        api("actions/artifacts/" + artifactId);
+        producer();
+      }
+    },
+  };
 }
 
 function readGitFile(repoRoot: string, sha: string, path: string) {
@@ -565,10 +627,13 @@ function runOperation(
 ) {
   const repoRoot = resolve(params.repoRoot ?? ".");
   const runGh = params.runGh ?? defaultRunGh;
-  const identityResponses =
+  const qualificationCapture =
     params.qualificationAdmission === undefined
-      ? verifyRemoteTooling(params, runGh, request.operation === "produce-inventory")
+      ? undefined
       : captureQualificationIdentity(params, runGh);
+  const identityResponses =
+    qualificationCapture?.responses ??
+    verifyRemoteTooling(params, runGh, request.operation === "produce-inventory");
   const toolingSha = requireSha(params.toolingSha, "tooling SHA");
   const executionHead = gitBytes(EXECUTION_ROOT, ["rev-parse", "HEAD"]).toString("utf8").trim();
   if (executionHead !== toolingSha) {
@@ -619,6 +684,17 @@ function runOperation(
         maxBuffer: 16 * 1024 * 1024,
         stdio: ["pipe", "pipe", "pipe"],
       });
+    if (qualificationCapture && request.operation === "produce-inventory") {
+      const discovery: { ok?: unknown; value?: unknown; message?: unknown } = JSON.parse(
+        execute({ operation: "inventory-supporting-evidence", params: request.params }),
+      );
+      if (discovery.ok !== true) {
+        throw new Error(
+          typeof discovery.message === "string" ? discovery.message : "verified child failed",
+        );
+      }
+      qualificationCapture.captureSupportingEvidence(discovery.value);
+    }
     // Verify the complete captured P proof before inventory production, then have
     // its secretless producer independently replay those same bounded observations.
     const verification =

@@ -609,6 +609,7 @@ describe("active-memory plugin", () => {
   });
 
   registerActiveMemoryProviderTests({
+    logger: api.logger,
     memoryCapability: hoisted.memoryCapability,
     getActiveMemoryProvider: hoisted.getActiveMemoryProvider,
     getActiveMemorySearchManager: hoisted.getActiveMemorySearchManager,
@@ -1128,6 +1129,30 @@ describe("active-memory plugin", () => {
     if (warn) {
       expect(hasWarnLine(warn)).toBe(true);
     }
+  });
+
+  it("warns once per provider and agent when the provider lacks protected transcript recall", async () => {
+    syncRuntimePluginConfig({ agents: [], logging: true, toolsAllow: ["memory_search"] });
+    setMemorySlot("memory-lancedb");
+    setAgents({ personal: { memory: { search: { rememberAcrossConversations: true } } } });
+    const sessionKey = "agent:personal:telegram:direct:owner";
+    seedSession(sessionKey, "s-personal");
+    const target = {
+      agentId: "personal",
+      sessionKey,
+      messageProvider: "telegram",
+      channelId: "owner",
+    };
+    await runRecall(target);
+    await runRecall(target);
+    await runRecall(target);
+    const unsupported = (level: "warn" | "debug") =>
+      logLines(level).filter((line) =>
+        line.includes("does not support protected private transcript recall"),
+      ).length;
+    expect(unsupported("warn")).toBe(1);
+    expect(unsupported("debug")).toBe(2);
+    expect(runEmbeddedAgent).not.toHaveBeenCalled();
   });
 
   it("runs product recall by default for a personal install without Active Memory config", async () => {
@@ -2817,7 +2842,7 @@ describe("active-memory plugin", () => {
   registerRecallCacheCases();
 
   it("pauses failed cooldown probes and clears the streak after a completed recall", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
     const CONFIGURED_TIMEOUT_MS = 250;
     const COOLDOWN_MS = 60_000;
     registerPluginConfig({

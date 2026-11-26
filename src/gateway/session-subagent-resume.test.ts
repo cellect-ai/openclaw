@@ -121,7 +121,6 @@ async function arrangePausedChild(childSessionKey = childKey, lifecycleRevision?
 
 it("retained task resume binds the current paused execution after a follow-up", async () => {
   const state = await arrangePausedChild(childKey, "original-incarnation");
-  const { caller: _caller, ...expectedTask } = state.resume;
   const adopt = await state.prepare();
   await adopt();
   await updateRun(nextRunId, (draft) => {
@@ -154,7 +153,6 @@ it("retained task resume binds the current paused execution after a follow-up", 
     sessionKey: childKey,
     displayKey: childKey,
     runId: "retained-successor",
-    expectedTask,
     sendParams: { message: "Retained guidance" },
     callGateway: inProcessGateway.callAgentToolGatewayRequest,
   });

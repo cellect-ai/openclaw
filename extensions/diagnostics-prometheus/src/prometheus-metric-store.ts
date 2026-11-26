@@ -1,9 +1,8 @@
 /// <reference lib="es2024.arraybuffer" />
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import {
-  MAX_PROMETHEUS_FAMILY_SERIES,
-  PROMETHEUS_FAMILY_RESERVES,
-  SHARED_PROMETHEUS_SERIES,
+  PROMETHEUS_FAMILY_LIMITS,
+  MAX_PROMETHEUS_SERIES,
   type PrometheusMetricName,
 } from "./prometheus-family-budget.js";
 import {
@@ -79,7 +78,7 @@ export function createPrometheusMetricStore(
   const gauges = createSeries<ScalarSample>();
   const histograms = createSeries<HistogramSample>();
   let droppedSeries = 0;
-  let sharedSeries = 0;
+  let retainedSeries = 0;
   const familyCounts = new Map<PrometheusMetricName, number>();
   const familyDrops = new Map<PrometheusMetricName, number>();
   const headers = new Map<string, { type: string; help: string; bytes: Buffer }>();
@@ -131,11 +130,7 @@ export function createPrometheusMetricStore(
       break;
     }
     const count = familyCounts.get(name) ?? 0;
-    const reserve = PROMETHEUS_FAMILY_RESERVES[name];
-    if (
-      count >= Math.max(MAX_PROMETHEUS_FAMILY_SERIES, reserve) ||
-      (count >= reserve && sharedSeries >= SHARED_PROMETHEUS_SERIES)
-    ) {
+    if (count >= PROMETHEUS_FAMILY_LIMITS[name] || retainedSeries >= MAX_PROMETHEUS_SERIES) {
       droppedSeries++;
       familyDrops.set(name, (familyDrops.get(name) ?? 0) + 1);
       if (onSeriesDropped && !warnedFamilies.has(name)) {
@@ -145,9 +140,7 @@ export function createPrometheusMetricStore(
       return undefined;
     }
     familyCounts.set(name, count + 1);
-    if (count >= reserve) {
-      sharedSeries++;
-    }
+    retainedSeries++;
     if (!shape) {
       // Each metric can have multiple label shapes (for example GC's optional worker slot).
       shape = {
@@ -242,8 +235,7 @@ export function createPrometheusMetricStore(
     gauges.samples = gauges.samples.filter((sample) => sample.name !== name);
     const count = familyCounts.get(name) ?? 0;
     const remaining = count - (previousLength - gauges.samples.length);
-    const reserve = PROMETHEUS_FAMILY_RESERVES[name];
-    sharedSeries -= Math.max(0, count - reserve) - Math.max(0, remaining - reserve);
+    retainedSeries -= count - remaining;
     familyCounts.set(name, remaining);
   };
 
@@ -303,10 +295,12 @@ export function createPrometheusMetricStore(
     sample.count += 1;
     sample.sum += value;
     sample.renderedDirty = true;
+    // Bounds are fixed and ascending; cumulative counts are needed only at scrape time.
     for (let index = 0; index < sample.buckets.length; index += 1) {
       const bucket = sample.buckets[index];
       if (bucket !== undefined && value <= bucket) {
         sample.counts[index] = (sample.counts[index] ?? 0) + 1;
+        break;
       }
     }
   };
@@ -398,9 +392,12 @@ export function createPrometheusMetricStore(
       }
       header(sample.name, "histogram", sample.help);
       if (!sample.rendered || sample.renderedDirty) {
-        sample.bucketPrefixes.forEach((prefix, bucketIndex) => {
-          write(prefix, sample.counts[bucketIndex] ?? sample.count);
-        });
+        let cumulative = 0;
+        for (let bucketIndex = 0; bucketIndex < sample.counts.length; bucketIndex++) {
+          cumulative += sample.counts[bucketIndex]!;
+          write(sample.bucketPrefixes[bucketIndex]!, cumulative);
+        }
+        write(sample.bucketPrefixes[sample.counts.length]!, sample.count);
         write(sample.sumPrefix, sample.sum);
         write(sample.countPrefix, sample.count);
         sample.rendered = finish(sample.rendered);
@@ -424,7 +421,7 @@ export function createPrometheusMetricStore(
       map.shapes.clear();
     }
     droppedSeries = 0;
-    sharedSeries = 0;
+    retainedSeries = 0;
     familyCounts.clear();
     familyDrops.clear();
     headers.clear();

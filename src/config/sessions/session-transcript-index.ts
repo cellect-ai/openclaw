@@ -24,17 +24,20 @@ import {
   readSessionActorTransactionState,
   writableSessionActorMap,
 } from "./session-actor-transaction.js";
+import { createSessionTranscriptActiveFactsInserter } from "./session-transcript-active-facts.js";
 import {
   createSessionTranscriptFtsInserter,
   deleteSessionTranscriptFtsRowsInTransaction,
 } from "./session-transcript-fts.js";
 import {
   createPostgresProjectionFlusher,
+  type TranscriptWindowPostimage,
   type TranscriptWindowUpdate,
 } from "./session-transcript-index-postgres.js";
 import {
   prepareSessionTranscriptProjectionAppend,
   type SessionTranscriptProjectionState,
+  type TranscriptIndexAppend,
   type TranscriptIndexEntry,
 } from "./session-transcript-projection-append.js";
 import {
@@ -53,13 +56,6 @@ type TranscriptIndexDatabase = Pick<
 >;
 
 export type { SessionTranscriptProjectionState } from "./session-transcript-projection-append.js";
-
-type TranscriptIndexAppend = {
-  seq: number;
-  event: unknown;
-  eventId: string | null;
-  createdAt: number;
-};
 
 type SessionTranscriptIndexProjectionRow =
   PreparedSessionTranscriptProjection["activeRows"][number] & {
@@ -106,7 +102,8 @@ export function shouldRebuildSessionTranscriptIndexSynchronously(
       )
       .select((eb) => [
         eb.fn.countAll<number>().as("event_count"),
-        eb.fn.sum<number>("stored.event_bytes").as("event_bytes"),
+        // PostgreSQL SUM(bigint) returns numeric text unless cast back to an integer.
+        eb.cast<number | null>(eb.fn.sum("stored.event_bytes"), "bigint").as("event_bytes"),
       ]),
   );
   if ((stored?.event_count ?? 0) + events.length > SYNC_REBUILD_MAX_ROWS) {
@@ -272,6 +269,7 @@ function createActiveEventInserter(db: EngineConnection, sessionId: string) {
         ),
     );
   const inserts = new Map<number, ReturnType<typeof prepare>>();
+  const insertFacts = createSessionTranscriptActiveFactsInserter(db, sessionId);
   return (rows: readonly ActiveRow[]) => {
     for (let offset = 0; offset < rows.length; offset += TRANSCRIPT_INSERT_BATCH_SIZE) {
       const chunk = rows.slice(offset, offset + TRANSCRIPT_INSERT_BATCH_SIZE);
@@ -279,7 +277,10 @@ function createActiveEventInserter(db: EngineConnection, sessionId: string) {
       if (!inserts.has(chunk.length)) {
         inserts.set(chunk.length, write);
       }
-      withSqliteDatabaseWriteScope(db, [sqliteSessionIdWriteScope(sessionId)], () => write(chunk));
+      withSqliteDatabaseWriteScope(db, [sqliteSessionIdWriteScope(sessionId)], () => {
+        write(chunk);
+        insertFacts(chunk);
+      });
     }
   };
 }
@@ -309,7 +310,10 @@ export function createTranscriptIndexAppenderInTransaction(
 ): {
   append: (params: TranscriptIndexAppend) => boolean;
   flushRows: () => void;
-  flush: (windowUpdate?: TranscriptWindowUpdate) => void;
+  flush: (windowUpdate?: TranscriptWindowUpdate) => TranscriptWindowPostimage | undefined;
+  readPostimage: () =>
+    | { state: Readonly<SessionTranscriptProjectionState>; flushed: boolean }
+    | undefined;
 } {
   const actor = readSessionActorTransactionState({ db }, { sessionId });
   const initial = prepared ? prepared.state : readSessionTranscriptProjectionState(db, sessionId);
@@ -418,7 +422,7 @@ export function createTranscriptIndexAppenderInTransaction(
           pendingUpdatedAt !== undefined && watermark
             ? { ...watermark, updatedAt: pendingUpdatedAt }
             : undefined;
-        flushPostgres(
+        const postimage = flushPostgres(
           { activeRows: pendingActiveRows, ftsRows: pendingFtsRows, watermark: next },
           persisted,
           windowUpdate,
@@ -429,11 +433,11 @@ export function createTranscriptIndexAppenderInTransaction(
           persisted = true;
           pendingUpdatedAt = undefined;
         }
-        return;
+        return postimage;
       }
       flushRows();
       if (pendingUpdatedAt === undefined || !watermark) {
-        return;
+        return undefined;
       }
       const write = persisted
         ? (updateWatermark ??= createWatermarkWriter(db, sessionId, true))
@@ -441,6 +445,16 @@ export function createTranscriptIndexAppenderInTransaction(
       write({ ...watermark, updatedAt: pendingUpdatedAt });
       persisted = true;
       pendingUpdatedAt = undefined;
+      return undefined;
+    },
+    readPostimage() {
+      if (!watermark || watermark.needsRebuild || hasUnclassifiedEvents) {
+        return undefined;
+      }
+      return {
+        state: watermark,
+        flushed: persisted && pendingUpdatedAt === undefined && pendingActiveRows.length === 0,
+      };
     },
   };
 }

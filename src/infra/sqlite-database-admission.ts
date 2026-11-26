@@ -6,7 +6,6 @@ import {
   isPostgresSqlConnection,
   sqlPublicationAnchor,
   type PostgresSqlConnection,
-  type EngineConnection,
 } from "./sql-connection.js";
 import {
   exchangeSqliteDatabaseAdmission as exchange,
@@ -34,6 +33,7 @@ import {
   quickIntegrityVerificationKey,
   SqliteDatabaseCleanCloseSeals,
 } from "./sqlite-database-admission-seal.js";
+import { withSqliteDatabaseAdmissionSettlement } from "./sqlite-database-admission-wait.js";
 import { createSqliteDatabaseWriteReceipts } from "./sqlite-database-write-receipts.js";
 import { getSqliteNativeAdmissionFacts } from "./sqlite-native-admission.js";
 import { hasSqlitePostCommitScope, stageSqliteTransactionState } from "./sqlite-post-commit.js";
@@ -49,6 +49,7 @@ export type {
   SqliteDatabaseAdmissionKey,
   SqliteDatabaseFactKey,
 } from "./sqlite-database-admission-record.js";
+export { resolveSqliteDatabaseFilePath } from "./sqlite-database-admission-descriptor.js";
 export { beginSqliteDatabaseAdmissionOperation } from "./sqlite-native-admission.js";
 
 export {
@@ -72,45 +73,21 @@ const seals = resolveGlobalSingleton(
 
 const descriptors = createSqliteDatabaseDescriptorOwner(seals);
 export const {
+  prepareOwnedSqliteDatabaseAdmission,
   prepareSqliteDatabaseAdmissionAsync,
-  prepareSqliteDatabaseAdmission,
   retainSqliteDatabaseAdmissionLocation,
+  retainPreparedSqliteDatabaseAdmissionLocation,
+  prepareSqliteDatabaseAdmission,
 } = descriptors;
 const { pathAdmission } = descriptors;
-export { resolveSqliteDatabaseFilePath } from "./sqlite-database-admission-descriptor.js";
 
 /** Independent readers have no writer-fact relay; retain facts only with their native readers. */
 export const useConnectionScopedSqliteDatabaseAdmissionFacts = (): void =>
   state.registry.useConnectionScopedFacts();
 
-export function readSqliteDatabaseCleanClose(location: string): boolean {
-  const currentIdentity = prepareSqliteDatabaseAdmission(location);
-  const record = pathAdmission(location);
-  return (
-    record !== undefined &&
-    record.identity === currentIdentity &&
-    Atomics.load(new Int32Array(record.generation), SqliteDatabaseGenerationSlot.sealPresent) === 1
-  );
-}
-
 /** Maintenance can invalidate restart proof while retaining its freshly checked runtime facts. */
 export function invalidateSqliteDatabaseCleanClose(location: string): void {
   seals.invalidate(location, pathAdmission(location));
-}
-
-export function readSqliteDatabaseIntegrityVerification(
-  source: string | DatabaseSync,
-): { verifiedAt: number } | undefined {
-  const verifiedAt =
-    typeof source === "string"
-      ? getOrLoadSqliteDatabaseAdmissionForPath(source, integrityVerificationKey, () => undefined)
-      : getSqliteDatabaseAdmission(source, integrityVerificationKey);
-  return verifiedAt === undefined ? undefined : { verifiedAt };
-}
-
-/** Consume the admission owner's first-load diagnostic, including in worker isolates. */
-export function readSqliteDatabaseCleanCloseRefusal(database: EngineConnection) {
-  return admission(sqlPublicationAnchor(database))?.cleanCloseRefusal;
 }
 
 export function recordSqliteDatabaseIntegrity(db: DatabaseSync, verifiedAt = Date.now()): void {
@@ -131,12 +108,19 @@ const reader = createSqliteDatabaseAdmissionReader({
   state,
   admission,
   pathAdmission,
+  prepareFileIdentity: prepareSqliteDatabaseAdmission,
+  integrityVerificationKey,
   exchange,
   publishFact,
   retain: retainReference,
   release: releaseReference,
 });
 export const {
+  readSqliteDatabaseCleanClose,
+  readSqliteDatabaseWriteRevision,
+  readSqliteDatabaseSiblingWriteRevision,
+  readSqliteDatabaseIntegrityVerification,
+  readSqliteDatabaseCleanCloseRefusal,
   getSqliteDatabaseAdmission,
   getSqliteDatabaseSchemaRevision,
   getOrLoadSqliteDatabaseAdmissionForPath,
@@ -144,12 +128,20 @@ export const {
   prepareSqliteDatabaseAdmissionForPath,
   hasSqliteDatabaseSchemaAdmissionForPath,
   getSqliteDatabaseAdmissionIdentityForPath,
+  getSqliteDatabaseAdmissionSourceForPath,
+  observeSqliteDatabaseAdmissionLocation,
   hasSqliteDatabaseSchemaAdmissionForIdentity,
+  retainSqliteDatabaseAdmissionForPath,
 } = reader;
 
 const scopedWrites = createSqliteDatabaseWriteReceipts({
   admission,
-  pathAdmission,
+  pathAdmission: (location, identity) =>
+    identity
+      ? identity.key.startsWith("file:")
+        ? state.registry.records.get(`${identity.key.slice("file:".length)}:${identity.birthtime}`)
+        : undefined
+      : pathAdmission(location),
   retain: retainReference,
   release: releaseReference,
   writeListeners: state.writeListeners,
@@ -168,6 +160,7 @@ export const {
   onSqliteDatabaseWriteSettled,
   retireSqliteDatabaseWriteScopes,
   retainSqliteDatabaseWriteScopesForPath,
+  prepareSqliteDatabaseScopedWriteRevisionForPath,
   withSqliteDatabaseWriteScope,
   withoutSqliteDatabaseWriteScope,
   readSqliteDatabaseScopedWriteToken,
@@ -239,7 +232,9 @@ function admission(database: DatabaseSync, create = true): Admission | undefined
     return undefined;
   }
   const discover = create && !database.isTransaction;
-  const record = discover ? pathAdmission(location) : state.registry.records.get(expected);
+  const record = discover
+    ? pathAdmission(location, expected)
+    : state.registry.records.get(expected);
   if (record && record.identity !== expected) {
     throw new Error("SQLite database changed identity before admission");
   }
@@ -280,7 +275,7 @@ function retainConnection(database: DatabaseSync, record: Admission): Admission 
       const replacement = database.isTransaction
         ? state.registry.records.get(expected)
         : location
-          ? pathAdmission(location)
+          ? pathAdmission(location, prepareSqliteDatabaseAdmission(location))
           : undefined;
       if (!replacement || isRetired(replacement)) {
         throw new Error("SQLite database admission unavailable during native open");
@@ -383,33 +378,6 @@ export function finishSqliteDatabaseWrite(database: DatabaseSync, noEffect = fal
       notifyListeners(listeners, undefined);
     }
   }
-}
-
-/** Ordinary reads consume the last committed writer revision without a writer census. */
-export function readSqliteDatabaseWriteRevision(connection: EngineConnection): number | undefined {
-  const database = sqlPublicationAnchor(connection);
-  if (!database.isOpen || state.suspended.has(database)) {
-    return undefined;
-  }
-  const record = admission(database);
-  if (!record) {
-    const location = database.location();
-    return !location || location === ":memory:"
-      ? (state.localWriteRevisions.get(database) ?? 0)
-      : undefined;
-  }
-  return readSqliteDatabaseGeneration(record, "writeRevision");
-}
-
-/** TEMP-trigger owners already see their own writes and only need sibling settlement. */
-export function readSqliteDatabaseSiblingWriteRevision(
-  connection: EngineConnection,
-): number | undefined {
-  const database = sqlPublicationAnchor(connection);
-  const revision = readSqliteDatabaseWriteRevision(database);
-  return revision === undefined
-    ? undefined
-    : (revision - (state.localWriteRevisions.get(database) ?? 0)) | 0;
 }
 
 /** Settle interrupted native writes before releasing the departed worker's handles. */
@@ -596,20 +564,30 @@ export function revokeSqliteDatabaseAdmissionsForPath(location: string): void {
   revoke(pathAdmission(location), location);
 }
 
+/** Closed connections can lose their published admission while the host still owns the file. */
+export function* captureSqliteDatabaseDescriptorCustodyLocations(): Iterable<string> {
+  for (const { location } of state.registry.descriptors.values()) {
+    yield location;
+  }
+}
+
 /** Explicit removal or maintenance calls this only after its owner has joined native consumers. */
 export function retireSqliteDatabaseAdmissionForPath(
   location: string,
   options: { requireSoleDescriptor?: boolean } = {},
 ): void {
-  const observed = prepareSqliteDatabaseAdmission(location);
-  if (!observed) {
-    return;
-  }
-  state.localSchemaRevisions.delete(observed);
-  const record = threadId === 0 ? state.registry.records.get(observed) : pathAdmission(location);
-  if (state.registry.retireDescriptor(observed, options) && record) {
-    exchange(record);
-  }
+  // Removing a cancelled task's private copy still publishes its retired facts.
+  withSqliteDatabaseAdmissionSettlement(() => {
+    const observed = prepareSqliteDatabaseAdmission(location);
+    if (!observed) {
+      return;
+    }
+    state.localSchemaRevisions.delete(observed);
+    const record = threadId === 0 ? state.registry.records.get(observed) : pathAdmission(location);
+    if (state.registry.retireDescriptor(observed, options) && record) {
+      exchange(record);
+    }
+  });
 }
 
 export function suspendSqliteDatabaseAdmission(database: DatabaseSync, suspended: boolean): void {

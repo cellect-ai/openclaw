@@ -1,4 +1,5 @@
 import type { Block, KnownBlock } from "@slack/web-api";
+import { agentControlText } from "openclaw/plugin-sdk/agent-control-runtime";
 import {
   resolveApprovalOverGateway,
   type ApprovalResolveResult,
@@ -673,7 +674,7 @@ export function registerSlackBlockActionHandler(params: {
       normalizeOptionalString(parsed.typedActionWithText.action_ts) ?? parsed.typedBody.trigger_id,
     ].filter(Boolean);
     const accepted = await enqueueSlackInteractionEvent(
-      eventPayload,
+      agentControlText(pluginInteractionData) ?? eventPayload,
       route,
       {
         contextKey: contextParts.join(":"),

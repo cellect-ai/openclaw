@@ -51,7 +51,7 @@ import {
   gotoPageWithNavigationGuard,
   isPolicyDenyNavigationError,
 } from "./pw-session-navigation.js";
-import { isConnectionScopedPage } from "./pw-session-page-target.js";
+import { pageCloseClosesConnection } from "./pw-session-page-target.js";
 import type { PlaywrightOwnedPage } from "./pw-session-page.types.js";
 import {
   ensurePageState,
@@ -306,8 +306,7 @@ export async function listPagesViaPlaywright(opts: {
   if (timeoutMs !== undefined) {
     timer = setTimeout(() => {
       controller.abort(new Error(`Playwright page enumeration timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    timer.unref?.();
+    }, timeoutMs).unref();
   }
   const signal = controller.signal;
   try {
@@ -513,6 +512,7 @@ export async function createPageViaPlaywright(
     browserProxyMode: opts.browserProxyMode,
     assertNavigationCurrent: opts.assertNavigationCurrent,
     standingSsrfPolicy: opts.standingSsrfPolicy,
+    allowOperatorPages: opts.allowOperatorPages,
   });
   await assertBrowserNavigationAllowed({
     url: targetUrl,
@@ -546,7 +546,7 @@ export async function createPageViaPlaywright(
   const close = async () => {
     if (opts.isolatedContext) {
       await context.close();
-    } else if (adapter.descriptor.sessionScope === "connection") {
+    } else if (adapter.closePageClosesConnection) {
       await closeConnectionScopedPageBrowser(opts.cdpUrl, browser);
     } else {
       await page?.close();
@@ -675,7 +675,7 @@ export async function closeResolvedPageViaPlaywright(
     undefined,
     async () => {
       opts.signal?.throwIfAborted();
-      if (isConnectionScopedPage(page)) {
+      if (pageCloseClosesConnection(page)) {
         const browser = page.context().browser();
         if (browser) {
           await closeConnectionScopedPageBrowser(opts.cdpUrl, browser);

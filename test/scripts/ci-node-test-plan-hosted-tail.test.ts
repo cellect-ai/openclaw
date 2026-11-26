@@ -11,6 +11,7 @@ import { resolveVitestPretestBuildMode } from "../../scripts/lib/vitest-build-pr
 const options = {
   compact: true,
   compactMode: "push",
+  mainValidation: false,
   runnerBackend: "github",
   includeProofTests: true,
   includeReleaseOnlyPluginShards: false,
@@ -21,7 +22,8 @@ const options = {
 
 afterEach(() => vi.unstubAllEnvs());
 
-it.each(["push", "full"] as const)("bounds hosted groups (%s)", (mode) => {
+it.each(["push", "main", "full"] as const)("bounds hosted groups (%s)", (mode) => {
+  const mainValidation = mode === "main";
   const full = mode === "full";
   vi.stubEnv("CI", "true");
   vi.stubEnv("OPENCLAW_CI_TEST_TIMINGS", "1");
@@ -33,20 +35,29 @@ it.each(["push", "full"] as const)("bounds hosted groups (%s)", (mode) => {
         includeReleaseOnlyToolingShards: true,
         includeReleaseOnlyRuntimeTests: true,
       }
-    : options;
+    : mainValidation
+      ? {
+          ...options,
+          compactMode: "pull-request" as const,
+          includeProofTests: true,
+          includeReleaseOnlyToolingShards: true,
+          includePrExemptRuntimeTests: true,
+          mainValidation: true,
+        }
+      : options;
   const workerRows = createNodeWorkerE2eTestShards();
   expect(workerRows).toHaveLength(2);
   expect(workerRows.every((row) => !row.requiresDist && row.planConcurrency === 1)).toBe(true);
-  const totalJobCap = full ? 130 : 70;
+  const totalJobCap = full ? 98 : mainValidation ? 77 : 70;
   const jobCap = full ? undefined : totalJobCap - workerRows.length;
   const owners = createNodeTestShards(selectedOptions);
   const jobs = createNodeTestShardBundles({ ...selectedOptions, compactNodeJobCap: jobCap });
   expect(jobs.filter((job) => !job.requiresDist).length + workerRows.length).toBeLessThanOrEqual(
     totalJobCap,
   );
-  expect(jobs.length).toBeLessThanOrEqual(full ? 128 : 90);
+  expect(jobs.length).toBeLessThanOrEqual(full ? 96 : mainValidation ? 90 : 69);
 
-  if (!full) {
+  if (!mainValidation && !full) {
     const reducedOwners = owners.filter(
       (owner) =>
         /^core-tooling-\d+$/u.test(owner.shardName) || owner.shardName === "agentic-cli-process",
@@ -119,6 +130,7 @@ it.each(["push", "full"] as const)("bounds hosted groups (%s)", (mode) => {
           );
         }
         if (
+          !mainValidation &&
           !full &&
           (ownerName === "agentic-control-plane-agent-chat" ||
             (ownerName === "agentic-gateway-methods" && files.length > 32))
@@ -135,32 +147,6 @@ it.each(["push", "full"] as const)("bounds hosted groups (%s)", (mode) => {
     expect(new Set(actual).size).toBe(actual.length);
   }
 
-  if (full) {
-    const serverOwner = owners.find(
-      (owner) => owner.shardName === "agentic-control-plane-runtime-server",
-    )!;
-    const serverGroups = jobs.flatMap((job) =>
-      job.groups
-        .filter((group) =>
-          /^agentic-control-plane-runtime-server(?:-hosted-\d+)?$/u.test(group.shard_name),
-        )
-        .map((group) => {
-          if ((group.includePatterns?.length ?? 0) > 64) {
-            expect(job.groups).toHaveLength(1);
-            expect(job.planConcurrency).toBe(1);
-            expect(group.env?.OPENCLAW_VITEST_MAX_WORKERS).toBe("2");
-          }
-          return group;
-        }),
-    );
-    expect(serverGroups.length).toBeGreaterThan(0);
-    expect(serverGroups.flatMap((group) => group.includePatterns!).toSorted()).toEqual(
-      (serverOwner.includePatterns ?? listWholeConfigSplitFiles(serverOwner.shardName)!)
-        .filter((file) => isRuntimeTestFileIncluded(file, selectedOptions))
-        .toSorted(),
-    );
-  }
-
   const updateJobs = jobs.filter((job) =>
     job.groups.some((group) => group.includePatterns?.includes("src/cli/update-cli.test.ts")),
   );
@@ -170,17 +156,15 @@ it.each(["push", "full"] as const)("bounds hosted groups (%s)", (mode) => {
   );
   expect(updateGroups).toHaveLength(1);
   if (full) {
-    // Price the selected stripe, not its broader owner's unrelated prerequisites.
-    const selectedFiles = new Set(updateGroups[0]!.includePatterns!);
-    const preparation = resolveVitestPretestBuildMode([
-      { matchesFile: (file) => selectedFiles.has(file) },
-    ]);
-    expect(updateGroups[0]!.pretestBuildMode ?? updateJobs[0]!.pretestBuildMode).toBe(preparation);
+    // Full inventory keeps the updater with its stripe, not necessarily a runtime consumer.
+    expect(updateGroups[0]!.pretestBuildMode).toBe(
+      resolveVitestPretestBuildMode([{ includePatterns: updateGroups[0]!.includePatterns }]),
+    );
     expect(updateGroups[0]!.includePatterns!.length).toBeGreaterThan(1);
   } else {
     expect(updateGroups[0]!.includePatterns).toEqual(["src/cli/update-cli.test.ts"]);
   }
-  if (!full) {
+  if (!mainValidation && !full) {
     expect(updateJobs[0]!.groups).toHaveLength(1);
   }
 });

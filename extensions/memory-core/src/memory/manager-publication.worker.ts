@@ -38,10 +38,15 @@ import {
   tableExists,
   withSqliteDatabaseWriteScope,
   type SqliteWorkerBackend,
+  type SynchronousSqliteCallback,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { advanceMemoryIndexRevision } from "../memory-index-revision.worker.js";
 import { hasMemorySessionTombstone } from "../memory-session-tombstones.js";
 import { publishMemoryDatabaseTables } from "./manager-db-kernel.js";
+import {
+  retirePublishedMemoryEmbeddingCacheRows,
+  type MemoryEmbeddingCacheRetireCursor,
+} from "./manager-embedding-cache-retire.js";
 import {
   clearMemoryEmbeddingCacheIdentities,
   countMemoryEmbeddingCache,
@@ -274,7 +279,7 @@ function createPublicationBackend(
     }
   };
   const write = <T>(
-    run: () => T,
+    run: SynchronousSqliteCallback<T>,
     scopes = [MEMORY_INDEX_WRITE_SCOPE],
   ): MemoryPublicationResult<T> =>
     transact((hooks) =>
@@ -288,7 +293,9 @@ function createPublicationBackend(
         { withCommit: hooks.withCommit },
       ),
     );
-  const writeSingleStatement = <T>(statement: () => T): MemoryPublicationResult<T> => {
+  const writeSingleStatement = <T>(
+    statement: SynchronousSqliteCallback<T>,
+  ): MemoryPublicationResult<T> => {
     let committed = false;
     try {
       admit("transaction");
@@ -511,6 +518,15 @@ function createPublicationBackend(
           recount ? maxEntries : undefined,
         );
         return result.ok ? { ...result, value: exceedsCap } : result;
+      }
+      if (command.type === "cache.retire") {
+        let next: MemoryEmbeddingCacheRetireCursor | null = null;
+        const result = writeCache((size) => {
+          const page = retirePublishedMemoryEmbeddingCacheRows(db, command.input);
+          next = page.next ?? null;
+          return { ...size, size: size.size - page.removed };
+        });
+        return result.ok ? { ...result, value: next } : result;
       }
       if (command.type === "cache.clear") {
         return writeCache((size) => ({

@@ -184,9 +184,7 @@ describe("GatewayPlugin", () => {
 
   it("reconnects when the socket closes while waiting for identify concurrency", async () => {
     const gateway = timedGateway();
-    const seeded = new TestGatewayPlugin();
-    seeded.openSocket().hello();
-    await vi.advanceTimersByTimeAsync(0);
+    await sharedGatewayIdentifyLimiter.schedule(() => true);
     const errorSpy = vi.fn();
     gateway.emitter.on("error", errorSpy);
 
@@ -203,9 +201,7 @@ describe("GatewayPlugin", () => {
 
   it("does not identify from a stale HELLO or let it delay the replacement socket", async () => {
     const gateway = timedGateway();
-    const seeded = new TestGatewayPlugin();
-    seeded.openSocket().hello();
-    await vi.advanceTimersByTimeAsync(0);
+    await sharedGatewayIdentifyLimiter.schedule(() => true);
 
     const originalSocket = gateway.openSocket();
     originalSocket.hello();

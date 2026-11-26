@@ -59,9 +59,13 @@ export async function prepareCronCliSessionAuth({
           selected,
         })
       : Promise.resolve(undefined);
-  // A recorded account runs only when this backend forwards exactly that account.
+  // The recorded provider runs only when this backend forwards exactly its account;
+  // other providers select their account live.
   const authProfileId = inference
-    ? await inference.resolveCliAuthProfile(resolveForwardedProfile)
+    ? await inference.resolveCliAuthProfile(providerOverride, resolveForwardedProfile, () =>
+        // A bound job's selection names its recorded account; others select live.
+        resolveForwardedProfile(undefined),
+      )
     : await resolveForwardedProfile(
         params.liveSelection.authProfileId
           ? {

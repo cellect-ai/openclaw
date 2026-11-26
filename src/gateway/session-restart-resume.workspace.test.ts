@@ -13,7 +13,7 @@ import {
 import { requireGit } from "../agents/worktrees/git.js";
 import { ManagedWorktreeService } from "../agents/worktrees/service.js";
 import * as sessionEvents from "../auto-reply/reply/session-event-handoff.js";
-import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
+import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry-replace.js";
 import { readSessionEntryReadOnlyInWorker } from "../config/sessions/session-entry-read-runtime.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { closeProvider, listenProvider } from "./gateway-provider-fixture.test-support.js";
@@ -79,7 +79,6 @@ it(
         return create.call(this, params);
       });
     let gateway: Awaited<ReturnType<typeof startGatewayWithClient>> | undefined;
-    let startingGateway: ReturnType<typeof startGatewayWithClient> | undefined;
     try {
       await requireGit(state.workspaceDir, ["init", "-b", "main"]);
       await requireGit(state.workspaceDir, ["config", "user.name", "OpenClaw Test"]);
@@ -87,19 +86,9 @@ it(
       await fs.writeFile(path.join(state.workspaceDir, "marker.txt"), "prepared workspace\n");
       await requireGit(state.workspaceDir, ["add", "."]);
       await requireGit(state.workspaceDir, ["commit", "-qm", "synthetic workspace"]);
-      const baseUrl = await listenProvider(provider);
-      // Bypass the ambient proxy only for this fixture, preserving other proxy routing.
-      // A standalone "*" must remain standalone to retain its bypass-all semantics.
-      const inheritedNoProxy = process.env.no_proxy ?? process.env.NO_PROXY;
-      const noProxy =
-        inheritedNoProxy === "*"
-          ? inheritedNoProxy
-          : [inheritedNoProxy, new URL(baseUrl).host].filter(Boolean).join(",");
-      Object.assign(state.envVars, { NO_PROXY: noProxy, no_proxy: noProxy });
-      state.applyEnv();
       const model = productModelConfig(
         state.workspaceDir,
-        buildMockOpenAiResponsesProvider(baseUrl, "restart-workspace"),
+        buildMockOpenAiResponsesProvider(await listenProvider(provider), "restart-workspace"),
       );
       const cfg: OpenClawConfig = {
         agents: {
@@ -126,24 +115,12 @@ it(
         },
       });
       expect((await readSessionEntryReadOnlyInWorker(target))?.resumeAfterRestart).toBeDefined();
-      // Client admission waits for recovery, so do not await it while checkout is held.
-      startingGateway = startGatewayWithClient({
+      gateway = await startGatewayWithClient({
         cfg,
         configPath: state.configPath,
         token: "restart-workspace-proof",
-        beforeConnect: async () => {
-          const recovery = await recoveryEntered.promise;
-          await recovery.work;
-        },
       });
-      const recovery = await withinTest(
-        awaitGateBeforeSettlement(
-          recoveryEntered.promise,
-          startingGateway,
-          "Gateway settled before recovery",
-        ),
-        signal,
-      );
+      const recovery = await withinTest(recoveryEntered.promise, signal);
       const admitted = recovery.work.then(async () => {
         expect(await Promise.all(receipts.map((receipt) => receipt.accepted))).toEqual([
           { ok: true },
@@ -163,7 +140,6 @@ it(
       expect(preparing?.resumeAfterRestart).toBeDefined();
       releaseCheckout.resolve();
       await withinTest(admitted, signal);
-      gateway = await withinTest(startingGateway, signal);
       await expect(withinTest(receipts[0]!.settled, signal)).resolves.toMatchObject({
         status: "completed",
         executionStarted: true,
@@ -185,7 +161,6 @@ it(
       expect(providerErrors).toEqual([]);
     } finally {
       releaseCheckout.resolve();
-      gateway ??= await startingGateway?.catch(() => undefined);
       await closeProvider(provider);
       if (gateway) {
         await disconnectGatewayClient(gateway.client);

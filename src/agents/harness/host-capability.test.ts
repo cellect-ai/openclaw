@@ -11,11 +11,9 @@ import {
 import { createDeferred } from "../../../test/helpers/promise.js";
 import {
   clearRuntimeConfigSnapshot,
-  createRuntimeConfigReader,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
 import { prepareSessionSourceAuthority } from "../../config/sessions/session-source-authority.js";
-import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { GatewayRequestContext } from "../../gateway/server-methods/types.js";
 import { onAgentEvent } from "../../infra/agent-events.js";
 import {
@@ -28,7 +26,9 @@ import {
   bindGatewayContextResolver,
   withPluginRuntimeGatewayRequestScope,
 } from "../../plugins/runtime/gateway-request-scope.js";
+import * as processExec from "../../process/exec.js";
 import { AsyncWorkScope } from "../../shared/async-work-scope.js";
+import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
 import {
   closeAdmittedRunDelegatedAuthority,
   createOperationalRunInstanceRef,
@@ -39,8 +39,12 @@ import {
   rewrapToolWithBeforeToolCallHook,
   runBeforeToolCallHook,
 } from "../agent-tools.before-tool-call.js";
-import { createModelGenerationFixture } from "../embedded-agent-runner/model.generation-scope.test-support.js";
-import { bindPreparedModelRuntimeAuth } from "../prepared-model-runtime-auth.js";
+import { commandResult } from "../github-identity.test-support.js";
+import {
+  clearNativeGitHubTokenCache,
+  readNativeGitHubConfiguration,
+  refreshNativeGitHubConfiguration,
+} from "../github-read-identity.js";
 import { createAgentRunRestartAbortError } from "../run-termination.js";
 import type { AnyAgentTool } from "../tools/common.js";
 import {
@@ -77,52 +81,67 @@ afterEach(() => {
 });
 
 describe("agent harness host capability", () => {
-  it.each(["host", "scoped"] as const)(
-    "forwards the admitted %s policy reader to native tool construction",
-    async (scope) => {
-      const config: OpenClawConfig = { tools: { openclaw: { autoApproveChanges: true } } };
-      const scoped: OpenClawConfig = { tools: { openclaw: { autoApproveChanges: false } } };
-      setRuntimeConfigSnapshot(config);
-      const reader = createRuntimeConfigReader(config);
-      const preparedModelRuntime = {
-        ...createModelGenerationFixture({
-          config,
-          agentDir: "/synthetic/native-policy-agent",
-          workspaceDir: "/synthetic/native-policy-workspace",
-          label: "native-policy",
-        }).preparedModelRuntime,
-      };
-      bindPreparedModelRuntimeAuth(preparedModelRuntime, { readPolicyConfig: reader });
-      const replacement: OpenClawConfig = { ...config, ui: { seamColor: "#123456" } };
-      setRuntimeConfigSnapshot(replacement);
-      const { attempt } = await admittedAttempt("native-delegation-binding", {
+  it("keeps native GitHub specs and thread fingerprint stable across background discovery", async () => {
+    const codex = await loadBundledPluginFacade<{
+      createCodexDynamicToolSpecsForPromptSnapshot: (params: {
+        tools: AnyAgentTool[];
+        directToolNames: string[];
+      }) => unknown[];
+      codexDynamicToolsFingerprint: (specs: readonly unknown[]) => string;
+    }>({ pluginId: "codex", artifactBasename: "test-api.js" });
+    const config = { agents: { entries: { main: {} } }, tools: { profile: "coding" as const } };
+    vi.stubEnv("GH_TOKEN", undefined);
+    vi.stubEnv("GITHUB_TOKEN", undefined);
+    setRuntimeConfigSnapshot(config);
+    clearNativeGitHubTokenCache();
+    using native = vi
+      .spyOn(processExec, "runCommandBuffered")
+      .mockResolvedValue(commandResult("", 1));
+    let turn = 0;
+    const render = async (trigger: "user" | "event") => {
+      const { attempt } = await admittedAttempt("github-native-listing-" + turn++, {
         config,
-        preparedModelRuntime,
+        trigger,
+        githubPublicationAvailable: true,
       });
-      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "copilot" });
+      const host = createAgentHarnessHostCapabilities({ attempt, pluginId: "codex" });
       try {
-        using construct = vi
-          .spyOn(agentTools, "createOpenClawCodingToolsInternalAsync")
-          .mockResolvedValue([]);
-        await host.capabilities.createToolSurfaceAsync!({
-          config: scope === "host" ? config : scoped,
+        const tools = (await host.capabilities.createToolSurfaceAsync!({ config })).filter((tool) =>
+          tool.name.startsWith("github_"),
+        );
+        const specs = codex.createCodexDynamicToolSpecsForPromptSnapshot({
+          tools,
+          directToolNames: tools.map((tool) => tool.name),
         });
-        const options = construct.mock.calls[0]![0]!;
-        expect(options.config).toBe(scope === "host" ? config : scoped);
-        expect(options.readDelegationConfig).toBeTypeOf("function");
-        if (scope === "host") {
-          expect(options.readDelegationConfig).toBe(reader);
-        }
-        expect(options.readDelegationConfig!()).toBe(scope === "host" ? replacement : scoped);
-        const revoked: OpenClawConfig = { tools: { openclaw: { autoApproveChanges: false } } };
-        setRuntimeConfigSnapshot(revoked);
-        expect(options.readDelegationConfig!()).toBe(scope === "host" ? revoked : scoped);
+        return {
+          publicationSchema: tools.find((tool) => tool.name === "github_publish")?.parameters,
+          specs,
+          fingerprint: codex.codexDynamicToolsFingerprint(specs),
+        };
       } finally {
         host.close();
-        clearRuntimeConfigSnapshot();
       }
-    },
-  );
+    };
+    try {
+      const initial = await render("user");
+      expect(initial.publicationSchema).toMatchObject({
+        properties: { action: { enum: expect.arrayContaining(["publish"]) } },
+      });
+      native.mockImplementation(async (argv) =>
+        commandResult(argv[2] === "status" ? '{"hosts":{}}' : "", argv[2] === "status" ? 0 : 1),
+      );
+      await refreshNativeGitHubConfiguration();
+      expect(readNativeGitHubConfiguration("github.com")).toBe("unconfigured");
+      expect(await render("event")).toEqual(initial);
+      native.mockResolvedValue(commandResult("", 1));
+      await refreshNativeGitHubConfiguration();
+      expect(readNativeGitHubConfiguration("github.com")).toBe("unknown");
+      expect(await render("user")).toEqual(initial);
+    } finally {
+      clearNativeGitHubTokenCache();
+      clearRuntimeConfigSnapshot();
+    }
+  });
 
   it.each([
     "host close",

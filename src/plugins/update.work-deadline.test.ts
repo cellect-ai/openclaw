@@ -177,17 +177,18 @@ if (process.argv[2] === 'doctor' && process.argv.includes('--lint')) {
 }
 event('complete');\n`,
       );
+      // Only plugin work is timed here; admission and Doctor keep their ordinary budgets.
+      const setupLifecycle = new UpdateFinalizationLifecycle(false, undefined, () => {});
       // oxlint-disable-next-line typescript/unbound-method -- Capture before spying; every call supplies the lifecycle instance via .call.
       const budget = UpdateFinalizationLifecycle.prototype.budget;
       vi.spyOn(UpdateFinalizationLifecycle.prototype, "budget").mockImplementation(function (
         this: UpdateFinalizationLifecycle,
         phase,
       ) {
-        // Exercise the explicit plugin deadline, not setup or Doctor startup timing.
-        if (explicit !== undefined && phase !== "plugins") {
-          return 30_000;
+        if (phase !== "plugins") {
+          return budget.call(setupLifecycle, phase);
         }
-        return phase === "plugins" && explicit === undefined ? allowance : budget.call(this, phase);
+        return explicit === undefined ? allowance : budget.call(this, phase);
       });
       await updateFinalizeCommand({
         json: true,

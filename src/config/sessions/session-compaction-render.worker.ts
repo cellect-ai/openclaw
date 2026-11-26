@@ -1,9 +1,9 @@
 import type { WorkerTaskControl } from "@openclaw/worker-runtime/worker";
-import { getMessageFromEntryForCompaction } from "../../../packages/agent-core/src/harness/compaction/compaction-cut-point.js";
 import { renderConversationEntriesWithinBudget } from "../../../packages/agent-core/src/harness/compaction/conversation-serialization.js";
 import { serializeConversationEntry } from "../../../packages/agent-core/src/harness/compaction/utils.js";
 import { convertToLlm } from "../../../packages/agent-core/src/harness/messages.js";
 import { sanitizeCompactionMessages } from "../../agents/compaction-planning.js";
+import { readPreparedCompactionMessage } from "../../agents/embedded-agent-runner/prepared-compaction-plan.js";
 import type { SessionEntry } from "../../agents/sessions/session-manager-types.js";
 import {
   iterateSqliteQuerySync,
@@ -14,12 +14,10 @@ import type { OpenClawAgentReadOnlyDatabase } from "../../state/openclaw-agent-d
 import { withOpenClawAgentDatabaseReadOnly } from "../../state/openclaw-agent-db-readonly.js";
 import { validateSessionTranscriptContextInDatabase } from "./session-accessor.sqlite-model-context.js";
 import { prepareTranscriptEventReadQuery } from "./session-accessor.sqlite-read.js";
-import { toDatabaseOptions } from "./session-accessor.sqlite-scope.js";
+import { toDatabaseOptions } from "./session-accessor.sqlite-scope-helpers.js";
 import { assertSessionTranscriptHot } from "./session-cold-storage-state.js";
-import type {
-  CompactionReadCounts,
-  SessionPreparedCompactionInput,
-} from "./session-compaction-prepared.types.js";
+import type { SessionPreparedCompactionInput } from "./session-compaction-prepared.types.js";
+import type { CompactionReadCounts } from "./session-compaction-read-counts.types.js";
 import { isIndexedSessionEntry } from "./session-entry-codec.js";
 import type { SessionTranscriptContextVersion } from "./session-transcript-context-version.types.js";
 import { SessionTranscriptStorageUnavailableError } from "./session-transcript-projection-error.js";
@@ -126,9 +124,8 @@ export async function renderPreparedSessionCompaction(
       request.operation.entries,
       request.operation.maxChars,
       (descriptor, variant) => {
-        const message = getMessageFromEntryForCompaction(readEntry(descriptor.source.seq));
-        const projected =
-          message && convertToLlm(sanitizeCompactionMessages([message]))[descriptor.source.index];
+        const message = readPreparedCompactionMessage(descriptor.source, readEntry);
+        const projected = message && convertToLlm(sanitizeCompactionMessages([message]))[0];
         if (!projected) {
           throw new Error("Prepared summary source no longer contains its projected message");
         }

@@ -38,7 +38,7 @@ import * as legacyMainMigration from "./legacy-main-session-migration.js";
 import { replaceSessionEntrySync } from "./session-accessor.js";
 import { resolveSqliteSessionKey } from "./session-accessor.sqlite-scope.js";
 import { markCanonicalSessionValidationPending } from "./session-canonical-key.js";
-import { runSessionStartupMigration } from "./startup-migration.js";
+import { runSessionStartupMigration } from "./startup-migration-runtime.js";
 
 function acpMeta(agent: string, lastActivityAt = 100) {
   return {
@@ -263,10 +263,7 @@ it.each(["retained-by-deletion", "unconfigured", "configured"] as const)(
         }
         const before = fs.readFileSync(pathname);
         if (disposition === "configured") {
-          await expect(startup()).rejects.toMatchObject({
-            name: "SqliteSchemaMismatchError",
-            message: expect.stringContaining("run openclaw doctor --fix to upgrade"),
-          });
+          await expect(startup()).rejects.toMatchObject({ code: "gateway.maintenance_required" });
           expect(handoff).not.toHaveBeenCalled();
         } else {
           await expect(startup()).resolves.toBeUndefined();

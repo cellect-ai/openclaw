@@ -178,7 +178,8 @@ export async function verifyCollaborativeCancellation(signal: AbortSignal) {
           } else {
             expect(bobResult.error, id).toBeUndefined();
             expect(bobResult.result?.deferredToActiveRun).toBe("followup");
-            // Incumbent cancellation queues Bob automatically, without an explicit-command notice.
+            // Cancellation falls back automatically; it does not issue an
+            // explicit /followup command or send an immediate queue notice.
             expect(replies.filter((reply) => reply.sender === "bob")).toEqual([]);
             expect(scenario.accepted).toMatchObject({ status: "accepted" });
             expect(scenario.sourceRequests.length).toBeGreaterThan(0);

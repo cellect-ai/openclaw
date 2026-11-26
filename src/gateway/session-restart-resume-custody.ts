@@ -1,3 +1,4 @@
+import type { AdmittedRunOperatorAuthority } from "../agents/admitted-run-context.js";
 import {
   getSubagentRunsForRequesterSession,
   subagentRuns,
@@ -5,9 +6,12 @@ import {
 import { resumeSubagentRun } from "../agents/subagents/registry/subagent-registry.js";
 import { owesRequesterCompletion } from "../agents/subagents/registry/subagent-requester-settle-identity.js";
 import { isYieldedSubagentRun } from "../agents/subagents/registry/subagent-run-liveness.js";
-import { readSessionSubmittedInput } from "../config/sessions/session-accessor.pending-inputs.js";
-import { prepareSessionGenerationFacts } from "../config/sessions/session-delivery-generation.js";
+import { readSessionSubmittedInput } from "../config/sessions/session-pending-input-source.js";
 import type { PendingInputScope } from "../config/sessions/session-pending-input-store.js";
+import {
+  acquireTranscriptLease,
+  type TranscriptLease,
+} from "../config/sessions/transcript-lease.js";
 import type { InternalSessionEntry } from "../config/sessions/types.js";
 import {
   bindGatewayContextResolver,
@@ -18,13 +22,18 @@ import {
   isGatewayRestartDraining,
 } from "../process/gateway-work-admission.js";
 import { parseAgentSessionKey } from "../routing/session-key.js";
-import { ADMIN_SCOPE } from "./operator-scopes.js";
+import { chatRef } from "../sessions/chat-ref.js";
+import { restoreGatewayQueuedOperatorRecovery } from "./operator-run-recovery.js";
+import { WRITE_SCOPE } from "./operator-scopes.js";
 import type { GatewayRequestContext } from "./server-methods/types.js";
 import {
   captureOperatorToolGatewayContinuationContext,
   withOperatorToolGatewayAuthority,
 } from "./server-plugin-in-process-dispatch.js";
-import type { RestartResumeParams } from "./session-restart-resume.types.js";
+import type {
+  PreparedRestartStore,
+  RestartResumeParams,
+} from "./session-restart-resume-discovery.js";
 import { prepareSessionSystemTurnAuthority } from "./session-system-turn-authority.js";
 
 /** A consumed settle input transfers interrupted-turn recovery to the Gateway. */
@@ -49,13 +58,7 @@ export async function hasInterruptedCommittedRequesterSettleInput(
 /** Admit retained obligations before classifying nested waits in this store. */
 export async function prepareRestartCompletionCustody(
   { context, signal, log }: RestartResumeParams,
-  {
-    target,
-    entries,
-  }: {
-    target: { agentId: string; storePath: string; env?: NodeJS.ProcessEnv };
-    entries: readonly { sessionKey: string; entry: InternalSessionEntry }[];
-  },
+  { target, entries }: Pick<PreparedRestartStore, "target" | "entries">,
 ): Promise<{ assertCurrent: () => void; resume: () => void }> {
   const assertCurrent = () => {
     signal.throwIfAborted();
@@ -75,6 +78,7 @@ export async function prepareRestartCompletionCustody(
           entry,
           agentId: parseAgentSessionKey(sessionKey)?.agentId ?? target.agentId,
           assertCurrent,
+          log,
         })),
       );
     } catch (error) {
@@ -104,82 +108,93 @@ async function recoverRequesterCompletionCustody(params: {
   env?: NodeJS.ProcessEnv;
   entry: Pick<InternalSessionEntry, "sessionId" | "lifecycleRevision" | "archivedAt">;
   assertCurrent: () => void;
+  log: RestartResumeParams["log"];
 }): Promise<string[]> {
-  const { context, entry, agentId, sessionKey, storePath, assertCurrent } = params;
+  const { context, entry, agentId, sessionKey, storePath, assertCurrent, log } = params;
   if (entry.archivedAt !== undefined) {
     return [];
   }
   const pending = [...getSubagentRunsForRequesterSession(sessionKey)].filter(
     (child) =>
       child.requesterAgentId === agentId &&
-      child.completionRequesterSessionId === entry.sessionId &&
-      child.completionRequesterLifecycleRevision === entry.lifecycleRevision &&
       subagentRuns.isCompletionAuthorityRetired(child) &&
-      // A canceled member can still owe its frozen cohort a cancellation notice.
-      // Recover that wake without reviving standalone suppressed result delivery.
-      (child.requesterSettleWake !== undefined ||
-        (owesRequesterCompletion(child) &&
-          (isYieldedSubagentRun(child) ||
-            child.delivery?.status === "pending" ||
-            child.delivery?.status === "in_progress" ||
-            child.delivery?.status === "failed"))),
+      ((isYieldedSubagentRun(child) && owesRequesterCompletion(child)) ||
+        child.requesterSettleWake !== undefined ||
+        child.delivery?.status === "pending" ||
+        child.delivery?.status === "in_progress" ||
+        child.delivery?.status === "failed"),
   );
   if (!pending.length) {
     return [];
   }
-  const authority = await prepareSessionSystemTurnAuthority({
-    context,
-    agentId,
-    sessionKey,
-    storePath,
-    sessionId: entry.sessionId,
-    preserveRecordedSource: true,
-    assertCurrent,
-  });
-  let target: Awaited<ReturnType<typeof prepareSessionGenerationFacts>> | undefined;
+  const recovered: string[] = [];
+  let target: TranscriptLease | undefined;
   try {
-    target = await prepareSessionGenerationFacts({
-      agentId,
-      sessionKey,
-      storePath,
-      sessionId: entry.sessionId,
-      lifecycleRevision: entry.lifecycleRevision ?? null,
-      env: params.env,
-    });
+    target = await acquireTranscriptLease(
+      chatRef({ agentId, sessionKey, storePath }),
+      { sessionId: entry.sessionId, lifecycleRevision: entry.lifecycleRevision },
+      { env: params.env },
+    );
     const requester = target;
-    await withPluginRuntimeGatewayContextResolver(context.resolveGatewayContext, () =>
-      withOperatorToolGatewayAuthority(
-        {
-          operatorRunAuthority: authority?.authority,
-          operatorRoleActor: { kind: "system" },
-          scopes: authority?.authority.scopes ?? [ADMIN_SCOPE],
-          assertCurrent,
-        },
-        async () => {
-          for (const child of pending) {
-            const custody = await captureOperatorToolGatewayContinuationContext({
+    for (const child of pending) {
+      let authority: { authority: AdmittedRunOperatorAuthority; release: () => void } | undefined;
+      try {
+        // Re-admit the spawning requester's saved source; the woken turn checks session access
+        // when it starts. Older rows use the session principal, else the System write baseline.
+        const source = child.requesterOperatorSource;
+        authority = source
+          ? await restoreGatewayQueuedOperatorRecovery({ source, context, assertCurrent })
+          : await prepareSessionSystemTurnAuthority({
+              context,
               agentId,
               sessionKey,
+              storePath,
+              sessionId: entry.sessionId,
+              preserveRecordedSource: true,
+              assertCurrent,
             });
-            if (!custody) {
-              throw new Error("Restart completion has no current Gateway authority");
-            }
-            try {
-              assertCurrent();
-              requester.assertCurrent();
-              bindGatewayContextResolver(child, context.resolveGatewayContext);
-              subagentRuns.bindCompletionAuthority(child, custody);
-            } catch (error) {
-              custody.release();
-              throw error;
-            }
-          }
-        },
-      ),
-    );
+        await withPluginRuntimeGatewayContextResolver(context.resolveGatewayContext, () =>
+          withOperatorToolGatewayAuthority(
+            {
+              operatorRunAuthority: authority?.authority,
+              operatorRoleActor: { kind: "system" },
+              scopes: authority?.authority.scopes ?? [WRITE_SCOPE],
+              assertCurrent,
+            },
+            async () => {
+              const custody = await captureOperatorToolGatewayContinuationContext({
+                agentId,
+                sessionKey,
+              });
+              if (!custody) {
+                throw new Error("Restart completion has no current Gateway authority");
+              }
+              try {
+                assertCurrent();
+                requester.assertCurrent();
+                bindGatewayContextResolver(child, context.resolveGatewayContext);
+                subagentRuns.bindCompletionAuthority(child, custody);
+              } catch (error) {
+                custody.release();
+                throw error;
+              }
+            },
+          ),
+        );
+        recovered.push(child.runId);
+      } catch (error) {
+        // Shutdown or a changed requester chat stops every child; one refused source stops one.
+        assertCurrent();
+        requester.assertCurrent();
+        log.warn(
+          `Restart completion recovery failed for ${child.runId} in ${sessionKey}: ${String(error)}`,
+        );
+      } finally {
+        authority?.release();
+      }
+    }
   } finally {
     target?.release();
-    authority?.release();
   }
-  return pending.map((child) => child.runId);
+  return recovered;
 }

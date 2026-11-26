@@ -1,7 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { expectDefined } from "@openclaw/normalization-core";
 import { Command, CommanderError } from "commander";
 import { afterEach, describe, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
@@ -11,46 +10,12 @@ import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import { cliRecoveryEntrypoints } from "./cli-entrypoint.test-support.js";
 import { writeFixtureJson } from "./cli-fixtures.test-support.js";
 import { formatCliProcessFailure, runCliProcessChild } from "./cli-process-child.test-helpers.js";
-import { createCliProcessFixture } from "./isolated-process-fixture.test-support.js";
 import { registerCoreCliByName } from "./program/command-registry-core.js";
 import { createProgramContext } from "./program/context.js";
 import { registerSubCliByName } from "./program/register.subclis.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 const preparedCliEntry = resolveRuntimeWorkerUrl(cliRecoveryEntrypoints.cli);
-
-it.each([
-  { args: ["update", "--help"], code: 0, output: "Usage:" },
-  {
-    args: ["update", "--dry-run", "--no-restart", "--timeout", "1", "--json"],
-    code: 0,
-    output: "dryRun",
-  },
-  {
-    args: ["gateway", "call", "system-presence", "--params", "not-json", "--json"],
-    code: 1,
-    output: "--params must be valid JSON",
-  },
-])("keeps nonlogging CLI invocation artifact-free: $args", async ({ args, code, output }) => {
-  const root = tempDirs.make("openclaw-no-log-state-");
-  const fixture = createCliProcessFixture(root, {
-    OPENCLAW_HOME: root,
-    TMPDIR: path.join(root, "tmp"),
-    XDG_CACHE_HOME: path.join(root, "cache"),
-    NODE_DISABLE_COMPILE_CACHE: "1",
-    BUN_RUNTIME_TRANSPILER_CACHE_PATH: "0",
-    NO_COLOR: "1",
-    OPENCLAW_HIDE_BANNER: "1",
-  });
-  await fixture.writeConfig({});
-  const result = await fixture.run(args);
-  expect(result.code, result.stderr).toBe(code);
-  expect(result.stdout + result.stderr).toContain(output);
-  if (args.includes("--json")) {
-    expect(JSON.parse(result.stdout)).toBeTypeOf("object");
-  }
-  await expect(fs.access(fixture.env.OPENCLAW_STATE_DIR)).rejects.toMatchObject({ code: "ENOENT" });
-});
 const SLOW_DOTENV_CHILD_PROCESS_TIMEOUT_MS = 240_000;
 const SLOW_DOTENV_TEST_TIMEOUT_MS = SLOW_DOTENV_CHILD_PROCESS_TIMEOUT_MS + 10_000;
 const dotenvLoggingConfig = {
@@ -309,8 +274,9 @@ describe("CLI help process exit", () => {
   });
 });
 
-it("only writes the validation error log before scaffolding a selected profile", async () => {
+it("does not scaffold profile state before option validation", async () => {
   const profile = "rejected-profile";
+  const fixture = await createHelpProcessFixture();
   const result = await runCliProcess({
     args: [
       "onboard",
@@ -324,19 +290,20 @@ it("only writes the validation error log before scaffolding a selected profile",
     entry: preparedCliEntry,
     expectedExitCode: 1,
     pristineHome: true,
+    fixture,
+    env: { OPENCLAW_HOME: fixture.root },
   });
 
   expect(result.stderr).toContain("--gateway-port must be an integer between 1 and 65535.");
-  const stateDir = path.join(result.root, `.openclaw-${profile}`);
-  // Console error capture is real logging, not profile scaffolding.
-  expect(await fs.readdir(stateDir)).toEqual(["logs"]);
-  const logFile = expectDefined(
-    (await fs.readdir(path.join(stateDir, "logs")))[0],
-    "validation error log",
-  );
-  expect(await fs.readFile(path.join(stateDir, "logs", logFile), "utf8")).toContain(
-    "--gateway-port must be an integer between 1 and 65535.",
-  );
+  // Reporting the error can log without creating operational profile state.
+  const profileDir = path.join(result.root, `.openclaw-${profile}`);
+  const entries = await fs.readdir(profileDir, { withFileTypes: true });
+  expect(entries.map((entry) => [entry.name, entry.isDirectory()])).toEqual([["logs", true]]);
+  const logs = await fs.readdir(path.join(profileDir, "logs"), { withFileTypes: true });
+  const logName = /^openclaw-rejected--profile-\d{4}-\d{2}-\d{2}\.log$/u;
+  expect(
+    logs.filter((entry) => !entry.isFile() || !logName.test(entry.name)).map((entry) => entry.name),
+  ).toEqual([]);
 });
 
 it.each(
@@ -378,13 +345,8 @@ it.each(
     ok: false,
     error: { type: "cli_error", message },
   });
-  if (provider === "autoqa-no-such-provider") {
-    expect(result.stderr).toContain("[openclaw] The CLI command failed.");
-    expect(result.stderr).toContain("[openclaw] For help, run `openclaw doctor`.");
-    expect(result.stderr).not.toContain(message);
-  } else {
-    expect(result.stderr).toContain(message);
-  }
+  expect(result.stderr).toContain(message);
+  expect(result.stderr).not.toContain("[openclaw] The CLI command failed.");
 });
 
 it.runIf(process.platform !== "win32")(

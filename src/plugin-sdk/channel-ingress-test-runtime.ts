@@ -19,3 +19,7 @@ export {
   resetGatewaySuspendCoordinatorForLifecycleRestart as resetGatewaySuspendForTest,
 } from "../infra/gateway-suspend-coordinator.js";
 export { resetGatewayWorkAdmission as resetGatewayWorkAdmissionForTest } from "../process/gateway-work-admission.js";
+
+// Load the Gateway inspector only for receiver tests that exercise suspension.
+export const loadGatewaySuspendCoordinatorForTest = () =>
+  import("../infra/gateway-suspend-coordinator.js");

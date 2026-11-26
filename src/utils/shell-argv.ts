@@ -106,7 +106,13 @@ function splitQuotedArgs(
       return null;
     }
     if (escaped) {
-      buf += ch;
+      // POSIX line continuation: a backslash-newline pair is removed outright and
+      // does not terminate the surrounding word, so `ba\<newline>sh` is one `bash`
+      // token. Keeping the newline would both corrupt the token and disagree with
+      // hasTopLevelShellControlOperator, which already consumes escaped newlines.
+      if (ch !== "\n") {
+        buf += ch;
+      }
       escaped = false;
       continue;
     }
@@ -123,7 +129,11 @@ function splitQuotedArgs(
       const next = raw[i + 1];
       // Inside double quotes, only POSIX-recognized escapes consume the backslash.
       if (quote === '"' && backslashEscapes && ch === "\\" && isDoubleQuoteEscape(next)) {
-        buf += next;
+        // Backslash-newline stays a line continuation inside double quotes; single
+        // quotes keep both characters literally because no escape applies there.
+        if (next !== "\n") {
+          buf += next;
+        }
         i += 1;
         continue;
       }

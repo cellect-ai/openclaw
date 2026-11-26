@@ -1,18 +1,20 @@
+import type { AdmissionDiagnostics } from "../infra/diagnostics-timeline.js";
+
 export const SESSION_WATCHDOG_WARNING_MS = 120_000;
 export const SESSION_WATCHDOG_ABORT_FLOOR_MS = 5 * 60_000;
 export const SESSION_WATCHDOG_QUIET_TOOL_MS = 15 * 60_000;
 export const SESSION_WATCHDOG_CLEANUP_MS = 60_000;
 
-type SessionWatchdogWaitKind =
-  | "global_capacity"
-  | "deferred_maintenance"
-  | "human_question"
-  | "approval"
-  | "runtime_owned"
-  | "retry"
-  | "backend";
 export type OwnedWait = {
-  kind: SessionWatchdogWaitKind;
+  admission?: AdmissionDiagnostics;
+  kind:
+    | "global_capacity"
+    | "deferred_maintenance"
+    | "human_question"
+    | "approval"
+    | "runtime_owned"
+    | "retry"
+    | "backend";
   deadlineAtMs?: number;
   rateLimitStopMessage?: string;
   /** A runtime-owned wait whose release hands a finished turn back to its run. */
@@ -32,11 +34,10 @@ export type SessionWatchdogSnapshot = Readonly<{
   hasActiveAttempt?: boolean;
   semanticProgressAtMs: number;
   lastProgressReason?: string;
-  warningMs: number;
   semanticDeadlineAtMs: number;
   executionDeadlineAtMs?: number;
   cleanupDeadlineAtMs?: number;
-  waits: ReadonlyArray<{ kind: SessionWatchdogWaitKind; deadlineAtMs?: number }>;
+  waits: ReadonlyArray<Pick<OwnedWait, "kind" | "deadlineAtMs" | "admission">>;
   requests?: ReadonlyArray<{ requestTimeoutMs?: number; deadlineAtMs?: number }>;
   tools: ReadonlyArray<{
     toolName: string;
@@ -48,7 +49,7 @@ export type SessionWatchdogSnapshot = Readonly<{
   recovery?: { status: "pending" | "blocked" | "settled"; startedAtMs: number; error?: string };
 }>;
 export type SessionWatchdogDecision = Readonly<{
-  action: "observe" | "warn" | "stop" | "expire_cleanup" | "blocked";
+  action: "observe" | "stop" | "expire_cleanup" | "blocked";
   reason: string;
   deadlineAtMs?: number;
 }>;
@@ -100,7 +101,5 @@ export function decideSessionWatchdog(
   if (now >= deadlineAtMs) {
     return { action: "stop", reason: "semantic_stall", deadlineAtMs };
   }
-  return now >= snapshot.semanticProgressAtMs + snapshot.warningMs
-    ? { action: "warn", reason: "no_semantic_progress", deadlineAtMs }
-    : { action: "observe", reason: "progress", deadlineAtMs };
+  return { action: "observe", reason: "progress", deadlineAtMs };
 }

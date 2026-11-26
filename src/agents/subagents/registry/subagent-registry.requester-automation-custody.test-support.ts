@@ -48,7 +48,7 @@ export function registerRequesterAutomationCustodyTests({
   updateRun,
 }: RegistryRegistrationFixture) {
   it.each(["current", "revoked"] as const)(
-    "keeps %s original completion custody after a same-human chat admission revokes automation",
+    "settles with %s original completion custody after a same-human chat admission revokes automation",
     async (authority) => {
       await withOpenClawTestState({ scenario: "minimal" }, async (state) => {
         const cfg = { session: { store: state.path("sessions.json") } };
@@ -183,12 +183,12 @@ export function registerRequesterAutomationCustodyTests({
           deliver.mockImplementation(async (params) => {
             const retained =
               getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority;
-            expect(retained?.source).toBe(
-              authority === "current" ? source.authority.source : undefined,
-            );
-            expect(getPluginRuntimeGatewayRequestScope()?.client?.connect.scopes).toEqual(
-              authority === "current" ? ["operator.admin"] : ["operator.write"],
-            );
+            if (authority === "current") {
+              expect(retained?.source).toBe(source.authority.source);
+              expect(retained?.scopes).toEqual(["operator.admin"]);
+            } else {
+              expect(retained).toBeUndefined();
+            }
             expect(params.triggerMessage).toContain(resultText);
             expect(
               resolveGatewayCronCreatorAuthorityAdmission({
@@ -205,7 +205,6 @@ export function registerRequesterAutomationCustodyTests({
                   sourceSessionKey: subagentRuns.get(runId)!.childSessionKey,
                   sourceTool: "subagent_settle",
                 },
-                hasRestoredCronContinuation: false,
                 isOneShotModelRun: false,
               }),
             ).toBeUndefined();

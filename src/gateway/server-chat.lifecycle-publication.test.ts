@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { createDeferred } from "../../test/helpers/promise.js";
 import {
   emitAgentEvent as emitRuntimeAgentEvent,
   getAgentEventLifecycleGeneration,
@@ -11,12 +12,11 @@ import {
   registerAgentRunContext,
 } from "../infra/agent-run-registry.js";
 import { abortChatRunById } from "./chat-abort.js";
-import {
-  createAgentEventTestHarness,
-  type AgentEventTestHarnessOptions,
-} from "./server-chat.agent-events.test-harness.js";
+import { createAgentEventTestHarness } from "./server-chat.agent-events.test-harness.js";
 import { subscribeAgentEvents } from "./server-chat.agent-events.test-helpers.js";
 import { registerRpcSourceForTest } from "./server-methods/rpc-source-fixtures.test-support.js";
+import * as sessionEventRows from "./session-event-prepared-row.js";
+import type { persistGatewaySessionLifecycleEvent } from "./session-lifecycle-state.js";
 import { claimRpcSourceForTest } from "./test-helpers.rpc-source.js";
 
 // mock-isolation: Publication tests use injected persistence without operator config or SQLite.
@@ -27,9 +27,9 @@ vi.mock("./session-utils-store-worker.js", () => ({
 }));
 
 describe("single lifecycle publication", () => {
-  const persistGatewaySessionLifecycleEventMock = vi.fn<
-    NonNullable<AgentEventTestHarnessOptions["persistGatewaySessionLifecycleEventForEvent"]>
-  >(async () => {});
+  const persistGatewaySessionLifecycleEventMock = vi.fn<typeof persistGatewaySessionLifecycleEvent>(
+    async () => {},
+  );
   beforeEach(() => {
     resetAgentEventsForTest();
     persistGatewaySessionLifecycleEventMock.mockClear();
@@ -41,6 +41,28 @@ describe("single lifecycle publication", () => {
       persistGatewaySessionLifecycleEventForEvent: persistGatewaySessionLifecycleEventMock,
     });
   }
+
+  it("does not prepare terminal session rows without receivers", async () => {
+    const preparation = vi.spyOn(sessionEventRows, "withPreparedSessionEventRow");
+    const persistence = createDeferred();
+    persistGatewaySessionLifecycleEventMock.mockReturnValueOnce(persistence.promise);
+    const h = createAgentEventTestHarness({
+      resolveSessionKeyForRun: () => "session-unobserved",
+      persistGatewaySessionLifecycleEventForEvent: persistGatewaySessionLifecycleEventMock,
+    });
+    onTestFinished(async () => {
+      persistence.resolve();
+      await h.handler.dispose();
+      preparation.mockRestore();
+    });
+
+    await h.emit("run-unobserved", "lifecycle", { phase: "end", endedAt: 1_700 });
+    expect(persistGatewaySessionLifecycleEventMock).toHaveBeenCalledTimes(1);
+    persistence.resolve();
+    await persistence.promise;
+    expect(preparation).not.toHaveBeenCalled();
+    expect(h.changes()).toEqual([]);
+  });
 
   it("reserves the RPC abort terminal before synchronous lifecycle errors", async () => {
     const stopReason = "rpc";

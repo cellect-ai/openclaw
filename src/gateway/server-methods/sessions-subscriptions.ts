@@ -148,6 +148,8 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
             }),
           requireMaterialized:
             readGatewayRequestMutationAuthority(options).sessionScope === "operator.sessions.read",
+          // Its creator observes the first turn; delivery still filters every event by visibility.
+          allowStartableMain: true,
         });
         const assertBrowserBoundary = () => {
           read?.assertCurrent();
@@ -169,6 +171,7 @@ export const sessionSubscriptionHandlers: GatewayRequestHandlers = {
         const rollback = connId
           ? context.subscribeSessionMessageEvents(connId, subscriptionKey, {
               ...(includeApprovals ? { includeApprovals: true } : {}),
+              ...(params.includeLiveToolOutput ? { includeLiveToolOutput: true } : {}),
               provisional: true,
               mode: params.mode,
               subscriptionId: params.subscriptionId,

@@ -5,7 +5,7 @@
 import { WorkerTaskError } from "../../infra/worker-task-pool.js";
 import type { OpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution-contract.js";
 import {
-  captureOpenClawAgentDatabaseExecution,
+  captureOpenClawAgentDatabaseExecutionAsync,
   supportsOpenClawAgentDatabaseExecution,
 } from "../../state/openclaw-agent-execution.js";
 import {
@@ -116,7 +116,7 @@ export async function searchSessionTranscripts(
     try {
       // Retain writer admission while the search checks projection readiness.
       if (supportsOpenClawAgentDatabaseExecution(options)) {
-        execution = captureOpenClawAgentDatabaseExecution(options);
+        execution = await captureOpenClawAgentDatabaseExecutionAsync(options);
       }
     } catch (error) {
       statusOwnerFailure = { error };

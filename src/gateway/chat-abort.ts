@@ -119,14 +119,17 @@ export function resolveChatAbortStopReason(signal: AbortSignal): string {
 
 export function createChatAbortSignalReason(
   stopReason: string | undefined,
-  stopActor?: VerifiedRunStopActor,
+  initiator?: boolean | VerifiedRunStopActor,
 ): Error {
   if (stopReason === "restart") {
     return createAgentRunRestartAbortError();
   }
   if (stopReason !== "timeout") {
     // Keep transport presentation separate from the typed lifecycle cause.
-    const userInitiated = isPersonRunStopReason(stopReason);
+    // A verified actor implies a person stop; an explicit boolean wins over the reason name.
+    const stopActor = typeof initiator === "object" ? initiator : undefined;
+    const userInitiated =
+      typeof initiator === "boolean" ? initiator : isPersonRunStopReason(stopReason);
     return Object.assign(
       createAgentRunDirectAbortError(userInitiated, userInitiated ? stopActor : undefined),
       { gatewayStopReason: stopReason },

@@ -15,6 +15,7 @@ import {
   deviceSystemInfo,
   deviceDesktopEnvironments,
 } from "../../test-helpers/devices-fixtures.ts";
+import { openDeviceDisclosures } from "../../test-helpers/devices-view.tsx";
 import { createModalDialogTestFixture } from "../../test-helpers/modal-dialog.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { waitForSolid } from "../../test-helpers/solid-settle.ts";
@@ -48,6 +49,7 @@ export function gatewaySnapshot(
   connected = true,
   methods: string[] = [],
   scopes = ["operator.read", "operator.pairing"],
+  roleAllowsAdmin?: boolean,
 ): ApplicationGatewaySnapshot {
   return createApplicationGatewaySnapshot({
     client,
@@ -56,7 +58,7 @@ export function gatewaySnapshot(
     hello: {
       type: "hello-ok",
       protocol: 1,
-      auth: { role: "operator", scopes },
+      auth: { role: "operator", scopes, roleAllowsAdmin },
       features: { methods },
       snapshot: { presence: [gatewayPresence] },
     },
@@ -105,7 +107,7 @@ export function gatewayFixture(initial: ApplicationGatewaySnapshot) {
 export function mountPage(
   fixture: ReturnType<typeof gatewayFixture>,
   initial: Partial<DevicesPageDataState> = {},
-  routeOverride?: Partial<DevicesRouteData>,
+  routeOverride?: Partial<DevicesRouteData> | null,
   runtimeConfig?: ApplicationContext["runtimeConfig"],
 ) {
   const snapshot = fixture.source.snapshot;
@@ -122,7 +124,11 @@ export function mountPage(
     ...routeOverride,
   };
   const [currentGateway, setGateway] = createSignal(fixture.source);
-  const [presentation, setPresentation] = createSignal({ routeData });
+  const [presentation, setPresentation] = createSignal<{ routeData: DevicesRouteData | undefined }>(
+    {
+      routeData: routeOverride === null ? undefined : routeData,
+    },
+  );
   const configListeners = new Set<() => void>();
   const reloadConfig = vi.fn(async () => undefined);
   const refreshConfig = vi.fn(async () => undefined);
@@ -245,19 +251,14 @@ export async function selectEntryAction(
 ) {
   // Let initial native readiness settle before keeping an interactive row reference.
   await waitForSolid(() => expect(container.textContent).toContain(name));
+  openDeviceDisclosures(container);
+  const selector = `[data-device-action="${action}"]`;
   const row = [...container.querySelectorAll(".device-entry")].find(
-    (entry) => entry.querySelector(".settings-row__title")?.textContent === name,
+    (entry) =>
+      entry.querySelector(".settings-row__title")?.textContent === name &&
+      entry.querySelector(selector) !== null,
   );
-  const trigger = expectDefined(
-    row?.querySelector<HTMLButtonElement>(".device-entry__menu-trigger"),
-    "device actions trigger",
-  );
-  trigger.click();
-  await waitForSolid(() => expect(trigger.getAttribute("aria-expanded")).toBe("true"));
-  expectDefined(
-    row?.querySelector<HTMLButtonElement>(`[role="menuitem"][data-value="${action}"]`),
-    `device action ${action}`,
-  ).click();
+  expectDefined(row?.querySelector<HTMLButtonElement>(selector), `device action ${action}`).click();
   await Promise.resolve();
   flush();
 }
@@ -277,6 +278,7 @@ export function mountPaired(request: Parameters<typeof clientFor>[0]) {
     devicesList: { paired: [pairedDevice], pending: [] },
     nodes: [{ nodeId: "node-1", displayName: "Office Mac" }],
   });
+  openDeviceDisclosures(page.container);
   return { ...page, fixture, client };
 }
 
@@ -301,7 +303,7 @@ export function setupDevicesPageFixtures() {
   beforeEach(() => {
     dialogs = createModalDialogTestFixture((modal) => {
       const acknowledge = modal.querySelector<HTMLButtonElement>(
-        ".exec-approval-actions button[autofocus]",
+        "openclaw-modal-actions button[autofocus]",
       );
       if (acknowledge) {
         acknowledge.click();

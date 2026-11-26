@@ -1,15 +1,13 @@
 import { materializeErrorStack } from "../../../infra/error-graph-internal.js";
 import { hasSqliteWorkerOutcomeUnknown } from "../../../infra/sqlite-worker-contract.js";
-import {
-  getPluginRuntimeGatewayRequestScope,
-  getGatewayContextResolver,
-} from "../../../plugins/runtime/gateway-request-scope.js";
+import { getGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { retireSessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
 import { normalizeDeliveryContext } from "../../../utils/delivery-context.shared.js";
 import { resolveSubagentRequesterAgentId } from "../../subagent-requester-owner.js";
 import { reserveSubagentCompletionControllerSource } from "../announce/subagent-announce-controller-source.js";
 import { loadSessionEntryByKey } from "../announce/subagent-announce-delivery.runtime.js";
+import { settleConsumedRequesterDelivery } from "../completion/subagent-completion-settlement.js";
 import {
   matchesSubagentChildSessionOwner,
   resolveRecordedRequester,
@@ -19,9 +17,12 @@ import {
 import {
   ensureDeliveryState,
   getDeliveryLastError,
+  hasConsumedPrivateRequesterInput,
   isDeliverySuspended,
   clearSubagentPendingDelivery,
   loadPendingFinalDeliveryPayload,
+  recordRequesterDelivery,
+  recordRequesterHandoff,
 } from "./subagent-delivery-state.js";
 import {
   resolveAnnounceDeliveryDeadline,
@@ -58,6 +59,7 @@ import {
   assertSubagentRegistryWriteOutcomeKnown,
 } from "./subagent-registry-persistence.js";
 import type { SubagentRunRecord } from "./subagent-registry.types.js";
+import { observeSubagentRequesterDelivery } from "./subagent-requester-delivery.js";
 import { hasRequesterCompletionCohort } from "./subagent-requester-settle-identity.js";
 import { isClaimedByLiveRequesterTurn } from "./subagent-requester-turn-liveness.js";
 import { getSubagentRunRuntimeKey } from "./subagent-run-generation.js";
@@ -209,7 +211,9 @@ export const startSubagentAnnounceCleanupFlow = (
     });
   };
   const alreadyDelivered = () =>
-    typeof entry.delivery?.announcedAt === "number" || entry.delivery?.status === "delivered";
+    typeof entry.delivery?.announcedAt === "number" ||
+    entry.delivery?.status === "delivered" ||
+    hasConsumedPrivateRequesterInput(entry);
   const finalizeDelivered = (options?: { skipRequesterDelivery: boolean }) =>
     finalizeSubagentCleanup(context, entry, cleanup, "delivered", cleanupGeneration, stateContext, {
       skipAnnounce: true,
@@ -351,6 +355,7 @@ export const startSubagentAnnounceCleanupFlow = (
     current.requesterSettleWake?.rearmGeneration !== requesterSettleGeneration;
   let latestDeliveryError = getDeliveryLastError(entry);
   let committedDeliveryOwner: SubagentRunRecord | undefined;
+  let waitForRequesterDelivery: (() => Promise<void> | undefined) | undefined;
   const finalizeAnnounceCleanup = async (announceOutcome: SubagentAnnounceFlowOutcome) => {
     assertPersistenceCurrent();
     if (!context.isCleanupAttemptCurrent(entry, cleanupGeneration)) {
@@ -421,7 +426,6 @@ export const startSubagentAnnounceCleanupFlow = (
     roundOneReply: entry.completion?.resultText ?? undefined,
     fallbackReply: entry.completion?.fallbackResultText ?? undefined,
     endedReason: entry.endedReason,
-    completionRequesterLifecycleRevision: entry.completionRequesterLifecycleRevision,
     wakeOnDescendantSettle: pendingPayload.wakeOnDescendantSettle === true,
     suppressChildSessionEffects: suppressSessionEffects,
     isChildSessionEffectsAllowed: childSessionEffectsAllowed,
@@ -461,7 +465,8 @@ export const startSubagentAnnounceCleanupFlow = (
             return childSessionEffectsAllowed();
           }
         : undefined,
-    onDeliveryResult: async (delivery) => {
+    onDeliveryResult: async (observedDelivery) => {
+      await waitForRequesterDelivery?.();
       assertPersistenceCurrent();
       if (!context.isCleanupAttemptCurrent(entry, cleanupGeneration)) {
         const retiredEntry = entry;
@@ -481,6 +486,7 @@ export const startSubagentAnnounceCleanupFlow = (
       if (entry.delivery?.status === "delivered") {
         return;
       }
+      const delivery = await settleConsumedRequesterDelivery([entry], observedDelivery);
       // A late failure cannot rearm an announcement transferred to the batch.
       // Committed sends still retain their delivery evidence.
       if (!delivery.delivered && requesterTookCompletion(entry)) {
@@ -514,9 +520,10 @@ export const startSubagentAnnounceCleanupFlow = (
           }
           recordAnnounceDeliveryResult(draft, delivery, params.runs);
           const deliveryState = ensureDeliveryState(draft);
-          latestDeliveryError = delivery.delivered
-            ? undefined
-            : formatAnnounceDeliveryError(delivery);
+          latestDeliveryError =
+            delivery.delivered || delivery.reason === "completion_handoff_pending"
+              ? undefined
+              : formatAnnounceDeliveryError(delivery);
           if (delivery.delivered) {
             deliveryState.status = "delivered";
             deliveryState.announcedAt = deliveryState.deliveredAt ?? Date.now();
@@ -524,6 +531,9 @@ export const startSubagentAnnounceCleanupFlow = (
           } else {
             if (delivery.reason === "delivery_suppressed") {
               deliveryState.status = "failed";
+              if (deliveryState.requesterDelivery?.state === "waiting") {
+                deliveryState.requesterDelivery = undefined;
+              }
             }
             deliveryState.lastError = latestDeliveryError;
           }
@@ -582,18 +592,17 @@ export const startSubagentAnnounceCleanupFlow = (
         if (!controllerInput) {
           throw new Error("Subagent completion requester is unavailable");
         }
+        waitForRequesterDelivery = observeSubagentRequesterDelivery(controllerInput, (fact) =>
+          commit((draft) => recordRequesterDelivery(draft, fact)),
+        );
+        const blockingRunId = controllerInput.mailbox.claim?.inputs.find(
+          (source) => source !== controllerInput,
+        )?.protocolRunId;
+        await commit((draft) => recordRequesterHandoff(draft, blockingRunId));
       }
-      announceOutcome = await subagentRuns.runWithCompletionAuthority(entry, () => {
-        // Select the delivery source once. Revocation after admission must not
-        // downgrade the in-flight send to fresh System authority.
-        const authority =
-          getPluginRuntimeGatewayRequestScope()?.client?.internal?.operatorRunAuthority;
-        return params.runSubagentAnnounceFlow({
+      announceOutcome = await subagentRuns.runWithCompletionAuthority(entry, () =>
+        params.runSubagentAnnounceFlow({
           ...announceParams,
-          isCompletionDeliveryAllowed: () => {
-            authority?.assertCurrent();
-            return announceParams.isCompletionDeliveryAllowed?.() ?? false;
-          },
           controllerInput,
           childAgentId: entry.childAgentId,
           childSessionIdentity: entry.childSessionIdentity,
@@ -604,8 +613,8 @@ export const startSubagentAnnounceCleanupFlow = (
             releasePreparation();
             clearTimeout(deadlineTimer);
           },
-        });
-      });
+        }),
+      );
     } catch (error) {
       if (hasSqliteWorkerOutcomeUnknown(error)) {
         throw error;

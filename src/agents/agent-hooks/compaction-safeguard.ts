@@ -13,7 +13,10 @@ import {
   getCompactionProvider,
   type CompactionProvider,
 } from "../../plugins/compaction-provider.js";
+import { recoverCompactionSafeguardFailure } from "../compaction-summary-refusal.js";
 import { summarizeCompactionHistory } from "../compaction.js";
+import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "../copilot-dynamic-headers.js";
+import type { AgentMessage, SessionTreeEntry } from "../runtime/index.js";
 import type { SessionModelUsageSink } from "../sessions/compaction/runtime.js";
 import type { ExtensionAPI, ExtensionContext } from "../sessions/index.js";
 import { recordSessionModelUsage } from "../sessions/session-model-usage.js";
@@ -26,9 +29,9 @@ import {
 } from "./compaction-safeguard-budget.js";
 import {
   buildPreservedTurnsSection,
-  buildSplitTurnContextSection,
   resolveRecentTurnsPreserve,
   splitPreservedRecentTurns,
+  type ContextSection,
 } from "./compaction-safeguard-context.js";
 import type {
   CompactionSafeguardResult,
@@ -38,19 +41,21 @@ import type {
   RunCompactionSafeguard,
 } from "./compaction-safeguard-execution.types.js";
 import {
-  prepareCompactionSafeguardMessages,
+  prepareCompactionSafeguardContext,
   prepareCompactionSafeguardHistory,
+  prepareCompactionSafeguardMessages,
   prepareCompactionSafeguardSections,
   prepareCompactionSafeguardSummary,
   type CompactionSafeguardHistory,
 } from "./compaction-safeguard-preparation.js";
-import type { ContextSection } from "./compaction-safeguard-prepared.types.js";
 import {
   appendSummarySection,
   auditSummaryQuality,
   buildCompactionStructureInstructions,
   buildStructuredFallbackSummary,
   extractOpaqueIdentifiers,
+  formatGeneratedSplitTurnSection,
+  resolveQualityGuardMaxRetries,
   resolveSummaryReserveTokens,
   wrapUntrustedInstructionBlock,
 } from "./compaction-safeguard-quality.js";
@@ -63,9 +68,6 @@ import { readWorkspaceContextForSummary } from "./compaction-workspace-context.j
 const log = createSubsystemLogger("compaction-safeguard");
 
 const missedModelWarningSessions = new WeakSet<object>();
-const SPLIT_TURN_SECTION_HEADING = "**Turn Context (split turn):**";
-const DEFAULT_QUALITY_GUARD_MAX_RETRIES = 1;
-const MAX_QUALITY_GUARD_MAX_RETRIES = 3;
 const compactionSafeguardDeps = {
   summarizeCompactionHistory,
 };
@@ -78,14 +80,6 @@ type CompactionLoss =
   | "identifier-retention"
   | "quality-retention";
 
-function nestMarkdownHeadings(text: string): string {
-  return text.replace(/^##(?=[ \t]+\S)/gmu, "###");
-}
-
-/**
- * Build the reserved suffix that follows the summary body. Both the provider
- * and LLM paths use this so diagnostic sections survive truncation.
- */
 async function resolveModelAuth(
   ctx: Pick<ExtensionContext, "model" | "modelRegistry">,
   model: NonNullable<ExtensionContext["model"]>,
@@ -121,31 +115,24 @@ async function resolveModelAuth(
   return { ok: true, apiKey: requestAuth.apiKey, headers: requestAuth.headers };
 }
 
-function clampNonNegativeInt(value: number | undefined, fallback: number, max: number): number {
-  return Math.min(max, Math.max(0, Math.floor(value ?? fallback)));
-}
-
-function resolveQualityGuardMaxRetries(value: number | undefined): number {
-  return clampNonNegativeInt(
-    value,
-    DEFAULT_QUALITY_GUARD_MAX_RETRIES,
-    MAX_QUALITY_GUARD_MAX_RETRIES,
-  );
-}
-
-function formatGeneratedSplitTurnSection(
-  summary: string,
-  onTruncated: () => void,
-  maxChars: number,
-): string {
-  const heading = `${SPLIT_TURN_SECTION_HEADING}\n\n`;
-  const summaryBudget = maxChars - heading.length;
-  const nestedSummary = nestMarkdownHeadings(summary);
-  const cappedSummary = capCompactionSummary(nestedSummary, summaryBudget);
-  if (cappedSummary.length < nestedSummary.length) {
-    onTruncated();
+function buildCompactionSummaryHeaders(params: {
+  model: NonNullable<ExtensionContext["model"]>;
+  messages: AgentMessage[];
+  headers?: NonNullable<ExtensionContext["model"]>["headers"];
+}): typeof params.headers {
+  if (params.model.provider !== "github-copilot") {
+    return params.headers;
   }
-  return `${heading}${cappedSummary}`;
+  const messages = params.messages as unknown as Parameters<
+    typeof buildCopilotDynamicHeaders
+  >[0]["messages"];
+  return {
+    ...buildCopilotDynamicHeaders({
+      messages,
+      hasImages: hasCopilotVisionInput(messages),
+    }),
+    ...params.headers,
+  };
 }
 
 function requireFullPreparation(ctx: CompactionSafeguardContext) {
@@ -155,11 +142,12 @@ function requireFullPreparation(ctx: CompactionSafeguardContext) {
   return ctx.fullPreparation;
 }
 
-/** Registers the array-backed adapter of the builtin safeguard owner. */
+/** Registers compaction hooks that summarize, preserve recent turns, and audit output quality. */
 export default function compactionSafeguardExtension(api: ExtensionAPI): void {
   api.on("session_before_compact", runCompactionSafeguard);
 }
 
+/** Public extensions retain their complete mutable SDK contract. */
 export function runCompactionSafeguard(
   event: Parameters<RunCompactionSafeguard>[0],
   ctx: Parameters<RunCompactionSafeguard>[1],
@@ -169,13 +157,12 @@ export function runCompactionSafeguard(
     modelRegistry: ctx.modelRegistry,
     identity: ctx.sessionManager,
     fullPreparation: event.preparation,
-    readBranch: () => ctx.sessionManager.getBranch(),
+    readBranch: () => ctx.sessionManager.getBranch() as SessionTreeEntry[],
   });
 }
 
-/** Prepared execution carries no session-manager history facade. */
 export async function executeCompactionSafeguard(
-  event: CompactionSafeguardEvent,
+  event: Parameters<RunCompactionSafeguard>[0] | CompactionSafeguardEvent,
   ctx: CompactionSafeguardContext,
   prepared?: PreparedCompactionSafeguardExecution,
 ): Promise<CompactionSafeguardResult> {
@@ -243,7 +230,7 @@ export async function executeCompactionSafeguard(
       },
     };
   }
-  const { readFiles, modifiedFiles, fileOpsSummary, toolFailureSection, copilotHeaders } =
+  const { readFiles, modifiedFiles, fileOpsSummary, toolFailureSection } =
     prepared?.facts.sections ??
     prepareCompactionSafeguardSections({ fileOps: preparation.fileOps, history });
 
@@ -277,25 +264,24 @@ export async function executeCompactionSafeguard(
     },
     producerLosses: ReadonlySet<CompactionLoss> = new Set(),
     qualityRetention?: SummaryQualityRetention,
-    // Lossy recovery reserves the active split turn before older preserved turns.
-    degraded = false,
   ) => {
     workspaceContextPromise ??= readWorkspaceContextForSummary(
       runtime?.postCompactionSections,
       runtime?.workspaceDir,
     );
+    // Chronological, and the tail cap trims from the head: older verbatim
+    // preserved turns yield before the split turn and the required sections.
     const parts = {
+      preservedTurnsSection: sections.preservedTurnsSection,
       splitTurnSection: sections.splitTurnSection,
       generatedSplitTurnSection: sections.generatedSplitTurnSection,
-      preservedTurnsSection: sections.preservedTurnsSection,
       toolFailureSection,
       fileOpsSummary,
       workspaceContext: await workspaceContextPromise,
     };
     let text = "";
-    let reservedChars = 0;
     const contextRanges: CompactionSuffix["contextRanges"] = [];
-    for (const [name, part] of Object.entries(parts)) {
+    for (const part of Object.values(parts)) {
       if (!part) {
         continue;
       }
@@ -307,9 +293,6 @@ export async function executeCompactionSafeguard(
       const appended = leadingTrim > 0 ? section.slice(leadingTrim) : section;
       const start = text.length;
       text = appendSummarySection(text, section);
-      if (degraded && name === "generatedSplitTurnSection") {
-        reservedChars = text.length;
-      }
       if (typeof part !== "string") {
         contextRanges.push({
           start,
@@ -324,18 +307,13 @@ export async function executeCompactionSafeguard(
     // ends without newline: "...## Exact identifiers## Tool Failures").
     if (text && !/^\s/.test(text)) {
       text = `\n\n${text}`;
-      reservedChars += reservedChars > 0 ? 2 : 0;
       for (const range of contextRanges) {
         range.start += 2;
         range.end += 2;
         range.segmentStarts = range.segmentStarts.map((segmentStart) => segmentStart + 2);
       }
     }
-    const suffix: CompactionSuffix = {
-      text,
-      contextRanges,
-      ...(reservedChars > 0 ? { reservedChars } : {}),
-    };
+    const suffix: CompactionSuffix = { text, contextRanges };
     const fit = (retention?: SummaryQualityRetention) =>
       fitCompactionSummary(
         preparation.summaryTokenBudget,
@@ -395,16 +373,14 @@ export async function executeCompactionSafeguard(
       },
     },
   });
-  const compactionProvider: CompactionProvider | undefined = providerId
-    ? getCompactionProvider(providerId)
-    : undefined;
-  if (compactionProvider && prepared) {
-    return cancelCompaction(
-      "Prepared compaction does not support custom compaction providers; use the array-backed extension path.",
-    );
-  }
   if (providerId) {
+    const compactionProvider: CompactionProvider | undefined = getCompactionProvider(providerId);
     if (compactionProvider) {
+      if (prepared) {
+        return cancelCompaction(
+          "Prepared compaction cannot invoke a custom provider without its full history.",
+        );
+      }
       try {
         // Give the provider ALL messages — no pruning, no chunking, no split-turn splitting.
         const providerResult = await compactionProvider.summarize({
@@ -415,18 +391,15 @@ export async function executeCompactionSafeguard(
           previousSummary,
         });
         if (typeof providerResult === "string" && providerResult.trim()) {
-          const { preservedMessages } = splitPreservedRecentTurns({
-            messages: baseMessagesToSummarize,
+          const context = prepareCompactionSafeguardContext({
+            messagesToSummarize: baseMessagesToSummarize,
             recentTurnsPreserve,
+            splitTurnContextChars,
+            turnPrefixMessages: preparation.isSplitTurn ? turnPrefixMessages : undefined,
           });
           const finalized = await finalizeSummaryText(reconcileRequestSelection(providerResult), {
-            splitTurnSection: preparation.isSplitTurn
-              ? buildSplitTurnContextSection(turnPrefixMessages, splitTurnContextChars)
-              : undefined,
-            preservedTurnsSection: buildPreservedTurnsSection(
-              preservedMessages,
-              splitTurnContextChars,
-            ),
+            splitTurnSection: context.splitTurnSection,
+            preservedTurnsSection: context.preservedTurnsSection,
           });
           return compactionResult(finalized.summary);
         }
@@ -461,15 +434,19 @@ export async function executeCompactionSafeguard(
     return cancelCompaction("Compaction safeguard could not resolve a summarization model.");
   }
 
+  if (prepared && model.provider === "github-copilot") {
+    return cancelCompaction("Prepared compaction cannot replace provider-owned history headers.");
+  }
   const authResult = await resolveModelAuth(ctx, model);
   if (!authResult.ok) {
     return cancelCompaction(authResult.reason);
   }
   try {
-    const headers =
-      model.provider === "github-copilot"
-        ? { ...copilotHeaders, ...authResult.headers }
-        : authResult.headers;
+    const headers = buildCompactionSummaryHeaders({
+      model,
+      messages: baseMessagesToSummarize,
+      headers: authResult.headers,
+    });
     const usageSink: SessionModelUsageSink = (usage) =>
       recordSessionModelUsage(ctx.identity, usage);
     const llmSummaryParams = {
@@ -485,8 +462,8 @@ export async function executeCompactionSafeguard(
     };
     const qualityGuardMaxRetries = resolveQualityGuardMaxRetries(runtime?.qualityGuardMaxRetries);
 
-    const eagerSummary = prepared
-      ? undefined
+    const summaryFacts = prepared
+      ? { ...prepared.facts.summary, reconciliationMessages: [] }
       : prepareCompactionSafeguardSummary({
           history,
           preparation: requireFullPreparation(ctx),
@@ -494,28 +471,17 @@ export async function executeCompactionSafeguard(
           splitTurnContextChars,
           qualityGuardEnabled,
         });
-    const summaryInputs = prepared ? prepared.facts.summary : eagerSummary!;
     const {
       latestUserAsk,
       latestAskInRetainedTurn,
       identifiers,
       requiredAskContext,
       preservedTurnsSection: preservedTurnsSectionLocal,
-    } = summaryInputs;
-    const reconciliationMessages = eagerSummary?.reconciliationMessages ?? [];
-    const reconciliationCount =
-      prepared?.facts.reconciliationCount ?? reconciliationMessages.length;
+    } = summaryFacts;
+    const reconciliationCount = prepared
+      ? prepared.facts.reconciliationCount
+      : summaryFacts.reconciliationMessages.length;
     const turnPrefixCount = prepared?.facts.turnPrefixCount ?? turnPrefixMessages.length;
-    const summarize = (
-      source: "history" | "turnPrefix",
-      params: Omit<Parameters<typeof summarizeCompactionHistory>[0], "messages">,
-    ) =>
-      prepared
-        ? prepared.summarize(source, params)
-        : compactionSafeguardDeps.summarizeCompactionHistory({
-            ...params,
-            messages: source === "history" ? reconciliationMessages : turnPrefixMessages,
-          });
 
     let correctiveInstructions = "";
     const totalAttempts = qualityGuardEnabled ? qualityGuardMaxRetries + 1 : 1;
@@ -536,12 +502,20 @@ export async function executeCompactionSafeguard(
       try {
         historySummary =
           reconciliationCount > 0
-            ? await summarize("history", {
-                ...llmSummaryParams,
-                summaryPrompt: { kind: "custom", instructions: structuredInstructions },
-                customInstructions: correctiveInstructions,
-                previousSummary,
-              })
+            ? await (prepared
+                ? prepared.summarize("history", {
+                    ...llmSummaryParams,
+                    summaryPrompt: { kind: "custom", instructions: structuredInstructions },
+                    customInstructions: correctiveInstructions,
+                    previousSummary,
+                  })
+                : compactionSafeguardDeps.summarizeCompactionHistory({
+                    ...llmSummaryParams,
+                    messages: summaryFacts.reconciliationMessages,
+                    summaryPrompt: { kind: "custom", instructions: structuredInstructions },
+                    customInstructions: correctiveInstructions,
+                    previousSummary,
+                  }))
             : buildStructuredFallbackSummary(previousSummary);
 
         historySummary = reconcileRequestSelection(historySummary);
@@ -552,14 +526,24 @@ export async function executeCompactionSafeguard(
             splitTurnFocusLabel,
             customInstructions,
           );
-          const prefixSummary = await summarize("turnPrefix", {
-            ...llmSummaryParams,
-            summaryPrompt: { kind: "turn-prefix" },
-            customInstructions: [splitTurnFocus, correctiveInstructions]
-              .filter(Boolean)
-              .join("\n\n"),
-            previousSummary: undefined,
-          });
+          const prefixSummary = await (prepared
+            ? prepared.summarize("turnPrefix", {
+                ...llmSummaryParams,
+                summaryPrompt: { kind: "turn-prefix" },
+                customInstructions: [splitTurnFocus, correctiveInstructions]
+                  .filter(Boolean)
+                  .join("\n\n"),
+                previousSummary: undefined,
+              })
+            : compactionSafeguardDeps.summarizeCompactionHistory({
+                ...llmSummaryParams,
+                messages: turnPrefixMessages,
+                summaryPrompt: { kind: "turn-prefix" },
+                customInstructions: [splitTurnFocus, correctiveInstructions]
+                  .filter(Boolean)
+                  .join("\n\n"),
+                previousSummary: undefined,
+              }));
           splitTurnSummaryLocal = prefixSummary;
           splitTurnSectionLocal = formatGeneratedSplitTurnSection(
             prefixSummary,
@@ -646,7 +630,6 @@ export async function executeCompactionSafeguard(
             requiredAskContext,
             identifierPolicy,
           },
-          true,
         );
         bestSummary = { summary: recovered.summary, reasonCount };
       }
@@ -681,17 +664,10 @@ export async function executeCompactionSafeguard(
 
     throw new Error("Compaction safeguard exhausted summary attempts without a decision.");
   } catch (error) {
-    // Caller cancellation is terminal, not a safeguard failure. Preserve the
-    // original abort so the runner can classify it without a false data-loss warning.
-    if (signal?.aborted) {
-      signal.throwIfAborted();
-    }
-    const message = formatErrorMessage(error);
-    log.warn("Compaction summarization failed; cancelling compaction to preserve history.");
-    return cancelCompaction(
-      `Compaction safeguard could not summarize the session: ${message}`,
-      error,
-    );
+    signal.throwIfAborted();
+    return prepared
+      ? prepared.recover(error)
+      : recoverCompactionSafeguardFailure(error, preparation, signal, ctx.identity);
   }
 }
 

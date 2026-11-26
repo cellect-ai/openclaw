@@ -27,6 +27,7 @@ export function createCronRuntimeOverrideResolver(
       entry: resolveCronRuntimeSessionEntry(
         params.job.inferenceBinding,
         params.cronSession.sessionEntry,
+        provider,
       ),
       cfg: params.cfgWithAgentDefaults,
     });
@@ -52,6 +53,7 @@ export function createCronCandidateExecutionResolver(
         sessionEntry: resolveCronRuntimeSessionEntry(
           params.job.inferenceBinding,
           params.cronSession.sessionEntry,
+          provider,
         ),
       },
       { isCliProvider, resolveEffectiveAgentRuntime },

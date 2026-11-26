@@ -2,6 +2,7 @@
 // aliases, model catalog validation, and rejected invalid patch payloads.
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { prepareSharedAuthStoreOwnership } from "../agents/auth-profiles/path-resolve.js";
+import * as authStore from "../agents/auth-profiles/store-runtime.js";
 import * as modelSelection from "../agents/model-selection.js";
 import type { OpenClawConfig } from "../config/config.js";
 import type { SessionEntry } from "../config/sessions.js";
@@ -452,7 +453,7 @@ describe("gateway sessions patch", () => {
     expect(read.agentStatus).toBeUndefined();
   });
 
-  test("commits a read acknowledgement without ageing the session row", async () => {
+  test("commits read and unread marks without ageing the session row", async () => {
     const store = mainStoreEntry({
       markedUnreadAt: 40,
       agentStatus: { note: "Waiting", attention: "hand", expiresAt: Date.now() + 60_000 },
@@ -465,7 +466,7 @@ describe("gateway sessions patch", () => {
     expect(read.agentStatus).toBeUndefined();
 
     const marked = await patchOk({ store, unread: true });
-    expect(marked.updatedAt).toBeGreaterThan(1);
+    expect(marked.updatedAt).toBe(1);
     expect(marked.markedUnreadAt).toEqual(expect.any(Number));
 
     const pinned = await patchOk({
@@ -605,6 +606,7 @@ describe("gateway sessions patch", () => {
     expect(set.toolOverrides).toEqual({
       mcpServers: { alpha: true, zeta: false },
       mcpToolsDeny: { alpha: ["read", "write"] },
+      webSearch: true,
     });
 
     const replaced = await patchOk({ store, toolOverrides: { skills: { release: false } } });
@@ -1394,9 +1396,9 @@ describe("gateway sessions patch", () => {
     { profile: "newprofile", existing: true },
     { profile: "openai:user@example.com", existing: false },
   ])("persists @profile=$profile (existing=$existing)", async ({ profile, existing }) => {
+    using previousProfile = vi.spyOn(authStore, "prepareAuthProfileProvider");
     const store = existing
       ? mainStoreEntry({
-          sessionId: "sess-live-profile-only",
           providerOverride: "anthropic",
           modelOverride: ANTHROPIC_SONNET_ID,
           authProfileOverride: "oldprofile",
@@ -1411,9 +1413,8 @@ describe("gateway sessions patch", () => {
     });
     expectModelSelection(entry, "anthropic", ANTHROPIC_SONNET_ID);
     expectAuthOverride(entry, { profile });
-    if (existing) {
-      expect(entry.liveModelSwitchPending).toBe(true);
-    }
+    expect(previousProfile).not.toHaveBeenCalled();
+    expect(entry.liveModelSwitchPending).toBe(existing ? true : undefined);
   });
 
   test("resolves bare allowlisted model ids before persisting @profile suffix", async () => {

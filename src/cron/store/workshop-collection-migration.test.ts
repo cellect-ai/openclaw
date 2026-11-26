@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop/collection-review-prompt.js";
+import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop-host/collection-review-prompt.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
 import { createReloadCronJob } from "../store.test-support.js";
 import { withCronStore, writeCronJobScratch } from "../store.worker.test-support.js";

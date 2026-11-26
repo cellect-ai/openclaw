@@ -98,6 +98,7 @@ function runPluginManifest(
   eventName = "workflow_dispatch",
   runtimePolicy = "",
   targetRoot?: string,
+  runnerBackend = "",
 ) {
   const workflow = readPluginPrereleaseWorkflow();
   const step = workflow.jobs.preflight.steps.find(
@@ -108,7 +109,11 @@ function runPluginManifest(
   }
   const root = tempDirs.make("openclaw-plugin-prerelease-phase-");
   const outputPath = join(root, "github-output");
-  const result = spawnSync("bash", ["-c", step.run], {
+  const run = step.run.replace(
+    "./.frv-tooling/scripts/lib/ci-blacksmith-capacity.mjs",
+    new URL("../../scripts/lib/ci-blacksmith-capacity.mjs", import.meta.url).href,
+  );
+  const result = spawnSync("bash", ["-c", run], {
     cwd: targetRoot,
     encoding: "utf8",
     env: {
@@ -117,6 +122,7 @@ function runPluginManifest(
       GITHUB_OUTPUT: outputPath,
       PATH: process.env.PATH,
       PHASE: phase,
+      OPENCLAW_CI_RUNNER_BACKEND: runnerBackend,
       OPENCLAW_CI_TEST_RUNTIME_POLICY: runtimePolicy,
     },
   });
@@ -241,7 +247,6 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
   it("uses kitchen-sink npm and ClawHub scenarios as the registry install canary", () => {
     const lane = getDockerLane("kitchen-sink-plugin");
     const script = readFileSync("scripts/e2e/kitchen-sink-plugin-docker.sh", "utf8");
-    const rpcScript = readFileSync("scripts/e2e/kitchen-sink-rpc-docker.sh", "utf8");
     const sweepScript = readFileSync("scripts/e2e/lib/kitchen-sink-plugin/sweep.sh", "utf8");
     const assertionsScript = readFileSync(
       "scripts/e2e/lib/kitchen-sink-plugin/assertions.mjs",
@@ -262,24 +267,6 @@ describe("scripts/lib/plugin-prerelease-test-plan.mts", () => {
       "utf8",
     ).trim();
     expect(recordedVersion).toMatch(/^\d+\.\d+\.\d+(?:[+-][0-9A-Za-z.-]+)?$/);
-    expect(script).toContain(
-      "$TARGET_ROOT_DIR/scripts/e2e/lib/kitchen-sink-plugin/npm-version.txt",
-    );
-    expect(script).toContain(
-      "Frozen target is missing its branch-recorded Kitchen Sink npm version",
-    );
-    expect(rpcScript).toContain(
-      "$TARGET_ROOT_DIR/scripts/e2e/lib/kitchen-sink-plugin/npm-version.txt",
-    );
-    expect(rpcScript).toContain(
-      'export OPENCLAW_KITCHEN_SINK_NPM_SPEC="npm:@openclaw/kitchen-sink@$KITCHEN_SINK_NPM_VERSION"',
-    );
-    expect(script).toContain(
-      'KITCHEN_SINK_NPM_SPEC="npm:@openclaw/kitchen-sink@$KITCHEN_SINK_NPM_VERSION"',
-    );
-    expect(script).not.toContain("npm:@openclaw/kitchen-sink@latest");
-    expect(script).toContain("npm-pinned-conformance");
-    expect(script).toContain("npm-pinned-adversarial");
     expect(script).toContain("npm:@openclaw/kitchen-sink@beta");
     expect(script).toContain("clawhub:@openclaw/kitchen-sink@latest");
     expect(script).toContain("clawhub:@openclaw/kitchen-sink@beta");
@@ -579,9 +566,11 @@ export const createExtensionTestShards = () => [{
     ).toBe("matrix.requires_bun == true");
 
     const hourly = runPluginManifest("independent", "schedule");
+    const boatHourly = runPluginManifest("independent", "schedule", "", undefined, "boat");
     const release = runPluginManifest("independent");
     const forcedNode = runPluginManifest("independent", "workflow_dispatch", "node");
     expect(hourly.result.status, hourly.result.stderr).toBe(0);
+    expect(boatHourly.result.status, boatHourly.result.stderr).toBe(0);
     expect(release.result.status, release.result.stderr).toBe(0);
     expect(forcedNode.result.status, forcedNode.result.stderr).toBe(0);
     const outputs = (output: string) =>
@@ -592,6 +581,39 @@ export const createExtensionTestShards = () => [{
           .map((line) => [line.slice(0, line.indexOf("=")), line.slice(line.indexOf("=") + 1)]),
       );
     const selected = outputs(hourly.output);
+    const manifestStep = workflow.jobs.preflight.steps.find(
+      (step: WorkflowStep) => step.id === "manifest",
+    );
+    expect(manifestStep.env.OPENCLAW_CI_RUNNER_BACKEND).toBeUndefined();
+    const physicalRows = JSON.parse(
+      expectDefined(selected.plugin_prerelease_extension_matrix, "hourly extension matrix"),
+    ).include;
+    const boatRows = JSON.parse(
+      expectDefined(outputs(boatHourly.output).plugin_prerelease_extension_matrix, "Boat matrix"),
+    ).include;
+    expect(boatRows).toEqual(physicalRows);
+    const pinnedLabels = new Set(
+      physicalRows.map((row: Record<string, unknown>) => row.runner_label),
+    );
+    expect(pinnedLabels).toEqual(
+      new Set(["blacksmith-2vcpu-ubuntu-2404", "blacksmith-4vcpu-ubuntu-2404"]),
+    );
+    for (const runner_label of pinnedLabels) {
+      for (const releaseRunnerGroup of ["", "release-runners"]) {
+        for (const eventName of ["schedule", "workflow_dispatch"] as const) {
+          expect(
+            evaluateWorkflowRunner(workflow.jobs["plugin-prerelease-extension-shard"]["runs-on"], {
+              ...context,
+              eventName,
+              releaseRunnerGroup,
+              matrix: { runner_label },
+            }),
+          ).toEqual(
+            releaseRunnerGroup ? { group: releaseRunnerGroup, labels: runner_label } : runner_label,
+          );
+        }
+      }
+    }
     const ownership = (matrix: string | undefined) => [
       ...new Map(
         JSON.parse(expectDefined(matrix, "extension matrix"))

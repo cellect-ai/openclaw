@@ -13,6 +13,10 @@ import {
 import { collectPackageDistImportErrors } from "./package-dist-imports.mjs";
 import { isRecord } from "./record-shared.mjs";
 
+const PATCHED_CIAO_NAME = "@homebridge/ciao";
+const PATCHED_CIAO_ENTRY = `${PATCHED_CIAO_NAME}/native.js`;
+const DIST_SCRIPT_RE = /^dist\/.*\.(?:cjs|js|mjs)$/u;
+
 type BundledPackage = {
   entries: ReadonlySet<string>;
   files: string[];
@@ -162,17 +166,14 @@ export function collectBundledDependencyErrors({
   const bundledDependencies = new Set(listBundleDependencies(packageJson));
   const patchedRuntime = "its patched runtime must not be replaced by the registry package";
   const required = new Map<string, string>([[PATCHED_MCP_NAME, patchedRuntime]]);
-  // Bonjour's patch-only @homebridge/ciao/native.js entry is absent from registry
-  // Ciao. Frozen releases that import the package root keep their unbundled pin.
+  // Registry Ciao lacks the patch-only native entry. Released packages that
+  // import the package root stay valid with the registry dependency.
   if (
-    !bundledDependencies.has("@homebridge/ciao") &&
     runtime.files.some(
-      (file) =>
-        /^dist\/.*\.(?:cjs|js|mjs)$/u.test(file) &&
-        runtime.readText(file).includes("@homebridge/ciao/native.js"),
+      (file) => DIST_SCRIPT_RE.test(file) && runtime.readText(file).includes(PATCHED_CIAO_ENTRY),
     )
   ) {
-    required.set("@homebridge/ciao", patchedRuntime);
+    required.set(PATCHED_CIAO_NAME, patchedRuntime);
   }
   if (requireBundledWorkspaceDeps) {
     required.set("@openclaw/ai", "it is private to the OpenClaw workspace");

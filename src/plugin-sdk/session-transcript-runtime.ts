@@ -35,7 +35,12 @@ import { withSessionTranscriptDeltaReader } from "../config/sessions/session-tra
 import { prepareSessionTranscriptHydration } from "../config/sessions/session-transcript-hydration.js";
 import { assertLegacyTranscriptPreparation } from "../config/sessions/session-transcript-preparation.js";
 import { normalizeRawDeltaLimits } from "../config/sessions/session-transcript-raw-cursor.js";
-import { targetDiscoveryLane } from "../config/sessions/session-transcript-worker-resources.js";
+import {
+  validateSessionTranscriptReplaySelection,
+  type SessionTranscriptReplayGroup,
+  type SessionTranscriptReplaySelection,
+} from "../config/sessions/session-transcript-replay.types.js";
+import { sessionStoreLane } from "../config/sessions/session-transcript-worker-resources.js";
 import { recordAssistantManagedMediaUrls } from "../config/sessions/transcript-assistant-delivery.js";
 import {
   resolveMirroredTranscriptText,
@@ -56,7 +61,10 @@ import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { readLegacySessionTranscriptCatalogTitle } from "../gateway/session-transcript-catalog.js";
 import { warnPluginSdkDeprecation } from "../plugins/sdk-deprecation.js";
 import { normalizeAgentId, resolveAgentIdFromSessionKey } from "../routing/session-key.js";
+import type { PluginNotice } from "../shared/plugin-notice.js";
+import { PLUGIN_NOTICE_KIND } from "../shared/transcript-only-openclaw-assistant.js";
 import type { AgentMessage } from "./agent-core.js";
+import { projectSessionTranscriptAppendOptions } from "./session-transcript-append-options.js";
 import { withProjectedSessionTranscriptWriteLock } from "./session-transcript-lock-runtime.js";
 import {
   formatSessionTranscriptMemoryHitKey,
@@ -135,6 +143,25 @@ export function composeSessionTranscriptWriteAssertion(
 export type SessionTranscriptEvent = unknown;
 
 export type SessionTranscriptTargetParams = SessionTranscriptReadParams;
+
+export type { SessionTranscriptReplayGroup };
+export type SessionTranscriptReplayGroupsParams = SessionTranscriptTargetParams &
+  SessionTranscriptReplaySelection;
+
+/**
+ * Read canonical active-branch users and their adjacent runtime/system-update carriers.
+ * Results follow requested ID order (duplicates once); absent, non-user, and fenced IDs are omitted.
+ * The uncompressed source-byte budget includes carriers and rejects the entire read on overflow.
+ */
+export async function readSessionTranscriptReplayGroups(
+  params: SessionTranscriptReplayGroupsParams,
+): Promise<SessionTranscriptReplayGroup[]> {
+  const { entryIds, maxBytes, ...target } = params;
+  validateSessionTranscriptReplaySelection({ entryIds, maxBytes });
+  const selection = { entryIds: [...entryIds], maxBytes };
+  const scope = bindSessionTranscriptStoreScope(target);
+  return withSessionTranscriptDeltaReader(scope, (reader) => reader.replayGroups(selection));
+}
 
 /** Persists a successful yield's private context through the admitted session writer. */
 export async function appendSessionYieldContext(
@@ -261,7 +288,8 @@ export type SessionTranscriptStrictMessageAppendResult<TMessage> =
 
 export type SessionTranscriptAssistantMirrorAppendParams = SessionTranscriptReadParams & {
   config?: OpenClawConfig;
-  deliveryMirror?: SessionTranscriptDeliveryMirror;
+  /** A plugin notice keeps the row out of model replay; clients may render its data natively. */
+  deliveryMirror?: SessionTranscriptDeliveryMirror | PluginNotice;
   expectedLifecycleRevision?: string;
   expectedWriterRunId?: string;
   idempotencyKey?: string;
@@ -460,7 +488,7 @@ export async function appendAssistantMirrorMessageByIdentity(
             params.signal?.throwIfAborted();
           },
           undefined,
-          targetDiscoveryLane,
+          sessionStoreLane,
         );
     if (!currentEntry?.sessionId) {
       return { ok: false, reason: "missing active session", code: "blocked" };
@@ -468,8 +496,11 @@ export async function appendAssistantMirrorMessageByIdentity(
     if (params.sessionId && currentEntry.sessionId !== params.sessionId) {
       return { ok: false, reason: "session changed", code: "session-rebound" };
     }
+    // A plugin notice is identified by its data, not its text, so it never folds into a match.
     const latestEquivalentAssistantId =
-      !params.idempotencyKey && isDeliveryMirrorAssistantMessage(message)
+      !params.idempotencyKey &&
+      params.deliveryMirror?.kind !== PLUGIN_NOTICE_KIND &&
+      isDeliveryMirrorAssistantMessage(message)
         ? findLatestEquivalentAssistantMessageId(
             selectVisibleTranscriptEvents(await locked.readEvents()),
             message,
@@ -513,7 +544,7 @@ export async function appendAssistantMirrorMessageByIdentity(
               },
               undefined,
               params.signal,
-              targetDiscoveryLane,
+              sessionStoreLane,
             ).readLatestActiveMessage();
             events = latest ? [latest.event] : [];
           } catch (error) {
@@ -570,7 +601,7 @@ export async function appendSessionTranscriptMessageByIdentity<TMessage>(
 ): Promise<TranscriptMessageAppendResult<TMessage> | undefined> {
   return await appendTranscriptMessage(
     bindSessionTranscriptStoreScope(params, params.config),
-    params,
+    projectSessionTranscriptAppendOptions(params),
   );
 }
 
@@ -668,7 +699,11 @@ export async function appendSessionTranscriptMessageByIdentityStrict<TMessage>(
 export async function appendSessionTranscriptMessagesByIdentity<TMessage>(
   params: SessionTranscriptAppendMessagesParams<TMessage>,
 ): Promise<TranscriptMessageAppendResult<TMessage>[]> {
-  return await appendTranscriptMessages(params, params);
+  return await appendTranscriptMessages(params, {
+    config: params.config,
+    cwd: params.cwd,
+    messages: params.messages.map(projectSessionTranscriptAppendOptions),
+  });
 }
 
 /**
@@ -708,8 +743,22 @@ export async function withSessionTranscriptWrite<T>(
   );
 }
 
+/** Copies only the marker's known fields; caller objects may carry more. */
+function projectDeliveryMirrorMarker(
+  marker: SessionTranscriptDeliveryMirror | PluginNotice,
+): Record<string, unknown> {
+  if (marker.kind === PLUGIN_NOTICE_KIND) {
+    return { kind: marker.kind, pluginId: marker.pluginId, type: marker.type, data: marker.data };
+  }
+  return {
+    kind: marker.kind,
+    ...(marker.sourceMessageId !== undefined ? { sourceMessageId: marker.sourceMessageId } : {}),
+
+  };
+}
+
 function createAssistantMirrorMessage(params: {
-  deliveryMirror?: SessionTranscriptDeliveryMirror;
+  deliveryMirror?: SessionTranscriptDeliveryMirror | PluginNotice;
   idempotencyKey?: string;
   mediaUrls?: string[];
   text: string;
@@ -726,14 +775,7 @@ function createAssistantMirrorMessage(params: {
     timestamp: Date.now(),
     ...(params.idempotencyKey ? { idempotencyKey: params.idempotencyKey } : {}),
     ...(params.deliveryMirror
-      ? {
-          openclawDeliveryMirror: {
-            kind: params.deliveryMirror.kind,
-            ...(params.deliveryMirror.sourceMessageId !== undefined
-              ? { sourceMessageId: params.deliveryMirror.sourceMessageId }
-              : {}),
-          },
-        }
+      ? { openclawDeliveryMirror: projectDeliveryMirrorMarker(params.deliveryMirror) }
       : {}),
   };
   return recordAssistantManagedMediaUrls(message, params.mediaUrls);

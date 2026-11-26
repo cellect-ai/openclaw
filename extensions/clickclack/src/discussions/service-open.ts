@@ -1,6 +1,10 @@
 import { resolveSessionAgentIdStrict } from "openclaw/plugin-sdk/agent-scope-runtime";
 import type { PluginRuntime } from "openclaw/plugin-sdk/core";
-import { listClickClackAccountIds, resolveClickClackAccount } from "../accounts.js";
+import {
+  listClickClackAccountIds,
+  resolveClickClackAccountAsync,
+  resolveClickClackAccountMetadata,
+} from "../accounts.js";
 import {
   ClickClackHttpError,
   isClickClackChannelNameConflict,
@@ -22,7 +26,7 @@ import {
   type ClickClackDiscussionBindingStore,
 } from "./binding-store.js";
 import { controlSessionUrl } from "./control-session-url.js";
-import { discussionAccounts, normalizedServerBaseUrl } from "./eligibility.js";
+import { isDiscussionAccountCurrent, normalizedServerBaseUrl } from "./eligibility.js";
 import {
   discussionCredentialFingerprint,
   discussionExternalRef,
@@ -271,22 +275,15 @@ export async function openClickClackDiscussionBinding(
   const withCurrentAuthority = async <T>(
     operation: (assertCurrent: () => NonNullable<typeof entry>) => Promise<T>,
   ): Promise<T> => {
-    // Retain one incarnation for each effect or commit, while following resets between effects.
+    // Opening follows resets during HTTP; retain one incarnation only for each effect or commit.
     const session = await prepareDiscussionSessionEntry(runtime, sessionKey);
     try {
       const assertCurrentAuthority = () => {
-        // SAFETY: account resolution only reads the SDK's deep-readonly, schema-validated config.
-        const currentAccounts = discussionAccounts(runtime.config.current() as CoreConfig);
-        const currentAccount = currentAccounts.length === 1 ? currentAccounts[0] : undefined;
         session.source();
         const currentEntry = session.entry;
         if (
-          !currentAccount ||
-          currentAccount.accountId !== account.accountId ||
-          normalizedServerBaseUrl(currentAccount) !== serverBaseUrl ||
-          currentAccount.apiEndpoint !== account.apiEndpoint ||
-          discussionCredentialFingerprint(currentAccount.token) !== credentialFingerprint ||
-          currentAccount.discussions.workspace !== account.discussions.workspace ||
+          // SAFETY: Runtime config has passed the registered ClickClack schema.
+          !isDiscussionAccountCurrent(runtime.config.current() as CoreConfig, account) ||
           !currentEntry?.sessionId ||
           currentEntry.archivedAt !== undefined
         ) {
@@ -522,14 +519,18 @@ export async function reconcilePendingDiscussionOpen(params: {
   }
   // SAFETY: account resolution only reads the SDK's deep-readonly, schema-validated config.
   const cfg = params.runtime.config.current() as CoreConfig;
-  const account = listClickClackAccountIds(cfg)
-    .map((accountId) => resolveClickClackAccount({ cfg, accountId }))
-    .find(
-      (candidate) =>
-        candidate.configured &&
-        normalizedServerBaseUrl(candidate) === pending.serverBaseUrl &&
-        discussionCredentialFingerprint(candidate.token) === pending.credentialFingerprint,
-    );
+  const candidates = listClickClackAccountIds(cfg)
+    .map((accountId) => resolveClickClackAccountMetadata({ cfg, accountId }))
+    .filter((account) => normalizedServerBaseUrl(account) === pending.serverBaseUrl);
+  const prepared = await Promise.all(
+    candidates.map(({ accountId }) => resolveClickClackAccountAsync({ cfg, accountId })),
+  );
+  const account = prepared.find(
+    (candidate) =>
+      candidate.configured &&
+      normalizedServerBaseUrl(candidate) === pending.serverBaseUrl &&
+      discussionCredentialFingerprint(candidate.token) === pending.credentialFingerprint,
+  );
   if (!account) {
     // Without the creating credential, keep the destination quarantined until
     // an operator restores access or explicitly cleans up the pending record.
@@ -537,8 +538,13 @@ export async function reconcilePendingDiscussionOpen(params: {
   }
   const client = params.clientFactory(account);
   const entry = await readDiscussionSessionEntry(params.runtime, pending.sessionKey);
-  const activeAccounts = discussionAccounts(cfg);
-  const retryAccount = activeAccounts.length === 1 ? activeAccounts[0] : undefined;
+  const retryAccount = isDiscussionAccountCurrent(
+    // SAFETY: Runtime config has passed the registered ClickClack schema.
+    params.runtime.config.current() as CoreConfig,
+    account,
+  )
+    ? account
+    : undefined;
   if (
     params.allowRetry !== false &&
     entry?.sessionId &&

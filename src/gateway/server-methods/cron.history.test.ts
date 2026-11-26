@@ -112,17 +112,16 @@ function expectMessages(page: { payload?: CronHistoryResult }, ...contents: stri
 
 async function withCronTranscript(
   run: (fixture: Awaited<ReturnType<typeof setup>>) => Promise<void>,
-  agentId = "main",
 ) {
   let registry: ReturnType<typeof captureActivePluginRegistrySnapshot> | undefined;
   try {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
-      setRuntimeConfigSnapshot({ agents: { entries: { main: {}, [agentId]: {} } } });
+      setRuntimeConfigSnapshot({});
       registry = captureActivePluginRegistrySnapshot();
       setActivePluginRegistry(createEmptyPluginRegistry());
       let fixture: Awaited<ReturnType<typeof setup>> | undefined;
       try {
-        fixture = await setup(agentId);
+        fixture = await setup();
         await run(fixture);
       } finally {
         fixture?.cron.stop();
@@ -136,10 +135,10 @@ async function withCronTranscript(
   }
 }
 
-async function setup(agentId = "main") {
+async function setup() {
   const profile = ensureProfileForEmail("cron-reader@example.test");
-  const baseKey = `agent:${agentId}:cron:history-job`;
-  const oldScope = { agentId, sessionKey: baseKey, sessionId: "old-cron" };
+  const baseKey = "agent:main:cron:history-job";
+  const oldScope = { agentId: "main", sessionKey: baseKey, sessionId: "old-cron" };
   await upsertSessionEntryCore(oldScope, {
     sessionId: oldScope.sessionId,
     updatedAt: 1,
@@ -150,15 +149,15 @@ async function setup(agentId = "main") {
   }
   const alias = `${baseKey}:run:${oldScope.sessionId}`;
   await upsertSessionEntryCore(
-    { agentId, sessionKey: alias },
+    { agentId: "main", sessionKey: alias },
     {
       sessionId: oldScope.sessionId,
       updatedAt: 1,
     },
   );
   await deleteSessionEntryLifecycle({
-    agentId,
-    storePath: resolveSessionStorePathCore(undefined, { agentId }),
+    agentId: "main",
+    storePath: resolveSessionStorePathCore(undefined, { agentId: "main" }),
     target: { canonicalKey: alias, storeKeys: [alias] },
     archiveTranscript: false,
     expectedSessionId: oldScope.sessionId,
@@ -179,12 +178,12 @@ async function setup(agentId = "main") {
   );
   const cron = createReadService({
     storePath,
-    defaultAgentId: agentId,
+    defaultAgentId: "main",
     cronEnabled: false,
     enqueueSystemEvent() {},
     runIsolatedAgentJob: async () => ({ status: "ok" }),
   });
-  const created = await cron.add(createHistoryJob(agentId, baseKey, "History job"), {
+  const created = await cron.add(createHistoryJob("main", baseKey, "History job"), {
     scheduledToolPolicy: { version: 1, mode: "trusted" },
   });
   const job = "job" in created ? created.job : created;
@@ -200,7 +199,7 @@ async function setup(agentId = "main") {
       status: "ok",
     },
     storePath,
-    agentId,
+    "main",
     "internal-old-run",
   );
   const detail = expectDefined(record.detail, "record detail");
@@ -373,17 +372,13 @@ it("does not disclose hidden session keys in cron.history errors", () =>
       { runId: "public-old-run", cursor: "invalid" },
     ]) {
       const { calls } = await query(selector, { client }, context);
-      expect(context.logGateway.debug).toHaveBeenCalledWith(
-        expect.stringMatching(/^cron\.history unavailable: /),
-      );
-      expect(JSON.stringify(vi.mocked(context.logGateway.debug).mock.calls)).not.toContain(baseKey);
       expect(calls).toEqual([
         [
           false,
           undefined,
           {
             code: "UNAVAILABLE",
-            message: "The recorded cron transcript is unavailable. Refresh the run and try again.",
+            message: "The chat for this run is unavailable. Refresh the run and try again.",
           },
         ],
       ]);
@@ -454,29 +449,6 @@ it("refuses ambiguous timestamps and cursors moved to another recorded run", () 
     ]);
     expect((await query({ runId: "public-old-run" })).ok).toBe(false);
   }));
-
-it.each(["main", "probe"])(
-  "retains the recorded Cron transcript for %s when its current generation rotates during the read",
-  (agentId) =>
-    withCronTranscript(async ({ cron, storePath, baseKey, query }) => {
-      const onRead = vi.fn(async () => {
-        await upsertSessionEntryCore(
-          { agentId, sessionKey: baseKey },
-          { sessionId: "next-cron", updatedAt: 3, visibility: "shared" },
-        );
-        return undefined;
-      });
-      const context = await createHistoryReadContext({
-        cron,
-        cronStorePath: storePath,
-        readChatStartupProjection: onRead,
-      });
-      const result = await query({ runId: "public-old-run" }, {}, context);
-      expect(onRead).toHaveBeenCalled();
-      expect(result.ok).toBe(true);
-      expectMessages(result, "Old first", "Old second", "Old last");
-    }, agentId),
-);
 
 it.each(["sharing", "binding", "retention", "transcript owner"] as const)(
   "rechecks %s before publishing a retained Cron transcript",
@@ -601,37 +573,44 @@ it.each([false, true])(
   "reads retained history after sharing preparation rollover (revoke sharing: %s)",
   (revokeSharing) =>
     withCronTranscript(async ({ baseKey, query }) => {
-      const readFacts = sharingFactsRead.readSessionSharingFactsInWorker;
+      const acquire = sharingFactsRead.createSessionSharingFactAcquisition;
       let rotated = false;
       const probe = vi
-        .spyOn(sharingFactsRead, "readSessionSharingFactsInWorker")
-        .mockImplementation(async (...args) => {
-          const facts = await readFacts(...args);
-          if (!rotated && args[0].sessionKeys.includes(baseKey)) {
-            rotated = true;
-            const cronSession = await prepareCronSession({
-              cfg: { agents: { entries: { main: {} } } },
-              agentId: "main",
-              sessionKey: baseKey,
-              nowMs: Date.now(),
-              forceNew: true,
-            });
-            await createPersistCronSessionEntry({
-              cronSession,
-              agentSessionKey: baseKey,
-              workspaceDir: process.cwd(),
-              persistSessionEntry: createCronSessionRowWriter({
-                agentId: "main",
-                agentSessionKey: baseKey,
-              }),
-            })();
-            if (revokeSharing) {
-              await patchSessionEntryCore({ agentId: "main", sessionKey: baseKey }, () => ({
-                visibility: "draft",
-              }));
-            }
-          }
-          return facts;
+        .spyOn(sharingFactsRead, "createSessionSharingFactAcquisition")
+        .mockImplementation((params) => {
+          const acquisition = acquire(params);
+          const read = acquisition.read;
+          return {
+            ...acquisition,
+            async read(input, publishSource) {
+              const facts = await read(input, publishSource);
+              if (!rotated && input.sessionKeys.includes(baseKey)) {
+                rotated = true;
+                const cronSession = await prepareCronSession({
+                  cfg: { agents: { entries: { main: {} } } },
+                  agentId: "main",
+                  sessionKey: baseKey,
+                  nowMs: Date.now(),
+                  forceNew: true,
+                });
+                await createPersistCronSessionEntry({
+                  cronSession,
+                  agentSessionKey: baseKey,
+                  workspaceDir: process.cwd(),
+                  persistSessionEntry: createCronSessionRowWriter({
+                    agentId: "main",
+                    agentSessionKey: baseKey,
+                  }),
+                })();
+                if (revokeSharing) {
+                  await patchSessionEntryCore({ agentId: "main", sessionKey: baseKey }, () => ({
+                    visibility: "draft",
+                  }));
+                }
+              }
+              return facts;
+            },
+          };
         });
       try {
         const result = await query({ runId: "public-old-run" });

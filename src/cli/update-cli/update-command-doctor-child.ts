@@ -29,21 +29,21 @@ import { withUpdateCommandExecutorChild } from "./update-command-executor.js";
 import type { UpdateDoctorInput } from "./update-command-migrated-types.js";
 import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-error.js";
 
-/** Inspect the same published --check contract consumed by candidate canary. */
+/** Inspect the same published --check contract consumed by the candidate check. */
 export async function inspectUpdateDoctorChildSupport(
   worker: { workerUrl: URL; argv: string[] },
   options: CommandOptions,
   assertCurrent: () => void,
-): Promise<boolean> {
+): Promise<{ doctorConfigWrites: boolean; doctorRetirementOnly: boolean }> {
   assertCurrent();
   try {
     await fs.lstat(worker.workerUrl);
   } catch (cause) {
     if (hasErrnoCode(cause, "ENOENT")) {
-      // Candidate canary preserves this pre-worker published-target contract.
+      // The candidate check preserves this pre-worker published-target contract.
       // Only the expected worker's absence qualifies, never a failed command.
       assertCurrent();
-      return false;
+      return { doctorConfigWrites: false, doctorRetirementOnly: false };
     }
     throw new UpdateCommandRecoveryPendingError("Target Doctor worker could not be inspected.", {
       cause,
@@ -85,8 +85,17 @@ export async function inspectUpdateDoctorChildSupport(
   if (capability !== undefined && capability !== "pid-start-v1") {
     throw new UpdateCommandRecoveryPendingError("Target Doctor authority protocol is unsupported.");
   }
+  if (
+    contract.doctorRetirementOnly !== undefined &&
+    typeof contract.doctorRetirementOnly !== "boolean"
+  ) {
+    throw new UpdateCommandRecoveryPendingError("Target Doctor retirement capability is invalid.");
+  }
   // v2026.9.3 reports its schemas but has no delegated Doctor entrypoint.
-  return capability === "pid-start-v1";
+  return {
+    doctorConfigWrites: capability === "pid-start-v1",
+    doctorRetirementOnly: contract.doctorRetirementOnly === true,
+  };
 }
 
 /** Both delegated and standalone update Doctors publish through the same result channel. */

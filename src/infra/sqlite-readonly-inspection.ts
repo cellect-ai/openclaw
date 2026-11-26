@@ -5,8 +5,10 @@ import {
   isSqliteReadOnlyError,
   readSourceJournalMode,
   readSourceSidecars,
+  requiresPrivateRollbackRecovery,
   SqliteSourceChangedError,
 } from "./sqlite-readonly-location.js";
+import { readSqliteSchemaCookie } from "./sqlite-schema-contract.js";
 import { withSqliteSourceReadDatabase } from "./sqlite-source-handle.js";
 
 /**
@@ -94,4 +96,19 @@ const SQLITE_CANTOPEN_RESULT_CODE = 14;
 
 function isSqliteCantOpenError(error: unknown): boolean {
   return sqlitePrimaryResultCode(error) === SQLITE_CANTOPEN_RESULT_CODE;
+}
+
+/** The isolated reader lets SQLite distinguish a hot journal from harmless residue. */
+export function requiresSqliteRollbackRecoveryInProcess(pathname: string): boolean {
+  return withSqliteSourceReadDatabase(pathname, "source", (database) => {
+    try {
+      readSqliteSchemaCookie(database);
+      return false;
+    } catch (error) {
+      if (!requiresPrivateRollbackRecovery(pathname, error)) {
+        throw error;
+      }
+      return true;
+    }
+  });
 }

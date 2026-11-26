@@ -86,7 +86,7 @@ function billingDefaults(model: string, retired: string) {
 
 it("does not compare Decision selectors through conversational billing routes", async () => {
   await withDoctorConfigPreflightHome(async (home) => {
-    const { config: before, configPath } = await writeBillingFixture(home, "gpt-4o-mini", {
+    const { config: before } = await writeBillingFixture(home, "gpt-4o-mini", {
       defaults: billingDefaults("gpt-5.4", "gpt-4o-mini"),
       entries: { main: { decisionModel: "openai/gpt-4o-mini" } },
     });
@@ -94,9 +94,11 @@ it("does not compare Decision selectors through conversational billing routes", 
       ...before,
       agents: { ...before.agents, entries: { main: { decisionModel: "openai/gpt-5.6-luna" } } },
     };
-    await using ctx = await prepareDoctorContext(configPath);
-    expect(ctx.sourceConfigValid).toBe(true);
-    expect(collectModelBillingRouteMigrationWarnings({ before, after })).toEqual([]);
+    await maybeMigrateAuthProfileJsonStoresToSqlite({
+      cfg: before,
+      prompter: { confirmAutoFix: async () => true },
+    });
+    expect(await collectModelBillingRouteMigrationWarnings({ before, after })).toEqual([]);
     const withChatSelection = (config: OpenClawConfig, model: string): OpenClawConfig => ({
       ...config,
       agents: {
@@ -104,16 +106,45 @@ it("does not compare Decision selectors through conversational billing routes", 
         entries: { main: { ...config.agents?.entries?.main, model } },
       },
     });
-    const warnings = collectModelBillingRouteMigrationWarnings({
+    const warnings = await collectModelBillingRouteMigrationWarnings({
       before: withChatSelection(before, "openai/gpt-4o-mini"),
       after: withChatSelection(after, "openai/gpt-5.6-luna"),
     });
-    expect(warnings).toEqual(
-      ["model.primary", "subagents.model"].map((selector) =>
-        expect.stringContaining(
-          `Billing route changed for agents.entries.main.${selector} (agent main):`,
-        ),
-      ),
+    expect(warnings).toEqual([
+      "Billing route changed for agents.entries.main.model.primary (agent main): openai/gpt-4o-mini via metered API-key profile openai:default -> openai/gpt-5.6-luna via subscription/OAuth profile openai:chatgpt-default. Review its model and authentication settings.",
+      "Billing route changed for agents.entries.main.subagents.model (agent main): openai/gpt-4o-mini via metered API-key profile openai:default -> openai/gpt-5.6-luna via subscription/OAuth profile openai:chatgpt-default. Review its model and authentication settings.",
+    ]);
+  });
+});
+
+it("compares credential kinds for providers without catalog billing routes", async () => {
+  await withDoctorConfigPreflightHome(async (home) => {
+    const withPrimary = (model: string): OpenClawConfig => ({
+      agents: { defaults: { model }, entries: { main: {} } },
+      gateway: { mode: "local" },
+    });
+    const before = withPrimary("anthropic/claude-opus-4-6@anthropic:default");
+    const configPath = await writeOpenClawConfig(home, before);
+    const agentDir = path.join(path.dirname(configPath), "agents", "main", "agent");
+    await fs.mkdir(agentDir, { recursive: true });
+    await writeFixtureJson(path.join(agentDir, "auth-profiles.json"), {
+      version: 1,
+      profiles: {
+        "anthropic:default": { type: "api_key", provider: "anthropic", key: "synthetic-api-key" },
+        "anthropic:sub": { type: "token", provider: "anthropic", token: "synthetic-token" },
+      },
+    });
+    await maybeMigrateAuthProfileJsonStoresToSqlite({
+      cfg: before,
+      prompter: { confirmAutoFix: async () => true },
+    });
+    expect(
+      await collectModelBillingRouteMigrationWarnings({
+        before,
+        after: withPrimary("anthropic/claude-opus-4-6@anthropic:sub"),
+      }),
+    ).toContain(
+      "Billing route changed for agents.entries.main.model.primary (agent main): anthropic/claude-opus-4-6 via metered API-key profile anthropic:default -> anthropic/claude-opus-4-6 via subscription/OAuth profile anthropic:sub. Review its model and authentication settings.",
     );
   });
 });

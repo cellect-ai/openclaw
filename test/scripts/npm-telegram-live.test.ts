@@ -63,7 +63,7 @@ function writeFixture(
   return file;
 }
 
-function runHotpathCandidate(consentSupported: boolean, candidateVersion = "") {
+function runHotpathCandidate(consentSupported: boolean, candidateVersion?: string) {
   const root = mkTempRoot();
   const hotpath = script.slice(
     script.indexOf('if [ "${OPENCLAW_NPM_TELEGRAM_SKIP_HOTPATH:-0}" != "1" ]'),
@@ -96,7 +96,7 @@ ${hotpath}`,
         CONSENT_SUPPORTED: consentSupported ? "1" : "0",
         FIXTURE_ROOT: root,
         OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_DIR: candidateVersion ? root : "",
-        OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION: candidateVersion,
+        OPENCLAW_PREPUBLISH_PLUGIN_REGISTRY_CANDIDATE_VERSION: candidateVersion ?? "",
       },
     },
   );
@@ -108,6 +108,33 @@ it("keeps bounded installation and redacted runtime logging", () => {
     /"\$timeout_bin" (?:--kill-after=\S+ )?"\$npm_install_timeout" npm install/u,
   );
   expect(script).not.toContain('cat "$run_log"');
+});
+
+it("reports a redirected hot-path command failure outside its private log", () => {
+  const root = mkTempRoot();
+  const diagnostics = script.slice(
+    script.indexOf("\n\n", script.indexOf("trap cleanup_recovery EXIT")),
+    script.indexOf('test -x "$sut_command"'),
+  );
+  const result = spawnSync(
+    "bash",
+    [
+      "-c",
+      `set -Eeuo pipefail
+source scripts/lib/openclaw-e2e-instance.sh
+openclaw_e2e_print_log() { return 0; }
+${diagnostics}
+fail() { bash -c 'exit 23'; }
+fail >"$1/command.log" 2>&1`,
+      "bash",
+      root,
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  expect(result.status, result.stderr).toBe(23);
+  expect(result.stderr).toContain(
+    "installed-package onboarding recovery hot path failed with exit code 23",
+  );
 });
 
 it("uses unique direct-run output dirs by default", () => {
@@ -155,20 +182,23 @@ it("requires Convex leases instead of static credentials", () => {
   expect(runs).toEqual([]);
 });
 
-it.each([
-  [false, "", ""],
-  [true, "", "@openclaw/codex"],
-  [true, "2026.11.12-beta.3", "npm:@openclaw/codex@2026.11.12-beta.3 --pin"],
-])(
-  "runs the onboarding hotpath with consent=%s and verified candidate=%s",
-  (supported, candidateVersion, expectedInstall) => {
-    const calls = runHotpathCandidate(supported, candidateVersion);
-    expect(
-      calls.filter((call) => call.startsWith("plugins install ") && !call.endsWith("--help")),
-    ).toEqual(expectedInstall ? [`plugins install ${expectedInstall} --accept-capabilities`] : []);
+it.each([false, true])(
+  "runs the onboarding hotpath with candidate consent support=%s",
+  (supported) => {
+    const calls = runHotpathCandidate(supported);
+    expect(calls.filter((call) => call.startsWith("plugins install @openclaw/codex"))).toEqual(
+      supported ? ["plugins install @openclaw/codex --accept-capabilities"] : [],
+    );
     expect(calls.some((call) => call.startsWith("onboard "))).toBe(true);
   },
 );
+
+it("installs the exact sealed Codex companion for mounted candidates", () => {
+  const calls = runHotpathCandidate(true, "2026.11.10");
+  expect(
+    calls.filter((call) => call.startsWith("plugins install ") && !call.endsWith(" --help")),
+  ).toEqual(["plugins install npm:@openclaw/codex@2026.11.10 --pin --accept-capabilities"]);
+});
 
 it("adds loadable private SDK exports without replacing existing harness exports", () => {
   const root = mkTempRoot();
@@ -556,7 +586,16 @@ if (args[0] === 'run' && process.env.CHECK_WRITABLE_PREFIX === '1') {
   const mode = fs.statSync(mount.slice(0, -':/npm-global'.length)).mode & 0o007;
   if (mode !== 0o007) throw new Error('npm prefix is inaccessible to the container user: ' + mode);
 }
+if (args[0] === 'run' && process.env.CHECK_WRITABLE_OUTPUT === '1') {
+  const suffix = ':/app/.artifacts/qa-e2e/npm-telegram-live-output';
+  const mount = args.find(arg => arg.endsWith(suffix));
+  if (mount) {
+    const mode = fs.statSync(mount.slice(0, -suffix.length)).mode & 0o007;
+    if (mode !== 0o007) throw new Error('artifact output is inaccessible to the container user: ' + mode);
+  }
+}
 fs.appendFileSync(process.env.DOCKER_CALLS, JSON.stringify(args) + '\\n');
+if (args.includes('-i') && args.some(arg => arg.endsWith(':/app/.artifacts/qa-e2e/npm-telegram-live-output'))) process.exit(Number(process.env.MOCK_SUITE_EXIT || 0));
 `,
   );
   const result = run({
@@ -582,10 +621,34 @@ fs.appendFileSync(process.env.DOCKER_CALLS, JSON.stringify(args) + '\\n');
   return { root, candidate, result, runs };
 }
 
-it("makes the disposable npm prefix writable to the container user", () => {
-  const { result } = captureDocker({ CHECK_WRITABLE_PREFIX: "1" });
+it.each(["PREFIX", "OUTPUT"])("makes the mounted %s writable to the container user", (mount) => {
+  const { result } = captureDocker({ [`CHECK_WRITABLE_${mount}`]: "1" });
   expect(result.status, result.stderr).toBe(0);
 });
+
+it.each([0, 23])(
+  "returns private artifacts to the host owner while preserving suite exit %s",
+  (suiteExit) => {
+    const { root, result, runs } = captureDocker({ MOCK_SUITE_EXIT: String(suiteExit) });
+    expect(result.status, result.stderr).toBe(suiteExit);
+    expect(runs[2]).toEqual(
+      expect.arrayContaining([
+        "--user",
+        "0:0",
+        "--network",
+        "none",
+        "--entrypoint",
+        "chown",
+        `${path.join(root, "output")}:/qa-output`,
+        "-hR",
+        `${process.getuid?.()}:${process.getgid?.()}`,
+        "/npm-global",
+        "/qa-output",
+      ]),
+    );
+    expect(runs[2]?.some((arg) => arg.startsWith("OPENCLAW_QA_CONVEX_SECRET_"))).toBe(false);
+  },
+);
 
 it.each([false, true])("isolates install and runtime credentials (upgrade=%s)", (upgrade) => {
   const { root, candidate, result, runs } = captureDocker({
@@ -606,6 +669,7 @@ it.each([false, true])("isolates install and runtime credentials (upgrade=%s)", 
       `${path.join(root, "output")}:/app/.artifacts/qa-e2e/npm-telegram-live-output`,
       `${repoRoot}/node_modules:/trusted-harness/node_modules:ro`,
     ]),
+    expect.arrayContaining(["--entrypoint", "chown", "/npm-global", "/qa-output"]),
   ]);
   expect(runs[0]?.some((arg) => arg.startsWith("OPENCLAW_QA_CONVEX_SECRET_"))).toBe(false);
   expect(runs[1]?.includes(`${candidate}:${candidatePath}:ro`)).toBe(upgrade);

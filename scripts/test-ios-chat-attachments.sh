@@ -57,6 +57,7 @@ run_test() {
   local project_args=(-project "$tree/apps/ios/OpenClaw.xcodeproj")
   if [[ "$stage" == after && "${IOS_TEST_BUILD_PREPARED:-false}" == true ]]; then
     test_action=test-without-building
+    project_args+=(-clonedSourcePackagesDirPath "$root/apps/ios/build/SourcePackages")
   fi
   # Keep Actions log backpressure outside the simulator, retaining complete logs and xcresults.
   xcodebuild "${project_args[@]}" -scheme "$scheme" \
@@ -119,7 +120,7 @@ run_revision() {
 
 if [[ -n "$baseline" ]]; then
   [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || { echo 'Expected an exact baseline SHA' >&2; exit 2; }
-  git cat-file -e "$baseline^{commit}" || git -c gc.auto=0 fetch --no-tags --depth=1 origin "$baseline"
+  GIT_NO_LAZY_FETCH=1 git cat-file -e "$baseline^{commit}" || git -c gc.auto=0 fetch --no-tags origin "$baseline"
   # Initial introduction proves the pre-fix tree; later changes retain the candidate regression
   # without rebuilding an already-fixed baseline on every native PR.
   if ! git cat-file -e "$baseline:apps/shared/OpenClawKit/Sources/OpenClawChatUI/ChatFileAttachment.swift" 2>/dev/null; then

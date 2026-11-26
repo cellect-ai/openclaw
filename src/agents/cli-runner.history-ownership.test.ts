@@ -121,23 +121,124 @@ it.each([false, true])(
   },
 );
 
+afterAll(clearRuntimeConfigSnapshot);
+
+async function prepareHistoryRun(sessionId: string, runId: string) {
+  const root = dirs.make();
+  const target = {
+    agentId: "main",
+    sessionId,
+    sessionKey: `agent:main:${sessionId}`,
+    storePath: path.join(root, "agents/main/agent/openclaw-agent.sqlite"),
+  };
+  await upsertSessionEntry({
+    ...target,
+    entry: { sessionId, updatedAt: Date.now() },
+  });
+  const context = buildPreparedCliRunContext({
+    sessionTarget: target,
+    workspaceDir: root,
+    runId,
+  });
+  Object.assign(context.params, {
+    config: {},
+    storePath: target.storePath,
+    persistAssistantTranscript: true,
+  });
+  return { target, context };
+}
+
+// Completed held answers are not narration: canonical consumers need both results.
+it.each([
+  { transformed: false, finalInterim: false },
+  { transformed: true, finalInterim: false },
+  { transformed: false, finalInterim: true },
+])(
+  "retains held answers and deduplicates the final interim result in canonical history (%j)",
+  async ({ transformed, finalInterim }) => {
+    setRuntimeConfigSnapshot({});
+    const { target, context } = await prepareHistoryRun("held-answer", "held-answer-run");
+    const parser = createClaudeParser();
+    for (const [index, text] of ["PARENT_COMPLETE", "CHILD_COMPLETE"].entries()) {
+      parser.push(
+        joinJsonlFrames(
+          { type: "system", subtype: "init", session_id: "native-held" },
+          {
+            type: "assistant",
+            uuid: "answer-" + index,
+            message: { role: "assistant", content: [{ type: "text", text }] },
+          },
+          {
+            type: "result",
+            subtype: "success",
+            result: text,
+            session_id: "native-held",
+            ...(index === 0 || finalInterim ? { openclaw_interim_result: true } : {}),
+          },
+          "",
+        ),
+      );
+    }
+    parser.finish();
+    expect(parser.getOutput()).toMatchObject({
+      textParts: ["PARENT_COMPLETE", "CHILD_COMPLETE"],
+      rawFinalText: "CHILD_COMPLETE",
+      resumeCheckpointId: "answer-1",
+    });
+    const replacements = [{ from: "COMPLETE", to: "DONE" }];
+    const output = parser.getOutput();
+    if (!output) {
+      throw new Error("Expected completed CLI output");
+    }
+    execute.mockResolvedValue(transformed ? transformCliResultText(output, replacements) : output);
+    if (transformed) {
+      context.backendResolved.textTransforms = { output: replacements };
+    }
+    const result = await runPreparedCliAgent(context);
+    const texts = transformed
+      ? ["PARENT_DONE", "CHILD_DONE"]
+      : ["PARENT_COMPLETE", "CHILD_COMPLETE"];
+    expect(result.payloads?.map((payload) => payload.text)).toEqual(texts);
+    const history = await loadCliSessionHistoryMessages({ sessionTarget: target });
+    expect(history).toHaveLength(2);
+    for (const [i, text] of texts.entries()) {
+      expect(history[i]).toMatchObject({
+        content: [{ type: "text", text }],
+        __openclaw: {
+          importedFrom: "claude-cli",
+          cliSessionId: "native-held",
+          externalId: `answer-${i}`,
+        },
+      });
+    }
+    const index = new MemoryCliSessionHistoryIndex();
+    index.appendLocal(history.map((message, i) => ({ message, seq: i + 1 })));
+    for (const [i, text] of ["PARENT_COMPLETE", "CHILD_COMPLETE"].entries()) {
+      index.appendImported({
+        role: "assistant",
+        content: [{ type: "text", text }],
+        timestamp: Date.now() - 10_000 + i,
+        __openclaw: {
+          importedFrom: "claude-cli",
+          cliSessionId: "native-held",
+          externalId: `answer-${i}`,
+        },
+      });
+    }
+    index.finish();
+    expect(index.count).toBe(2);
+    expect(index.rows(0, 2).map((row) => row.local_seq)).toEqual([1, 2]);
+    index.close();
+  },
+);
+
 it.each([
   { transformed: false, interrupted: false, yielded: false },
   { transformed: true, interrupted: false, yielded: false },
   { transformed: false, interrupted: true, yielded: false },
   { transformed: false, interrupted: false, yielded: true },
 ])("settles Claude history safely: %j", async ({ transformed, interrupted, yielded }) => {
-  const root = dirs.make();
-  const target = {
-    agentId: "main",
-    sessionId: "ownership",
-    sessionKey: "agent:main:ownership",
-    storePath: path.join(root, "agents/main/agent/openclaw-agent.sqlite"),
-  };
-  await upsertSessionEntry({
-    ...target,
-    entry: { sessionId: target.sessionId, updatedAt: Date.now() },
-  });
+  const { target, context } = await prepareHistoryRun("ownership", "owner-run");
   const replacements = [{ from: "Done", to: "Finished" }];
   const parsed: CliOutput = {
     text: "Checking now\nChecking inputs\nDone",
@@ -149,17 +250,6 @@ it.each([
   };
   // The process layer applies output replacements before the runner sees the result.
   execute.mockResolvedValue(transformed ? transformCliResultText(parsed, replacements) : parsed);
-  const context = buildPreparedCliRunContext({
-    sessionTarget: target,
-    workspaceDir: root,
-    runId: "owner-run",
-  });
-  Object.assign(context.params, {
-    config: {},
-    storePath: target.storePath,
-    persistAssistantTranscript: true,
-    provider: "claude-cli",
-  });
   if (transformed) {
     context.backendResolved.textTransforms = { output: replacements };
   }

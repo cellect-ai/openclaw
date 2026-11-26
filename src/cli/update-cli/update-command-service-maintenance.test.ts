@@ -21,6 +21,7 @@ import * as openClawTmp from "../../infra/tmp-openclaw-dir.js";
 import { stopSupervisedPredecessorGateway } from "../../infra/update-candidate-predecessor-stop.js";
 import { createDoctorServiceInspectionBudget } from "../../infra/update-doctor-deadline.js";
 import { createManagedHandoffLeaseStore } from "../../infra/update-managed-service-handoff-lease.js";
+import { findUpdateGatewayStop } from "../../infra/update-run-gateway-stop.js";
 import { createUpdateRun, getUpdateRun } from "../../infra/update-run-ledger.js";
 import { closeStateDatabaseForTest } from "../../test-utils/database-cleanup.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
@@ -713,9 +714,10 @@ it("records the update's own Gateway stop so repair can restore it after the upd
       root: process.cwd(),
       phase: "prepare",
     });
-    expect(getUpdateRun(run.runId, { env })?.steps).toContainEqual(
-      expect.objectContaining({ step: "service-stop", status: "completed" }),
-    );
+    expect(findUpdateGatewayStop([getUpdateRun(run.runId, { env })!])).toEqual({
+      runId: run.runId,
+      started: false,
+    });
     await closeStateDatabaseForTest();
   }));
 

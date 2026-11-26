@@ -68,21 +68,17 @@ it.each([
   {
     interrupted: false,
     screenshots: 0,
-    label: "keeps genuinely completed work successful after summary recovery",
+    label: "summarizes completed work when reasoning display is on",
   },
-  // The summary reopens the session within contextWindow * 8 bytes; screenshots
-  // fill those bytes long before the token budget, so the request must survive.
+  // Screenshot-heavy recovery retains the request within the fixed 16 MiB history guard.
+  // These ten images no longer force eviction after the history-until-compaction change.
   {
     interrupted: true,
     screenshots: 10,
     label: "keeps the user's request in view after a screenshot-heavy cut-off",
   },
 ])("$label", async ({ interrupted, screenshots }) => {
-  const sessionId = screenshots
-    ? "screenshot-finalization"
-    : interrupted
-      ? "interrupted-finalization"
-      : "completed-finalization";
+  const sessionId = `finalization-${interrupted}-${screenshots}`;
   await withOpenClawTestState({ label: sessionId }, async (state) => {
     const bundled = state.path("bundled");
     await fs.mkdir(bundled);
@@ -205,6 +201,7 @@ it.each([
               models: [
                 completionModelDefinition({
                   id: modelId,
+                  reasoning: true,
                   ...(screenshots
                     ? { contextWindow: 65_536, input: ["text", "image"] }
                     : { contextWindow: 200_000 }),
@@ -246,6 +243,7 @@ it.each([
               },
               provider: "anthropic",
               model: modelId,
+              reasoningLevel: interrupted ? "off" : "on",
               prompt,
               toolsAllow: ["read", "write"],
               cleanupBundleMcpOnRunEnd: true,
@@ -264,8 +262,8 @@ it.each([
             );
             expect(summaryRequestHasPrompt).toBe(true);
             if (screenshots) {
-              // The request survives inside the replay byte bound, not by loading everything.
-              expect(summaryRequestBytes).toBeLessThan(65_536 * 8);
+              // Match the fixed history guard; it no longer scales with the model context window.
+              expect(summaryRequestBytes).toBeLessThan(16 * 1024 * 1024);
             }
             expect(await fs.readFile(path.join(state.workspaceDir, "a.txt"), "utf8")).toBe(
               "alpha\n",

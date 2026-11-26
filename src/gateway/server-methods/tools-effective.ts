@@ -3,6 +3,7 @@ import {
   ErrorCodes,
   validateToolsEffectiveParams,
 } from "../../../packages/gateway-protocol/src/index.js";
+import { readAcpSessionMetaForEntryAsync } from "../../acp/runtime/session-meta-readonly.js";
 import {
   buildBundleMcpToolsFromCatalog,
   peekSessionMcpRuntime,
@@ -17,8 +18,11 @@ import {
 import { prepareConversationCapabilityProfile } from "../../agents/conversation-capability-profile.js";
 import { resolveConversationToolPolicies } from "../../agents/conversation-tool-policy-pipeline.js";
 import { applyFinalEffectiveToolPolicy } from "../../agents/embedded-agent-runner/effective-tool-policy.js";
+import { readGitHubPublicationConfiguration } from "../../agents/github-tool-identity-config.js";
 import { getRegisteredAgentHarness } from "../../agents/harness/registry.js";
+import { agentHarnessExposesOpenClawTools } from "../../agents/harness/tool-surface.js";
 import { resolveSandboxRuntimeStatus } from "../../agents/sandbox/runtime-status.js";
+import { resolveEffectiveAgentRuntime } from "../../agents/thinking-runtime.js";
 import { readToolAllowlistIntersection } from "../../agents/tool-policy-shared.js";
 import type { ToolPolicyLike } from "../../agents/tool-policy.js";
 import { buildEffectiveToolInventoryGroups } from "../../agents/tools-effective-inventory-groups.js";
@@ -48,12 +52,15 @@ import {
   sessionDeliveryOrigin,
 } from "../../utils/delivery-context.read.js";
 import { getConnectedNodePluginToolsVersion } from "../node-plugin-tool-snapshot.js";
+import { SessionMutationAuthorizationChangedError } from "../session-mutation-authorization-error.js";
 import { resolveRequestedSessionAgentId } from "../session-request-agent.js";
 import { withGatewaySessionEntryReadOnly } from "../session-utils-read-lifetime.js";
 import { resolveSessionModelRef, type GatewaySessionEntryRead } from "../session-utils.js";
 import { respondError } from "./response.js";
 import { readGatewayRequestMutationAuthority } from "./session-mutation-guards.js";
-import type { GatewayRequestHandlers, RespondFn } from "./types.js";
+import { retainSessionScopedRead } from "./session-scoped-read.js";
+import { projectSessionToolPreview } from "./tools-effective.projection.js";
+import type { GatewayRequestContext, GatewayRequestHandlers, RespondFn } from "./types.js";
 import { defineValidatedGatewayHandler } from "./validation.js";
 
 type TrustedToolsEffectiveContext = NonNullable<
@@ -98,6 +105,7 @@ function buildToolsEffectiveCacheKey(context: TrustedToolsEffectiveContext): str
     agentId: context.agentId,
     modelProvider: optionalCacheString(context.modelProvider),
     modelId: optionalCacheString(context.modelId),
+    agentRuntime: context.agentRuntime,
     messageProvider: optionalCacheString(context.messageProvider),
     accountId: optionalCacheString(context.accountId),
     currentChannelId: optionalCacheString(context.currentChannelId),
@@ -107,6 +115,11 @@ function buildToolsEffectiveCacheKey(context: TrustedToolsEffectiveContext): str
     groupSpace: optionalCacheString(context.groupSpace),
     replyToMode: optionalCacheString(context.replyToMode),
     webSearchEnabled: context.toolOverrides?.webSearch !== false,
+    githubPublicationAvailable: context.githubPublicationAvailable,
+    githubPublicationConfiguration:
+      !context.agentRuntime || context.agentRuntime === "openclaw"
+        ? readGitHubPublicationConfiguration({ config: context.cfg, agentId: context.agentId })
+        : undefined,
     // Prepared session ceilings can change without a config or session-id change.
     policy: Object.values<ToolPolicyLike | undefined>(
       resolveConversationToolPolicies({ capabilityProfile: context.capabilityProfile }),
@@ -276,6 +289,7 @@ async function resolveBaseToolsEffectiveInventory(
         messageProvider: context.messageProvider,
         modelProvider: context.modelProvider,
         modelId: context.modelId,
+        agentRuntime: context.agentRuntime,
         modelApi: runtimeModelContext.modelApi,
         runtimeModel: runtimeModelContext.runtimeModel,
         currentChannelId: context.currentChannelId,
@@ -286,6 +300,7 @@ async function resolveBaseToolsEffectiveInventory(
         groupSpace: context.groupSpace,
         replyToMode: context.replyToMode,
         webSearchEnabled: context.toolOverrides?.webSearch,
+        githubPublicationAvailable: context.githubPublicationAvailable,
       }),
     );
   } finally {
@@ -460,7 +475,9 @@ async function resolveTrustedToolsEffectiveContext(
   params: {
     sessionKey: string;
     requestedAgentId?: string;
+    localEmbedded?: boolean;
     respond: RespondFn;
+    context: GatewayRequestContext;
   },
   loaded: Pick<GatewaySessionEntryRead, "entry" | "canonicalKey" | "cfg">,
 ) {
@@ -493,6 +510,26 @@ async function resolveTrustedToolsEffectiveContext(
   const delivery = deliveryContextFromSession(loaded.entry);
   const origin = sessionDeliveryOrigin(loaded.entry);
   const resolvedModel = resolveSessionModelRef(loaded.cfg, loaded.entry, sessionAgentId);
+  const agentRuntime = resolveEffectiveAgentRuntime({
+    cfg: loaded.cfg,
+    provider: resolvedModel.provider,
+    modelId: resolvedModel.model,
+    agentScope: { kind: "prepared", agentId: sessionAgentId },
+    sessionKey: canonicalKey,
+    sessionEntry: loaded.entry,
+  });
+  // Listing describes the brokered surface, never current publication authority.
+  const githubPublicationAvailable =
+    !params.localEmbedded &&
+    agentHarnessExposesOpenClawTools(agentRuntime) &&
+    !(await readAcpSessionMetaForEntryAsync({
+      cfg: loaded.cfg,
+      sessionKey: canonicalKey,
+      agentId: sessionAgentId,
+      entry: loaded.entry,
+    }))
+      ? true
+      : undefined;
   const workspaceDir =
     normalizeOptionalString(loaded.entry.spawnedWorkspaceDir) ??
     resolveAgentWorkspaceDir(loaded.cfg, sessionAgentId);
@@ -509,6 +546,7 @@ async function resolveTrustedToolsEffectiveContext(
     modelProvider: resolvedModel.provider,
     modelId: resolvedModel.model,
     messageProvider: delivery?.channel ?? origin?.provider,
+    agentRuntime,
     accountId: delivery?.accountId ?? origin?.accountId,
     currentChannelId: delivery?.to,
     currentThreadTs:
@@ -522,6 +560,7 @@ async function resolveTrustedToolsEffectiveContext(
     groupSpace: loaded.entry.space,
     spawnedBy: normalizeOptionalString(loaded.entry.spawnedBy),
     agentHarnessId: normalizeOptionalString(loaded.entry.agentHarnessId),
+    githubPublicationAvailable,
     toolOverrides: loaded.entry.toolOverrides,
     replyToMode: resolveReplyToMode(
       loaded.cfg,
@@ -577,6 +616,7 @@ export const toolsEffectiveHandlers: GatewayRequestHandlers = {
         return;
       }
       const authority = readGatewayRequestMutationAuthority(options);
+      const sessionOnly = authority.sessionScope === "operator.sessions.read";
       const consume = async (
         loaded: Pick<GatewaySessionEntryRead, "entry" | "canonicalKey" | "cfg">,
         assertSourceCurrent: () => void,
@@ -585,7 +625,9 @@ export const toolsEffectiveHandlers: GatewayRequestHandlers = {
           {
             sessionKey: params.sessionKey,
             requestedAgentId: sessionOwner.agentId,
+            localEmbedded: context.localEmbedded,
             respond,
+            context,
           },
           loaded,
         );
@@ -595,9 +637,20 @@ export const toolsEffectiveHandlers: GatewayRequestHandlers = {
         const inventory = await resolveReadOnlyToolsEffectiveInventory(trustedContext);
         authority.assertCurrent();
         assertSourceCurrent();
-        respond(true, inventory, undefined);
+        respond(true, sessionOnly ? projectSessionToolPreview(inventory) : inventory, undefined);
       };
+      let scopedRead: Awaited<ReturnType<typeof retainSessionScopedRead>>;
       try {
+        scopedRead = await retainSessionScopedRead(
+          options,
+          params.sessionKey,
+          sessionOwner.agentId,
+          { requireMaterialized: true },
+        );
+        if (scopedRead) {
+          await consume(scopedRead.prepared, scopedRead.assertCurrent);
+          return;
+        }
         const memory = captureSessionEntryMetadataRead(
           {
             agentId: sessionOwner.agentId,
@@ -628,7 +681,22 @@ export const toolsEffectiveHandlers: GatewayRequestHandlers = {
           );
         }
       } catch (err) {
-        respondError(respond, ErrorCodes.UNAVAILABLE, `tools.effective failed: ${String(err)}`);
+        if (err instanceof SessionMutationAuthorizationChangedError) {
+          respond(false, undefined, err.error);
+          return;
+        }
+        if (sessionOnly) {
+          logWarn(`tools-effective: preview failed: ${String(err)}`);
+        }
+        respondError(
+          respond,
+          ErrorCodes.UNAVAILABLE,
+          sessionOnly
+            ? "Tool preview is unavailable. Retry the request."
+            : `tools.effective failed: ${String(err)}`,
+        );
+      } finally {
+        scopedRead?.release();
       }
     },
   ),

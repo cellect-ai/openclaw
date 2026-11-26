@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { captureSessionEventConfigPolicy } from "../auto-reply/reply/session-event-policy.js";
 import {
   SessionDeliveryGenerationRevokedError,
   SessionDeliveryGenerationUnavailableError,
@@ -24,6 +25,7 @@ import {
   resolveModelFallbackError,
 } from "./failover-error.js";
 import {
+  AgentHarnessModelRequestPolicyError,
   AgentHarnessPreflightError,
   recordAgentHarnessPreflightOwner,
   SessionControllerAdmissionRequiredError,
@@ -112,6 +114,21 @@ function transportedSessionReadFailure() {
   return decodeSessionTranscriptWorkerReadError(failure);
 }
 it.each([
+  [
+    "session event config authority",
+    () => {
+      const policy = captureSessionEventConfigPolicy({}, "main");
+      try {
+        policy.assertCurrent({ tools: { deny: ["exec"] } }, []);
+      } catch (cause) {
+        return new Error("Session target preparation outlived its attempt", {
+          cause: new Error("admitted run authority is no longer active", { cause }),
+        });
+      }
+      throw new Error("Expected policy refusal");
+    },
+    false,
+  ],
   ...[SessionDeliveryGenerationUnavailableError, SessionDeliveryGenerationRevokedError].map(
     (Failure) =>
       [
@@ -169,6 +186,11 @@ it.each([
     "wrapped transcript conflict",
     () => new Error("worker operation failed", { cause: transcriptConflict() }),
     false,
+  ],
+  [
+    "wrapped deployment denial",
+    () => new Error("run failed", { cause: new AgentHarnessModelRequestPolicyError() }),
+    true,
   ],
   ["cyclic recorded stop", cyclicRecordedStop, true],
   ["recorded supersession", createAgentRunSupersededAbortError, true],

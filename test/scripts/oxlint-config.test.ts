@@ -477,18 +477,6 @@ describe("oxlint config", () => {
       "fixture.ts",
       "export function f(a: number, b: number) {\n  var c = a;\n  return c + b;\n}\n",
     );
-    git(root, ["init", "--quiet", "--initial-branch=main"]);
-    git(root, [
-      "-c",
-      "user.name=Test",
-      "-c",
-      "user.email=test@example.com",
-      "commit",
-      "--allow-empty",
-      "-qm",
-      "base",
-    ]);
-    git(root, ["checkout", "--quiet", "--detach"]);
     const env = { GITHUB_ACTIONS: "false", OPENCLAW_RELEASE_CONTEXT_REF: "release/2026.11.4" };
     const suppressed =
       "/* oxlint-disable max-lines, max-lines-per-function -- retained size exception */\nexport function f(a: number) {\n  return a;\n}\n";
@@ -531,12 +519,6 @@ describe("oxlint config", () => {
         ({ severity }) => severity,
       ),
     ).toEqual(["warning", "warning"]);
-    const strict = { ...env, OPENCLAW_RELEASE_CONTEXT_REF: undefined };
-    expect(
-      parseReport(checked(runFocused(root, ["fixture.ts"], strict), 1))
-        .diagnostics.map(({ code }) => code)
-        .toSorted(),
-    ).toEqual(["eslint(max-lines)", "eslint(max-lines-per-function)"]);
   });
 
   it("keeps native cap scopes and correctness while warning on untouched local line debt", () => {

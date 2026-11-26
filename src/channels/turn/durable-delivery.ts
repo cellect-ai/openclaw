@@ -1,4 +1,3 @@
-import { isDeepStrictEqual } from "node:util";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
 import type { ExecutionIdentityAdmissionToken } from "../../audit/execution-identity-admission.js";
 import { getGroupThreadDispatchContext } from "../../auto-reply/group-thread-context.js";
@@ -12,7 +11,10 @@ import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { DeliveryQueueStateContext } from "../../infra/delivery-queue-state-context.js";
 import { isProvenDeliveryNotSentError } from "../../infra/delivery-recovery.shared.js";
 import { normalizeDeliverableOutboundChannel } from "../../infra/outbound/channel-resolution.js";
-import { PlatformMessageNotDispatchedError } from "../../infra/outbound/deliver-types.js";
+import {
+  isOutboundDeliveryError,
+  PlatformMessageNotDispatchedError,
+} from "../../infra/outbound/deliver-types.js";
 import {
   type DeliverOutboundPayloadsParams,
   type DurableFinalDeliveryRequirement,
@@ -20,23 +22,14 @@ import {
 } from "../../infra/outbound/deliver.js";
 import type { OutboundPayloadPlan } from "../../infra/outbound/reply-payload-parts.js";
 import { buildOutboundSessionContext } from "../../infra/outbound/session-context.js";
-import {
-  getPluginRegistryGatewayChannelRegistration,
-  getPluginRegistryGatewayOwner,
-  isPluginRegistryGatewayViewOf,
-} from "../../plugins/registry-lifecycle.js";
-import {
-  getPluginRuntimeGatewayRequestScope,
-  withPluginRuntimeRegistryScope,
-} from "../../plugins/runtime/gateway-request-scope.js";
-import { runOutsidePluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
-import { getPluginRuntimeLoadContext } from "../../plugins/runtime/load-context.js";
+import { getPluginRuntimeGatewayRequestScope } from "../../plugins/runtime/gateway-request-scope.js";
 import { deriveDurableFinalDeliveryRequirements } from "../message/capabilities.js";
 import {
   durableMessageBatchMayHaveReachedRecipient,
   sendDurableMessageBatchCore,
   sendStructuredDurableMessageBatchCore,
 } from "../message/send.js";
+import { runAdmittingGatewayDelivery } from "./admitting-gateway-delivery.js";
 import {
   createChannelDeliveryResultFromReceipt,
   createChannelPartialDeliveryError,
@@ -91,6 +84,11 @@ type DurableInboundReplyDeliveryResult =
       error: unknown;
       /** False requires affirmative no-dispatch proof; omission preserves ambiguity. */
       sentBeforeError?: boolean;
+      /**
+       * The delivery queue still holds this proven-unsent reply, so recovery may replay it.
+       * Custody is not a delivery guarantee: replays are bounded and can still fail.
+       */
+      retainedForRecovery?: true;
     };
 
 function resolveDurableInboundReplyToId(
@@ -186,64 +184,17 @@ async function deliverInboundReplyWithMessageSendContext(
       return result;
     };
     const registry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
-    const owner = registry && getPluginRegistryGatewayOwner(registry);
-    if (!registry || !owner) {
+    if (!registry) {
       return await deliver(input.cfg);
     }
-    const current = owner.current();
-    const reject = (message: string): never => {
-      throw new PlatformMessageNotDispatchedError(message, {
-        cause: new Error(message),
-        retryable: false,
-      });
-    };
-    if (!current) {
-      return reject("The Gateway that admitted this reply is closing.");
-    }
-    const assertCurrent = () => {
-      if (owner.current() !== current) {
-        reject("The reply delivery runtime changed before sending.");
-      }
-    };
-    if (current === registry || isPluginRegistryGatewayViewOf(registry, current)) {
-      // A filtered agent registry is still this publication, not a reload handoff.
-      // The completed model turn must not select or own the final transport.
-      return await runOutsidePluginRuntimeGenerationScope(() =>
-        withPluginRuntimeRegistryScope(current, () => deliver(input.cfg, assertCurrent)),
-      );
-    }
-    const cfg = getPluginRuntimeLoadContext(current)?.rawConfig;
-    const channel = current.channels.find((entry) => entry.plugin.id === input.channel);
-    const prepareRuntimeHandoff = input.prepareRuntimeHandoff;
-    const admittedChannel = getPluginRegistryGatewayChannelRegistration(registry, input.channel);
-    const admittedConfig = admittedChannel?.config;
-    const retainedChannel =
-      channel &&
-      admittedChannel?.pluginId === channel.pluginId &&
-      admittedChannel.plugin === channel.plugin;
-    if (
-      !cfg ||
-      !admittedConfig ||
-      !isDeepStrictEqual(cfg.channels?.[input.channel], admittedConfig.channels?.[input.channel]) ||
-      !isDeepStrictEqual(cfg.channels?.defaults, admittedConfig.channels?.defaults) ||
-      !channel ||
-      !retainedChannel ||
-      !isDeepStrictEqual(
-        cfg.plugins?.entries?.[channel.pluginId],
-        admittedConfig.plugins?.entries?.[channel.pluginId],
-      )
-    ) {
-      return reject("The reply channel changed; delivery was not started.");
-    }
-    // Drop both inherited generation selectors, but retain the exact authenticated caller.
-    // The retained registration and unchanged settings keep the admitted sender. Channels whose
-    // credential can change outside config (env, files, SecretRefs) pin it through the callback.
-    return await runOutsidePluginRuntimeGenerationScope(() =>
-      withPluginRuntimeRegistryScope(current, () => {
-        const preparedCfg = prepareRuntimeHandoff ? prepareRuntimeHandoff(cfg) : cfg;
-        assertCurrent();
-        return deliver(preparedCfg, assertCurrent);
-      }),
+    return await runAdmittingGatewayDelivery(
+      {
+        registry,
+        cfg: input.cfg,
+        channel: input.channel,
+        prepareRuntimeHandoff: input.prepareRuntimeHandoff,
+      },
+      deliver,
     );
   } catch (error) {
     return { status: "failed", error };
@@ -357,12 +308,14 @@ async function deliverAdmittedInboundReply(
     gatewayClientScopes: params.ctxPayload.GatewayClientScopes ?? [],
   });
   if (send.status === "failed") {
+    const provenNotSent =
+      !durableMessageBatchMayHaveReachedRecipient(send) && isProvenDeliveryNotSentError(send.error);
     return {
       status: "failed" as const,
       error: send.error,
-      ...(!durableMessageBatchMayHaveReachedRecipient(send) &&
-      isProvenDeliveryNotSentError(send.error)
-        ? { sentBeforeError: false }
+      ...(provenNotSent ? { sentBeforeError: false } : {}),
+      ...(provenNotSent && isOutboundDeliveryError(send.error) && send.error.queueCustody === "held"
+        ? { retainedForRecovery: true as const }
         : {}),
     };
   }

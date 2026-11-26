@@ -65,6 +65,7 @@ import {
 import { withGatewayToolCallerIdentity } from "./gateway-caller-context.js";
 import * as inProcessGateway from "./in-process-gateway.js";
 import type { AgentToolGatewayRequestCaller } from "./in-process-gateway.js";
+import * as sessionsSendExecutor from "./sessions-send-executor.js";
 import * as sessionsSendFollowup from "./sessions-send-followup-custody.js";
 import { runSessionsSendA2AFlow } from "./sessions-send-tool.a2a.js";
 import * as sessionsSendDelivery from "./sessions-send-tool.delivery.js";
@@ -253,6 +254,39 @@ describe("sessions_send dispatch admission", () => {
     resetGatewayWorkAdmission();
     await state.cleanup();
   });
+
+  it.each([{ sessionKey: targetSessionKey }, { label: "synthetic-label" }])(
+    "returns a schema-valid result when admission outlives its deadline: %o",
+    async (target) => {
+      const execution = vi
+        .spyOn(sessionsSendExecutor, "executeSessionsSend")
+        .mockReturnValue(new Promise(() => {}));
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+      try {
+        const tool = createTool();
+        const pending = tool.execute("admission-deadline", {
+          ...target,
+          message: "Continue the task",
+        });
+        await vi.advanceTimersByTimeAsync(30_000);
+        const { details } = await pending;
+        expect(details).toMatchObject({
+          runId,
+          status: "error",
+          error: expect.stringContaining("the message may have been accepted"),
+        });
+        expect(details).toEqual(
+          "sessionKey" in target
+            ? expect.objectContaining(target)
+            : expect.not.objectContaining({ sessionKey: expect.anything() }),
+        );
+        expect(Value.Check(tool.outputSchema!, details)).toBe(true);
+      } finally {
+        vi.useRealTimers();
+        execution.mockRestore();
+      }
+    },
+  );
 
   it("applies peer preferences to new notifications without revoking accepted events", async () => {
     const callGateway = vi.fn();
@@ -562,7 +596,15 @@ describe("sessions_send dispatch admission", () => {
       expect(continuationSignal?.aborted).toBe(false);
       expect.soft(liveness.view.deadlineAtMs).toBe(deadline);
       await vi.advanceTimersByTimeAsync(30_000);
-      expect.soft(result).toMatchObject({ status: "timeout", runId, sessionKey: targetSessionKey });
+      // Queue acceptance is not a confirmed transcript commit; report uncertain admission.
+      expect.soft(result).toMatchObject({
+        status: "error",
+        runId,
+        sessionKey: targetSessionKey,
+        error:
+          "sessions_send timed out; the message may have been accepted. Inspect the target before retrying.",
+      });
+      expect.soft(Value.Check(createTool().outputSchema!, result)).toBe(true);
       expect.soft(continuationSignal?.aborted).toBe(false);
       detachActiveEmbeddedRun("target-session", sibling, targetSessionKey);
       await vi.advanceTimersByTimeAsync(0);
@@ -882,11 +924,11 @@ describe("sessions_send dispatch admission", () => {
           .soft(requestParams(callGateway, "send"))
           .toEqual([expect.objectContaining({ ...originalRoute, message: "Task complete" })]);
         const [sendParams] = requestParams(callGateway, "send");
-        expect(readInProcessSessionDeliveryGeneration(sendParams)).toMatchObject({
+        // The send follows the chat by key; it carries no transcript id to compare later.
+        expect(readInProcessSessionDeliveryGeneration(sendParams)).toEqual({
           agentId: "main",
+          storePath: expect.any(String),
           sessionKey: sourceKey,
-          sessionId: sourceId,
-          lifecycleRevision: entry.lifecycleRevision,
         });
         expect(sendParams).toHaveProperty("idempotencyKey", `sessions-send:${runId}`);
         expect(sendParams).not.toHaveProperty("sessionGeneration");
@@ -897,19 +939,14 @@ describe("sessions_send dispatch admission", () => {
     }
   });
 
-  it.each(["rejected", "revoked", "pending"] as const)(
+  it.each(["rejected", "pending"] as const)(
     "does not install a watch or start A2A when admission is %s",
     async (admission) => {
-      const controller = new AbortController();
-      const rejection = "Task admission failed before dispatch";
       const callGateway = mockGateway(async (request) => {
         switch (request.method) {
           case "agent":
-            if (admission !== "pending") {
-              if (admission === "revoked") {
-                controller.abort(new Error(rejection));
-              }
-              throw new Error(rejection);
+            if (admission === "rejected") {
+              throw new Error("Task admission failed before dispatch");
             }
             return { runId, status: "in_flight", admissionPending: true };
           case "agent.wait":
@@ -918,18 +955,17 @@ describe("sessions_send dispatch admission", () => {
             return unexpectedRequest(request);
         }
       }, true);
-      const result = await execute(
-        createTool({ callGateway, signal: controller.signal }),
-        "send-followup",
-        { watch: true, timeoutSeconds: 1 },
-      );
+      const result = await execute(createTool({ callGateway }), "send-followup", {
+        watch: true,
+        timeoutSeconds: 1,
+      });
       expect.soft(result.details).toMatchObject({
         status: "error",
         runId,
         sessionKey: targetSessionKey,
         error:
-          admission !== "pending"
-            ? rejection
+          admission === "rejected"
+            ? "Task admission failed before dispatch"
             : expect.stringMatching(/admission|unconfirmed|pending/i),
       });
       if (admission === "pending") {

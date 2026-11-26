@@ -71,12 +71,11 @@ validation even when first published to beta.
   package integrity, and all Linux/Windows/macOS Gateway checks, including
   Windows packaged install/upgrade in Release Checks. All-group qualification
   includes all nine Gateway install/upgrade combinations.
-- Selected `openclaw/ci-gate` must succeed unless checked-in exact-job grants
-  cover every failed cause. Missing, skipped, or cancelled required coverage
-  blocks. Exact failed live-provider/Telegram leaves and operator-accepted
-  `2026.11.5-beta.3`/candidate-bound `2026.11.4` jobs may use that policy;
-  candidate, job, version, and attempt restrictions still apply. **FRV must
-  conclude success; publishers cannot waive it.**
+- Selected `openclaw/ci-gate` must succeed unless it is itself waived. A matching
+  job waiver does not require a run; omit `jobName` to waive the entire child
+  role and all descendants without a run or receipt. Optional `step` limits a
+  job waiver to the first incomplete or failed step. Unwaived gaps block, and
+  waived is not passed. **FRV must conclude success.**
 - Coverage spans source CI, packages, plugins, Gateway installs/upgrades, and
   selected app, UI, Telegram, QA, and live-provider checks. Inspect recorded
   profile/OS coverage; skipped or deferred is not passed.
@@ -207,8 +206,13 @@ changed bytes. This change authorizes no dispatch/publication.
 `release-ci-summary.mjs` authenticates qualification once for all consumers;
 `validate-full-release-validation-evidence.mjs` checks the release tag and
 publication selection, including plugin subsets, and rechecks live authority.
-Recovery preserves the original admission, candidate, artifacts, and coverage.
-Existing waiver, historical-evidence, profile, soak, and performance rules apply.
+Only authenticated direct admission qualifies evidence for publication.
+Unadmitted historical manifests, including v3, require new admitted
+qualification; ancestry alone is not admission. Receipt-backed aggregate recovery
+is retired for every profile, including beta. Normal authenticated qualification
+and reuse remain available, and C, Q, and P may remain independent. Existing
+waiver, profile, soak, and performance rules apply. Historical manifest parsing
+remains available for diagnostic summaries, not qualification or publication.
 
 ### Frozen qualification identity
 
@@ -242,6 +246,9 @@ diagnostics. Local Parallels uses isolated Q harness/frozen dependencies against
 exact validated C tarballs when Q differs.
 
 Reuse preserves producer/consumer identities, inputs, coverage, and provenance.
+[Child evidence reuse](/reference/full-release-validation/stages) can cross Q with
+an authenticated producer and reevaluation under current Q grants. Tooling
+changes alone do not force fresh runs; whole-parent reuse still requires exact Q/P.
 [Root-request recovery](/reference/full-release-validation/dispatch#retain-and-reconcile-the-root-request)
 owns read-only reconciliation and explicit pre-POST resume: intended Q, empty
 uncertain-ref inventory, revalidated admission/signer, final ref verification.

@@ -11,12 +11,12 @@ import {
 } from "../state/openclaw-state-db-async-lifecycle.js";
 import { OPENCLAW_SQLITE_BUSY_TIMEOUT_MS } from "../state/openclaw-state-db-contract.js";
 import { resolveOpenClawStateDirForDatabasePath } from "../state/openclaw-state-db.paths.js";
-import {
-  resolveIdentityPathViaExistingAncestor,
-  resolveIdentityPathViaExistingAncestorSync,
-} from "./boundary-path.js";
 import type { acquireFileLockSync } from "./file-lock-manager.js";
 import { describeGatewayLockHolder, type LockPayload } from "./gateway-lock-payload.js";
+import {
+  createColdAdmissionBudget,
+  type ColdAdmissionOptions,
+} from "./gateway-state-owner-cold-admission.js";
 import {
   resolveStateOwnerIdentity,
   resolveStateOwnerIdentityAsync,
@@ -43,11 +43,13 @@ import {
   StateDatabaseAdmissionPendingError,
   StateDatabaseMaintenanceScopeError,
 } from "./gateway-state-owner-record.js";
+import {
+  resolveIdentityPathViaExistingAncestor,
+  resolveIdentityPathViaExistingAncestorSync,
+} from "./path-existence.js";
 import { normalizeWindowsPathForComparison } from "./path-guards.js";
-import { normalizeSqliteNonNegativeInteger } from "./sqlite-busy-timeout.js";
 import { runWithSqliteCleanup } from "./sqlite-lifecycle-errors.js";
 
-export { createGatewayStateProjection } from "./gateway-state-owner-lifecycle.js";
 export type { GatewayStateProjection } from "./gateway-state-owner-lifecycle.js";
 export { GatewayStateOwnerContentionError } from "./gateway-state-owner-record.js";
 
@@ -58,6 +60,8 @@ export type StateDatabaseSchemaLease = {
   run<T>(this: void, operation: () => T): T;
   release(this: void): void;
 };
+
+type StateOwnerIdentity = ReturnType<typeof resolveStateOwnerIdentity>;
 
 const schemaOwners = resolveGlobalSingleton(
   Symbol.for("openclaw.stateDatabaseSchemaOwners"),
@@ -81,31 +85,17 @@ export function getStateDatabaseSchemaLease(
 
 /** Retry cold admission only; the same budget covers opening and its first unentered write. */
 export function withStateDatabaseColdAdmission<T>(
-  params: { databasePath: string; busyTimeoutMs: number; canRetry?: () => boolean },
+  params: ColdAdmissionOptions,
   open: (remainingBusyTimeoutMs: () => number) => T,
 ): T {
-  const budget = normalizeSqliteNonNegativeInteger(params.busyTimeoutMs, "busyTimeoutMs");
-  const deadline = performance.now() + budget;
-  const canonical = resolveIdentityPathViaExistingAncestorSync(params.databasePath);
-  const remainingBusyTimeoutMs = () => Math.max(0, Math.ceil(deadline - performance.now()));
+  const { remainingBusyTimeoutMs, retryDelay } = createColdAdmissionBudget(params);
   const waiting = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
   for (;;) {
     try {
       assertStateDatabaseAccessAllowed(params.databasePath);
       return open(remainingBusyTimeoutMs);
     } catch (error) {
-      if (
-        !(error instanceof StateDatabaseAdmissionPendingError) ||
-        resolveIdentityPathViaExistingAncestorSync(error.databasePath) !== canonical ||
-        params.canRetry?.() === false
-      ) {
-        throw error;
-      }
-      const remaining = deadline - performance.now();
-      if (remaining <= 0) {
-        throw error;
-      }
-      Atomics.wait(waiting, 0, 0, Math.min(10, remaining));
+      Atomics.wait(waiting, 0, 0, retryDelay(error));
     }
   }
 }
@@ -180,6 +170,7 @@ function leaseForFile(
           void owner.heartbeat?.stop();
           owner.accepting = false;
           owners.delete(owner.key);
+          owner.onReleased?.();
         }
       }
       // A failed directory cleanup remains retryable after physical lock release.
@@ -197,6 +188,10 @@ export function acquireGatewayStateOwner(params: {
   payload?: LockPayload;
   projectionPath?: string;
   getProjection?: () => GatewayStateProjection | undefined;
+  /** Custody held outside this process, such as the PostgreSQL install lock; abort retires it. */
+  custody?: AbortSignal;
+  /** Ends that outside custody once physical custody ends, including retained leases. */
+  onReleased?: () => void;
 }): StateDatabaseSchemaLease {
   const identity = resolveStateOwnerIdentity(params.databasePath);
   const pathname = identity.ownerPath;
@@ -229,6 +224,7 @@ export function acquireGatewayStateOwner(params: {
     projectionDirectories: [],
     lost: new AbortController(),
     accepting: true,
+    onReleased: params.onReleased,
   };
   const lock = acquireGatewayStateOwnerFile(params.databasePath, pathname, payload);
   owner.locks.add(lock);
@@ -239,6 +235,13 @@ export function acquireGatewayStateOwner(params: {
     owner.heartbeat = startGatewayStateOwnerHeartbeat(owner.locks, (error, lockPath) =>
       observeOwnerLoss(owner, error, lockPath),
     );
+    // Admission, workers and the server lifecycle all observe this owner's lost signal.
+    const custody = params.custody;
+    const onCustodyLost = () => {
+      const reason: unknown = custody?.reason;
+      loseOwner(owner, reason instanceof Error ? reason : new Error("State custody was lost"));
+    };
+    custody?.addEventListener("abort", onCustodyLost, { once: true });
     lease.assertCurrent();
   } catch (error) {
     return runWithSqliteCleanup(lease, "state process ownership verification", () => {
@@ -522,7 +525,7 @@ export function assertStateDatabaseReadAllowed(
 function assertStateDatabaseReadAtOwnerPath(
   databasePath: string,
   captured: Parameters<typeof assertStateDatabaseAccessAllowed>[1],
-  prepared?: ReturnType<typeof resolveStateOwnerIdentity>,
+  prepared?: StateOwnerIdentity,
 ): void {
   if (owners.size === 0) {
     assertStateDatabaseAccessAtOwnerPath(
@@ -580,10 +583,7 @@ export async function captureStateDatabaseAccess(databasePath: string) {
   return createStateDatabaseAccess(await resolveStateOwnerIdentityAsync(databasePath));
 }
 // Cleanup pins its process owner; ordinary handles discover current custody on each request.
-function createStateDatabaseAccess(
-  identity: ReturnType<typeof resolveStateOwnerIdentity>,
-  capturedOwner?: ProcessOwner,
-) {
+function createStateDatabaseAccess(identity: StateOwnerIdentity, capturedOwner?: ProcessOwner) {
   const { canonicalPath } = identity;
   const registered = owners.get(identity.key);
   return {
@@ -671,7 +671,7 @@ function createStateDatabaseAccess(
 
 function assertStateDatabaseAccessAtOwnerPath(
   databasePath: string,
-  identity: ReturnType<typeof resolveStateOwnerIdentity>,
+  identity: StateOwnerIdentity,
   captured: Parameters<typeof assertStateDatabaseAccessAllowed>[1],
 ): void {
   const assertMaintenance = () => {

@@ -3,12 +3,12 @@ import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { createAiTransportHost, getAiTransportHost, runWithAiTransportHost } from "@openclaw/ai";
+import { configureAiTransportHost, getAiTransportHost } from "@openclaw/ai";
 import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
 import { stableStringify } from "@openclaw/normalization-core";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { afterEach, expect, it, vi } from "vitest";
+import { expect, it, vi } from "vitest";
 import {
   assertStableProviderPrefix,
   snapshotProviderPrefix,
@@ -22,7 +22,6 @@ import {
   mintMessageActionTurnCapability,
   revokeMessageActionTurnCapability,
 } from "../gateway/message-action-turn-capability.js";
-import { RUNTIME_CONTEXT_HEADER } from "../llm/types.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
 import { resolveActiveReplyOperationForSessionId } from "../sessions/session-controller.queries.js";
@@ -32,17 +31,12 @@ import { createUserTurnTranscriptRecorder } from "../sessions/user-turn-transcri
 import { closeOpenClawAgentDatabasesAsync } from "../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import { prepareSystemAgentRunAdmission } from "./admitted-run-context.js";
-import { releaseSessionMcpRuntime } from "./agent-bundle-mcp-manager-cleanup.js";
 import { bindSessionMcpRuntimeTestScheduler } from "./agent-bundle-mcp-manager.test-support.js";
-import {
-  acquireSessionMcpRuntime,
-  disposeAllSessionMcpRuntimes,
-} from "./agent-bundle-mcp-tools.js";
+import { disposeAllSessionMcpRuntimes, peekSessionMcpRuntime } from "./agent-bundle-mcp-tools.js";
 import { runEmbeddedAgent } from "./embedded-agent-runner.js";
 import {
   cacheRunnerConfig,
-  captureOpenAIResponsesOutput,
-  normalizeOpenAIResponsesPrefixInput,
+  omitWireFields,
   providerResponse,
   type WireApi,
 } from "./embedded-agent-runner.wire.test-support.js";
@@ -60,6 +54,12 @@ const cases = [
   ["anthropic-messages", "anthropic", "claude-opus-5", "in-history"],
 ] satisfies Array<[WireApi, string, string, string]>;
 const PNG = createSolidPngBuffer(1, 1, { r: 12, g: 34, b: 56 }).toString("base64");
+// Just over the 32,000-character live cap at this fixture's context size.
+const OVERSIZED_TOOL_RESULT_REPEATS = 1_600;
+// On a contended CPU, the first admitted turn took 80s (cold runtime and
+// five tool calls); the remaining ten turns took 15s together.
+const FIRST_TURN_TIMEOUT_MS = 120_000;
+const PROMPT_CACHE_TEST_TIMEOUT_MS = 180_000;
 const FAILED_ASSISTANT_TEXT = "partial assistant output before provider error";
 const FAILED_ASSISTANT_REPLAY_TEXT =
   "[This turn failed before it completed. Do not redo its work without confirming with the user first.]";
@@ -73,9 +73,6 @@ function responseFor(api: WireApi, model: string, request: number, tool: boolean
     id,
     messageId: `msg_${id}`,
     text: `answer ${request}`,
-    ...(api === "openai-responses" && !failure
-      ? { reasoning: { id: `rs_${id}`, encrypted_content: `opaque_${id}` } }
-      : {}),
     calls: tool
       ? Array.from({ length: 5 }, (_, index) => ({
           id: `${api === "anthropic-messages" ? "toolu" : "call"}_${id}_${index}`,
@@ -106,14 +103,12 @@ function rateLimitResponse(api: WireApi) {
   });
 }
 
-afterEach(() => clearActivePluginRegistry());
-
 it.for(cases)(
   "preserves %j prefixes across tool loops, hooks, images, errors, rate-limit retries, refresh and reopen",
-  { timeout: 120_000 },
-  async ([api, provider, model, route], { signal }) => {
+  { timeout: PROMPT_CACHE_TEST_TIMEOUT_MS },
+  async ([api, provider, model, route], { signal, onTestFinished }) => {
     const responses = api === "openai-responses";
-    await withOpenClawTestState({ label: `prompt-cache-${route}` }, async (state) => {
+    const journey = withOpenClawTestState({ label: `prompt-cache-${route}` }, async (state) => {
       await bindSessionMcpRuntimeTestScheduler();
       const mcp = await startPromptCacheMcpServer(signal);
       try {
@@ -132,7 +127,7 @@ it.for(cases)(
           path.join(pluginDir, "index.cjs"),
           `module.exports = {
       id: "cache-proof", register(api) {
-        api.registerTool({ name: "cache_probe", label: "Cache probe", description: "Return a large deterministic synthetic result.", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "synthetic tool result ".repeat(5000) }] }) });
+        api.registerTool({ name: "cache_probe", label: "Cache probe", description: "Return a large deterministic synthetic result.", parameters: { type: "object", properties: {} }, execute: async () => ({ content: [{ type: "text", text: "synthetic tool result ".repeat(${OVERSIZED_TOOL_RESULT_REPEATS}) }] }) });
         api.on("before_prompt_build", (event) => ({ prependContext: "hook before " + event.prompt, appendContext: "hook after " + event.prompt }));
       }
     };`,
@@ -140,6 +135,9 @@ it.for(cases)(
         const sessionId = `cache-${route}`;
         const sessionKey = `agent:main:telegram:direct:${sessionId}`;
         const config = cacheRunnerConfig({
+          // Room for the full journey below the compaction trigger: this proof covers prefix
+          // stability. agent-runner-compaction-fallback.test.ts owns the warm summary shape.
+          contextWindow: 131_072,
           api,
           provider,
           model,
@@ -170,9 +168,15 @@ it.for(cases)(
         };
         await upsertSessionEntryCore(target, { sessionId, updatedAt: 1 });
         const host = getAiTransportHost();
+        let firstContinuation:
+          | {
+              previousResponseId: unknown;
+              toolOutputs: number;
+              toolCalls: number;
+            }
+          | undefined;
         const requests: Array<{
           turn: number;
-          payload: unknown;
           prefix: ReturnType<typeof snapshotProviderPrefix>;
           userEnvelopes: Map<string, string>;
         }> = [];
@@ -234,7 +238,7 @@ it.for(cases)(
               },
             };
           });
-        const transportHost = createAiTransportHost({
+        configureAiTransportHost({
           ...host,
           buildModelFetch: () => async (input, init) => {
             try {
@@ -246,6 +250,18 @@ it.for(cases)(
                 assert(Array.isArray(payload.input));
                 const previousId =
                   "previous_response_id" in payload ? payload.previous_response_id : undefined;
+                if (requests.length === 1) {
+                  // Runtime context may accompany the tool results on the wire.
+                  firstContinuation = {
+                    previousResponseId: previousId,
+                    toolOutputs: payload.input.filter(
+                      (item) => isRecord(item) && item.type === "function_call_output",
+                    ).length,
+                    toolCalls: payload.input.filter(
+                      (item) => isRecord(item) && item.type === "function_call",
+                    ).length,
+                  };
+                }
                 if (previousId !== undefined) {
                   assert.equal(typeof previousId, "string");
                   const inherited = responseHistory.get(previousId as string);
@@ -254,31 +270,15 @@ it.for(cases)(
                 } else {
                   effectiveInput = payload.input;
                 }
-                effectivePayload = {
-                  ...payload,
-                  input: normalizeOpenAIResponsesPrefixInput(effectiveInput),
-                };
+                effectivePayload = { ...payload, input: effectiveInput };
               }
-              const prefix = snapshotProviderPrefix(
-                api,
-                JSON.parse(stableStringify(effectivePayload)),
-              );
+              const prefix = snapshotProviderPrefix(api, effectivePayload);
               if (route === "messages") {
-                const runtimeIndex = prefix.history.findIndex((item) =>
-                  item.includes(RUNTIME_CONTEXT_HEADER),
-                );
+                // Runtime-context carriers stay in history, so they may carry a checkpoint.
                 expect(prefix.breakpoints.length).toBeGreaterThan(0);
-                expect(
-                  prefix.breakpoints.some(
-                    (point) => runtimeIndex >= 0 && point.index >= runtimeIndex,
-                  ),
-                ).toBe(false);
               }
               expect(prefix.tools, "advertised tool").toContain('"name":"cache_probe"');
-              expect(prefix.tools, "advertised MCP tool").toContain(
-                '"name":"cache_fixture__probe"',
-              );
-              requests.push({ turn, payload, prefix, userEnvelopes });
+              requests.push({ turn, prefix, userEnvelopes });
               requestsThisTurn++;
               if (turn === 6 && requestsThisTurn === 1) {
                 const outcome = await steerSessionControllerOperation({
@@ -305,7 +305,11 @@ it.for(cases)(
                 failure,
               );
               if (effectiveInput) {
-                const output = captureOpenAIResponsesOutput(result.output);
+                // Full replay omits provider item IDs. Function calls also omit
+                // status; assistant messages retain their completed status.
+                const output = result.output.map((item) =>
+                  omitWireFields(item, item.type === "function_call" ? ["id", "status"] : ["id"]),
+                );
                 responseHistory.set(`cache_${requests.length}`, [...effectiveInput, ...output]);
               }
               return result.response;
@@ -315,301 +319,288 @@ it.for(cases)(
             }
           },
         });
-        // Keep the scenario and transport cleanup scoped across lazy provider initialization.
-        await runWithAiTransportHost(transportHost, async () => {
-          const mcpLease = await acquireSessionMcpRuntime({
-            sessionId,
-            sessionKey,
-            agentId: "main",
-            workspaceDir: state.workspaceDir,
-            agentDir: state.agentDir(),
-            cfg: config,
-          });
-          try {
-            // Expiry is meaningful only after this exact session discovered its server.
-            const catalog = await mcpLease.runtime.getCatalog();
-            expect(catalog.diagnostics ?? []).toEqual([]);
-            expect(catalog.tools).toEqual(
-              expect.arrayContaining([
-                expect.objectContaining({ serverName: "cache_fixture", toolName: "probe" }),
-              ]),
-            );
-            for (turn = 1; turn <= 11; turn++) {
-              requestsThisTurn = 0;
-              if (turn === 3) {
-                const runtime = mcpLease.runtime;
-                mcp.expireSession();
-                await expect(runtime.callTool("cache_fixture", "probe", {})).rejects.toThrow(
-                  "Session not found",
-                );
-                await runtime.getCatalog();
-                await withinTest(mcp.reconnectStarted, signal);
-              }
-              if (turn === 4) {
-                mcp.releaseReconnect();
-                await withinTest(mcp.reconnectListed, signal);
-              }
-              if (turn === 7) {
-                // Simulate the durable runner lifecycle after Gateway restart, without a second server boot.
-                cleanupSessionResources(sessionId);
-                clearEmbeddedSessionPromptStates([sessionId]);
-                await closeOpenClawAgentDatabasesAsync(state.stateDir);
-              }
-              const runId = `${sessionId}-turn-${turn}`;
-              const provenance =
-                turn === 8
-                  ? {
-                      kind: "inter_session" as const,
-                      sourceSessionKey: "agent:main:subagent:cache-child",
-                      sourceChannel: "internal",
-                      sourceTool: "subagent_announce",
-                    }
-                  : undefined;
-              const internalEvents: AgentInternalEvent[] | undefined = provenance
-                ? [
-                    {
-                      type: "task_completion",
-                      source: "subagent",
-                      childSessionKey: provenance.sourceSessionKey,
-                      childSessionId: "cache-child",
-                      announceType: "subagent task",
-                      taskLabel: "Synthetic cache verification",
-                      status: "ok",
-                      statusLabel: "completed successfully",
-                      result: "Synthetic child verification completed.",
-                      replyInstruction: buildSubagentPrivateCompletionInstruction(undefined),
-                    },
-                  ]
-                : undefined;
-              const transcriptPrompt = provenance
-                ? RUNTIME_EVENT_USER_PROMPT
-                : `visible turn ${turn}`;
-              const instructionRevision =
-                (route === "responses" || route === "in-history") && turn >= 4 ? 2 : 1;
-              const admission = prepareSystemAgentRunAdmission(
-                config,
-                runId,
-                "main",
-                "prompt-cache-proof",
+        try {
+          for (turn = 1; turn <= 11; turn++) {
+            signal.throwIfAborted();
+            requestsThisTurn = 0;
+            if (turn === 3) {
+              const runtime = peekSessionMcpRuntime({ sessionKey });
+              expect(runtime).toBeDefined();
+              mcp.expireSession();
+              await expect(runtime!.callTool("cache_fixture", "probe", {})).rejects.toThrow(
+                "Session not found",
               );
-              const recorder = createUserTurnTranscriptRecorder({
-                target: { ...target, sessionEntry: undefined },
-                input: {
-                  text: transcriptPrompt,
-                  provenance,
-                  timestamp: turn,
-                  idempotencyKey: `${runId}:user`,
-                },
-              });
-              // Alternate real WebChat prompt authority with ordinary follow-up runs.
-              // Tool presentation must not depend on this one-turn capability.
-              const source = {
-                agentId: "main",
-                sessionKey,
-                assertCurrent: admission.assertSourceCurrent,
-                createReaction: (sourceRecorder: typeof recorder) =>
-                  createCurrentPromptReaction({
-                    ...target,
-                    recorder: sourceRecorder,
-                    context: { broadcast: () => {}, getRuntimeConfig: () => config },
-                  }),
-              };
-              bindUserTurnPromptReactionSource(recorder, source);
-              const capability =
-                responses && turn % 2 === 1
-                  ? mintMessageActionTurnCapability({
-                      ...target,
-                      runId,
-                      expiresWithRun: true,
-                      promptReactionSource: { source, recorder },
-                    })
-                  : undefined;
-              try {
-                const run = runEmbeddedAgent({
-                  userTurnTranscriptRecorder: recorder,
-                  messageActionTurnCapability: capability,
-                  messageProvider: responses ? "webchat" : "telegram",
-                  abortSignal: signal,
-                  inputProvenance: provenance,
-                  internalEvents,
-                  preparedRunAdmission: admission,
-                  onExecutionPhase: ({ phase }) => {
-                    // Responses keeps real continuation state; the other fixtures are stateless.
-                    if (phase === "model_call_started" && !responses) {
-                      cleanupSessionResources(sessionId);
-                    }
-                  },
-                  agentId: "main",
-                  sessionId,
-                  sessionKey,
-                  sessionTarget: target,
-                  agentDir: state.agentDir(),
-                  workspaceDir: state.workspaceDir,
-                  config,
-                  provider,
-                  model,
-                  agentHarnessRuntimeOverride: "openclaw",
-                  modelSelectionLocked: true,
-                  codeModeOverride: false,
-                  thinkLevel: "off",
-                  toolsAllow: ["cache_probe", "cache_fixture__probe", "message"],
-                  runId,
-                  // The first admitted turn lazily loads the provider/plugin runtime.
-                  timeoutMs: turn === 1 ? 60_000 : 20_000,
-                  prompt: provenance
-                    ? transcriptPrompt
-                    : turn % 2 === 0
-                      ? `replacement model prompt ${turn}`
-                      : transcriptPrompt,
-                  transcriptPrompt,
-                  skillsSnapshot: {
-                    prompt: `<available_skills>synthetic skill revision ${instructionRevision}</available_skills>`,
-                    skills: [],
-                  },
-                  extraSystemPrompt: `## Temporal Context\nSynthetic day ${instructionRevision}\n## Runtime\nSynthetic revision ${instructionRevision}`,
-                  ...(turn <= 2
-                    ? { images: [{ type: "image" as const, mimeType: "image/png", data: PNG }] }
-                    : {}),
-                });
-                if (responses && turn === 5) {
-                  await expect(run).rejects.toMatchObject({ reason: "format" });
-                  if (providerFailure) {
-                    throw providerFailure;
+              await runtime!.getCatalog();
+              await withinTest(mcp.reconnectStarted, signal);
+            }
+            if (turn === 4) {
+              mcp.releaseReconnect();
+              await withinTest(mcp.reconnectListed, signal);
+            }
+            if (turn === 7) {
+              // Simulate the durable runner lifecycle after Gateway restart, without a second server boot.
+              clearEmbeddedSessionPromptStates([sessionId]);
+              await closeOpenClawAgentDatabasesAsync(state.stateDir);
+            }
+            const runId = `${sessionId}-turn-${turn}`;
+            const provenance =
+              turn === 8
+                ? {
+                    kind: "inter_session" as const,
+                    sourceSessionKey: "agent:main:subagent:cache-child",
+                    sourceChannel: "internal",
+                    sourceTool: "subagent_announce",
                   }
-                  expect(requestsThisTurn).toBe(1);
-                  continue;
-                }
-                const result = await run;
+                : undefined;
+            const internalEvents: AgentInternalEvent[] | undefined = provenance
+              ? [
+                  {
+                    type: "task_completion",
+                    source: "subagent",
+                    childSessionKey: provenance.sourceSessionKey,
+                    childSessionId: "cache-child",
+                    announceType: "subagent task",
+                    taskLabel: "Synthetic cache verification",
+                    status: "ok",
+                    statusLabel: "completed successfully",
+                    result: "Synthetic child verification completed.",
+                    replyInstruction: buildSubagentPrivateCompletionInstruction(undefined),
+                  },
+                ]
+              : undefined;
+            const transcriptPrompt = provenance
+              ? RUNTIME_EVENT_USER_PROMPT
+              : `visible turn ${turn}`;
+            const instructionRevision =
+              (route === "responses" || route === "in-history") && turn >= 4 ? 2 : 1;
+            const admission = prepareSystemAgentRunAdmission(
+              config,
+              runId,
+              "main",
+              "prompt-cache-proof",
+            );
+            const recorder = createUserTurnTranscriptRecorder({
+              target: { ...target, sessionEntry: undefined },
+              input: {
+                text: transcriptPrompt,
+                provenance,
+                timestamp: turn,
+                idempotencyKey: `${runId}:user`,
+              },
+            });
+            // Alternate real WebChat prompt authority with ordinary follow-up runs.
+            // Tool presentation must not depend on this one-turn capability.
+            const source = {
+              agentId: "main",
+              sessionKey,
+              assertCurrent: admission.assertSourceCurrent,
+              createReaction: (sourceRecorder: typeof recorder) =>
+                createCurrentPromptReaction({
+                  ...target,
+                  recorder: sourceRecorder,
+                  context: { broadcast: () => {}, getRuntimeConfig: () => config },
+                }),
+            };
+            bindUserTurnPromptReactionSource(recorder, source);
+            const capability =
+              responses && turn % 2 === 1
+                ? mintMessageActionTurnCapability({
+                    ...target,
+                    runId,
+                    expiresWithRun: true,
+                    promptReactionSource: { source, recorder },
+                  })
+                : undefined;
+            try {
+              const run = runEmbeddedAgent({
+                userTurnTranscriptRecorder: recorder,
+                messageActionTurnCapability: capability,
+                messageProvider: responses ? "webchat" : "telegram",
+                abortSignal: signal,
+                inputProvenance: provenance,
+                internalEvents,
+                preparedRunAdmission: admission,
+                onExecutionPhase: ({ phase }) => {
+                  // Responses keeps real continuation state; the other fixtures are stateless.
+                  if (phase === "model_call_started" && !responses) {
+                    cleanupSessionResources(sessionId);
+                  }
+                },
+                agentId: "main",
+                sessionId,
+                sessionKey,
+                sessionTarget: target,
+                agentDir: state.agentDir(),
+                workspaceDir: state.workspaceDir,
+                config,
+                provider,
+                model,
+                agentHarnessRuntimeOverride: "openclaw",
+                modelSelectionLocked: true,
+                codeModeOverride: false,
+                thinkLevel: "off",
+                toolsAllow: ["cache_probe", "cache_fixture__probe", "message"],
+                runId,
+                timeoutMs: turn === 1 ? FIRST_TURN_TIMEOUT_MS : 20_000,
+                prompt: provenance
+                  ? transcriptPrompt
+                  : turn % 2 === 0
+                    ? `replacement model prompt ${turn}`
+                    : transcriptPrompt,
+                transcriptPrompt,
+                skillsSnapshot: {
+                  prompt: `<available_skills>synthetic skill revision ${instructionRevision}</available_skills>`,
+                  skills: [],
+                },
+                extraSystemPrompt: `## Temporal Context\nSynthetic day ${instructionRevision}\n## Runtime\nSynthetic revision ${instructionRevision}`,
+                ...(turn <= 2
+                  ? { images: [{ type: "image" as const, mimeType: "image/png", data: PNG }] }
+                  : {}),
+              });
+              if (responses && turn === 5) {
+                await expect(run).rejects.toMatchObject({ reason: "format" });
                 if (providerFailure) {
                   throw providerFailure;
                 }
-                expect(result.meta.aborted, `turn ${turn} aborted`).not.toBe(true);
-                expect(requestsThisTurn, `turn ${turn} reached provider`).toBeGreaterThan(0);
-                expect(
-                  result.payloads?.some((payload) => payload.text?.includes("answer")),
-                  `turn ${turn} completed`,
-                ).toBe(true);
-              } finally {
-                if (capability) {
-                  revokeMessageActionTurnCapability(capability);
-                }
-                admission.close();
+                expect(requestsThisTurn).toBe(1);
+                continue;
               }
+              const result = await run;
+              if (providerFailure) {
+                throw providerFailure;
+              }
+              expect(result.meta.aborted, `turn ${turn} aborted`).not.toBe(true);
+              expect(requestsThisTurn, `turn ${turn} reached provider`).toBeGreaterThan(0);
+              expect(
+                result.payloads?.some((payload) => payload.text?.includes("answer")),
+                `turn ${turn} completed`,
+              ).toBe(true);
+            } finally {
+              if (capability) {
+                revokeMessageActionTurnCapability(capability);
+              }
+              admission.close();
             }
-            expect(requests.length).toBe(15);
-            expect(requests.filter((request) => request.turn === 10)).toHaveLength(3);
-            const historyAt = (value: number) =>
-              requests.find((request) => request.turn === value)!.prefix.history.join("");
-            if (responses) {
-              expect(requests.filter((request) => request.turn === 5)).toHaveLength(1);
-              const afterFailure = historyAt(6);
-              expect(afterFailure).toContain(FAILED_ASSISTANT_REPLAY_TEXT);
-              expect(afterFailure).not.toContain(FAILED_ASSISTANT_TEXT);
-              expect(historyAt(7)).toContain(FAILED_ASSISTANT_REPLAY_TEXT);
-              const continuation = requests[1]!.payload as Record<string, unknown>;
-              expect(continuation.previous_response_id).toBe("cache_1");
-              const input = continuation.input as Array<Record<string, unknown>>;
-              // The runner may append fresh runtime context alongside the tool results.
-              expect(input.filter((item) => item.type === "function_call_output")).toHaveLength(5);
-              expect(input.filter((item) => item.type === "function_call")).toEqual([]);
-            }
-            expect(requests[0]!.userEnvelopes.size).toBeGreaterThan(0);
-            const firstPrefix = requests[0]!.prefix.history.join("");
-            expect(firstPrefix, "plugin prepend hook reached provider").toContain("hook before");
-            expect(firstPrefix, "plugin append hook reached provider").toContain("hook after");
-            expect(firstPrefix, "image reached provider").toContain(PNG);
-            expect(historyAt(2)).toContain("replacement model prompt 2");
-            const toolResults = requests[1]!.prefix.history.filter((segment) =>
-              segment.includes("synthetic tool result"),
-            );
-            expect(toolResults.length).toBe(5);
-            // Oversized tool results must remain frozen after they have reached the provider.
-            expect(
-              toolResults.reduce((bytes, segment) => bytes + segment.length, 0),
-            ).toBeGreaterThan(65_536);
-            expect(historyAt(8)).toContain("Synthetic child verification completed");
-            const recoveredMcpResult = await mcpLease.runtime.callTool(
-              "cache_fixture",
-              "probe",
-              {},
-            );
-            expect(recoveredMcpResult.isError ?? false).toBe(false);
-            for (let index = 1; index < requests.length; index++) {
-              const previous = requests[index - 1]!;
-              const current = requests[index]!;
-              for (const [textDigest, envelopeDigest] of previous.userEnvelopes) {
-                if (current.userEnvelopes.has(textDigest)) {
-                  expect(
-                    current.userEnvelopes.get(textDigest),
-                    `${route} request ${index + 1}, turn ${current.turn}: retained user envelope ${textDigest}`,
-                  ).toBe(envelopeDigest);
-                }
-              }
-              const pruning = current.turn === 9 && previous.turn === 8;
-              const firstUserIndex = previous.prefix.history.findIndex((item) =>
-                item.includes("visible turn 1"),
-              );
-              const retainedUserIndex = previous.prefix.history.findIndex((item) =>
-                item.includes("visible turn 5"),
-              );
-              if (pruning) {
-                expect(firstUserIndex).toBeGreaterThanOrEqual(0);
-                expect(retainedUserIndex).toBeGreaterThan(firstUserIndex);
-              }
-              let previousPrefix = previous.prefix;
-              if (route === "completions" && pruning) {
-                // Legacy Chat Completions moves the same Runtime facts to the new
-                // first user when the history window retires its original carrier.
-                const retired: unknown = JSON.parse(previous.prefix.history[firstUserIndex]!);
-                const retained: unknown = JSON.parse(previous.prefix.history[retainedUserIndex]!);
-                assert(isRecord(retired) && Array.isArray(retired.content));
-                assert(isRecord(retained) && typeof retained.content === "string");
-                const runtime: unknown = retired.content.at(-1);
-                assert(
-                  isRecord(runtime) &&
-                    runtime.type === "text" &&
-                    typeof runtime.text === "string" &&
-                    runtime.text.startsWith("Runtime: "),
-                );
-                previousPrefix = {
-                  ...previous.prefix,
-                  history: previous.prefix.history.with(
-                    retainedUserIndex,
-                    JSON.stringify({
-                      ...retained,
-                      content: `${retained.content}\n\n${runtime.text}`,
-                    }),
-                  ),
-                };
-              }
-              assertStableProviderPrefix(previousPrefix, current.prefix, {
-                label: `${route} request ${index + 1}, turn ${current.turn}`,
-                ...(route === "messages"
-                  ? { historyLength: previous.prefix.breakpoints.at(-1)!.index + 1 }
-                  : {}),
-                ...(pruning
-                  ? {
-                      boundary: {
-                        kind: "history-pruning" as const,
-                        startIndex: firstUserIndex,
-                        deleteCount: retainedUserIndex - firstUserIndex,
-                      },
-                    }
-                  : {}),
-              });
-            }
-          } finally {
-            observerSpy.mockRestore();
-            await releaseSessionMcpRuntime(mcpLease);
-            cleanupSessionResources(sessionId);
-            clearEmbeddedSessionPromptStates([sessionId]);
           }
-        });
+          expect(requests.length).toBe(15);
+          expect(requests.filter((request) => request.turn === 10)).toHaveLength(3);
+          const historyAt = (value: number) =>
+            requests.find((request) => request.turn === value)!.prefix.history.join("");
+          if (responses) {
+            expect(requests.filter((request) => request.turn === 5)).toHaveLength(1);
+            const afterFailure = historyAt(6);
+            expect(afterFailure).toContain(FAILED_ASSISTANT_REPLAY_TEXT);
+            expect(afterFailure).not.toContain(FAILED_ASSISTANT_TEXT);
+            expect(historyAt(7)).toContain(FAILED_ASSISTANT_REPLAY_TEXT);
+            expect(firstContinuation).toEqual({
+              previousResponseId: "cache_1",
+              toolOutputs: 5,
+              toolCalls: 0,
+            });
+          }
+          expect(requests[0]!.userEnvelopes.size).toBeGreaterThan(0);
+          const firstPrefix = requests[0]!.prefix.history.join("");
+          expect(firstPrefix, "plugin prepend hook reached provider").toContain("hook before");
+          expect(firstPrefix, "plugin append hook reached provider").toContain("hook after");
+          expect(firstPrefix, "image reached provider").toContain(PNG);
+          expect(historyAt(2)).toContain("replacement model prompt 2");
+          const toolResults = requests[1]!.prefix.history.filter((segment) =>
+            segment.includes("synthetic tool result"),
+          );
+          expect(toolResults.length).toBe(5);
+          // Oversized tool results must remain frozen after they have reached the provider.
+          expect(toolResults.reduce((bytes, segment) => bytes + segment.length, 0)).toBeGreaterThan(
+            65_536,
+          );
+          expect(historyAt(8)).toContain("Synthetic child verification completed");
+          const recoveredMcpResult = await peekSessionMcpRuntime({ sessionKey })!.callTool(
+            "cache_fixture",
+            "probe",
+            {},
+          );
+          expect(recoveredMcpResult.isError ?? false).toBe(false);
+          for (let index = 1; index < requests.length; index++) {
+            const previous = requests[index - 1]!;
+            const current = requests[index]!;
+            for (const [textDigest, envelopeDigest] of previous.userEnvelopes) {
+              if (current.userEnvelopes.has(textDigest)) {
+                expect(
+                  current.userEnvelopes.get(textDigest),
+                  `${route} request ${index + 1}, turn ${current.turn}: retained user envelope ${textDigest}`,
+                ).toBe(envelopeDigest);
+              }
+            }
+            const pruning = current.turn === 9 && previous.turn === 8;
+            const firstUserIndex = previous.prefix.history.findIndex((item) =>
+              item.includes("visible turn 1"),
+            );
+            const retainedUserIndex = previous.prefix.history.findIndex((item) =>
+              item.includes("visible turn 5"),
+            );
+            if (pruning) {
+              expect(firstUserIndex).toBeGreaterThanOrEqual(0);
+              expect(retainedUserIndex).toBeGreaterThan(firstUserIndex);
+            }
+            let previousPrefix = previous.prefix;
+            if (route === "completions" && pruning) {
+              // Legacy Chat Completions moves the same Runtime facts to the new
+              // first user when the history window retires its original carrier.
+              const retired: unknown = JSON.parse(previous.prefix.history[firstUserIndex]!);
+              const retained: unknown = JSON.parse(previous.prefix.history[retainedUserIndex]!);
+              assert(isRecord(retired) && Array.isArray(retired.content));
+              assert(isRecord(retained) && typeof retained.content === "string");
+              const runtime: unknown = retired.content.at(-1);
+              assert(
+                isRecord(runtime) &&
+                  runtime.type === "text" &&
+                  typeof runtime.text === "string" &&
+                  runtime.text.startsWith("Runtime: "),
+              );
+              previousPrefix = {
+                ...previous.prefix,
+                history: previous.prefix.history.with(
+                  retainedUserIndex,
+                  JSON.stringify({
+                    ...retained,
+                    content: `${retained.content}\n\n${runtime.text}`,
+                  }),
+                ),
+              };
+            }
+            assertStableProviderPrefix(previousPrefix, current.prefix, {
+              label: `${route} request ${index + 1}, turn ${current.turn}`,
+              ...(route === "messages"
+                ? { historyLength: previous.prefix.breakpoints.at(-1)!.index + 1 }
+                : {}),
+              ...(pruning
+                ? {
+                    boundary: {
+                      kind: "history-pruning" as const,
+                      startIndex: firstUserIndex,
+                      deleteCount: retainedUserIndex - firstUserIndex,
+                    },
+                  }
+                : {}),
+            });
+          }
+        } finally {
+          observerSpy.mockRestore();
+          cleanupSessionResources(sessionId);
+          configureAiTransportHost(host);
+          clearEmbeddedSessionPromptStates([sessionId]);
+        }
       } finally {
         mcp.releaseReconnect();
         await disposeAllSessionMcpRuntimes();
         await mcp.close();
       }
     });
+    // Vitest can time out before the runner unwinds. Join fixture disposal before
+    // the next route writes its process-wide config, transport, and plugin state.
+    onTestFinished(async () => {
+      await Promise.allSettled([journey]);
+      await clearActivePluginRegistry();
+    });
+    await journey;
   },
 );

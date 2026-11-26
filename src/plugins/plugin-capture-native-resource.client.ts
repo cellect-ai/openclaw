@@ -17,15 +17,15 @@ import {
   type PluginCaptureResourceRoot,
   type PluginCaptureRootAnnouncement,
 } from "./plugin-capture-native-resource.types.js";
+import { markPluginSourceAcquisitionError } from "./plugin-instance-error.js";
 import type { PluginSourceCaptureStorage } from "./plugin-instance-invocation.types.js";
 import type { PluginNativeCaptureRoot } from "./plugin-native-root.types.js";
-import type { PluginRecoveryCaptureInput } from "./plugin-recovery-source-copy.types.js";
+import type { PluginRecoveryCaptureInput } from "./plugin-recovery-source-copy.js";
 import { subscribePluginNativeLoads } from "./plugin-source-capture-native-loads.js";
 
 export function createPluginCaptureResourceClient(
   port: MessagePort,
   retainBrokerUntilProcessExit?: () => void,
-  reference?: { ref(): void; unref(): void },
 ) {
   const pending = new Map<
     number,
@@ -56,19 +56,11 @@ export function createPluginCaptureResourceClient(
   port.on("message", receive);
   port.on("close", fail);
   port.on("messageerror", fail);
-  const release = (id: number) => {
-    pending.delete(id);
-    // A lost reply does not settle native work; retain custody on transport failure.
-    if (!pending.size && !unavailable) {
-      reference?.unref();
-    }
-  };
-  reference?.unref();
+  port.unref();
   const start = (command: PluginCaptureResourceCommand) => {
     if (unavailable) {
       throw unavailable;
     }
-    reference?.ref();
     const id = ++nextId;
     const call: {
       completion: ReturnType<typeof createDeferredCore<PluginCaptureResourceReply>>;
@@ -76,19 +68,14 @@ export function createPluginCaptureResourceClient(
     } = { completion: createDeferredCore() };
     void call.completion.promise.catch(() => {});
     pending.set(id, call);
-    try {
-      port.postMessage({ id, command });
-    } catch (error) {
-      // Synchronous refusal admits no native operation.
-      release(id);
-      throw error;
-    }
+    port.ref();
+    port.postMessage({ id, command });
     return { id, call };
   };
   const unwrap = (reply: PluginCaptureResourceReply) => {
     if (!reply.ok) {
       const error = decodeNativeWorkerFailure(reply.error);
-      throw error;
+      throw reply.sourceAcquisitionFailure ? markPluginSourceAcquisitionError(error) : error;
     }
     return reply;
   };
@@ -98,7 +85,10 @@ export function createPluginCaptureResourceClient(
       try {
         return unwrap(await call.completion.promise);
       } finally {
-        release(id);
+        pending.delete(id);
+        if (!pending.size) {
+          port.unref();
+        }
       }
     },
     requestSync(command: PluginCaptureResourceCommand) {
@@ -118,7 +108,10 @@ export function createPluginCaptureResourceClient(
         }
         return unwrap(call.reply).root;
       } finally {
-        release(id);
+        pending.delete(id);
+        if (!pending.size) {
+          port.unref();
+        }
       }
     },
   };
@@ -137,7 +130,6 @@ export async function createPluginCaptureOwner(
   const client = createPluginCaptureResourceClient(
     independent.port,
     independent.retainBrokerUntilProcessExit,
-    independent,
   );
   const roots = new Set<number>();
   let closing = false;
@@ -212,7 +204,7 @@ export async function createPluginCaptureOwner(
       port1.postMessage(reply);
     };
     port1.on("message", receive);
-    // Execution and independent requests retain their existing reference owners.
+    // The execution worker keeps active preparation alive, not this idle relay.
     port1.unref();
     return {
       port: port2,
@@ -246,11 +238,11 @@ export async function createPluginCaptureOwner(
       return root;
     },
     async copyRecovery(captureId: number, input: PluginRecoveryCaptureInput) {
-      const { root } = await client.request({ type: "recovery", captureId, input });
-      if (!root) {
+      const { root, copiedBytes } = await client.request({ type: "recovery", captureId, input });
+      if (!root || copiedBytes === undefined) {
         throw new Error("Plugin capture owner returned no recovery source");
       }
-      return { root };
+      return { root, copiedBytes };
     },
     releaseSource: (captureId: number) =>
       client.request({ type: "release-source", captureId }).then(() => {}),

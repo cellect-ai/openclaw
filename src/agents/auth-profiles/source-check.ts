@@ -115,14 +115,16 @@ export async function hasAnyAuthProfileStoreSourceAsync(
   }
   const legacySharedPath = resolveAuthProfileDatabasePath(resolveSharedMainAuthAgentDir(env));
   const paths = [...new Set([legacySharedPath, ...(localPath ? [localPath] : [])])];
-  const cohortPath =
+  let cohortPath =
     reader &&
-    cohort?.agentId === reader.database.agentId &&
     path.resolve(resolveStateDir(reader.database.env)) === path.resolve(resolveStateDir(env))
       ? paths.find(
           (databasePath) => path.resolve(databasePath) === path.resolve(reader.database.path),
         )
       : undefined;
+  if (cohortPath && cohort?.agentId !== reader?.database.agentId) {
+    cohortPath = undefined;
+  }
   // Each possible shared owner captures revocation before filesystem preparation yields.
   const readers = new Map(
     await Promise.all(
@@ -206,6 +208,35 @@ export async function hasAnyAuthProfileStoreSourceAsync(
     assertRootCurrent();
   }
   return result;
+}
+
+/** Local-only presence keeps Doctor from inspecting inherited profiles as another store. */
+export async function hasLocalAuthProfileStoreSourceAsync(agentDir: string): Promise<boolean> {
+  const env = cloneEnvWithPlatformSemantics(process.env);
+  env.OPENCLAW_STATE_DIR = resolveStateDir(env);
+  if (
+    hasRuntimeAuthProfileStoreSource(agentDir, env) ||
+    (await hasLegacyAuthProfileCredentialSourceAsync(agentDir, env))
+  ) {
+    return true;
+  }
+  const databasePath = resolveAuthProfileDatabasePath(agentDir);
+  const source = await prepareAgentAuthProfileRowsRead({
+    databasePath,
+    env,
+  });
+  return withAuthProfileReaderCleanup(
+    async () => {
+      const rows = await source.read();
+      source.assertCurrent();
+      return (
+        rows.store.status !== "missing" ||
+        (rows.state.status === "readable" && Boolean(rows.state.raw))
+      );
+    },
+    [source],
+    { read: "Local auth source read failed", cleanup: "Local auth source cleanup failed" },
+  );
 }
 
 /** Returns true when the requested agent dir has a local auth profile source. */

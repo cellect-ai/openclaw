@@ -1,8 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-
-const UNIX_SOCKET_PATH_BYTES = 103;
+import { fitsBrokerSocketPath } from "./socket-directory.js";
 
 export type NativeResourceAuthority = {
   endpoint: string;
@@ -11,18 +10,14 @@ export type NativeResourceAuthority = {
   secret: string;
 };
 
-/**
- * Allocate authority without touching disk. Whether the endpoint has a private socket directory
- * is decided only here and forwarded whole to the broker, which creates and removes it. The host
- * removes it again after readiness in case the broker could not.
- */
+/** Allocate authority without touching disk; the broker creates its private socket directory. */
 export function createNativeResourceAuthority(): NativeResourceAuthority {
   const name = `oc-br-${randomBytes(16).toString("hex")}`;
   const preferred = join(tmpdir(), name);
   const directory =
     process.platform === "win32"
       ? undefined
-      : Buffer.byteLength(join(preferred, "resource.sock")) <= UNIX_SOCKET_PATH_BYTES
+      : fitsBrokerSocketPath(preferred, "resource.sock")
         ? preferred
         : join("/tmp", name);
   const secret = randomBytes(32).toString("hex");

@@ -15,13 +15,6 @@ function createExcludeMatcher(excludeDirs?: readonly string[], literalNames = fa
     excluded.has(literalNames ? name.toLowerCase() : normalizeLowercaseStringOrEmpty(name));
 }
 
-export function isOpenShellMirrorPathExcluded(parts: readonly string[]): boolean {
-  return (
-    createExcludeMatcher(DEFAULT_OPEN_SHELL_MIRROR_EXCLUDE_DIRS)(parts[0] ?? "") ||
-    parts.slice(1).some(createExcludeMatcher(NESTED_GIT_EXCLUDE_DIRS, true))
-  );
-}
-
 const runLimitedFs = pLimit(COPY_TREE_FS_CONCURRENCY);
 
 async function reconcileMirrorPath(params: {

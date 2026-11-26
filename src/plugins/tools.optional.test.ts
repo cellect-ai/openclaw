@@ -47,6 +47,7 @@ import {
   makeTool,
   type MockRegistryToolEntry,
 } from "./tools.optional.test-helpers.js";
+import { createToolLoadContext } from "./tools.test-support.js";
 
 const loadOpenClawPluginsMock = vi.fn();
 const applyPluginAutoEnableMock = vi.fn();
@@ -683,18 +684,11 @@ describe("resolvePluginTools optional tools", () => {
             ? { runtimeRegistry: registry as never }
             : {
                 preparedRuntime: {
-                  loadContext: {
-                    rawConfig: context.config,
-                    config: context.config,
-                    activationSourceConfig: context.config,
-                    autoEnabledReasons: {},
-                    workspaceDir: context.workspaceDir,
-                    env: process.env,
-                    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+                  loadContext: createToolLoadContext(context.config, context.workspaceDir, {
                     manifestRegistry: metadataSnapshot.manifestRegistry as never,
                     metadataSnapshot: metadataSnapshot as never,
                     installRecords: {},
-                  },
+                  }),
                   metadataSnapshot: metadataSnapshot as never,
                   registry: registry as never,
                 },
@@ -942,37 +936,41 @@ describe("resolvePluginTools optional tools", () => {
       ],
     });
 
+    const env = process.env;
     const resolveTools = () =>
       resolvePluginTools({
         ...createResolveToolsParams({ context, toolAllowlist: ["optional_tool"] }),
         preparedRuntime: {
-          loadContext: {
-            rawConfig: preparedConfig,
-            config: preparedConfig,
-            activationSourceConfig: preparedConfig,
-            autoEnabledReasons: {},
-            workspaceDir: "/gateway/plugin-runtime",
-            env: process.env,
-            logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+          loadContext: createToolLoadContext(preparedConfig, "/gateway/plugin-runtime", {
+            env,
             manifestRegistry: metadataSnapshot.manifestRegistry as never,
             metadataSnapshot: metadataSnapshot as never,
             installRecords: {},
-          },
+          }),
           metadataSnapshot: metadataSnapshot as never,
           registry: registry as never,
         },
       });
 
-    for (const phase of ["cold", "warm"]) {
-      const tools = resolveTools();
-      expectResolvedToolNames(tools, ["optional_tool"]);
-      expect(getPluginToolMeta(expectDefined(tools[0], "tools[0] test invariant"))).toMatchObject({
-        pluginId: "optional-demo",
-        sideEffecting: true,
-      });
-      await expect(tools[0]?.execute(phase, {}, undefined)).resolves.toEqual({
-        content: [{ type: "text", text: "ok" }],
-      });
+    try {
+      for (const phase of ["cold", "warm"]) {
+        if (phase === "warm") {
+          process.env = { ...env };
+        }
+        const tools = resolveTools();
+        expectResolvedToolNames(tools, ["optional_tool"]);
+        expect(getPluginToolMeta(expectDefined(tools[0], "tools[0] test invariant"))).toMatchObject(
+          {
+            pluginId: "optional-demo",
+            sideEffecting: true,
+          },
+        );
+        await expect(tools[0]?.execute(phase, {}, undefined)).resolves.toEqual({
+          content: [{ type: "text", text: "ok" }],
+        });
+      }
+    } finally {
+      process.env = env;
     }
     expect(loadContextMocks.resolve).not.toHaveBeenCalled();
     expect(loadOpenClawPluginsMock).not.toHaveBeenCalled();

@@ -7,6 +7,7 @@ import {
 } from "openclaw/plugin-sdk/database-engine-worker-runtime";
 import { expectDefined } from "openclaw/plugin-sdk/expect-runtime";
 import {
+  assertTransactionUsable,
   executeSqliteQuerySync,
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
@@ -15,6 +16,7 @@ import {
   requestSqliteWorkerOperationAdmission,
   type SqliteWorkerBackend,
   type SqliteWorkerCommand,
+  type SynchronousSqliteCallback,
 } from "openclaw/plugin-sdk/sqlite-worker-runtime";
 import { MAX_FRAMES_PER_CALL, pickKeyframeId } from "./analyze.js";
 import { isLogbookWriteOperation } from "./store-contract.js";
@@ -34,7 +36,10 @@ import type { LogbookBatch, LogbookCard, LogbookFrame, LogbookObservation } from
 const WRITE_BATCH_SIZE = 64;
 const FRAME_PRUNE_BATCH_SIZE = 64;
 
-function runAdmittedTransaction<T>(db: EngineConnection, operation: () => T): T {
+function runAdmittedTransaction<T>(
+  db: EngineConnection,
+  operation: SynchronousSqliteCallback<T>,
+): T {
   requestSqliteWorkerOperationAdmission({ stage: "transaction", facts: undefined });
   return runSqliteImmediateTransactionSync(db, operation, {
     withCommit(commit) {
@@ -266,7 +271,7 @@ class LogbookDatabaseStore {
     }
   }
 
-  private runTransaction<T>(operationLabel: string, operation: () => T): T {
+  private runTransaction<T>(operationLabel: string, operation: SynchronousSqliteCallback<T>): T {
     return runSqliteImmediateTransactionSync(this.db, operation, {
       busyTimeoutMs: LOGBOOK_SQLITE_BUSY_TIMEOUT_MS,
       databaseLabel: "logbook",
@@ -668,6 +673,17 @@ export function createSqliteWorkerBackend(
     return operations[command.type](command.input);
   }
   return {
+    assertSettled() {
+      const db = store.connection;
+      // A lost PostgreSQL client must retire this worker before the next command.
+      assertTransactionUsable(db);
+      if (!db.isOpen) {
+        throw new Error("Logbook database is closed");
+      }
+      if (db.isTransaction) {
+        throw new Error("Logbook database left an unsettled transaction");
+      }
+    },
     execute(command) {
       const execute = () => dispatch(command);
       // Pruning owns its SQL transaction so filesystem work does not hold the writer lock.

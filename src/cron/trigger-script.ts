@@ -44,7 +44,6 @@ import {
   resolveScheduledToolPolicyContext,
   type ScheduledToolPolicyContext,
 } from "../agents/scheduled-tool-policy.js";
-import { resolveToolLoopDetectionConfig } from "../agents/tool-loop-detection-config.js";
 import {
   clearToolSearchCatalog,
   createToolSearchCatalogRef,
@@ -57,7 +56,9 @@ import {
   withGatewayToolCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import { ensureAgentWorkspace } from "../agents/workspace.js";
+import { selectLiveRuntimeConfig } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
+import { restoreCronScriptOperatorSource } from "../gateway/cron-operator-source.js";
 import type { GatewayContextResolver } from "../gateway/server-methods/types.js";
 import { formatErrorMessageWithCode } from "../infra/errors.js";
 import { logWarn } from "../logger.js";
@@ -69,10 +70,7 @@ import type { PluginRegistry } from "../plugins/registry-types.js";
 import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-request-scope.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import { normalizeAgentId } from "../routing/session-key.js";
-import {
-  resolveCronActiveRuntimeConfig,
-  resolveCronAgentConfig,
-} from "./isolated-agent/run-config.js";
+import { resolveCronAgentConfig } from "./isolated-agent/run-config.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import { prepareCronRunAdmission } from "./run-admission.js";
 import {
@@ -86,6 +84,7 @@ import {
   MAX_CRON_SCRIPT_TOOL_BUDGET,
 } from "./script-payload.js";
 import type { CronServiceDeps } from "./service/state.js";
+import { observePrAutoFix, prAutoFixFailureCode } from "./session-pr-auto-fix.js";
 import { resolveCronAuthenticatedChannelRequester } from "./tools-allow-provenance.js";
 import { acquireCronScriptMcpTools, type CronScriptMcpTools } from "./trigger-script-mcp.js";
 import {
@@ -101,7 +100,6 @@ import type {
   CronTriggerFailureCode,
 } from "./types.js";
 
-const MAX_CONCURRENT_TRIGGER_EVALS = 3;
 const MAX_CACHED_TRIGGER_RUNTIMES = 128;
 const HEADLESS_TRIGGER_WALL_CLOCK_MS = 30_000;
 const HEADLESS_TRIGGER_TOOL_BUDGET = 5;
@@ -111,8 +109,6 @@ const MIN_TRIGGER_PREPARATION_TIMEOUT_MS = 120_000;
 // Holds a finished evaluation for MCP teardown at most this long; a hung connect or shutdown
 // keeps retiring as tracked work instead of holding the result and trigger slot.
 const CRON_SCRIPT_MCP_CLEANUP_GRACE_MS = 1_000;
-
-let activeTriggerEvaluations = 0;
 
 // Compile-time sync with the leaf contract in ./types.ts: a new code-mode
 // failure code must be added to CronTriggerFailureCode or this line errors.
@@ -319,7 +315,6 @@ async function prepareTriggerRuntime(
         cwd: effectiveWorkspace,
         workspaceDir: effectiveWorkspace,
         sessionKey,
-        loopDetection: resolveToolLoopDetectionConfig({ cfg: config, agentId }),
       };
       const acquireMcpTools: PreparedTriggerRuntime["acquireMcpTools"] = async (
         admitted,
@@ -517,8 +512,15 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
     let mcp: CronScriptMcpTools | undefined;
     let releaseRuntime = () => {};
     try {
+      // Conditions can act without a model run; restore the original source before preparation.
+      using operator = await restoreCronScriptOperatorSource(
+        params.job,
+        deps.resolveGatewayContext?.(),
+        evaluationScope,
+        params.deliveryAttemptFence,
+      );
       const request = {
-        runtimeConfig: resolveCronActiveRuntimeConfig(deps.config),
+        runtimeConfig: selectLiveRuntimeConfig(deps.config),
         jobId: params.job.id,
         agentId: params.job.agentId,
         toolsAllow: params.job.payload.toolsAllow,
@@ -530,12 +532,11 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
         execTarget: params.job.toolsAllowExecTarget,
         callerOrigin: params.job.toolsAllowProvenance?.callerOrigin,
       };
-      const retained = await resolveCachedRuntime(request, evaluationScope, {
+      const { runtime, release } = await resolveCachedRuntime(request, evaluationScope, {
         cancelSignal: params.abortSignal,
         wallClockMs: params.wallClockMs,
       });
-      const runtime = retained.runtime;
-      releaseRuntime = retained.release;
+      releaseRuntime = release;
       admission = prepareCronRunAdmission({
         scheduledExecution: params.occurrence.mint({
           cfg: runtime.context.config,
@@ -543,7 +544,9 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           runId,
           runSessionKey: runtime.context.sessionKey,
           toolsAllow: request.toolsAllow,
+          operatorAuthority: operator?.authority,
         }),
+        operatorAuthority: operator?.authority,
         cfg: runtime.context.config,
         runId,
         agentId: runtime.context.agentId,
@@ -577,6 +580,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
         approvalSignals: [evaluationScope.signal],
       });
       assertActive();
+      const triggerState = await observePrAutoFix(params, caller, evaluationScope, assertActive);
       // Reload during setup is best effort; the next invocation refreshes its cache.
       let tools = await withPluginRuntimeRegistryScope(runtime.pluginRegistry, () =>
         runtime.createTools(
@@ -628,13 +632,12 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           }),
       };
 
-      const selectedRuntime = runtime;
-      return await withPluginRuntimeRegistryScope(selectedRuntime.pluginRegistry, async () => {
+      return await withPluginRuntimeRegistryScope(runtime.pluginRegistry, async () => {
         assertActive();
         registerHeadlessToolSearchCatalog({
           catalogRef,
           tools,
-          hookContext: { ...selectedRuntime.context, runId },
+          hookContext: { ...runtime.context, runId },
         });
         const remainingWallClockMs = Math.ceil(evaluationScope.deadline - performance.now());
         if (remainingWallClockMs <= 0) {
@@ -645,7 +648,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           code: params.script,
           wallClockMs: remainingWallClockMs,
           maxToolCalls: params.maxToolCalls,
-          extraNamespaces: [triggerStateNamespace(params.state, params.streamBatch)],
+          extraNamespaces: [triggerStateNamespace(triggerState, params.streamBatch)],
           signal: evaluationScope.signal,
         });
         if (result.status === "failed") {
@@ -665,7 +668,7 @@ function createCronCodeModeRunner(deps: CronTriggerEvaluatorDeps) {
           ? "timeout"
           : error instanceof CodeModeHeadlessAbortError
             ? "aborted"
-            : "internal_error",
+            : prAutoFixFailureCode(params, error),
       );
     } finally {
       try {
@@ -693,21 +696,13 @@ export function createCronScriptRuntime(deps: CronTriggerEvaluatorDeps) {
   const run = createCronCodeModeRunner(deps);
   return {
     evaluateTrigger: async (params: CronScriptInvocation): Promise<CronTriggerEvaluationResult> => {
-      if (activeTriggerEvaluations >= MAX_CONCURRENT_TRIGGER_EVALS) {
-        return { kind: "busy" };
-      }
-      activeTriggerEvaluations += 1;
-      try {
-        const outcome = await run({
-          ...params,
-          wallClockMs: HEADLESS_TRIGGER_WALL_CLOCK_MS,
-          maxToolCalls: HEADLESS_TRIGGER_TOOL_BUDGET,
-          label: "cron trigger evaluation",
-        });
-        return outcome.kind === "completed" ? parseTriggerResult(outcome.result) : outcome;
-      } finally {
-        activeTriggerEvaluations -= 1;
-      }
+      const outcome = await run({
+        ...params,
+        wallClockMs: HEADLESS_TRIGGER_WALL_CLOCK_MS,
+        maxToolCalls: HEADLESS_TRIGGER_TOOL_BUDGET,
+        label: "cron trigger evaluation",
+      });
+      return outcome.kind === "completed" ? parseTriggerResult(outcome.result) : outcome;
     },
     executePayload: async (
       params: Parameters<NonNullable<CronServiceDeps["runScriptJob"]>>[0],

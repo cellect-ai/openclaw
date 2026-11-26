@@ -13,11 +13,13 @@ import {
   RealtimeTalkPcmInputPump,
 } from "./talk/audio.ts";
 import { describeRealtimeTalkInputError, RealtimeTalkInputOwner } from "./talk/input.ts";
+import { RealtimeTalkLevelSignal } from "./talk/level.ts";
+
+registerEnglishCatalog(registerChatDictationEnglish);
 
 const FINAL_TRANSCRIPT_MAX_WAIT_MS = 10_000;
 const DICTATION_ENCODING = "g711_ulaw";
 const DICTATION_SAMPLE_RATE_HZ = 8000;
-registerEnglishCatalog(registerChatDictationEnglish);
 
 type DictationSessionResult = {
   sessionId: string;
@@ -177,6 +179,8 @@ export class ComposerDictationSession {
   private context: AudioContext | null = null;
   private readonly inputPump = new RealtimeTalkPcmInputPump();
   private inputMeter: RealtimeTalkMediaStreamMeter | null = null;
+  // Live microphone level for the listening meter; lives with the lazily loaded capture.
+  readonly inputLevel = new RealtimeTalkLevelSignal();
   private unsubscribe: (() => void) | null = null;
   private sessionId: string | null = null;
   private transcriptionSessionId: string | null = null;
@@ -215,7 +219,16 @@ export class ComposerDictationSession {
       this.options && "inputDeviceId" in this.options
         ? this.options.inputDeviceId
         : loadSettings().realtimeTalkInputDeviceId?.trim() || undefined;
-    // Admit the recording before opening its microphone; stopped recordings still hold capacity.
+    // Start the audio graph while the Gateway admits the session instead of after it.
+    // stopCapture() closes the context on every exit.
+    try {
+      this.context = new AudioContext({ sampleRate: DICTATION_SAMPLE_RATE_HZ });
+    } catch {
+      this.context = null;
+    }
+    // Claim the Gateway session before the microphone opens. Stopped recordings
+    // hold their sessions while they transcribe, so a full connection must refuse
+    // here rather than after the user has started speaking.
     const result = await this.client.request<DictationSessionResult>("talk.session.create", {
       mode: "transcription",
       transport: "gateway-relay",
@@ -234,6 +247,8 @@ export class ComposerDictationSession {
       await this.closeRemote();
       throw new Error(t("chat.composer.dictationAudioUnsupported"));
     }
+    // Listen before awaiting the permission prompt: a provider failure while it is
+    // open must stop startup instead of capturing against a removed session.
     this.unsubscribe = this.client.addEventListener((frame) => {
       const payload = eventPayload(frame);
       if (
@@ -270,24 +285,20 @@ export class ComposerDictationSession {
         this.reportFailure(t("chat.composer.dictationDisconnected"));
       }
     });
-    // Listen before the permission prompt so a provider failure cannot leave capture on a removed session.
     const media = await this.input.open(inputDeviceId);
     if (this.stopped || this.failed) {
       return;
     }
-    try {
-      this.context = new AudioContext({ sampleRate: DICTATION_SAMPLE_RATE_HZ });
-    } catch {
+    if (this.context?.sampleRate !== DICTATION_SAMPLE_RATE_HZ) {
       throw new Error(t("chat.composer.dictationBrowserAudioUnsupported"));
     }
-    if (this.context.sampleRate !== DICTATION_SAMPLE_RATE_HZ) {
-      throw new Error(t("chat.composer.dictationBrowserAudioUnsupported"));
-    }
-    if (this.callbacks.onLevel) {
-      this.inputMeter = new RealtimeTalkMediaStreamMeter(this.callbacks.onLevel);
-      this.inputMeter.start(media, this.context);
-    }
-    this.inputPump.start(media, this.context, (samples) => {
+    const context = this.context;
+    this.inputMeter = new RealtimeTalkMediaStreamMeter((level) => {
+      this.inputLevel.set(level);
+      this.callbacks.onLevel?.(level);
+    });
+    this.inputMeter.start(media, context);
+    this.inputPump.start(media, context, (samples) => {
       if (this.stopped) {
         return;
       }

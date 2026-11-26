@@ -48,7 +48,7 @@ import { UpdateCommandRecoveryPendingError } from "./update-command-recovery-err
 import { UpdateCommandFailure } from "./update-command-result.js";
 import * as updateResume from "./update-command-resume.js";
 import * as commandRun from "./update-command-run.js";
-import { stubNodeRuntime } from "./update-command-runtime-recovery.test-support.js";
+import { getNodeRuntimeFixture } from "./update-command-runtime-recovery.test-support.js";
 import { withOwnedManagedUpdateEnv } from "./update-command-service-env.js";
 import { withUpdateFailureTriage } from "./update-command-triage.js";
 import { withUpdateCommandRecoveryUnwind } from "./update-command-unwind.js";
@@ -107,9 +107,6 @@ function pendingPackageInvocation(
     profile?: string;
   } = {},
 ) {
-  if (params.serviceDrift) {
-    stubNodeRuntime();
-  }
   const home = fs.realpathSync(makeTempDir(dirs, "pending-package-admission-"));
   const identity = createManagedServiceIdentityFixture(home);
   const state = resolveProfileStateDir(params.profile ?? "default", process.env, () => home);
@@ -166,7 +163,7 @@ function pendingPackageInvocation(
       params.serviceDrift
         ? {
             programArguments: [
-              process.execPath,
+              getNodeRuntimeFixture().execPath,
               path.join(serviceRoot, "dist", "entry.js"),
               "gateway",
             ],
@@ -454,7 +451,7 @@ describe("pending recovery finalizer", () => {
         { ...process.env, ...f.env, OPENCLAW_CONFIG_PATH: configPath },
         () => invoke({ json: true, yes: true, deferCompletionCache: true }),
       ),
-    ).rejects.toThrow("full-state recovery is deferred");
+    ).rejects.toThrow("Interrupted shared-database publication left");
     expect(resolveRoot).not.toHaveBeenCalled();
     f.expectRetained();
     expect(fs.readFileSync(configPath)).toEqual(originalConfig);

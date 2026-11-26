@@ -1,45 +1,35 @@
-import "./service-http-mock.test-support.js";
-import "./session-authority.test-support.js";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { getEnvironmentData } from "node:worker_threads";
-import type {
-  OpenAsyncKeyedStoreOptions,
-  OpenKeyedStoreOptions,
-  PluginStateActionAuthority,
-} from "openclaw/plugin-sdk/plugin-state-runtime";
+import { createPluginRuntimeMock } from "openclaw/plugin-sdk/channel-test-helpers";
+import type { OpenAsyncKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import * as state from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runtime-testing";
 import { useAutoCleanupTempDirTracker } from "openclaw/plugin-sdk/test-env";
 import pg from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { getClickClackDiscussionBindingStore } from "./binding-store.js";
-import { captureDiscussionRegistration } from "./register.test-support.js";
-import { resolveClickClackDiscussionRoute } from "./routing.js";
-import { createHarness } from "./service-test-support.js";
+import {
+  clearClickClackDiscussionChannelRevoked,
+  isClickClackDiscussionChannelRevokedAsync,
+  markClickClackDiscussionChannelIdentityRevoked,
+} from "./revoked-channel-store.js";
 
 const configured: unknown = getEnvironmentData("openclaw.test.state.conformance.connection");
 const connection = typeof configured === "string" ? configured : undefined;
 const tempDirs = useAutoCleanupTempDirTracker(afterAll);
 
-describe.skipIf(!connection)("ClickClack public discussion flow on PostgreSQL state", () => {
+describe.skipIf(!connection)("ClickClack revoked channels on PostgreSQL state", () => {
   const client = new pg.Client({ connectionString: connection });
   const stateDir = tempDirs.make("clickclack-revoked-postgres-");
   const env = { ...process.env, OPENCLAW_STATE_DIR: stateDir };
-  const f = createHarness(
-    { label: "PostgreSQL discussion" },
-    {
-      openSyncKeyedStore: <T>(options: OpenKeyedStoreOptions) =>
-        state.createPluginStateSyncKeyedStoreForTests<T>("clickclack", { ...options, env }),
+  const runtime = createPluginRuntimeMock({
+    state: {
+      openKeyedStoreV2: <T>(options: OpenAsyncKeyedStoreOptions) =>
+        state.createPluginStateKeyedStoreForTests<T>("clickclack", { ...options, env })
+          .withCurrent!({ assertCurrent: () => {} }),
     },
-  );
-  f.runtime.state.openKeyedStoreV2 = <T>(
-    options: OpenAsyncKeyedStoreOptions,
-    authority?: PluginStateActionAuthority,
-  ) =>
-    state.createPluginStateKeyedStoreForTests<T>("clickclack", { ...options, env }).withCurrent!(
-      authority ?? { assertCurrent() {} },
-    );
+  });
+
   const withPostgres = <T>(run: () => Promise<T>) =>
     state.withDatabaseEngineSelection(
       {
@@ -50,12 +40,13 @@ describe.skipIf(!connection)("ClickClack public discussion flow on PostgreSQL st
       },
       run,
     );
+
   beforeAll(async () => {
     await client.connect();
   });
+
   afterAll(async () => {
     try {
-      await f.service.cleanup();
       await closeOpenClawStateDatabaseAsync();
       using anchor = new DatabaseSync(path.join(stateDir, "state", "openclaw.sqlite"), {
         readOnly: true,
@@ -64,69 +55,28 @@ describe.skipIf(!connection)("ClickClack public discussion flow on PostgreSQL st
         | { schema: string }
         | undefined;
       if (row) {
-        await client.query(
-          'DROP SCHEMA IF EXISTS "' + row.schema.replaceAll('"', '""') + '" CASCADE',
-        );
+        await client.query(`DROP SCHEMA IF EXISTS "${row.schema.replaceAll('"', '""')}" CASCADE`);
       }
     } finally {
       await client.end();
     }
   });
-  it("opens, routes, discloses history, retires the binding, and reopens", async () => {
+
+  it("records, reads, and clears a revoked discussion channel", async () => {
+    const channel = { serverBaseUrl: "https://clickclack.example/", channelId: "chn_room" };
     await withPostgres(async () => {
-      const sessionKey = "agent:main:postgres-discussion";
-      await expect(f.service.provider.open({ sessionKey, agentId: "main" })).resolves.toMatchObject(
-        {
-          state: "open",
-        },
-      );
-      expect(f.createChannel).toHaveBeenCalledOnce();
-      const store = getClickClackDiscussionBindingStore(f.runtime);
-      const binding = await store.getAsync(sessionKey);
-      expect(binding).toBeDefined();
-      if (!binding) {
-        throw new Error("Public open did not persist a binding");
-      }
-      const routeInput = { runtime: f.runtime, ...binding };
-      const route = await resolveClickClackDiscussionRoute(routeInput);
-      expect(route.state).toBe("active");
-      if (route.state !== "active") {
-        throw new Error("Public route was not active");
-      }
-      const registration = captureDiscussionRegistration(f.runtime);
-      await expect(
-        registration.run(
-          { toolName: "sessions_history", params: { sessionKey } },
-          { toolName: "sessions_history", sessionKey: route.route.sessionKey },
-        ),
-      ).resolves.toBeUndefined();
-      await expect(f.service.readLatestMessages(sessionKey, 5)).resolves.toMatchObject({ binding });
-      expect(f.messagePage).toHaveBeenCalledOnce();
-      // Changing the selector retires the old local binding through the public info path.
-      // ClickClack owns the remote room lifecycle; there is no separate public close method.
-      f.config.channels!.clickclack!.discussions!.workspace = "wsp_team";
-      await expect(f.service.provider.info({ sessionKey, agentId: "main" })).resolves.toEqual({
-        state: "available",
-      });
-      expect(await store.getAsync(sessionKey)).toBeUndefined();
-      await expect(resolveClickClackDiscussionRoute(routeInput)).resolves.toEqual({
-        state: "revoked",
+      await markClickClackDiscussionChannelIdentityRevoked({
+        runtime,
+        accountId: "default",
+        ...channel,
       });
       await expect(
-        registration.run(
-          { toolName: "sessions_history", params: { sessionKey } },
-          { toolName: "sessions_history", sessionKey: route.route.sessionKey },
-        ),
-      ).resolves.toMatchObject({ block: true });
-      await expect(f.service.provider.open({ sessionKey, agentId: "main" })).resolves.toMatchObject(
-        {
-          state: "open",
-        },
-      );
-      expect(f.createChannel).toHaveBeenCalledTimes(2);
-      await expect(resolveClickClackDiscussionRoute(routeInput)).resolves.toMatchObject({
-        state: "active",
-      });
+        isClickClackDiscussionChannelRevokedAsync({ runtime, ...channel }),
+      ).resolves.toBe(true);
+      await clearClickClackDiscussionChannelRevoked({ runtime, ...channel });
+      await expect(
+        isClickClackDiscussionChannelRevokedAsync({ runtime, ...channel }),
+      ).resolves.toBe(false);
     });
   });
 });

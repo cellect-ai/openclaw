@@ -13,7 +13,7 @@ import { closeOpenClawStateDatabaseAsync } from "openclaw/plugin-sdk/sqlite-runt
 import { useAutoCleanupTempDirTracker, withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ClawdbotConfig } from "../runtime-api.js";
-import { processedCardActions, resolvedCardActionChatTypes } from "./card-action-state.js";
+import { cardActionReplayGuard, resolvedCardActionChatTypes } from "./card-action-state.js";
 import { handleFeishuCardAction, type FeishuCardActionEvent } from "./card-action.js";
 import { createFeishuCardInteractionEnvelope } from "./card-interaction.js";
 import { FEISHU_APPROVAL_REQUEST_ACTION } from "./card-ux-approval.js";
@@ -23,7 +23,7 @@ import { setFeishuRuntime } from "./runtime.js";
 const tempDirs = useAutoCleanupTempDirTracker((cleanup) => afterEach(cleanup));
 beforeEach(() => {
   vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("feishu-card-loopback-"));
-  processedCardActions.clear();
+  cardActionReplayGuard.clearMemory();
   resolvedCardActionChatTypes.clear();
   feishuDedupeState.reset();
 });

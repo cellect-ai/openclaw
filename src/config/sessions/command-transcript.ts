@@ -5,11 +5,10 @@ import { parseConfigCommand } from "../../auto-reply/reply/config-commands.js";
 import { parseDebugCommand } from "../../auto-reply/reply/debug-commands.js";
 import { logVerbose } from "../../globals.js";
 import { resolveAgentIdFromSessionKey } from "../../routing/session-key.js";
-import { isSessionRunActiveForKey } from "../../sessions/session-controller.queries.js";
 import {
-  getSessionControllerOperation,
-  hasReplyOperationExecutionStarted,
-} from "../../sessions/session-controller.state.js";
+  isSessionRunActiveForKey,
+  resolveActiveSessionRunId,
+} from "../../sessions/session-controller.queries.js";
 import {
   captureSessionTarget,
   type SessionTarget,
@@ -115,6 +114,7 @@ type CommandExchangeParams = Pick<
   | "config"
   | "assertCurrent"
   | "beforeMessageWrite"
+  | "contextFreeCommand"
 > & {
   commandText: string;
   replyText: string;
@@ -124,13 +124,18 @@ type CommandExchangeParams = Pick<
   commandInputCommitted?: boolean;
 };
 
+/** A local effect committed; this records its outcome, not delivery of the reply. */
+export function recordCommittedCommandExchange(params: CommandExchangeParams) {
+  return recordCommandExchange(params);
+}
+
 /** Bounds how often a deferred exchange re-waits when follow-up turns keep the session busy. */
 const MAX_DEFERRED_COMMAND_EXCHANGE_WAITS = 8;
 
 /**
  * A started turn owns the session's model-context fence until it commits. A context-bearing
  * exchange appended inside that window invalidates the turn's prepared answer, so it waits
- * until no turn is executing. Rows coordinated with a writer run
+ * until no turn is executing. Rows coordinated with a writer run or kept out of context
  * cannot move the fence.
  */
 function resolveExchangeTarget(params: CommandExchangeParams): SessionTarget | undefined {
@@ -155,19 +160,30 @@ function shouldDeferUntilActiveTurnSettles(
   params: CommandExchangeParams,
   target: SessionTarget | undefined,
 ): boolean {
-  if (params.expectedWriterRunId) {
+  if (params.contextFreeCommand === true || params.expectedWriterRunId) {
     return false;
   }
   const sessionKey = params.sessionKey.trim();
   try {
     if (target) {
-      const operation = getSessionControllerOperation(sessionKey, target);
-      return operation !== undefined && hasReplyOperationExecutionStarted(operation);
+      return (
+        resolveActiveSessionRunId(sessionKey, target, { executionStartedOnly: true }) !== undefined
+      );
     }
   } catch {
     // Unresolvable ownership must not fail a delivered command; fall through.
   }
   return isSessionRunActiveForKey(sessionKey);
+}
+
+async function recordDeliveredCommandExchangeNow(params: CommandExchangeParams) {
+  try {
+    return await recordCommandExchange(params);
+  } catch {
+    // Delivery has already succeeded. A transcript failure must not trigger a resend.
+    logVerbose("Command transcript recording failed after delivery");
+    return { ok: false as const, reason: "transcript recording failed" };
+  }
 }
 
 async function recordAfterActiveTurnSettles(
@@ -191,10 +207,6 @@ async function recordAfterActiveTurnSettles(
  * without cancelling the running answer.
  */
 export async function recordDeliveredCommandExchange(params: CommandExchangeParams) {
-  const commandText = normalizeCommandTranscriptText(params.commandText);
-  if (isEphemeralCommandTranscript(commandText)) {
-    return { ok: false as const, reason: "ephemeral command" };
-  }
   const target = resolveExchangeTarget(params);
   if (shouldDeferUntilActiveTurnSettles(params, target)) {
     void recordAfterActiveTurnSettles(params, target).catch(() => {
@@ -205,31 +217,25 @@ export async function recordDeliveredCommandExchange(params: CommandExchangePara
   return await recordDeliveredCommandExchangeNow(params);
 }
 
-async function recordDeliveredCommandExchangeNow(params: CommandExchangeParams) {
+async function recordCommandExchange(params: CommandExchangeParams) {
   const commandText = normalizeCommandTranscriptText(params.commandText);
   if (isEphemeralCommandTranscript(commandText)) {
     return { ok: false as const, reason: "ephemeral command" };
   }
-  try {
-    return await appendAssistantMessageToSessionTranscript({
-      ...params,
-      text: redactCommandTranscriptText(commandText, params.replyText),
-      ...(params.commandInputCommitted
-        ? {}
-        : {
-            command: {
-              text: redactCommandTranscriptText(
-                commandText,
-                await redactConfigCommandInput(commandText),
-              ),
-              idempotencyKey: `command-input:${params.commandId}`,
-            },
-          }),
-      idempotencyKey: `command-reply:${params.commandId}:${params.replyId}`,
-    });
-  } catch {
-    // Delivery has already succeeded. A transcript failure must not trigger a resend.
-    logVerbose("Command transcript recording failed after delivery");
-    return { ok: false as const, reason: "transcript recording failed" };
-  }
+  return appendAssistantMessageToSessionTranscript({
+    ...params,
+    text: redactCommandTranscriptText(commandText, params.replyText),
+    ...(params.commandInputCommitted
+      ? {}
+      : {
+          command: {
+            text: redactCommandTranscriptText(
+              commandText,
+              await redactConfigCommandInput(commandText),
+            ),
+            idempotencyKey: `command-input:${params.commandId}`,
+          },
+        }),
+    idempotencyKey: `command-reply:${params.commandId}:${params.replyId}`,
+  });
 }

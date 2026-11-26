@@ -6,6 +6,7 @@ import { captureRuntimeConfig } from "../config/runtime-source-projection.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { resolveUserPath } from "../utils.js";
 import { resolvePluginActivationSourceConfig } from "./activation-source-config.js";
+import { normalizePluginsConfigWithResolverCore } from "./config-normalization-shared.js";
 import {
   applyTestPluginDefaults,
   createPluginActivationSource,
@@ -26,6 +27,7 @@ import { getPluginCache } from "./plugin-cache.js";
 import { resolvePluginDiscoveryContext } from "./plugin-control-plane-context.js";
 import { resolvePluginRuntimeArtifactPreference } from "./plugin-runtime-artifact-selection.js";
 import { normalizePluginIdScope } from "./plugin-scope.js";
+import { inheritPreparedSyntheticAuthScope } from "./provider-synthetic-auth.js";
 import { getPluginLoaderCacheState } from "./registry-lifecycle.js";
 import { getPluginRegistryRuntime } from "./registry-runtime-binding.js";
 import { getActivePluginRegistry, getPluginRegistryForContext } from "./runtime.js";
@@ -163,11 +165,20 @@ export function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
         onMissing: () => undefined,
       }) as OpenClawConfig)
     : rawActivationSourceConfig;
-  const normalized = normalizePluginsConfig(runtimeConfig.plugins);
+  // Prepared callers carry the exact alias identity used for selection. Ordinary loads
+  // keep their existing normalization owner when no metadata resolver was supplied.
+  const normalize = options.normalizePluginId
+    ? (plugins: OpenClawConfig["plugins"]) =>
+        normalizePluginsConfigWithResolverCore(plugins, options.normalizePluginId)
+    : normalizePluginsConfig;
+  const normalized = normalize(runtimeConfig.plugins);
   // Identical plugin inputs may share facts; source channel policy keeps its own root config.
   const activationSource = createPluginActivationSource({
     config: activationConfig,
-    plugins: runtimeConfig.plugins === activationConfig.plugins ? normalized : undefined,
+    plugins:
+      runtimeConfig.plugins === activationConfig.plugins
+        ? normalized
+        : normalize(activationConfig.plugins),
   });
   const trustNormalized = mergeTrustPluginConfigFromActivationSource({
     normalized,
@@ -372,16 +383,23 @@ export function resolvePluginLoadCacheContext(options: PluginLoadOptions = {}) {
   const capture = () => {
     if (!captured) {
       const cfg = captureRuntimeConfig(runtimeConfig);
+      // Raw substitution changes auth inputs; only policy/capture views inherit closed facts.
+      if (!shouldResolveRawConfigEnvVars) {
+        inheritPreparedSyntheticAuthScope(rawConfig, cfg);
+      }
       if (registrationGeneration !== undefined && cfg !== runtimeConfig) {
         // api.config reentry belongs to the load already registering this generation.
         runtimeBindingCacheIds.set(cfg, registrationGeneration);
       }
       const activationSourceConfig =
         activationConfig === runtimeConfig ? cfg : captureRuntimeConfig(activationConfig);
-      const capturedNormalized = normalizePluginsConfig(cfg.plugins);
+      const capturedNormalized = normalize(cfg.plugins);
       const capturedActivationSource = createPluginActivationSource({
         config: activationSourceConfig,
-        plugins: cfg.plugins === activationSourceConfig.plugins ? capturedNormalized : undefined,
+        plugins:
+          cfg.plugins === activationSourceConfig.plugins
+            ? capturedNormalized
+            : normalize(activationSourceConfig.plugins),
       });
       captured = {
         cfg,

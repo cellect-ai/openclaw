@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readSessionArchiveContentSync } from "../config/sessions/archive-compression.js";
+import { readSessionArchiveText } from "../../test/helpers/session-archive.js";
 import {
   ensureTranscriptGenerationsForCanonicalRepair,
   loadTranscriptEvents,
@@ -163,7 +163,7 @@ describe("doctor canonical session-key retention repair", () => {
             .map((name) => path.join(directory, name)),
         )
         .at(0);
-      expect(readSessionArchiveContentSync(loserArchive as string)).toContain("loser history");
+      expect(readSessionArchiveText(loserArchive as string)).toContain("loser history");
     });
   });
 

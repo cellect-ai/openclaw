@@ -39,6 +39,7 @@ import {
 } from "./session-row-projection-record.js";
 import type { SessionRowProjection } from "./session-row-projection.js";
 import { createSessionRowSelection } from "./session-row-selection.js";
+import { createSessionRuntimeResolution } from "./session-runtime-resolution.js";
 import type { SessionListRowContext } from "./session-utils-contracts.js";
 import { getSessionDefaults } from "./session-utils-model.js";
 import type { GatewaySessionRow, SessionsListResult } from "./session-utils.types.js";
@@ -212,6 +213,7 @@ export function prepareSessionRowSelection(
     prepared?.ordered ? undefined : rows,
   );
   const { entries } = selected;
+  let runtimeResolution: ReturnType<typeof createSessionRuntimeResolution> | undefined;
   return {
     cfg,
     opts,
@@ -245,6 +247,7 @@ export function prepareSessionRowSelection(
       return projection.modelFacts(
         { agentId: winner.agentId, key: winner.key, storePath: winner.storeTarget.storePath },
         prepared?.metadataPrepared === true,
+        (runtimeResolution ??= createSessionRuntimeResolution(cfg)),
       );
     },
     modelSearchMayMatch: (search: string) => projection.modelSearchMayMatch(search),
@@ -338,6 +341,7 @@ export function prepareProjectedSessionList(params: {
     involvingActorId: opts.involvingMe ? identity : undefined,
     ownerFirstActorId: opts.ownerFirst ? identity : undefined,
     restrictProfileReferences: client !== undefined,
+    viewerProfileId: identity,
     projectActiveRun: context ? (key) => active(getTarget(key)!)! : undefined,
     entryFilter:
       client === undefined && opts.hasBoard === undefined && !opts.activeOnly
@@ -361,16 +365,16 @@ export function prepareProjectedSessionList(params: {
             // An unrestricted list has no sharing decision to memoize (11.7 skips it).
             let visible = presentation.sharing.entryFilter ? visibility?.get(entry) : true;
             if (visible === undefined) {
-              const selected = getTarget(key)!;
               visible =
                 client === undefined ||
                 (presentation.sharing.entryFilter?.(
                   storeKey,
                   entry,
                   Boolean(
+                    presentation.sharing.sessionCap === "invited" &&
                     presentation.sharing.identity &&
                     projection.hasMembership(
-                      selected.storeTarget.storePath,
+                      getTarget(key)!.storeTarget.storePath,
                       storeKey,
                       presentation.sharing.identity.id,
                     ),
@@ -386,17 +390,15 @@ export function prepareProjectedSessionList(params: {
             );
           },
   };
-  const ownerRunningCandidateKeys = () =>
-    prepared.candidateKeys(
-      new Set([
-        ...(projectRun?.candidateSessionIdsOrKeys() ?? []),
-        ...[...presentation.rowContext.subagentRuns.requesterSessionKeys()].filter(
-          (key) => presentation.rowContext.subagentRuns.countActiveDescendantRuns(key) > 0,
-        ),
-        ...(presentation.rowContext.projectedSubagentActivity ?? []),
-      ]),
-    );
-  return { prepared, presentation, filters, ownerRunningCandidateKeys };
+  return {
+    prepared,
+    presentation,
+    filters,
+    activeRunCandidateKeys: () => {
+      const identities = projectRun?.candidateSessionIdsOrKeys();
+      return identities?.size ? prepared.candidateKeys(identities) : undefined;
+    },
+  };
 }
 
 /** Prepare selected rows, then authorize and present them in one synchronous boundary. */
@@ -442,7 +444,7 @@ export async function listProjectedSessions(params: {
       try {
         diagnostics?.mark("storeLoad");
         const now = Date.now();
-        const { presentation, prepared, filters, ownerRunningCandidateKeys } =
+        const { presentation, prepared, filters, activeRunCandidateKeys } =
           prepareProjectedSessionList({
             projection,
             opts,
@@ -454,7 +456,7 @@ export async function listProjectedSessions(params: {
             metadataPrepared: true,
           });
         diagnostics?.mark("filterSetup");
-        const select = (retained?: WeakMap<object, SessionListFilteredEntries>) =>
+        const select = (retained?: Map<object, SessionListFilteredEntries>) =>
           withAgentRosterFactsBatch(prepared.cfg, () =>
             selectSessionEntries({
               ...filters,
@@ -463,19 +465,12 @@ export async function listProjectedSessions(params: {
               retained,
             }),
           );
-        const selection =
-          params.acceptsSerializedJson && exactKey === undefined
-            ? presentation.select(opts, select)
-            : select();
+        const selection = exactKey === undefined ? presentation.select(opts, select) : select();
         return {
           now,
           presentation,
           prepared,
-          selection: projectSessionOwnerRunningCounts(
-            filters,
-            selection,
-            ownerRunningCandidateKeys,
-          ),
+          selection: projectSessionOwnerRunningCounts(filters, selection, activeRunCandidateKeys),
         };
       } finally {
         diagnostics?.finishSyncCpu("prepareThreadCpuMs", syncCpu);
@@ -567,6 +562,13 @@ export async function listProjectedSessions(params: {
             context?.getCommittedRuntimeConfig?.() ?? cfg,
             client,
           );
+          if (!params.acceptsSerializedJson) {
+            // Object readers own response containers and person counts, not the frozen selection.
+            result.owners = result.owners?.slice();
+            if (result.people) {
+              result.people = result.people.map((person) => ({ ...person }));
+            }
+          }
           if (client !== undefined) {
             result.defaults.modelSelectionTarget = resolveGatewayModelSelectionPolicy({
               callerScopes: client?.connect?.scopes ?? [],

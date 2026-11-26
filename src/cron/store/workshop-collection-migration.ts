@@ -2,7 +2,7 @@
 import { safeParseJsonRecord } from "@openclaw/normalization-core/json-coercion";
 import { asRecord } from "@openclaw/normalization-core/record-coerce";
 import { sha256Hex } from "../../infra/crypto-digest.js";
-import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop/collection-review-prompt.js";
+import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../../skills/workshop-host/collection-review-prompt.js";
 import {
   RETIRED_SKILL_COLLECTION_REVIEW_DECLARATION_PREFIX,
   WORKSHOP_COLLECTION_REVIEW_DECLARATION_PREFIX,

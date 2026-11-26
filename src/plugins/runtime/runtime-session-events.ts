@@ -1,6 +1,5 @@
 import type { SessionEventTarget as HostTarget } from "../../auto-reply/reply/session-event-contract.js";
 import type { enqueueSessionEventForHost } from "../../auto-reply/reply/session-event-handoff.js";
-import { runInDetachedAsyncContext } from "../../shared/detached-async-context.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { createLazyRuntimeNamedExport } from "../../shared/lazy-runtime.js";
 import type { DeliveryContext } from "../../utils/delivery-context.types.js";
@@ -16,7 +15,7 @@ const targets = resolveGlobalSingleton(
 );
 
 const loadCaptureSessionEventTarget = createLazyRuntimeNamedExport(
-  () => runInDetachedAsyncContext(() => import("../../auto-reply/reply/session-event-target.js")),
+  () => import("../../auto-reply/reply/session-event-target.js"),
   "captureSessionEventTargetForHost",
 );
 

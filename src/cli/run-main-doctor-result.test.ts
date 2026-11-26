@@ -1,17 +1,17 @@
 import fs from "node:fs";
 import path from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   installPrivateUpdateHandoffStore,
   writePrivateUpdateHandoffChildGuard,
 } from "../../test/helpers/private-update-handoff-store.js";
-import { withRuntimePreload } from "../../test/helpers/runtime-preload.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
 import { isChildProcessTreeAlive } from "../process/child-process-tree.js";
-import { settleCommandProcessGroups } from "../process/command-process-custody.js";
+import * as reservationCensus from "../process/command-reservation-census.js";
 import { withCommandProcessScope } from "../process/exec-spawn.js";
 import { tryRunDoctorResultBridge } from "./run-main-doctor-result.js";
+import { updateExecutorNativeEntrypoints } from "./update-cli/update-command-executor-native-runtime.test-support.js";
 
 const directories = useAutoCleanupTempDirTracker(afterEach);
 const resultEnv = "OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH";
@@ -26,13 +26,19 @@ afterEach(() => {
 it.skipIf(process.platform === "win32").each([
   ["normal", { status: "ok", warnings: [warning] }, undefined],
   ["interrupted", undefined, 1],
+  ["abandoned-reservation", { status: "ok", warnings: expect.arrayContaining([stopped]) }, 0],
   [
-    "unsettled",
+    "unreadable-receipt",
     {
       status: "error",
-      failureFacts: [expect.objectContaining({ code: "doctor-processes-unsettled" })],
+      failureFacts: [
+        expect.objectContaining({
+          code: "doctor-processes-unsettled",
+          message: expect.stringContaining("custody receipt unavailable"),
+        }),
+      ],
     },
-    undefined,
+    1,
   ],
   ["completed-cleanup", { status: "ok", warnings: expect.arrayContaining([warning, stopped]) }, 0],
   ["plain-nonzero", undefined, 1],
@@ -46,14 +52,12 @@ it.skipIf(process.platform === "win32").each([
     fs.mkdirSync(privateTmp, { mode: 0o700 });
     const { databasePath } = installPrivateUpdateHandoffStore(privateTmp);
     const childGuard = writePrivateUpdateHandoffChildGuard(databasePath, privateTmp);
-    const source = path.resolve("src");
     const fixture = path.join(root, "doctor.mjs");
     const identity = path.join(root, "writer-pid");
     const stale = path.join(root, "-.processes");
     const staleBytes =
       '{"nonce":"previous-fixture","pid":123,"runId":"previous-interrupted-doctor","slots":[]}';
     fs.writeFileSync(stale, staleBytes);
-    const moduleUrl = (relative: string) => pathToFileURL(path.join(source, relative)).href;
     fs.writeFileSync(
       fixture,
       `
@@ -63,9 +67,9 @@ it.skipIf(process.platform === "win32").each([
       const resultPath = process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH;
       let custody;
       let withCommandProcessScope, spawnCommand;
-      if (['normal','interrupted','unsettled'].includes(mode)) {
-        const owner = await import(${JSON.stringify(moduleUrl("infra/update-doctor-process-custody.ts"))});
-        ({withCommandProcessScope,spawnCommand}=await import(${JSON.stringify(moduleUrl("process/exec-spawn.ts"))}));
+      if (['normal','interrupted','abandoned-reservation','unreadable-receipt'].includes(mode)) {
+        const owner = await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.doctorCustody).href)});
+        ({withCommandProcessScope,spawnCommand}=await import(${JSON.stringify(resolveRuntimeWorkerUrl(updateExecutorNativeEntrypoints.processSpawn).href)}));
         if (mode === 'normal') {
           process.env.OPENCLAW_UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH = '-';
           try {
@@ -83,28 +87,14 @@ it.skipIf(process.platform === "win32").each([
         fs.writeFileSync(resultPath+'.processes',JSON.stringify(receipt));
       }
       const writeResult = (result) => fs.writeFileSync(resultPath, JSON.stringify(result), {flag:'wx', mode:0o600});
-      if (mode === 'unsettled') {
-        const {spawn}=await import('node:child_process');
-        const {once}=await import('node:events');
-        const {getProcessInstanceStartTime}=await import(${JSON.stringify(moduleUrl("shared/pid-alive.ts"))});
-        const argv=[process.execPath,'-e','setInterval(()=>{},1000)'];
-        const reservation=custody.reserve(argv);
-        const writer=spawn(argv[0],argv.slice(1),{detached:true,stdio:'ignore'});
-        const closed=once(writer,'close');
-        try {
-          await once(writer,'spawn');
-          assert.ok(writer.pid);
-          const startedAt=getProcessInstanceStartTime(writer.pid);
-          assert.notEqual(startedAt,null);
-          fs.writeFileSync(${JSON.stringify(identity)},JSON.stringify({pid:writer.pid,startedAt}));
-          // Native custody is bound, but the receipt cannot authorize signalling.
-          reservation.spawned({pid:writer.pid,startedAt:null});
-          writeResult({status:'ok'});
-          writer.unref();
-        } catch(error) {
-          writer.kill('SIGKILL');
-          await closed;
-          throw error;
+      if (mode === 'abandoned-reservation' || mode === 'unreadable-receipt') {
+        custody.reserve([process.execPath, '-e', 'process.stdin.resume()']);
+        writeResult({status:'ok'});
+        if (mode === 'unreadable-receipt') {
+          // An interrupted Doctor cannot certify settlement through partial IPC.
+          fs.writeFileSync(resultPath+'.processes', '{');
+          process.stdout.write('fixture-writer-ready\\n');
+          await new Promise(() => setInterval(() => {}, 1_000));
         }
       } else if (mode === 'interrupted') {
         await withCommandProcessScope(async () => {
@@ -129,18 +119,23 @@ it.skipIf(process.platform === "win32").each([
       custody?.[Symbol.dispose]();
       `,
     );
-    let childEnv = childGuard({ ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") });
-    childEnv = withRuntimePreload(childEnv, path.resolve("scripts/tsx.mjs"));
+    const childEnv = childGuard({ ...process.env, OPENCLAW_STATE_DIR: path.join(root, "state") });
     for (const key of ["NODE_OPTIONS", "BUN_OPTIONS", "OPENCLAW_STATE_DIR"]) {
       vi.stubEnv(key, childEnv[key]);
     }
     vi.stubEnv(resultEnv, "-");
+    if (mode === "abandoned-reservation") {
+      vi.spyOn(reservationCensus, "findCommandReservationCandidates").mockReturnValue([]);
+    }
     const controller = new AbortController();
     const captured = { stdout: "", stderr: "" };
     for (const stream of ["stdout", "stderr"] as const) {
       vi.spyOn(process[stream], "write").mockImplementation((chunk) => {
         captured[stream] += String(chunk);
-        if (mode === "interrupted" && captured.stdout.includes("fixture-writer-ready")) {
+        if (
+          (mode === "interrupted" || mode === "unreadable-receipt") &&
+          captured.stdout.includes("fixture-writer-ready")
+        ) {
           controller.abort();
         }
         // Backpressure must not cancel an owned Doctor process.
@@ -149,44 +144,36 @@ it.skipIf(process.platform === "win32").each([
     }
     vi.spyOn(process, "cwd").mockReturnValue(root);
     const argv = [process.execPath, fixture, "doctor", "--fix", "--non-interactive"];
-    try {
-      await withCommandProcessScope(() => tryRunDoctorResultBridge(argv), controller.signal).catch(
-        (error: unknown) => {
-          if (mode === "unsettled") {
-            expect(error).toMatchObject({ code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN" });
-          } else if (mode !== "interrupted") {
-            throw error;
-          }
-        },
-      );
-      const { stdout: output, stderr } = captured;
-      const line = output.split("\n").findLast((item) => item.startsWith(`${resultEnv}=`));
-      expect(fs.readFileSync(stale, "utf8")).toBe(staleBytes);
-      expect(
-        fs.readdirSync(privateTmp).filter((name) => name.endsWith(".json.processes")),
-      ).toHaveLength(mode === "unsettled" ? 1 : 0);
-      if (exitCode !== undefined) {
-        expect(process.exitCode).toBe(exitCode);
-      }
-      if (!result) {
-        expect(line, output).toBeUndefined();
-        if (mode === "interrupted") {
-          expect(isChildProcessTreeAlive({ pid: Number(fs.readFileSync(identity, "utf8")) })).toBe(
-            false,
-          );
+    await withCommandProcessScope(() => tryRunDoctorResultBridge(argv), controller.signal).catch(
+      (error: unknown) => {
+        if (mode === "unreadable-receipt") {
+          expect(error).toMatchObject({ code: "ERR_COMMAND_PROCESS_CLEANUP_UNCERTAIN" });
+        } else if (mode !== "interrupted") {
+          throw error;
         }
-        return;
+      },
+    );
+    const { stdout: output, stderr } = captured;
+    const line = output.split("\n").findLast((item) => item.startsWith(`${resultEnv}=`));
+    expect(fs.readFileSync(stale, "utf8")).toBe(staleBytes);
+    expect(
+      fs.readdirSync(privateTmp).filter((name) => name.endsWith(".json.processes")),
+    ).toHaveLength(mode === "unreadable-receipt" ? 1 : 0);
+    if (exitCode !== undefined) {
+      expect(process.exitCode).toBe(exitCode);
+    }
+    if (!result) {
+      expect(line, output).toBeUndefined();
+      if (mode === "interrupted") {
+        expect(isChildProcessTreeAlive({ pid: Number(fs.readFileSync(identity, "utf8")) })).toBe(
+          false,
+        );
       }
-      expect(JSON.parse(line!.slice(resultEnv.length + 1)), stderr).toMatchObject(result);
-      if (mode === "normal") {
-        expect(output).toContain("fixture-legacy-refusal");
-      }
-    } finally {
-      if (mode === "unsettled" && fs.existsSync(identity)) {
-        const ownedIdentity = JSON.parse(fs.readFileSync(identity, "utf8"));
-        const cleanup = await settleCommandProcessGroups([ownedIdentity]);
-        expect(cleanup.settled, cleanup.reason).toBe(true);
-      }
+      return;
+    }
+    expect(JSON.parse(line!.slice(resultEnv.length + 1)), stderr).toMatchObject(result);
+    if (mode === "normal") {
+      expect(output).toContain("fixture-legacy-refusal");
     }
   },
 );

@@ -172,7 +172,7 @@ export const toolsCatalogHandlers: GatewayRequestHandlers = {
             ...(parameters?.length ? { parameters } : {}),
             optional: meta?.optional,
             risk: ownedMetadata?.risk,
-            tags: ownedMetadata?.tags ? [...ownedMetadata.tags] : undefined,
+            tags: ownedMetadata?.tags,
           });
         }
         for (const entry of catalogRegistry?.tools ?? []) {
@@ -194,7 +194,7 @@ export const toolsCatalogHandlers: GatewayRequestHandlers = {
               fullDescription: ownedMetadata?.description,
               optional: entry.optional,
               risk: ownedMetadata?.risk,
-              tags: ownedMetadata?.tags ? [...ownedMetadata.tags] : undefined,
+              tags: ownedMetadata?.tags,
             });
           }
         }

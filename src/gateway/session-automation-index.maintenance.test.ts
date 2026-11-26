@@ -80,7 +80,8 @@ function nextOccurrenceParentState(job: CronStoredJob, entry: SessionEntry | und
   if ("error" in principal || principal.kind !== "parent") {
     throw new Error("expected a parent-linked job");
   }
-  return classifyScheduledParent(parentRowFactsFromEntry(entry, false));
+  const state = classifyScheduledParent(parentRowFactsFromEntry(entry, false));
+  return typeof state === "string" ? state : "current";
 }
 
 afterEach(() => {
@@ -96,11 +97,7 @@ describe.each(phases)("%s maintenance", (_phase, overrides, archiveReason) => {
     const store = await maintain([job], overrides);
     expect(store[chatKey]?.archivedAt).toBeUndefined();
     expect(job.enabled).toBe(true);
-    expect(nextOccurrenceParentState(job, store[chatKey])).toEqual({
-      sessionId: "chat-session",
-      archived: false,
-      sandboxRequired: false,
-    });
+    expect(nextOccurrenceParentState(job, store[chatKey])).toBe("current");
     expect(store[otherKey]).toMatchObject({ archiveReason });
   });
 

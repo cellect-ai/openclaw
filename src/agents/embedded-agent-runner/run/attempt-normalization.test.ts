@@ -3,6 +3,7 @@ import { awaitGateBeforeSettlement, createDeferred } from "../../../../test/help
 import * as sessionEntryWriter from "../../../config/sessions/session-accessor.sqlite-entry.js";
 import { getAgentEventLifecycleGeneration } from "../../../infra/agent-events.js";
 import { createAgentRunDirectAbortError } from "../../run-termination.js";
+import { findReplaySafeRunAbort } from "../transcript-conflict.js";
 import { normalizeEmbeddedRunAttempt } from "./attempt-normalization.js";
 import {
   makeAttempt,
@@ -39,9 +40,9 @@ it.each(["safe", "effectful", "opaque", "prior-effect", "refresh"] as const)(
     input.runInput.laneController.throwIfAborted = () => controller.signal.throwIfAborted();
     controller.abort(reason);
     const failure = await normalizeEmbeddedRunAttempt(input).catch((error: unknown) => error);
-    expect(failure !== reason).toBe(kind === "safe");
+    expect(Boolean(findReplaySafeRunAbort(failure))).toBe(kind === "safe");
     expect(failure).toMatchObject({ name: "AbortError", message: reason.message });
-    expect(failure === reason || (failure instanceof Error && failure.cause === reason)).toBe(true);
+    expect(findReplaySafeRunAbort(reason)).toBeUndefined();
   },
 );
 
@@ -82,6 +83,34 @@ beforeEach(() => {
   sessionReaderMocks.readSessionEntryInWorker.mockReset().mockResolvedValue(undefined);
   sessionReaderMocks.readSessionEntryReadOnlyInWorker.mockReset().mockResolvedValue(undefined);
 });
+
+it.each([
+  { available: true, compactions: 0, tokens: 123 },
+  { available: false, compactions: 0, tokens: undefined },
+  { available: true, compactions: 1, tokens: 123 },
+])(
+  "records the native producer's ordered terminal context: %j",
+  async ({ available, compactions, tokens }) => {
+    const input = makeNormalizationInput(
+      makeAttempt(undefined, {
+        compactionCount: compactions,
+        attemptUsage: {
+          input: 9000,
+          output: 500,
+          contextUsage: available
+            ? { state: "available", promptTokens: 100, totalTokens: 123 }
+            : { state: "unavailable" },
+        },
+      }),
+    );
+    vi.spyOn(input.preparedRuntime, "snapshot").mockReturnValue({
+      ...input.preparedRuntime.snapshot(),
+      pluginHarnessOwnsTransport: true,
+    });
+    await normalizeEmbeddedRunAttempt(input);
+    expect(input.contextRecoveryState.currentContextSnapshot).toEqual({ tokens });
+  },
+);
 
 it.each([0, 2])(
   "retains compaction facts when parent Stop arrives during persistence (%s ingress records)",

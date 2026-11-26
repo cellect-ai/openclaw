@@ -9,8 +9,8 @@ import {
 } from "./tool-result-limits.js";
 
 /** Shared by budget fitting and delivery so formatting cannot consume unreserved context. */
-export function serializeToolSearchControlResult(payload: unknown, compact = false): string {
-  return JSON.stringify(payload, null, compact ? undefined : 2);
+export function serializeToolSearchControlResult(payload: unknown): string {
+  return JSON.stringify(payload);
 }
 
 /** Shared by the source projector and final formatter; no terminal receipts are consumed here. */

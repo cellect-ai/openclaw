@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import { syncBuiltinESMExports } from "node:module";
 import path from "node:path";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { assert, expect, it, vi } from "vitest";
@@ -51,7 +52,7 @@ it("prepares an agent database while its original creation witness is retained",
   signal,
 }) => {
   const options = fixture();
-  const creator = await captureOpenClawAgentDatabaseExecutionAsync(options);
+  const creator = await captureOpenClawAgentDatabaseExecutionAsync(options, {}, "observed-absence");
   await using _ = onExit(() => creator.release());
   expect(fs.existsSync(options.path)).toBe(false);
   await withinTest(
@@ -70,24 +71,6 @@ it("prepares an agent database while its original creation witness is retained",
       signal,
     ),
   ).resolves.toMatchObject({ entries: [] });
-});
-
-it("keeps an async capture live when the preceding unused borrower releases", async ({
-  signal,
-}) => {
-  const options = fixture();
-  const preceding = capture(options);
-  const capturing = captureOpenClawAgentDatabaseExecutionAsync(options, true);
-  let joining: Execution | undefined;
-  try {
-    await preceding.release();
-    joining = await capturing;
-    await withinTest(joining.prepare(source(), signal), signal);
-    expect(joining.fileIdentity).toMatchObject({ kind: "file" });
-  } finally {
-    await preceding.release();
-    await joining?.release();
-  }
 });
 
 it.for(["cancelled", "revoked"] as const)(
@@ -524,15 +507,20 @@ it("prepares its originally missing store and records native birth without chang
       get: unrelatedInitialization,
     });
   }
-  const warm = capture({
-    ...options,
-    env,
-  });
+  const stat = vi.spyOn(fs, "statSync");
+  syncBuiltinESMExports();
   try {
-    await expect(warm.runExisting(source(), async () => "warm")).resolves.toBe("warm");
-    expect(unrelatedInitialization).not.toHaveBeenCalled();
+    const warm = capture({ ...options, env });
+    try {
+      await expect(warm.runExisting(source(), async () => "warm")).resolves.toBe("warm");
+      expect(unrelatedInitialization).not.toHaveBeenCalled();
+      expect(stat).not.toHaveBeenCalled();
+    } finally {
+      await warm.release();
+    }
   } finally {
-    await warm.release();
+    stat.mockRestore();
+    syncBuiltinESMExports();
   }
   const windows = (() => {
     const platform = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
@@ -890,8 +878,8 @@ it.skipIf(process.platform === "win32")(
         replaced = true;
       }
     };
-    const readEntry = (request = source()) =>
-      execution.runExisting(request, (scope) =>
+    const readEntry = (request = source(), borrowed = execution) =>
+      borrowed.runExisting(request, (scope) =>
         scope.execute({
           type: "session.entry.read",
           input: { sessionKeys: ["agent:main:missing"] },
@@ -901,7 +889,12 @@ it.skipIf(process.platform === "win32")(
       await execution.prepare(source());
       await expect(readEntry(requestSource)).resolves.toMatchObject({ entries: [] });
       expect(replaced).toBe(true);
-      await expect(readEntry()).rejects.toThrow(/identity changed/);
+      const borrowed = capture(options);
+      try {
+        await expect(readEntry(source(), borrowed)).rejects.toThrow(/identity changed/);
+      } finally {
+        await borrowed.release();
+      }
     } finally {
       if (replaced) {
         fs.unlinkSync(options.path);

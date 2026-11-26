@@ -16,6 +16,7 @@ export function createDeviceAuthToken(params: {
   scopes: string[];
   allowedAgentIds?: string[];
   issuer?: DeviceAuthToken["issuer"];
+  approval?: DeviceAuthToken["approval"];
   existing?: DeviceAuthToken;
   preserveExistingIssuer?: boolean;
   now: number;
@@ -24,6 +25,9 @@ export function createDeviceAuthToken(params: {
   return {
     token: generatePairingToken(),
     role: params.role,
+    ...((params.approval ?? params.existing?.approval)
+      ? { approval: params.approval ?? params.existing?.approval }
+      : {}),
     scopes: params.scopes,
     allowedAgentIds: params.allowedAgentIds ?? params.existing?.allowedAgentIds,
     issuer: params.issuer ?? (params.preserveExistingIssuer ? params.existing?.issuer : undefined),

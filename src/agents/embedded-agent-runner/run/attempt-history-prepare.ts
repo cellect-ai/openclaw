@@ -11,6 +11,7 @@ import {
   sessionEntryCommitGuardOptions,
   type SessionSourceAssertion,
 } from "../../../config/sessions/session-source-authority.js";
+import { isOwnedTranscriptPayload } from "../../../config/sessions/transcript-json.js";
 import { OPENCLAW_EMBEDDED_CONTEXT_ENGINE_HOST } from "../../../context-engine/host-compat.js";
 import { freezeJsonSnapshot } from "../../../shared/immutable-data.js";
 import { shouldMergeConsecutiveTurns } from "../../embedded-agent-helpers/turns.js";
@@ -25,13 +26,16 @@ import type { EmbeddedRunAttemptInternalParams } from "./internal-params.js";
 import { resolveEmbeddedSessionContextLimits } from "./session-context-limits.js";
 
 function boundSettledFinalizationMessages(attempt: EmbeddedRunAttemptInternalParams) {
+  // Selection never reads entry timestamps, and these entries are neither persisted nor
+  // sent to the model. Context-engine messages may omit timestamps, so use a fixed value.
+  const timestamp = new Date(0).toISOString();
   const requests: ModelContextRequest[] = attempt.settledTurnFinalizationMessages!.map(
     (message, index) => ({
       entry: {
         type: "message",
         id: String(index),
         parentId: index ? String(index - 1) : null,
-        timestamp: new Date(message.timestamp).toISOString(),
+        timestamp,
         message,
         seq: index,
       },
@@ -116,6 +120,8 @@ export async function prepareEmbeddedAttemptHistory(
     });
     input.setup.prepStages.mark("history-sanitize");
     cacheTrace?.recordStage("session:sanitized", { messages: prior });
+    // Keep each keyed user row intact until prompt() has resolved the current turn.
+    // The stream boundary merges projected rows for providers requiring alternation.
     const validated = await validateReplayTurns({
       ...replayContext(),
       messages: prior,
@@ -214,11 +220,16 @@ export async function prepareEmbeddedAttemptHistory(
         heartbeatFiltered,
         limitHistoryTurns(
           heartbeatFiltered,
-          getHistoryLimitFromSessionKey(attempt.sessionKey, attempt.config, {
-            accountId: attempt.agentAccountId,
-            peerId: attempt.conversationRoutePeerId,
-            chatType: attempt.chatType,
-          }),
+          // A fork runs under its own key but keeps its source conversation's history window.
+          getHistoryLimitFromSessionKey(
+            attempt.sandboxSessionKey ?? attempt.sessionKey,
+            attempt.config,
+            {
+              accountId: attempt.agentAccountId,
+              peerId: attempt.conversationRoutePeerId,
+              chatType: attempt.chatType,
+            },
+          ),
           {
             groupConsecutiveUserTurns:
               transcriptPolicy.validateAnthropicTurns &&
@@ -268,9 +279,12 @@ export async function prepareEmbeddedAttemptHistory(
     warn: (message) => log.warn(message),
   });
   input.setup.prepStages.mark("context-engine");
-  // Restored history stays writable through preparation; published replies are complete.
+  // Seal restored model history once; transcript admission already seals retained messages.
   for (const message of messages) {
-    if (message.role === "assistant") {
+    if (
+      (message.role === "assistant" || message.role === "user" || message.role === "toolResult") &&
+      !isOwnedTranscriptPayload(message)
+    ) {
       freezeJsonSnapshot(message);
     }
   }

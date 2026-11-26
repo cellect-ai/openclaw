@@ -119,7 +119,7 @@ test("metadata RPCs recover from retryable startup and preserve owner isolation 
         error: {
           code: "UNAVAILABLE",
           retryable: true,
-          message: expect.stringMatching(/start(?:ing|up)/),
+          message: expect.stringContaining("starting"),
         },
       });
     }

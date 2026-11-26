@@ -5,10 +5,8 @@ import { wrapSqliteWorkerError } from "../../infra/sqlite-worker-contract.js";
 import type { UserTurnTranscriptRecorder } from "../../sessions/user-turn-transcript.types.js";
 import { resolveOpenClawAgentSqlitePath } from "../../state/openclaw-agent-db.paths.js";
 import type { AgentDatabaseRequestExecutionSource } from "../../state/openclaw-agent-execution-admission-contract.js";
-import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { captureSessionPendingInputWorkerCustody } from "./session-accessor.sqlite-pending-inputs.js";
 import { prepareSqliteScope } from "./session-accessor.sqlite-read-scope.js";
-import { prepareSessionEntryReplacementDatabase } from "./session-accessor.sqlite-replacement-worker.js";
 import {
   resolveSqliteSessionKey,
   toDatabaseOptions,
@@ -128,47 +126,38 @@ export async function acquireSessionInputActor(
   }
   const { createSessionActorFactory } = await import("./session-actor-durable.js");
   lifetime.assertCurrent();
-  const execution = captureOpenClawAgentDatabaseExecution(database, {
-    expectedIdentity: target.readSource && {
-      kind: "file",
-      physicalIdentity: target.readSource.databaseIdentity,
-      birthtime: target.readSource.databaseBirthtime,
-      nativeLocation: database.path,
+  const actor = await createSessionActorFactory(database).acquire(
+    {
+      database: target.readSource
+        ? {
+            kind: "file",
+            physicalIdentity: target.readSource.databaseIdentity,
+            birthtime: target.readSource.databaseBirthtime,
+            nativeLocation: database.path,
+          }
+        : { kind: "file" },
+      sessionKey,
     },
-  });
-  try {
-    // Native receipts already identify the file; only cold owners need writer preparation.
-    if (!execution.fileIdentity) {
-      await prepareSessionEntryReplacementDatabase(
-        database,
-        () => lifetime.assertCurrent(),
-        execution,
-        followRegistration,
-      );
-    }
-    const identity = execution.fileIdentity;
-    if (!identity) {
-      throw new Error("Input actor has no admitted physical database");
-    }
-    const actor = await createSessionActorFactory(database).acquire(
-      { database: identity, sessionKey },
-      lifetime,
-    );
-    return {
-      actor,
-      target: {
-        ...target,
-        readSource: target.readSource ?? {
-          agentId: database.agentId,
-          path: database.path,
-          databaseIdentity: identity.physicalIdentity,
-          databaseBirthtime: identity.birthtime,
-        },
-      },
-    };
-  } finally {
-    await execution.release();
+    lifetime,
+    followRegistration,
+  );
+  const identity = actor.target.database;
+  if (identity.kind !== "file") {
+    await actor.release();
+    throw new Error("Input actor has no admitted physical database");
   }
+  return {
+    actor,
+    target: {
+      ...target,
+      readSource: target.readSource ?? {
+        agentId: database.agentId,
+        path: database.path,
+        databaseIdentity: identity.physicalIdentity,
+        databaseBirthtime: identity.birthtime,
+      },
+    },
+  };
 }
 
 const inputActor = new AsyncLocalStorage<SessionInputActorBinding | undefined>();
@@ -213,6 +202,7 @@ export async function getSessionInputActor(
         snapshot(authority: SessionActorAuthority) {
           return memory.actor.snapshot(authority);
         },
+        assertCurrent: () => memory.actor.assertCurrent(),
       };
     }
     return undefined;
@@ -230,23 +220,25 @@ export async function getSessionInputActor(
     throw new Error("Input actor differs from the recorder's admitted target");
   }
   const custody = captureSessionPendingInputWorkerCustody();
+  const guard = <T>(operation: () => T): T => {
+    try {
+      return operation();
+    } catch (error) {
+      // A closed input actor must remain a custody refusal, not enable fallback.
+      if (custody) {
+        throw new SessionPendingInputCustodyError("Pending input actor is unavailable", {
+          cause: error,
+        });
+      }
+      throw error;
+    }
+  };
   return {
     ...acquired,
     phase: binding.phase,
     storageAuthority: acquired.storageAuthority ?? getSessionActorStorageBinding(scope)?.authority,
-    snapshot(authority: SessionActorAuthority) {
-      try {
-        return acquired.actor.snapshot(authority);
-      } catch (error) {
-        // A closed input actor must remain a custody refusal, not enable fallback.
-        if (custody) {
-          throw new SessionPendingInputCustodyError("Pending input actor is unavailable", {
-            cause: error,
-          });
-        }
-        throw error;
-      }
-    },
+    assertCurrent: () => guard(() => acquired.actor.assertCurrent()),
+    snapshot: (authority: SessionActorAuthority) => guard(() => acquired.actor.snapshot(authority)),
   };
 }
 

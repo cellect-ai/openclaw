@@ -21,7 +21,7 @@ vi.mock("../plugins/current-plugin-metadata-snapshot.js", () => ({
 vi.mock("../config/sessions/session-accessor.js", () => ({
   readSessionEntriesFromStoreInWorker: mocks.sessions,
 }));
-import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../skills/workshop/collection-review.js";
+import { WORKSHOP_COLLECTION_REVIEW_MESSAGE } from "../skills/workshop-host/collection-review.js";
 import {
   hasEligibleSkillCollectionReviewRuntime,
   reconcileWorkshopCollectionReviews,

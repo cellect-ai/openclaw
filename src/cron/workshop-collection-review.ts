@@ -28,17 +28,17 @@ import { readSessionEntriesFromStoreInWorker } from "../config/sessions/session-
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import type { ManifestModelIdNormalizationSource } from "../plugins/manifest-model-id-normalization.js";
-import { WORKSHOP_COLLECTION_REVIEW_EVERY_MS } from "../skills/workshop/collection-review-prompt.js";
+import { WORKSHOP_COLLECTION_REVIEW_EVERY_MS } from "../skills/workshop-host/collection-review-prompt.js";
 import {
   WORKSHOP_COLLECTION_REVIEW_MESSAGE,
   supportsWorkshopCollectionRuntime,
-} from "../skills/workshop/collection-review.js";
-import { resolveSkillWorkshopConfig } from "../skills/workshop/config.js";
+} from "../skills/workshop-host/collection-review.js";
+import { resolveSkillWorkshopConfig } from "../skills/workshop-host/config.js";
 import { resolveCronAgentSessionKey } from "./isolated-agent/session-key.js";
 import type { CronServiceContract } from "./service-contract.js";
 import { WORKSHOP_COLLECTION_REVIEW_DECLARATION_PREFIX } from "./system-owned-declaration.js";
 import type { CronJob, CronJobCreate } from "./types.js";
-export { WORKSHOP_COLLECTION_REVIEW_EVERY_MS } from "../skills/workshop/collection-review-prompt.js";
+export { WORKSHOP_COLLECTION_REVIEW_EVERY_MS } from "../skills/workshop-host/collection-review-prompt.js";
 
 /** Returns undefined when static config cannot prove the full runtime chain. */
 export function hasEligibleSkillCollectionReviewRuntime(

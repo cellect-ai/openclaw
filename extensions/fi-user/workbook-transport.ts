@@ -119,11 +119,13 @@ export function delegatedWorkbookTransport(
     async authorize(signal) {
       assertCurrent();
       signal.throwIfAborted();
+      const carried = "turn" in initial ? initial.turn : undefined;
       const delegation = await lookupDelegation(initial.connection, initial.body, {
         agentId: initial.agentId,
         signal,
-        // A Matrix requester's admitted event, when this run has one (a projected Matrix reply).
-        turn: delegationTurnFor(api, context),
+        // Entitlement turn when this run recorded one. A Slack source session has
+        // none; the proven requester carries the admitted Matrix event instead.
+        turn: delegationTurnFor(api, context) ?? carried,
       });
       assertCurrent();
       signal.throwIfAborted();

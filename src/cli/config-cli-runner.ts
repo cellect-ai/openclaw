@@ -17,11 +17,13 @@ import { ConfigMutationConflictError } from "../config/mutation-conflict.js";
 import { resolveConfigPath } from "../config/paths.js";
 import { REDACTED_SENTINEL, restoreRedactedValues } from "../config/redact-snapshot.js";
 import type { ConfigSchemaResponse } from "../config/schema.js";
+import { findSkillWorkshopPolicyWriteRefusal } from "../config/skill-workshop-plugin-migration.js";
 import type { OpenClawConfig } from "../config/types.js";
 import { visitConfigValueTree } from "../config/value-tree.js";
 import { diffConfigPaths } from "../gateway/config-diff.js";
 import { buildGatewayReloadPlan } from "../gateway/config-reload-plan.js";
 import { resolveGatewayReloadSettings } from "../gateway/config-reload-settings.js";
+import { openClawIdAccessWarning } from "../gateway/openclaw-id/access-plugin.js";
 import { danger, info } from "../globals.js";
 import { formatErrorMessage } from "../infra/errors.js";
 import type { RuntimeEnv } from "../runtime.js";
@@ -477,6 +479,15 @@ export async function runConfigOperations(params: {
       previousEnv: preparedPreviousValues.resolutionEnv,
     };
   }
+  // Refuse before any offline write or Gateway-routed patch, including an equal value.
+  const workshopPolicyRefusal = findSkillWorkshopPolicyWriteRefusal({
+    previousConfig: authoredPreviousConfig,
+    nextConfig: authoredNextConfig,
+    writesPlugins: appliedOperations.some(({ setPath }) => setPath[0] === "plugins"),
+  });
+  if (workshopPolicyRefusal) {
+    throw new Error(workshopPolicyRefusal);
+  }
   const validation = await validateConfigMutation({
     config: nextConfig,
     modelValidation,
@@ -530,7 +541,7 @@ export async function runConfigOperations(params: {
       );
     }
   } else {
-    await replaceConfigFile({
+    const written = await replaceConfigFile({
       sourceConfig: authoredNextConfig,
       snapshot,
       ...(snapshot.hash !== undefined ? { baseHash: snapshot.hash } : {}),
@@ -553,6 +564,10 @@ export async function runConfigOperations(params: {
           : {}),
       },
     });
+    const warning = openClawIdAccessWarning(written.nextConfig);
+    if (warning) {
+      runtime.error(warning);
+    }
   }
   if (removedGatewayAuthPaths.length > 0) {
     runtime.log(

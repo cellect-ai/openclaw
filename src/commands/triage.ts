@@ -10,10 +10,10 @@ import { formatInstallationTargetCommand } from "../cli/installation-target-form
 import { exitCliAfterOutput } from "../cli/one-shot-exit.js";
 import { registerSignalExitGate } from "../cli/signal-exit-barrier.js";
 import { resolveSubprocessExitCode } from "../cli/subprocess-exit-code.js";
+import { isDefaultInstallIdentity } from "../config/paths.js";
 import { isNodeRuntime } from "../daemon/runtime-binary.js";
 import { scrubDoctorErrorMessage } from "../flows/doctor-error-message.js";
 import type { HealthFinding, HealthFindingSeverity } from "../flows/health-checks.js";
-import { createEmbeddedStateSignalBridge } from "../infra/embedded-state-lock.js";
 import { resolveExecutablePath } from "../infra/executable-path.js";
 import {
   installationTargetEnv,
@@ -21,6 +21,7 @@ import {
   type InstallationTarget,
 } from "../infra/installation-target-context.js";
 import { resolveOpenClawPackageRoot } from "../infra/openclaw-root.js";
+import { createProcessSignalBridge } from "../infra/process-signal-bridge.js";
 import { acceptTriageContinuation } from "../infra/triage-continuation.js";
 import { writeTriageUpdateFailure } from "../infra/update-failure-report-artifact.js";
 import type { UpdateRepairValidation } from "../infra/update-repair-protocol.js";
@@ -117,8 +118,10 @@ async function collectTriageBundle(
           defaultTimeoutMs: 3000,
           sharedStateMode: "read-only",
         }),
-      readStatusSnapshot: async () =>
-        await gatherDaemonStatus({ rpc, probe: true, requireRpc: false, deep: false }),
+      // Custom state/config selectors do not select the account's native service.
+      readStatusSnapshot: isDefaultInstallIdentity(redaction.env)
+        ? async () => await gatherDaemonStatus({ rpc, probe: true, requireRpc: false, deep: false })
+        : undefined,
     });
     return { kind: "available", path: result.path };
   } catch (error) {
@@ -168,7 +171,7 @@ async function runTriage(
   ) {
     const continuation = await acceptTriageContinuation();
     if (continuation) {
-      const bridge = createEmbeddedStateSignalBridge();
+      const bridge = createProcessSignalBridge();
       try {
         const automaticRuntime: RuntimeEnv = {
           ...runtime,

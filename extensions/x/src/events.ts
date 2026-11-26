@@ -2,6 +2,7 @@ import { nextTick } from "node:process";
 import { sleepWithAbort } from "openclaw/plugin-sdk/runtime-env";
 import { asRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import {
+  X_ACTIVITY_POST_EVENT_TYPES,
   XApiError,
   parseXPostEnvelope,
   type XApiClient,
@@ -16,6 +17,7 @@ export type XEventStatus = {
   eventMode?: "stream" | "poll";
   streamConnected?: boolean;
   streamBackoffMs?: number;
+  terminalDisconnect?: true;
   lastEventAt?: number;
   cursor?: string;
   message?: string;
@@ -35,8 +37,22 @@ type XReceiveOptions = {
   onPost: (envelope: XPostEnvelope) => Promise<void>;
   onStatus?: (status: XEventStatus) => void;
   onWarning?: (message: string) => void;
+  onStreamTiming?: (step: string, elapsedMs: number) => void;
   signal: AbortSignal;
 };
+
+async function timeStreamStep<T>(
+  options: XReceiveOptions,
+  step: string,
+  operation: () => Promise<T>,
+): Promise<T> {
+  const started = performance.now();
+  try {
+    return await operation();
+  } finally {
+    options.onStreamTiming?.(step, performance.now() - started);
+  }
+}
 
 function laterId(a: string | undefined, b: string): string {
   return !a || BigInt(b) > BigInt(a) ? b : a;
@@ -145,7 +161,7 @@ export async function waitForXBudgetReset(until: number, signal: AbortSignal): P
 
 function eventEnvelope(value: unknown): XPostEnvelope | undefined {
   const event = asRecord(asRecord(value).data);
-  if (event.event_type !== "post.mention.create") {
+  if (!X_ACTIVITY_POST_EVENT_TYPES.some((type) => type === event.event_type)) {
     return undefined;
   }
   return parseXPostEnvelope({ post: event.payload, users: asRecord(event.includes).users });
@@ -168,14 +184,22 @@ async function receiveStream(
   let receiveError: Error | undefined;
   let wakeReader: (() => void) | undefined;
   let wakeConsumer: (() => void) | undefined;
+  let wakeCapacity: (() => void) | undefined;
   let chargesSettled = Promise.resolve();
-  const batches: { events: unknown[]; charged: Promise<void> }[] = [];
+  // Pause the reader once a slow onPost retains this many batches or this much
+  // event text. The pending-line guard below does not cover batches already queued.
+  const queuedBatchLimit = 32;
+  const queuedCharLimit = 1_048_576;
+  let queuedChars = 0;
+  const batches: { events: unknown[]; charged: Promise<void>; chars: number }[] = [];
+  const backlogFull = () => batches.length >= queuedBatchLimit || queuedChars >= queuedCharLimit;
   const cancelOnAbort = () => {
     void reader?.cancel().catch(() => {});
   };
   const requestDrain = () => {
     drainRequested = true;
     wakeReader?.();
+    wakeCapacity?.();
   };
   const pause = (until: number) => {
     budgetPaused = true;
@@ -218,10 +242,30 @@ async function receiveStream(
   };
   const receiveBatches = async (source: ReadableStreamDefaultReader<Uint8Array>) => {
     const decoder = new TextDecoder();
+    const started = performance.now();
+    let firstByte = true;
     let pending = "";
     try {
       for (;;) {
         options.signal.throwIfAborted();
+        if (!drainRequested && !controller.signal.aborted && backlogFull()) {
+          // Stay paused until the consumer drains below the bound, or drain/abort.
+          // The idle timer stays disarmed: this wait is local backpressure, not a dead stream.
+          await new Promise<void>((resolve) => {
+            const finish = () => {
+              options.signal.removeEventListener("abort", finish);
+              controller.signal.removeEventListener("abort", finish);
+              if (wakeCapacity === finish) {
+                wakeCapacity = undefined;
+              }
+              resolve();
+            };
+            wakeCapacity = finish;
+            options.signal.addEventListener("abort", finish, { once: true });
+            controller.signal.addEventListener("abort", finish, { once: true });
+          });
+          continue;
+        }
         const read = source.read();
         let ready = false;
         void read.then(
@@ -266,11 +310,16 @@ async function receiveStream(
           }
           throw new Error("X activity stream disconnected");
         }
+        if (firstByte && result.value.byteLength) {
+          firstByte = false;
+          options.onStreamTiming?.("first-byte", performance.now() - started);
+        }
         pending += decoder.decode(result.value, { stream: true });
         if (pending.length > 1_048_576) {
           throw new Error("X activity stream event exceeded 1 MiB");
         }
         const events: unknown[] = [];
+        let chars = 0;
         let boundary: number;
         while ((boundary = pending.indexOf("\n")) !== -1) {
           const line = pending.slice(0, boundary).trim();
@@ -278,6 +327,7 @@ async function receiveStream(
           if (!line) {
             continue;
           }
+          chars += line.length;
           try {
             events.push(JSON.parse(line));
           } catch {
@@ -294,7 +344,8 @@ async function receiveStream(
           // The spend owner serializes charges; its latest receipt joins every earlier charge.
           chargesSettled = charged.catch(fail);
         }
-        batches.push({ events, charged });
+        queuedChars += chars;
+        batches.push({ events, charged, chars });
         wakeConsumer?.();
       }
     } catch (error) {
@@ -308,12 +359,14 @@ async function receiveStream(
     }
   };
   try {
-    await checkBudget();
+    await timeStreamStep(options, "budget-check", checkBudget);
     if (budgetPaused) {
       return;
     }
     armIdleTimer();
-    const response = await options.api.openActivityStream(signal);
+    const response = await timeStreamStep(options, "response-headers", () =>
+      options.api.openActivityStream(signal),
+    );
     if (!response.body) {
       throw new Error("X activity stream has no response body");
     }
@@ -387,6 +440,8 @@ async function receiveStream(
         wakeConsumer = undefined;
         continue;
       }
+      queuedChars -= batch.chars;
+      wakeCapacity?.();
       await batch.charged;
       for (const value of batch.events) {
         options.signal.throwIfAborted();
@@ -394,7 +449,10 @@ async function receiveStream(
         if (!envelope) {
           const event = asRecord(value);
           const type = asRecord(event.data).event_type;
-          if (typeof type === "string" && type !== "post.mention.create") {
+          if (
+            typeof type === "string" &&
+            !X_ACTIVITY_POST_EVENT_TYPES.some((eventType) => eventType === type)
+          ) {
             continue;
           }
           if (++unparsed === 3) {
@@ -504,7 +562,10 @@ export async function runXEvents(
     }
     while (!options.signal.aborted) {
       if (stream && Date.now() >= streamPausedUntil) {
-        streamPausedUntil = (await options.api.spend.streamResumeAt()) ?? 0;
+        streamPausedUntil =
+          (await timeStreamStep(options, "budget-preflight", () =>
+            options.api.spend.streamResumeAt(),
+          )) ?? 0;
       }
       if (!stream || Date.now() < streamPausedUntil) {
         options.onStatus?.({
@@ -520,6 +581,13 @@ export async function runXEvents(
           await pollXMentions(options);
         } catch (error) {
           options.signal.throwIfAborted();
+          if (error instanceof XApiError && (error.status === 401 || error.status === 403)) {
+            options.onStatus?.({
+              terminalDisconnect: true,
+              message: "mentions polling authentication failed; check X credentials",
+            });
+            throw error;
+          }
           if (error instanceof XBudgetExceededError) {
             options.onStatus?.({ message: error.message, spend: await options.api.spend.status() });
             await waitForXBudgetReset(error.exhaustedUntil, options.signal);
@@ -558,7 +626,7 @@ export async function runXEvents(
           streamBackoffMs: backoffMs,
           message: "activity stream reconnect backoff",
         });
-        await sleepWithAbort(backoffMs, options.signal);
+        await timeStreamStep(options, "backoff", () => sleepWithAbort(backoffMs, options.signal));
         backoffMs = Math.min(backoffMs * 2, 60_000);
       }
     }

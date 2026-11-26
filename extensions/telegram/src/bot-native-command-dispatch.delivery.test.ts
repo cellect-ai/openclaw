@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import { join } from "node:path";
+import type * as CommandSurface from "openclaw/plugin-sdk/command-surface";
 import type { OpenClawConfig, TelegramAccountConfig } from "openclaw/plugin-sdk/config-contracts";
 import { PLUGIN_COMMAND_DISPATCH } from "openclaw/plugin-sdk/plugin-command-runtime";
 import type {
@@ -47,28 +48,13 @@ import {
   useTelegramHttpFixture,
 } from "./send.telegram-http.test-support.js";
 
-vi.mock("openclaw/plugin-sdk/command-auth-native", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("openclaw/plugin-sdk/command-auth-native")>();
-  return {
-    ...actual,
-    resolveCommandArgMenuAsync: async (
-      params: Parameters<typeof actual.resolveCommandArgMenuAsync>[0],
-    ) => {
-      const modelCatalog = [
-        {
-          provider: "native-test",
-          id: "reasoner",
-          name: "Prepared reasoner",
-          reasoning: true,
-          compat: { supportedReasoningEfforts: ["max"] },
-        },
-        { provider: "native-test", id: "plain", name: "Plain", reasoning: false },
-      ];
-      const menu = await actual.resolveCommandArgMenuAsync({ ...params, catalog: modelCatalog });
-      return menu ? { ...menu, modelCatalog } : null;
-    },
-  };
-});
+const { loadCommandArgMenuModelCatalog } = vi.hoisted(() => ({
+  loadCommandArgMenuModelCatalog: vi.fn<typeof CommandSurface.loadCommandArgMenuModelCatalog>(),
+}));
+vi.mock("openclaw/plugin-sdk/command-surface", async (importOriginal) => ({
+  ...(await importOriginal<typeof CommandSurface>()),
+  loadCommandArgMenuModelCatalog,
+}));
 
 function commandConfig(overrides: Partial<OpenClawConfig> = {}): OpenClawConfig {
   return {
@@ -125,6 +111,21 @@ async function dispatchCommand(
   const bot = await createBot(true, true, cfg, dmTopics);
   await bot.handleUpdate({ update_id: updateId, message: { ...commandMessage(text), ...message } });
 }
+
+beforeEach(() => {
+  loadCommandArgMenuModelCatalog.mockReset().mockImplementation(async () => {
+    return [
+      {
+        provider: "native-test",
+        id: "reasoner",
+        name: "Prepared reasoner",
+        reasoning: true,
+        compat: { supportedReasoningEfforts: ["max"] },
+      },
+      { provider: "native-test", id: "plain", name: "Plain", reasoning: false },
+    ];
+  });
+});
 
 describe("Telegram typed command delivery", () => {
   it("replies to the selected photo quote for a native command", async () => {
@@ -234,6 +235,16 @@ describe("Telegram typed command delivery", () => {
 });
 
 describe("Telegram native argument menus", () => {
+  it("dispatches bare ACP to help without an incomplete spawn keyboard", async () => {
+    harness.replySpy.mockResolvedValue({ text: "ACP command help." });
+    await dispatchCommand(commandConfig(), "/acp", 3102);
+    expect(harness.replySpy).toHaveBeenCalled();
+    expectSend({ text: "ACP command help." });
+    expect(apiCalls).not.toHaveBeenCalledWith(
+      "sendMessage",
+      expect.objectContaining({ reply_markup: expect.anything() }),
+    );
+  });
   it("records native menus in the configured store despite a stale default binding", async () => {
     const cfg = commandConfig();
     const sessionKey = "agent:main:main";
@@ -313,17 +324,6 @@ describe("Telegram native argument menus", () => {
       expectSend({ message_thread_id: 77 });
     },
   );
-  it("uses the menu catalog for the default thinking title", async () => {
-    const cfg = commandConfig({
-      agents: { defaults: { model: "native-test/reasoner" } },
-    });
-    await dispatchCommand(cfg, "/think", 3102, {}, true);
-    expect(sentMenu().text).toContain("Current thinking level: medium.\n");
-    expect(sentMenu().reply_markup.inline_keyboard.flat()).toContainEqual({
-      text: "max",
-      callback_data: "tgcmd:/think max",
-    });
-  });
 });
 
 describe("Telegram registered plugin delivery", () => {
@@ -508,14 +508,13 @@ describe("Telegram registered plugin delivery", () => {
     const upload = resolveTelegramTestUpload(payload, "document");
     expect(await upload.text()).toBe(content);
     expect(payload.message_thread_id).toBe("77");
-    const previousRequests = http.requests.length;
     mediaUrl = forbidden;
-    await expect(
-      bot.handleUpdate({ update_id: 3211, message: groupCommand("/plug", 77) }),
-    ).rejects.toThrow(/not under an allowed directory/);
-    expect(
-      http.requests.slice(previousRequests).filter(({ method }) => method === "sendDocument"),
-    ).toEqual([]);
+    await bot.handleUpdate({ update_id: 3211, message: groupCommand("/plug", 77) });
+    expect(effects().filter(({ method }) => method === "sendDocument")).toHaveLength(1);
+    expect(effects().at(-1)?.payload).toMatchObject({
+      text: "Workspace report\n⚠️ private.pdf: Delivery failed. Try sending this file again.",
+      message_thread_id: 77,
+    });
   });
 
   it.each(["presentation", "reaction"] as const)(
@@ -610,6 +609,29 @@ describe("Telegram registered plugin delivery", () => {
       }
     },
   );
+
+  it.each([
+    { label: "true", continueAgent: true as const },
+    { label: "a replacement prompt", continueAgent: { prompt: "Recall request: now" } },
+  ])("continues a plugin command with $label as an agent turn", async ({ continueAgent }) => {
+    const handler = vi.fn(async () => ({ continueAgent }));
+    registerCommand(handler, { progress: false });
+
+    await dispatchCommand(pluginConfig(), "/plug now", 3206);
+    await harness.settleUpdates();
+
+    expect(handler).toHaveBeenCalledOnce();
+    expect(harness.replySpy).toHaveBeenCalledOnce();
+    const [ctx, opts] = harness.replySpy.mock.calls[0]!;
+    // The reply pipeline gets the dispatch that already ran and applies its result there.
+    expect(ctx).toMatchObject({ CommandSource: "native", BodyForAgent: "/plug now" });
+    expect((opts as Record<PropertyKey, unknown>)[PLUGIN_COMMAND_DISPATCH]).toMatchObject({
+      kind: "plugin",
+    });
+    expect(effects().filter(({ method }) => method === "sendMessage")).toEqual([
+      { method: "sendMessage", payload: expect.objectContaining({ text: "Test response" }) },
+    ]);
+  });
 
   it("rejects unmatched arguments outside a forum topic", async () => {
     registerCommand(

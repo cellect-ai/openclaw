@@ -252,6 +252,17 @@ describe("generateVoiceResponse", () => {
     );
   });
 
+  it.each([
+    { payloads: [] },
+    { payloads: [{ text: "provider failed: synthetic-private-detail", isError: true }] },
+    { payloads: [{ text: "```js\nconst x = 1;\n```" }] },
+  ])("reports unusable output as a failed generation (%j)", async ({ payloads }) => {
+    const { result } = await runGenerateVoiceResponse(payloads);
+    expect(result.text).toBeNull();
+    expect(result.error).toBeTruthy();
+    expect(result.error).not.toContain("synthetic-private-detail");
+  });
+
   it("returns the lifecycle rejection without starting the embedded agent", async () => {
     const { runtime, runEmbeddedAgent, runWithWorkAdmission } = createAgentRuntime([]);
     runWithWorkAdmission.mockRejectedValueOnce(
@@ -379,6 +390,7 @@ describe("generateVoiceResponse", () => {
     async (text, expected) => {
       const { result } = await runGenerateVoiceResponse([{ text }]);
       expect(result.text).toBe(expected);
+      expect(result.error).toBeUndefined();
     },
   );
   it("inherits the call agent model ahead of the global default", async () => {

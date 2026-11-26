@@ -85,6 +85,12 @@ export type DiagnosticWorkerRequestFields = {
       | "posted"
       | "postFinished"
       | "received"
+      | "backendLoadStarted"
+      | "backendLoadFinished"
+      | "openGrantStarted"
+      | "openGrantFinished"
+      | "factoryStarted"
+      | "factoryFinished"
       | "inputReady"
       | "executeStarted"
       | "executeFinished"
@@ -194,16 +200,19 @@ export type DiagnosticMemoryUsage = {
     started: number;
     retired: { reason: string; count: number }[];
   }[];
-  /** Process-lifetime pool totals; completed workers remain represented after native exit. */
+  /** Process-lifetime worker totals; retired workers remain represented after native exit. */
   workerTaskMetrics?: {
     workerClass: WorkerPoolClass | "other";
     script: string;
-    tasksCompleted: number;
+    /** Absent for broker workers, which do not use the pool task-reply protocol. */
+    tasksCompleted?: number;
     heapUsedHighWaterBytes: number;
     gc: { kind: GcSample["kind"]; count: number; durationMs: number; reclaimedBytes: number }[];
   }[];
   /** Main-thread transport totals; unknown payload sizes remain separate from known zero bytes. */
   workerMessages?: WorkerMessageMetric[];
+  /** Linux physical reads by outer operation in direct reader workers, including retired workers. */
+  sqliteReaderMetrics?: { operation: string; count: number; readBytes: number }[];
   /** Process-lifetime selector totals with bounded shape and caller labels. */
   sessionRowSelections?: ReturnType<typeof getSessionRowSelectionMetrics>;
 };

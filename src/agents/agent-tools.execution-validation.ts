@@ -68,16 +68,13 @@ export function coerceToolExecutionArguments(
       { name: tool.name, description: tool.description ?? "", parameters },
       { type: "toolCall", id: tool.name, name: tool.name, arguments: args },
     );
-    // Model-argument cloning omits host-only launch identity and other private custody.
-    return isRecord(coerced)
-      ? Object.defineProperties(
-          {},
-          {
-            ...Object.getOwnPropertyDescriptors(args),
-            ...Object.getOwnPropertyDescriptors(coerced),
-          },
-        )
-      : coerced;
+    if (isRecord(coerced)) {
+      // Coercion clones JSON fields; retain the host's private invocation metadata.
+      for (const symbol of Object.getOwnPropertySymbols(args)) {
+        Object.defineProperty(coerced, symbol, Object.getOwnPropertyDescriptor(args, symbol)!);
+      }
+    }
+    return coerced;
   } catch {
     return args;
   }

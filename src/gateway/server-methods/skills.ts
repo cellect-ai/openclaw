@@ -38,7 +38,6 @@ import { skillsLibraryHandlers } from "./skills-library.js";
 import { skillsRetiredHandlers } from "./skills-retired.js";
 import { buildRemoteAwareWorkspaceSkillStatus, handleSkillsStatus } from "./skills-status.js";
 import { skillsUploadHandlers } from "./skills-upload.js";
-import { skillsWorkshopHandlers } from "./skills-workshop.js";
 import { resolveSkillsAgentWorkspace } from "./skills-workspace-handler.js";
 import type { GatewayRequestHandlers } from "./types.js";
 import { assertValidParams, defineValidatedGatewayHandler } from "./validation.js";
@@ -47,7 +46,6 @@ export const skillsHandlers: GatewayRequestHandlers = {
   ...skillsFilesHandlers,
   ...skillsLibraryHandlers,
   ...skillsUploadHandlers,
-  ...skillsWorkshopHandlers,
   ...skillsRetiredHandlers,
   "skills.status": handleSkillsStatus,
   "skills.securityVerdicts": defineValidatedGatewayHandler(

@@ -85,11 +85,18 @@ it("uses worker-observed custody without lock polling and refuses a successor ow
       );
       expect(assertCurrent).toBeDefined();
       const stat = vi.spyOn(fs, "lstatSync");
+      const realpath = vi.spyOn(fs.realpathSync, "native");
       try {
         assertCurrent!();
         expect(stat.mock.calls.filter(([pathname]) => pathname === owner.path)).toHaveLength(0);
+        expect(
+          realpath.mock.calls.filter(
+            ([pathname]) => pathname === path.join(root, "state", "openclaw.sqlite"),
+          ),
+        ).toHaveLength(1);
       } finally {
         stat.mockRestore();
+        realpath.mockRestore();
       }
       const captured = captureGatewayStateOwner(path.join(root, "state", "openclaw.sqlite"))!;
       fs.unlinkSync(owner.path);

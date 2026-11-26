@@ -9,11 +9,13 @@ import {
   cacheValidityTokensEqual,
   readSessionEntryCacheValidityToken,
 } from "./session-accessor.sqlite-entry-revision.js";
-import { readSessionDeletionSurvivors } from "./session-accessor.sqlite-entry-store.js";
 import type { SessionDeletionPlanningOperation } from "./session-accessor.sqlite-lifecycle-types.js";
 import { collectReclamationEntryReplacement } from "./session-accessor.sqlite-reclamation-publication.js";
 import { reclaimSqliteSessionInTransaction } from "./session-accessor.sqlite-reclamation.js";
-import { readSessionGenerationIdsForKeys } from "./session-accessor.sqlite-references.js";
+import {
+  readSessionGenerationIdsForKeys,
+  readSessionReferenceOwners,
+} from "./session-accessor.sqlite-references.js";
 import { prepareSessionEntryReplacementPublication } from "./session-accessor.sqlite-replacement-publication.js";
 import type {
   SessionEntryDeletionCommitted,
@@ -21,7 +23,6 @@ import type {
 } from "./session-entry-deletion.types.js";
 import type { SessionEntryPatchReceipt } from "./session-entry-patch.types.js";
 import { transferSessionEntryWorkerCandidate } from "./session-entry-patch.worker.js";
-import type { SessionDeletionSurvivors } from "./session-entry-storage.types.js";
 import { runSessionNativeBindingTransaction } from "./session-native-binding.worker.js";
 
 export function planSessionDeletionInAgentWorker(
@@ -42,7 +43,7 @@ export function deleteSessionEntryInAgentWorker(
     ...input.plan,
     databaseOptions: { ...input.plan.databaseOptions, ...context.options },
   };
-  const preparedOwners = new Map<string, SessionDeletionSurvivors>();
+  const preparedOwners = new Map<string, Map<string, string>>();
   const source = context.open();
   const revision = readSessionEntryCacheValidityToken(source.db);
   // Empty-transcript deletion only rehomes retained windows. Prepare its survivor
@@ -62,9 +63,9 @@ export function deleteSessionEntryInAgentWorker(
       const sessionKey = key.trim();
       preparedOwners.set(
         sessionKey,
-        readSessionDeletionSurvivors(
+        readSessionReferenceOwners(
           source,
-          sessionKey,
+          new Set([sessionKey]),
           readSessionGenerationIdsForKeys(source, [sessionKey]),
         ),
       );
@@ -75,7 +76,7 @@ export function deleteSessionEntryInAgentWorker(
     wrapReceipt: (receipt: SessionEntryPatchReceipt) => Receipt,
   ): Receipt => {
     const result = reclaimSqliteSessionInTransaction(plan, {
-      preparedSurvivors: (sessionKey) =>
+      preparedReferenceOwners: (sessionKey) =>
         database.db === source.db &&
         cacheValidityTokensEqual(revision, readSessionEntryCacheValidityToken(database.db))
           ? preparedOwners.get(sessionKey)

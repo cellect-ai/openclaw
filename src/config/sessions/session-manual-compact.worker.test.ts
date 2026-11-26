@@ -17,7 +17,11 @@ import {
   upsertConversationIdentities,
 } from "./session-accessor.sqlite-conversation.js";
 import { replaceSessionEntrySync } from "./session-accessor.sqlite-entry.js";
-import { readTranscriptEventRows } from "./session-accessor.sqlite-read.js";
+import {
+  assertSqliteTranscriptDigestUnchanged,
+  readTranscriptEventRows,
+  readTranscriptEventRowsDigest,
+} from "./session-accessor.sqlite-read.js";
 import { getSessionKysely, resolveSqliteTranscriptScope } from "./session-accessor.sqlite-scope.js";
 import { replaceSqliteTranscriptEventsInTransaction } from "./session-accessor.sqlite-transcript-store.js";
 import { readSessionTranscriptWatermark } from "./session-accessor.sqlite-transcript-watermark.js";
@@ -30,10 +34,6 @@ import { SqliteTranscriptMutationConflictError } from "./session-mutation-confli
 import { reconcileSessionTranscriptIndexInTransaction } from "./session-transcript-index.js";
 import { readSessionTranscriptModelContextInWorker } from "./session-transcript-read-worker-runtime.js";
 import * as reconcile from "./session-transcript-reconcile.js";
-import {
-  assertSqliteTranscriptDigestUnchanged,
-  readTranscriptEventRowsDigest,
-} from "./session-transcript-snapshot-digest.js";
 import { createManualCompactRecords, messageEvent } from "./transcript-message.test-support.js";
 
 const metadataFault = useSqliteWorkerFault([
@@ -62,11 +62,20 @@ function fixture(seed = true) {
   if (seed) {
     replaceTranscriptEventsSync(f.scope, records);
   }
+  const facts = () =>
+    f.database.db
+      .prepare(
+        "SELECT seq, serialized_bytes, dependency_navigation_json FROM session_transcript_active_event_facts WHERE session_id = ? ORDER BY seq",
+      )
+      .all(f.scope.sessionId);
+  const factsBefore = facts();
+  expect(factsBefore).toHaveLength(seed ? records.length - 1 : 0);
   const before = f.read()!;
   return {
     ...f,
     records,
     before,
+    facts,
     compact: (params: Partial<Parameters<typeof trimSessionTranscriptForManualCompact>[1]> = {}) =>
       trimSessionTranscriptForManualCompact(f.scope, { maxLines: 3, ...params }),
     authority: {
@@ -77,6 +86,7 @@ function fixture(seed = true) {
     expectUnchanged() {
       expect(f.events()).toEqual(records);
       expect(f.read()).toEqual(before);
+      expect(facts()).toEqual(factsBefore);
     },
     foreignScope: {
       ...f.scope,
@@ -156,6 +166,16 @@ it("trims compressed history into a ready next-turn projection and clears accoun
 
     await expect(f.compact({ nowMs: 500 })).resolves.toEqual({ compacted: true, kept: 3 });
     expect(f.events()).toHaveLength(3);
+    expect(f.facts()).toEqual(
+      f
+        .events()
+        .slice(1)
+        .map((event, index) => ({
+          seq: index + 1,
+          serialized_bytes: Buffer.byteLength(JSON.stringify(event)) + 1,
+          dependency_navigation_json: "{}",
+        })),
+    );
     const nextContext = await readSessionTranscriptModelContextInWorker(f.scope, undefined);
     expect(nextContext.events).toMatchObject([
       { type: "session", id: f.scope.sessionId },

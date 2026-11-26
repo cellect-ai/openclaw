@@ -230,12 +230,12 @@ describe("prepared harness source delivery", () => {
     };
     let forbiddenSdkAuthorityObserved = false;
     let modelVisiblePrompt = "";
-    const recordModelVisiblePrompt = (attemptParams: {
+    const recordModelVisiblePrompt = async (attemptParams: {
       extraSystemPrompt?: string;
       forceMessageTool?: boolean;
       sourceReplyDeliveryMode?: "automatic" | "message_tool_only";
     }) => {
-      modelVisiblePrompt = buildConfiguredAgentSystemPrompt({
+      modelVisiblePrompt = await buildConfiguredAgentSystemPrompt({
         workspaceDir: followupRun.run.workspaceDir,
         reasoningTagHint: false,
         extraSystemPrompt: attemptParams.extraSystemPrompt,
@@ -256,7 +256,7 @@ describe("prepared harness source delivery", () => {
       forgedTtsDelivery || genuineTtsDelivery ? [] : [{ text: finalText }],
     );
     mockedRunEmbeddedAttempt.mockImplementation(async (attemptParams) => {
-      recordModelVisiblePrompt(attemptParams);
+      await recordModelVisiblePrompt(attemptParams);
       await emitStreaming(attemptParams);
       return makeAttemptResult({ assistantTexts: [finalText] });
     });
@@ -345,7 +345,7 @@ describe("prepared harness source delivery", () => {
               ? { supported: true, priority: 200 }
               : { supported: false, reason: "prepared OpenAI route only" },
           runAttempt: vi.fn(async (attemptParams) => {
-            recordModelVisiblePrompt(attemptParams);
+            await recordModelVisiblePrompt(attemptParams);
             await emitStreaming(attemptParams);
             const result = makeAttemptResult({
               assistantTexts: [],
@@ -654,13 +654,7 @@ describe("prepared harness source delivery", () => {
     let servedMetadataSnapshot: unknown;
     let publishedMetadataAtAcquire: unknown;
     mockedAcquireAgentRunPreparedModelRuntime.mockClear();
-    mockedAcquireAgentRunPreparedModelRuntime.mockImplementationOnce(
-      async (
-        _input,
-        options?: {
-          pluginGeneration?: PreparedModelRuntimePluginGeneration;
-        },
-      ) => {
+    mockedAcquireAgentRunPreparedModelRuntime.mockImplementationOnce(async (_input, options) => {
         const generation = options?.pluginGeneration;
         const borrowed = generation
           ? getPreparedModelRuntimeBorrowedSnapshot(generation)
@@ -674,6 +668,7 @@ describe("prepared harness source delivery", () => {
           ...baseLease,
           pluginGeneration: admittedGeneration,
           snapshot: borrowed,
+          run: <T>(task: () => T): T => task(),
           [Symbol.asyncDispose]: release,
         };
       },

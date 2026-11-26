@@ -21,6 +21,7 @@ import { createUsageFixture } from "../../agents/test-helpers/usage-fixtures.js"
 import type { NormalizedUsage } from "../../agents/usage.js";
 import { setRuntimeConfigSnapshot, type OpenClawConfig } from "../../config/config.js";
 import { loadSessionEntry, replaceSessionEntry } from "../../config/sessions/session-accessor.js";
+import { SESSION_TOTAL_TOKENS_VERSION } from "../../config/sessions/types.js";
 import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import { resolveSystemEventQueueKey } from "../../infra/system-event-ownership.js";
 import { peekSystemEvents } from "../../infra/system-events.js";
@@ -145,7 +146,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       {
         totalTokens: 200_000,
         totalTokensFresh: true,
-        totalTokensVersion: 1 as const,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
       },
       "agent:main:main",
     );
@@ -173,7 +174,7 @@ describe("runReplyAgent auto-compaction token update", () => {
       const sessionEntry = sessionFixture({
         totalTokens: 10_920,
         totalTokensFresh: true,
-        totalTokensVersion: 1,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
         compactionCount: 0,
       });
       const reply = { ...sessionState(sessionKey, sessionEntry), storePath };
@@ -839,24 +840,56 @@ it("does not leak hook-blocked CLI input in raw trace payloads", async () => {
 
 describe("runReplyAgent messaging tool dedupe", () => {
   it.each([
-    { state: undefined, routed: true, delivered: true },
-    { state: "missing", routed: true, delivered: false },
-    { state: undefined, routed: false, delivered: false },
+    {
+      state: undefined,
+      routed: true,
+      outcome: "deduped",
+      text: "hello world!",
+      sourceReplyFinal: undefined,
+    },
+    {
+      state: "missing",
+      routed: true,
+      outcome: "missing",
+      text: "hello world!",
+      sourceReplyFinal: undefined,
+    },
+    {
+      state: undefined,
+      routed: false,
+      outcome: "missing",
+      text: "hello world!",
+      sourceReplyFinal: undefined,
+    },
+    { state: undefined, routed: true, outcome: "deduped", text: "Done", sourceReplyFinal: false },
+    { state: "missing", routed: true, outcome: "missing", text: "Done", sourceReplyFinal: false },
+    { state: undefined, routed: false, outcome: "reply", text: "Done", sourceReplyFinal: false },
+    { state: undefined, routed: true, outcome: "deduped", text: "✅", sourceReplyFinal: false },
+    {
+      state: undefined,
+      routed: true,
+      outcome: "deduped",
+      text: "hello world!",
+      sourceReplyFinal: false,
+    },
   ] as const)(
-    "requires current-source evidence before suppressing a deduplicated final: $state/$routed",
-    async ({ state, routed, delivered }) => {
+    "requires current-source evidence before suppressing a deduplicated final: $state/$routed/$text/$sourceReplyFinal",
+    async ({ state, routed, outcome, text, sourceReplyFinal }) => {
       runEmbeddedAgentMock.mockResolvedValueOnce({
-        payloads: [{ text: "hello world!" }],
+        payloads: [{ text }],
         sourceReplyDeliveryState: state,
-        messagingToolSentTexts: ["hello world!"],
+        messagingToolSentTexts: [text],
         messagingToolSentTargets: routed
-          ? [{ tool: "slack", provider: "slack", to: "channel:C1" }]
+          ? [{ tool: "slack", provider: "slack", to: "channel:C1", text, sourceReplyFinal }]
           : undefined,
         meta: {},
       });
       const result = await channelRun("slack", "channel:C1").run();
-      if (delivered) {
+      if (outcome === "deduped") {
         expect(result).toBeUndefined();
+      } else if (outcome === "reply") {
+        expect(result).toMatchObject({ text });
+        expect(result).not.toHaveProperty("isError", true);
       } else {
         expect(result).toMatchObject({ isError: true, text: expect.any(String) });
       }
@@ -911,7 +944,12 @@ it.each([false, true])("enforces fallback <final> tags (memory flush=%s)", async
   if (memoryFlush) {
     const root = await fs.realpath(tempDirs.make("openclaw-memory-flush-tags-"));
     const { sessionKey, reply } = await storedSession(
-      { totalTokens: 1_000_000, totalTokensFresh: true, totalTokensVersion: 1, compactionCount: 0 },
+      {
+        totalTokens: 1_000_000,
+        totalTokensFresh: true,
+        totalTokensVersion: SESSION_TOTAL_TOKENS_VERSION,
+        compactionCount: 0,
+      },
       "agent:main:memory-flush-tags",
       root,
     );

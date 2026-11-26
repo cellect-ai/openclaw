@@ -1,4 +1,3 @@
-import { randomUUID } from "node:crypto";
 import path from "node:path";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { normalizeOptionalString } from "@openclaw/normalization-core/string-coerce";
@@ -10,7 +9,6 @@ import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
   setReplyPayloadMetadata,
-  type ReplyMediaAttachment,
   type ReplyPayload,
 } from "../../auto-reply/reply-payload.js";
 import {
@@ -38,6 +36,7 @@ import { resolveOutboundAttachmentFromUrl } from "../../media/outbound-attachmen
 import { resolveAgentScopedOutboundMediaAccess } from "../../media/read-capability.js";
 import { readBooleanParam } from "../../plugin-sdk/boolean-param.js";
 import { withChannelReadAuthority } from "../../shared/channel-read-authority.js";
+import { readClawHubRecommendations } from "../../shared/clawhub-recommendations.js";
 import { dedupeByKey } from "../../shared/dedupe-by-key.js";
 import { createLazyRuntimeModule } from "../../shared/lazy-runtime.js";
 import { stripUnsupportedCitationControlMarkers } from "../../shared/text/citation-control-markers.js";
@@ -59,12 +58,12 @@ import {
   applyMessageCrossContextMarker,
   executeGatewayAction,
 } from "./message-action-execution.js";
-import { recordGatewayActionSend } from "./message-action-gateway-transcript.js";
 import { collectAttachmentSources, normalizeSandboxMediaSource } from "./message-action-params.js";
 import { annotateSourceDelivery } from "./message-action-result-acceptance.js";
 import {
   applySendLocationToActionParams,
   applySendPayloadPartsToActionParams,
+  resolveReplyMediaAttachmentType,
   type SendPayloadParts,
   updateSendPayloadPartsFromReplyPayload,
   withSendNormalization,
@@ -88,15 +87,10 @@ const loadMessageActionTtsRuntime = createLazyRuntimeModule(
   () => import("../../tts/tts.runtime.js"),
 );
 
-function resolveReplyMediaAttachmentType(value: unknown): ReplyMediaAttachment["type"] {
-  return value === "image" || value === "audio" || value === "video" || value === "file"
-    ? value
-    : undefined;
-}
-
 export async function buildMessagePayload(params: {
   actionParams: Record<string, unknown>;
   input: MessageActionInput;
+  resolvedChannelData?: ReplyPayload["channelData"];
   channel?: ChannelId;
   target?: string;
   accountId?: string | null;
@@ -142,9 +136,10 @@ export async function buildMessagePayload(params: {
   const voiceText = readToolStringParam(actionParams, "voiceText");
   const voiceProvider = readToolStringParam(actionParams, "voiceProvider");
   const voiceId = readToolStringParam(actionParams, "voiceId");
+  const needsText = !(hasMediaHint || hasPresentation || hasInteractive || location || voiceText);
   let message =
     readToolStringParam(actionParams, "message", {
-      required: !hasMediaHint && !hasPresentation && !hasInteractive && !location && !voiceText,
+      required: needsText && !params.resolvedChannelData,
       allowEmpty: true,
       trim: false,
     }) ?? "";
@@ -235,7 +230,8 @@ export async function buildMessagePayload(params: {
       hasBuffer ||
       mergedMediaUrls.length > 0 ||
       hasPresentation ||
-      hasInteractive),
+      hasInteractive ||
+      readClawHubRecommendations(params.resolvedChannelData).length > 0),
   );
   const normalization =
     hasLocationConflict && input.actionOrigin === "message-tool"
@@ -283,6 +279,7 @@ export async function buildMessagePayload(params: {
       presentation: actionParams.presentation,
       interactive: actionParams.interactive,
       location,
+      channelData: params.resolvedChannelData,
     })
   ) {
     throw new Error("send requires text or media or location");
@@ -307,7 +304,7 @@ export async function buildMessagePayload(params: {
     rawDelivery && typeof rawDelivery === "object" && !Array.isArray(rawDelivery)
       ? (rawDelivery as ReplyPayloadDelivery)
       : undefined;
-  const channelData = asOptionalRecord(actionParams.channelData);
+  const channelData = params.resolvedChannelData ?? asOptionalRecord(actionParams.channelData);
   const presentation = normalizeMessagePresentation(actionParams.presentation);
   const interactive = normalizeLegacyInteractiveReply(actionParams.interactive);
   const payload: ReplyPayload = {
@@ -388,15 +385,18 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
   // egress and prepend messages.responsePrefix here too; otherwise the disambiguation
   // prefix is silently dropped on tool sends while replies keep it. Interpolate the
   // template like normalize-reply.ts so identity tokens render. model/provider/thinking
-  // tokens need the live model selection that a tool send never performs, so when any
-  // placeholder stays unresolved we skip prefixing instead of leaking a literal `{model}`.
+  // tokens come from the calling run's model selection; callers without one (CLI, Gateway
+  // RPC) leave them unresolved, and we skip prefixing instead of leaking a literal `{model}`.
   // The startsWith guard matches normalize-reply.ts and keeps re-runs idempotent.
   const responsePrefix = resolveResponsePrefixTemplate(
     resolveResponsePrefix(cfg, agentId ?? "", {
       channel,
       accountId: accountId ?? undefined,
     }),
-    { identityName: normalizeOptionalString(resolveAgentIdentity(cfg, agentId ?? "")?.name) },
+    {
+      ...input.responsePrefixContext,
+      identityName: normalizeOptionalString(resolveAgentIdentity(cfg, agentId ?? "")?.name),
+    },
   );
   const prefixHasUnresolvedVar =
     responsePrefix !== undefined && UNRESOLVED_RESPONSE_PREFIX_VAR_PATTERN.test(responsePrefix);
@@ -496,14 +496,14 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
     const preparedTtsPreferences = await prepareTtsPreferences();
     if (
       explicitTts ||
-      shouldAttemptTtsPayload({
+      (await shouldAttemptTtsPayload({
         cfg,
         preparedTtsPreferences,
         ttsAuto,
         agentId,
         channelId: channel,
         accountId: accountId ?? undefined,
-      })
+      }))
     ) {
       const { maybeApplyTtsToPayload } = await loadMessageActionTtsRuntime();
       ttsPayload = await maybeApplyTtsToPayload({
@@ -605,29 +605,8 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
         }),
       });
   if (gatewayPluginAction) {
-    const deliveryFact = projectPluginMessageDeliveryFact(gatewayPluginAction.payload);
-    if (!deliveryFact || deliveryFact.status === "settled") {
-      await commitOutboundSessionRoute();
-      // The Gateway owns source-reply history; other conversations get the
-      // confirmed send through the destination history owner.
-      if (!dryRun && outboundRoute && !deliveryFact?.partialDelivery) {
-        await recordGatewayActionSend({
-          cfg,
-          channel,
-          to,
-          accountId: ctx.accountId ?? undefined,
-          route: outboundRoute,
-          producerSessionKey: input.sourceReplySessionKey ?? input.sessionKey,
-          agentId,
-          payload: sendPayload.payload,
-          deliveryId:
-            normalizeOptionalString(params.idempotencyKey) ??
-            input.deliveryIntentId ??
-            randomUUID(),
-          signal: ctx.abortSignal,
-        });
-      }
-    }
+    // The Gateway commits the route and transcript together. Repeating the route
+    // write here opens a second process-local owner behind its resident session.
     return await annotateSourceDelivery(
       withSendNormalization(gatewayPluginAction, sendPayload.normalization),
       ctx,
@@ -735,7 +714,10 @@ export async function executeMessageSend(ctx: ResolvedActionContext): Promise<Me
         toolCallId: input.sourceReplyToolCallId,
         deliveredPayload: send.payload,
         deliveredPayloads: send.deliveredPayloads,
+        mediaAccess,
+        abortSignal: ctx.abortSignal,
         replyToIsExplicit: reply?.source === "explicit",
+        runId: input.runId,
       });
     } catch (error) {
       // Delivery is already committed; a transcript failure must not resend it.

@@ -40,23 +40,22 @@ export async function settleUnreachableYieldedSubagentRun(params: {
   const { runId, entry, readScope, complete } = params;
   let requesterEnded = params.requesterEnded;
   if (isYieldedSubagentRun(entry) && entry.waitForMessage && requesterEnded === undefined) {
+    // An unclaimed wait belongs to the session across turns. Only a real
+    // continuation claim makes the requester's committed turn end close it.
     const requester = await loadSessionEntryByKey(
       entry.requesterSessionKey,
       entry.requesterAgentId,
     );
+    const requesterCompletion = subagentRuns.getRequesterCompletion(entry);
     requesterEnded =
-      !requester || requester.archivedAt !== undefined || isTerminalSessionStatus(requester.status);
+      requesterCompletion?.ended === true ||
+      !requester ||
+      requester.archivedAt !== undefined ||
+      (requesterCompletion !== undefined &&
+        isTerminalSessionStatus(requester.status) &&
+        requester.lastRunId === requesterCompletion.runId);
   }
   const retired = subagentRuns.isCompletionAuthorityRetired(entry);
-  if (requesterEnded && !retired && isYieldedSubagentRun(entry) && entry.waitForMessage) {
-    // The parent may finish before its retained send replays after a plugin reload.
-    // Both lifecycle events and periodic sweeps consume that handoff owner's live fact.
-    const { hasRetainedSessionSendForSubagent } =
-      await import("../../tools/sessions-send-self-hold.js");
-    if (hasRetainedSessionSendForSubagent(entry)) {
-      return false;
-    }
-  }
   let continuation = isYieldedSubagentRun(entry)
     ? resolveYieldedRunContinuation(entry, requesterEnded)
     : undefined;
@@ -74,6 +73,12 @@ export async function settleUnreachableYieldedSubagentRun(params: {
   if (continuation?.state !== "unreachable") {
     return false;
   }
+  subagentRegistryLog.warn("Settling unreachable yielded subagent", {
+    runId,
+    requesterSessionKey: entry.requesterSessionKey,
+    reason: continuation.error,
+    yieldedAt: entry.execution.endedAt,
+  });
   // An outcome the yield already recorded is kept, as a collector that yields now ends with its
   // yielded turn as its result; only a run with no recorded outcome takes the diagnostic error.
   const outcome = entry.execution.outcome ?? {
@@ -145,9 +150,8 @@ export async function settleRestartInterruptedSubagentRun(params: {
   if (
     hasSubagentRunEnded(entry) ||
     isYieldedSubagentRun(entry) ||
-    entry.killIntent !== undefined ||
-    entry.killReconciliation !== undefined ||
-    !subagentRuns.isCompletionAuthorityRetired(entry) ||
+    // Fresh requester custody owns the notice; the retired process cannot send it.
+    (subagentRuns.isCompletionAuthorityRetired(entry) && entry.expectsCompletionMessage === true) ||
     // Only an earlier process could have owned this execution; this process never did.
     !(entry.createdAt < processStartedAt) ||
     isSubagentRunLive(entry) ||

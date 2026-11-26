@@ -1,6 +1,7 @@
 import { throwSqliteLifecycleErrors } from "../../infra/sqlite-lifecycle-errors.js";
 import type { DatabasePathIdentity } from "../../infra/sqlite-worker-identity.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
+import { getSpawnBroker, runWithSpawnBroker } from "../../process/spawn-broker/context.js";
 import {
   GatewayRetainedWorkScope,
   isAsyncWorkScopeActiveHere,
@@ -183,13 +184,16 @@ function createLifetime({ admission }: OpenClawStateWorkerContext) {
         return Promise.resolve();
       }
       lastHousekeepingAtMs = now;
+      const broker = getSpawnBroker();
       housekeeping = runInDetachedAsyncContext(() =>
-        work.scope.track(async () => {
-          do {
-            housekeepingRequested = false;
-            await run(pruneCursor);
-          } while (housekeepingRequested);
-        }),
+        runWithSpawnBroker(broker, () =>
+          work.scope.track(async () => {
+            do {
+              housekeepingRequested = false;
+              await run(pruneCursor);
+            } while (housekeepingRequested);
+          }),
+        ),
       ).finally(() => {
         housekeeping = undefined;
       });
@@ -200,7 +204,11 @@ function createLifetime({ admission }: OpenClawStateWorkerContext) {
         throw new Error("Sandbox registry admission is closed");
       }
       if (!recurringHousekeeping) {
-        recurringHousekeeping = { run, onError };
+        const broker = getSpawnBroker();
+        recurringHousekeeping = {
+          run: (cursor) => runWithSpawnBroker(broker, () => run(cursor)),
+          onError,
+        };
         armHousekeepingTimer();
       }
       housekeepingRequested ||= request;

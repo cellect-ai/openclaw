@@ -11,6 +11,7 @@ import { wrapToolWithBeforeToolCallHook } from "../agents/agent-tools.before-too
 import { projectMemoryFlushTools } from "../agents/agent-tools.memory-flush.js";
 import { listRunningSessions } from "../agents/bash-process-registry.js";
 import type { ExecToolDefaults } from "../agents/bash-tools.exec-types.js";
+import { readCodeModeSkill } from "../agents/code-mode-skills.js";
 import { disposeAllCodeModeRuns } from "../agents/code-mode-state.js";
 import { createNativeModelOwnedRuntimeModel } from "../agents/defaults.js";
 import { classifyAssistantTurn } from "../agents/embedded-agent-runner/run/incomplete-turn-classification.js";
@@ -56,6 +57,7 @@ import { createNativeInferenceStreamGuard } from "./native-inference-stream.js";
 import type { NativeRuntimeResolved } from "./native-runtime.js";
 import { WORKER_PROVIDER_REPLAY_LOCAL_RETRY_MESSAGE } from "./transcript-message.js";
 import { createWorkerGatewayToolProxies } from "./worker-gateway-tools.js";
+import { createWorkerLocalMcpTool, type WorkerLocalMcpCall } from "./worker-local-mcp.js";
 import { createWorkerPlacementTools, WORKER_TOOL_CONFIG } from "./worker-placement-tools.js";
 
 function toWorkerAgentError(value: unknown, fallback: string): Error {
@@ -85,6 +87,8 @@ type RunWorkerEmbeddedTurnParams = Omit<
   gatewayTools: Parameters<typeof createWorkerGatewayToolProxies>[1];
   toolSurface: WorkerToolSurface;
   allowedToolNames: readonly string[];
+  mcpTools?: WorkerLaunchPlan["assignment"]["toolAuthority"]["mcpTools"];
+  localMcp?: WorkerLocalMcpCall;
   execAuthority: WorkerLaunchPlan["assignment"]["toolAuthority"]["exec"];
   createApprovalTransport?: ExecToolDefaults["createApprovalTransport"];
   browserRuntime?: WorkerBrowserRuntime;
@@ -112,7 +116,17 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
     if (params.operationalRunInstance.runId !== params.runId) {
       throw new Error("worker operational run instance disagrees with the admitted turn");
     }
-    const toolSurface = params.toolSurface;
+    const toolSurface = resources
+      ? {
+          ...params.toolSurface,
+          presentation: {
+            ...params.toolSurface.presentation,
+            skills: params.toolSurface.presentation.skills?.map((skill) =>
+              Object.assign({}, skill, { location: resources.rewriteReferences(skill.location) }),
+            ),
+          },
+        }
+      : params.toolSurface;
     const model =
       params.nativeInference?.model ??
       createNativeModelOwnedRuntimeModel({
@@ -269,16 +283,46 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
           ].map((tool) => [tool.name, tool]),
         );
         const gatewayTools = new Map(
-          createWorkerGatewayToolProxies(toolSurface, params.gatewayTools).map((tool) => [
-            tool.name,
-            tool,
-          ]),
+          createWorkerGatewayToolProxies(
+            toolSurface,
+            params.gatewayTools,
+            resources
+              ? {
+                  rewriteReferences: resources.rewriteReferences,
+                  readInstructions: async (name, location, signal) => {
+                    const workerLocation = resources.rewriteReferences(location);
+                    const skill = resources.snapshot.resolvedSkills.find(
+                      (candidate) =>
+                        candidate.name === name && candidate.filePath === workerLocation,
+                    );
+                    if (!skill) {
+                      return undefined;
+                    }
+                    return {
+                      name,
+                      location: workerLocation,
+                      content: await readCodeModeSkill(
+                        {
+                          name,
+                          description: skill.description,
+                          location: workerLocation,
+                          source: skill,
+                        },
+                        signal,
+                      ),
+                    };
+                  },
+                }
+              : undefined,
+          ).map((tool) => [tool.name, tool]),
         );
         const tools = toolSurface.tools.map((entry) => {
           if (entry.execution === "gateway") {
             return wrapToolWithAbortSignal(gatewayTools.get(entry.definition.name)!, toolSignal);
           }
-          const source = localTools.get(entry.definition.name);
+          const source = entry.plugin?.mcp
+            ? createWorkerLocalMcpTool(entry, params.mcpTools, params.localMcp)
+            : localTools.get(entry.definition.name);
           if (!source) {
             throw new Error(`Worker placement tool unavailable: ${entry.definition.name}`);
           }
@@ -331,7 +375,7 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
           os: resolveRuntimeOsLabel(),
           arch: os.arch(),
           node: process.version,
-          shell: detectRuntimeShell() ?? path.basename(getShellConfig().shell),
+          shell: detectRuntimeShell() ?? path.basename((await getShellConfig()).shell),
           repoRoot: await resolveSystemPromptRepoRoot({
             workspaceDir: params.cwd,
             cwd: params.cwd,
@@ -349,6 +393,9 @@ export async function runWorkerEmbeddedTurn(params: RunWorkerEmbeddedTurnParams)
           settingsManager,
           resourceLoader,
           withSessionWriteSettlement: transcriptRuntime.withSessionWriteSettlement,
+          // The Gateway resolves tools.loopDetection.enabled into the surface policy, and
+          // tool definitions carry their own `repeatable` exemptions over the wire.
+          toolRepeatPolicy: { enabled: toolSurface.policy.toolRepeatGuard !== false },
         });
       } catch (error) {
         throw await disposeTools(toWorkerAgentError(error, "Worker agent setup failed."));

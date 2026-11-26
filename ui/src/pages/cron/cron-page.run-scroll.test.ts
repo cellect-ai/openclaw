@@ -28,19 +28,18 @@ it.each([true, false])(
         "cron.get": () => ({ ...nextJob }),
         "cron.runs": (params) => {
           const request = asOptionalRecord(params);
-          return runPage(
-            typeof request?.runId === "string"
-              ? [
-                  {
-                    jobId: String(request.id),
-                    runId: request.runId,
-                    ts: 10,
-                    action: "finished",
-                    summary: request.runId,
-                  },
-                ]
-              : [],
-          );
+          if (typeof request?.runId !== "string" || typeof request.id !== "string") {
+            return runPage([]);
+          }
+          return runPage([
+            {
+              jobId: request.id,
+              runId: request.runId,
+              ts: 10,
+              action: "finished",
+              summary: request.runId,
+            },
+          ]);
         },
       }),
     );

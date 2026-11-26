@@ -3,7 +3,10 @@ import { isDeepStrictEqual } from "node:util";
 import { getRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import type { CapturedSessionEntryReadSource } from "../../config/sessions/session-entry-read-source.types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import { AGENT_GIT_SANDBOX_BIN } from "../../infra/agent-git-shim.js";
 import { observeDiagnosticsTimelinePhases } from "../../infra/diagnostics-timeline.js";
+import { hasErrnoCode } from "../../infra/errno.js";
+import { getGatewayAgentGitBinDir } from "../../infra/openclaw-cli-shim.js";
 import { createSubsystemLogger } from "../../logging/subsystem.js";
 import {
   ensureBrowserControlAuth,
@@ -16,6 +19,10 @@ import {
 import { defaultRuntime } from "../../runtime.js";
 import { captureChannelReadAuthority } from "../../shared/channel-read-authority.js";
 import { createLazyRuntimeNamedExport } from "../../shared/lazy-runtime.js";
+import {
+  prepareSandboxFsContext,
+  prepareSandboxMountSources,
+} from "../../skills/runtime/refresh.js";
 import { prepareRemoteSkillConnections } from "../../skills/runtime/remote-skills.js";
 import type { SkillEligibilityContext, SkillSnapshot, SkillUsagePath } from "../../skills/types.js";
 import {
@@ -29,6 +36,7 @@ import {
   resolveSubagentSessionAttachmentRootDir,
   SANDBOX_SUBAGENT_ATTACHMENTS_MOUNT,
 } from "../subagents/subagent-attachment-paths.js";
+import { runWorkspaceFilesystemOperation } from "../workspace-filesystem.js";
 import type { WorkspaceStateGuard } from "../workspace-state-store.worker-contract.js";
 import { ensureSandboxWorkspace } from "../workspace.js";
 import {
@@ -37,6 +45,7 @@ import {
 } from "../worktrees/preparation-timing.js";
 import { createSandboxBackend, getSandboxBackendWorkdirResolver } from "./backend.js";
 import { ensureSandboxBrowser } from "./browser.js";
+import { resolveSandboxDependencyStore } from "./config-contract.js";
 import { resolveSandboxConfigForAgent } from "./config.js";
 import { SANDBOX_GITHUB_CONFIG_DIR } from "./constants.js";
 import { retainSandboxContainerUsage } from "./container-usage.js";
@@ -55,14 +64,13 @@ import {
 } from "./session-secret-owner.js";
 import { resolveSandboxSession } from "./session-selection.js";
 import { resolveSandboxWorkspaceLayoutPaths } from "./shared.js";
-import { captureSandboxStateOwner, SandboxStateOwnerRequiredError } from "./state-owner.js";
+import { captureSandboxStateOwner } from "./state-owner.js";
 import { bindStreamSandboxContext } from "./stream-context.js";
 import {
   SANDBOX_DEFAULT_TOOL_ALLOW,
   type SandboxContext,
   type SandboxWorkspaceInfo,
 } from "./types.js";
-import { ensureReadOnlyWorkspaceSkillMountSources } from "./workspace-mounts.js";
 
 const sandboxLog = createSubsystemLogger("agent/sandbox");
 
@@ -118,7 +126,7 @@ async function ensureSandboxWorkspaceLayout(
       guard,
     );
   } else {
-    await fs.mkdir(workspaceDir, { recursive: true });
+    await runWorkspaceFilesystemOperation({ kind: "mkdir", dir: workspaceDir }, guard);
   }
   assertCurrent?.();
   const targetWorkspaceDir =
@@ -161,16 +169,21 @@ async function ensureSandboxWorkspaceLayout(
       const skillUsagePaths = await syncWorkspaceSkills({
         sourceWorkspaceDir: agentWorkspaceDir,
         targetWorkspaceDir,
+        readOnlyTarget: cfg.backend === "docker" || cfg.backend === "podman",
         config,
         agentId,
         eligibility,
         skillsSnapshot,
         assertCurrent,
+        stateOwnerPath: guard?.stateOwnerPath,
       });
       assertCurrent?.();
       return { eligibility, skillUsagePaths };
     } catch (error) {
       assertCurrent?.();
+      if (hasErrnoCode(error, "GATEWAY_STATE_OWNER_REQUIRED")) {
+        throw error;
+      }
       const message = error instanceof Error ? error.message : JSON.stringify(error);
       defaultRuntime.error?.(`Sandbox skill sync failed: ${message}`);
       if (skillsSnapshot?.librarySelections?.length) {
@@ -180,7 +193,7 @@ async function ensureSandboxWorkspaceLayout(
     }
   }
   const syncedSkills = await syncSandboxSkillsToWorkspace();
-  const createdSkillMountSources = await ensureReadOnlyWorkspaceSkillMountSources(
+  const createdSkillMountSources = await prepareSandboxMountSources(
     {
       workspaceDir,
       agentWorkspaceDir,
@@ -189,11 +202,12 @@ async function ensureSandboxWorkspaceLayout(
       workspaceAccess: cfg.workspaceAccess,
     },
     assertCurrent,
+    guard?.stateOwnerPath,
   );
   if (createdSkillMountSources && localWorkspace) {
     // Finish producer-created layout before first use, so source admission does
     // not mistake protected mount directories for unsaved guest work.
-    await localWorkspace.checkpoint();
+    await localWorkspace.checkpoint({ knownMutation: true });
     assertCurrent?.();
   }
 
@@ -246,6 +260,7 @@ async function prepareSandboxWorkspaceSelection(
             : (params.abortSignal ?? operatorAuthority?.signal),
         // Cleanup retains the workspace owner after execution authorization closes.
         assertCurrent: persistentExecution ? undefined : params.assertCurrent,
+        stateOwnerPath: guard?.stateOwnerPath,
         assertHost: () => {
           if (persistentExecution) {
             guard?.assertHost?.();
@@ -265,6 +280,7 @@ async function prepareSandboxWorkspaceSelection(
       ? {
           ...resolved.cfg,
           scope: "session" as const,
+          docker: resolveSandboxDependencyStore(resolved.cfg.docker),
           workspaceAccess:
             resolveSandboxConfigForAgent(params.config, runtime.agentId).workspaceAccess === "ro"
               ? ("ro" as const)
@@ -324,7 +340,8 @@ async function resolveSandboxContextWithAuthority(
     return null;
   }
   phases.mark("attempt.setup.sandbox.state_owner");
-  const assertStateOwner = await captureSandboxStateOwner();
+  const stateOwner = await captureSandboxStateOwner();
+  const assertStateOwner = stateOwner.assertCurrent;
   const assertCallerCurrent = params.assertCurrent;
   const assertCurrent = () => {
     assertCallerCurrent?.();
@@ -342,6 +359,8 @@ async function resolveSandboxContextWithAuthority(
       async (): Promise<SandboxContext> => {
         const guard: WorkspaceStateGuard = {
           assertHost: assertStateOwner,
+          stateOwnerPath: stateOwner.stateOwnerPath,
+          prepareHost: stateOwner.prepareCurrent,
           beforeLegacyApply: assertCurrent,
         };
         phases.mark("attempt.setup.sandbox.workspace_selection");
@@ -458,6 +477,13 @@ async function resolveSandboxContextWithAuthority(
           if (githubMount) {
             (readOnlyResourceMounts ??= []).push(githubMount);
           }
+          const gitBinDir = getGatewayAgentGitBinDir();
+          if (gitBinDir && (cfg.backend === "docker" || cfg.backend === "podman")) {
+            (readOnlyResourceMounts ??= []).push({
+              hostPath: gitBinDir,
+              containerPath: AGENT_GIT_SANDBOX_BIN,
+            });
+          }
 
           const admittedConfig = resolveSandboxConfigForAgent(ownedParams.config, runtime.agentId);
           // structuredClone omits symbol keys. Capture the default-allow provenance in
@@ -568,6 +594,7 @@ async function resolveSandboxContextWithAuthority(
                   bridgeAuth,
                   ssrfPolicy: resolvedBrowserConfig?.ssrfPolicy,
                   withWorkspace: localWorkspace?.provision,
+                  guard,
                   assertCurrent: localWorkspace?.assertCurrent ?? ownedParams.assertCurrent,
                 })
               : null;
@@ -604,6 +631,11 @@ async function resolveSandboxContextWithAuthority(
             backend,
           };
 
+          if (!backend.createFsBridge || backend.capabilities?.readOnlyResourceMounts) {
+            sandboxContext.fsPreparation = await prepareSandboxFsContext(sandboxContext);
+            ownedParams.assertCurrent?.();
+            localWorkspace?.assertCurrent();
+          }
           sandboxContext.fsBridge =
             backend.createFsBridge?.({ sandbox: sandboxContext }) ??
             createSandboxFsBridge({ sandbox: sandboxContext });
@@ -625,7 +657,7 @@ async function resolveSandboxContextWithAuthority(
             },
           });
           if (cfg.prune.idleHours !== 0 || cfg.prune.maxAgeDays !== 0) {
-            (await import("./prune.js")).scheduleSandboxPrune(assertStateOwner);
+            (await import("./prune.js")).scheduleSandboxPrune(assertStateOwner, false, stateOwner);
           }
           return sandboxContext;
         } catch (error) {
@@ -642,7 +674,7 @@ async function resolveSandboxContextWithAuthority(
       throw error;
     }
   } catch (error) {
-    if (error instanceof SandboxStateOwnerRequiredError) {
+    if (hasErrnoCode(error, "GATEWAY_STATE_OWNER_REQUIRED")) {
       throw error;
     }
     throw toSandboxProvisioningError(error, resolved.cfg.backend);

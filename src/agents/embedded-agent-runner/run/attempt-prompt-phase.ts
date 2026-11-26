@@ -1,3 +1,4 @@
+import { resolveOpenAIResponsesServerCompactionPlan } from "@openclaw/ai/internal/openai-responses-payload-policy";
 import {
   mergeAgentRunAttemptTerminal,
   projectAgentRunAttemptTerminal,
@@ -14,15 +15,18 @@ import {
   resolvePendingRuntimeContextReplay,
 } from "../../internal-runtime-context.js";
 import { agentSessionDeferThresholdCompaction } from "../../sessions/agent-session-types.js";
+import type { CompactionRequestBudget } from "../../sessions/compaction/preparation.types.js";
 import { createCompactionRequestBudget } from "../../sessions/compaction/request-budget.js";
-import type { CompactionRequestBudget } from "../../sessions/compaction/request-budget.types.js";
+import {
+  SAFETY_MARGIN,
+  createFixedRequestTokenEstimator,
+} from "../../sessions/context-token-pressure.js";
 import { withSessionManagerAppend } from "../../sessions/session-manager-append-admission.js";
 import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
 import { log } from "../logger.js";
 import {
   persistToolResultProjections,
   persistSessionSystemPrompt,
-  persistSessionToolSurface,
 } from "../session-prompt-state.js";
 import { resolveEmbeddedAgentApiKey } from "../stream-resolution.js";
 import { createAbortableError, isOpenClawAbortableWrapper } from "./abortable.js";
@@ -48,7 +52,6 @@ import {
 } from "./chatgpt-v2-compaction.js";
 import type { MidTurnPrecheckRequest } from "./midturn-precheck.js";
 import { sessionMessagesContainIdempotencyKey } from "./pre-persisted-user-turn.js";
-import { estimateToolSchemaTokenPressure } from "./preemptive-compaction.js";
 import { prepareEmbeddedAttemptPromptExecution } from "./prompt-image-preparation.js";
 
 type PromptPreflightState = Parameters<typeof prepareEmbeddedAttemptPromptPreflight>[0]["state"];
@@ -96,7 +99,7 @@ export async function runEmbeddedAttemptPromptPhase(
     state: sessionRuntimeState,
     toolResultPromptProjectionState,
     trajectoryRecorder,
-    transcriptPolicy: { appendOnlyRuntimeContext, inHistorySystemUpdates, pinnedSystemPrompt },
+    transcriptPolicy: { appendOnlyRuntimeContext, inHistorySystemUpdates },
     transport: {
       effectiveAgentTransport,
       effectiveExtraParams,
@@ -113,19 +116,7 @@ export async function runEmbeddedAttemptPromptPhase(
   const { withOwnedTranscriptWrite } = input.sessionLock;
   const withTranscriptWrite = <T>(write: () => Promise<T>) =>
     withOwnedTranscriptWrite(() => withSessionManagerAppend(sessionManager, write));
-  const observeForegroundRequests = (
-    onRequest: (
-      ...args: Parameters<NonNullable<PreparedStreamRuntime["cache"]["onModelRequest"]>>
-    ) => void,
-  ) => {
-    const streamFn = activeSession.agent.streamFn;
-    activeSession.agent.streamFn = (model, context, options) => {
-      if (!activeSession.isCompacting) {
-        onRequest(model, context);
-      }
-      return streamFn(model, context, options);
-    };
-  };
+  const estimateFixedRequest = createFixedRequestTokenEstimator();
   const { diagnosticTrace, runTrace } = input.diagnostics;
   const { systemPromptReport, runtimeInfo } = prepared.systemPrompt;
   let systemPromptText = sessionRuntimeState.systemPromptText;
@@ -142,7 +133,13 @@ export async function runEmbeddedAttemptPromptPhase(
     operation: attempt.operation,
   });
   const previousThresholdDeferral = activeSession[agentSessionDeferThresholdCompaction];
-  if (providerCompactionAtRequestBoundary) {
+  // Provider-owned thresholds defer client maintenance, never the hard window guard.
+  if (
+    providerCompactionAtRequestBoundary ||
+    (compactionReplayEnabled &&
+      (attempt.model.api === "anthropic-messages" ||
+        resolveOpenAIResponsesServerCompactionPlan(attempt.model, effectiveExtraParams).enabled))
+  ) {
     activeSession[agentSessionDeferThresholdCompaction] = true;
   }
 
@@ -372,6 +369,12 @@ export async function runEmbeddedAttemptPromptPhase(
     // Publish each admission transition before the next fallible phase so outer cleanup sees it.
     publishDispatchState(state);
 
+    const fixedTokenPressure = state.skipPromptSubmission
+      ? undefined
+      : estimateFixedRequest({
+          systemPrompt: promptContext.systemPromptForHook,
+          tools: activeSession.agent.state.tools,
+        });
     let compactionRequestBudget: CompactionRequestBudget | undefined;
     if (!state.skipPromptSubmission) {
       const userTurnRecorder = attempt.userTurnTranscriptRecorder;
@@ -388,6 +391,7 @@ export async function runEmbeddedAttemptPromptPhase(
         : [];
       compactionRequestBudget = createCompactionRequestBudget({
         ...foregroundBudget,
+        fixedTokenPressure,
         systemPrompt: promptContext.systemPromptForHook,
         tools: activeSession.agent.state.tools,
         pendingPrompt: promptContext.llmBoundaryPromptForPrecheck,
@@ -411,16 +415,6 @@ export async function runEmbeddedAttemptPromptPhase(
         pendingUserIdempotencyKey,
       });
       attempt.onCompactionRequestBudget?.(compactionRequestBudget);
-      // Summarization has its own prompt/model; it cannot replace foreground accounting.
-      observeForegroundRequests((_model, context) => {
-        attempt.onCompactionRequestBudget?.(
-          createCompactionRequestBudget({
-            ...foregroundBudget,
-            systemPrompt: context.systemPrompt,
-            tools: context.tools,
-          }),
-        );
-      });
     }
 
     state = await prepareEmbeddedAttemptPromptPreflight({
@@ -438,6 +432,7 @@ export async function runEmbeddedAttemptPromptPhase(
       hookMessagesForCurrentPrompt: promptContext.hookMessagesForCurrentPrompt,
       promptForPrecheck: promptContext.llmBoundaryPromptForPrecheck,
       pendingInputTokens: compactionRequestBudget?.pendingTokens,
+      fixedTokenPressure,
       reserveTokens,
       sessionMessageCount: activeSession.messages.length,
       state,
@@ -445,7 +440,9 @@ export async function runEmbeddedAttemptPromptPhase(
       toolResultMaxChars: promptContext.promptToolResultMaxChars,
       // Use the installed model-facing tool surface (same source as the compaction
       // request budget) so client tools appended by attempt-client-tools are counted.
-      toolSchemaTokens: estimateToolSchemaTokenPressure(activeSession.agent.state.tools),
+      toolSchemaTokens: fixedTokenPressure
+        ? Math.ceil(fixedTokenPressure.toolTokens * SAFETY_MARGIN)
+        : undefined,
     });
     input.setup.prepStages.mark("compaction-preflight");
     publishDispatchState(state);
@@ -515,6 +512,19 @@ export async function runEmbeddedAttemptPromptPhase(
               }),
             }
           : {}),
+        prepareRequestTokenPressure: (context) => {
+          const pressure = estimateFixedRequest(context);
+          if (!activeSession.isCompacting) {
+            attempt.onCompactionRequestBudget?.(
+              createCompactionRequestBudget({
+                contextWindow: promptContext.contextTokenBudget,
+                reserveTokens,
+                fixedTokenPressure: pressure,
+              }),
+            );
+          }
+          return pressure;
+        },
         onModelRequest: preparedStreamRuntime.cache.onModelRequest,
         normalizeToolCallIds: preparedStreamRuntime.normalizeToolCallIds,
         images: imageResult.images,
@@ -528,8 +538,10 @@ export async function runEmbeddedAttemptPromptPhase(
         persistToolResultProjections: async () => {
           if (
             !isRawModelRun &&
-            (pinnedSystemPrompt ||
+            (sessionRuntime.prepareSystemPromptUpdate ||
               sessionPromptState.pendingToolSurface ||
+              sessionPromptState.usageRanking?.snapshot !==
+                sessionPromptState.persistedUsageRanking ||
               toolResultPromptProjectionState.frozen.size > 0)
           ) {
             await withTranscriptWrite(async () => {
@@ -538,11 +550,9 @@ export async function runEmbeddedAttemptPromptPhase(
                 toolResultPromptProjectionState,
                 (customType, data) => sessionManager.appendCustomEntryAsync(customType, data),
               );
-              const appendEntry = (customType: string, data: unknown) =>
-                sessionManager.appendCustomEntryAsync(customType, data);
-              await (sessionRuntime.prepareSystemPromptUpdate && pinnedSystemPrompt
-                ? persistSessionSystemPrompt(sessionPromptState, appendEntry)
-                : persistSessionToolSurface(sessionPromptState, appendEntry));
+              await persistSessionSystemPrompt(sessionPromptState, (customType, data) =>
+                sessionManager.appendCustomEntryAsync(customType, data),
+              );
             });
           }
         },

@@ -13,7 +13,7 @@ import {
 } from "node:fs";
 import { delimiter, dirname, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { runInNewContext } from "node:vm";
+import { createContext, runInContext } from "node:vm";
 import { expectDefined } from "@openclaw/normalization-core/expect";
 import { afterAll, beforeAll, describe, expect, vi, type TestContext } from "vitest";
 import { parse } from "yaml";
@@ -160,6 +160,22 @@ beforeAll(async () => {
   cpSync(prepared, packed, { recursive: true, mode: fsConstants.COPYFILE_FICLONE });
   git(packed, "repack", "-ad");
   toolingTemplate = { loose: prepared, packed };
+});
+
+publicationIt("keeps compiled fixture JavaScript out of source commits", () => {
+  const sourceRepo = templateDirs.make("frv-source-only-commit-");
+  cpSync(toolingTemplate.loose, sourceRepo, {
+    recursive: true,
+    mode: fsConstants.COPYFILE_FICLONE,
+  });
+  const generated = toolingPaths
+    .filter((file) => /\.[cm]?ts$/u.test(file))
+    .map((file) => file.replace(/\.[cm]?ts$/u, ".js"));
+  expect(generated.some((file) => existsSync(join(sourceRepo, file)))).toBe(true);
+  git(sourceRepo, "add", ".");
+  const tracked = git(sourceRepo, "ls-files").split("\n");
+  expect(tracked.filter((file) => generated.includes(file))).toEqual([]);
+  expect(tracked).toContain("scripts/full-release-publication-contract.mjs");
 });
 
 const selection = publicationSelectionFixture();
@@ -311,6 +327,12 @@ console.log('{"status":"identical"}');
         let status = 0;
         let stderr = "";
         const completed: string[] = [];
+        const evaluate = createEvaluator({
+          inputs,
+          steps,
+          github: { token: "", ref: identity.fullRef, ref_name: identity.ref, sha: identity.sha },
+          env: selectedWorkflow.env,
+        });
         for (const step of [
           expectDefined(resolveTarget.steps[decoderIndex], "publication dispatch step"),
           expectDefined(resolveTarget.steps[identityIndex], "tooling identity step"),
@@ -322,14 +344,7 @@ console.log('{"status":"identical"}');
             GITHUB_REPOSITORY: "openclaw/openclaw",
             GITHUB_OUTPUT: output,
           };
-          const context = {
-            inputs,
-            steps,
-            toJSON: JSON.stringify,
-            github: { token: "", ref: identity.fullRef, ref_name: identity.ref, sha: identity.sha },
-            env: selectedWorkflow.env,
-          };
-          Object.assign(env, workflowEnv(step.env, context));
+          Object.assign(env, workflowEnv(step.env, evaluate));
           const result = await processFixture.run(
             workflowBash,
             ["-c", expectDefined(step.run, "transport command")],
@@ -381,24 +396,26 @@ console.log('{"status":"identical"}');
   );
 });
 
-function evaluate(expression: string, context: Record<string, unknown>) {
-  const source = expression.replace(/^\s*\$\{\{|\}\}\s*$/gu, "").trim();
-  return runInNewContext(source, {
+function createEvaluator(context: Record<string, unknown>) {
+  const sandbox = createContext({
     ...context,
     always: () => true,
     success: () => true,
     cancelled: () => false,
     fromJSON: JSON.parse,
+    toJSON: JSON.stringify,
     contains: (value: string | unknown[], member: string) => value.includes(member),
-  }) as unknown;
+  });
+  return (expression: string): unknown =>
+    runInContext(expression.replace(/^\s*\$\{\{|\}\}\s*$/gu, "").trim(), sandbox);
 }
 
-function workflowEnv(variables: Step["env"], context: Record<string, unknown>) {
+function workflowEnv(variables: Step["env"], evaluate: ReturnType<typeof createEvaluator>) {
   return Object.fromEntries(
     Object.entries(variables ?? {}).map(([key, raw]) => [
       key,
       raw.replace(/\$\{\{\s*(.*?)\s*\}\}/gu, (_match, expression: string) => {
-        const value = evaluate(expression, { ...context, toJSON: JSON.stringify });
+        const value = evaluate(expression);
         if (value === null || value === undefined) {
           return "";
         }
@@ -437,12 +454,13 @@ async function fixture(
     qualification?: "valid" | "wrong-input" | "wrong-archive" | "expired";
     legacyGhArchive?: boolean;
     toolingFullRef?: string;
-    androidPin?: string;
+    androidPin?: string | null;
     legacyPlatforms?: "absent-helper" | "dormant-helper";
     registry?:
       | "healthy"
       | "npm-empty-history"
       | "npm-error"
+      | "clawhub-error"
       | "prepared-trust"
       | "npm-absent"
       | "clawhub-absent"
@@ -506,7 +524,9 @@ async function fixture(
   const androidVersion = JSON.stringify({
     version: options.androidPin ?? version.split("-")[0],
   });
-  write(target, "apps/android/version.json", androidVersion);
+  if (options.androidPin !== null) {
+    write(target, "apps/android/version.json", androidVersion);
+  }
   const writePlugins = (directory: string) => {
     for (let index = 0; index < (options.pluginCount ?? 1); index += 1) {
       const plugin = writePublishablePluginFixture(directory, {
@@ -790,6 +810,7 @@ globalThis.fetch = async (input, init = {}) => {
     const versions = ${JSON.stringify(options.registry)} === "npm-empty-history" ? {} : { "2026.9.3": {} };
     return response({ versions, "dist-tags": { latest: url.pathname === "/demo-runtime" ? "1.2.4" : "2026.9.3" } });
   }
+  if (${JSON.stringify(options.registry)} === "clawhub-error") return response("denied", 403);
   if (${JSON.stringify(options.registry)} === "clawhub-absent") return response("", 404);
   if (url.pathname.endsWith("/publication")) {
     const name = decodeURIComponent(url.pathname.split("/")[4]);
@@ -841,7 +862,9 @@ globalThis.fetch = async (input, init = {}) => {
     const manifest = readJson(join(tooling, "package.json"));
     writeJson(tooling, "package.json", { ...manifest, version, dependencies: { yaml: "2.9.1" } });
     writePlugins(tooling);
-    write(tooling, "apps/android/version.json", androidVersion);
+    if (options.androidPin !== null) {
+      write(tooling, "apps/android/version.json", androidVersion);
+    }
   }
   let toolingSha = commit(tooling);
   let toolingFullRef = options.toolingFullRef ?? "refs/heads/main";
@@ -928,7 +951,11 @@ if (${Boolean(options.qualification)}) {
   }
   const responses = JSON.parse(fs.readFileSync(${JSON.stringify(join(temporary, "qualification-responses.json"))}, "utf8"));
   const key = JSON.stringify(args);
-  if (Object.hasOwn(responses, key)) { process.stdout.write(responses[key]); process.exit(0); }
+  if (Object.hasOwn(responses, key)) {
+    const response = JSON.parse(responses[key]);
+    process.stdout.write(JSON.stringify(response));
+    process.exit(0);
+  }
 }
 const expected = ${JSON.stringify(
       toolingFullRef === "refs/heads/main"
@@ -1027,6 +1054,7 @@ process.stdout.write(${JSON.stringify(
       workflow_ref: `openclaw/openclaw/${workflowPath}@${toolingFullRef}`,
     },
   };
+  const evaluate = createEvaluator(context);
   const effects: string[] = [];
   let status = 0;
   let stderr = "";
@@ -1058,7 +1086,7 @@ process.stdout.write(${JSON.stringify(
     ) {
       continue;
     }
-    if (step.if && !evaluate(step.if, context)) {
+    if (step.if && !evaluate(step.if)) {
       if (step.id) {
         steps[step.id] = { outcome: "skipped", outputs: {} };
       }
@@ -1156,7 +1184,7 @@ process.stdout.write(${JSON.stringify(
       NODE_PATH: join(root, "untrusted-modules"),
       HTTPS_PROXY: "http://proxy.invalid",
     };
-    Object.assign(env, workflowEnv(step.env, context));
+    Object.assign(env, workflowEnv(step.env, evaluate));
     if (
       step.name === "Finalize publication admission" &&
       options.uploadFault === "late-admission"
@@ -1336,7 +1364,7 @@ globalThis.Date = class extends OriginalDate {
       ? ["normal_ci", "prepare_npm_package"].filter((id) => {
           const job = expectDefined(workflow.jobs[id], "first-hop job");
           check([job.needs].flat()).toContain("resolve_target");
-          return evaluate(expectDefined(job.if, "first-hop condition"), {
+          return createEvaluator({
             ...context,
             needs: {
               resolve_target: {
@@ -1350,7 +1378,7 @@ globalThis.Date = class extends OriginalDate {
               plugin_compatibility_readiness: { result: "success" },
               evidence_reuse: { result: "skipped", outputs: { reuse: "false" } },
             },
-          });
+          })(expectDefined(job.if, "first-hop condition"));
         })
       : [],
     registryCalls: registryTrace,
@@ -1467,7 +1495,7 @@ describe("FRV required registry admission", () => {
     "binds actual post-upload admission without rewriting uploaded observations: %s",
     withCase(async (uploadFault, processFixture, check) => {
       const result = await fixture(processFixture, check, { registry: "healthy", uploadFault });
-      check(result.uploadedObservations).toBe(result.observationText);
+      check(result.uploadedObservations, result.stderr).toBe(result.observationText);
       check(result.effects.indexOf("Upload immutable publication observations")).toBeLessThan(
         result.effects.indexOf("Finalize publication admission"),
       );
@@ -1493,6 +1521,7 @@ describe("FRV required registry admission", () => {
     ["healthy", "normal", stable, "latest", ["normal_ci", "prepare_npm_package"]],
     ["npm-empty-history", "normal", stable, "latest", []],
     ["npm-error", "normal", stable, "latest", []],
+    ["clawhub-error", "normal", stable, "latest", []],
     ["prepared-trust", "prepared", stable, "latest", []],
   ] as const)(
     "keeps selected fanout closed for %s through %s",
@@ -1509,7 +1538,7 @@ describe("FRV required registry admission", () => {
         check(result.targetSha).not.toBe(result.toolingSha);
         check(result.effects).toContain("Provision trusted admission parser");
         check(result.effects).toContain("Admit publication source");
-        check(result.registryCalls).toContainEqual(isolatedWorker);
+        check(result.registryCalls, result.stderr).toContainEqual(isolatedWorker);
         const actualRequests = result.registryCalls.filter((entry) => entry.kind === "request");
         check(actualRequests.length).toBeGreaterThan(0);
         if (registry === "healthy") {
@@ -1534,6 +1563,9 @@ describe("FRV required registry admission", () => {
         }
         check(result.firstHopJobs, result.stderr).toEqual(expectedJobs);
         check(result.status, result.stderr).toBe(registry === "healthy" ? 0 : 1);
+        if (registry === "clawhub-error") {
+          check(result.stderr).toContain("required ClawHub observation http-403");
+        }
       },
     ),
   );
@@ -2212,20 +2244,17 @@ describe("FRV publication source admission", () => {
         const publisher = parse(
           readFileSync(join(repo, ".github/workflows/openclaw-release-publish.yml"), "utf8"),
         ) as Workflow;
-        const enabled = evaluate(
-          expectDefined(publisher.jobs.publish_windows?.if, "Windows predicate"),
-          {
-            inputs: {
-              tag: `v${version}`,
-              npm_dist_tag: npmDistTag,
-              windows_node_tag: windowsSelection.windowsNodeTag,
-              windows_node_installer_digests: JSON.stringify(
-                windowsSelection.windowsNodeInstallerDigests,
-              ),
-            },
-            needs: { finalize_github_release: { result: "success" } },
+        const enabled = createEvaluator({
+          inputs: {
+            tag: `v${version}`,
+            npm_dist_tag: npmDistTag,
+            windows_node_tag: windowsSelection.windowsNodeTag,
+            windows_node_installer_digests: JSON.stringify(
+              windowsSelection.windowsNodeInstallerDigests,
+            ),
           },
-        );
+          needs: { finalize_github_release: { result: "success" } },
+        })(expectDefined(publisher.jobs.publish_windows?.if, "Windows predicate"));
         check(enabled).toBe(expected);
         const result = await fixture(processFixture, check, {
           version,
@@ -2313,6 +2342,7 @@ describe("FRV publication source admission", () => {
   );
 
   publicationIt.concurrent.for([
+    { version: stable, pin: null, core: true, selected: false },
     { version: stable, pin: stable, core: true, selected: true },
     { version: "2026.9.9-1", pin: stable, core: true, selected: true },
     { version: stable, pin: "2026.8.1", core: true, selected: false },
@@ -2372,7 +2402,7 @@ describe("FRV publication source admission", () => {
       expect([job.needs].flat()).toContain("resolve_target");
       for (const result of ["success", "failure"]) {
         expect(
-          evaluate(job.if ?? "", {
+          createEvaluator({
             github: { run_attempt: 1 },
             inputs: { rerun_group: "all" },
             needs: {
@@ -2386,7 +2416,7 @@ describe("FRV publication source admission", () => {
               plugin_compatibility_readiness: { result: "success" },
               evidence_reuse: { result: "skipped", outputs: { reuse: "false" } },
             },
-          }),
+          })(job.if ?? ""),
         ).toBe(result === "success");
       }
     }
@@ -2509,10 +2539,7 @@ describe("publication source intent and durable binding", () => {
         expect(bindSource(fact)).toBe(fact);
         expect(publicationSourceJson(fact)).toBe(bytes);
       }
-      for (const [key, value] of [
-        ["known_flaky_jobs_json", '["normalCi:test"]'],
-        ["telegram_waiver", "legacy-omission"],
-      ] as const) {
+      for (const [key, value] of [["known_flaky_jobs_json", '["normalCi:test"]']] as const) {
         expect(() =>
           bindSource({
             ...retained,
@@ -2521,7 +2548,7 @@ describe("publication source intent and durable binding", () => {
         ).toThrow(`${key} must be empty`);
       }
       const withoutLegacyField = structuredClone(retained);
-      delete withoutLegacyField.coverage.telegram_waiver;
+      delete withoutLegacyField.coverage.known_flaky_jobs_json;
       expect(() => bindSource(withoutLegacyField)).toThrow("source admission digest mismatch");
       expect(() =>
         bindSource(historical, {

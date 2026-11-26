@@ -29,7 +29,6 @@ const REVIEWED_CRITICAL_FINDING_LIMITS = new Map<string, number>([
   ["dist:@openclaw/codex:dangerous-exec:dist/client-<hash>.js", 1],
   ["dist:@openclaw/codex:dangerous-exec:dist/dynamic-tools-<hash>.js", 2],
   ["dist:@openclaw/codex:dangerous-exec:dist/session-catalog-<hash>.js", 1],
-  // 0b5dd1983dc3 moves the reviewed transport spawn into a worker; pin its bytes below.
   ["dist:@openclaw/codex:dangerous-exec:dist/stdio.worker.js", 1],
   ["dist:@openclaw/codex:dangerous-exec:dist/transport-stdio-<hash>.js", 1],
   ["source:@openclaw/codex:dangerous-exec:src/app-server/managed-launcher-failure.ts", 1],
@@ -78,16 +77,12 @@ const REVIEWED_CRITICAL_FINDING_LIMITS = new Map<string, number>([
 
 const REVIEWED_CRITICAL_FINDING_CONTENT_SHA256 = new Map<string, string>([
   [
-    "dist:@openclaw/codex:dangerous-exec:dist/stdio.worker.js",
-    "4b974f9a440c7a8ac4356ef11068e0fcea8f363129e59beef46a593a7b12dc48",
-  ],
-  [
     "setup:@openclaw/imessage:dangerous-exec:dist/.setup/sanitize-outbound-<hash>.mjs",
     "34833261f1e012015e6e28f35903d78f77efcfdac68f924310b8a3761264878b",
   ],
   [
     "setup:@openclaw/openshell-sandbox:dangerous-exec:dist/.setup/worker-cli-<hash>.mjs",
-    "799a34cf8a82fed6725a5ac5322242becb394804b1ba6ea62d189aa8a1fa5f02",
+    "c5050d4065ef0365ffd611b558809a848994584f1f11c08854fe7ae3cf7072d7",
   ],
 ]);
 

@@ -20,8 +20,10 @@ import {
   withAgentRunId,
   withoutIncognitoLlmContent,
 } from "./hook-agent-observations.js";
+import { mergeBeforeAgentFinalize } from "./hook-before-agent-finalize.js";
 import { createChannelIngressHookRunner } from "./hook-channel-ingress.js";
 import { readClaimingHookAdmission } from "./hook-claim-admission.js";
+import { isHookContextEligible } from "./hook-context-eligibility.js";
 import {
   type GateHookResult,
   type InputGateDecision,
@@ -37,14 +39,9 @@ import type { PluginHookMessageContext } from "./hook-message.types.js";
 import { createPluginSystemContextLimiter, mergeAgentTurnPrepare } from "./hook-prompt-context.js";
 import type { GlobalHookRunnerRegistry } from "./hook-registry.types.js";
 import { acceptPluginReplyPayload, toPluginReplyPayload } from "./hook-reply-payload.js";
-import {
-  isHookContextEligible,
-  getHooksForName,
-  getHooksForNameAndPlugin,
-} from "./hook-runner-selection.js";
+import { getHooksForName, getHooksForNameAndPlugin } from "./hook-runner-selection.js";
 import type {
   BeforeAgentFinalizeResultWithRetryCandidates,
-  BeforeAgentFinalizeRetry,
   HookFailurePolicy,
   HookRunnerOptions,
   HookContext,
@@ -59,7 +56,6 @@ import { createBeforeToolCallDecisionRecorder } from "./hook-tool-decision.js";
 import { PLUGIN_HOOK_METADATA } from "./hook-types.js";
 import type {
   PluginHookAgentContext,
-  PluginHookBeforeAgentFinalizeResult,
   PluginHookBeforeDispatchContext,
   PluginHookBeforeDispatchEvent,
   PluginHookBeforeDispatchResult,
@@ -242,63 +238,6 @@ export function createHookRunner(
         right: appendSystemContext,
       }),
     };
-  };
-
-  const mergeBeforeAgentFinalize = (
-    acc: BeforeAgentFinalizeResultWithRetryCandidates | undefined,
-    next: PluginHookBeforeAgentFinalizeResult,
-  ): BeforeAgentFinalizeResultWithRetryCandidates => {
-    const normalizeRetry = (
-      retry: PluginHookBeforeAgentFinalizeResult["retry"] | undefined,
-    ): BeforeAgentFinalizeRetry | undefined => {
-      const instruction = typeof retry?.instruction === "string" ? retry.instruction.trim() : "";
-      if (!instruction) {
-        return undefined;
-      }
-      return {
-        ...retry,
-        instruction,
-      };
-    };
-    if (acc?.action === "finalize") {
-      return acc;
-    }
-    if (next.action === "finalize") {
-      return { action: "finalize", reason: next.reason };
-    }
-    if (acc?.action === "revise" && next.action === "revise") {
-      const nextRetry = normalizeRetry(next.retry);
-      const retryCandidates = [
-        ...(acc.retryCandidates ?? (acc.retry ? [acc.retry] : [])),
-        ...(nextRetry ? [nextRetry] : []),
-      ];
-      const retry = retryCandidates[0];
-      const result: BeforeAgentFinalizeResultWithRetryCandidates = {
-        action: "revise",
-        reason: concatOptionalTextSegments({ left: acc.reason, right: next.reason }),
-        ...(retry ? { retry } : {}),
-      };
-      if (retryCandidates.length > 1) {
-        Object.defineProperty(result, "retryCandidates", {
-          configurable: true,
-          enumerable: false,
-          value: retryCandidates,
-        });
-      }
-      return result;
-    }
-    if (acc?.action === "revise") {
-      return acc;
-    }
-    if (next.action === "revise") {
-      const retry = normalizeRetry(next.retry);
-      return {
-        action: "revise",
-        reason: next.reason,
-        ...(retry ? { retry } : {}),
-      };
-    }
-    return next.action === "continue" ? { action: "continue", reason: next.reason } : (acc ?? next);
   };
 
   const handleHookError = (params: {
@@ -720,10 +659,10 @@ export function createHookRunner(
     if (!sourceFingerprint) {
       return undefined;
     }
-    const activeToolNames = [
-      ...new Set(params.activeToolNames.map(normalizeToolPolicyName).filter(Boolean)),
-    ].toSorted();
-    const activeToolNameSet = new Set(activeToolNames);
+    const activeToolNameSet = new Set(
+      params.activeToolNames.map(normalizeToolPolicyName).filter(Boolean),
+    );
+    const activeToolNames = Object.freeze([...activeToolNameSet].toSorted());
     const token = { active: true };
     const assertActive = () => {
       if (!token.active) {
@@ -740,6 +679,10 @@ export function createHookRunner(
       allows(toolName: string): boolean {
         assertActive();
         return activeToolNameSet.has(normalizeToolPolicyName(toolName));
+      },
+      list(): readonly string[] {
+        assertActive();
+        return activeToolNames;
       },
       assertActive,
     });
@@ -1080,6 +1023,7 @@ export function createHookRunner(
           getPluginValueInstance(hook.handler)?.lifecycle.signal,
         ),
       ),
+    runRunStopped: bindVoidHook("run_stopped"),
     runSubagentDeliveryTarget: bindModifyingHook("subagent_delivery_target", {
       mergeResults: (acc, next): PluginHookSubagentDeliveryTargetResult =>
         acc?.origin ? acc : next,

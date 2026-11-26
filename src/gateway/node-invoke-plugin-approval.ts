@@ -56,7 +56,6 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
     accountId?: unknown;
     threadId?: unknown;
   };
-  isCurrent: () => boolean;
 }): OpenClawPluginNodeInvokePolicyContext["approvals"] | undefined {
   const manager = params.context.pluginApprovalManager;
   if (!manager) {
@@ -76,9 +75,6 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
         params.client?.internal?.pluginRuntimeOwnerId === params.pluginId
           ? params.client.internal.nodeInvokeApprovalSessionKey
           : undefined;
-      if (!params.isCurrent()) {
-        throw new Error("agent runtime approval authority is no longer active");
-      }
       const requestedDecisions =
         input.allowedDecisions === undefined
           ? undefined
@@ -115,9 +111,6 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
         risk: params.risk,
         nodeSession: params.nodeSession,
       });
-      if (!params.isCurrent()) {
-        throw new Error("agent runtime approval authority is no longer active");
-      }
       if (placementGrantResolution.kind === "granted") {
         params.standingGrantAuthorization.binding = placementGrantResolution.binding;
         return { id: placementGrantResolution.approvalId, decision: "allow-always" };
@@ -199,17 +192,13 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
         getIosPushDelivery: () => params.context.pluginApprovalIosPushDelivery,
         source: "node-policy",
       });
-      let decision = manager.projectDecisionIfActive(record.id, await decisionPromise);
-      if (!params.isCurrent()) {
-        return { id: record.id, decision: null };
-      }
+      const decision = manager.projectDecisionIfActive(record.id, await decisionPromise);
       if (
         decision === "allow-once" &&
         !(await manager.consumeAllowOnce(record.id, `plugin.node.invoke:${record.id}`))
       ) {
         return { id: record.id, decision: null };
       }
-      decision = manager.projectDecisionIfActive(record.id, decision);
       if (
         !(await retainResolvedNodeInvokePlacementGrant({
           runtime: params.context.placementStandingGrants,
@@ -221,7 +210,7 @@ export function createPluginNodeInvokeApprovalRuntime(params: {
       ) {
         return { id: record.id, decision: null };
       }
-      return { id: record.id, decision: params.isCurrent() ? decision : null };
+      return { id: record.id, decision };
     },
   };
 }

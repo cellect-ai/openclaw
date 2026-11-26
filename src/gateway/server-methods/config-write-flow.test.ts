@@ -1,6 +1,5 @@
 import { expect, it, vi } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
-import { createConfigHandlerHarness, createConfigWriteSnapshot } from "./config.test-helpers.js";
 
 const configMocks = vi.hoisted(() => ({
   replaceConfigFile: vi.fn(async () => ({ nextConfig: {}, persistedHash: "persisted-hash" })),
@@ -39,7 +38,9 @@ vi.mock("../../secrets/runtime-state.js", async (importOriginal) => ({
 }));
 
 const billingMocks = vi.hoisted(() => ({
-  collect: vi.fn((_params: { before: OpenClawConfig; after: OpenClawConfig }): string[] => []),
+  collect: vi.fn(
+    async (_params: { before: OpenClawConfig; after: OpenClawConfig }): Promise<string[]> => [],
+  ),
 }));
 
 // The comparator owns its own tests; these cases prove only the Gateway write wiring.
@@ -176,7 +177,7 @@ it.each([
 );
 
 const writeSnapshot = (sourceConfig: OpenClawConfig) =>
-  createConfigWriteSnapshot(sourceConfig).snapshot;
+  ({ path: "/tmp/openclaw.json", exists: true, raw: "{}", hash: "h", sourceConfig }) as never;
 const cliModel = (runtime: string): OpenClawConfig => ({
   agents: {
     defaults: {
@@ -188,16 +189,13 @@ const cliModel = (runtime: string): OpenClawConfig => ({
 
 it("returns billing-route warnings for a committed model write without logging them early", async () => {
   const warning = "Billing route changed for agents.defaults.subagents.model (agent main).";
-  billingMocks.collect.mockReset().mockReturnValue([warning]);
-  const {
-    options: { context },
-    logGateway: { warn },
-  } = createConfigHandlerHarness();
+  billingMocks.collect.mockReset().mockResolvedValue([warning]);
+  const warn = vi.fn();
   const result = await commitGatewayConfigWrite({
     snapshot: writeSnapshot(cliModel("claude-cli")),
     writeOptions: {},
     nextConfig: cliModel("openclaw"),
-    context,
+    context: { logGateway: { warn } } as never,
   });
   expect(billingMocks.collect).toHaveBeenCalledWith(
     expect.objectContaining({ before: cliModel("claude-cli"), after: cliModel("openclaw") }),
@@ -208,17 +206,14 @@ it("returns billing-route warnings for a committed model write without logging t
 });
 
 it("adds and logs billing-route warnings only on a successful reply", async () => {
-  billingMocks.collect.mockReset().mockReturnValue(["route moved"]);
-  const {
-    options: { context },
-    logGateway: { warn },
-  } = createConfigHandlerHarness();
+  billingMocks.collect.mockReset().mockResolvedValue(["route moved"]);
+  const warn = vi.fn();
   const respond = vi.fn();
   const { reply } = await commitGatewayConfigWrite({
     snapshot: writeSnapshot(cliModel("claude-cli")),
     writeOptions: {},
     nextConfig: cliModel("openclaw"),
-    context,
+    context: { logGateway: { warn } } as never,
     respond,
   });
   reply(false, undefined, { code: "UNAVAILABLE", message: "not applied" });
@@ -232,18 +227,13 @@ it("adds and logs billing-route warnings only on a successful reply", async () =
 });
 
 it("keeps the committed write when the billing comparison fails or has nothing to compare", async () => {
-  billingMocks.collect.mockReset().mockImplementation(() => {
-    throw new Error("auth store unavailable");
-  });
-  const {
-    options: { context },
-    logGateway: { warn },
-  } = createConfigHandlerHarness();
+  billingMocks.collect.mockReset().mockRejectedValue(new Error("auth store unavailable"));
+  const warn = vi.fn();
   const failed = await commitGatewayConfigWrite({
     snapshot: writeSnapshot(cliModel("claude-cli")),
     writeOptions: {},
     nextConfig: cliModel("openclaw"),
-    context,
+    context: { logGateway: { warn } } as never,
   });
   expect(failed).toMatchObject({ hash: "persisted-hash" });
   expect(failed).not.toHaveProperty("billingRouteWarnings");
@@ -274,3 +264,37 @@ it("keeps the committed write when the billing comparison fails or has nothing t
   });
   expect(billingMocks.collect).toHaveBeenCalledOnce();
 });
+
+it.each([
+  { deny: ["openclaw-id-access"] },
+  { entries: { "openclaw-id-access": { enabled: false } } },
+  { enabled: false },
+])(
+  "reports explicit Access plugin opposition without changing plugin policy: %j",
+  async (policy) => {
+    const respond = vi.fn();
+    const plugins = { allow: ["browser"], ...policy };
+    configMocks.replaceConfigFile.mockResolvedValueOnce({
+      nextConfig: { plugins, gateway: { openclawId: { enabled: true } } },
+      persistedHash: "persisted-hash",
+    });
+    const { reply } = await commitGatewayConfigWrite({
+      snapshot: writeSnapshot({ plugins }),
+      writeOptions: {},
+      nextConfig: { plugins, gateway: { openclawId: { enabled: true } } },
+      respond,
+    });
+    reply(true, { ok: true });
+    expect(respond).toHaveBeenLastCalledWith(
+      true,
+      expect.objectContaining({
+        warnings: [expect.stringMatching(/Access page stays off/)],
+      }),
+    );
+    expect(configMocks.replaceConfigFile).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        sourceConfig: expect.objectContaining({ plugins }),
+      }),
+    );
+  },
+);

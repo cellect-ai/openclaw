@@ -1,3 +1,5 @@
+/** Fits a generated summary body and its suffix sections into one bounded compaction artifact. */
+
 import { sliceUtf16Safe } from "@openclaw/normalization-core/utf16-slice";
 import {
   capCompactionSummary,
@@ -13,8 +15,6 @@ export type CompactionSuffix = {
   // Keep producer segment boundaries after later suffix sections are appended;
   // otherwise the final tail cap can split an assistant tool-call/result group.
   contextRanges: Array<{ start: number; end: number; segmentStarts: number[] }>;
-  // Leading chars the tail cap keeps whole, trimming the later sections instead.
-  reservedChars?: number;
 };
 
 export type SummaryQualityRetention = Parameters<typeof createSummaryQualityRetentionPlan>[2];
@@ -40,30 +40,25 @@ function capCompactionSuffix(suffix: CompactionSuffix, maxChars: number): string
   if (maxChars <= 0) {
     return "";
   }
-  const reserved = suffix.reservedChars ?? 0;
-  if (reserved > 0) {
-    // A reservation that cannot fit keeps its head, which names the active turn.
-    if (reserved >= maxChars) {
-      return capCompactionSummary(suffix.text.slice(0, reserved), maxChars);
-    }
-    const rest: CompactionSuffix = {
-      text: suffix.text.slice(reserved),
-      contextRanges: suffix.contextRanges
-        .filter((range) => range.start >= reserved)
-        .map((range) => ({
-          start: range.start - reserved,
-          end: range.end - reserved,
-          segmentStarts: range.segmentStarts.map((segmentStart) => segmentStart - reserved),
-        })),
-    };
-    return `${suffix.text.slice(0, reserved)}${capCompactionSuffix(rest, maxChars - reserved)}`;
-  }
   if (maxChars < CONTEXT_TRUNCATED_MARKER.length) {
     const start = resolveSuffixTailStart(suffix, maxChars);
     return sliceUtf16Safe(suffix.text, start);
   }
   const tailBudget = maxChars - CONTEXT_TRUNCATED_MARKER.length;
   const start = resolveSuffixTailStart(suffix, tailBudget);
+  // A cut inside a context section keeps its heading so the retained turns stay labeled.
+  const cutRange = suffix.contextRanges.find(
+    (range) =>
+      start > range.start && start < range.end && (range.segmentStarts[0] ?? range.end) <= start,
+  );
+  if (cutRange) {
+    // Ranges start after leading separators, so restore one before the heading.
+    const heading = `\n\n${suffix.text.slice(cutRange.start, cutRange.segmentStarts[0]).trim()}`;
+    const headedStart = resolveSuffixTailStart(suffix, tailBudget - heading.length);
+    if (tailBudget > heading.length && headedStart < cutRange.end) {
+      return `${heading}${CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(suffix.text, headedStart)}`;
+    }
+  }
   return tailBudget > 0
     ? `${CONTEXT_TRUNCATED_MARKER}${sliceUtf16Safe(suffix.text, start)}`
     : CONTEXT_TRUNCATED_MARKER;
@@ -104,7 +99,13 @@ export function budgetCompactionSummary(
     maxChars,
     Math.max(1, Math.ceil(maxChars / 2), retentionPlan?.minimumChars ?? 0),
   );
-  const suffixReservation = Math.min(suffix.text.length, maxChars);
+  // Verbatim context sections are the overflow: they yield to the generated body,
+  // which only reserves room for the suffix's required sections.
+  const contextChars = suffix.contextRanges.reduce(
+    (sum, range) => sum + range.end - range.start,
+    0,
+  );
+  const suffixReservation = Math.min(suffix.text.length - contextChars, maxChars);
   const bodySlot = Math.min(bodyCapacity, Math.max(bodyFloor, maxChars - suffixReservation));
   const rendered = retentionPlan?.render(bodySlot);
   const cappedBody = rendered?.text ?? capCompactionSummary(summaryBody, bodySlot);

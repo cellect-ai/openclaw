@@ -1,20 +1,26 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { isPromise } from "node:util/types";
-import { serialize } from "node:v8";
+import v8 from "node:v8";
 import { toErrorObject } from "@openclaw/normalization-core/error-coercion";
 import { createDeferredCore } from "../shared/deferred.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../state/openclaw-state-db-async-lifecycle.js";
-import type { Actor, OperationScope, StoreClient } from "./sqlite-worker-broker.types.js";
+import type {
+  Actor,
+  EnqueueOptions,
+  RequestBody,
+  OperationScope,
+  StoreClient,
+} from "./sqlite-worker-broker.types.js";
 import {
   SqliteWorkerError,
   type SqliteWorkerOperations,
   type SqliteWorkerStore,
-  type SqliteWorkerExecuteOptions,
 } from "./sqlite-worker-contract.js";
 import type { SqliteWorkerAdmissionFactory } from "./sqlite-worker-operation-admission.js";
 import { classifyWorkerRequest } from "./sqlite-worker-request-class.js";
 import {
   captureSqliteWorkerStateContext,
+  sqliteWorkerRequestBytes,
   type SqliteWorkerStateContext,
 } from "./sqlite-worker-state-context.js";
 
@@ -61,31 +67,17 @@ export function runSqliteWorkerClientOperation<Operations extends SqliteWorkerOp
   })();
 }
 
-/** Charge backing allocations once; transferred bytes remain resident during command streaming. */
-export function sqliteWorkerTransferredInputBytes(
-  input: SqliteWorkerExecuteOptions["transferredInput"],
-): number {
-  return [...new Set(Object.values(input ?? {}).map((value) => value.buffer))].reduce(
-    (bytes, buffer) => bytes + buffer.byteLength,
-    0,
-  );
-}
-
 export function createSqliteWorkerClient<Operations extends SqliteWorkerOperations>(owner: {
   actor: Actor;
   isDraining: () => boolean;
   isAvailable: () => boolean;
   retireIdle?: () => Promise<void> | undefined;
+  databaseIdentity?: Extract<RequestBody, { type: "execute" }>["databaseIdentity"];
+  cleanupAccess?: EnqueueOptions["cleanupAccess"];
   dispatch: (
-    input: {
-      payload: Buffer<ArrayBuffer>;
-      transferredInput?: SqliteWorkerExecuteOptions["transferredInput"];
-    },
-    signal: AbortSignal | undefined,
-    scope: OperationScope | undefined,
-    assertCurrent: (() => void) | undefined,
-    createAdmission: SqliteWorkerAdmissionFactory | undefined,
-    requestClass: string,
+    request: Extract<RequestBody, { type: "execute" }>,
+    bytes: number,
+    options: EnqueueOptions,
   ) => Promise<unknown>;
   release: (reclaiming: boolean) => Promise<void>;
 }) {
@@ -122,6 +114,7 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
       }
       let payload: Buffer<ArrayBuffer>;
       let transferredInput: typeof options.transferredInput;
+      let transferredBytes = 0;
       let requestClass: string;
       let assertCurrent: (() => void) | undefined;
       const admission = scope?.assertCurrent;
@@ -134,12 +127,15 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
         assertCurrent = admission && inCaller ? () => inCaller(admission, commandType) : undefined;
         assertCurrent?.();
         // The queued guard and wire command must observe the same captured type.
-        payload = serialize({ type: commandType, input: command.input });
+        payload = v8.serialize({ type: commandType, input: command.input });
         if (options.transferredInput) {
           const buffers = [
             ...new Set(Object.values(options.transferredInput).map((value) => value.buffer)),
           ];
-          transferredInput = structuredClone(options.transferredInput, { transfer: buffers });
+          transferredBytes = buffers.reduce((bytes, buffer) => bytes + buffer.byteLength, 0);
+          transferredInput = structuredClone(options.transferredInput, {
+            transfer: buffers,
+          });
         }
       } catch (error) {
         return Promise.reject(
@@ -147,14 +143,31 @@ export function createSqliteWorkerClient<Operations extends SqliteWorkerOperatio
         );
       }
       const operation = owner.dispatch(
-        { payload, transferredInput },
-        options.signal,
-        scope,
-        assertCurrent,
-        createAdmission && inCaller
-          ? (admissionOperation) => inCaller(createAdmission, admissionOperation)
-          : undefined,
-        requestClass,
+        {
+          type: "execute",
+          actor: owner.actor.id,
+          databaseIdentity: owner.databaseIdentity,
+          input: payload,
+          transferredInput,
+          ...(scope?.stateContext ? { stateContext: scope.stateContext } : {}),
+        },
+        sqliteWorkerRequestBytes(payload, scope?.stateContext) + transferredBytes,
+        {
+          signal: options.signal,
+          requestClass,
+          scope,
+          assertCurrent,
+          createAdmission:
+            createAdmission && inCaller
+              ? (admissionOperation) => inCaller(createAdmission, admissionOperation)
+              : undefined,
+          cleanupAccess: owner.cleanupAccess,
+          maintenanceScope: owner.cleanupAccess
+            ? undefined
+            : scope
+              ? scope.maintenanceScope
+              : getOpenClawDatabaseMaintenanceScope(),
+        },
       );
       pending.add(operation);
       scope?.pending.add(operation);

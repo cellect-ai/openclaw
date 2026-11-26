@@ -33,6 +33,7 @@ const {
   registerProviderStreamForModelMock,
 } = imageRuntimeMocks;
 
+// OpenAI route selection reads the agent auth store; these tests do not exercise it.
 vi.mock("../agents/auth-profiles/store-runtime.js", async () => ({
   ...(await vi.importActual<typeof import("../agents/auth-profiles/store-runtime.js")>(
     "../agents/auth-profiles/store-runtime.js",
@@ -46,6 +47,7 @@ const {
 } = await import("./image.js");
 const imageModelRuntime = await import("./image-model-runtime.js");
 type ImageRequest = Parameters<typeof describeImageWithModelCore>[0];
+// A provider with one route, so these generic cases skip OpenAI credential-route selection.
 const acme = { provider: "acme", model: "gpt-5.4-mini" };
 const minimax = { provider: "minimax-portal", model: "MiniMax-VL-01" };
 function request(ref = acme, overrides: Partial<ImageRequest> = {}): ImageRequest {
@@ -117,16 +119,23 @@ async function describeCn(providers: Providers, workspaceDir?: string) {
 describe("describeImageWithModelCore", () => {
   installImageRuntimeTestHooks({ apiKey: "test-api-key" });
 
-  it("surfaces provider errors from image-model responses", async () => {
-    mockAcme();
-    completeMock.mockResolvedValue({
-      ...acmeCompletion(""),
-      stopReason: "error",
-      errorMessage: "boom",
-    });
-    await expect(describeImageWithModelCore(request())).rejects.toThrow(/boom/i);
-    expect(completeMock).toHaveBeenCalledOnce();
-  });
+  it.each([
+    ["error", "boom", /boom/i],
+    ["aborted", undefined, "Image model failed (acme/gpt-5.4-mini)"],
+  ] as const)(
+    "surfaces %s image-model responses without retrying",
+    async (stopReason, errorMessage, expectedError) => {
+      mockAcme();
+      completeMock.mockResolvedValue({
+        ...acmeCompletion(""),
+        stopReason,
+        errorMessage,
+        content: [{ type: "thinking", thinking: "", thinkingSignature: "reasoning_content" }],
+      });
+      await expect(describeImageWithModelCore(request())).rejects.toThrow(expectedError);
+      expect(completeMock).toHaveBeenCalledOnce();
+    },
+  );
 
   it("returns trimmed text from image-model responses", async () => {
     const ref = { provider: "anthropic", model: "claude-opus-4-6" };
@@ -565,6 +574,7 @@ describe("image runtime cancellation and retries", () => {
               metadataSnapshot: createEmptyPluginMetadataSnapshot(),
               createStores: () => ({ authStorage: preparedAuthStorage, modelRegistry: {} }),
             },
+            run: <T>(run: () => T): T => run(),
             [Symbol.asyncDispose]: releasePreparedModelRuntimeMock,
           }),
         );
@@ -632,6 +642,7 @@ describe("image runtime cancellation and retries", () => {
         await drain;
         await work.drain();
       }
+      // The image runtime resolves the model once, then the shared owner resolves it for auth.
       expect(resolveModelAsyncMock).toHaveBeenCalledTimes(
         { admission: 0, model: 1, credential: 2, "prepared-model": 2, "runtime-auth": 2 }[stage],
       );

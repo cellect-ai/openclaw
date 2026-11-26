@@ -68,6 +68,7 @@ export function runWithSessionActorStorage<T>(
 /**
  * Leave the inherited session-storage binding for this callback and for awaits
  * it creates. AsyncLocalStorage.exit only covers the synchronous call.
+ * Independent work acquires its own actor instead of retaining the caller's admission.
  */
 export function runWithoutSessionActorStorage<T>(run: () => T): T {
   return currentBinding.run(undefined, run);
@@ -163,6 +164,11 @@ export function captureSessionActorStorageOwner(
   const currentAuthority =
     authority && selected
       ? {
+          workspaceEvidence: [
+            ...(caller.workspaceEvidence ?? []),
+            ...(authority.workspaceEvidence ?? []),
+          ],
+          readCustody: [...(caller.readCustody ?? []), ...(authority.readCustody ?? [])],
           authorize: (...args: Parameters<typeof caller.authorize>) => caller.authorize(...args),
           assertCurrent() {
             caller.assertCurrent();

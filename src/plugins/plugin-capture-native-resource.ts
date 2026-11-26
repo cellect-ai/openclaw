@@ -15,6 +15,7 @@ import type {
   PluginCaptureResourceReply,
   PluginCaptureRootAnnouncement,
 } from "./plugin-capture-native-resource.types.js";
+import { isPluginSourceAcquisitionError } from "./plugin-instance-error.js";
 import { withPluginSourceCaptureStorage } from "./plugin-source-capture-context.js";
 import {
   createPluginNativeCaptureRoot,
@@ -32,14 +33,13 @@ type Domain = {
       root: ReturnType<typeof createPluginNativeCaptureRoot>;
     }
   >;
-  sourceParents: Map<number, number>;
   nextRoot: number;
   borrowers: number;
 };
 // One physical token owner per domain; execution resources borrow it through the existing relay.
 const domains = new Map<string, Domain>();
 
-export default function createPluginCaptureNativeResource(
+export function createNativeWorkerResource(
   port: NativeWorkerResourcePort,
   input: unknown,
   ownerPort?: NativeWorkerResourcePort,
@@ -51,13 +51,7 @@ export default function createPluginCaptureNativeResource(
     if (domain) {
       throw new Error("Plugin capture owner already exists");
     }
-    domain = {
-      sources: new Map(),
-      sourceParents: new Map(),
-      roots: new Map(),
-      nextRoot: 0,
-      borrowers: 0,
-    };
+    domain = { sources: new Map(), roots: new Map(), nextRoot: 0, borrowers: 0 };
     domains.set(config.owner, domain);
   }
   if (!domain) {
@@ -109,9 +103,6 @@ export default function createPluginCaptureNativeResource(
       };
       // Keep failed cleanup under the same custody as every other source root.
       owned.sources.set(command.captureId, source);
-      if (command.parentCaptureId !== undefined) {
-        owned.sourceParents.set(command.captureId, command.parentCaptureId);
-      }
       try {
         const steps = copyPluginRecoveryFiles(copyInput, source.directory);
         let step = steps.next();
@@ -125,12 +116,12 @@ export default function createPluginCaptureNativeResource(
             directory: source.directory,
             managedRoot: source.managedRoot,
           },
+          copiedBytes: step.value,
         };
       } catch (error) {
         try {
           await source.release();
           owned.sources.delete(command.captureId);
-          owned.sourceParents.delete(command.captureId);
         } catch (cleanupError) {
           throw new AggregateError(
             [error, cleanupError],
@@ -190,17 +181,8 @@ export default function createPluginCaptureNativeResource(
         ),
       };
     } else if (command.type === "release-source") {
-      // A crashed execution cannot dispose its derived recovery handles itself.
-      for (const [childId, parentId] of owned.sourceParents) {
-        if (parentId === command.captureId) {
-          await owned.sources.get(childId)?.release();
-          owned.sources.delete(childId);
-          owned.sourceParents.delete(childId);
-        }
-      }
       await owned.sources.get(command.captureId)?.release();
       owned.sources.delete(command.captureId);
-      owned.sourceParents.delete(command.captureId);
       for (const [rootId, entry] of owned.roots) {
         if (entry.captureId === command.captureId && !entry.announced) {
           await entry.root.disposeAsync();
@@ -231,6 +213,9 @@ export default function createPluginCaptureNativeResource(
           id: request.id,
           ok: false,
           error: encodeNativeWorkerFailure(error),
+          ...(isPluginSourceAcquisitionError(error)
+            ? { sourceAcquisitionFailure: true as const }
+            : {}),
         };
       }
       if (available) {

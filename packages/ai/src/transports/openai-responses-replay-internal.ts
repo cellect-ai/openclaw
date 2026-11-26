@@ -1,12 +1,12 @@
-import type { AssistantMessage, Model } from "@openclaw/llm-core";
+import { observeAsyncIterator, type AssistantMessage, type Model } from "@openclaw/llm-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { APIError } from "openai";
+import { APIError } from "openai/core/error";
 import { Stream } from "openai/core/streaming";
 import type { ResponseInput } from "openai/resources/responses/responses.js";
 import type { BaseOpenAIStreamOptions, CompactionReplayRejection } from "../provider-options.js";
+import type { createOpenAIResponsesClient } from "../providers/openai-provider-client.js";
 import { registerSessionResourceCleanup } from "../session-resources.js";
 import { prepareModelRequestBody } from "./model-request-body.js";
-import type { createOpenAIResponsesClient } from "./openai-responses-client.js";
 import {
   suppressOpenAIResponsesCompaction,
   type OpenAIResponsesReplayMode,
@@ -138,6 +138,7 @@ export function createResponsesItemConflictRecovery(
             : output.stopReason === "error" || output.stopReason === "aborted"
               ? "failed"
               : "recovered";
+        output.itemConflictRecovery = outcome;
         log.info(
           `[responses] item_conflict_recovery sessionHash=${redactIdentifier(options?.sessionId)} outcome=${outcome}`,
         );
@@ -559,13 +560,23 @@ export async function createResponsesStreamWithRecovery(params: {
           let sourceError: unknown;
           const source = current.stream;
           const providerStream = {
-            async *[Symbol.asyncIterator]() {
-              try {
-                yield* source;
-              } catch (error) {
-                sourceError = error;
-                throw error;
-              }
+            [Symbol.asyncIterator]() {
+              return observeAsyncIterator({
+                iterator: () => source[Symbol.asyncIterator](),
+                onEvent() {},
+                onError(error) {
+                  sourceError = error;
+                },
+                // Closing can fail at the provider boundary too, independently of the hook.
+                async onClose(iterator) {
+                  try {
+                    await iterator?.return?.();
+                  } catch (error) {
+                    sourceError = error;
+                    throw error;
+                  }
+                },
+              });
             },
           };
           try {

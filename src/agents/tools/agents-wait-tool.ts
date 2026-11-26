@@ -12,10 +12,10 @@ import { createAbortError } from "../../infra/abort-signal.js";
 import { parseAgentSessionKey } from "../../routing/session-key.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
+import { retireAcceptedSessionSpawnCollectionForRun } from "../accepted-session-spawn.js";
 import { resolveSubagentCompletionResultText } from "../subagents/completion/subagent-completion-result.js";
 import { capFrozenResultText } from "../subagents/registry/subagent-registry-helpers.js";
 import { subscribeSubagentRunChanges } from "../subagents/registry/subagent-registry-publication.js";
-import { matchesSubagentRequesterSession } from "../subagents/registry/subagent-registry-queries.js";
 import { prepareSubagentRunsByRunIds } from "../subagents/registry/subagent-registry.js";
 import type { SubagentRunRecord } from "../subagents/registry/subagent-registry.types.js";
 import { markCollectorReaderTool } from "../subagents/swarm/swarm-collector-capability.js";
@@ -103,7 +103,6 @@ type CollectorOwnerScope = {
   currentSessionKeys: ReadonlySet<string>;
   currentAgentId?: string;
   config?: OpenClawConfig;
-  expectedRequester?: { sessionId: string; lifecycleRevision?: string };
 };
 
 // Hooks see the call ID and may invoke other tools with it. The per-tool marker
@@ -147,11 +146,8 @@ export function readNativeSubagentCollection(details: unknown) {
 
 function ownsRun(
   entry: SubagentRunRecord,
-  { currentSessionKeys, currentAgentId, config, expectedRequester }: CollectorOwnerScope,
+  { currentSessionKeys, currentAgentId, config }: CollectorOwnerScope,
 ): boolean {
-  if (expectedRequester && !matchesSubagentRequesterSession(entry, expectedRequester)) {
-    return false;
-  }
   const owner = entry.swarmRequesterSessionKey?.trim();
   if (!owner) {
     return false;
@@ -462,6 +458,7 @@ export function createAgentsWaitTool(opts: {
     label: "Wait for Agents",
     name: "agents_wait",
     displaySummary: "Wait for collector children.",
+    repeatable: true,
     description: describeAgentsWaitTool(false),
     parameters: AgentsWaitToolSchema,
     outputSchema: AgentsWaitOutputSchema,
@@ -530,9 +527,16 @@ async function collectNativeSubagentResults(
     waitForAll: params.awaitResults,
     signal: params.signal,
     assertCurrent: params.assertCurrent,
-    expectedRequester: params.expectedRequester,
     abortError: () => createAbortError("agents_wait aborted."),
   });
+  // Every harness runs tools under its admitted run, so collection settles that run's receipts.
+  const run = getGatewayToolCallerIdentity()?.operationalRunInstance;
+  if (run) {
+    retireAcceptedSessionSpawnCollectionForRun(
+      run,
+      result.completed.flatMap((entry) => (entry.status === "done" ? [entry.runId] : [])),
+    );
+  }
   const noAuthorizedTargets =
     result.completed.length === 0 && result.pending.length === 0 && Boolean(result.errors?.length);
   return noAuthorizedTargets ? { ...result, success: false as const } : result;

@@ -1,6 +1,6 @@
 /**
  * Internal exec workdir resolver.
- * Owns cwd selection and validation before exec approval, hooks, preflight, or
+ * Owns cwd selection and validation before exec approval, hooks, or
  * process launch can observe an invalid selected working directory.
  */
 import fs from "node:fs/promises";

@@ -49,6 +49,8 @@ it.each([
         ...context,
         agentDatabaseStartup: {
           hasPendingAgents: true,
+          registerInputRecovery() {},
+          isAgentInputRecoveryPending: () => false,
           waitForAgentPreparation,
         },
       },

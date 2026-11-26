@@ -1,4 +1,5 @@
 import type { webhook } from "@line/bot-sdk";
+import { agentControlText } from "openclaw/plugin-sdk/agent-control-runtime";
 import { recordChannelActivity } from "openclaw/plugin-sdk/channel-activity-runtime";
 import {
   buildChannelInboundEventContext,
@@ -587,8 +588,8 @@ export async function buildLinePostbackContext(params: {
   if (!rawBody) {
     return null;
   }
-  let agentBody = rawBody;
-  if (rawBody.includes("line.action=")) {
+  let agentBody = agentControlText(rawBody) ?? rawBody;
+  if (agentBody === rawBody && rawBody.includes("line.action=")) {
     const searchParams = new URLSearchParams(rawBody);
     const action = searchParams.get("line.action") ?? "";
     const device = searchParams.get("line.device");

@@ -7,6 +7,8 @@ import type {
 import type { captureSqliteWorkerEnvironmentData } from "./bun-sqlite-library.js";
 import type { NativeWorkerFailure } from "./worker-native-error.js";
 
+export const NATIVE_WORKER_LIFETIMES_KEY = Symbol.for("openclaw.nativeWorkerLifetimes");
+
 export type { NativeWorkerEvents, RetainedNativeWorker } from "@openclaw/worker-runtime/lifecycle";
 
 /** The host endpoint never crosses the supervisor transport. */
@@ -64,9 +66,9 @@ export interface NativeWorkerResourcePort {
   close(): void;
 }
 
-/** Private, version-matched modules expose their domain factory as the default export. */
+/** Private, version-matched modules expose their domain factory by name. */
 export type NativeWorkerResourceModule = {
-  default(
+  createNativeWorkerResource(
     port: NativeWorkerResourcePort,
     input: unknown,
     ownerPort?: NativeWorkerResourcePort,

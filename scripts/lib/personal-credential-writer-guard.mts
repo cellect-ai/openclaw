@@ -33,6 +33,7 @@ const authSqlite = "src/agents/auth-profiles/sqlite.ts";
 const authStore = "src/agents/auth-profiles/store.ts";
 const authRuntime = "src/agents/auth-profiles/store-runtime.ts";
 const authUpdate = "src/agents/auth-profiles/store-update.ts";
+const authUpdater = "src/agents/auth-profiles/store-updater.ts";
 const authEnrollment = "src/agents/auth-profiles/authorization-enrollment.ts";
 const authEnrollmentRuntime = "src/agents/auth-profiles/authorization-enrollment-runtime.ts";
 const authKernel = "src/agents/auth-profiles/store-update.worker.ts";
@@ -96,6 +97,10 @@ const publicationWriters = new Map<string, readonly string[]>([
     key(sharedPublication, "writeGitHubPublicationExecutionInDatabase"),
     [key(sharedPublication, "createGitHubPublicationExecutionStoreInDatabase")],
   ],
+  [
+    key(personalPublication, "requirePersonalGitHubPublicationConfirmationInDatabase"),
+    [key(personalPublication, "githubPublications.personalRestart")],
+  ],
   ...[
     "claimPersonalGitHubPublicationInDatabase",
     "writePersonalGitHubPublicationInDatabase",
@@ -109,6 +114,7 @@ const publicationWriters = new Map<string, readonly string[]>([
     [key(personalPublication, "githubPublications.personalRestart")],
   ],
   ...[
+    "reopenRepositoryGitHubPublicationInDatabase",
     "bindRepositoryGitHubPublicationCheckpointInDatabase",
     "failRepositoryGitHubPublicationPreparationInDatabase",
     "writeRepositoryGitHubPublicationInDatabase",
@@ -156,7 +162,7 @@ const authCredentialCallers = new Map<string, readonly string[]>([
   [
     key(authUpdate, "runAuthProfileStoreUpdate"),
     [
-      key(authUpdate, "createAuthProfileStoreUpdater/updateAuthProfileStoreWithLock"),
+      key(authUpdater, "createAuthProfileStoreUpdater/updateAuthProfileStoreWithLock"),
       key(authProfiles, "removeAuthProfileTargetsWithLocks"),
       key(authProfiles, "removeAuthProfileTargetsWithLocks/publish"),
       key("src/agents/auth-profiles/upsert-with-lock.ts", "persistAuthProfileBatch"),
@@ -287,7 +293,7 @@ const authCredentialCallers = new Map<string, readonly string[]>([
     ],
   ],
   [
-    key(authUpdate, "createAuthProfileStoreUpdater"),
+    key(authUpdater, "createAuthProfileStoreUpdater"),
     [key(authStore, "createAuthProfileStoreRuntime")],
   ],
   [
@@ -326,12 +332,23 @@ const genericCredentialCallers = new Map<string, readonly string[]>([
       key("src/state/local-onboarding-state.worker.ts", "localOnboarding.complete"),
       // installationCountStateKey is fixed to telemetry.installationCount.<endpoint hash>.
       key("src/infra/telemetry-store.worker.ts", "telemetry.claimInstallationCount"),
+      // Pairing receipts are fixed to devicePairing.openclawIdNode.<peer>, never credential keys.
+      key("src/infra/device-pairing-openclaw-id.worker.ts", "consumeOpenClawIdNodePairingInWorker"),
+      // Fixed update recovery/cohort prefixes cannot address authProfiles.store.
+      ...[
+        "beginPluginCohortRecovery",
+        "writePluginCohortRecovery",
+        "recordPluginCohortIndexPublicationInDatabase",
+        "recordPluginCohortMigrationPublicationInDatabase",
+      ].map((name) => key("src/infra/update-run-recovery-store.ts", name)),
     ],
   ],
   [
     key(machineState, "updateConfigMachineStateInDatabase"),
     [
       key(machineState, "updateConfigMachineState"),
+      // Deletes only the exact run/transaction-bound update recovery pair.
+      key("src/infra/update-run-recovery-store.ts", "deletePluginCohortRecovery"),
       // Both receipt writers construct only automation-default: keys in their kernel.
       ...["recordDefaultProactiveJobInDatabase", "recordConvertedProactiveJobInDatabase"].map(
         (name) => key("src/cron/proactive-job-receipt.kernel.ts", name),
@@ -538,6 +555,16 @@ const callers = new Map<string, readonly string[]>([
     [key("src/config/sessions/session-sharing-store.worker.ts", "bindSqliteWorkerBackend/execute")],
   ]),
   [
+    key(sessionMembers, "addSessionMemberInTransaction"),
+    [
+      key(sessionMembers, "addSessionMember"),
+      key(
+        "src/config/sessions/session-accessor.sqlite-involvement.worker.ts",
+        "updateSessionProfileInvolvementInTransaction",
+      ),
+    ],
+  ],
+  [
     key(sessionArtifacts, "clearSessionCollaborationForKey"),
     [
       key(
@@ -702,7 +729,15 @@ const exclusiveMaintenanceCallers = new Map([
 
 // Counts shrink freely. An additional sink, even in an existing function, needs review.
 const sinks = new Map<string, number>([
-  ...["addSessionMember", "removeSessionMember"].map((name): [string, number] => [
+  // Private restore output copies the validated named pair verbatim under parent exclusion.
+  [
+    key(
+      "src/infra/update-database-restore-source.ts",
+      "prepareUpdateDatabaseRestoreSourceInProcess",
+    ),
+    2,
+  ],
+  ...["addSessionMemberInTransaction", "removeSessionMember"].map((name): [string, number] => [
     key(sessionMembers, name),
     1,
   ]),
@@ -899,6 +934,10 @@ const credentialCommandOwners = new Map([
 ]);
 
 const repeatedEdges = new Map([
+  [
+    `${key(machineState, "writeConfigMachineStateInDatabase")}<-${key("src/infra/update-run-recovery-store.ts", "beginPluginCohortRecovery")}`,
+    2,
+  ],
   ...[
     key(
       "src/config/sessions/session-accessor.sqlite-canonical-repair.ts",
@@ -991,7 +1030,9 @@ function operation(node: ts.Node): string {
 export function inspectPersonalCredentialWriters(
   sources: readonly { file: string; source: ts.SourceFile }[],
   checker: NativeTypeScriptProject["project"]["checker"],
+  symbolsAt: (nodes: readonly ts.Node[]) => (Symbol | undefined)[],
 ): string[] {
+  const symbolAt = (node: ts.Node) => symbolsAt([node])[0];
   const approvedCallers = new Map([...callers, ...exclusiveMaintenanceCallers]);
   const protectedDeclarations = new Map<ts.Node, string>();
   const names = new Set(
@@ -1105,7 +1146,7 @@ export function inspectPersonalCredentialWriters(
       expression.expression.kind === ts.SyntaxKind.ImportKeyword
     ) {
       const specifier = expression.arguments[0];
-      return specifier && resolveSymbol(checker.getSymbolAtLocation(specifier));
+      return specifier && resolveSymbol(symbolAt(specifier));
     }
     if (ts.isPropertyAccessExpression(expression) || ts.isElementAccessExpression(expression)) {
       const base = accessSymbol(expression.expression);
@@ -1122,11 +1163,11 @@ export function inspectPersonalCredentialWriters(
         );
       }
     }
-    return resolveSymbol(checker.getSymbolAtLocation(expression));
+    return resolveSymbol(symbolAt(expression));
   };
   const bindModule = (binding: ts.BindingName, module: Symbol): boolean => {
     if (ts.isIdentifier(binding)) {
-      const local = checker.getSymbolAtLocation(binding);
+      const local = symbolAt(binding);
       if (local) {
         importedBindings.set(local, module);
         bindingNames.push(binding);
@@ -1221,7 +1262,7 @@ export function inspectPersonalCredentialWriters(
     source.forEachChild(visit);
   }
   // Resolve namespace candidates after every dynamic binding has its prepared target.
-  const bindingSymbols = bindingNames.length ? checker.getSymbolAtLocation(bindingNames) : [];
+  const bindingSymbols = symbolsAt(bindingNames);
   for (const [index, binding] of bindingNames.entries()) {
     if (targets(bindingSymbols[index]).length) {
       names.add(binding.text);
@@ -1264,6 +1305,8 @@ export function inspectPersonalCredentialWriters(
       );
     };
     const references: ts.Node[] = [];
+    const commandNodes: (readonly [ts.Node, ts.Expression])[] = [];
+    const commandExpressions: ts.Expression[] = [];
     const visit = (node: ts.Node) => {
       if (
         ts.isTypeNode(node) ||
@@ -1279,20 +1322,9 @@ export function inspectPersonalCredentialWriters(
         node.name.text === "type"
       ) {
         const initializer = ts.isPropertyAssignment(node) ? node.initializer : node.name;
-        // Literal command values are already exact; only expressions need semantic resolution.
-        const type = ts.isStringLiteralLikeNode(initializer)
-          ? undefined
-          : checker.getTypeAtLocation(initializer);
-        const commands = ts.isStringLiteralLikeNode(initializer)
-          ? [initializer.text]
-          : (type?.isUnionType() ? type.getTypes() : type ? [type] : [])
-              .filter((value) => value.isStringLiteralType())
-              .map((value) => value.value);
-        for (const command of commands) {
-          const owner = credentialCommandOwners.get(command);
-          if (owner && key(file, operation(node)) !== owner) {
-            fail(node, `${command} credential writes require the host publication adapter`);
-          }
+        commandNodes.push([node, initializer]);
+        if (!ts.isStringLiteralLikeNode(initializer)) {
+          commandExpressions.push(initializer);
         }
       }
       if (
@@ -1307,7 +1339,7 @@ export function inspectPersonalCredentialWriters(
         while (table && !seen.has(table)) {
           seen.add(table);
           if (ts.isIdentifier(table)) {
-            const declaration = checker.getSymbolAtLocation(table)?.valueDeclaration?.resolve();
+            const declaration = symbolAt(table)?.valueDeclaration?.resolve();
             if (declaration && ts.isVariableDeclaration(declaration)) {
               const loop = declaration.parent.parent;
               table =
@@ -1418,14 +1450,44 @@ export function inspectPersonalCredentialWriters(
       node.forEachChild(visit);
     };
     source.forEachChild(visit);
-    const symbols = references.length ? checker.getSymbolAtLocation(references) : [];
-    for (const [index, node] of references.entries()) {
+    // Literal commands need no compiler query; resolve every expression in the
+    // same immutable file together instead of one native round trip per field.
+    const commandTypes = commandExpressions.length
+      ? checker.getTypeAtLocation(commandExpressions)
+      : [];
+    let commandTypeIndex = 0;
+    for (const [node, initializer] of commandNodes) {
+      const type = ts.isStringLiteralLikeNode(initializer)
+        ? undefined
+        : commandTypes[commandTypeIndex++];
+      const commands = ts.isStringLiteralLikeNode(initializer)
+        ? [initializer.text]
+        : (type?.isUnionType() ? type.getTypes() : type ? [type] : [])
+            .filter((value) => value.isStringLiteralType())
+            .map((value) => value.value);
+      for (const command of commands) {
+        const owner = credentialCommandOwners.get(command);
+        if (owner && key(file, operation(node)) !== owner) {
+          fail(node, `${command} credential writes require the host publication adapter`);
+        }
+      }
+    }
+    // Access and shorthand references have their own resolution paths below.
+    const directReferences = references.filter(
+      (node) =>
+        !ts.isShorthandPropertyAssignment(node.parent) &&
+        !(ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) &&
+        !(ts.isElementAccessExpression(node.parent) && node.parent.argumentExpression === node),
+    );
+    const symbols = symbolsAt(directReferences);
+    let symbolIndex = 0;
+    for (const node of references) {
       const symbol = ts.isShorthandPropertyAssignment(node.parent)
         ? checker.getShorthandAssignmentValueSymbol(node.parent)
         : (ts.isPropertyAccessExpression(node.parent) && node.parent.name === node) ||
             (ts.isElementAccessExpression(node.parent) && node.parent.argumentExpression === node)
           ? accessSymbol(node.parent)
-          : symbols[index];
+          : symbols[symbolIndex++];
       if (
         ts.isStringLiteral(node) &&
         ts.isCallExpression(node.parent) &&

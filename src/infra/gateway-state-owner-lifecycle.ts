@@ -60,6 +60,8 @@ export type ProcessOwner = {
   projectionDirectories: StateOwnerDirectoryIdentity[];
   // Retained leases keep custody after this stops new admission.
   accepting: boolean;
+  /** Runs once physical custody ends, after the last retained lease. */
+  onReleased?: () => void;
 };
 
 export function hasPhysicalOwnership(owner: ProcessOwner): boolean {

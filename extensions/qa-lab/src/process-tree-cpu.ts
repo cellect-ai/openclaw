@@ -62,11 +62,16 @@ function readLinuxProcessRssBytes(
     const status = readFileSync(`/proc/${pid}/status`, "utf8");
     const match = status.match(/^VmRSS:[ \t]+(\d+)[ \t]+kB[ \t]*$/mu);
     const rssKiB = parseStrictNonNegativeInteger(match?.[1]);
-    if (rssKiB === undefined) {
-      onUnavailable?.(`vmrss-unavailable pid=${pid}`);
-      return null;
+    if (rssKiB !== undefined) {
+      return rssKiB * 1024;
     }
-    return rssKiB * 1024;
+    // A fully exited process has no address space. A zombie leader with live
+    // threads does, so only accept zero when the leader is the sole thread.
+    if (/^State:[ \t]+Z\b/mu.test(status) && /^Threads:[ \t]+1[ \t]*$/mu.test(status)) {
+      return 0;
+    }
+    onUnavailable?.(`vmrss-unavailable pid=${pid}`);
+    return null;
   } catch {
     onUnavailable?.(`proc-status-unreadable pid=${pid}`);
     return null;
@@ -221,7 +226,7 @@ function readProcessTreeMetric(params: {
   }
 
   // ps can report zero after a leader exits while its threads still hold memory.
-  // Keep that process in the tree and require an available VmRSS for every member.
+  // Keep that process in the tree; only fully exited members can contribute zero.
   const readRequiredMetric =
     process.platform === "linux" && params.posixColumn === "rss="
       ? (pid: number) => readLinuxProcessRssBytes(pid, onUnavailable)

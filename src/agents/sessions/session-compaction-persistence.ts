@@ -3,21 +3,20 @@ import {
   resolveSqliteTranscriptScope,
   toDatabaseOptions,
 } from "../../config/sessions/session-accessor.sqlite-scope.js";
+import type {
+  CommittedCompactionAppend,
+  PreparedCompactionAppend,
+} from "../../config/sessions/session-compaction-persistence.types.js";
 import { startSessionTranscriptIndexReconcile } from "../../config/sessions/session-transcript-reconcile.js";
 import { captureSessionTranscriptTargetBinding } from "../../config/sessions/transcript-target-binding.js";
 import {
   withOwnedSessionTranscriptWriterFence,
   getOwnedSessionTranscriptInitialWriter,
-  captureOwnedTranscriptWriteAssertion,
 } from "../../config/sessions/transcript-write-context.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { resolveGlobalSingleton } from "../../shared/global-singleton.js";
 import { captureOpenClawAgentDatabaseExecution } from "../../state/openclaw-agent-execution.js";
 import { runOpenClawAgentWriteAdmission } from "../../state/openclaw-agent-write-admission.js";
-import type {
-  PreparedCompactionAppend,
-  CommittedCompactionAppend,
-} from "./session-compaction-persistence.types.js";
 import { generateSessionEntryId } from "./session-manager-id.js";
 import {
   receiveSessionManagerCommit,
@@ -142,25 +141,19 @@ export async function appendSessionMetadataInWorker(
     ...prepared.scope,
     ...captureSessionTranscriptTargetBinding(prepared.scope),
   });
-  const assertOwned = captureOwnedTranscriptWriteAssertion(scope);
-  const assertActive = () => {
-    assertCurrent();
-    assertOwned();
-  };
+  const { withSessionMetadataWorker } = await import("./session-manager-metadata-runtime.js");
   const options = toDatabaseOptions(resolveSqliteTranscriptScope(scope));
   const database = captureOpenClawAgentDatabaseExecution(options);
   const initialWriter = getOwnedSessionTranscriptInitialWriter({ sessionTarget: scope });
   return trackAsyncWork(async () => {
     try {
-      const { withSessionMetadataWorker } = await import("./session-manager-metadata-runtime.js");
-      assertActive();
       await runOpenClawAgentWriteAdmission(
         options,
         () =>
           withSessionMetadataWorker(
             options,
             database,
-            assertActive,
+            assertCurrent,
             async (worker) => {
               const { env: _env, ...target } = scope;
               if (prepared.header) {
@@ -203,7 +196,7 @@ export async function appendSessionMetadataInWorker(
                 if (!header.value.snapshot.ok || !header.value.snapshot.value.result?.appended) {
                   throw new Error("Session transcript header was not persisted");
                 }
-                assertActive();
+                assertCurrent();
               }
               const receipt = await receiveSessionManagerCommit("session.metadata.append", () =>
                 worker.execute({
@@ -211,7 +204,7 @@ export async function appendSessionMetadataInWorker(
                   input: {
                     scope: target,
                     event: JSON.stringify(prepared.event),
-                    ...(prepared.initialModel ? { initialModel: prepared.initialModel } : {}),
+                    initialModel: prepared.initialModel,
                     options: {
                       appendIntent: prepared.appendIntent,
                       expectedMutationAt: prepared.expectedMutationAt,

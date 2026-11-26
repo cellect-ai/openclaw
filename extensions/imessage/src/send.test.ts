@@ -7,6 +7,7 @@ import { createOpenClawTestState, type OpenClawTestState } from "openclaw/plugin
 import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import type { IMessageRpcClient } from "./client.js";
 import { resolveIMessageRemoteHost } from "./remote-host.js";
+import { registerIMessageSendStatus } from "./send-status.js";
 import {
   createClient,
   createRejectingClient,
@@ -1135,15 +1136,12 @@ describe("sendMessageIMessage receipts", () => {
       const response = { success: false, error: detail };
       const { getIMessageRuntime } = await import("./runtime.js");
       const patches: unknown[] = [];
-      const lease = getIMessageRuntime().channel.runtimeContexts.register({
-        channelId: "imessage",
-        capability: "imessage-send-status",
+      const lease = registerIMessageSendStatus({
         accountId: "work",
+        channelRuntime: getIMessageRuntime().channel,
         abortSignal: new AbortController().signal,
-        context: {
-          getStatus: () => ({ accountId: "work" }),
-          setStatus: (next: unknown) => patches.push(next),
-        },
+        getStatus: () => ({ accountId: "work" }),
+        setStatus: (next) => patches.push(next),
       });
       onTestFinished(() => lease?.dispose());
       fs.writeFileSync(
@@ -1151,7 +1149,7 @@ describe("sendMessageIMessage receipts", () => {
         [
           "#!" + process.execPath,
           'const fs = require("node:fs");',
-          `fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)));`,
+          `fs.appendFileSync(${JSON.stringify(logPath)}, JSON.stringify(process.argv.slice(2)) + "\\n");`,
           `process.stdout.write(${JSON.stringify(JSON.stringify(response) + "\n")});`,
         ].join("\n"),
         { mode: 0o755 },
@@ -1272,8 +1270,7 @@ describe("sendMessageIMessage receipts", () => {
     }).catch((error: unknown) => error);
     expect(rejection).toBeInstanceOf(PlatformMessageNotDispatchedError);
     expect(rejection).toMatchObject({ message: rpcError.message, cause: rpcError });
-    expect(getClientMocks(client).request).toHaveBeenCalledOnce();
-    expect(getClientMocks(client).request).toHaveBeenCalledWith(
+    expect(getClientMocks(client).request).toHaveBeenCalledExactlyOnceWith(
       "send.attachment",
       expect.objectContaining({ file: "/tmp/openclaw-imessage-safe/photo.png" }),
       expect.any(Object),
@@ -1428,14 +1425,11 @@ describe("sendMessageIMessage receipts", () => {
       accountId: "work",
     });
 
-    expect(createClientForAccount).toHaveBeenCalledWith({
+    expect(createClientForAccount).toHaveBeenCalledExactlyOnceWith({
       cliPath: "/gateway/work-imsg",
       dbPath: "~/Library/Messages/chat.db",
       remoteHost: "work@messages-b",
     });
-    expect(createClientForAccount).not.toHaveBeenCalledWith(
-      expect.objectContaining({ remoteHost: "default@messages-a" }),
-    );
   });
 
   it("resolves service-qualified remote media through the canonical send RPC", async () => {
@@ -1469,7 +1463,7 @@ describe("sendMessageIMessage receipts", () => {
         localPath: "/gateway/photo.png",
       }),
     );
-    expect(getClientMocks(client).request).toHaveBeenCalledWith(
+    expect(getClientMocks(client).request).toHaveBeenCalledExactlyOnceWith(
       "send",
       expect.objectContaining({
         to: "+15550004567",
@@ -1477,11 +1471,6 @@ describe("sendMessageIMessage receipts", () => {
         service: "imessage",
       }),
       expect.any(Object),
-    );
-    expect(getClientMocks(client).request).not.toHaveBeenCalledWith(
-      "send.attachment",
-      expect.anything(),
-      expect.anything(),
     );
     expect(result).toMatchObject({
       messageId: "p:0/remote-resolved-media",
@@ -1549,8 +1538,7 @@ describe("sendMessageIMessage receipts", () => {
     await vi.advanceTimersByTimeAsync(delayedFallbackMs);
 
     await expect(send).resolves.toMatchObject({ messageId: "p:0/imsg-delayed-fallback" });
-    expect(getClientMocks(client).request).toHaveBeenCalledTimes(1);
-    expect(getClientMocks(client).request).toHaveBeenCalledWith(
+    expect(getClientMocks(client).request).toHaveBeenCalledExactlyOnceWith(
       "send",
       expect.any(Object),
       expect.objectContaining({ timeoutMs: 180_000 }),

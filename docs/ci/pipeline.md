@@ -277,6 +277,7 @@ Vitest without dropping coverage. Production sources remain free to change and
 are still exercised. Extra Vitest arguments, including cache-warming collection,
 retain the existing Vitest path.
 
+Shared fingerprints include the pinned Bun manifest and PostgreSQL test-root guard.
 A changed shared setup fingerprint invalidates the entire native cohort.
 Refreshing those fingerprints requires fresh qualification of the retained
 entries; tests without matching proof keep their Vitest coverage.
@@ -304,7 +305,9 @@ and worker budgets. The shared Vitest config resolves `ws` to the installed
 package so imports and mocks use the same module identity on both runtimes.
 
 Control UI uses three native shards and three workers per row, including
-exact-target Full Release Validation dispatches. The runtime partition applies
+exact-target Full Release Validation dispatches. Partial PR unit selections target
+three files per row, up to the same three-row cap; full UI owners keep three shards.
+The runtime partition applies
 after Vitest selects a shard, preserving original file ownership. Files with
 Node-only heap or WeakRef contracts keep Node coverage; the remaining selection
 uses Bun. UI `dual-all` keeps the original Node pass followed by its Bun portion
@@ -666,11 +669,11 @@ All four scans use `scripts/install-periphery.sh` to install the checksum-pinned
 Security review separates product changes that maintainers can approve from the
 small set of security policy and enforcement files that require SecOps approval.
 
-| Change                                     | User account with `maintain` or `admin` access   | Other authors                                                                    |
-| ------------------------------------------ | ------------------------------------------------ | -------------------------------------------------------------------------------- |
-| Sensitive product code                     | Informational notice; no extra security approval | `/allow-security-sensitive-change` from a user with `maintain` or `admin` access |
-| Dependency changes requiring review        | Same maintainer exemption                        | `/allow-dependencies-change` from a user with either role                        |
-| SecOps-owned files in `.github/CODEOWNERS` | Independent SecOps code-owner approval           | Independent SecOps code-owner approval                                           |
+| Change                                     | User account with `maintain` or `admin` access       | Other authors                                                                                       |
+| ------------------------------------------ | ---------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| Sensitive product code                     | Informational notice; no extra security approval     | `/allow-security-sensitive-change` from a user with `maintain` or `admin` access                    |
+| Dependency changes requiring review        | Admin authors exempt; Maintain alone is insufficient | `/allow-dependencies-change` from a repository admin or active SecOps member; SecOps authors exempt |
+| SecOps-owned files in `.github/CODEOWNERS` | Independent SecOps code-owner approval               | Independent SecOps code-owner approval                                                              |
 
 The **Security Review** workflow runs both guards from trusted repository code.
 It publishes a commit status named `openclaw/ci-gate` that requires both the
@@ -839,7 +842,7 @@ that already qualify as informational remain informational.
 Automatic lockfile cleanup is best effort. If neither cleanup App can provide a
 write token, or GitHub explicitly denies the cleanup mutation's permissions, the
 dependency notice explains how to remove the remaining changes or request
-maintainer approval. These expected access limitations do not fail the Actions
+admin or SecOps approval. These expected access limitations do not fail the Actions
 job or satisfy dependency review. Unexpected cleanup errors remain failures.
 
 Edit `.github/security-review-policy.yml` to change path classification. Its
@@ -861,12 +864,17 @@ and dependency caches disabled. That action's manifest and npm lock mirror the
 root dependency pins and `pnpm-lock.yaml`; update them together when those pins
 change. Approval decisions and dependency graph analysis remain in JavaScript.
 
-Both guards use current repository permissions. Only GitHub user accounts with
-`maintain` or `admin` access can grant command approval or receive the author exemption.
-`write` access and organization membership are insufficient. A maintainer pushing
-to an external contributor's branch does not transfer the author exemption.
-Automation using a GitHub user account qualifies under the same role check;
-GitHub App bot identities do not qualify.
+Both guards use current GitHub authority. Sensitive product changes retain the
+`maintain` or `admin` author exemption and command approval. Dependency changes
+require repository `admin` access or active membership in `@openclaw/openclaw-secops`
+for either path; Maintain access and organization membership alone are insufficient.
+SecOps membership reads use a separate organization Members-read App token from
+the existing primary/fallback GitHub Apps; repository statuses and notices keep
+using the workflow token. Missing membership credentials or failed reads never
+grant dependency approval. A maintainer pushing to another
+author's branch does not transfer the author exemption. Automation using a GitHub
+user account qualifies under the same guard-specific checks; GitHub App bot
+identities do not qualify.
 
 For other authors, wait for the applicable guard notice to show the current PR
 commit, then post the command on its own line in a new PR comment:
@@ -1074,9 +1082,12 @@ extra compiler pass runs to populate it. Archive upload cost and consumer hit
 rates still need CI measurement.
 
 Source-only Linux Node 24 shards can restore compiled Vitest workers from the
-protected cache warmer. The warmer prepares one generation before SDK or runtime
-builds change package resolution, joins the preparation owner, and publishes only
-the retained cache. PR jobs restore it without publishing. Consumers enable
+protected cache warmer. The warmer prepares separate full, runtime, and tooling
+generations before SDK or runtime builds change package resolution, joins each
+preparation owner, and publishes each retained slot in its own archive. The
+manifest uses the worker owner's selection rules to hint which archive to restore;
+unknown or mixed selections restore the full archive. Execution recomputes the
+preset and validates the restored generation before reuse. PR jobs restore it without publishing. Consumers enable
 reuse only when an archive exists; cold runners keep ordinary fresh compilation.
 The worker owner verifies source and dependency bytes, compiler identity,
 resolution topology, environment, output inventory, and the exact checkout and
@@ -1135,6 +1146,14 @@ remains the explicit operator override for attempting a different budget.
 sizes. Budget violations do not prevent artifact generation. The separate
 `control-ui-performance` job enforces the budgets without blocking other jobs
 from building or testing the same source.
+
+Both the absolute check and `ui:check-performance:base` normalize generated
+asset hashes before measuring gzip and Brotli budgets. Asset stems, extensions,
+and code stay intact, so a rename alone cannot consume the budget. The report's
+compressed budget numbers are normalized; its separate **served** gzip, Brotli,
+and raw sizes describe the bytes on the wire, including identity fallback when
+a compression sidecar is absent. JSON metrics use `gzipBytes`/`brotliBytes` for
+budgets and `servedGzipBytes`/`servedBrotliBytes` for transfer sizes (schema 2).
 
 Every production UI build checks generated protocol validators before building
 or reusing cached output. After changing a schema used by the Control UI, run

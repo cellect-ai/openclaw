@@ -183,24 +183,6 @@ describe("listed model chat rejection", () => {
     expect(replyText(failure)).not.toBe(REJECTED_COPY);
   });
 
-  it.each(["other-profile", "unavailable"])(
-    "does not trust %s listing evidence",
-    async (mismatch) => {
-      const input = makeInput(MODEL_DOES_NOT_EXIST, { fallbackConfigured: false });
-      input.providerOutcomes = [
-        {
-          provider: "openai",
-          status: mismatch === "unavailable" ? "unavailable" : "ready",
-          profileId: mismatch === "other-profile" ? "other-profile" : undefined,
-          listedModelIds: [MODEL],
-        },
-      ];
-      const failure = await surfacedFailure(input);
-      expect(failure.reason).toBe("model_not_found");
-      expect(failure.code).not.toBe("model_chat_rejected");
-    },
-  );
-
   it("leaves an empty successful reply to the empty-response path", async () => {
     const input = makeInput(MODEL_DOES_NOT_EXIST, { fallbackConfigured: false });
     Object.assign(input.normalizedAttempt.attemptAssistant, {

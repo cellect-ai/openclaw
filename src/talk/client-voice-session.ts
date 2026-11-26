@@ -28,6 +28,8 @@ import {
   matchesClientVoiceRunSource,
   type ClientVoiceRun,
   type ClientVoiceSessionSource,
+  captureClientVoiceSessionWriter,
+  type ClientVoiceSessionWriter,
 } from "./client-voice-session-source.js";
 import {
   assertVoiceSessionOwnership,
@@ -42,10 +44,8 @@ import {
   voiceSessionOperations,
 } from "./client-voice-session-transcript.js";
 import {
-  captureClientVoiceSessionWriter,
   mutateAuthorizedClientVoiceSession,
   type ClientVoiceSessionMutationAuthority,
-  type ClientVoiceSessionWriter,
 } from "./client-voice-session-write.js";
 import type { VoiceSessionMutation } from "./client-voice-session-write.kernel.js";
 
@@ -354,7 +354,10 @@ export async function flushClientVoiceSessionWrites(
   await withClientVoiceSessionResources(resources, async () => {
     await voiceSessionOperations.flush(operationKey(params.agentId, params.voiceSessionId));
     // Join the accepted agent-writer prefix, including synchronous diagnostic producers.
-    await runOpenClawAgentWriteAdmission(writer.options, () => writer.assertCurrent());
+    await runOpenClawAgentWriteAdmission(writer.options, async () => {
+      await writer.prepare();
+      writer.assertCurrent();
+    });
   });
 }
 
@@ -463,6 +466,7 @@ export async function closeStaleClientVoiceSessions(params: {
   // A new voice session remains a retry point, but channel I/O is detached so a
   // stalled adapter cannot block stale-session recovery.
   const physicalSource = captureClientVoiceSessionSource(params.agentId);
+  await physicalSource.prepare();
   mutationDigestDeliveryOwner.retryAgent(params.agentId, {
     config: params.config,
     source: physicalSource,

@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
+import { isPendingBackgroundResultMessage } from "../../../../packages/agent-core/src/harness/session/background-result-placement.js";
 import type { AgentMessage } from "../../../../packages/agent-core/src/types.js";
 import {
   prepareForeignLiveSessionPendingInputEntries,
@@ -27,7 +28,7 @@ import {
   isSessionWorkStartInvalidatedError,
   SessionWorkStartChangedError,
 } from "../../../config/sessions/work-start-error.js";
-import { readNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
+import { readOwnNestedToolActivity } from "../../../sessions/nested-tool-activity.js";
 import type {
   PersistedUserTurnMessage,
   UserTurnTranscriptRecorder,
@@ -35,7 +36,7 @@ import type {
 import { MODEL_FALLBACK_NOTICE_KIND } from "../../../shared/model-fallback-notice.js";
 import {
   isOpenClawDeliveryMirrorAssistantMessage,
-  SKILL_WORKSHOP_CHANGE_NOTICE_KIND,
+  PLUGIN_NOTICE_KIND,
 } from "../../../shared/transcript-only-openclaw-assistant.js";
 import {
   AGENT_RUN_RESTART_ABORT_ERROR,
@@ -73,14 +74,15 @@ function isInterruptedTurnEntry(entry: SessionEntry, runId: string): boolean {
   }
   const message = entry.message;
   if (message.role === "custom") {
-    return readNestedToolActivity(message)?.details.runId === runId;
+    return readOwnNestedToolActivity(message)?.details.runId === runId;
   }
   const delivery = isOpenClawDeliveryMirrorAssistantMessage(message)
     ? asOptionalRecord(Reflect.get(message, "openclawDeliveryMirror"))
     : undefined;
   // Operational notices do not complete the foreground user turn.
   if (
-    delivery?.kind === SKILL_WORKSHOP_CHANGE_NOTICE_KIND ||
+    isPendingBackgroundResultMessage(message) ||
+    delivery?.kind === PLUGIN_NOTICE_KIND ||
     delivery?.kind === MODEL_FALLBACK_NOTICE_KIND
   ) {
     return true;
@@ -577,7 +579,7 @@ export async function prepareForeignPendingUserTurns(
   | ((
       activeSession: ForeignPendingUserTurnSession,
       currentUserIdempotencyKey: string | undefined,
-    ) => ForeignPendingUserTurns | undefined)
+    ) => Promise<ForeignPendingUserTurns | undefined>)
   | undefined
 > {
   const target = sessionManager.getSessionTarget();
@@ -598,10 +600,12 @@ export async function prepareForeignPendingUserTurns(
   const entries = new Map<string, string>();
   const adopted = new Set<string>();
   let observing = false;
-  return (activeSession, currentUserIdempotencyKey) => {
+  return async (activeSession, currentUserIdempotencyKey) => {
+    assertPrepared();
+    const liveEntries = await readEntries();
     assertPrepared();
     // Preserve the first sample through transcript reload even if a source finishes meanwhile.
-    for (const [id, key] of readEntries()) {
+    for (const [id, key] of liveEntries) {
       entries.set(id, key);
     }
     if (!entries.size) {

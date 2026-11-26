@@ -15,6 +15,7 @@ import type { AgentDatabaseMigrationTarget } from "../infra/state-migrations.med
 import { retainUpdateDoctorProcesses } from "../infra/update-doctor-process-custody.js";
 import {
   captureUpdateDoctorConfigWrites,
+  getUpdateDoctorConfigCapture,
   DoctorMaintenanceRefusalError,
   normalizeUpdatePostInstallDoctorWarnings,
   UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE,
@@ -102,7 +103,7 @@ export async function runDoctorHealthFlow(
       }
       const resultPath = process.env[UPDATE_POST_INSTALL_DOCTOR_RESULT_PATH_ENV]?.trim();
       return withPluginLoadDiagnostics((diagnostics) => {
-        const runDoctor = (capture?: DoctorConfigCapture) =>
+        const runDoctor = (capture = getUpdateDoctorConfigCapture()) =>
           runDoctorHealthFlowWithResult(
             (selectedRuntime, code) => {
               requestedExit = () => startup.exitDoctorHealthFlow(selectedRuntime, code);
@@ -111,7 +112,7 @@ export async function runDoctorHealthFlow(
             options,
             preparedPreflight,
             diagnostics,
-            resultPath && capture ? { resultPath, capture } : undefined,
+            capture ? { resultPath, capture } : undefined,
             writeAuthority,
             resumeCapture,
             preCaptureRehearsalRoot,
@@ -125,7 +126,12 @@ export async function runDoctorHealthFlow(
     await import("../plugins/plugin-generation-source-lookup.js");
   await withPluginGenerationSourceCustody(() =>
     custody ? withCommandProcessScope(run, undefined, custody) : run(),
-  );
+  ).catch(async (error: unknown) => {
+    const { reportDoctorReadOnlyFilesystemError } =
+      await import("../commands/doctor-maintenance-inspection.js");
+    await reportDoctorReadOnlyFilesystemError(error, runtime);
+    throw error;
+  });
   signal?.throwIfAborted();
   requestedExit?.();
 }
@@ -136,7 +142,7 @@ async function runDoctorHealthFlowWithResult(
   options: DoctorOptions,
   databasePreflight: DoctorDatabasePreflight | undefined,
   diagnostics: readonly PluginDiagnostic[],
-  updateResult?: { resultPath: string; capture: DoctorConfigCapture },
+  updateResult?: { resultPath?: string; capture: DoctorConfigCapture },
   writeAuthority?: UpdateDoctorWriteAuthority,
   resumeCapture?: () => void,
   preCaptureRehearsalRoot?: string,
@@ -414,6 +420,7 @@ async function runDoctorHealthFlowWithResult(
         runtime: doctorRuntime,
         healthFindings: startupFindings.healthFindings,
         options,
+        retirementOnly: writeAuthority?.retirementOnly === true,
         prompter,
         configResult,
         cfg: configResult.cfg,
@@ -553,12 +560,15 @@ async function runDoctorHealthFlowWithResult(
       return;
     }
     const pluginWarnings: string[] = [];
+    let pluginLoadFailed = false;
     if (diagnostics.length > 0) {
       const { collectPluginLoadHealthFindings } =
         await import("../commands/doctor-workspace-status.js");
       const findings = collectPluginLoadHealthFindings(diagnostics);
       renderStructuredHealthFindings(ctx, findings);
       pluginWarnings.push(...findings.map((finding) => `${finding.checkId}: ${finding.message}`));
+      // Advisory notices, such as open tool schemas, come from plugins that still loaded.
+      pluginLoadFailed = findings.some((finding) => finding.severity === "error");
     }
     showDoctorHealthSummary(ctx);
     const warnings = normalizeUpdatePostInstallDoctorWarnings([
@@ -586,11 +596,11 @@ async function runDoctorHealthFlowWithResult(
           }
         : {}),
     };
-    if (updateResult && doctorResult.status === "advisory") {
+    if (updateResult?.resultPath && doctorResult.status === "advisory") {
       exitCode = UPDATE_POST_INSTALL_DOCTOR_ADVISORY_EXIT_CODE;
       return;
     }
-    if (pluginWarnings.length > 0) {
+    if (pluginLoadFailed) {
       startup.showDoctorOutro("Doctor finished with plugin load errors.");
       if (options.nonInteractive && !updatePhase.isUpdateDoctorLintPass(process.env)) {
         exitCode = 1;
@@ -708,5 +718,5 @@ async function runDoctorHealthFlowWithResult(
     }
   }
 
-  startup.showDoctorOutro("Doctor complete.");
+  startup.showDoctorComplete({ watchExit: options.watchExitAfterComplete === true });
 }

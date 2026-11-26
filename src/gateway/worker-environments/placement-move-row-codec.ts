@@ -17,7 +17,6 @@ import { normalizeEpoch, required } from "./placement-record.js";
 export const MOVE_OPERATION_PREFIX = "move:v1:";
 const MOVE_MACHINE_CLASS_MAX_LENGTH = 128;
 const MOVE_OS_MAX_LENGTH = 64;
-
 export type MoveRow = Selectable<WorkerSessionPlacementMoves>;
 type MoveDatabase = Pick<
   StateDatabase,

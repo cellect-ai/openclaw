@@ -22,18 +22,13 @@ import {
 } from "openclaw/plugin-sdk/interactive-runtime";
 import type { MessagePresentation } from "openclaw/plugin-sdk/interactive-runtime";
 import type { ReplyPayload } from "openclaw/plugin-sdk/reply-runtime";
-import { resolveStorePath } from "openclaw/plugin-sdk/session-store-runtime";
-import { resolveTelegramAccountOwnerAgentId } from "./account-owner.js";
-import {
-  createTelegramActionGate,
-  resolveDefaultTelegramAccountId,
-  resolveTelegramPollActionGateState,
-} from "./accounts.js";
+import { createTelegramActionGate, resolveTelegramPollActionGateState } from "./accounts.js";
 import { TELEGRAM_MESSAGE_ACTION_MAP } from "./action-names.js";
 import {
   normalizeTelegramDeliveryPin,
   readTelegramChatId,
   readTelegramForumTopicIconColor,
+  readTelegramMessageEffectId,
   readTelegramPositiveIntegerParam,
   readTelegramReplyToMessageId,
   readTelegramSendMediaUrls,
@@ -78,7 +73,8 @@ import { TELEGRAM_SUPPORTED_REACTION_EMOJI_LIST } from "./status-reaction-varian
 import { getCacheStats, searchStickers } from "./sticker-cache.js";
 import { normalizeTelegramOutboundTarget, parseTelegramTarget } from "./targets.js";
 import { resolveTelegramToken } from "./token.js";
-import { updateTopicName } from "./topic-name-cache.js";
+import { buildTelegramConversationId, resolveTelegramTargetThread } from "./topic-conversation.js";
+import { resolveTelegramTopicNameCacheScope, updateTopicName } from "./topic-name-cache.js";
 
 const TELEGRAM_EMOJI_LIST_LIMIT = 100;
 const TELEGRAM_REACTION_HINT_LIMIT = 20;
@@ -110,24 +106,15 @@ function normalizeTelegramActionName(action: string): TelegramActionName {
   return normalized;
 }
 
-function resolveActionTopicNameCacheScope(cfg: OpenClawConfig, accountId?: string | null): string {
-  const resolvedAccountId = accountId ?? resolveDefaultTelegramAccountId(cfg);
-  return resolveStorePath(cfg.session?.store, {
-    agentId: resolveTelegramAccountOwnerAgentId({ cfg, accountId: resolvedAccountId }),
-  });
-}
-
 function formatTelegramDeliveryTarget(to: string, messageThreadId?: number | null): string {
   const parsed = parseTelegramTarget(to);
-  const directTopicId = parsed.directMessagesTopicId;
-  if (directTopicId != null) {
-    return `${parsed.chatId}:direct-topic:${directTopicId}`;
-  }
-  const topicId = messageThreadId ?? parsed.messageThreadId;
-  if (topicId == null) {
-    return to;
-  }
-  return `${parsed.chatId}:topic:${topicId}`;
+  const thread = resolveTelegramTargetThread({
+    ...parsed,
+    messageThreadId: messageThreadId ?? parsed.messageThreadId,
+  });
+  return thread.scope === "none"
+    ? to
+    : buildTelegramConversationId({ chatId: parsed.chatId, thread });
 }
 
 export async function handleTelegramAction(
@@ -428,6 +415,7 @@ export async function handleTelegramAction(
     const replyToMessageId = readTelegramReplyToMessageId(params);
     const messageThreadId = readTelegramThreadId(params);
     const quoteText = readStringParam(params, "quoteText", { trim: false });
+    const messageEffectId = readTelegramMessageEffectId(params, to);
     requireToken();
     const asVoice = readBooleanParam(params, "asVoice");
     const silent = readBooleanParam(params, "silent");
@@ -435,8 +423,12 @@ export async function handleTelegramAction(
       readBooleanParam(params, "forceDocument") ?? readBooleanParam(params, "asDocument") ?? false;
     const pin = normalizeTelegramDeliveryPin(params);
     const telegramData =
-      buttons || quoteText
-        ? { ...(buttons ? { buttons } : {}), ...(quoteText ? { quoteText } : {}) }
+      buttons || quoteText || messageEffectId
+        ? {
+            ...(buttons ? { buttons } : {}),
+            ...(quoteText ? { quoteText } : {}),
+            ...(messageEffectId ? { messageEffectId } : {}),
+          }
         : undefined;
     const payload: ReplyPayload = {
       text: content,
@@ -611,7 +603,8 @@ export async function handleTelegramAction(
       });
       content = progressPreview.text;
     }
-    // An unsupported all-disabled keyboard still retires the previous controls.
+    // A keyboard of only unsupported disabled controls becomes an empty keyboard, so
+    // the edit still retires the previous buttons instead of failing.
     const buttons =
       resolveButtons(chatId ?? "") ??
       (droppedControls.length > 0 &&
@@ -694,6 +687,7 @@ export async function handleTelegramAction(
       token,
       replyToMessageId,
       messageThreadId,
+      silent: readBooleanParam(params, "silent"),
     });
     notifyVisibleOutboundSuccess(to, messageThreadId);
     return jsonResult({
@@ -772,7 +766,11 @@ export async function handleTelegramAction(
           result.chatId,
           result.messageThreadId,
           patch,
-          resolveActionTopicNameCacheScope(cfg, accountId),
+          resolveTelegramTopicNameCacheScope({
+            cfg,
+            accountId,
+            direct: resolveTelegramTargetChatType(result.chatId) === "direct",
+          }),
         ).catch(() => {});
       }
     }

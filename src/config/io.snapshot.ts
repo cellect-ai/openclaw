@@ -13,7 +13,6 @@ import {
   includeContributionOwnsBindings,
 } from "./agent-roster-provenance.js";
 import { captureConfigReadEnvMutation, cloneEnvWithPlatformSemantics } from "./config-env-vars.js";
-import { resolveManagedUnsetPathsForWrite } from "./config-path-mutation.js";
 import { applyImplicitAgentRosterDefaults } from "./implicit-agent-roster.js";
 import { ConfigIncludeError, ConfigIncludeReadError } from "./includes.js";
 import { createConfigIoContext, type ConfigIoContext } from "./io.context.js";
@@ -584,7 +583,7 @@ export async function readConfigFileSnapshotForWriteFromContext(
     }
   };
   assertConfigSelection();
-  // Planning may read a provisioned file link; publication separately rejects it.
+  // Reads may follow file aliases; the writer separately pins its publication target.
   const pathProof = captureConfigFileWritePathProof(
     context.configPath,
     resolvePathViaExistingAncestorSync(context.configPath),
@@ -611,7 +610,6 @@ export async function readConfigFileSnapshotForWriteFromContext(
       ownedConfigPathForWrite: context.configPath,
       includeFileHashesForWrite: result.includeFileHashesForWrite,
       includeFileTargetsForWrite: result.includeFileTargetsForWrite,
-      unsetPaths: resolveManagedUnsetPathsForWrite(undefined),
     },
   };
 }

@@ -27,7 +27,7 @@ import { DirectoryCache } from "../infra/outbound/directory-cache.js";
 import type { MemoryAudience } from "../plugins/memory-provider-types.js";
 import { getPluginToolMeta } from "../plugins/tool-metadata.js";
 import type { SkillLibraryAuthoringCapability } from "../skills/library/authoring.js";
-import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop/workspace-authoring.types.js";
+import type { SkillWorkshopWorkspaceAuthoring } from "../skills/workshop-host/workspace-authoring.types.js";
 import type { McpLoopbackRequestContext } from "./mcp-grant-store.js";
 import {
   buildMcpToolSchema,
@@ -353,7 +353,7 @@ async function constructMcpLoopbackTools(
     cfg: params.cfg,
     authProfileStore: params.authProfileStore,
     onYield: params.onYield,
-    skillWorkshop,
+    skillLibraryAuthoring: params.skillLibraryAuthoring,
     bundledTools: params.bundledTools,
     nativeCronCreatorToolAllowlist: context.nativeCronCreatorToolAllowlist ?? undefined,
     agentDir: params.authProfileStoreAgentDir,
@@ -368,7 +368,9 @@ async function constructMcpLoopbackTools(
     nodeExecAvailable: params.nodeExecAvailability?.isAvailable,
     pairedNodeComputerUse: params.pairedComputerUseAvailability?.prepared,
   };
-  const scoped = await resolveGatewayScopedTools(scopeOptions, params.assertCurrent);
+  // Host-held Workshop authoring overrides any caller-supplied context field.
+  const scopedTools = { ...scopeOptions, skillWorkshop };
+  const scoped = await resolveGatewayScopedTools(scopedTools, params.assertCurrent);
   params.assertCurrent();
   const tools =
     mode === "exact"

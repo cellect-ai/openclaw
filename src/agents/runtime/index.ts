@@ -2,14 +2,12 @@
 export {
   Agent,
   bashExecutionToText,
-  buildSessionContext,
   calculateContextTokens,
   compact,
   estimateContextTokens,
   estimateTokens,
   generateSummary,
   openClawAgentCoreRuntime,
-  prepareCompaction,
   shouldCompact,
   BRANCH_SUMMARY_PREFIX,
   BRANCH_SUMMARY_SUFFIX,
@@ -33,5 +31,4 @@ export type {
   SessionTreeEntry,
   StreamFn,
   ThinkingLevel,
-  ToolExecutionMode,
 } from "../../plugin-sdk/agent-core.js";

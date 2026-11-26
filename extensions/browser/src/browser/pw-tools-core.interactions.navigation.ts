@@ -241,7 +241,7 @@ type ObservedDelayedNavigations = {
   subframes: string[];
 };
 
-function createInteractionFrameListener(
+export function createInteractionFrameListener(
   page: NavigationObservablePage,
   previousUrl: string,
   subframes: string[],
@@ -504,7 +504,7 @@ async function awaitNavigationGuardedInteraction<T>(
               navigationPolicy.assertNavigationCurrent?.();
               return await opts.action();
             } finally {
-              actionSettledAtMs = Date.now();
+              actionSettledAtMs = performance.now();
             }
           },
           previousUrl: baselineUrl,
@@ -513,7 +513,7 @@ async function awaitNavigationGuardedInteraction<T>(
         if (hasNavigationPolicy && actionSettledAtMs !== undefined) {
           // The canonical post-check can settle on the first safe navigation.
           // Keep request interception for the full grace after the raw action.
-          const elapsedMs = Math.max(0, Date.now() - actionSettledAtMs);
+          const elapsedMs = Math.max(0, performance.now() - actionSettledAtMs);
           const remainingMs = Math.max(0, BROWSER_ACTION_NAVIGATION_GRACE_MS - elapsedMs);
           if (remainingMs > 0) {
             await sleepWithAbort(remainingMs);

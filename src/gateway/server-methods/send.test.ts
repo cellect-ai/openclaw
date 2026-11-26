@@ -11,7 +11,10 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import { jsonResult } from "../../agents/tools/common.js";
 import type { ChannelPlugin } from "../../channels/plugins/types.public.js";
 import { createChannelPartialDeliveryError } from "../../channels/turn/delivery-result.js";
-import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
+import {
+  clearRuntimeConfigSnapshot,
+  setRuntimeConfigSnapshot,
+} from "../../config/runtime-snapshot.js";
 import type { SessionTranscriptAppendResult } from "../../config/sessions/transcript.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { OutboundDeliveryError } from "../../infra/outbound/deliver-types.js";
@@ -20,6 +23,7 @@ import { buildOutboundMediaLoadOptions } from "../../media/load-options.js";
 import { loadWebMediaRaw } from "../../media/web-media.js";
 import { resetPluginRuntimeStateForTest, setActivePluginRegistry } from "../../plugins/runtime.js";
 import { AGENT_HARNESS_SESSION_KEY_RESERVED_MESSAGE } from "../../sessions/agent-harness-session-key.js";
+import { chatRef } from "../../sessions/chat-ref.js";
 import { prepareUserProfileCatalog } from "../../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../../state/user-profiles.js";
 import { loadBundledPluginFacade } from "../../test-utils/bundled-plugin-public-surface.js";
@@ -78,8 +82,6 @@ const mocks = vi.hoisted(() => ({
   sendPoll: vi.fn<NonNullable<NonNullable<ChannelPlugin["outbound"]>["sendPoll"]>>(),
   getChannelPlugin: vi.fn(),
   loadOpenClawPlugins: vi.fn(),
-  getRuntimeConfigSnapshot: vi.fn(),
-  getRuntimeConfigSourceSnapshot: vi.fn(),
   loadSessionEntry:
     vi.fn<
       (sessionKey: string) => { canonicalKey: string; entry: { sessionId: string } | undefined }
@@ -122,12 +124,6 @@ vi.mock("../../agents/agent-scope.js", async (importOriginal) => ({
   resolveAgentConfig: () => undefined,
   resolveDefaultAgentId: () => "main",
   resolveAgentWorkspaceDir: () => TEST_AGENT_WORKSPACE,
-}));
-
-vi.mock("../../config/runtime-snapshot.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("../../config/runtime-snapshot.js")>()),
-  getRuntimeConfigSnapshot: mocks.getRuntimeConfigSnapshot,
-  getRuntimeConfigSourceSnapshot: mocks.getRuntimeConfigSourceSnapshot,
 }));
 
 vi.mock("../../plugins/loader.js", () => ({
@@ -254,7 +250,7 @@ function mockDeliverySuccess(messageId: string) {
   mocks.deliverOutboundPayloads.mockResolvedValue([{ messageId, channel: "slack" }]);
 }
 
-const { registerMessageThreadAddressingPlugin, registerMessageActionPlugin } =
+const { registerMessageThreadAddressingPlugin, registerMessageActionPlugin, routePlugin } =
   createMessageMethodPluginFixtures(mocks);
 
 async function expectRejectedSend(params: Record<string, unknown>, message: string) {
@@ -276,22 +272,6 @@ function fixedStoreContext(): GatewayRequestContext {
       defaults: { sessionStore: { agentId: "ops" } },
     },
   }));
-}
-
-function routePlugin(channel: string, config: Partial<ChannelPlugin["config"]> = {}) {
-  return {
-    id: channel,
-    actions: { handleAction: true },
-    outbound: { sendPoll: mocks.sendPoll },
-    config: {
-      listAccountIds: (cfg: { channels?: Record<string, { accounts?: object }> }) => {
-        const ids = Object.keys(cfg.channels?.[channel]?.accounts ?? {});
-        return ids.length ? ids : ["default"];
-      },
-      resolveAccount: (_cfg: unknown, accountId: string) => ({ accountId, enabled: true }),
-      ...config,
-    },
-  };
 }
 
 function mockMutableMessageRouteAccounts(resolveDefaultAccountId: (channel: string) => string) {
@@ -342,7 +322,7 @@ function dedupeRouteFixture() {
 
 function expectAuthorityDenied(respond: ReturnType<typeof vi.fn>) {
   expect(firstRespondCall(respond)[0]).toBe(false);
-  expect(firstRespondCall(respond)[2]?.message).toContain("authority is no longer active");
+  expect(firstRespondCall(respond)[2]?.message).toContain("Start a new turn to retry.");
 }
 
 function expectFailure(respond: ReturnType<typeof vi.fn>, error: Record<string, unknown>) {
@@ -423,6 +403,7 @@ describe("gateway send conversation ownership", () => {
   });
 
   afterEach(() => {
+    clearRuntimeConfigSnapshot();
     resetPluginRuntimeStateForTest();
   });
 
@@ -430,8 +411,6 @@ describe("gateway send conversation ownership", () => {
     vi.clearAllMocks();
     registrySeq += 1;
     setActivePluginRegistry(createTestRegistry([]), `send-test-${registrySeq}`);
-    mocks.getRuntimeConfigSnapshot.mockReturnValue(null);
-    mocks.getRuntimeConfigSourceSnapshot.mockReturnValue(null);
     mocks.loadSessionEntry.mockImplementation((sessionKey: string) => ({
       canonicalKey: sessionKey,
       entry: undefined,
@@ -445,10 +424,11 @@ describe("gateway send conversation ownership", () => {
             : `agent:${agentId ?? "main"}:${channel ?? "main"}:resolved`,
       }),
     );
-    mocks.resolveMessageChannelSelection.mockResolvedValue({
-      channel: "slack",
-      configured: ["slack"],
-    });
+    mocks.resolveMessageChannelSelection.mockImplementation(async ({ channel = "slack" }) => ({
+      channel,
+      plugin: mocks.getChannelPlugin(channel),
+      configured: [channel],
+    }));
     mocks.dispatchChannelMessageAction.mockResolvedValue({
       details: { action: "handled" },
     });
@@ -502,8 +482,7 @@ describe("gateway send conversation ownership", () => {
       channels: { discord: { enabled: true, accounts: { drclaw: runtimeAccount } } },
       plugins: { allow: ["discord"] },
     };
-    mocks.getRuntimeConfigSnapshot.mockReturnValue(runtimeConfig);
-    mocks.getRuntimeConfigSourceSnapshot.mockReturnValue(sourceConfig);
+    setRuntimeConfigSnapshot(runtimeConfig, sourceConfig);
     const { respond } = await runMessageActionRequest(
       {
         channel: "discord",
@@ -513,14 +492,13 @@ describe("gateway send conversation ownership", () => {
       null,
       makeContext(() => sourceConfig),
     );
-    expect(mocks.getRuntimeConfigSnapshot).toHaveBeenCalledTimes(1);
-    expect(mocks.getRuntimeConfigSourceSnapshot).toHaveBeenCalledTimes(1);
     expect(lastDispatchChannelMessageActionCall()?.cfg).toBe(runtimeConfig);
     expect(firstRespondCall(respond)[0]).toBe(true);
   });
 
   it("does not share message.action idempotency results across authority origins", async () => {
     const context = makeContext();
+    const controller = new AbortController();
     const firstDeferred = createDeferred<{ details: { action: string } }>();
     const secondDeferred = createDeferred<{ details: { action: string } }>();
     mocks.dispatchChannelMessageAction
@@ -538,6 +516,7 @@ describe("gateway send conversation ownership", () => {
       { ...params, conversationReadOrigin: "direct-operator" },
       {
         context,
+        signal: controller.signal,
         requestId: "direct",
       },
     );
@@ -553,6 +532,7 @@ describe("gateway send conversation ownership", () => {
     await waitForCalls(mocks.dispatchChannelMessageAction, 2);
     expect(mocks.dispatchChannelMessageAction.mock.calls[0]?.[0]).toMatchObject({
       conversationReadOrigin: "direct-operator",
+      abortSignal: controller.signal,
     });
     expect(mocks.dispatchChannelMessageAction.mock.calls[1]?.[0]).toMatchObject({
       conversationReadOrigin: "delegated",
@@ -881,13 +861,11 @@ describe("gateway send conversation ownership", () => {
 
   it("hands each internally bound session result to the durable queue with its original generation", async () => {
     mockDeliverySuccess("m-session-result");
-    const generation = {
+    const generation = chatRef({
       agentId: "main",
       storePath: "/test/agents/main/sessions/sessions.json",
       sessionKey: "agent:main:main",
-      sessionId: "original-session",
-      lifecycleRevision: "original-revision",
-    };
+    });
     const { respond } = await sendWithClient(
       bindInProcessSessionDeliveryGeneration(
         {
@@ -1585,7 +1563,7 @@ describe("gateway send conversation ownership", () => {
     expect(actionCall?.requesterSenderId).toBe("blocked-sender");
     expect(actionCall?.mediaAccess.workspaceDir).toBe(TEST_AGENT_WORKSPACE);
     expect(actionCall?.mediaAccess).not.toHaveProperty("readFile");
-    expect(actionCall).not.toHaveProperty("mediaReadFile");
+    expect(actionCall?.mediaReadFile).toBeUndefined();
   });
 
   it("applies signed sender aliases to gateway send media policy", async () => {
@@ -1639,12 +1617,9 @@ describe("gateway send conversation ownership", () => {
 
         expect(firstRespondCall(respond)[0]).toBe(true);
         const actionCall = lastDispatchChannelMessageActionCall();
-        expect(actionCall).toMatchObject({
-          requesterSenderId: "allowed-id",
-          requesterSenderName: "Blocked Sender",
-          requesterSenderUsername: "blocked-user",
-          requesterSenderE164: "+15551234567",
-        });
+        expect(actionCall?.requesterSenderId).toBe("allowed-id");
+        // The runner consumes signed aliases into media policy before provider dispatch;
+        // prove the resulting access below rather than forwarding private identity fields.
         expect(actionCall?.params).toMatchObject({ mediaUrl: workspaceFile });
         expect(actionCall?.params).not.toHaveProperty("buffer");
         const mediaAccess = actionCall?.mediaAccess;

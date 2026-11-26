@@ -24,9 +24,10 @@ const fileEffects = vi.hoisted(() => ({
 
 // mock-isolation: Observe real filesystem effects through the worker's named imports.
 vi.mock("node:fs", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("node:fs")>();
-  return {
-    ...actual,
+  const actual = await importOriginal<
+    typeof import("node:fs") & { default: typeof import("node:fs") }
+  >();
+  const overrides = {
     rmSync: (...args: Parameters<typeof actual.rmSync>) => {
       fileEffects.beforeRemove?.();
       return actual.rmSync(...args);
@@ -36,6 +37,7 @@ vi.mock("node:fs", async (importOriginal) => {
       return actual.rmdirSync(...args);
     },
   };
+  return { ...actual, ...overrides, default: { ...actual.default, ...overrides } };
 });
 
 // mock-isolation: Exercise the real SQL owner in-process; broker transport is covered separately.
@@ -581,8 +583,11 @@ describe.skipIf(!connection)("PostgreSQL logbook operations", () => {
       expect.objectContaining({ keyframeId: undefined, title: "Coding" }),
     ]);
     saveStandup("After pruning", day);
+    expect(() => backend.assertSettled!()).not.toThrow();
     await backend.close();
+    expect(() => backend.assertSettled!()).toThrow("Logbook database is closed");
     backend = open();
+    expect(() => backend.assertSettled!()).not.toThrow();
     expect(execute({ type: "getStandup", input: { day } })).toMatchObject({
       text: "After pruning",
     });

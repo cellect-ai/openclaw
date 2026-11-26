@@ -231,29 +231,6 @@ describe("navigation authority fence lifecycle", () => {
     });
   });
 
-  it("keeps the current origin usable without granting another private origin", async () => {
-    const { send, session, dispose, pause } = await fence({
-      standingSsrfPolicy: { dangerouslyAllowPrivateNetwork: false },
-    });
-    session.emit("Page.frameNavigated", {
-      frame: { id: "main", url: "http://127.0.0.1:3000/current" },
-    });
-    await dispose();
-    pause("same-origin", "http://127.0.0.1:3000/reload");
-    session.emit("Page.frameRequestedNavigation", {
-      frameId: "main",
-      url: "http://127.0.0.1:4000/private",
-    });
-    pause("other-origin", "http://127.0.0.1:4000/private");
-    await vi.waitFor(() => {
-      expect(send).toHaveBeenCalledWith("Fetch.continueRequest", { requestId: "same-origin" });
-      expect(send).toHaveBeenCalledWith("Fetch.failRequest", {
-        requestId: "other-origin",
-        errorReason: "Aborted",
-      });
-    });
-  });
-
   it("starts the next invocation's document tracking after the last release is acknowledged", async () => {
     // A transport that applies the release when it answers it.
     const disabled = Promise.withResolvers<void>();

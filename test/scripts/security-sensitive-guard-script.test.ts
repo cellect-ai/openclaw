@@ -115,6 +115,8 @@ function runGuard(options: Options = {}) {
     "GET /repos/openclaw/openclaw/collaborators/maintainer/permission": {
       role_name: options.approverRole ?? "maintain",
     },
+    "GET /orgs/openclaw/teams/openclaw-secops/memberships/contributor": { httpError: 404 },
+    "GET /orgs/openclaw/teams/openclaw-secops/memberships/maintainer": { httpError: 404 },
     ...options.routes,
   };
   writeFileSync(
@@ -157,6 +159,7 @@ function runGuard(options: Options = {}) {
       env: {
         PATH: process.env.PATH,
         GITHUB_TOKEN: "fixture-token",
+        GH_APP_TOKEN: "fixture-members-token",
         GITHUB_EVENT_PATH: eventPath,
         GITHUB_REPOSITORY: "openclaw/openclaw",
         GITHUB_RUN_ID: "123",
@@ -388,6 +391,24 @@ describe("security-sensitive guard entry point", () => {
     const result = expectGuard({ changedFiles: 3001 }, ["pending", "failure"], 1);
     expect(result.stderr).toContain("complete changed-file list");
   });
+
+  it.each(["security-sensitive-guard", "dependency-guard"] as const)(
+    "%s publishes failure when initialization times out after pending",
+    (script) => {
+      const result = runGuard({
+        script,
+        files: guardFiles(script),
+        routes: {
+          [`GET ${pullPath}/files`]: { requestTimeout: true },
+        },
+      });
+      expect(result.status, result.stderr).toBe(1);
+      expect(result.statuses).toEqual(["pending", "failure"]);
+      expect(result.stderr).toContain(
+        `GitHub API GET ${pullPath}/files?per_page=100&page=1 exceeded timeout 30000ms`,
+      );
+    },
+  );
 
   it.each(["security-sensitive-guard", "dependency-guard"] as const)(
     "%s skips a superseded head after approval is read",

@@ -19,15 +19,13 @@ it.each(["kickoff", "resumed"])(
     const tools = [{ type: "function", name: "sessions_spawn" }];
     const client_metadata = { session_id: "kickoff" };
     const first = await respond(server, prompt, { tools, client_metadata });
-    const firstSpawn = outputToolCall(first, "sessions_spawn");
-    expect(outputToolArgsFromItem(firstSpawn)).toMatchObject({
+    expect(outputToolArgsFromItem(outputToolCall(first, "sessions_spawn"))).toMatchObject({
       label: "qa-fanout-alpha",
     });
     const second = await respond(
       server,
-      userInputs(prompt, firstSpawn, {
+      userInputs(prompt, {
         type: "function_call_output",
-        call_id: firstSpawn.call_id,
         output:
           '{"status":"accepted","childSessionKey":"agent:qa:subagent:alpha","note":"ALPHA-OK"}',
       }),

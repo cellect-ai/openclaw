@@ -30,9 +30,6 @@ export function resolveYieldedRunContinuation(
   entry: SubagentRunRecord,
   requesterEnded = false,
 ): YieldedRunContinuation {
-  if (entry.collect === true && entry.collectorCompletion === undefined) {
-    return { state: "unreachable", error: COLLECTOR_YIELD_ERROR };
-  }
   if (entry.waitForMessage && requesterEnded) {
     return {
       state: "unreachable",
@@ -40,7 +37,10 @@ export function resolveYieldedRunContinuation(
         "Requester finished or was released while this subagent waited for a continuation message.",
     };
   }
-  return { state: "continuable" };
+  // A collector result is read by an explicit wait, never delivered by a continuation.
+  return entry.collect === true && entry.collectorCompletion === undefined
+    ? { state: "unreachable", error: COLLECTOR_YIELD_ERROR }
+    : { state: "continuable" };
 }
 
 /** Whether the yield pause refuses this completion; a kill or an explicit settle may pass it. */
@@ -57,7 +57,7 @@ export function isCompletionHeldByYield(
 
 type SubagentYieldClaim = "nothing-pending" | "pending-work" | { messageWaitRegistered: boolean };
 
-/** Claim a live native task, recording announcing waits before the yielded terminal. */
+/** Claim a live native task, recording message waits before the yielded terminal. */
 export async function claimSubagentYieldInRuns(params: {
   runId: string;
   sessionKey: string;

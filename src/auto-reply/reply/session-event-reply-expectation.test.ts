@@ -4,6 +4,7 @@ import { withinTest } from "../../../test/helpers/promise.js";
 import { completionConfig } from "../../agents/bash-tools.lifecycle.test-support.js";
 import { buildPreparedCliRunContext } from "../../agents/cli-runner.test-helpers.js";
 import { runEmbeddedAgent } from "../../agents/embedded-agent.js";
+import { buildSystemPromptReport } from "../../agents/system-prompt-report.js";
 import { setRuntimeConfigSnapshot } from "../../config/runtime-snapshot.js";
 import { replaceSessionEntry } from "../../config/sessions/session-accessor.js";
 import { openOpenClawStateDatabase } from "../../state/openclaw-state-db.js";
@@ -15,8 +16,7 @@ import {
 } from "./session-event-handoff.js";
 import { startEmbeddedTurn } from "./session-event.test-support.js";
 
-// The real event admission, reply preparation and CLI completion run.
-// mock-isolation: Replace runtime selection and external CLI I/O with deterministic output.
+// mock-isolation: Run real admission/reply/CLI settlement; replace runner selection and CLI I/O.
 vi.mock("../../agents/embedded-agent-runner/run.js", () => ({ runEmbeddedAgent: vi.fn() }));
 const runEmbeddedAgentMock = vi.mocked(runEmbeddedAgent);
 await Promise.all([
@@ -58,6 +58,16 @@ it("carries host-only notification silence through admission to the CLI runner",
           inputProvenance: params.inputProvenance,
           terminalReplyExpectation: params.terminalReplyExpectation,
         };
+        context.systemPromptReport = buildSystemPromptReport({
+          source: "run",
+          generatedAt: Date.now(),
+          systemPrompt: context.systemPrompt,
+          workspaceDir: state.workspaceDir,
+          bootstrapMaxChars: 20_000,
+          injectedWorkspaceFiles: [],
+          skillsPrompt: "",
+          tools: [],
+        });
         return runPreparedCliAgent(context);
       });
       for (const [replyExpectation, text, status] of [

@@ -18,6 +18,7 @@ import {
   type SqliteDatabaseAdmissionLocation,
 } from "./sqlite-database-admission-record.js";
 import type { SqliteDatabaseCleanCloseSeals } from "./sqlite-database-admission-seal.js";
+import { createSqliteLifecycleAggregateError } from "./sqlite-lifecycle-errors.js";
 import {
   assertDatabaseFileIdentity,
   inspectDatabasePathIdentity,
@@ -39,6 +40,91 @@ export function resolveSqliteDatabaseFilePath(location: string): string {
 export function createSqliteDatabaseDescriptorOwner(
   seals: Pick<SqliteDatabaseCleanCloseSeals, "load" | "markLoaded" | "isLoaded">,
 ) {
+  /** Private staging owners await this before dispatching any native consumer of the file.
+   * Sync public/offline callers retain their existing entry; they must not open this private token
+   * during its first preparation. This is not an asynchronous worker-message receiver.
+   */
+  function prepareOwnedSqliteDatabaseAdmission(params: {
+    location: string;
+    expectedIdentity: DatabaseFileIdentity;
+    assertCurrent: () => void;
+  }): Promise<void> {
+    const prepared = state.descriptorPreparation.then(async () => {
+      if (threadId !== 0) {
+        throw new Error("SQLite descriptor preparation belongs to the host");
+      }
+      params.assertCurrent();
+      const observed = await fs.promises.stat(params.location, { bigint: true });
+      assertDatabaseFileIdentity(observed, params.expectedIdentity);
+      const canonical = await fs.promises.realpath(params.location);
+      params.assertCurrent();
+      if (canonical !== params.location) {
+        throw new Error("SQLite private staging location changed before admission");
+      }
+      const key = identity(observed);
+      const custody = state.registry.descriptors.get(key);
+      if (
+        retainPreparedSqliteDatabaseAdmissionLocation(params.location, params.expectedIdentity, {
+          identity: key,
+          canonicalPath: canonical,
+        })
+      ) {
+        return;
+      }
+      const descriptor =
+        custody?.descriptor ??
+        (await new Promise<number>((resolve, reject) => {
+          fs.open(params.location, "r", (error, value) => (error ? reject(error) : resolve(value)));
+        }));
+      let owned = false;
+      let installed = false;
+      try {
+        const opened = await new Promise<BigIntStats>((resolve, reject) => {
+          fs.fstat(descriptor, { bigint: true }, (error, value) =>
+            error ? reject(error) : resolve(value),
+          );
+        });
+        assertDatabaseFileIdentity(opened, params.expectedIdentity);
+        owned = custody === undefined;
+        let refusal: SqliteCleanCloseSealRefusal | undefined;
+        const seal = await readSqliteCleanCloseSealAsync(canonical, opened, (reason) => {
+          refusal = reason;
+        });
+        assertDatabaseFileIdentity(
+          await fs.promises.stat(params.location, { bigint: true }),
+          params.expectedIdentity,
+        );
+        params.assertCurrent();
+        const record = state.registry.retainDescriptor(canonical, descriptor, opened);
+        installed = true;
+        seals.load(record, { seal, refusal });
+      } catch (error) {
+        // Before publication, this private owner has not dispatched a native user.
+        // An unexpected inode keeps the existing retain path's no-close policy.
+        if (owned && !installed) {
+          try {
+            await new Promise<void>((resolve, reject) => {
+              fs.close(descriptor, (closeError) => (closeError ? reject(closeError) : resolve()));
+            });
+          } catch (cleanupError) {
+            throw createSqliteLifecycleAggregateError(
+              [error, cleanupError],
+              "SQLite preparation cleanup failed",
+              error,
+            );
+          }
+        }
+        throw error;
+      }
+    });
+    // Serialize discovery/install, never native operations or their worker dispatch.
+    state.descriptorPreparation = prepared.then(
+      () => {},
+      () => {},
+    );
+    return prepared;
+  }
+
   /** The caller owns permission to create; ordinary turn preparation observes absence only. */
   function prepareSqliteDatabaseAdmissionAsync(params: {
     location: string;
@@ -135,7 +221,7 @@ export function createSqliteDatabaseDescriptorOwner(
             assertDatabaseFileIdentity(opened, observed);
           }
           // Numeric fd custody outlives cancellation; this publishes no native admission.
-          state.registry.retainDescriptorCustody(descriptor, opened);
+          state.registry.retainDescriptorCustody(observed.canonicalPath, descriptor, opened);
           accepted?.resolve();
         } catch (error) {
           if (acquired === undefined) {
@@ -177,11 +263,7 @@ export function createSqliteDatabaseDescriptorOwner(
       const record =
         current && !isRetired(current)
           ? current
-          : state.registry.retainDescriptor(
-              physical.canonicalPath,
-              state.registry.descriptors.get(identity(opened))?.descriptor ?? descriptor,
-              opened,
-            );
+          : state.registry.retainDescriptor(physical.canonicalPath, descriptor, opened);
       state.registry.observeLocation(filename, record.identity);
       if (exists) {
         seals.load(record, { seal, refusal });
@@ -408,8 +490,10 @@ export function createSqliteDatabaseDescriptorOwner(
   }
 
   return {
+    prepareOwnedSqliteDatabaseAdmission,
     prepareSqliteDatabaseAdmissionAsync,
     retainSqliteDatabaseAdmissionLocation,
+    retainPreparedSqliteDatabaseAdmissionLocation,
     prepareSqliteDatabaseAdmission,
     pathAdmission,
   };

@@ -49,20 +49,20 @@ export function parseSent(socket: FakeWebSocketInstance): SentRealtimeEvent[] {
   return socket.sent.map((payload: string) => JSON.parse(payload) as SentRealtimeEvent);
 }
 
-export function requireSocket(index = 0): FakeWebSocketInstance {
-  const socket = FakeWebSocket.instances[index];
-  if (!socket) {
-    throw new Error(`expected xAI realtime socket at index ${index}`);
-  }
-  return socket;
-}
-
 export function requireSession(socket: FakeWebSocketInstance, index = 0): Record<string, unknown> {
   const session = parseSent(socket)[index]?.session;
   if (!session || typeof session !== "object") {
     throw new Error("expected session.update payload");
   }
   return session as Record<string, unknown>;
+}
+
+export function requireSocket(index = 0): FakeWebSocketInstance {
+  const socket = FakeWebSocket.instances[index];
+  if (!socket) {
+    throw new Error(`expected xAI realtime socket at index ${index}`);
+  }
+  return socket;
 }
 
 export function createTestBridge(options: Partial<TestBridgeOptions> = {}): TestBridge {

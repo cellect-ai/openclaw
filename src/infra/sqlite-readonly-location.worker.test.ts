@@ -1,3 +1,4 @@
+import { PassThrough } from "node:stream";
 import { afterEach, expect, it, vi } from "vitest";
 import "../test-utils/prepare-compiled-subprocesses.js";
 import type { SqliteReadOnlyWorkerMode } from "./sqlite-readonly-worker-protocol.js";
@@ -26,6 +27,7 @@ afterEach(() => {
   process.argv = originalArgv;
   process.exitCode = originalExitCode;
   vi.restoreAllMocks();
+  vi.unstubAllGlobals();
   prepare.mockReset();
   prepareCopy.mockReset();
   createToken.mockReset();
@@ -78,8 +80,25 @@ async function expectWorkerFailure(
     const { markPrivateDirectoryCreationRefused } = await import("./private-directory-creation.js");
     markPrivateDirectoryCreationRefused(error);
   }
-  process.argv = [process.execPath, "worker", "--openclaw-sqlite-readonly-child", mode, "/db"];
-  const write = vi.spyOn(process.stdout, "write").mockReturnValue(true);
+  vi.stubGlobal(
+    "process",
+    Object.setPrototypeOf(
+      {
+        ...process,
+        argv: [process.execPath, "worker", "--openclaw-sqlite-readonly-child", mode, "/db"],
+        stdin: new PassThrough(),
+        stdout: new PassThrough(),
+      },
+      process,
+    ),
+  );
+  const write = vi.spyOn(process.stdout, "write").mockImplementation((chunk, ...rest) => {
+    const callback = rest.find((argument) => typeof argument === "function");
+    if (typeof callback === "function") {
+      queueMicrotask(() => callback());
+    }
+    return true;
+  });
   if (mode === "async") {
     prepare.mockRejectedValueOnce(error);
   } else {
@@ -95,7 +114,7 @@ async function expectWorkerFailure(
     (contention ? "Retryable SQLite inspection contention: " : "") +
     (allocationRefused ? "SQLite snapshot directory creation refused: " : "");
   const stdout = JSON.stringify({ ok: false, message: `${prefix}${message}` });
-  expect(write).toHaveBeenCalledExactlyOnceWith(stdout);
+  expect(write).toHaveBeenCalledExactlyOnceWith(stdout, expect.any(Function));
   expect(process.exitCode).toBe(1);
   expect(await readFailure(stdout, mode)).toEqual({
     contention,

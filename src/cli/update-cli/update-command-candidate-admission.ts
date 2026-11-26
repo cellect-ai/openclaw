@@ -276,7 +276,7 @@ export async function withUpdateCandidateAdmission<T>(
     if (
       target.packageAlreadyCurrent ||
       !usesCandidateUpdateAdmission(opts, prepared.installKind) ||
-      target.updateInstallKind !== "package"
+      !target.packageInstallTarget
     ) {
       apply({
         owner: "installed",

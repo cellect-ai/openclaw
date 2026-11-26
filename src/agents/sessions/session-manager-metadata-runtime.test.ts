@@ -141,22 +141,24 @@ it("initializes bounded compaction metadata through the native owner without dup
     const populated = manager.getEntries();
     const preflight = await readPreparedSessionCompactionInWorker(target, { kind: "preflight" });
     assert(preflight.status === "preflight");
-    expect(preflight.source.metadata).toMatchObject({
-      hasExistingSession: true,
-      hasThinkingEntry: true,
-      lastModelSnapshot: {
-        provider: model.provider,
-        modelId: model.modelId,
-        modelApi: model.modelApi,
-      },
-    });
+    expect(preflight.source.leafEntryId).toEqual(expect.any(String));
     // Thinking and snapshots precede the retained compaction suffix but still initialize SDK state.
     expect(preflight.source.entries.some((entry) => entry.type === "thinking_level_change")).toBe(
       false,
     );
     await initializePreparedCompactionMetadata(
       target,
-      preflight.source.metadata,
+      {
+        hasExistingSession: true,
+        hasThinkingEntry: true,
+        leafEntryId: preflight.source.leafEntryId,
+        lastModelSnapshot: {
+          timestamp: Date.now(),
+          provider: model.provider,
+          modelId: model.modelId,
+          modelApi: model.modelApi,
+        },
+      },
       model,
       () => undefined,
     );

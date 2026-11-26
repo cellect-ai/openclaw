@@ -15,13 +15,14 @@ import type {
   CliBackendPromptContext,
   CliBackendTurnInterrupt,
 } from "../../plugins/cli-backend.types.js";
+import type { MemoryAudience } from "../../plugins/memory-provider-types.js";
 import type { PluginInstanceConsumer } from "../../plugins/plugin-instance.types.js";
 import type { SpawnSecretInput } from "../../process/supervisor/types.js";
 import type { AdmittedRunContext } from "../admitted-run-context.js";
 import type { AuthProfileStore } from "../auth-profiles/types.js";
 import type { ResolvedCliBackend } from "../cli-backends.js";
 import type { resolveCliSessionReuse } from "../cli-session.js";
-import type { AgentRunExecutionContext } from "../command/shared-types.js";
+import type { AgentRunExecutionContext } from "../command/execution-context.types.js";
 import type { ContextWindowInfo } from "../context-window-guard.js";
 import type { EmbeddedAgentExecutionPhase } from "../embedded-agent-runner/execution-phase.js";
 import type { RunEmbeddedAgentParams } from "../embedded-agent-runner/run/params.js";
@@ -111,6 +112,8 @@ export type RunCliAgentParams = Pick<
   requesterModel?: ProviderModelRef;
   /** Native context window resolved by the run owner from its prepared model catalog. */
   modelContextWindow?: number;
+  /** Catalog model a CLI-native alias selects, taken from the CLI's own model menu. */
+  nativeModelId?: string;
   /** Effective context cap resolved by the run owner from its prepared model catalog. */
   modelContextTokens?: number;
   provider: string;
@@ -140,7 +143,7 @@ export type RunCliAgentParams = Pick<
   onBeforeFreshCliSessionRetry?: (params: CliSessionRetryParams) => boolean | Promise<boolean>;
   /** Effective turn-local exec policy resolved before entering the CLI runtime. */
   execOverrides?: ExecPolicyOverrides;
-  skillWorkshopWorkspaceAuthoring?: import("../../skills/workshop/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
+  skillWorkshopWorkspaceAuthoring?: import("../../skills/workshop-host/workspace-authoring.types.js").SkillWorkshopWorkspaceAuthoring;
   /** Server-authored origin for fresh automation mutations from this CLI run. */
   cronCreatorCallerOrigin?: CronScheduledToolCallerOrigin;
   /** Exact native plus canonical OpenClaw surface for a selectable CLI backend. */
@@ -188,6 +191,8 @@ type CliPreparedBackend = Awaited<ReturnType<typeof prepareCliBundleMcpConfig>> 
   claimLiveSessionResources?: () => (() => Promise<void>) | undefined;
   /** Private child-only credential transport; never serialized into env or public plugin state. */
   secretInput?: CliSecretInput;
+  /** Check saved-account presence only at process launch and initial input. */
+  prepareCredentialUse?: () => Promise<void>;
   /** Gateway-owned capture fence for this prepared bundle-MCP client. */
   mcpClientGrantCapture?: {
     /** Fresh bearer minted for this prepared turn. */
@@ -231,6 +236,8 @@ export type PreparedCliRunContext = {
   cwd?: string;
   backendResolved: ResolvedCliBackend;
   hostOwnedTools?: readonly string[];
+  /** Host-minted memory audience for this turn's hooks; its leases release with run cleanup. */
+  memoryAudience?: MemoryAudience;
   preparedBackend: CliPreparedBackend;
   /** Enforced timeout of this run's managed Claude MCP server, when present. */
   managedMcpToolTimeoutMs?: number;
@@ -261,7 +268,7 @@ export type PreparedCliRunContext = {
     import("./claude-skills-plugin.js").ClaudeCliSkillsPlugin,
     "args" | "skillCommands"
   >;
-  /** Host-held, policy-selected personal Workshop tool for the paired-node adapter. */
+  /** Host-held, policy-selected skill_library tool for the paired-node "workshop" slot. */
   nodeSkillWorkshop?: import("../tools/common.js").AnyAgentTool;
   openClawHistoryPrompt?: string;
   /** Only the exact resumed native session may receive these newly committed conversation rows. */

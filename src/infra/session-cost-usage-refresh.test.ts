@@ -9,10 +9,8 @@ import { loggingState } from "../logging/state.js";
 import { AsyncWorkScope } from "../shared/async-work-scope.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { readAgentDeletionJournalStatusInWorker } from "../state/agent-deletion-journal.read.js";
-import {
-  closeOpenClawStateDatabaseByPathAsync,
-  openOpenClawStateDatabase,
-} from "../state/openclaw-state-db.js";
+import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
+import { closeStateDatabaseForTest } from "../test-utils/database-cleanup.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "./agent-run-registry.js";
 import { refreshCostUsageCacheForAgent as refreshAgent } from "./session-cost-usage-aggregation.js";
@@ -22,6 +20,7 @@ import {
   loadCostUsageSummaryFromCache as loadSummary,
   loadSessionCostSummary,
   loadSessionCostSummariesFromCache as loadSessions,
+  loadSessionUsageOverviewFromCache as loadOverview,
 } from "./session-cost-usage.js";
 
 const config = {};
@@ -201,26 +200,24 @@ async function withRefreshFixture(
       .map((file, index) => fs.writeFile(file, index === 0 ? firstRecord : userLine)),
   );
   await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-    // Retain a real journal fact before virtual time drives refreshes; missing files cannot cache it.
-    const state = openOpenClawStateDatabase();
+    const fixture = makeRefreshFixture(agentId, sessionFiles);
     try {
-      await expect(readAgentDeletionJournalStatusInWorker(agentId)).resolves.toBe("absent");
+      // Prepare real admission before fake time controls the refresh deadlines.
+      // A missing shared-state file requires an asynchronous filesystem probe on every batch.
+      openOpenClawStateDatabase();
+      await readAgentDeletionJournalStatusInWorker(agentId);
       if (fakeTimers) {
         vi.useFakeTimers();
       }
-      const fixture = makeRefreshFixture(agentId, sessionFiles);
-      try {
-        await run(fixture);
-      } finally {
-        try {
-          await fixture.close();
-        } finally {
-          fixture.refresh.mockReset();
-          vi.useRealTimers();
-        }
-      }
+      await run(fixture);
     } finally {
-      await closeOpenClawStateDatabaseByPathAsync(state.path);
+      try {
+        await fixture.close();
+      } finally {
+        fixture.refresh.mockReset();
+        vi.useRealTimers();
+        await closeStateDatabaseForTest();
+      }
     }
   });
 }
@@ -494,6 +491,35 @@ test.for(["completes", "slow", "cancelled", "rollback"] as const)(
   },
 );
 
+test("returns the committed overview while its refresh is still pending", async ({
+  usage: { agentId, files, refresh, hold, request, newScope },
+}) => {
+  const refreshOwner = newScope();
+  const release = hold("refreshed");
+  refresh.mockReturnValue(release.promise);
+  request({ sessionFiles: [files[0]] }, refreshOwner);
+  await tick(0, 1);
+  const settled = vi.fn();
+  const reading = newScope().track(() =>
+    loadOverview({
+      config,
+      agentId,
+      families: [[{ sessionFile: files[0] }]],
+      startMs: Date.UTC(2026, 8, 18),
+      endMs: Date.UTC(2026, 8, 19) - 1,
+    }),
+  );
+  void reading.then(settled, settled);
+  // A report must return its explicit partial state without waiting for a transcript scan.
+  await vi.waitFor(() => expect(settled).toHaveBeenCalled(), { timeout: 1_000 });
+  expect(await reading).toMatchObject({
+    computing: [true],
+    summarizing: 1,
+    cacheStatus: { status: "refreshing", pendingFiles: 1 },
+  });
+  expect(refreshOwner.signal.aborted).toBe(false);
+});
+
 test("keeps an exact logical-selector read pending across a deferred rebuild", async ({
   usage: { agentId, storePath, refresh, hold, read, request },
 }) => {
@@ -513,7 +539,7 @@ test("keeps an exact logical-selector read pending across a deferred rebuild", a
   await vi.advanceTimersByTimeAsync(0);
   const reading = read(logical);
   const settled = vi.fn();
-  void reading.then(settled);
+  void reading.then(settled, settled);
   releaseFirst.resolve("refreshed");
   await vi.advanceTimersByTimeAsync(1);
   expect(refresh.mock.calls[1]?.[0]).toMatchObject({

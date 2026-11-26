@@ -97,10 +97,41 @@ export async function runCoreContributionHealth(
 export async function runCoreHealthFindingNote(
   ctx: DoctorHealthFlowContext,
   checkId: string,
-  options?: { infoNoteTitle?: string },
+  options?: HealthFindingNoteOptions,
 ): Promise<void> {
   const { CORE_HEALTH_CHECKS } = await import("./doctor-core-checks.js");
-  const check = CORE_HEALTH_CHECKS.find((candidate) => candidate.id === checkId);
+  await renderHealthFindingNote(
+    ctx,
+    CORE_HEALTH_CHECKS.find((candidate) => candidate.id === checkId),
+    options,
+  );
+}
+
+type HealthFindingNoteOptions = {
+  /** Print info findings as a doctor note under this title; the summary only shows fix-now items. */
+  infoNoteTitle?: string;
+};
+
+/** Plain `openclaw doctor` note for one bundled plugin check (structured runs cover --lint/--fix). */
+export async function runBundledHealthFindingNote(
+  ctx: DoctorHealthFlowContext,
+  checkId: string,
+): Promise<void> {
+  const { registerBundledHealthChecks } = await import("./bundled-health-checks.js");
+  const { getHealthCheck } = await import("./health-check-registry.js");
+  registerBundledHealthChecks({
+    cfg: ctx.cfg,
+    cwd: resolveDoctorWorkspaceDir(ctx.cfg, ctx.env),
+    env: ctx.env,
+  });
+  await renderHealthFindingNote(ctx, getHealthCheck(checkId));
+}
+
+async function renderHealthFindingNote(
+  ctx: DoctorHealthFlowContext,
+  check: Pick<DoctorHealthCheck, "detect"> | undefined,
+  options?: HealthFindingNoteOptions,
+): Promise<void> {
   if (!check) {
     return;
   }

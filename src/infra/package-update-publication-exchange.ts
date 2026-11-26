@@ -67,7 +67,6 @@ export function publicationExchange<Observed extends { selected: "previous" | "c
       // observation and this rename. The previous package then held the name: it
       // goes back, and the publication is read as published.
       if (entryIdentity(candidate, true) === read().descriptor.previous.identity) {
-        assertCurrent();
         await fsp.rename(candidate, previous);
       }
       await persistReturn();
@@ -97,9 +96,8 @@ export function publicationExchange<Observed extends { selected: "previous" | "c
       }
       await fsp.rename(candidate, previous);
       assertCurrent();
-      outcome = await exchangePaths(previous, live, assertCurrent);
+      outcome = await exchangePaths(previous, live);
       if (outcome.status === "unavailable") {
-        assertCurrent();
         await fsp.rename(previous, candidate);
         await persistReturn();
         return undefined;

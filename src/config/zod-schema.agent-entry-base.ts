@@ -3,6 +3,11 @@ import { z } from "zod";
 import { ALL_THINKING_LEVELS } from "../auto-reply/thinking.shared.js";
 import { AgentModelSchema, DecisionModelSchema } from "./zod-schema.agent-model.js";
 
+export const WorkspaceFileModeSchema = z.enum(["0600", "0620", "0640", "0660"], {
+  error:
+    "Expected an octal string: 0600, 0620, 0640, or 0660 (owner read/write; group access optional)",
+});
+
 /** Persisted client-side summary ceiling; the active model token budget may require less. */
 export const AgentCompactionMaxSummaryCharsSchema = z.number().int().min(1_000).max(200_000);
 
@@ -86,6 +91,7 @@ export const AgentEntryBaseSchema = z.strictObject({
   name: z.string().optional(),
   description: z.string().optional(),
   workspace: z.string().optional(),
+  workspaceFileMode: WorkspaceFileModeSchema.optional(),
   cwd: z.string().optional(),
   agentDir: z.string().optional(),
   model: AgentModelSchema.optional(),
@@ -98,6 +104,7 @@ export const AgentEntryBaseSchema = z.strictObject({
   toolProgressDetail: z.enum(["explain", "raw"]).optional(),
   reasoningDefault: z.enum(["on", "off", "stream"]).optional(),
   fastModeDefault: z.union([z.boolean(), z.literal("auto"), z.literal("ultrafast")]).optional(),
+  newSessionPermissionMode: z.enum(["read-only", "guarded", "workspace", "full"]).optional(),
   contextInjection: z
     .union([z.literal("always"), z.literal("continuation-skip"), z.literal("never")])
     .optional(),

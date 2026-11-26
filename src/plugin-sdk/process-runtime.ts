@@ -1,6 +1,7 @@
-export { AGENT_GIT_CONFIG_PARAMETERS } from "../infra/git-maintenance-env.js";
+export { createBoundedLineFramer } from "../process/bounded-line-framer.js";
 export { stripGatewayAllocatorEnv } from "../process/child-env.js";
 export { SUPERVISOR_HINT_ENV_VARS } from "../infra/supervisor-markers.js";
+export { AGENT_GIT_CONFIG_PARAMETERS } from "../infra/git-maintenance-env.js";
 export {
   resolveNodeRuntimeExecutable,
   resolveNodeRuntimeExecutableAsync,
@@ -53,6 +54,7 @@ export { prepareSecretInputStdio, type SpawnStdioEntry } from "../process/spawn-
 export {
   createOwnedStdioProcess,
   closeOwnedStdioProcess,
+  OwnedStdioCleanupError,
   type OwnedStdioProcess,
   type OwnedStdioProcessOptions,
 } from "../process/owned-stdio.js";

@@ -1,8 +1,10 @@
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import type { PluginInstallRecord } from "../config/types.plugins.js";
 import type { GatewayRequestHandler } from "../gateway/server-methods/types.js";
+import type { DeferredPluginMigration } from "../infra/deferred-plugin-migrations.contract.js";
 import type { PluginCapabilityCatalogHostContext } from "./capability-catalog-context.types.js";
 import type { PluginCapabilityCatalog } from "./capability-catalog.types.js";
+import type { NormalizePluginId } from "./config-normalization-shared.js";
 import type { PluginDiscoveryResult } from "./discovery.js";
 import type { PluginManifestRegistry } from "./manifest-registry.js";
 import type { PluginModuleLoaderRecovery } from "./plugin-instance.types.js";
@@ -32,6 +34,8 @@ export type PluginLoadOptions = {
   autoEnabledReasons?: Readonly<Record<string, string[]>>;
   workspaceDir?: string;
   installRecords?: Record<string, PluginInstallRecord>;
+  /** Worker-read readiness for a scoped load on the Gateway thread. */
+  pendingStateMigrations?: readonly DeferredPluginMigration[];
   /** Resolve plugin roots and load paths against an explicit environment. */
   env?: NodeJS.ProcessEnv;
   /** Apply the config IO env-substitution pass to direct raw-config callers. */
@@ -75,6 +79,11 @@ export type PluginLoadOptions = {
    */
   borrowRegistry?: PluginRegistry;
   replacePluginIds?: readonly string[];
+  /**
+   * Bundled plugins whose code an explicit development reload recaptures from disk.
+   * Set only when the Gateway opted in with `OPENCLAW_DEV_RELOAD_BUNDLED_PLUGINS`.
+   */
+  bundledCodeReloadPluginIds?: readonly string[];
   moduleRecoveries?: ReadonlyMap<string, PluginRuntimeRecovery>;
   /** Preserve host cleanup hooks before failed registration removes its contributions. */
   prepareRegistrationFailureCleanup?: (registry: PluginRegistry, record: PluginRecord) => void;
@@ -84,6 +93,8 @@ export type PluginLoadOptions = {
   throwOnLoadError?: boolean;
   /** Exact lifecycle inventory supplied by a prepared load owner. */
   metadataSnapshot?: PluginMetadataSnapshot;
+  /** Alias identity captured with the supplied metadata generation. */
+  normalizePluginId?: NormalizePluginId;
   manifestRegistry?: PluginManifestRegistry;
   discovery?: PluginDiscoveryResult;
 };

@@ -58,7 +58,7 @@ describe("runDoctorSessionSqlite", () => {
       const forwardHome = store.tempDir.replaceAll("\\", "/");
       const backslashHome = store.tempDir.replaceAll("/", "\\");
       const manifest = failureManifest(store, "home-redaction");
-      expectDefined(manifest.targets[0], "fixture target").issues = [
+      manifest.targets[0]!.issues = [
         {
           code: "startup_failure",
           message: `Failed at ${store.storePath}; ${forwardHome}/private/forward.json; ${backslashHome}\\private\\backslash.json`,

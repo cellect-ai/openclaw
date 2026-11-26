@@ -1,23 +1,20 @@
 import {
   CONTROL_PLANE_WRITE,
   OBSERVATION,
+  OWN_SESSION_WRITE,
+  PORTAL_SESSION_WRITE,
   PROFILE_DEPENDENT,
   PROFILE_STARTUP,
   SESSION_METADATA_READ,
+  SESSION_WRITE,
+  SIDECAR_CONTROL_PLANE_WRITE,
   UNADVERTISED,
   UNADVERTISED_OBSERVATION,
-  SIDECAR_CONTROL_PLANE_WRITE,
-  PORTAL_SESSION_WRITE,
-  SESSION_WRITE,
-  OWN_SESSION_WRITE,
 } from "./core-descriptor-options.js";
-import {
-  MODEL_METADATA_READ,
-  CRON_LIST_READ,
-  CRON_STATUS_READ,
-} from "./core-descriptor-read-sharing.js";
 import type { CoreGatewayMethodSpecRow } from "./core-descriptor-types.js";
+import { cronListShareKey, modelsListShareKey, operatorReadShareKey } from "./read-share-keys.js";
 
+// Canonical append-only method table; derived lookup and dispatch policy lives in core-method-policy.ts.
 // This is the canonical core method policy table: every core handler must appear here so
 // listing, authorization, startup availability, and write throttling stay in sync.
 export const CORE_GATEWAY_METHOD_SPECS = [
@@ -108,8 +105,19 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["talk.speak", "talk", "operator.talk", "<=2026.7"],
   ["talk.mode", "talk-mode", "operator.talk", "<=2026.7"],
   ["commands.list", "commands", "operator.read", "<=2026.7"],
-  // Wait for identity hydration before caching the caller's personal model catalog.
-  ["models.list", "models", "operator.read", "<=2026.7", MODEL_METADATA_READ],
+  // Profile authorization and catalog publication own readiness for this read.
+  [
+    "models.list",
+    "models",
+    "operator.read",
+    "<=2026.7",
+    {
+      ...PROFILE_DEPENDENT,
+      shareKey: modelsListShareKey,
+      shareMaxAgeMs: 1_000,
+      shareInvalidationEvents: ["chat.metadata.changed", "sessions.changed"],
+    },
+  ],
   ["models.authStatus", "models-auth-status", "operator.read", "<=2026.7"],
   ["models.authLogout", "models-auth-status", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
   ["tools.catalog", "tools-catalog", "operator.read", "<=2026.7"],
@@ -153,6 +161,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["taskSuggestions.dismiss", "task-suggestions", "operator.write", "<=2026.7"],
   ["environments.list", "environments", "dynamic", "2026.7"],
   ["environments.status", "environments", "operator.read", "2026.7"],
+  // Lists every managed worktree's host path, repo root and branch across sessions.
   ["worktrees.list", "worktrees", "operator.write", "2026.7"],
   // Read-only git probe, but it accepts arbitrary host paths; keep it at the
   // same bar as starting worktree sessions instead of plain read scope.
@@ -272,6 +281,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["device.token.revoke", "devices", "operator.pairing", "<=2026.7"],
   ["device.pair.setupCode", "device-pair-setup", "operator.admin", "<=2026.7", UNADVERTISED],
   ["device.pair.setupStatus", "device-pair-setup", "operator.admin", "2026.8", UNADVERTISED],
+  ["device.pair.code", "device-pair-code", "operator.admin", "2026.11", UNADVERTISED],
   ["node.rename", "nodes", "operator.pairing", "<=2026.7"],
   ["node.list", "nodes", "operator.read", "<=2026.7"],
   ["node.describe", "nodes", "operator.read", "<=2026.7"],
@@ -289,8 +299,24 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["node.invoke.result", "nodes", "node", "<=2026.7"],
   ["node.event", "nodes", "node", "<=2026.7"],
   ["cron.get", "cron", "operator.read", "<=2026.7"],
-  ["cron.list", "cron", "operator.read", "<=2026.7", CRON_LIST_READ],
-  ["cron.status", "cron", "operator.read", "<=2026.7", CRON_STATUS_READ],
+  [
+    "cron.list",
+    "cron",
+    "operator.read",
+    "<=2026.7",
+    {
+      shareKey: cronListShareKey,
+      shareMaxAgeMs: 1_000,
+      shareInvalidationEvents: ["cron", "sessions.changed"],
+    },
+  ],
+  [
+    "cron.status",
+    "cron",
+    "operator.read",
+    "<=2026.7",
+    { shareKey: operatorReadShareKey, shareMaxAgeMs: 1_000, shareInvalidationEvents: ["cron"] },
+  ],
   ["cron.scratch.get", "cron", "operator.admin", "2026.7"],
   ["cron.scratch.set", "cron", "operator.admin", "2026.7"],
   ["cron.add", "cron", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
@@ -309,7 +335,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     { compatibilityRestored: true },
   ],
   ["gateway.restart.request", "restart", "operator.admin", "<=2026.7", CONTROL_PLANE_WRITE],
-  ["system-presence", "system", "operator.read", "<=2026.7"],
+  ["system-presence", "system", "operator.sessions.read", "<=2026.7"],
   ["system-event", "system", "operator.admin", "<=2026.7"],
   ["message.action", "send", "operator.write", "<=2026.7"],
   ["conversations.send", "conversations", "operator.admin", "<=2026.7"],
@@ -491,6 +517,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   [
     "projects.searchRemote",
     "projects",
+    // Results open through projectGitUrl with the Gateway's GitHub identity.
     "operator.write",
     "2026.8",
     { description: "Search GitHub repositories that can be cloned as managed projects." },
@@ -547,7 +574,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
     SIDECAR_CONTROL_PLANE_WRITE,
   ],
   ["users.github.disconnect", "users", "operator.read", "2026.8", SIDECAR_CONTROL_PLANE_WRITE],
-  ["sessions.github.options", "sessions-github", "operator.read", "2026.8", { startup: true }],
+  ["sessions.github.options", "sessions-github", "operator.read", "2026.8"],
   ["sessions.github.status", "sessions-github", "operator.read", "2026.8", { startup: true }],
   [
     "sessions.github.confirm",
@@ -558,7 +585,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ],
   ["sessions.title.prepare", "sessions-title", "operator.write", "2026.8", CONTROL_PLANE_WRITE],
   ["users.mentionable", "users-mentionable", "operator.read", "2026.8", PROFILE_STARTUP],
-  ["mentions.list", "mentions", "operator.read", "2026.8", { startup: true }],
+  ["mentions.list", "mentions", "operator.read", "2026.8"],
   // Dismissal only changes the caller's temporary Inbox, not session or shared state.
   ["mentions.dismiss", "mentions", "operator.read", "2026.8", { startup: true }],
   // Meeting notes share the trusted operator domain, like workspace/session reads.
@@ -583,7 +610,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["transcripts.export", "transcripts", "operator.read", "2026.9"],
   ["transcripts.status", "transcripts", "operator.read", "2026.9"],
   ["update.report", "update", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
-  ["skills.workshop.read", "skills", "operator.read", "2026.9"],
   ["session.publicShare.set", "sessions-sharing", "operator.write", "2026.9"],
   ["plugins.catalog.browse", "plugins", "operator.read", "2026.9"],
   ["plugins.catalog.categories", "plugins", "operator.read", "2026.9"],
@@ -610,6 +636,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["diagnostics.heapProfile", "diagnostics", "operator.admin", "2026.9"],
   ["desktop.release", "environments", "operator.admin", "2026.9", { startup: true }],
   ["mcp.authLogin", "mcp-auth-login", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
+  ["mcp.authLogout", "mcp-auth-logout", "operator.admin", "2026.10", CONTROL_PLANE_WRITE],
   ["environments.session.status", "environments", "operator.read", "2026.9"],
   ["environments.session.create", "environments", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["environments.session.destroy", "environments", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
@@ -637,7 +664,7 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["portal.session.close", "portals", "operator.write", "2026.9", PORTAL_SESSION_WRITE],
   ["cron.history", "cron", "operator.read", "2026.9"],
   // The first UI interaction may precede post-hello identity hydration.
-  ["presence.activity", "system", "operator.read", "2026.9", PROFILE_DEPENDENT],
+  ["presence.activity", "system", "operator.sessions.read", "2026.9", PROFILE_DEPENDENT],
   ["presence.query", "presence", "operator.read", "2026.9", PROFILE_DEPENDENT],
   ["users.merge", "users", "operator.admin", "2026.9", PROFILE_DEPENDENT],
   ["gateway.stop.request", "restart", "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
@@ -687,13 +714,6 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   ["sessions.processes.stop", "session-processes", "operator.write", "2026.9"],
   ["catalog.browse", "plugins", "operator.read", "2026.9"],
   ["catalog.searchKeywords", "plugins", "operator.read", "2026.9"],
-  ["skills.workshop.list", "skills", "operator.read", "2026.9"],
-  ["skills.workshop.changes", "skills", "operator.read", "2026.9"],
-  ["skills.workshop.archive", "skills", "operator.admin", "2026.9"],
-  ["skills.workshop.restore", "skills", "operator.admin", "2026.9"],
-  ["skills.workshop.undo", "skills", "operator.admin", "2026.9"],
-  ["skills.workshop.applyDraft", "skills", "operator.admin", "2026.10"],
-  ["skills.workshop.discardDraft", "skills", "operator.admin", "2026.10"],
   ["memory.search.owner", "memory-search", "operator.admin", "2026.9"],
   ["secrets.store.import", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
   ["secrets.store.allowedHosts", null, "operator.admin", "2026.9", CONTROL_PLANE_WRITE],
@@ -739,4 +759,17 @@ export const CORE_GATEWAY_METHOD_SPECS = [
   // Fi shadow reports deliver into an existing cellect-fi-user Matrix session.
   ["fi.shadow.announce", "fi-shadow", "operator.admin", "2026.11"],
   ["fi.review.announce", "fi-review", "operator.admin", "2026.11"],
+  ["sessions.files.preview", "sessions-files", "operator.read", "2026.10"],
+  ["sessions.files.preview.release", "sessions-files", "operator.read", "2026.10"],
+  ["users.channelIdentity", "users", "operator.sessions.read", "2026.10", PROFILE_DEPENDENT],
+  ["sessions.groups.create", "sessions-groups", "operator.write", "2026.10"],
+  ["sessions.catalog.resolve", "session-catalog", "operator.read", "2026.10"],
+  ["openclawId.status", "openclaw-id", "operator.read", "2026.11"],
+  ["openclawId.people", "openclaw-id", "operator.admin", "2026.11"],
+  ["openclawId.authority", "openclaw-id", "operator.admin", "2026.11", CONTROL_PLANE_WRITE],
+  ["openclawId.account", "openclaw-id", "operator.read", "2026.11"],
+  ["chat.steerNow", "chat", "operator.write", "2026.11", OWN_SESSION_WRITE],
+  ["toolUsage.status", "tool-usage", "operator.admin", "2026.11"],
+  ["toolUsage.import", "tool-usage", "operator.admin", "2026.11", CONTROL_PLANE_WRITE],
+  ["toolUsage.reset", "tool-usage", "operator.admin", "2026.11", CONTROL_PLANE_WRITE],
 ] as const satisfies readonly CoreGatewayMethodSpecRow[];

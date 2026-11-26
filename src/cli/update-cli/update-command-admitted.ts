@@ -35,6 +35,7 @@ export async function runAdmittedUpdate(
   prepared: NonNullable<Awaited<ReturnType<typeof prepareUpdateCommand>>>,
   recoveryState: UpdateCommandRecoveryState,
   invocationCwd: string | undefined,
+  env: NodeJS.ProcessEnv,
   executeUpdate: (
     opts: UpdateCommandOptions,
     presentation: ReturnType<typeof createUpdateProgress>,
@@ -84,8 +85,7 @@ export async function runAdmittedUpdate(
         opts: inputOpts,
         root: resolveUpdateCommandAdmissionRoot(prepared),
         serviceRoot,
-        invocationCwd,
-        pkgOwnership: prepared.pkgOwnership,
+        env,
         initialization,
         assertCurrent: assertInitializationCurrent,
         expectedForeground:

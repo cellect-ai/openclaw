@@ -57,7 +57,7 @@ export function createSessionControllerWatchdog(params: {
   expireCleanup: (
     effect: SessionWatchdogEffect,
   ) => SessionWatchdogEffectResult | Promise<SessionWatchdogEffectResult>;
-  onWarning?: (decision: SessionWatchdogDecision) => void;
+  onBlocked?: (decision: SessionWatchdogDecision) => void;
 }): SessionControllerWatchdog {
   const now = Date.now;
   const abortMs = Math.max(SESSION_WATCHDOG_ABORT_FLOOR_MS, 3 * SESSION_WATCHDOG_WARNING_MS);
@@ -66,22 +66,14 @@ export function createSessionControllerWatchdog(params: {
   let transportAt = params.startedAtMs;
   let reason: string | undefined;
   let semanticSequence = 0;
-  let stagnation:
-    | { startedAtMs: number; observedAtMs: number; semanticSequence: number }
-    | undefined;
-  const stagnationCurrent = (at: number) =>
-    stagnation &&
-    !(semanticSequence > stagnation.semanticSequence && at - stagnation.observedAtMs >= 60_000);
   // While an opted-in runtime-owned wait is live, the native runtime owns liveness, so
   // that interval is never semantically stale. Its release (a native turn that just
   // completed) starts the semantic horizon; it must not make the masked interval
-  // retroactively expire and stop a run that is finalizing. Other waits keep their
-  // retroactive horizon and publish progress themselves when they end.
+  // retroactively expire and stop a run that is finalizing. Nested maintenance
+  // (compaction) owns liveness the same way until its own execution deadline. Other
+  // waits keep their retroactive horizon and publish progress themselves when they end.
   let runtimeOwnedThroughAt: number | undefined;
-  const progressOrigin = (at: number) =>
-    stagnationCurrent(at)
-      ? stagnation!.startedAtMs
-      : Math.max(semanticAt, runtimeOwnedThroughAt ?? semanticAt);
+  const progressOrigin = () => Math.max(semanticAt, runtimeOwnedThroughAt ?? semanticAt);
   let retryAllowanceAt: number | undefined;
   let requestRecoveryAt: number | undefined;
   let cleanupAt: number | undefined;
@@ -90,8 +82,7 @@ export function createSessionControllerWatchdog(params: {
   let attemptReleases: Set<() => void> | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let started = false;
-  let warningAt: number | undefined;
-  let blockedWarning = false;
+  let blockedReported = false;
   let recovery: SessionWatchdogSnapshot["recovery"];
   let recoveryAction: "stop" | "expire_cleanup" | undefined;
   let pendingTick:
@@ -101,13 +92,15 @@ export function createSessionControllerWatchdog(params: {
   const waits = new Set<OwnedWait>();
   const tools = new Set<SessionWatchdogSnapshot["tools"][number] & { touch(): void }>();
   const executions = new Set<OwnedExecution>();
+  const maintenance = new Set<OwnedExecution>();
   const finalizationWork = new Set<{ deadlineAtMs: number }>();
   const current = () => !closed && live(params.isCurrent);
-  const semanticDeadline = (at = now()) =>
+  const semanticDeadline = () =>
     Math.max(
-      progressOrigin(at) + abortMs,
+      progressOrigin() + abortMs,
       requestRecoveryAt ?? 0,
       ...[...requests].map((request) => request.deadlineAtMs ?? 0),
+      ...[...maintenance].map((work) => work.deadlineAtMs ?? 0),
     );
 
   const assessment = createWatchdogAssessment(
@@ -161,11 +154,8 @@ export function createSessionControllerWatchdog(params: {
       semanticAt = transportAt;
       semanticSequence += 1;
       assessment.clear();
-      if (!stagnationCurrent(transportAt)) {
-        retryAllowanceAt = undefined;
-      }
+      retryAllowanceAt = undefined;
       reason = nextReason;
-      warningAt = undefined;
     } else if (kind === "finalization" && cleanupAt !== undefined) {
       cleanupAt = transportAt + SESSION_WATCHDOG_CLEANUP_MS;
       reason = nextReason;
@@ -184,12 +174,13 @@ export function createSessionControllerWatchdog(params: {
     ) {
       runtimeOwnedThroughAt = Math.max(runtimeOwnedThroughAt ?? at, at);
     }
-    const liveWaits = currentWaits.map((wait) => ({
+    const liveWaits = currentWaits.map<SessionWatchdogSnapshot["waits"][number]>((wait) => ({
       kind: wait.kind,
+      admission: wait.admission,
       // Mechanical traffic/retry rearming never moves the logical semantic horizon.
       deadlineAtMs:
         wait.kind === "backend"
-          ? Math.min(wait.deadlineAtMs!, semanticDeadline(at))
+          ? Math.min(wait.deadlineAtMs!, semanticDeadline())
           : wait.kind === "retry"
             ? Math.min(wait.deadlineAtMs!, retryAllowanceAt!)
             : wait.deadlineAtMs,
@@ -202,10 +193,9 @@ export function createSessionControllerWatchdog(params: {
       current: isCurrent && current(),
       phase: closed ? "settled" : params.readPhase(),
       hasActiveAttempt: attempt?.isCurrent() === true,
-      semanticProgressAtMs: progressOrigin(at),
-      lastProgressReason: stagnationCurrent(at) ? "tool_loop:argument_churn" : reason,
-      warningMs: SESSION_WATCHDOG_WARNING_MS,
-      semanticDeadlineAtMs: semanticDeadline(at),
+      semanticProgressAtMs: progressOrigin(),
+      lastProgressReason: reason,
+      semanticDeadlineAtMs: semanticDeadline(),
       executionDeadlineAtMs: [executionAt, ...[...executions].map(executionDeadline)]
         .filter((deadline): deadline is number => deadline !== undefined)
         .reduce<number | undefined>(
@@ -250,19 +240,16 @@ export function createSessionControllerWatchdog(params: {
     ) {
       recovery = undefined;
       recoveryAction = undefined;
-      blockedWarning = false;
+      blockedReported = false;
     }
     const decision = decide(at);
-    if (decision.action === "warn" || decision.action === "blocked") {
-      if (warningAt !== semanticAt || (decision.action === "blocked" && !blockedWarning)) {
-        warningAt = semanticAt;
-        if (decision.action === "blocked" && recovery) {
-          blockedWarning = true;
-          recovery.status = "blocked";
-          pendingTick?.resolve(decision);
-          pendingTick = undefined;
-        }
-        params.onWarning?.(decision);
+    if (decision.action === "blocked") {
+      if (!blockedReported && recovery) {
+        blockedReported = true;
+        recovery.status = "blocked";
+        pendingTick?.resolve(decision);
+        pendingTick = undefined;
+        params.onBlocked?.(decision);
       }
       return decision;
     }
@@ -357,7 +344,7 @@ export function createSessionControllerWatchdog(params: {
             } else {
               assessment.check(now());
             }
-            blockedWarning = false;
+            blockedReported = false;
             const resumedPhase = params.readPhase();
             if (resumedPhase === "finishing" || resumedPhase === "terminal") {
               cleanupAt = now() + SESSION_WATCHDOG_CLEANUP_MS;
@@ -436,6 +423,7 @@ export function createSessionControllerWatchdog(params: {
       requests.clear();
       finalizationWork.clear();
       executions.clear();
+      maintenance.clear();
       attempt = undefined;
       attemptReleases = undefined;
     },
@@ -527,6 +515,7 @@ export function createSessionControllerWatchdog(params: {
       const maintenanceExecution: OwnedExecution | undefined = parent ? {} : undefined;
       if (maintenanceExecution) {
         executions.add(maintenanceExecution);
+        maintenance.add(maintenanceExecution);
       }
       let attemptClosed = false;
       const ownedReleases = new Set<() => void>();
@@ -548,6 +537,15 @@ export function createSessionControllerWatchdog(params: {
         parentReleases?.delete(closeAttempt);
         if (maintenanceExecution) {
           executions.delete(maintenanceExecution);
+          // Releasing live maintenance starts the semantic horizon, never retroactively.
+          if (
+            maintenance.delete(maintenanceExecution) &&
+            maintenanceExecution.deadlineAtMs !== undefined &&
+            current() &&
+            !recovery
+          ) {
+            runtimeOwnedThroughAt = Math.max(runtimeOwnedThroughAt ?? 0, now());
+          }
         }
         for (const release of ownedReleases) {
           release();
@@ -577,18 +575,6 @@ export function createSessionControllerWatchdog(params: {
             }
           }
           return false;
-        },
-        observeStagnation(observation) {
-          if (!valid() || (observation.existingOnly && !stagnation)) {
-            return;
-          }
-          if (!observation.active) {
-            stagnation = undefined;
-            return;
-          }
-          const at = now();
-          const startedAtMs = stagnationCurrent(at) ? stagnation!.startedAtMs : at;
-          stagnation = { startedAtMs, observedAtMs: at, semanticSequence };
         },
         beginWait(input) {
           const wait = beginWait(input, valid);

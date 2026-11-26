@@ -12,7 +12,10 @@ import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot
 import { getPluginModuleLoaderStats } from "../plugins/plugin-module-loader-cache.js";
 import type { PluginRegistry } from "../plugins/registry.js";
 import { getPluginRegistryVersion } from "../plugins/runtime-state.js";
-import { getGatewayContextLifetime } from "../plugins/runtime/gateway-request-scope.js";
+import {
+  getGatewayContextLifetime,
+  withPluginRuntimeGatewayContextResolver,
+} from "../plugins/runtime/gateway-request-scope.js";
 import type { PluginServiceCronHost } from "../plugins/service-cron.js";
 import type { PluginServicesHandle } from "../plugins/services.js";
 import { createDeferredCore } from "../shared/deferred.js";
@@ -35,7 +38,7 @@ import { startGatewaySidecars } from "./server-startup-sidecars.js";
 import { measureStartup, type GatewayStartupTrace } from "./server-startup-trace.js";
 import { scheduleTranscriptsSidecar } from "./server-startup-transcripts.js";
 import { createDeferredGatewayUpdateCheck } from "./server-startup-update-check.js";
-import type { PreparedReadinessChecker } from "./server/readiness.types.js";
+import type { PreparedReadinessChecker } from "./server/readiness.js";
 import { beginMacOSSystemCaWarmupOnce } from "./system-ca-warmup.js";
 type Awaitable<T> = T | Promise<T>;
 
@@ -109,6 +112,49 @@ export async function startGatewayPostAttachRuntime(params: {
   // The CLI's hidden capability flag supplies this typed internal handoff.
   // Rehearsal loads plugins without resuming copied jobs, services, or notices.
   const candidateCanary = params.updateCanary === true;
+  let durableRuntime: typeof import("../agents/bash-process-durable.js") | undefined;
+  let durableStartup: Promise<void> | undefined;
+  let durableStopped = false;
+  // Every platform reports ordinary background commands a restart lost; only Linux and
+  // macOS can also launch durable ones.
+  const startDurableProcesses =
+    !params.minimalTestGateway && !candidateCanary
+      ? (signal: AbortSignal) => {
+          durableStartup ??= (async () => {
+            const assertCurrent = () => {
+              signal.throwIfAborted();
+              if (durableStopped || params.isClosing?.()) {
+                throw new Error("Durable process observation is closing");
+              }
+            };
+            assertCurrent();
+            durableRuntime = await import("../agents/bash-process-durable.js");
+            assertCurrent();
+            const runtime = durableRuntime;
+            // Restart reports wait for agent readiness through the Gateway's preparation owner.
+            await withPluginRuntimeGatewayContextResolver(
+              params.resolveGatewayContext,
+              () =>
+                runtime.initializeDurableProcesses({
+                  assertCurrent,
+                  crashWindows: params.resolveGatewayContext()?.restartResumeWindows,
+                }),
+              { inheritRequestScope: false },
+            );
+          })();
+          return durableStartup;
+        }
+      : undefined;
+  if (startDurableProcesses) {
+    params.onGatewayLifetimeSidecars({
+      name: "durable-processes",
+      stop: async () => {
+        durableStopped = true;
+        await durableStartup?.catch(() => {});
+        await durableRuntime?.disposeDurableProcesses();
+      },
+    });
+  }
   const controlUiRootLifecycle = params.controlUiRootLifecycle;
   const controlUiAssetsSidecar =
     !params.minimalTestGateway && controlUiRootLifecycle
@@ -420,6 +466,9 @@ export async function startGatewayPostAttachRuntime(params: {
         registry: sidecarRegistry,
         signal,
         resolveGatewayContext: params.resolveGatewayContext,
+        startDurableProcesses: startDurableProcesses
+          ? () => startDurableProcesses(signal)
+          : undefined,
         loadSubagentRegistryActivation: async () =>
           (await import("../agents/subagents/registry/subagent-registry.js"))
             .activateSubagentRegistry,

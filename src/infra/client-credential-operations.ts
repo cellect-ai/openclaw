@@ -2,12 +2,12 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { expressionBuilder } from "kysely";
 import type {
-  ClientCredentialOperation,
+  ClientCredentialDatabase,
   ClientCredentialResult,
-  ClientNativeTokenSelector,
+  ClientIdentityRecord,
   ClientSocketRecord,
-} from "./client-credential-operations.types.js";
-import type { ClientCredentialDatabase } from "./client-credential-schema.js";
+  ClientTokenRecord,
+} from "./client-credential-schema.js";
 import {
   salvageStoredIdentityRow,
   storedDeviceIdentityFromRow,
@@ -18,6 +18,12 @@ import {
   executeSqliteQueryTakeFirstSync,
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
+
+type ClientNativeTokenSelector =
+  | { kind: "all" }
+  | { kind: "role"; role: string }
+  | { kind: "gateway"; gateway: string }
+  | { kind: "unscoped" };
 
 function encodeClientNativeTokenRole(role: string, gateway: string): string {
   return `v2.${Buffer.from(gateway).toString("base64url")}.${Buffer.from(role.trim()).toString("base64url")}`;
@@ -122,6 +128,50 @@ function claimClientNativeToken(
   );
   return true;
 }
+
+export type {
+  ClientCredentialResult,
+  ClientIdentityRecord,
+  ClientSocketRecord,
+  ClientTokenRecord,
+} from "./client-credential-schema.js";
+export type ClientTokenKey = Pick<ClientTokenRecord, "device_id" | "role"> & {
+  gateway_scope?: string;
+};
+
+/** Typed owner operations; IPC decoding belongs at its local transport boundary. */
+export type ClientCredentialOperation =
+  | { kind: "identity.read"; identity_key: string }
+  | { kind: "identity.create"; identity: ClientIdentityRecord }
+  | { kind: "identity.repair"; identity: ClientIdentityRecord }
+  | {
+      kind: "token.list";
+      device_id: string;
+      gateway_scope?: string;
+      afterRole?: string;
+      limit?: number;
+    }
+  | { kind: "native.tokens.clear"; device_id: string; selector: ClientNativeTokenSelector }
+  | { kind: "native.token.claim"; device_id: string; role: string; gateway: string }
+  | { kind: "token.read"; key: ClientTokenKey }
+  | {
+      kind: "token.replace";
+      key: ClientTokenKey;
+      token: ClientTokenRecord;
+      expectedToken?: string | null;
+    }
+  | {
+      kind: "token.remove";
+      key: ClientTokenKey;
+      expectedToken?: string | null;
+      observedToken?: string;
+    }
+  | { kind: "socket.read" }
+  | {
+      kind: "socket.ensure";
+      fallback: ClientSocketRecord;
+      requested?: { path?: string; token?: string };
+    };
 
 export function performClientCredentialOperation(
   database: DatabaseSync,

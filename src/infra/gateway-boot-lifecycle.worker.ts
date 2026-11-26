@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { createSubsystemLogger } from "../logging/subsystem.js";
-import { writeConfigMachineStateInDatabase } from "../state/config-machine-state-write.js";
+import {
+  updateConfigMachineStateInDatabase,
+  writeConfigMachineStateInDatabase,
+} from "../state/config-machine-state-write.js";
 import type { DB } from "../state/openclaw-state-db.generated.js";
 import { runOpenClawStateWriteTransaction } from "../state/openclaw-state-db.js";
 import type { WorkerOperationHandlers } from "../state/worker-operation-registry.js";
-import type { GatewayBootLifecycleCompletion } from "./gateway-boot-lifecycle.js";
+import type {
+  GatewayBootLifecycleCompletion,
+  GatewayBootLifecycleStart,
+  GatewayRestartResumeWindow,
+  GatewayRestartResumeWindows,
+} from "./gateway-boot-lifecycle.js";
 import {
   GATEWAY_CRASH_LOOP_BREAKER_REASON,
   GATEWAY_CRASH_LOOP_RECOVERED_REASON,
@@ -15,8 +23,8 @@ import {
 } from "./gateway-boot-lifecycle.kernel.js";
 import {
   GATEWAY_CRASH_STATE_KEY,
-  type GatewayCrashRecord,
   type GatewayCrashEvidence,
+  type GatewayCrashRecord,
   type GatewayRunMetadata,
 } from "./gateway-crash.js";
 import {
@@ -25,10 +33,11 @@ import {
   getNodeSqliteKysely,
 } from "./kysely-sync.js";
 
-type GatewayBootLifecycleDatabase = Pick<DB, "gateway_boot_lifecycle">;
+type GatewayBootLifecycleDatabase = Pick<DB, "gateway_boot_lifecycle" | "agent_databases">;
 
 // Keep forensic history longer than the crash-loop window.
 const GATEWAY_BOOT_LIFECYCLE_RETENTION_MS = 24 * 60 * 60_000;
+const RESTART_RECOVERY_KEY = "gateway.restartRecovery";
 const gatewayLifecycleLog = createSubsystemLogger("gateway/lifecycle");
 
 export const gatewayBootOperations = {
@@ -39,7 +48,7 @@ export const gatewayBootOperations = {
       previousOwner?: { pid: number; heartbeatAt?: number };
     },
     context,
-  ) => {
+  ): GatewayBootLifecycleStart & { crashes?: GatewayCrashRecord[] } => {
     const { nowMs, metadata, previousOwner } = input;
     let decision = buildGatewayCrashLoopBreakerDecision({ uncleanBoots: 0 });
     try {
@@ -65,7 +74,7 @@ export const gatewayBootOperations = {
           db,
           boots.orderBy("started_at_ms", "desc").limit(1),
         );
-        let window: { startedAt: number; endedAt: number } | undefined;
+        let window: GatewayRestartResumeWindow | undefined;
         // Forced exit can interrupt marker persistence just like a process crash.
         if (
           predecessor &&
@@ -93,7 +102,7 @@ export const gatewayBootOperations = {
         }
         const crashState = readGatewayCrashStateInDatabase(db);
         let previousCrash: GatewayCrashRecord | undefined;
-        // A safe-mode split is still the same process incarnation.
+        // Reuse this boot's recovery window; retained agent windows may predate a clean boot.
         if (predecessor && (window || predecessor.outcome === "startup_failed")) {
           const run =
             crashState.active?.bootId === predecessor.boot_id ? crashState.active : undefined;
@@ -117,7 +126,7 @@ export const gatewayBootOperations = {
         }
         crashState.active = { ...metadata, bootId: id };
         writeConfigMachineStateInDatabase(db, GATEWAY_CRASH_STATE_KEY, crashState);
-
+        // Read the predecessor before pruning: a long-running boot can exceed retention.
         executeSqliteQuerySync(
           db,
           kysely
@@ -136,15 +145,71 @@ export const gatewayBootOperations = {
             reason: null,
           }),
         );
-        return { previousCrash, crashes: crashState.recent };
+        // Registration precedes every durable run, including shared stores and refused schemas.
+        // Keep exact intervals until that physical agent completes recovery, across clean boots.
+        const owners = executeSqliteQuerySync(
+          db,
+          kysely.selectFrom("agent_databases").select("agent_id").distinct(),
+        ).rows;
+        const restartResumeWindows =
+          updateConfigMachineStateInDatabase<GatewayRestartResumeWindows>(
+            db,
+            RESTART_RECOVERY_KEY,
+            (pending = {}) => {
+              const retained = Object.fromEntries<GatewayRestartResumeWindow[]>(
+                owners.flatMap(({ agent_id: agentId }) => {
+                  const windows = Object.hasOwn(pending, agentId) ? pending[agentId]! : [];
+                  if (window) {
+                    const last = windows.at(-1);
+                    if (last && last.endedAt === window.startedAt) {
+                      last.endedAt = window.endedAt;
+                    } else {
+                      windows.push(window);
+                    }
+                  }
+                  return windows.length ? [[agentId, windows]] : [];
+                }),
+              );
+              return Object.keys(retained).length ? retained : undefined;
+            },
+            nowMs,
+          );
+        return {
+          restartResumeWindow: window,
+          restartResumeWindows,
+          previousCrash,
+          crashes: crashState.recent,
+        };
       }, context.stateOptions());
       return { decision, id, ...recorded };
     } catch (err) {
       // A failed history append must not discard an already-tripped breaker decision.
       gatewayLifecycleLog.warn(`failed to persist gateway boot start; fail-open: ${String(err)}`);
-      return { decision, id: undefined, crashes: undefined, previousCrash: undefined };
+      return { decision, id: undefined };
     }
   },
+  "gatewayBoot.recoveredAgent": (input: { agentId: string; through: number }, context) =>
+    runOpenClawStateWriteTransaction(({ db }) => {
+      updateConfigMachineStateInDatabase<GatewayRestartResumeWindows>(
+        db,
+        RESTART_RECOVERY_KEY,
+        (pending) => {
+          if (!pending || !Object.hasOwn(pending, input.agentId)) {
+            return pending;
+          }
+          const remaining = pending[input.agentId]?.filter(
+            (window) => window.endedAt > input.through,
+          );
+          if (remaining?.length) {
+            pending[input.agentId] = remaining;
+          } else {
+            delete pending[input.agentId];
+          }
+          return Object.keys(pending).length ? pending : undefined;
+        },
+        Date.now(),
+      );
+    }, context.stateOptions()),
   "gatewayBoot.enrichCrash": (input: { bootId: string; evidence: GatewayCrashEvidence }, context) =>
     runOpenClawStateWriteTransaction(({ db }) => {
       const state = readGatewayCrashStateInDatabase(db);

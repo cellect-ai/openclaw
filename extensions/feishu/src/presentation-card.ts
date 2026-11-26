@@ -1,3 +1,4 @@
+import { agentControlText } from "openclaw/plugin-sdk/agent-control-runtime";
 import type { ChannelOutboundAdapter } from "openclaw/plugin-sdk/channel-send-result";
 import {
   legacyInteractiveReplyToPresentation,
@@ -169,6 +170,10 @@ function resolveFeishuButtonUrl(button: MessagePresentationButton): string | und
 function resolveFeishuCommandButtonValue(button: MessagePresentationButton): string | undefined {
   if (button.action?.type === "command") {
     return button.action.command;
+  }
+  // Typed callbacks render only when a message action authored them for the agent.
+  if (button.action?.type === "callback" && agentControlText(button.action.value)) {
+    return button.action.value;
   }
   if (button.action) {
     return undefined;

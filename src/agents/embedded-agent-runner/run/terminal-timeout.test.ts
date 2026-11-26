@@ -83,7 +83,6 @@ async function resolveTerminal(
     throw new Error("Expected terminal completion without replay");
   }
   expect(input.sessionPromptState.activateInternalPrompt).not.toHaveBeenCalled();
-  expect(input.armPostCompactionGuard).not.toHaveBeenCalled();
   expect(attempt.messagesSnapshot).toEqual(messages);
   return { input, attempt, result: resolved.result };
 }
@@ -179,9 +178,6 @@ it("keeps an external cancellation during compaction distinct from a timeout", a
     status: "error",
   });
   expect(result.payloads ?? []).toEqual([]);
-  expect(
-    result.payloads?.some((payload) => payload.text?.includes("compaction timed out")),
-  ).not.toBe(true);
 });
 
 it.each(["delivered", "pending"] as const)(

@@ -11,7 +11,7 @@ import {
   type ProjectionExternalSource,
 } from "./projection-source.js";
 
-type MatrixThreadBindingTargetKind = "subagent" | "acp";
+type MatrixThreadBindingTargetKind = "subagent" | "acp" | "session";
 
 export type MatrixThreadBindingRecord =
   AccountScopedConversationBindingRecord<MatrixThreadBindingTargetKind> & {
@@ -28,6 +28,7 @@ export type MatrixThreadBindingRecord =
     parentConversationId?: string;
     idleTimeoutMs?: number;
     maxAgeMs?: number;
+    metadata?: Record<string, unknown>;
   };
 
 type MatrixThreadBindingManager = {

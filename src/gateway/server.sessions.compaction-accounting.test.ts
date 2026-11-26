@@ -39,10 +39,10 @@ test.each([55, undefined])(
     embeddedRunMock.compactEmbeddedAgentSession.mockImplementationOnce(
       async (_params, hostInput) => {
         const host = hostInput as QueuedCompactionHostOptions;
-        const prepared = host.preparedSession;
-        const source = prepared?.source;
-        const keptId = source?.entries[0]?.id;
-        if (!prepared || !source || !keptId || !host.withCompactionPersistenceAsync) {
+        const keptId = host.preparedSession?.source?.entries.find(
+          (entry) => entry.type === "message",
+        )?.id;
+        if (!host.preparedSession || !keptId || !host.withCompactionPersistenceAsync) {
           throw new Error("expected prepared Gateway compaction persistence");
         }
         await upsertSessionEntryCore(scope, {
@@ -52,9 +52,9 @@ test.each([55, undefined])(
           compactionCount: 3,
         });
         await host.withCompactionPersistenceAsync({
-          scope: prepared.sessionTarget,
+          scope: host.preparedSession.sessionTarget,
           event: createSessionCompactionEntry(
-            source.leafEntryId,
+            null,
             "summary",
             keptId,
             120,
@@ -64,7 +64,6 @@ test.each([55, undefined])(
             80,
           ),
           appendIntent: "active-branch",
-          expectedMutationAt: source.transcriptMutationAt,
         });
         expect(readEntry()).toMatchObject(committed);
         return {

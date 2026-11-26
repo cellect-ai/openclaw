@@ -1,20 +1,16 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { DatabaseSync, SQLInputValue } from "node:sqlite";
 import { isDeepStrictEqual } from "node:util";
-import type { Client } from "pg";
 import { encodeSqliteValue, escapedSqliteText } from "../../snapshot/sqlite-cell-codec.js";
 import { openNodeSqliteDatabase } from "../node-sqlite.js";
 import { decodePostgresRows } from "../postgres-sync/protocol.js";
 import { assertSqliteIntegrity } from "../sqlite-integrity.js";
 import { admitSqliteSchema, getAdmittedSqliteSchemaFacts } from "../sqlite-schema-facts.js";
 import { quoteSqliteIdentifier as quote } from "../sqlite-schema-sql.js";
-import {
-  readAutoincrementHighWater,
-  restoreAutoincrementHighWater,
-  withSqliteForeignKeysDisabled,
-} from "../sqlite-strict.js";
+import { restoreAutoincrementHighWater, withSqliteForeignKeysDisabled } from "../sqlite-strict.js";
 import { runSqliteImmediateTransactionSync } from "../sqlite-transaction.js";
 import { writeSqliteUserVersion } from "../sqlite-user-version.js";
+import { readSqlitePortAllocation } from "./port-allocation-fact.js";
 import {
   admitDatabasePortDescriptor,
   DatabasePortDataError,
@@ -32,6 +28,7 @@ import {
   refreshPostgresPlannerStatistics,
   type PostgresPlannerStatistics,
 } from "./postgres-planner-statistics.js";
+import { readPostgresPortCapabilities } from "./postgres-port-capabilities.js";
 export {
   admitDatabasePortDescriptor,
   DatabasePortDataError,
@@ -240,21 +237,12 @@ export async function readDatabasePortAllocations(
         ).rows[0];
         result[key] = { value: row.value, called: row.called };
       } else {
-        const statement = sqliteStatement(
+        result[key] = readSqlitePortAllocation(
           endpoint.db,
-          `SELECT max(${quote(identity.column)}) AS value FROM ${quote(table.name)}`,
+          table.name,
+          identity.column,
+          identity.autoIncrement,
         );
-        let value = statement.get()?.value;
-        if (identity.autoIncrement) {
-          const high = readAutoincrementHighWater(endpoint.db, table.name);
-          if (
-            high !== null &&
-            (value === null || (typeof value === "bigint" && BigInt(high) > value))
-          ) {
-            value = BigInt(high);
-          }
-        }
-        result[key] = { value: String(value ?? 1), called: value !== null && value !== undefined };
       }
     }
   }
@@ -341,7 +329,8 @@ async function insertBatch(
 async function scan(
   endpoint: Endpoint,
   descriptor: PortDescriptor,
-  maxRowBytes: number,
+  // Include the blob owner's 100 MiB allowance plus keys and JSON metadata.
+  maxRowBytes = 128 * 1024 * 1024,
   destination?: Endpoint,
   assertCurrent = () => {},
   transformRow?: (table: string, row: PortRow) => PortRow | undefined,
@@ -540,7 +529,7 @@ export async function inspectDatabasePort(
     }
     return {
       catalog,
-      tables: await scan(source, descriptor, 64 * 1024 * 1024),
+      tables: await scan(source, descriptor),
       allocations: await readDatabasePortAllocations(source, descriptor),
     };
   } finally {
@@ -552,27 +541,20 @@ export async function inspectDatabasePort(
   }
 }
 
-/** One capability contract for dry-run evidence and the actual copy session. */
-export async function readPostgresPortCapabilities(
-  db: Client,
-  descriptor: Pick<PortDescriptor, "minimumPostgresVersion">,
+/** Copy rows server-side; the caller's snapshot already covers both namespaces. */
+async function copyPostgresTables(
+  source: Extract<Endpoint, { engine: "postgres" }>,
+  destination: Extract<Endpoint, { engine: "postgres" }>,
+  descriptor: PortDescriptor,
+  assertCurrent: () => void,
 ) {
-  const server = (
-    await db.query<{ version: number; encoding: string; client_encoding: string }>(
-      "SELECT current_setting('server_version_num')::int AS version, current_setting('server_encoding') AS encoding, current_setting('client_encoding') AS client_encoding",
-    )
-  ).rows[0];
-  if (
-    !server ||
-    server.version < descriptor.minimumPostgresVersion * 10000 ||
-    server.encoding !== "UTF8" ||
-    server.client_encoding !== "UTF8"
-  ) {
-    throw new DatabasePortDataError(
-      `Observed PostgreSQL ${server?.version}/${server?.encoding}/${server?.client_encoding}; required PostgreSQL >=${descriptor.minimumPostgresVersion} and UTF8 server/client`,
+  for (const table of copiedTables(descriptor)) {
+    assertCurrent();
+    const columns = table.columns.map((c) => quote(c.name)).join(",");
+    await destination.db.query(
+      `INSERT INTO ${qualified(destination, table.name)} (${columns}) SELECT ${columns} FROM ${qualified(source, table.name)}`,
     );
   }
-  return { version: server.version, encoding: server.encoding };
 }
 
 /** Offline worker API: caller owns tracked SQLite handles (data statements read BigInts), migrated source, fresh destination, and exclusive custody. No publication. */
@@ -590,7 +572,13 @@ export async function materializeDatabasePort(params: {
   transformRow?: (table: string, row: PortRow) => PortRow | undefined;
 }): Promise<PortVerification> {
   const { source, destination, assertCurrent } = params;
-  if (source.engine === destination.engine) {
+  // A same-server copy shares one client, so one transaction snapshots both namespaces.
+  const sameServer =
+    source.engine === "postgres" &&
+    destination.engine === "postgres" &&
+    source.db === destination.db &&
+    source.namespace !== destination.namespace;
+  if (source.engine === destination.engine && !sameServer) {
     throw new DatabasePortDataError("Port endpoints must use different engines");
   }
   const descriptor = await admitDatabasePortDescriptor(
@@ -598,7 +586,7 @@ export async function materializeDatabasePort(params: {
     params.descriptor,
     params.activeFragments,
   );
-  const maxRowBytes = params.maxRowBytes ?? 64 * 1024 * 1024;
+  const maxRowBytes = params.maxRowBytes;
   const postgres = [source, destination].find(
     (endpoint): endpoint is Extract<Endpoint, { engine: "postgres" }> =>
       endpoint.engine === "postgres",
@@ -633,15 +621,16 @@ export async function materializeDatabasePort(params: {
       definitions.source ?? definitions.base,
     );
   }
-  if (source.engine === "postgres") {
-    await source.db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
-  } else {
+  // A same-server copy reads inside the destination's repeatable-read transaction below.
+  if (source.engine === "sqlite") {
     source.db.exec("BEGIN");
+  } else if (!sameServer) {
+    await source.db.query("BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY");
   }
   try {
     if (destination.engine === "postgres") {
       await destination.db.query(
-        "BEGIN; SET LOCAL synchronous_commit = on; SET LOCAL statement_timeout = '1h'",
+        `BEGIN${sameServer ? " ISOLATION LEVEL REPEATABLE READ" : ""}; SET LOCAL synchronous_commit = on; SET LOCAL statement_timeout = '1h'`,
       );
       assertCurrent();
       await destination.db.query(`CREATE SCHEMA ${quote(destination.namespace)}`);
@@ -655,14 +644,19 @@ export async function materializeDatabasePort(params: {
     }
     const facts =
       params.sourceAllocations ?? (await readDatabasePortAllocations(source, descriptor));
-    const tables = await scan(
-      source,
-      descriptor,
-      maxRowBytes,
-      destination,
-      assertCurrent,
-      params.transformRow,
-    );
+    // Same-server rows are copied on the server, then hashed from a separate source read
+    // in the same snapshot so the copy is checked against its source, not against itself.
+    const tables = sameServer
+      ? (await copyPostgresTables(source, destination, descriptor, assertCurrent),
+        await scan(source, descriptor, maxRowBytes))
+      : await scan(
+          source,
+          descriptor,
+          maxRowBytes,
+          destination,
+          assertCurrent,
+          params.transformRow,
+        );
     assertCurrent();
     await restoreAllocations(destination, descriptor, facts);
     for (const projection of descriptor.projections ?? []) {
@@ -719,10 +713,10 @@ export async function materializeDatabasePort(params: {
     }
     throw error;
   } finally {
-    if (source.engine === "postgres") {
-      await source.db.query("ROLLBACK");
-    } else {
+    if (source.engine === "sqlite") {
       source.db.exec("ROLLBACK");
+    } else if (!sameServer) {
+      await source.db.query("ROLLBACK");
     }
   }
 }

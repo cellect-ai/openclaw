@@ -18,7 +18,6 @@ it.each([
   ["2026.9.33", "2026.9.37", "2026.9.38"],
   ["2026.10.1", "2026.10.33", "2026.10.34"],
   ["2026.10.1", "2026.10.2", "2026.10.2"],
-  ["2026.10.34-first-hop.1", "2026.9.37", "2026.10.34-first-hop.1"],
 ])("selects fixture %s from driver %s as %s", (candidate, driver, expected) => {
   expect(publishedDriverFixtureVersion(candidate, driver)).toBe(expected);
 });

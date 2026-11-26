@@ -6,6 +6,8 @@ import { withDatabaseEngineSelection } from "../infra/database-engine/context.js
 import { resolveDatabaseFamilyEngines } from "../infra/database-engine/registry.js";
 import { bindConfigOwner } from "./config-cli-owner-patch.js";
 
+let lastCommitted: unknown;
+
 // Commits one change through a synthetic owner and returns the config.patch request it sent.
 async function commitThroughOwner(
   change: { previous: OpenClawConfig; next: OpenClawConfig },
@@ -25,22 +27,19 @@ async function commitThroughOwner(
     { effectiveEngines: resolveDatabaseFamilyEngines({}) },
     () => bindConfigOwner(requestOwner, env),
   );
-  const result = await commit(change);
-  return {
-    result,
-    request: sent[0] as { raw: string; baseHash?: string; replacePaths?: string[] },
-  };
+  lastCommitted = await commit(change);
+  return sent[0] as { raw: string; baseHash?: string; replacePaths?: string[] };
 }
 
 describe("bindConfigOwner", () => {
   it("returns the owner's billing-route warnings with the restart hint", async () => {
     const warning = "Billing route changed for agents.defaults.subagents.model (agent main).";
-    const { result } = await commitThroughOwner(
+    await commitThroughOwner(
       { previous: {}, next: { gateway: { reload: { mode: "off" } } } },
       "base-hash",
       { restart: { scheduled: true }, billingRouteWarnings: [warning] },
     );
-    expect(result).toEqual({
+    expect(lastCommitted).toEqual({
       hint: "The Gateway is restarting to apply it.",
       warnings: [warning],
     });
@@ -57,8 +56,7 @@ describe("bindConfigOwner", () => {
       agents: { entries: {} },
       tools: { toolSearch: false },
     };
-    const { request, result } = await commitThroughOwner({ previous, next }, "base-hash");
-    expect(result).toEqual({ hint: undefined, warnings: [] });
+    const request = await commitThroughOwner({ previous, next }, "base-hash");
     // v2026.10.7 Gateways accept routed writes but close config.patch over these fields.
     const stableConfigPatchFields = new Set([
       "raw",

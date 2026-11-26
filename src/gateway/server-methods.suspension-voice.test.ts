@@ -184,6 +184,7 @@ it("keeps registered transcription audio live and blocks stop until provider fin
     createTalkTranscriptionRelaySession({
       context,
       connId: "conn-suspend-proof",
+      assertCurrent: () => {},
       providerConfig: {},
       provider: {
         id: "transcription-fixture",

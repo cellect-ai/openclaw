@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { createRetainedOperation } from "@openclaw/worker-runtime/lifecycle";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { expectBytesEqual } from "../../test/helpers/file-snapshots.js";
+import type { RetainedPreparedSqliteReadOnlyLocation } from "../infra/sqlite-readonly-location.types.js";
 import { SqliteSnapshotCapacityError } from "../infra/sqlite-snapshot-capacity-error.js";
 import * as snapshotSource from "../infra/sqlite-snapshot-source.js";
 import { DoctorStateMigrationRefusalError } from "../infra/state-migrations.messages.js";
@@ -104,15 +107,13 @@ async function runDuringCapture<T>(
 }
 
 function failSnapshotStaging(failure: Error) {
-  const prepare = snapshotSource.prepareSqliteReadOnlyLocationSync;
-  return vi
-    .spyOn(snapshotSource, "prepareSqliteReadOnlyLocationSync")
-    .mockImplementation((...args) => {
-      if (args[0].includes(`${path.sep}agents${path.sep}`)) {
-        throw failure;
-      }
-      return prepare(...args);
-    });
+  return vi.spyOn(snapshotSource, "startSqliteReadOnlyLocationAsync").mockImplementation(() => {
+    const preparation = createRetainedOperation<RetainedPreparedSqliteReadOnlyLocation>(() => {});
+    preparation.reject(failure);
+    const closed = createRetainedOperation<void>(() => {});
+    closed.resolve();
+    return { ...preparation.operation, startClose: () => closed.operation };
+  });
 }
 
 const capacityFailure = () =>
@@ -137,7 +138,7 @@ it("defers an update's entry-state inspection when snapshot space runs out", asy
     ),
   ]);
   expect(outcome.receipt).toMatchObject({ unchanged: true });
-  expect(fs.readFileSync(databasePath)).toEqual(original);
+  expectBytesEqual(fs.readFileSync(databasePath), original, "deferred database");
 });
 
 it.each([
@@ -155,7 +156,7 @@ it.each([
   expect(outcome.error).toBeInstanceOf(DoctorStateMigrationRefusalError);
   expect(outcome.error).toMatchObject({ message: expect.stringContaining(injected.message) });
   expect(outcome.receipt).toMatchObject({ unchanged: true });
-  expect(fs.readFileSync(databasePath)).toEqual(original);
+  expectBytesEqual(fs.readFileSync(databasePath), original, "refused database");
 });
 
 it("records the deferred inspection and continues the activation migration", async () => {
@@ -175,7 +176,12 @@ it("records the deferred inspection and continues the activation migration", asy
     pluginSessionStoreAgentIds: [],
     legacySessionSurfaces: EMPTY_LEGACY_SESSION_SURFACES,
   }).filter(({ id }) =>
-    ["session-entry-state-preparation", "media-persistence", "session-entry-state"].includes(id),
+    [
+      "session-entry-state-preparation",
+      "media-persistence",
+      "session-entry-state",
+      "cold-navigation",
+    ].includes(id),
   );
 
   // An open read transaction keeps WAL frames in place, so the scan still needs a private snapshot.
@@ -191,6 +197,7 @@ it("records the deferred inspection and continues the activation migration", asy
     ["session-entry-state-preparation", "skipped"],
     ["media-persistence", "skipped"],
     ["session-entry-state", "deferred"],
+    ["cold-navigation", "skipped"],
   ]);
   expect(outcome.receipt).toMatchObject({ unchanged: true });
 });

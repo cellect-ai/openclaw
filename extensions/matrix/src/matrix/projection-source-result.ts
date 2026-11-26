@@ -298,16 +298,24 @@ export async function reconcileMatrixNativeFinalResults(
   selected?: Omit<NativeFinalDeliveryReference, "deliveryId">,
 ): Promise<void> {
   const storage = store(runtime);
+  const errors: unknown[] = [];
   for (const entry of await storage.entries()) {
     if (!entry.key.startsWith("accepted-") && !entry.key.startsWith("pending-")) continue;
-    const item = await storage.lookup(entry.key);
-    if (!item) continue;
-    const reference = decode(item.bytes);
-    if (!reference.nativeFinal || (selected && !sameNativePlan(reference.nativeFinal, selected)))
-      continue;
-    if (reference.sourceMessageId) await joinNativeResult(reference, storage);
-    else await completeNativePlan(reference, storage);
+    try {
+      const item = await storage.lookup(entry.key);
+      if (!item) continue;
+      const reference = decode(item.bytes);
+      if (!reference.nativeFinal || (selected && !sameNativePlan(reference.nativeFinal, selected)))
+        continue;
+      if (reference.sourceMessageId) await joinNativeResult(reference, storage);
+      else await completeNativePlan(reference, storage);
+    } catch (error) {
+      // Keep the unresolved reference durable and still replay independent receipts.
+      errors.push(error);
+    }
   }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Native final receipt replay failed");
 }
 
 /** Exact persisted lifecycle source selects recovery; native intent CAS fences further appends. */

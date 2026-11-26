@@ -168,6 +168,7 @@ export async function readDatabasePathIdentity(
   return identity;
 }
 
+/** Async counterpart of native-owner inspection; the eventual opener owns non-file diagnostics. */
 export async function inspectDatabasePathIdentity(
   databasePath: string,
 ): Promise<DatabasePathIdentity | undefined> {
@@ -244,21 +245,13 @@ export function assertExistingDatabaseIdentity(
   });
 }
 
-export function isSoleDatabaseFileDescriptor(
-  descriptor: number,
-  file: BigIntStats,
-  additionalOwnedDescriptors?: ReadonlySet<number>,
-): boolean {
+export function isSoleDatabaseFileDescriptor(descriptor: number, file: BigIntStats): boolean {
   if (process.platform !== "linux") {
     return false;
   }
   try {
     for (const name of readdirSync("/proc/self/fd")) {
-      if (
-        !/^\d+$/u.test(name) ||
-        Number(name) === descriptor ||
-        additionalOwnedDescriptors?.has(Number(name))
-      ) {
+      if (!/^\d+$/u.test(name) || Number(name) === descriptor) {
         continue;
       }
       try {

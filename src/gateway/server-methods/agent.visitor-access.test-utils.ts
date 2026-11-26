@@ -44,6 +44,7 @@ import {
 } from "../device-revocation.js";
 import {
   GatewayOperatorAccessDeniedError,
+  GatewayOperatorAccessUnavailableError,
   resolveGatewayOperatorAccessAuthority,
   resumeGatewayOperatorAccessGrant,
 } from "../operator-access-policy.js";
@@ -265,6 +266,14 @@ describe("visitor access admitted caller", () => {
                         );
                       try {
                         [renewal] = await Promise.allSettled([invite(2)]);
+                        // Revocation fences the next request, not this admitted renewal.
+                        await expect(
+                          captureGatewayOperatorRunAuthority({
+                            client,
+                            context,
+                            hasCurrentClientAuthority: caller.isCurrent,
+                          }),
+                        ).rejects.toThrow("Gateway caller authority is no longer active");
                       } finally {
                         intercept.mockRestore();
                       }
@@ -330,19 +339,15 @@ describe("visitor access admitted caller", () => {
           expect(revocationState).toEqual({
             ownerBefore: true,
             callerCurrent: false,
-            ownerAfter: false,
+            ownerAfter: true,
           });
           expect(stages).toEqual(["transaction", "commit"]);
           const outcome = expectDefined(renewal, "renewal result missing");
-          expect(outcome.status).toBe("rejected");
-          if (scenario === "revoked before commit") {
-            expect(saved).toEqual(original);
-          } else {
-            const renewed = expectDefined(saved, "committed renewal was lost");
-            expect(renewed.createdAt).toBe(original.createdAt);
-            expect(renewed.expiresAt).toBeGreaterThan(original.expiresAt);
-          }
-          expect(commitGranted).toBe(scenario === "revoked after commit");
+          expect(outcome.status).toBe("fulfilled");
+          const renewed = expectDefined(saved, "committed renewal was lost");
+          expect(renewed.createdAt).toBe(original.createdAt);
+          expect(renewed.expiresAt).toBeGreaterThan(original.expiresAt);
+          expect(commitGranted).toBe(true);
         } finally {
           caller.release();
           closeGatewayDeviceRevocation(context);
@@ -466,9 +471,10 @@ describe("visitor access admitted caller", () => {
       });
       try {
         const grants = createVisitorGrantStore(state.env);
+        // Invalid policy configuration is unavailable, not a decision to revoke this visitor.
         expect(() =>
           resolveGatewayOperatorAccessAuthority(unassigned.id, restrictedConfig),
-        ).toThrow(GatewayOperatorAccessDeniedError);
+        ).toThrow(GatewayOperatorAccessUnavailableError);
         for (const profile of [staff, owner]) {
           expect(resolveGatewayOperatorAccessAuthority(profile.id, restrictedConfig)).toBeNull();
         }

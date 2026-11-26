@@ -4,11 +4,12 @@ import fs from "node:fs";
 import fsPromises from "node:fs/promises";
 import path from "node:path";
 import { hasErrnoCode, isMissingPathError } from "./errno.js";
+import { isPathInside } from "./path-guards.js";
 
 /** Why a path has no canonical spelling; callers treat all of these as outside. */
 type UncanonicalReason = "parent-after-missing" | "unreadable" | "link-loop";
 
-type ContainmentPath =
+export type ContainmentPath =
   | {
       kind: "resolved";
       path: string;
@@ -118,7 +119,7 @@ async function answerAsync(probe: Probe): Promise<ProbeResult> {
  * its stored target, so the result names the location a create or read would actually reach; an
  * unreadable or looping prefix has no knowable target and is reported instead of guessed.
  */
-async function canonicalizeForContainment(candidate: string): Promise<ContainmentPath> {
+export async function canonicalizeForContainment(candidate: string): Promise<ContainmentPath> {
   const walk = walkForContainment(candidate, MAX_DANGLING_LINK_HOPS);
   let step = walk.next();
   while (!step.done) {
@@ -147,4 +148,35 @@ export async function realpathViaExistingPrefix(candidate: string): Promise<stri
 export function realpathViaExistingPrefixSync(candidate: string): string | undefined {
   const resolved = canonicalizeForContainmentSync(candidate);
   return resolved.kind === "resolved" ? resolved.path : undefined;
+}
+
+/** Canonical root spelling; configured roots are trusted, so ".." folds lexically first. */
+export async function canonicalizeContainmentRoot(root: string): Promise<string> {
+  const resolved = path.resolve(root);
+  return (await realpathViaExistingPrefix(resolved)) ?? resolved;
+}
+
+/** Synchronous counterpart of `canonicalizeContainmentRoot`, for trusted recorded paths. */
+export function canonicalizeContainmentRootSync(root: string): string {
+  const resolved = path.resolve(root);
+  return realpathViaExistingPrefixSync(resolved) ?? resolved;
+}
+
+/**
+ * Re-spells a candidate under the caller's own spelling of root when both canonicalize to a
+ * containing pair, so lexical checks that follow (and alias-escape walks) see one spelling.
+ */
+export async function respellUnderRoot(
+  root: string,
+  candidate: string,
+): Promise<string | undefined> {
+  const [canonicalRoot, canonicalCandidate] = await Promise.all([
+    canonicalizeContainmentRoot(root),
+    realpathViaExistingPrefix(candidate),
+  ]);
+  if (!canonicalCandidate || !isPathInside(canonicalRoot, canonicalCandidate)) {
+    return undefined;
+  }
+  const relative = path.relative(canonicalRoot, canonicalCandidate);
+  return relative ? path.join(path.resolve(root), relative) : path.resolve(root);
 }

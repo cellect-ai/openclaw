@@ -45,17 +45,15 @@ export function resolveChatModelSetup(
   const catalog = state.chatModelCatalog;
   const onSetup = state.onSetup;
   const retired = state.modelCatalogState.retired === true;
-  const error = state.catalogError;
   const inference =
     state.activeSession?.placement?.state === "active"
       ? state.activeSession.placement.inference
       : undefined;
   let modelUnavailableBanner: ChatComposerDisabledBanner | undefined;
   if (retired) {
-    modelUnavailableBanner = {
-      kind: "above-composer",
-      text: t(error ? "chat.modelControls.modelsUnavailable" : "chat.modelControls.loadingModels"),
-    };
+    modelUnavailableBanner = state.catalogError
+      ? { kind: "above-composer", text: t("chat.modelControls.modelsUnavailable") }
+      : undefined;
   } else if (
     policy?.restricted &&
     policy.defaultModel === null &&
@@ -81,7 +79,9 @@ export function resolveChatModelSetup(
     modelUnavailableBanner,
     requiredReason: modelSetupRequired
       ? t("modelSetup.required.body")
-      : modelUnavailableBanner?.text,
+      : retired
+        ? t("chat.modelControls.modelsUnavailable")
+        : modelUnavailableBanner?.text,
   };
 }
 

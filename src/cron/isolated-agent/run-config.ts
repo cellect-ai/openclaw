@@ -1,12 +1,13 @@
 import { resolveAgentModelConfigForRuntime } from "../../agents/agent-scope-config.js";
 /** Builds isolated cron runner config from global defaults plus agent overrides. */
 import type { resolveAgentConfig } from "../../agents/agent-scope.js";
+import { toAgentModelListLike } from "../../config/model-input.js";
 import {
   getRuntimeConfigSnapshot,
   getRuntimeConfigSourceSnapshot,
   selectApplicableRuntimeConfig,
-} from "../../config/config.js";
-import { toAgentModelListLike } from "../../config/model-input.js";
+  selectLiveRuntimeConfig,
+} from "../../config/runtime-snapshot.js";
 import type { AgentDefaultsConfig } from "../../config/types.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 
@@ -29,7 +30,7 @@ export function resolveCronAgentConfig(params: {
   config: OpenClawConfig;
   agentConfigOverride?: ResolvedAgentConfig;
 }) {
-  const runtimeConfig = resolveCronActiveRuntimeConfig(params.config);
+  const runtimeConfig = selectLiveRuntimeConfig(params.config);
   const {
     model: _agentModelOverride,
     sandbox: _agentSandboxOverride,

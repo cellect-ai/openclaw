@@ -507,21 +507,45 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
     public var activity: [OpenClawAgentActivityItem]?
     public internal(set) var transcriptRunID: String?
     public var isTruncated = false
-    public let role: String
+    public internal(set) var role: String
+    #if os(iOS)
+    private var decodedNestedToolActivity = false
+    #endif
+
+    var isNestedToolActivity: Bool {
+        #if os(iOS)
+        self.role == "custom" && self.decodedNestedToolActivity
+        #else
+        false
+        #endif
+    }
+
     public let phase: String?
-    public let turnBoundary: Bool?
+    public internal(set) var turnBoundary: Bool?
     public let steerTargetRunID: String?
     public let streamFallback: OpenClawChatStreamFallback?
     public internal(set) var content: [OpenClawChatMessageContent]
     public internal(set) var timestamp: Double?
     public internal(set) var idempotencyKey: String?
-    public let toolCallId: String?
-    public let toolName: String?
+    public internal(set) var toolCallId: String?
+    public internal(set) var toolName: String?
     public let usage: OpenClawChatUsage?
     public let stopReason: String?
     public let errorMessage: String?
     public internal(set) var details: AnyCodable?
-    public let isError: Bool?
+    #if os(macOS)
+    private var runFailureNotice: AnyCodable?
+
+    var desktopFailureSummary: String? {
+        guard self.role == "custom",
+              let notice = self.runFailureNotice?.dictionaryValue,
+              ChatPayloadDecoding.trimmedNonEmptyString(notice["runId"]?.stringValue) != nil,
+              ChatPayloadDecoding.trimmedNonEmptyString(notice["summary"]?.stringValue) != nil
+        else { return nil }
+        return ChatPayloadDecoding.trimmedNonEmptyString(notice["desktopSummary"]?.stringValue)
+    }
+    #endif
+    public internal(set) var isError: Bool?
     public internal(set) var provenance: OpenClawChatInputProvenance?
     public internal(set) var historyMarker: OpenClawChatHistoryMarker?
 
@@ -560,6 +584,9 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
 
     enum CodingKeys: String, CodingKey {
         case role
+        #if os(iOS)
+        case customType
+        #endif
         case model
         case senderLabel
         case senderSession
@@ -579,6 +606,9 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         case stopReason
         case errorMessage
         case details
+        #if os(macOS)
+        case runFailureNotice = "openclawRunError"
+        #endif
         case isError
         case is_error
         case mediaPath = "MediaPath"
@@ -640,6 +670,10 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         self.role = try container.decode(String.self, forKey: .role)
+        #if os(iOS)
+        self.decodedNestedToolActivity = self.role == "custom" &&
+            (try? container.decode(String.self, forKey: .customType)) == "openclaw.nested-tool.v1"
+        #endif
         self.timestamp = try container.decodeIfPresent(Double.self, forKey: .timestamp)
         let decodedOpenClaw = try container.decodeIfPresent(OpenClawMetadata.self, forKey: .openClaw)
         self.idempotencyKey = try decodedOpenClaw?.idempotencyKey ??
@@ -654,6 +688,9 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         self.stopReason = try container.decodeIfPresent(String.self, forKey: .stopReason)
         self.errorMessage = try container.decodeIfPresent(String.self, forKey: .errorMessage)
         self.details = try container.decodeIfPresent(AnyCodable.self, forKey: .details)
+        #if os(macOS)
+        self.runFailureNotice = try? container.decode(AnyCodable.self, forKey: .runFailureNotice)
+        #endif
         self.isError = try container.decodeIfPresent(Bool.self, forKey: .isError) ??
             container.decodeIfPresent(Bool.self, forKey: .is_error)
         self.provenance = try? container.decode(
@@ -768,6 +805,11 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
     public func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(self.role, forKey: .role)
+        #if os(iOS)
+        if self.isNestedToolActivity {
+            try container.encode("openclaw.nested-tool.v1", forKey: .customType)
+        }
+        #endif
         try container.encodeIfPresent(self.model, forKey: .model)
         try container.encodeIfPresent(self.senderLabel, forKey: .senderLabel)
         try container.encodeIfPresent(self.senderSession, forKey: .senderSession)
@@ -806,6 +848,9 @@ public struct OpenClawChatMessage: Codable, Hashable, Identifiable, Sendable {
         try container.encodeIfPresent(self.stopReason, forKey: .stopReason)
         try container.encodeIfPresent(self.errorMessage, forKey: .errorMessage)
         try container.encodeIfPresent(self.details, forKey: .details)
+        #if os(macOS)
+        try container.encodeIfPresent(self.runFailureNotice, forKey: .runFailureNotice)
+        #endif
         try container.encodeIfPresent(self.isError, forKey: .isError)
         try container.encode(self.content, forKey: .content)
     }
@@ -912,6 +957,8 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
     public let inFlightRun: OpenClawChatInFlightRun?
     public let inputConsumptions: [InputConsumption]?
     public let activity: [OpenClawChatHistoryActivity]?
+    public let kind: String?
+    public let deltaCursor: String?
 
     public init(
         sessionKey: String,
@@ -921,7 +968,9 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
         sessionInfo: OpenClawChatSessionInfo? = nil,
         inFlightRun: OpenClawChatInFlightRun? = nil,
         inputConsumptions: [InputConsumption]? = nil,
-        activity: [OpenClawChatHistoryActivity]? = nil)
+        activity: [OpenClawChatHistoryActivity]? = nil,
+        kind: String? = nil,
+        deltaCursor: String? = nil)
     {
         self.sessionKey = sessionKey
         self.sessionId = sessionId
@@ -931,6 +980,26 @@ public struct OpenClawChatHistoryPayload: Codable, Sendable {
         self.inFlightRun = inFlightRun
         self.inputConsumptions = inputConsumptions
         self.activity = activity
+        self.kind = kind
+        self.deltaCursor = deltaCursor
+    }
+
+    public init(from decoder: any Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        self.kind = try values.decodeIfPresent(String.self, forKey: .kind)
+        self.sessionKey = if self.kind == "delta" || self.kind == "reset" {
+            try values.decodeIfPresent(String.self, forKey: .sessionKey) ?? ""
+        } else {
+            try values.decode(String.self, forKey: .sessionKey)
+        }
+        self.sessionId = try values.decodeIfPresent(String.self, forKey: .sessionId)
+        self.messages = try values.decodeIfPresent([AnyCodable].self, forKey: .messages)
+        self.thinkingLevel = try values.decodeIfPresent(String.self, forKey: .thinkingLevel)
+        self.sessionInfo = try values.decodeIfPresent(OpenClawChatSessionInfo.self, forKey: .sessionInfo)
+        self.inFlightRun = try values.decodeIfPresent(OpenClawChatInFlightRun.self, forKey: .inFlightRun)
+        self.inputConsumptions = try values.decodeIfPresent([InputConsumption].self, forKey: .inputConsumptions)
+        self.activity = try values.decodeIfPresent([OpenClawChatHistoryActivity].self, forKey: .activity)
+        self.deltaCursor = try values.decodeIfPresent(String.self, forKey: .deltaCursor)
     }
 }
 

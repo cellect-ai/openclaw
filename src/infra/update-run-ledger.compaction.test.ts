@@ -38,6 +38,10 @@ describe("update run ledger compaction", () => {
     })) {
       write(entry);
     }
+    const widenings = [
+      "Retirement-only Doctor widened: config.model-retirement",
+      "Retirement-only Doctor widened: config.model-retirement.warning-notes.codex-routes",
+    ];
     const evidence = [
       "candidate-admission",
       "warning:update-admission-fallback",
@@ -45,8 +49,18 @@ describe("update run ledger compaction", () => {
       "candidate-gateway-startup",
       "openclaw doctor",
       "managed-service-restart",
+      "managed-service update handoff",
+      "service-stop",
+      "service-start",
+      "service-running",
       "update-driver-handoff",
-    ].map((step) => timedStep(step, step === "global update" ? "failed" : "completed"));
+      ...widenings.map((_, index) => `diagnostic:post-plugin doctor:${index}`),
+    ].map((step) =>
+      Object.assign(
+        timedStep(step, step === "global update" ? "failed" : "completed"),
+        step.startsWith("diagnostic:") ? { detail: widenings[Number(step.split(":").at(-1))] } : {},
+      ),
+    );
     const refusal = {
       reason: "refused",
       message: "Repair is pending.",
@@ -55,7 +69,7 @@ describe("update run ledger compaction", () => {
     for (const step of evidence) {
       write({
         ...step,
-        detail,
+        detail: step.detail ?? detail,
         ...(step.step === "openclaw doctor" ? { configWriteRefusal: refusal } : {}),
       });
     }
@@ -64,6 +78,7 @@ describe("update run ledger compaction", () => {
       "notice:ack",
       "previous generation restoration",
       "warning:post-plugin doctor",
+      "warning:post-stop-checks",
       // Candidate Doctor's predecessor-stop receipt: identity lives in the key.
       "finalize:predecessor-stop:1758600000000:1000:631:0123456789abcdef",
       "post-update verification",
@@ -85,13 +100,8 @@ describe("update run ledger compaction", () => {
     );
     expect(report.markdown).toContain("Snapshots retained at $OPENCLAW_STATE_DIR/backup.");
     expect(report.markdown).not.toContain(options.env.OPENCLAW_STATE_DIR);
-    expect(
-      published.steps.filter((step) => step.step === "warning:database migration writes"),
-    ).toHaveLength(1);
     for (const expected of evidence) {
-      expect(persisted.steps.filter((step) => step.step === expected.step)).toEqual([
-        expect.objectContaining(expected),
-      ]);
+      expect(persisted.steps.find(({ step }) => step === expected.step)).toMatchObject(expected);
     }
     const retainedRefusal = persisted.steps.find(
       (step) => step.step === "openclaw doctor",
@@ -100,7 +110,9 @@ describe("update run ledger compaction", () => {
     expect(retainedRefusal?.keys).toHaveLength(32);
     expect(retainedRefusal?.keys.every((key) => key.length < 1_020)).toBe(true);
     expect(persisted.steps.map((step) => step.step)).toEqual(expect.arrayContaining(notices));
-    expect(persisted.steps.find((s) => s.step.endsWith("plugin doctor"))?.detail).toBe(detail);
+    for (const key of ["warning:post-plugin doctor", "warning:post-stop-checks"]) {
+      expect(persisted.steps.find((step) => step.step === key)?.detail).toBe(detail);
+    }
     expect(persisted.steps.length).toBeLessThanOrEqual(128);
     expect(Buffer.byteLength(JSON.stringify(persisted.steps))).toBeLessThanOrEqual(16 * 1024);
   });

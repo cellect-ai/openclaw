@@ -17,11 +17,11 @@ title: "Configuration — agent models"
     defaults: {
       models: {
         "anthropic/claude-opus-4-6": { alias: "opus" },
-        "minimax/MiniMax-M2.7": { alias: "minimax" },
+        "minimax/MiniMax-M3": { alias: "minimax" },
       },
       model: {
         primary: "anthropic/claude-opus-4-6",
-        fallbacks: ["minimax/MiniMax-M2.7"],
+        fallbacks: ["minimax/MiniMax-M3"],
       },
       utilityModel: {
         primary: "openai/gpt-5.4-mini",
@@ -132,9 +132,10 @@ Leaving `agents.defaults.timeoutSeconds` unset gives each model attempt the 48-h
 - `params`: global default provider parameters applied to all models. Set at `agents.defaults.params` (e.g. `{ cacheRetention: "long" }`).
 - `params` merge precedence (config): `agents.defaults.params` (global base), then `agents.defaults.models["provider/model"].params` (shared per-model), then `agents.entries.*.models["provider/model"].params` (agent-specific per-model), then `agents.entries.*.params` (agent-wide). Later layers override by key. See [Prompt Caching](/reference/prompt-caching) for details.
 - Nucleus sampling accepts `params.topP` or `params.top_p`. If both are present after config merging, `topP` wins; a per-request `topP` overrides either spelling. Google forwards the value on Interactions, GenerateContent, and Vertex routes. Provider-specific sampling restrictions still apply.
+- `params.seed` requests reproducible sampling where the provider supports it. Google forwards it on Interactions, GenerateContent, and Vertex routes, and Mistral receives it as `random_seed`. Google does not forward `presencePenalty` or `frequencyPenalty`.
 - Model `params.thinking` sets that model's thinking default; an agent-specific model entry overrides the shared entry. Per-message and session choices, followed by the agent's `thinkingDefault`, take precedence over either model setting. See [thinking resolution order](/tools/thinking#resolution-order).
 - `models.providers.openrouter.params.provider`: OpenRouter-wide default provider-routing policy. OpenClaw forwards this to OpenRouter's request `provider` object; per-model `agents.defaults.models["openrouter/<model>"].params.provider` and agent params override by key. See [OpenRouter provider routing](/providers/openrouter#advanced-configuration).
-- `params.extra_body`/`params.extraBody`: advanced pass-through JSON merged into `api: "openai-completions"` request bodies for OpenAI-compatible proxies. If it collides with generated request keys, the extra body wins; non-native completions routes still strip OpenAI-only `store` afterward.
+- `params.extra_body`/`params.extraBody`: advanced pass-through JSON merged into `api: "openai-completions"` request bodies for native OpenAI and OpenAI-compatible proxies. For example, `extraBody: { safety_identifier: "<stable-user-id-hash>" }` sends an explicitly configured [safety identifier](/providers/openai/advanced#native-vs-openai-compatible-routes). If it collides with generated request keys, the extra body wins; non-native completions routes still strip OpenAI-only `store` afterward.
 - `params.chat_template_kwargs`: vLLM/OpenAI-compatible chat-template arguments merged into top-level `api: "openai-completions"` request bodies. For `vllm/nemotron-3-*` with thinking off, the bundled vLLM plugin automatically sends `enable_thinking: false` and `force_nonempty_content: true`; explicit `chat_template_kwargs` override generated defaults, and `extra_body.chat_template_kwargs` still has final precedence. Configured vLLM Qwen and Nemotron thinking models expose binary `/think` choices (`off`, `on`) instead of the multi-level effort ladder.
 - `compat.thinkingFormat`: OpenAI-compatible thinking payload style. Use `"together"` for Together-style `reasoning.enabled`, `"qwen"` for Qwen-style top-level `enable_thinking`, or `"qwen-chat-template"` for `chat_template_kwargs.enable_thinking` on Qwen-family backends that support request-level chat-template kwargs, such as vLLM. OpenClaw maps disabled thinking to `false` and enabled thinking to `true`. With `"qwen-chat-template"`, a selected enabled level also sends `chat_template_kwargs.reasoning_effort` when the model declares `compat.supportedReasoningEfforts`. The level is resolved against that list and `compat.reasoningEffortMap`. Turn, session, configured, and inherited explicit selections count; without a selection, the nested effort is omitted so the template keeps its own default. The logical fallback remains `medium`. Configured vLLM Qwen models expose their plugin-owned thinking controls.
 - `compat.supportedReasoningEfforts`: per-model OpenAI-compatible reasoning effort list. Include `"xhigh"` for custom endpoints that truly accept it; OpenClaw then exposes `/think xhigh` in command menus, Gateway session rows, session patch validation, agent CLI validation, and `llm-task` validation for that configured provider/model. Use `compat.reasoningEffortMap` when the backend wants a provider-specific value for an OpenClaw level.

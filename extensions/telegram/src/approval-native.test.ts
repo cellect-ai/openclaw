@@ -96,7 +96,9 @@ describe("telegram native approval adapter", () => {
     accountId = "default",
     targetCfg: OpenClawConfig = multiApproverCfg,
   ) => {
-    const resolveTargets = telegramApprovalCapability.nativeAsync?.resolveApproverDmTargets;
+    const resolveTargets =
+      telegramApprovalCapability.nativeAsync?.resolveApproverDmTargets ??
+      telegramApprovalCapability.native?.resolveApproverDmTargets;
     return resolveTargets?.({
       cfg: targetCfg,
       accountId,

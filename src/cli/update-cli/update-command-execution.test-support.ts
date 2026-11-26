@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, vi } from "vitest";
 import { createTestConfigSnapshot } from "../../commands/test-runtime-config-helpers.js";
 import * as gatewayBindings from "../../daemon/managed-gateway-bindings.js";
+import { createNpmTarget } from "../../infra/package-update-steps.test-support.js";
 import type { UpdateRunResult } from "../../infra/update-runner-types.js";
 import type { UpdateStepResult } from "../../infra/update-step-result.js";
 import type * as schema from "./schema-preflight.js";
@@ -11,6 +12,9 @@ import type * as serviceCommand from "./update-command-service-command.js";
 import type { PreManagedServiceStop } from "./update-command-service.js";
 
 type ExecutionParams = Parameters<typeof executeMutableUpdate>[0];
+type UnguardedExecutionParams<Params = ExecutionParams> = Params extends ExecutionParams
+  ? Omit<Params, "executionGuards">
+  : never;
 const mocks = vi.hoisted(() => ({
   captureManagedContext: vi.fn(),
   captureManagedPreflight: vi.fn<typeof managed.captureOwnedManagedUpdatePreflightContext>(),
@@ -29,8 +33,14 @@ const mocks = vi.hoisted(() => ({
   runGitUpdate: vi.fn(),
   runPackageUpdate: vi.fn(),
   runtimeError: vi.fn(),
-  validateCanary: vi.fn(),
+  checkCandidate: vi.fn(),
+  activatedCheck:
+    vi.fn<
+      typeof import("../../infra/update-activated-gateway-check.js").checkActivatedGatewayStartup
+    >(),
   nativeSupport: vi.fn<typeof serviceCommand.isUpdatedInstallGatewayExecutorSupported>(),
+  nodeServiceCommand: vi.fn(),
+  nodeServiceRuntime: vi.fn(),
   serviceStopped: false,
   shouldBlockServiceUpdate: vi.fn(),
   verifyPackageRecovery: vi.fn(),
@@ -38,8 +48,8 @@ const mocks = vi.hoisted(() => ({
 
 export { mocks };
 
-export function readyCanary(steps: UpdateStepResult[], durationMs = 1, logTail: string[] = []) {
-  return { status: "ok" as const, phase: "readiness" as const, steps, durationMs, logTail };
+export function readyCandidate(steps: UpdateStepResult[]) {
+  return { status: "ok" as const, steps };
 }
 
 export function packageCandidate(root: string) {
@@ -63,14 +73,15 @@ vi.mock(import("../../infra/update-global.js"), async (original) => ({
   ...(await original()),
   verifyPackageUpdateRecovery: mocks.verifyPackageRecovery,
 }));
-vi.mock("../../infra/update-candidate-canary.js", () => ({
-  validateUpdateCandidateCanary: mocks.validateCanary,
+// mock-isolation: the candidate check spawns a staged package worker these fixtures do not build.
+vi.mock("../../infra/update-candidate-check.js", () => ({
+  checkUpdateCandidate: mocks.checkCandidate,
 }));
 
-// Like the canary above, the activated-release boot is a process boundary.
+// Like the candidate check above, the activated-release boot is a process boundary.
 vi.mock(import("../../infra/update-activated-gateway-check.js"), async (original) => ({
   ...(await original()),
-  checkActivatedGatewayStartup: async ({ result }) => result,
+  checkActivatedGatewayStartup: mocks.activatedCheck,
 }));
 vi.mock("./update-command-plugin-preflight.js", () => ({
   preflightConfiguredNpmPluginTargets: mocks.pluginPreflight,
@@ -131,6 +142,19 @@ vi.mock(import("./update-command-package.js"), async (original) => ({
   runPackageInstallUpdate: mocks.runPackageUpdate,
 }));
 
+// Execution never inspects the host's real node service manager.
+vi.mock(import("../../daemon/node-service.js"), async (original) => {
+  const actual = await original();
+  return {
+    ...actual,
+    resolveNodeService: () => ({
+      ...actual.resolveNodeService(),
+      readCommand: mocks.nodeServiceCommand,
+      readRuntime: mocks.nodeServiceRuntime,
+    }),
+  };
+});
+
 vi.mock("./update-command-service.js", async () => {
   const actual = await vi.importActual<typeof import("./update-command-service-maintenance.js")>(
     "./update-command-service-maintenance.js",
@@ -151,20 +175,17 @@ export const successfulUpdate: UpdateRunResult = resultFixture("/opt/openclaw", 
   durationMs: 1,
 });
 
-export function executionParams(
-  updateInstallKind: "git" | "package",
-): Omit<ExecutionParams, "executionGuards"> {
-  return {
+export function executionParams(updateInstallKind: "git" | "package"): UnguardedExecutionParams {
+  const params = {
     root: "/opt/openclaw",
     installKind: updateInstallKind,
-    updateInstallKind,
     switchToGit: false,
     timeoutMs: 30_000,
     updateStepTimeoutMs: 30_000,
     startedAt: 1,
     progress: {},
     stop: vi.fn(),
-    channel: "stable",
+    channel: "stable" as const,
     tag: "1.0.1",
     opts: { json: true },
     shouldRestart: true,
@@ -176,10 +197,13 @@ export function executionParams(
     prepareMutableUpdate: mocks.prepareMutableUpdate,
     packageTargetSchemaVersions: { state: 15, agent: 19 },
   };
+  return updateInstallKind === "package"
+    ? { ...params, updateInstallKind, packageInstallTarget: createNpmTarget("/opt") }
+    : { ...params, updateInstallKind };
 }
 
 export async function bindExecutionGuards(
-  params: Omit<ExecutionParams, "executionGuards">,
+  params: UnguardedExecutionParams,
 ): Promise<ExecutionParams> {
   const { createUpdateCommandExecutionGuards: createGuards } =
     await import("./update-command-execution-guards.js");
@@ -225,9 +249,11 @@ export function inspectOrStopService(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  successfulUpdate.steps = [];
   vi.spyOn(gatewayBindings, "discoverManagedGatewayBindings").mockResolvedValue([]);
   mocks.serviceStopped = false;
-  mocks.validateCanary.mockResolvedValue(readyCanary([]));
+  mocks.checkCandidate.mockResolvedValue(readyCandidate([]));
+  mocks.activatedCheck.mockImplementation(async ({ result }) => result);
   mocks.captureManagedContext.mockResolvedValue(undefined);
   mocks.captureManagedPreflight.mockResolvedValue(schemaContext("default"));
   mocks.captureSchemaContext.mockResolvedValue(schemaContext("invoker"));
@@ -237,6 +263,8 @@ beforeEach(() => {
     (schemas) => schemas.incompatible.length > 0 || schemas.indeterminate.length > 0,
   );
   mocks.maybeRestartService.mockResolvedValue(undefined);
+  mocks.nodeServiceCommand.mockResolvedValue(null);
+  mocks.nodeServiceRuntime.mockResolvedValue({ status: "stopped" });
   mocks.maybeStopService.mockImplementation(async ({ phase }) => inspectOrStopService(phase));
   mocks.prepareMutableUpdate.mockResolvedValue(undefined);
   mocks.pluginPreflight.mockResolvedValue([]);

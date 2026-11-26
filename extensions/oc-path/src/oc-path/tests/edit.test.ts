@@ -10,25 +10,13 @@ function edit(raw: string, address: string, value: string) {
 }
 
 describe("setOcPath", () => {
-  it("preserves fenced examples before the selected field", () => {
-    const raw = "## Tools\n- \x60\x60\x60\n  name: decoy\n  \x60\x60\x60\n\n  name: old\n";
-    expect(edit(raw, "tools/#0/name", "new").raw).toBe(raw.replace("name: old", "name: new"));
-  });
-  it("refuses an unmappable table field", () => {
-    expect(() => edit("## Tools\n- | name: example |\n  | --- |\n", "tools/#0/name", "x")).toThrow(
-      expect.objectContaining({ reason: "not-writable" }),
-    );
-  });
   it("replaces frontmatter while retaining unrelated pre-existing sentinel text", () => {
-    const r = edit(
-      `---\nname: github\ndescription: old desc\n---\nBody ${REDACTED_SENTINEL}.`,
-      "[frontmatter]/description",
-      "new desc",
-    );
-    expect(r.raw).toBe(`---\nname: github\ndescription: new desc\n---\nBody ${REDACTED_SENTINEL}.`);
+    const raw = `---\nname: github\ndescription: old desc\n---\nBody ${REDACTED_SENTINEL}.`;
+    const r = edit(raw, "[frontmatter]/description", "new desc");
+    expect(r.raw).toBe(raw.replace("old desc", "new desc"));
   });
 
-  it.each(["has: colon", "1.10", "0123", "true", "~", "null", "- draft"])(
+  it.each(["", "has: colon", "1.10", "0123", "true", "~", "null", "- draft"])(
     "keeps the string %s readable as the same string",
     (value) => {
       const r = edit("---\nversion: 9.9\n---\n", "[frontmatter]/version", value);
@@ -43,25 +31,20 @@ describe("setOcPath", () => {
     expect(parseYaml(r.raw.split(/^---$/m)[1] ?? "").version).toBe(value);
   });
 
-  it("keeps an inserted frontmatter value a string", () => {
-    const r = edit("---\nname: x\n---\n", "[frontmatter]/+version", "1.10");
-    expect(r.raw).toContain('version: "1.10"');
-    expect(parseYaml(r.raw.split(/^---$/m)[1] ?? "").version).toBe("1.10");
-  });
-
   it("edits only the selected duplicate-key item", () => {
-    const raw = "## Tools\n- name: first\n- name: second\n";
-    const ast = parseMd(raw);
-    const result = setOcPath(ast, parseOcPath("oc://AGENTS.md/tools/$first/name"), "changed");
+    const result = edit(
+      "## Tools\n- name: first\n- name: second\n",
+      "tools/$first/name",
+      "changed",
+    );
     expect(result.raw).toBe("## Tools\n- name: changed\n- name: second\n");
-    expect(ast.raw).toBe(raw);
   });
 
   it.each(["\n", "\r\n", "\r"])(
     "keeps item positions through multiline edits and insertion with %j",
     (ending) => {
       let ast = parseMd(
-        "---\ndescription: |\n  old\n  text\n---\n## Intro\n- keep: stable\n## Tools\n- name: first\n- name: second\n".replaceAll(
+        "---\ndescription: |\n  old\n  text\n---\n## Intro\n- keep: stable\n## Tools\n- name: first\n- ```\n  name: decoy\n  ```\n\n  name: second\n".replaceAll(
           "\n",
           ending,
         ),
@@ -70,7 +53,7 @@ describe("setOcPath", () => {
         ["[frontmatter]/description", "short"],
         ["tools/#0/name", "first\n- name: literal"],
         ["tools/$last/name", "second changed"],
-        ["[frontmatter]/+added", "value"],
+        ["[frontmatter]/+added", "1.10"],
         ["tools/+", "name: appended"],
         ["tools/#2/name", "appended changed"],
       ] as const) {
@@ -81,10 +64,13 @@ describe("setOcPath", () => {
         ast = result;
       }
       expect(ast.raw).toBe(
-        "---\ndescription: short\nadded: value\n---\n## Intro\n- keep: stable\n## Tools\n- name: first\n- name: literal\n- name: second changed\n- name: appended changed\n".replaceAll(
+        '---\ndescription: short\nadded: "1.10"\n---\n## Intro\n- keep: stable\n## Tools\n- name: first\n- name: literal\n- ```\n  name: decoy\n  ```\n\n  name: second changed\n- name: appended changed\n'.replaceAll(
           "\n",
           ending,
         ),
+      );
+      expect(parseYaml(ast.raw.replace(/\r\n?/g, "\n").split(/^---$/m)[1] ?? "").added).toBe(
+        "1.10",
       );
       expect(ast.blocks[1]?.items.map((item) => item.kv?.value)).toEqual([
         "first\n- name: literal",
@@ -157,8 +143,12 @@ describe("setOcPath", () => {
     ["## Boundaries\n\n- plain bullet\n", "boundaries/plain-bullet/plain-bullet", "no-item-kv"],
     ["## Other\n\n- foo: bar\n", "missing/foo/foo", "unresolved"],
     ["## Boundaries\n\n- enabled: true\n", "boundaries", "not-writable"],
-  ])("rejects %s at %s with %s", (raw, address, reason) => {
-    expect(() => edit(raw, address, "x")).toThrow(expect.objectContaining({ reason }));
+    ["## Tools\n- name: original\n", "tools/name/name", "parse-error", ""],
+    ["## Tools\n- name: original\n", "tools/name/name", "parse-error", " \t"],
+    ["## Tools\n- name: original\n", "tools/name/name", "parse-error", "\r\n"],
+    ["## Tools\n- | name: example |\n  | --- |\n", "tools/#0/name", "not-writable"],
+  ])("rejects %s at %s with %s for %j", (raw, address, reason, value = "x") => {
+    expect(() => edit(raw, address, value)).toThrow(expect.objectContaining({ reason }));
   });
 
   it("rejects substring-embedded sentinel on item kv", () => {

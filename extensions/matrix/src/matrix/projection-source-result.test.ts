@@ -464,6 +464,34 @@ describe("durable exact source-result rendezvous", () => {
     expect(m.note).not.toHaveBeenCalled();
     expect(m.releaseNative).toHaveBeenCalled();
   });
+  it("replays a later valid receipt while retaining and reporting an unproven source placement", async () => {
+    const mismatch = new Error("Native final receipt has different source placement");
+    const validPlan = { ...host.nativeFinal, intentId: "valid-intent" };
+    const original = m.nativeReceipt.getMockImplementation()!;
+    m.nativeReceipt.mockImplementation(async (plan, source) => {
+      if (plan.intentId === host.nativeFinal.intentId) throw mismatch;
+      return {
+        ...(await original(plan, source)),
+        deliveries: [{ id: "native-first", state: "suppressed" }],
+      };
+    });
+    await prepareMatrixSourceResult({});
+    m.host.mockReturnValue({ ...host, publicationId: "publication-z", nativeFinal: validPlan });
+    await prepareMatrixSourceResult({});
+
+    await expect(reconcileMatrixNativeFinalResults(getMatrixRuntime())).rejects.toBe(mismatch);
+    expect(m.nativeReceipt.mock.calls.map(([plan]) => plan.intentId)).toEqual([
+      host.nativeFinal.intentId,
+      validPlan.intentId,
+    ]);
+    expect(m.releaseNative).toHaveBeenCalledTimes(1);
+    expect(m.releaseNative).toHaveBeenCalledWith(validPlan, expect.any(String));
+    expect(m.note).not.toHaveBeenCalled();
+
+    m.nativeReceipt.mockClear();
+    await expect(reconcileMatrixNativeFinalResults(getMatrixRuntime())).rejects.toBe(mismatch);
+    expect(m.nativeReceipt).toHaveBeenCalledTimes(1);
+  });
   it.each(["queued", "unknown", "missing-final-receipt"])(
     "does not substitute a source ACK for native %s custody",
     async (state) => {

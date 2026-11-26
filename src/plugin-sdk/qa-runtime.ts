@@ -1,5 +1,6 @@
 import { createServer } from "node:net";
 import path from "node:path";
+import { resolveTimerTimeoutMs } from "@openclaw/normalization-core/number-coercion";
 import { selectSessionTranscriptActiveEntries } from "../config/sessions/transcript-tree.js";
 import { monotonicNow } from "../shared/monotonic-time.js";
 import { runExec } from "./process-runtime.js";
@@ -20,6 +21,9 @@ export { mergeAttemptToolMediaPayloads } from "../agents/embedded-agent-runner/r
 export { wrapPromptDataBlock } from "../agents/sanitize-for-prompt.js";
 export { stripInboundMetadata } from "../auto-reply/reply/strip-inbound-meta.js";
 export { writeGatewayRestartIntentSync } from "../infra/restart-intent.js";
+// Private QA config projection reuses the canonical policy schema and target registry.
+export { SecretsConfigSchema } from "../config/zod-schema.core.js";
+export { discoverConfigSecretTargets } from "../secrets/target-registry.js";
 export { GATEWAY_RESTART_RESUME_TEXT } from "../gateway/session-restart-resume-prompt.js";
 export {
   createLazyCliRuntimeLoader,
@@ -348,10 +352,11 @@ export function createQaDockerRuntime(params: {
         break;
       }
       let response: QaDockerFetchResponse | undefined;
-      const requestUsesOverallDeadline = remainingMs <= DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS;
-      const requestTimeoutMs = Math.max(
-        1,
-        Math.min(DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS, Math.floor(remainingMs)),
+      // Rounding the timer delay must not lose the final probe's deadline ownership.
+      const isFinalProbe = remainingMs <= DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS;
+      const requestTimeoutMs = resolveTimerTimeoutMs(
+        Math.min(DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS, remainingMs),
+        DEFAULT_QA_DOCKER_HEALTH_REQUEST_TIMEOUT_MS,
       );
       const requestSignal = AbortSignal.timeout(requestTimeoutMs);
       try {
@@ -364,7 +369,7 @@ export function createQaDockerRuntime(params: {
         lastError = new Error(`Health check returned non-OK for ${url}`);
       } catch (error) {
         lastError = error;
-        if (requestSignal.aborted && requestUsesOverallDeadline) {
+        if (requestSignal.aborted && isFinalProbe) {
           break;
         }
       } finally {

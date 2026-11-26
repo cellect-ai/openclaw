@@ -1,8 +1,8 @@
-import { queryObjects } from "node:v8";
 import {
   clearLiveCatalogCacheForTests,
   type LiveModelCatalogFetchGuard,
 } from "openclaw/plugin-sdk/provider-catalog-live-runtime";
+import { forceFullGc } from "openclaw/plugin-sdk/test-env";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { resolveOpenAICodexModelsEndpoint } from "./base-url.js";
 import { buildOpenAIProvider } from "./openai-provider.js";
@@ -357,7 +357,7 @@ describe("OpenAI ChatGPT OAuth catalog", () => {
     await new Promise<void>((resolve) => {
       setImmediate(resolve);
     });
-    queryObjects(WeakRef);
+    forceFullGc();
     expect(rows.map((row) => row.deref() !== undefined)).toEqual([false, false]);
   });
 

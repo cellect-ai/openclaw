@@ -18,38 +18,32 @@ import { resolveDatabaseEngineSelection } from "./database-engine/config.js";
 import { installDatabaseEngineSelection } from "./database-engine/context.js";
 import { preparePostgresPoolForUpdate } from "./postgres-sync/pool.js";
 import { registerSealedRuntimeProcessEntrypoints } from "./runtime-process-url.js";
-import { withUpdateRunRead } from "./update-run-admission.js";
+import { readManagedHandoffUpdateRun } from "./update-managed-service-handoff-interrupted.js";
 import {
   adoptUpdateRun,
   finishUpdateRun,
   recordUpdateRunStep,
   recordUpdateRunVerification,
 } from "./update-run-ledger.js";
-import { readUpdateRunRecord } from "./update-run-read.kernel.js";
 
 routeLogsToStderr();
 registerSealedRuntimeProcessEntrypoints("managedHandoff", import.meta.url);
 
+export { parseLaunchctlJob } from "../daemon/launchctl-job.js";
 export { formatErrorMessage } from "@openclaw/normalization-core/error-coercion";
+export { classifyUpdateOutcome } from "../shared/update-outcome-classification.js";
+
 export { OPENCLAW_STATE_SCHEMA_SQL } from "../state/openclaw-state-schema.js";
 export { assertOpenClawStateWriteAllowed } from "../state/openclaw-state-ownership.js";
 export { resolveImmutableSqliteFileUri } from "./node-sqlite.js";
 export { procCgroupMembershipMatches } from "./update-managed-service-handoff-scope.js";
+export { packageActivationIdentity } from "./package-update-activation-paths.js";
+export { resolveUpdateInstallRoot } from "./update-install-root.js";
 export {
-  readRestartSentinelRowSync,
-  writeRestartSentinelRowIfRevisionSync,
-} from "./restart-sentinel-store.js";
-export { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
-export {
-  createManagedHandoffLeaseStore,
-  prepareManagedHandoffLeaseStore,
-} from "./update-managed-service-handoff-lease.js";
-
-export {
-  resolveUpdateRestartNoticeMeta,
-  shouldPublishUpdateRestartNotice,
-} from "./update-restart-notice.js";
-
+  recoverInterruptedManagedUpdate,
+  readManagedHandoffGatewayStop,
+} from "./update-managed-service-handoff-interrupted.js";
+export { findUpdateGatewayStop } from "./update-run-gateway-stop.js";
 /** The detached one-shot resolves its own canonical store before adopting the run. */
 export async function prepareManagedHandoffLedger(isCurrent: () => boolean) {
   const assertCurrent = () => {
@@ -89,11 +83,27 @@ export async function prepareManagedHandoffLedger(isCurrent: () => boolean) {
   return {
     adoptUpdateRun,
     finishUpdateRun,
-    // This one-shot already owns the ledger; its native read must not depend
-    // on a snapshot worker from the installation being replaced.
-    getUpdateRun: (runId: string) =>
-      withUpdateRunRead(({ db }) => readUpdateRunRecord(db, runId), { allowNativeRead: true }),
+    getUpdateRun: readManagedHandoffUpdateRun,
     recordUpdateRunStep,
     recordUpdateRunVerification,
   };
 }
+export {
+  finishUpdateRun,
+  recordUpdateRunDiagnostic,
+  recordUpdateRunStep,
+} from "./update-run-ledger.js";
+export {
+  inspectManagedHandoffSentinelRowSync,
+  recordManagedHandoffSentinelOutcomeRowSync,
+} from "./restart-sentinel-store.js";
+export { extractSqliteTableSchema } from "./sqlite-schema-sql.js";
+export {
+  createManagedHandoffLeaseStore,
+  prepareManagedHandoffLeaseStore,
+} from "./update-managed-service-handoff-lease.js";
+
+export {
+  resolveUpdateRestartNoticeMeta,
+  shouldPublishUpdateRestartNotice,
+} from "./update-restart-notice.js";

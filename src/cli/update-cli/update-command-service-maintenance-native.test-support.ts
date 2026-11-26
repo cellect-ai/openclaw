@@ -1,5 +1,6 @@
 import { vi } from "vitest";
 import { createTestConfigSnapshot } from "../../commands/test-runtime-config-helpers.js";
+import { createNpmTarget } from "../../infra/package-update-steps.test-support.js";
 import { createSystemPackageOwnershipInspection } from "../../infra/update-system-package-ownership.js";
 
 const command = vi.hoisted(() => ({
@@ -44,7 +45,8 @@ vi.mock("./update-command-terminal.js", async (original) => ({
   withUpdateCommandTerminalResult: async <T>(run: (register: () => void) => Promise<T>) =>
     run(() => {}),
 }));
-vi.mock("./update-command-schema.js", () => ({
+vi.mock("./update-command-schema.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./update-command-schema.js")>()),
   preflightUpdateCommandSchemas: async () => ({ preflightNotes: [], preflightFailures: [] }),
   captureUpdateActivationSchemas: async () => ({}),
 }));
@@ -141,7 +143,7 @@ export async function runNativeMaintenanceUpdate(
     fallbackToLatest: false,
     packageInstallSpec: "/synthetic/candidate.tgz",
     packageInstallEnv: undefined,
-    packageInstallTarget: undefined,
+    packageInstallTarget: { ...createNpmTarget(root), packageRoot: root },
     packageAlreadyCurrent: false,
     packageTargetSchemaVersions: undefined,
     packageRuntimeTarget: undefined,

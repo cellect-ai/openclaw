@@ -11,6 +11,7 @@ import { combineGatewayLocalUserIngress } from "../../../gateway/local-user-ingr
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import { resolveGlobalSingleton } from "../../../shared/global-singleton.js";
 import { normalizeMessageChannel } from "../../../utils/message-channel.js";
+import { replyCallbackCustody } from "../reply-callback-custody.js";
 import {
   resolveReplyOperatorAuthorityKey,
   resolveReplyPersonalToolTargets,
@@ -89,10 +90,7 @@ export function resolveFollowupAuthorizationKey(run: FollowupRun): string {
   ]);
 }
 
-/** Storage grouping is policy-independent; drain prepares current screen/theme authority. */
-export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
-  const execution = run.run;
-  const provenance = execution.inputProvenance;
+export function resolveFollowupReplyDeliveryKey(run: FollowupRun): string {
   return JSON.stringify([
     channelRouteDedupeKey({
       channel: run.originatingChannel,
@@ -100,13 +98,22 @@ export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
       accountId: run.originatingAccountId,
       threadId: run.originatingThreadId,
     }),
+    resolveFollowupReplyAnchor(run) ?? "",
+    run.originatingReplyToMode ?? "",
+    normalizeChatType(run.originatingChatType) ?? "",
+  ]);
+}
+
+/** Storage grouping is policy-independent; drain prepares current screen/theme authority. */
+export function resolveFollowupDeliveryStorageKey(run: FollowupRun): string {
+  const execution = run.run;
+  const provenance = execution.inputProvenance;
+  return JSON.stringify([
+    resolveFollowupReplyDeliveryKey(run),
     hasPreparedCurrentTurnImages(run),
     // Approved sources skip the write hook; never carry unstaged input past it.
     Boolean(run.userTurnTranscriptRecorder?.getPendingInputMessage?.()),
     run.originatingChatId ?? "",
-    resolveFollowupReplyAnchor(run) ?? "",
-    run.originatingReplyToMode ?? "",
-    normalizeChatType(run.originatingChatType) ?? "",
     resolveFollowupAuthorizationKey(run),
     run.expectedQuestionId
       ? [run.expectedQuestionId, run.messageId ?? run.sourceTurnId ?? ""]
@@ -228,7 +235,7 @@ export async function prepareNextDeliveryGroup(
   });
 }
 
-export function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
+function resolveFollowupReplyAnchor(run: FollowupRun): string | undefined {
   if (run.originatingReplyToMode === "off") {
     return undefined;
   }
@@ -341,6 +348,10 @@ export function collectRuntimeMetadata(items: FollowupRun[], abortSignal?: Abort
       : [],
   );
   const deliveryCorrelations = items.flatMap((item) => item.deliveryCorrelations ?? []);
+  const callbackCustodies = items.flatMap((item) => {
+    const custody = item[replyCallbackCustody];
+    return custody ? [custody] : [];
+  });
   const explicitSkillSelections = [
     ...new Map(
       items
@@ -374,6 +385,19 @@ export function collectRuntimeMetadata(items: FollowupRun[], abortSignal?: Abort
     abortSignal,
     queueAbortSignal: items.find((item) => item.queueAbortSignal)?.queueAbortSignal,
     deliveryCorrelations: deliveryCorrelations.length > 0 ? deliveryCorrelations : undefined,
+    [replyCallbackCustody]:
+      callbackCustodies.length > 0
+        ? {
+            retain: () => {
+              const releases = callbackCustodies.map((custody) => custody.retain());
+              return () => {
+                for (const release of releases) {
+                  release();
+                }
+              };
+            },
+          }
+        : undefined,
     turnAdoptionLifecycle: items.length === 1 ? items[0]?.turnAdoptionLifecycle : undefined,
     replyOperationRunStates: items.flatMap((item) => item.replyOperationRunStates ?? []),
     queuedFollowupReplyDisposition: collectReplyDisposition(items),
@@ -445,6 +469,7 @@ export function createOverflowSummaryRetrySource(source: InternalFollowupRun): I
     ...getFollowupOriginRouting(source),
     abortSignal: source.abortSignal,
     deliveryCorrelations: source.deliveryCorrelations,
+    [replyCallbackCustody]: source[replyCallbackCustody],
     onQueueDisposition: source.onQueueDisposition,
     turnAdoptionLifecycle: source.turnAdoptionLifecycle,
     replyOperationRunStates: source.replyOperationRunStates,

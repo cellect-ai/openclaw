@@ -85,14 +85,11 @@ async function executeSessionsSendWithDeadline(
     // Stop new sender effects without cancelling input already owned by the receiver.
     controller.abort(new Error(error));
     const target = readSessionsSendTarget(params);
-    return sendFailure("timeout", error, target.ok ? target.sessionKeyParam : undefined, runId);
+    return sendFailure("error", error, target.ok ? target.sessionKeyParam : undefined, runId);
   };
   const deadlineAtMs = Date.now() + timeoutMs;
   const releaseDeadline = registerDiagnosticToolExecutionDeadline(deadlineAtMs);
   try {
-    // Cancellation still fences every sender effect through boundedOptions. Let the
-    // executor report its known refusal or accepted result instead of an abort race
-    // replacing that outcome; the deadlines also bound an unresponsive executor.
     return await raceWithTimeout(
       async () => {
         const execution = withSessionsSendRequesterSource(boundedOptions, () =>
@@ -111,11 +108,13 @@ async function executeSessionsSendWithDeadline(
             ]),
           SESSIONS_SEND_ADMISSION_TIMEOUT_MS,
           () => true,
+          { signal: opts?.signal },
         );
         return admissionExpired ? timeout() : await execution;
       },
       timeoutMs,
       timeout,
+      { signal: opts?.signal },
     );
   } finally {
     releaseDeadline?.();

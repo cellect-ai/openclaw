@@ -3,9 +3,9 @@ import path from "node:path";
 import { createReadTool } from "openclaw/plugin-sdk/agent-sessions";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
+import { createOpenClawCodingTools } from "./agent-tools.js";
 import "./test-helpers/fast-coding-tools.js";
 import "./test-helpers/fast-openclaw-tools.js";
-import { createOpenClawCodingTools } from "./agent-tools.js";
 import { projectMemoryFlushWriteTool } from "./agent-tools.memory-flush.test-support.js";
 import { createHostWorkspaceWriteTool, createOpenClawReadTool } from "./agent-tools.read.js";
 import { expectReadWriteEditTools, getTextContent } from "./test-helpers/agent-tools-fs-helpers.js";
@@ -55,6 +55,22 @@ describe("memory filesystem policy", () => {
     ]) {
       await expect(readPath(filePath)).rejects.toThrow(/ENOENT|no such file|not found/i);
     }
+  });
+
+  it("preserves a required daily journal through argument preparation and execution", async () => {
+    const read = createOpenClawReadTool(createReadTool(workspaceDir));
+    const filePath = "memory/2099-12-31.md";
+    const prepare = (args: unknown) => read.prepareArguments?.(args) ?? args;
+    const implicit = await read.execute("implicit-daily", prepare({ path: filePath }));
+    expect(implicit.details).toEqual({
+      kind: "not_found",
+      status: "not_found",
+      path: filePath,
+      optional: true,
+    });
+    await expect(
+      read.execute("required-daily", prepare({ path: filePath, optional: false })),
+    ).rejects.toThrow("File not found");
   });
 
   it.each([true, false])(

@@ -2,7 +2,6 @@ import { normalizeFastMode } from "@openclaw/normalization-core/string-coerce";
 import type {
   SessionsListParams,
   SessionsResolveParams,
-  SessionsSearchResult,
 } from "../../../packages/gateway-protocol/src/index.js";
 import { validateSessionsSearchParams } from "../../../packages/gateway-protocol/src/index.js";
 import type { CallGatewayOptions } from "../../gateway/call.js";
@@ -76,6 +75,36 @@ async function handleSessionsResolve(params: Record<string, unknown>) {
   );
 }
 
+async function handleSessionsDescribe(params: Record<string, unknown>) {
+  const key = readToolStringParam(params, "key", { required: true });
+  const agentId = readToolStringParam(params, "agentId");
+  if (params.includeNativeSubagents || params.includeDerivedTitles || params.includeLastMessage) {
+    throw new Error("Session description enrichment requires a running gateway");
+  }
+  const rt = await getRuntime();
+  const publication = sessionProjection;
+  const query = (cfg: Parameters<typeof rt.resolveRequestedSessionAgentId>[0]) => {
+    const resolved = rt.resolveRequestedSessionAgentId(cfg, key, agentId, "read");
+    if (!resolved.ok) {
+      throw new Error(resolved.error.message);
+    }
+    return { key, agentId: resolved.agentId };
+  };
+  return rt.withReadySessionRows(
+    await borrowSessionRowProjection(),
+    (cfg) => [query(cfg)],
+    (read) => {
+      if (sessionProjection !== publication) {
+        throw new Error(
+          "Session projection changed while describing the session; retry the request",
+        );
+      }
+      const { row } = rt.prepareProjectedSessionPresentation(read).snapshot(query(read.state.cfg));
+      return { session: row };
+    },
+  );
+}
+
 async function handleSessionsSearch(params: Record<string, unknown>) {
   const rt = await getRuntime();
   const cfg = rt.getRuntimeConfig();
@@ -92,15 +121,11 @@ async function handleSessionsSearch(params: Record<string, unknown>) {
     }
     const { searchRecallSessionTranscripts } =
       await import("../../gateway/server-methods/sessions-search-recall.js");
-    const projection = await borrowSessionRowProjection();
-    return new Promise<SessionsSearchResult>((resolve, reject) => {
-      void searchRecallSessionTranscripts({
-        query,
-        limit: readPositiveIntegerParam(params, "limit"),
-        recall: params.recall!,
-        projection,
-        onResult: resolve,
-      }).catch(reject);
+    return searchRecallSessionTranscripts({
+      query,
+      limit: readPositiveIntegerParam(params, "limit"),
+      recall: params.recall!,
+      projection: await borrowSessionRowProjection(),
     });
   }
   if (params.agentId !== undefined && params.sessionKeys === undefined) {
@@ -283,6 +308,9 @@ export function createEmbeddedCallGateway(): EmbeddedCallGateway {
         return (await handleSessionsList(params)) as T;
       case "sessions.resolve":
         return (await handleSessionsResolve(params)) as T;
+      case "sessions.describe":
+        // SAFETY: the caller selects T for this method's session-description response.
+        return (await handleSessionsDescribe(params)) as T;
       case "sessions.search":
         return (await handleSessionsSearch(params)) as T;
       case "chat.history":

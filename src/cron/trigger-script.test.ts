@@ -62,6 +62,33 @@ function createEvaluator(
 const INPUT = { jobId: "probe", script: "return result", state: null };
 const INTERNAL_ERROR = expect.objectContaining({ kind: "error", code: "internal_error" });
 
+it("snapshots a cron tool result without temporary object-value arrays", async () => {
+  const details = {
+    rows: Array.from({ length: 40 }, (_, snapshotRow) => ({ snapshotRow, state: "ready" })),
+  };
+  const probe = makeTool("snapshot_probe", async () => jsonResult(details));
+  const { evaluate } = createEvaluator(runCodeModeScriptHeadless, {
+    prepareRuntime: async ({ runtimeConfig }) => createPreparedRuntime(runtimeConfig, [probe]),
+  });
+  const objectValues = Object.values;
+  let snapshotArraySlots = 0;
+  const values = vi.spyOn(Object, "values").mockImplementation((object) => {
+    const members = objectValues(object);
+    if (Object.hasOwn(object, "snapshotRow")) {
+      snapshotArraySlots += members.length;
+    }
+    return members;
+  });
+  try {
+    await expect(
+      evaluate({ script: "return { fire: true, state: await snapshot_probe({}) };" }),
+    ).resolves.toMatchObject({ kind: "evaluated", fire: true, state: details });
+    expect(snapshotArraySlots).toBe(0);
+  } finally {
+    values.mockRestore();
+  }
+});
+
 function execEvaluator(host: "auto" | "node" | "gateway", node?: string) {
   return createCronScriptRuntime({
     config: {
@@ -217,6 +244,54 @@ it("keeps an uncanonicalized alias-name cap fail-closed for exec", async () => {
   expect(result).toMatchObject({ kind: "error", code: "internal_error" });
   expect(result.kind === "error" ? result.error : "").toContain("exec is not defined");
 });
+
+it("projects typed exec details into trigger scripts without content wrappers", async () => {
+  const evaluate = execEvaluator("gateway");
+
+  await expect(
+    evaluate({
+      ...INPUT,
+      toolsAllow: ["exec"],
+      scheduledToolPolicy: { version: 1, mode: "trusted" },
+      script: `
+        const result = await exec({ command: "printf watcher-ready" });
+        return {
+          fire:
+            result.status === "completed" &&
+            result.exitCode === 0 &&
+            result.aggregated === "watcher-ready" &&
+            result.content === undefined,
+        };
+      `,
+    }),
+  ).resolves.toEqual({ kind: "evaluated", fire: true });
+});
+
+it.skipIf(process.platform === "win32")(
+  "gives a trigger only the command's output when the command leaves a process running",
+  async () => {
+    // One JSON line, then a child that outlives the command (as `gh` does with its telemetry).
+    const command = `printf '{"ok":true}\\n'; (sleep 5 >/dev/null 2>&1 &)`;
+
+    await expect(
+      execEvaluator("gateway")({
+        ...INPUT,
+        toolsAllow: ["exec", "process"],
+        scheduledToolPolicy: { version: 1, mode: "trusted" },
+        script: `
+          const result = await exec({ command: ${JSON.stringify(command)} });
+          const observed = JSON.parse(result.aggregated);
+          const left = /keeps running as background session (\\S+):/.exec(result.warningText ?? "");
+          if (!left) {
+            throw new Error("the process left running was not reported");
+          }
+          await process({ action: "kill", sessionId: left[1] });
+          return { fire: false, state: observed };
+        `,
+      }),
+    ).resolves.toEqual({ kind: "evaluated", fire: false, state: { ok: true } });
+  },
+);
 
 it.each([
   [
@@ -478,21 +553,6 @@ it.each(["policy change", "capacity eviction"] as const)(
     }
   },
 );
-
-it("returns busy instead of queueing a fourth concurrent evaluation", async () => {
-  const pending = createDeferred<CodeModeHeadlessResult>();
-  const runHeadless = vi.fn(async () => await pending.promise);
-  const { evaluate } = createEvaluator(runHeadless);
-  const running = ["one", "two", "three"].map((jobId) => evaluate({ jobId }));
-  await vi.waitFor(() => expect(runHeadless).toHaveBeenCalledTimes(3));
-
-  const saturated = await evaluate({ jobId: "four" });
-  pending.resolve(completed({ fire: false }));
-  await Promise.all(running);
-
-  expect(saturated).toEqual({ kind: "busy" });
-  expect(runHeadless).toHaveBeenCalledTimes(3);
-});
 
 it.each(["preparation", "headless"] as const)("survives a clock jump during %s", async (phase) => {
   const now = Date.now();

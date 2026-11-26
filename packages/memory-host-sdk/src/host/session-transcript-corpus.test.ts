@@ -14,7 +14,7 @@ import { describe, expect, it, vi } from "vitest";
 import { upsertSessionEntryCore } from "../../../../src/config/sessions/session-accessor.js";
 import { markCanonicalSessionValidationPending } from "../../../../src/config/sessions/session-canonical-key.js";
 import { seedCanonicalSessionValidation } from "../../../../src/config/sessions/session-canonical-validation.js";
-import * as storeTargets from "../../../../src/config/sessions/session-store-target-runtime.js";
+import * as transcriptResources from "../../../../src/config/sessions/session-transcript-worker-resources.js";
 import { runSqliteImmediateTransactionSync } from "../../../../src/infra/sqlite-transaction.js";
 import { closeOpenClawAgentDatabasesAsync } from "../../../../src/state/openclaw-agent-db-lifecycle.js";
 import { registerOpenClawAgentDatabase } from "../../../../src/state/openclaw-agent-db-registry.js";
@@ -75,14 +75,14 @@ async function seedSession(
 function pauseDirectoryDiscovery(sessionsDir: string) {
   const entered = createDeferred();
   const release = createDeferred();
-  const prepare = storeTargets.prepareSessionStoreReaderCandidates;
+  const prepare = transcriptResources.prepareSessionStoreCandidatesInWorker;
   const storePath = path.join(sessionsDir, "sessions.json");
   let paused = false;
   const discoverySpy = vi
-    .spyOn(storeTargets, "prepareSessionStoreReaderCandidates")
-    .mockImplementation(async (requestedStorePath, options) => {
-      const result = await prepare(requestedStorePath, options);
-      if (!paused && requestedStorePath === storePath) {
+    .spyOn(transcriptResources, "prepareSessionStoreCandidatesInWorker")
+    .mockImplementation(async (request) => {
+      const result = await prepare(request);
+      if (!paused && "storePath" in request && request.storePath === storePath) {
         paused = true;
         entered.resolve();
         await release.promise;

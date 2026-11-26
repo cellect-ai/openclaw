@@ -105,6 +105,7 @@ describe("executeBoundedCompactionSession", () => {
       mocks.prepare.mockImplementation(async () => ({
         effects: {},
         value: {
+          status: "prepared",
           hasRealConversation: true,
           beforeHookMetrics: {
             messageCountOriginal: 4,
@@ -197,7 +198,7 @@ describe("executeBoundedCompactionSession", () => {
         diagnosticCompactionRunId: "compaction-test",
         nextDiagnosticModelCallId: () => "call-test",
         contextTokenBudget: 16000,
-        buildSystemPromptText: () => "Summarize the synthetic conversation.",
+        buildSystemPromptText: async () => "Summarize the synthetic conversation.",
         fail,
       };
       const target = {

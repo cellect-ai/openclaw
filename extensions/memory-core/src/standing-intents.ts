@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { getDatabaseEngineInput } from "openclaw/plugin-sdk/database-engine-runtime";
+import { resolveGlobalSingleton } from "openclaw/plugin-sdk/global-singleton";
 import { pathEntryExists } from "openclaw/plugin-sdk/path-existence-runtime";
 import type { PluginServiceSchedulerV1 } from "openclaw/plugin-sdk/plugin-entry";
 import { resolveRuntimeWorkerUrl } from "openclaw/plugin-sdk/process-runtime";
@@ -25,10 +26,28 @@ import {
 } from "./standing-intents-model.js";
 
 type DatabaseOptions = ReturnType<typeof captureMemoryAgentDatabaseOptions>;
-let scheduleMaintenance: ((path: string, nextDueAt: number | null) => void) | undefined;
-const lifecycleFacts = new Map<string, { empty: boolean }>();
-const knownDueAt = new Map<string, number>();
-const sweeps: { active: number; waiting: Array<() => void> } = { active: 0, waiting: [] };
+type MaintenanceSchedule = (path: string, nextDueAt: number | null) => void;
+// Queue, committed-absence facts, and the selected scheduler share one process owner.
+const maintenance = resolveGlobalSingleton<{
+  schedule: MaintenanceSchedule | undefined;
+  owners: Map<MaintenanceSchedule, () => void>;
+  lifecycleFacts: Map<string, { empty: boolean }>;
+  // Deadlines learned from completed operations survive a service reload, so reloading for one
+  // agent does not sweep every other agent database again.
+  knownDueAt: Map<string, number>;
+  sweeps: { active: number; waiting: Array<() => void> };
+  operationQueues: Map<string, StoreWriterQueue>;
+}>(Symbol.for("openclaw.memoryCore.standingIntents"), () => ({
+  schedule: undefined,
+  owners: new Map<MaintenanceSchedule, () => void>(),
+  lifecycleFacts: new Map<string, { empty: boolean }>(),
+  knownDueAt: new Map<string, number>(),
+  sweeps: { active: 0, waiting: [] },
+  operationQueues: new Map<string, StoreWriterQueue>(),
+}));
+const { lifecycleFacts, knownDueAt, sweeps, operationQueues } = maintenance;
+// Startup and unknown deadlines make every agent due at once; bound how many sweeps open a store.
+const MAX_CONCURRENT_SWEEPS = 2;
 
 function recordDueAt(path: string, nextDueAt: number | null): void {
   if (nextDueAt === null) {
@@ -36,11 +55,12 @@ function recordDueAt(path: string, nextDueAt: number | null): void {
   } else {
     knownDueAt.set(path, nextDueAt);
   }
-  scheduleMaintenance?.(path, nextDueAt);
+  maintenance.schedule?.(path, nextDueAt);
 }
 
 async function withSweepSlot<T>(run: () => Promise<T>): Promise<T> {
-  if (sweeps.active >= 2) {
+  if (sweeps.active >= MAX_CONCURRENT_SWEEPS) {
+    // A released slot is handed to the next waiter without being freed in between.
     await new Promise<void>((resolve) => {
       sweeps.waiting.push(resolve);
     });
@@ -58,8 +78,6 @@ async function withSweepSlot<T>(run: () => Promise<T>): Promise<T> {
     }
   }
 }
-
-const operationQueues = new Map<string, StoreWriterQueue>();
 
 export {
   DEFAULT_INTENT_COOLDOWN_SECONDS,
@@ -131,7 +149,9 @@ async function executeStandingIntent(
         recordDueAt(options.path, result.nextDueAt);
         return result.value;
       } catch (error) {
-        // An uncertain write may have committed; only the first failure resets the retry deadline.
+        // A failed or uncertain write may have committed; forget the learned deadline and let the
+        // current owner sweep. Only the first failure reschedules, so repeated failures keep the
+        // sweep retry backoff instead of sweeping at request rate.
         if (knownDueAt.has(options.path)) {
           recordDueAt(options.path, null);
         }
@@ -152,13 +172,13 @@ export function startStandingIntentMaintenance(params: {
   const targets = new Map(
     params.agentIds.map((agentId) => {
       const options = captureMemoryAgentDatabaseOptions(agentId);
-      return [options.path, { agentId, options }] as const;
+      return [options.path, { agentId, options, facts: { empty: false } }] as const;
     }),
   );
   const jobs = new Map<string, ReturnType<PluginServiceSchedulerV1["schedule"]>>();
   const schedule = (path: string, nextDueAt: number | null) => {
     const target = targets.get(path);
-    if (!target || scheduler.signal.aborted) {
+    if (!target || !maintenance.owners.has(schedule) || scheduler.signal.aborted) {
       return;
     }
     jobs.get(path)?.cancel();
@@ -190,21 +210,33 @@ export function startStandingIntentMaintenance(params: {
       }),
     );
   };
-  scheduleMaintenance = schedule;
-  // Past deadlines run immediately; unknown stores require a recovery sweep.
-  for (const path of targets.keys()) {
-    lifecycleFacts.set(path, { empty: false });
-    schedule(path, knownDueAt.get(path) ?? null);
+  // Known deadlines are already overdue-safe: a past deadline runs immediately. Only databases
+  // without one (first start, added agents, failed sweeps) need a recovery sweep now.
+  const scheduleKnown = (path: string) => schedule(path, knownDueAt.get(path) ?? null);
+  maintenance.owners.set(schedule, () => {
+    for (const path of targets.keys()) {
+      scheduleKnown(path);
+    }
+  });
+  maintenance.schedule = schedule;
+  for (const [path, { facts }] of targets) {
+    lifecycleFacts.set(path, facts);
+    scheduleKnown(path);
   }
   return () => {
-    if (scheduleMaintenance === schedule) {
-      scheduleMaintenance = undefined;
+    maintenance.owners.delete(schedule);
+    if (maintenance.schedule === schedule) {
+      const predecessor = [...maintenance.owners].at(-1);
+      maintenance.schedule = predecessor?.[0];
+      predecessor?.[1]();
     }
     for (const job of jobs.values()) {
       job.cancel();
     }
-    for (const path of targets.keys()) {
-      lifecycleFacts.delete(path);
+    for (const [path, { facts }] of targets) {
+      if (lifecycleFacts.get(path) === facts) {
+        lifecycleFacts.delete(path);
+      }
     }
   };
 }

@@ -30,7 +30,6 @@ import {
 import { clearRuntimeConfigSnapshot, setRuntimeConfigSnapshot } from "./runtime-snapshot.js";
 import type { ModelProviderConfig } from "./types.models.js";
 import type { OpenClawConfig } from "./types.openclaw.js";
-import { validateConfigObjectRaw } from "./validation-core.js";
 
 const mocks = vi.hoisted(() => ({
   applyProviderConfigDefaultsForConfig: vi.fn(),
@@ -498,24 +497,22 @@ describe("applyModelDefaults output-token default", () => {
   const custom = (
     model: Partial<ModelProviderConfig["models"][number]>,
     provider: Partial<ModelProviderConfig> = {},
-  ) => {
-    const parsed = validateConfigObjectRaw({
-      models: {
-        providers: {
-          custom: {
-            baseUrl: "https://custom.example.com/v1",
-            ...provider,
-            models: [{ id: "house-model", name: "House Model", ...model }],
+  ) =>
+    applyModelDefaults(
+      {
+        models: {
+          providers: {
+            custom: {
+              baseUrl: "https://custom.example.com/v1",
+              ...provider,
+              // SAFETY: mirrors operator config rows that omit sizing fields.
+              models: [{ id: "house-model", name: "House Model", ...model } as never],
+            },
           },
         },
       },
-    });
-    if (!parsed.ok) {
-      throw new Error(JSON.stringify(parsed.issues));
-    }
-    return applyModelDefaults(parsed.config, { manifestRegistry: { plugins: [] } }).models
-      ?.providers?.custom?.models?.[0]?.maxTokens;
-  };
+      { manifestRegistry: { plugins: [] } },
+    ).models?.providers?.custom?.models?.[0]?.maxTokens;
 
   it.each([
     ["an unknown window", {}, 32_768],

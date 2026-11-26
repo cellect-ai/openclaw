@@ -418,7 +418,7 @@ describeProviderLive("anthropic transport stream provider live", () => {
       errorPrefix: "forced",
     },
     {
-      name: "keeps a healthy forced tool through the Anthropic SDK provider",
+      name: "keeps a healthy forced tool through the Anthropic SDK with a malformed sibling schema",
       sdk: true,
       value: "SDK_OK",
       errorPrefix: "SDK forced",
@@ -435,46 +435,37 @@ describeProviderLive("anthropic transport stream provider live", () => {
       contextWindow: 200_000,
       maxTokens: 512,
     });
-    const context = {
+    const context: Parameters<typeof streamAnthropic>[1] = {
       messages: [
         {
           role: "user",
           content: `Call healthy_probe with value ${value}.`,
-          ...(sdk ? { timestamp: Date.now() } : {}),
+          timestamp: Date.now(),
         },
       ],
       tools: [
         {
-          name: "malformed_probe",
-          description: "Malformed probe",
-          // Readable malformed schemas are quarantined; throwing getters fail before handoff.
-          parameters: { type: "object", required: "value" },
+          // Unreadable descriptors are stream errors (tool-descriptor-errors.test.ts).
+          // Readable but invalid schemas are instead omitted during projection.
+          name: "malformed_schema_probe",
+          description: "Malformed schema probe",
+          parameters: Type.Unsafe({ type: "object", required: "value" }),
         },
         {
           name: "healthy_probe",
           description: "Return the requested probe value.",
-          parameters: {
-            type: "object",
-            properties: { value: { type: "string" } },
-            required: ["value"],
-          },
+          parameters: Type.Object({ value: Type.String() }),
         },
       ],
     };
-    const options = {
+    const options: Parameters<typeof streamAnthropic>[2] = {
       apiKey: ANTHROPIC_KEY,
       maxTokens: 128,
       toolChoice: { type: "tool", name: "healthy_probe" },
-    } as AnthropicStreamOptions;
+    };
     const stream = sdk
-      ? streamAnthropic(model, context as unknown as Parameters<typeof streamAnthropic>[1], options)
-      : await Promise.resolve(
-          createAnthropicMessagesTransportStreamFn()(
-            model,
-            context as unknown as AnthropicStreamContext,
-            options,
-          ),
-        );
+      ? streamAnthropic(model, context, options)
+      : await Promise.resolve(createAnthropicMessagesTransportStreamFn()(model, context, options));
 
     const result = await stream.result();
     if (result.stopReason === "error" && isLiveBillingDrift(result.errorMessage ?? "")) {

@@ -23,6 +23,7 @@ export type StartChatDispatchParams = {
   context: GatewayRequestHandlerOptions["context"];
   toolsAllow?: string[];
   sourceReplyDeliveryMode?: SourceReplyDeliveryMode;
+  deferWorkspaceBootstrap?: true;
   prepareAssistantTranscriptMessage?: PrepareAssistantTranscriptMessage;
   skillLibrary: { owner: SkillLibraryRequestOwner; isHumanTurn: boolean; sessionKey: string };
   cronCreatorAuthority: ReturnType<ChatSendExternalAuthorityAdmission["resolve"]>;

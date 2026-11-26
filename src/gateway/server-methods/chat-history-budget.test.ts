@@ -25,7 +25,14 @@ describe("replaceOversizedChatHistoryMessages", () => {
       role: "assistant",
       timestamp: 1,
       content: [{ type: "text", text: "y".repeat(4000) }],
-      __openclaw: { runId: "run", turnBoundary: true, transcriptPosition, transport },
+      __openclaw: {
+        id: "abc",
+        seq: 7,
+        runId: "run",
+        turnBoundary: true,
+        transcriptPosition,
+        transport,
+      },
     };
     const messages = replace([last], 2_000);
     expect(messages).toHaveLength(1);

@@ -25,7 +25,7 @@ import {
   streamMocks,
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
-import type { CompactionRequestBudget } from "../../sessions/compaction/request-budget.types.js";
+import type { CompactionRequestBudget } from "../../sessions/compaction/preparation.types.js";
 import { estimateCompactionHistoryTokens } from "../../sessions/context-token-pressure.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { SettingsManager } from "../../sessions/settings-manager.js";
@@ -82,6 +82,7 @@ afterEach(() => {
     "phase-context-replay",
     "phase-system-update",
     "phase-finalization",
+    "phase-server-threshold",
   ]);
 });
 
@@ -182,6 +183,151 @@ describe("runEmbeddedAttemptPromptPhase", () => {
     expect(mocks.submitPrompt).toHaveBeenCalledTimes(1);
     expect(write).not.toHaveBeenCalled();
     expect(manager.buildSessionContext().messages).toEqual([]);
+  });
+
+  it.each([
+    { name: "direct", enabled: true, supportsStore: true, proxy: false, clientCompacts: false },
+    { name: "disabled", enabled: false, supportsStore: true, proxy: false, clientCompacts: true },
+    { name: "no store", enabled: true, supportsStore: false, proxy: false, clientCompacts: true },
+    { name: "proxy", enabled: true, supportsStore: true, proxy: true, clientCompacts: true },
+    {
+      name: "checkpoint defaults",
+      enabled: undefined,
+      supportsStore: true,
+      proxy: false,
+      clientCompacts: false,
+      seeded: true,
+    },
+    {
+      name: "checkpoint client summary",
+      enabled: false,
+      supportsStore: true,
+      proxy: false,
+      clientCompacts: true,
+      seeded: true,
+    },
+  ])("preserves Responses threshold ownership ($name)", async (test) => {
+    const fixture = createFixture({ pendingImageCount: 0 });
+    const model = {
+      ...testModel,
+      provider: "openai",
+      baseUrl: test.proxy ? "https://example.test/v1" : "https://api.openai.com/v1",
+      contextWindow: test.seeded ? 16_384 : 1_000_000,
+      maxTokens: test.seeded ? 1_024 : testModel.maxTokens,
+      compat: { supportsStore: test.supportsStore },
+    };
+    const seededManager = SessionManager.inMemory();
+    if (test.seeded) {
+      await seededManager.appendMessageAsync({
+        role: "user",
+        content: "Read the marker.",
+        timestamp: 1,
+      });
+      await seededManager.appendMessageAsync(
+        createAssistant(
+          model,
+          [{ type: "toolCall", id: "read-marker", name: "read", arguments: {} }],
+          "toolUse",
+        ),
+      );
+      await seededManager.appendMessageAsync({
+        role: "toolResult",
+        toolCallId: "read-marker",
+        toolName: "read",
+        content: [{ type: "text", text: "TOOL-MEMORY-1234 " + "source context ".repeat(1_000) }],
+        isError: false,
+        timestamp: 2,
+      });
+      // The live checkpoint fixture lowers its cap to saved total usage plus 1,024.
+      await seededManager.appendMessageAsync(createAssistant(model, "STORED", "stop", 15_359));
+    }
+    const { session, settingsManager, sessionManager } = await createTestSession({
+      model,
+      sessionManager: seededManager,
+      settingsManager: SettingsManager.inMemory({
+        compaction: {
+          enabled: true,
+          reserveTokens: test.seeded ? 4_096 : 20_000,
+          ...(test.seeded ? { keepRecentTokens: 1_024 } : {}),
+        },
+        retry: { enabled: false },
+      }),
+    });
+    let clientCompactions = 0;
+    session.subscribe((event) => {
+      if (event.type === "compaction_start") {
+        clientCompactions += 1;
+      }
+    });
+    const runtime = fixture.input.prepared.sessionRuntime;
+    runtime.agentSession.activeSession = session;
+    runtime.agentSession.settingsManager = settingsManager;
+    runtime.sessionManager = sessionManager;
+    using promptStateLease = retainEmbeddedSessionPromptState("phase-server-threshold");
+    runtime.sessionPromptState = promptStateLease.state;
+    runtime.toolResultPromptProjectionState = promptStateLease.state.toolResults;
+    runtime.state.systemPromptText = session.systemPrompt;
+    runtime.transport.compactionReplayEnabled = true;
+    runtime.transport.effectiveExtraParams = {
+      responsesServerCompaction: test.enabled,
+      responsesCompactEndpoint: false,
+      responsesCompactThreshold: 900_000,
+    };
+    Object.assign(fixture.input.attempt, {
+      model,
+      provider: model.provider,
+      modelId: model.id,
+      config: {},
+      sessionId: "phase-server-threshold",
+    });
+    fixture.input.preparedStreamRuntime.promptActiveSession = (prompt, options) =>
+      session.prompt(prompt, options);
+    const context = expectDefined(mocks.preparePromptContext.getMockImplementation(), "context");
+    mocks.preparePromptContext.mockImplementation(() => ({
+      ...context(),
+      contextTokenBudget: model.contextWindow,
+      runtimeContextMessageForCurrentTurn: buildRuntimeContextCustomMessage("Runtime facts"),
+      systemPromptForHook: session.systemPrompt,
+    }));
+    const { submitEmbeddedAttemptPrompt } = await vi.importActual<
+      typeof import("./attempt-prompt-submit.js")
+    >("./attempt-prompt-submit.js");
+    mocks.submitPrompt.mockImplementation(submitEmbeddedAttemptPrompt);
+    let checkpointBeforeResponse = false;
+    streamMocks.streamSimple.mockImplementation((requestModel: Model, requestContext: Context) => {
+      const summarizing = requestContext.systemPrompt?.includes("context summarization assistant");
+      if (!summarizing && test.seeded) {
+        checkpointBeforeResponse = sessionManager
+          .getBranch()
+          .some(
+            (entry) => entry.type === "compaction" && entry.summary.includes("TOOL-MEMORY-1234"),
+          );
+      }
+      return createAssistantResultStream(
+        createAssistant(
+          requestModel,
+          summarizing ? "The durable marker is TOOL-MEMORY-1234." : "Done.",
+          "stop",
+          test.seeded ? 100 : 800_000,
+        ),
+      );
+    });
+
+    await runEmbeddedAttemptPromptPhase(fixture.input, fixture.promptState);
+
+    expect(mocks.handlePromptError.mock.calls.map(([input]) => input.error)).toEqual([]);
+    expect(session.messages.filter((message) => message.role === "assistant")).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ stopReason: "error" })]),
+    );
+    if (test.seeded) {
+      expect(checkpointBeforeResponse).toBe(test.clientCompacts);
+      expect(
+        sessionManager.getBranch().filter((entry) => entry.type === "compaction"),
+      ).toHaveLength(test.clientCompacts ? 1 : 0);
+    } else {
+      expect(streamMocks.streamSimple).toHaveBeenCalledOnce();
+    }
+    expect(clientCompactions > 0).toBe(test.clientCompacts);
   });
 
   it("reuses the attempt during context assembly", async () => {
@@ -560,13 +706,12 @@ describe("runEmbeddedAttemptPromptPhase", () => {
       });
       mocks.submitPrompt.mockImplementation(async (submission: PromptSubmissionCall) => {
         expect(submission.compactionRequestBudget).toBe(budgets[0]);
-        const model = fixture.input.attempt.model;
         const context = {
           systemPrompt: "Current foreground context. ".repeat(200),
           messages: [],
           tools: [{ ...tool, description: "Complete schema guidance. ".repeat(100) }],
         };
-        await activeSession.agent.streamFn(model, context);
+        submission.prepareRequestTokenPressure!(context);
         expect(budgets).toHaveLength(2);
         expect(budgets[1]).toMatchObject({
           contextWindow: 32_000,
@@ -576,16 +721,18 @@ describe("runEmbeddedAttemptPromptPhase", () => {
         expect(budgets[1]?.fixedTokens).toBeGreaterThan(budgets[0]?.fixedTokens ?? 0);
         expect(budgets[1]?.pendingUserIdempotencyKey).toBeUndefined();
         compacting = true;
-        await activeSession.agent.streamFn(
-          { ...model, contextWindow: 200_000 },
-          { systemPrompt: "Separate summarizer", messages: [], tools: [] },
-        );
+        submission.prepareRequestTokenPressure!({
+          systemPrompt: "Separate summarizer",
+          messages: [],
+          tools: [],
+        });
         expect(budgets).toHaveLength(2);
         compacting = false;
       });
 
       await runEmbeddedAttemptPromptPhase(fixture.input, fixture.promptState);
 
+      expect(mocks.handlePromptError.mock.calls.map(([input]) => input.error)).toEqual([]);
       expect(fixture.readState().promptError).toBeNull();
     },
   );

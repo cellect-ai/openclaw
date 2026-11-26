@@ -5,7 +5,6 @@ import { clearCronJobActive, isCronActiveJobMarkerCurrent } from "../active-jobs
 import { resolveCronRunErrorReason } from "../run-error-reason.js";
 import { getCronJobsStoreRevision, noteCronJobsStoreCommit } from "../store.js";
 import { cronRunResultEvent } from "../store/run-result.js";
-import { isDeferredCronAdmission } from "./admission-deferred.js";
 import { needsCronTimerMaintenance } from "./jobs-scheduling.js";
 import { locked } from "./locked.js";
 import { clearManualCronJobActive, maybeNotifyManualIsolatedSetupTimeout } from "./ops-shared.js";
@@ -24,10 +23,8 @@ import {
 import type { TimedCronRunOutcome } from "./timer-execution-timeout.js";
 
 type CompletedCronRunOutcomeFinalizationOptions = {
-  clearOnFailure?: boolean;
   discardWhenStopped?: boolean;
-  repairFutureCronNextRunAtMs?: boolean;
-  onRequestedRunFinalized?: () => void;
+  onReceiptSettlement?: (settlement: Promise<void>) => void;
 };
 
 /** Sends terminal facts to the worker; the host only publishes committed results. */
@@ -38,27 +35,6 @@ export async function finalizeCompletedCronRunOutcomes(
 ): Promise<TimedCronRunOutcome[]> {
   if (!outcomes.length) {
     return [];
-  }
-  if (
-    outcomes.length > 1 &&
-    outcomes.some((outcome) => isDeferredCronAdmission(outcome.job, outcome))
-  ) {
-    const completed = outcomes.filter((outcome) => !isDeferredCronAdmission(outcome.job, outcome));
-    const deferred = outcomes.filter((outcome) => isDeferredCronAdmission(outcome.job, outcome));
-    const finalized: TimedCronRunOutcome[] = [];
-    const failures: unknown[] = [];
-    // Completed siblings survive a failed deferred-admission transition.
-    for (const batch of [completed, ...deferred.map((outcome) => [outcome])]) {
-      try {
-        finalized.push(...(await finalizeCompletedCronRunOutcomes(state, batch, opts)));
-      } catch (error) {
-        failures.push(error);
-      }
-    }
-    if (failures.length) {
-      throw new AggregateError(failures, "Cron outcome settlement failed");
-    }
-    return finalized;
   }
   const context =
     outcomes.find((outcome) => outcome.runReceiptContext)?.runReceiptContext ??
@@ -81,7 +57,6 @@ export async function finalizeCompletedCronRunOutcomes(
           nowMs: state.deps.nowMs(),
           defaultAgentId: state.deps.resolveDefaultAgentId?.() ?? state.deps.defaultAgentId,
           cronConfig: state.deps.cronConfig,
-          failureRepairTimeoutMs: state.deps.failureRepairTimeoutMs,
           outcomes: outcomes.map(
             ({
               activeJobMarker,
@@ -121,7 +96,7 @@ export async function finalizeCompletedCronRunOutcomes(
         if (!outcome.executionSettlement || !outcome.runReceipt) {
           continue;
         }
-        void trackAsyncWork(async () => {
+        const settlement = trackAsyncWork(async () => {
           await Promise.allSettled([outcome.executionSettlement]);
           await executeOpenClawStateWorker(context, {
             type: "cron.finalizeRuns",
@@ -141,6 +116,7 @@ export async function finalizeCompletedCronRunOutcomes(
             "cron: execution receipt settlement failed",
           );
         });
+        opts?.onReceiptSettlement?.(settlement);
       }
       applyCronRuntimeRowsToState(
         state,
@@ -153,6 +129,16 @@ export async function finalizeCompletedCronRunOutcomes(
       }
       for (const entry of result.logs) {
         state.deps.log[entry.level](entry.fields, entry.message);
+      }
+      for (const job of result.upsertedJobs) {
+        if (job.state.admissionDeferred) {
+          emit(state, {
+            jobId: job.id,
+            action: "scheduled",
+            job,
+            nextRunAtMs: job.state.nextRunAtMs,
+          });
+        }
       }
       for (const plan of result.eventPlans) {
         const outcome = outcomes[plan.outcomeIndex]!;
@@ -172,6 +158,9 @@ export async function finalizeCompletedCronRunOutcomes(
               admissionDeferredReason: outcome.admissionDeferredReason,
             };
           }
+          // The terminal event publishes this wake time; only a different resident
+          // schedule (or a quiet evaluation without an event) still needs publication.
+          state.durableNextRunAtMsByJobId.set(plan.job.id, plan.job.state.nextRunAtMs);
           emit(
             state,
             cronRunResultEvent(plan.job, outcome),
@@ -189,7 +178,6 @@ export async function finalizeCompletedCronRunOutcomes(
             job: outcome.request.executionJob,
             isolatedAgentSetupTimeout: outcome.isolatedAgentSetupTimeout,
           });
-          opts?.onRequestedRunFinalized?.();
         }
       }
       for (const job of result.removedJobs) {
@@ -212,7 +200,6 @@ export async function finalizeCompletedCronRunOutcomes(
           await locked(state, () =>
             recomputeUnownedCronSchedules(state, {
               nowMs,
-              repairFutureCronNextRunAtMs: opts?.repairFutureCronNextRunAtMs,
               ...(request
                 ? {
                     recomputeExpired: true,
@@ -238,12 +225,10 @@ export async function finalizeCompletedCronRunOutcomes(
       noteCronJobsStoreCommit(storeKey);
     }
     for (const outcome of outcomes) {
-      if (opts?.clearOnFailure !== false || committedSuccessfully) {
-        if (outcome.request) {
-          clearManualCronJobActive(state, outcome.jobId, outcome.activeJobMarker);
-        } else {
-          clearCronJobActive(outcome.jobId, outcome.activeJobMarker);
-        }
+      if (outcome.request) {
+        clearManualCronJobActive(state, outcome.jobId, outcome.activeJobMarker);
+      } else {
+        clearCronJobActive(outcome.jobId, outcome.activeJobMarker);
       }
     }
   }

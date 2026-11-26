@@ -4,7 +4,6 @@ import type {
   ModelDefinitionConfig,
   ModelProviderConfig,
 } from "openclaw/plugin-sdk/provider-model-shared";
-import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { projectOpenAIAccountModels } from "./account-models.js";
 import {
   isOpenAICodexBaseUrl,
@@ -69,12 +68,8 @@ export async function buildOpenAILiveProviderConfig(
   if (!isOpenAIApiBaseUrl(baseUrl)) {
     return { provider: fallback };
   }
-  const {
-    buildLiveModelProviderConfig,
-    buildOpenAICompatibleLiveModels,
-    readLiveModelCatalogStringField,
-    LiveModelCatalogHttpError,
-  } = await import("openclaw/plugin-sdk/provider-catalog-live-runtime");
+  const { buildLiveModelProviderConfig, LiveModelCatalogHttpError } =
+    await import("openclaw/plugin-sdk/provider-catalog-live-runtime");
   const rejectionScope =
     params.apiKey && !params.discoveryApiKey && isNonSecretApiKeyMarker(params.apiKey)
       ? "catalog"
@@ -97,7 +92,6 @@ export async function buildOpenAILiveProviderConfig(
   try {
     // A successful account catalog is authoritative even when it has no
     // visible supported models; catalog rows only describe listed ids.
-    let listedModelIds: string[] = [];
     const provider = await buildLiveModelProviderConfig({
       discoveryMode: "strict",
       providerId: PROVIDER_ID,
@@ -108,23 +102,6 @@ export async function buildOpenAILiveProviderConfig(
       discoveryApiKey: params.discoveryApiKey,
       ttlMs: OPENAI_MODELS_CACHE_TTL_MS,
       auditContext: "openai-model-discovery",
-      projectRows: (rows, seed) => {
-        listedModelIds = rows.flatMap((row) => {
-          const id = readLiveModelCatalogStringField(row, "id");
-          return id ? [id] : [];
-        });
-        return buildOpenAICompatibleLiveModels(
-          rows.filter((row) => {
-            const record = asOptionalRecord(row);
-            return (
-              record &&
-              (record.object === undefined || record.object === "model") &&
-              readLiveModelCatalogStringField(row, "id") !== undefined
-            );
-          }),
-          seed,
-        );
-      },
     });
     const listedModels = new Set(provider.models.map((model) => model.id));
     const modelAccessPrograms = (
@@ -145,7 +122,7 @@ export async function buildOpenAILiveProviderConfig(
         provider: PROVIDER_ID,
         status: "ready",
         ...(modelAccessPrograms?.length ? { modelAccessPrograms } : {}),
-        modelIdCatalog: { baseUrl, modelIds: listedModelIds },
+        modelIdCatalog: { baseUrl, modelIds: [...listedModels] },
       },
     };
   } catch (error) {

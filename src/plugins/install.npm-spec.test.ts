@@ -15,7 +15,7 @@ import {
 } from "./install-paths.js";
 import {
   requestDeferredPluginInstall,
-  resolvePluginInstallTransaction,
+  takePluginInstallTransaction,
 } from "./install-transaction.js";
 import type { PluginInstallArtifactConsentRequest } from "./install-types.js";
 import {
@@ -410,6 +410,7 @@ function mockPackage(
 
 function mockPackages(packages: MockNpmPackage[]) {
   const packagesByName = new Map(packages.map((pkg) => [pkg.packageName, pkg]));
+  const packagesBySpec = new Map(packages.map((pkg) => [pkg.spec, pkg]));
   const responses = new Map<string, () => unknown>();
   for (const pkg of packages) {
     const metadata = () => ({
@@ -468,7 +469,9 @@ function mockPackages(packages: MockNpmPackage[]) {
         prunePluginLocalOpenClawPeerLinks(projectRoot);
       }
       for (const packageName of Object.keys(dependencies)) {
-        const pkg = packagesByName.get(packageName);
+        const dependencySpec = dependencies[packageName];
+        const pkg =
+          packagesBySpec.get(`${packageName}@${dependencySpec}`) ?? packagesByName.get(packageName);
         if (planner) {
           if (pkg) {
             installedPackages.push(pkg);
@@ -482,7 +485,6 @@ function mockPackages(packages: MockNpmPackage[]) {
         if (!pkg) {
           throw new Error(`unexpected managed npm dependency: ${packageName}`);
         }
-        const dependencySpec = dependencies[packageName];
         if (pkg.expectedDependencySpec && dependencySpec !== pkg.expectedDependencySpec) {
           throw new Error(
             `expected managed npm dependency ${packageName}@${pkg.expectedDependencySpec}, got ${dependencySpec ?? ""}`,
@@ -681,7 +683,7 @@ describe("installPluginFromNpmSpec", () => {
       assert(updated.ok, JSON.stringify(updated));
       expect(updated.targetDir).toBe(targetDir);
       expect(readText(targetDir, "dist", "index.js")).toContain("replacement");
-      const transaction = resolvePluginInstallTransaction(updated);
+      const transaction = takePluginInstallTransaction(updated);
       expect(transaction).toBeDefined();
       await transaction?.rollback();
       expect(readTextFileTree(projectRoot)).toEqual(original);
@@ -733,6 +735,65 @@ describe("installPluginFromNpmSpec", () => {
     expect(rollback.targetDir).not.toBe(retainedPackageDir);
     await expect(retainedModule.default.runAttempt()).resolves.toEqual({ chunk: "v2" });
     expectPresent(retainedPackageDir, "dist", "run-attempt-v2.js");
+  });
+
+  it("keeps an active same-resolution artifact intact while an outer cohort owns publication", async () => {
+    const packageName = "cohort-generation-plugin";
+    let priorPackageDir = "";
+    for (const version of ["1.0.0", "2.0.0"]) {
+      mockPackage({ spec: `${packageName}@${version}`, packageName, version });
+      const result = await installNpm(`${packageName}@${version}`, { mode: "update" });
+      assert(result.ok, JSON.stringify(result));
+      priorPackageDir = result.targetDir;
+      await markRetainedManagedNpmInstall({
+        packageDir: priorPackageDir,
+        pluginId: packageName,
+        reason: "test-updater-preimage",
+      });
+    }
+    const priorProjectRoot = path.dirname(path.dirname(priorPackageDir));
+    const priorBytes = readTextFileTree(priorProjectRoot);
+    mockPackage({ spec: `${packageName}@2.0.0`, indexJs: "export const candidate = true;\n" });
+    let preparedProjectRoot = "";
+    let consentMode: string | undefined;
+    const result = await installNpm(
+      requestDeferredPluginInstall(
+        {
+          spec: `${packageName}@2.0.0`,
+          mode: "update" as const,
+          onBeforePluginArtifactCommit: async (artifact: PluginInstallArtifactConsentRequest) => {
+            consentMode = artifact.mode;
+          },
+        },
+        undefined,
+        undefined,
+        undefined,
+        {
+          forceFreshGeneration: true,
+          beforeManagedNpmPublish: async (facts) => {
+            expect(facts.pluginId).toBe(packageName);
+            expect(readText(facts.stagedPackageDir, "dist", "index.js")).toContain("candidate");
+            expect(readTextFileTree(priorProjectRoot)).toEqual(priorBytes);
+            expectAbsent(facts.targetNpmRoot);
+            preparedProjectRoot = facts.targetNpmRoot;
+            writeText(
+              path.join(facts.stagedNpmRoot, "cohort-intent.txt"),
+              "prepared before publish",
+            );
+          },
+        },
+      ),
+    );
+    assert(result.ok, JSON.stringify(result));
+    expect(consentMode).toBe("update");
+    expect(result.targetDir).not.toBe(priorPackageDir);
+    expect(readText(preparedProjectRoot, "cohort-intent.txt")).toBe("prepared before publish");
+    expect(readTextFileTree(priorProjectRoot)).toEqual(priorBytes);
+    const transaction = takePluginInstallTransaction(result);
+    assert(transaction);
+    await transaction.rollback();
+    expectAbsent(preparedProjectRoot);
+    expect(readTextFileTree(priorProjectRoot)).toEqual(priorBytes);
   });
 
   it("allocates a fresh generation when a plain install selects a retained artifact", async () => {
@@ -1277,7 +1338,7 @@ describe("installPluginFromNpmSpec", () => {
     info.mockImplementation(() => {});
     const retry = await install();
     expect(retry).toMatchObject({ ok: true, pluginId });
-    await resolvePluginInstallTransaction(retry)?.commit();
+    await takePluginInstallTransaction(retry)?.commit();
     expectPresent(installedPackageDir(npmRoot, packageName));
   });
 

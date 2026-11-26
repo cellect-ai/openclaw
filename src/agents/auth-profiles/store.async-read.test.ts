@@ -33,6 +33,7 @@ import type { AuthProfileStore, AuthProfileRowRead } from "./types.js";
 const reader = vi.hoisted(() => ({
   agentId: "main",
   identity: undefined,
+  databaseIdentity: undefined,
   source: { kind: "shared-state" as const, databasePath: "/fixture/shared.sqlite" },
   signal: new AbortController().signal,
   captureCredentialAuthority: () => undefined,

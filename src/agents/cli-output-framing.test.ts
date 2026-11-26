@@ -432,73 +432,16 @@ describe("createCliJsonlStreamingParser framing", () => {
   });
 
   it.each([
-    {
-      name: "uses complete tool args from content_block_start when no deltas arrive",
-      frames: [
-        claudeBlockStart(
-          {
-            type: "tool_use",
-            id: "toolu_start",
-            name: "Bash",
-            input: { command: "ls -la" },
-          },
-          0,
-        ),
-        claudeBlockStop(0),
-      ],
-      expected: [
-        {
-          toolCallId: "toolu_start",
-          name: "Bash",
-          kind: "tool_use",
-          args: { command: "ls -la" },
-        },
-      ],
-    },
-    {
-      name: "keeps an explicit empty streamed input over the start snapshot",
-      frames: [
-        claudeBlockStart(
-          {
-            type: "tool_use",
-            id: "toolu_empty",
-            name: "Bash",
-            input: { command: "stale --from-start-block" },
-          },
-          0,
-        ),
-        claudeInputJsonDelta("{}", 0),
-        claudeBlockStop(0),
-      ],
-      expected: [{ toolCallId: "toolu_empty", name: "Bash", kind: "tool_use", args: {} }],
-    },
-    {
-      name: "reassembles streamed tool args from input_json_delta chunks",
-      frames: [
-        claudeBlockStart({ type: "tool_use", id: "toolu_chunked", name: "Bash", input: {} }, 0),
-        claudeInputJsonDelta('{"command":', 0),
-        claudeInputJsonDelta(' "echo hi"}', 0),
-        claudeBlockStop(0),
-      ],
-      expected: [
-        {
-          toolCallId: "toolu_chunked",
-          name: "Bash",
-          kind: "tool_use",
-          args: { command: "echo hi" },
-        },
-      ],
-    },
-    {
-      name: "emits empty args when streamed tool args are malformed",
-      frames: [
-        claudeBlockStart({ type: "tool_use", id: "toolu_bad", name: "Bash", input: {} }, 0),
-        claudeInputJsonDelta('{"command": "ls', 0),
-        claudeBlockStop(0),
-      ],
-      expected: [{ toolCallId: "toolu_bad", name: "Bash", kind: "tool_use", args: {} }],
-    },
-  ])("$name", ({ frames, expected }) => {
+    ["start snapshot", { command: "ls -la" }, [], { command: "ls -la" }],
+    ["explicit empty input", { command: "stale --from-start-block" }, ["{}"], {}],
+    ["chunked input", {}, ['{"command":', ' "echo hi"}'], { command: "echo hi" }],
+    ["malformed input", {}, ['{"command": "ls'], {}],
+  ] as const)("reassembles tool arguments from %s", (_name, input, deltas, args) => {
+    const frames = [
+      claudeBlockStart({ type: "tool_use", id: "toolu_args", name: "Bash", input }, 0),
+      ...deltas.map((delta) => claudeInputJsonDelta(delta, 0)),
+      claudeBlockStop(0),
+    ];
     const starts: CliToolUseStartDelta[] = [];
     const parser = createClaudeParser({
       backend: createClaudeBackend(),
@@ -508,6 +451,6 @@ describe("createCliJsonlStreamingParser framing", () => {
     parser.push(joinJsonlFrames(...frames, ""));
     parser.finish();
 
-    expect(starts).toEqual(expected);
+    expect(starts).toEqual([{ toolCallId: "toolu_args", name: "Bash", kind: "tool_use", args }]);
   });
 });

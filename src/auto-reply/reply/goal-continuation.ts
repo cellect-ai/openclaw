@@ -7,6 +7,10 @@ import type { SessionEntryCohortReader } from "../../config/sessions/session-ent
 import type { SessionEntry } from "../../config/sessions/types.js";
 import { getInProcessGatewayRequestContext } from "../../plugins/runtime/gateway-request-scope.js";
 import {
+  hasSessionControllerQueuedWork,
+  withSessionControllerSource,
+} from "../../sessions/session-controller.context.js";
+import {
   runAfterReplyOperationClear,
   type ReplyOperation,
 } from "../../sessions/session-controller.js";
@@ -22,7 +26,7 @@ import { createGoalContinuationReturnScope } from "./goal-continuation-return.js
 import type { GoalContinuation } from "./goal-continuation.types.js";
 import { refreshActiveGoalContext } from "./inbound-meta.js";
 import { scheduleFollowupDrain } from "./queue/drain.js";
-import { enqueueFollowupRun, getFollowupQueueDepth } from "./queue/enqueue.js";
+import { enqueueFollowupRun } from "./queue/enqueue.js";
 import { isFollowupRunAborted, type FollowupRun, type QueueSettings } from "./queue/types.js";
 import { buildTranscriptFollowupRun } from "./transcript-followup-run.js";
 
@@ -101,7 +105,9 @@ export async function isGoalContinuationPlacementCurrent(params: {
   if (!continuation.workerGoal && !continuation.localCodexGoal) {
     return true;
   }
-  if (!params.hasOperatorAuthority) {
+  // Local continuations reuse the admitted source, just like built-in turns.
+  // Only remote execution needs a Gateway operator capability for placement.
+  if (continuation.workerGoal && !params.hasOperatorAuthority) {
     return false;
   }
   if (continuation.localCodexGoal && params.requiresWorker) {
@@ -158,7 +164,11 @@ export async function enqueueGoalContinuation(params: GoalContinuationParams): P
     params.operation.result?.kind !== "failed" &&
     params.operation.result?.kind !== "aborted" &&
     !isFollowupRunAborted(params.base) &&
-    getFollowupQueueDepth(params.queueKey) === 0;
+    !hasSessionControllerQueuedWork(
+      params.storePath,
+      [params.sessionKey, params.expectedSession.sessionId],
+      params.base.run.agentId,
+    );
   if (!isGoalContinuationOutcome(params.result) || !eligible()) {
     return false;
   }
@@ -181,7 +191,7 @@ export async function enqueueGoalContinuation(params: GoalContinuationParams): P
     return false;
   }
   const codexPlacement =
-    entry.agentHarnessId === "codex" && params.base.operatorAuthority
+    entry.agentHarnessId === "codex"
       ? await resolveCodexGoalPlacement({
           agentId: params.base.run.agentId,
           sessionKey: params.sessionKey,
@@ -189,7 +199,10 @@ export async function enqueueGoalContinuation(params: GoalContinuationParams): P
           requiresWorker: Boolean(params.base.run.config?.cloudWorkers?.requiredProfile),
         })
       : undefined;
-  if (entry.agentHarnessId === "codex" && !codexPlacement) {
+  if (
+    entry.agentHarnessId === "codex" &&
+    (!codexPlacement || (codexPlacement === "worker" && !params.base.operatorAuthority))
+  ) {
     return false;
   }
   params.base.operatorAuthority?.assertCurrent();
@@ -315,17 +328,19 @@ export function createGoalContinuationReturn(
       });
       let enqueued = false;
       try {
-        enqueued = await enqueueGoalContinuation({
-          ...params,
-          base,
-          result,
-          sourceRunId: runId,
-          expectedSession: continuation,
-          initialGoalId: continuation.goalId,
-          reader: undefined,
-          controllerInput: input,
-          isCurrent,
-        });
+        enqueued = await withSessionControllerSource(input, () =>
+          enqueueGoalContinuation({
+            ...params,
+            base,
+            result,
+            sourceRunId: runId,
+            expectedSession: continuation,
+            initialGoalId: continuation.goalId,
+            reader: undefined,
+            controllerInput: input,
+            isCurrent,
+          }),
+        );
         if (enqueued) {
           scheduleFollowupDrain(params.queueKey, params.runFollowup);
         }

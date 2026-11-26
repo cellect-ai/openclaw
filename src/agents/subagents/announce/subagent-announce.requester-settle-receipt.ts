@@ -13,59 +13,13 @@ import {
 } from "../registry/subagent-registry-lifecycle-log.js";
 import { buildRequesterSettleWakeIdentity } from "../registry/subagent-requester-settle-identity.js";
 
-/** Persist only host-authored copy in the replacement; findings retain their original audience. */
-export async function recordRequesterReplacementNotice(params: {
-  requester: { canonicalKey: string; agentId?: string; storePath?: string };
-  identity: { sessionId: string; lifecycleRevision?: string };
-  batchRunIds: readonly string[];
-  rearmGeneration?: number;
-  assertCommitAllowed: () => void;
-}): Promise<boolean> {
-  const { runId } = buildRequesterSettleWakeIdentity({
-    requesterSessionKey: params.requester.canonicalKey,
-    requesterAgentId: params.requester.agentId,
-    batchRunIds: params.batchRunIds,
-    rearmGeneration: params.rearmGeneration,
-  });
-  const target = {
-    agentId: params.requester.agentId,
-    storePath: params.requester.storePath,
-    sessionKey: params.requester.canonicalKey,
-    sessionId: params.identity.sessionId,
-    expectedLifecycleRevision: params.identity.lifecycleRevision,
-  };
-  try {
-    await recordGatewaySessionRunFailure({
-      target,
-      runId,
-      assertCommitAllowed: params.assertCommitAllowed,
-      error: "private completion requester session was replaced",
-      notice:
-        "Subagent results from the previous session were not delivered because a new session was started. Open Tasks to inspect the completed subagents and recover their results.",
-    });
-    await publishTranscriptUpdate(target, { lifecycleRevision: params.identity.lifecycleRevision });
-    return true;
-  } catch (error) {
-    // Throwing would let the lifecycle caller retire the batch as a failed wake.
-    subagentRegistryLog.warn("requester replacement notice could not be persisted", {
-      runId,
-      error: buildSafeLifecycleErrorMeta(error),
-    });
-    return false;
-  }
-}
-
-/** Admission follows the current store but retains the exact requester incarnation. */
+/** Admission follows the requester in its current store. */
 export function createRequesterSettleReceiptAdmission(params: {
   requester: { canonicalKey: string; agentId?: string; storePath?: string };
-  identity: { sessionId: string; lifecycleRevision?: string };
-  isSourceCurrent(): boolean;
   readCurrent(): SessionEntryCurrentFacts | undefined;
 }) {
-  const isEntryCurrent = (entry: SessionEntryCurrentFacts | undefined) =>
-    entry?.sessionId === params.identity.sessionId &&
-    entry.lifecycleRevision === params.identity.lifecycleRevision &&
-    params.isSourceCurrent();
+  // The session key is the address: a reset or a compaction successor stays current.
+  const isEntryCurrent = (entry: SessionEntryCurrentFacts | undefined) => entry !== undefined;
   const admission: GatewayToolCallerReceiptAdmission = {
     async prepare() {
       const [
@@ -135,4 +89,45 @@ export function createRequesterSettleReceiptAdmission(params: {
       }
     },
   });
+}
+
+/** Persist only host-authored copy in the replacement; findings retain their original audience. */
+export async function recordRequesterReplacementNotice(params: {
+  requester: { canonicalKey: string; agentId?: string; storePath?: string };
+  identity: { sessionId: string; lifecycleRevision?: string };
+  batchRunIds: readonly string[];
+  rearmGeneration?: number;
+  assertCommitAllowed: () => void;
+}): Promise<boolean> {
+  const { runId } = buildRequesterSettleWakeIdentity({
+    requesterSessionKey: params.requester.canonicalKey,
+    requesterAgentId: params.requester.agentId,
+    batchRunIds: params.batchRunIds,
+    rearmGeneration: params.rearmGeneration,
+  });
+  const target = {
+    agentId: params.requester.agentId,
+    storePath: params.requester.storePath,
+    sessionKey: params.requester.canonicalKey,
+    sessionId: params.identity.sessionId,
+    expectedLifecycleRevision: params.identity.lifecycleRevision,
+  };
+  try {
+    await recordGatewaySessionRunFailure({
+      target,
+      runId,
+      assertCommitAllowed: params.assertCommitAllowed,
+      error: "private completion requester session was replaced",
+      notice:
+        "Subagent results from the previous session were not delivered because a new session was started. Open Tasks to inspect the completed subagents and recover their results.",
+    });
+    await publishTranscriptUpdate(target, { lifecycleRevision: params.identity.lifecycleRevision });
+    return true;
+  } catch (error) {
+    subagentRegistryLog.warn("requester replacement notice could not be persisted", {
+      runId,
+      error: buildSafeLifecycleErrorMeta(error),
+    });
+    return false;
+  }
 }

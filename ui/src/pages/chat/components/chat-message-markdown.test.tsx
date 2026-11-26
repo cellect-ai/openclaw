@@ -1,9 +1,9 @@
-/* @vitest-environment jsdom */
 // Contract for full-message eligibility: the Gateway marks every display-
 // capped projection; pending inputs share assistant expansion without gaining
 // transcript mutation actions.
 import { For } from "solid-js";
 import { describe, expect, it, onTestFinished, vi } from "vitest";
+/* @vitest-environment jsdom */
 import {
   prepareChatMessageRender,
   resolveMessageDisplayMarkdown,

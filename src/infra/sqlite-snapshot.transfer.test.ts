@@ -294,8 +294,8 @@ it.each(["native", "isolated", "copy", "zero", "ctime"] as const)(
       expect(copy).toHaveBeenCalledOnce();
     }
     expect((await fs.readdir(tempDir)).toSorted()).toEqual(["snapshot.sqlite", "source.sqlite"]);
-    expect(await fs.readFile(targetPath)).toEqual(preparedBytes);
-    expect(await fs.readFile(sourcePath)).toEqual(original);
+    assert(preparedBytes?.equals(await fs.readFile(targetPath)), targetPath);
+    assert(original.equals(await fs.readFile(sourcePath)), sourcePath);
     expect(query("PRAGMA integrity_check")).toEqual([{ integrity_check: "ok" }]);
     expect(query("SELECT rowid,value,length(payload) AS bytes FROM records")).toEqual([
       { rowid: 71, value: "retained", bytes: 131072 },

@@ -3,7 +3,10 @@ import {
   hasOnlyAssistantReasoningContent,
   isReasoningOnlyLengthAssistantTurn,
 } from "@openclaw/ai/internal/shared";
-import { MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE } from "../../../llm/types.js";
+import {
+  MALFORMED_TOOL_CALL_ARGUMENTS_ERROR_CODE,
+  type AssistantHistoryMessage,
+} from "../../../llm/types.js";
 import { isTerminalAssistantError } from "../../../llm/utils/retry.js";
 import { hasAcceptedSessionSpawn } from "../../accepted-session-spawn.js";
 import { isPreDispatchToolCallRejectionMessage } from "../../failover/message-patterns.js";
@@ -17,6 +20,7 @@ import { readToolEffectReceipt } from "../../tool-effect-receipt.js";
 import { TOOL_FAILURE_INSTRUCTION } from "../../tool-outcome-instructions.js";
 import { isZeroUsageEmptyStopAssistantTurn } from "../empty-assistant-turn.js";
 import { assessLastAssistantMessage } from "../thinking.js";
+import type { EmbeddedAgentRunResult } from "../types.js";
 import {
   hasAsyncActivity,
   hasAttemptTerminalState,
@@ -25,12 +29,19 @@ import {
 } from "./attempt-terminal-evidence.js";
 import {
   classifyAssistantTurn,
+  countSettledTurnDeliveryPayloads,
   hasPositiveOutputTokenUsage,
   isOllamaIncompleteTurnProvider,
   joinAssistantTexts,
   shouldApplyNonVisibleTurnRetryGuard,
   type IncompleteTurnAttempt,
 } from "./incomplete-turn-classification.js";
+import type { RunEmbeddedAgentInternalParams as TerminalRunParams } from "./internal-params.js";
+import {
+  isEmbeddedRunTerminalAbort,
+  isEmbeddedRunTerminalTimeout,
+  type EmbeddedRunTerminalState,
+} from "./terminal-outcome.js";
 import type { EmbeddedRunAttemptResult } from "./types.js";
 
 // Allow one immediate continuation plus one follow-up continuation before
@@ -206,7 +217,7 @@ type SettledToolCall = { id: string | null; name: string | null };
 type SettledToolResult = { toolCallId?: unknown; toolName?: unknown; isError?: unknown };
 
 function readSettledToolCalls(
-  message: EmbeddedRunAttemptResult["currentAttemptAssistant"] | null | undefined,
+  message: AssistantHistoryMessage | null | undefined,
 ): SettledToolCall[] {
   if (!Array.isArray(message?.content)) {
     return [];
@@ -232,7 +243,7 @@ export function resolveSettledToolBatchEvidence(
   options?: { midTurn?: boolean },
 ) {
   const snapshot = attempt.messagesSnapshot ?? [];
-  let assistant = attempt.currentAttemptAssistant;
+  let assistant: AssistantHistoryMessage | undefined = attempt.currentAttemptAssistant;
   let assistantIndex = assistant ? snapshot.indexOf(assistant) : -1;
   const latestUserIndex = snapshot.findLastIndex(
     (message, index) =>
@@ -521,7 +532,7 @@ function resolveEmptyResponseRetryInstruction(
 
   if (
     assistant?.stopReason === "stop" &&
-    isOllamaIncompleteTurnProvider(params.provider) &&
+    isOllamaIncompleteTurnProvider(params) &&
     !hasPositiveOutputTokenUsage(assistant)
   ) {
     return null;
@@ -563,4 +574,61 @@ export function resolveNonVisibleTurnRetryInstructions(
   return settled?.disableTools === false
     ? [null, settled.instruction]
     : [resolveReasoningOnlyRetryInstruction(params), resolveEmptyResponseRetryInstruction(params)];
+}
+
+export function resolveSettledTurnFinalizationRequest(input: {
+  runParams: TerminalRunParams;
+  attempt: EmbeddedRunAttemptResult;
+  activeErrorContext: { provider: string; model: string };
+  modelApi: string | undefined;
+  executionContract: string | undefined;
+  payloadsWithToolMedia: EmbeddedAgentRunResult["payloads"];
+  recoveredFinalAssistantPayloadsAfterPromptTimeout?: EmbeddedAgentRunResult["payloads"];
+  hasTerminalToolPresentation: boolean;
+  terminalState: EmbeddedRunTerminalState;
+  settledTurnFinalizationAvailable: boolean;
+  replyDeliveryState?: ReplyDeliveryState;
+}): string | null {
+  if (
+    !input.settledTurnFinalizationAvailable ||
+    resolveReplyExpectation(input.runParams) === "optional" ||
+    isTerminalAssistantError(resolveCurrentAttemptAssistant(input.attempt)) ||
+    (input.replyDeliveryState ?? "missing") !== "missing"
+  ) {
+    return null;
+  }
+  const terminalAborted = isEmbeddedRunTerminalAbort(input.terminalState.outcome);
+  const terminalTimedOut = isEmbeddedRunTerminalTimeout(input.terminalState.outcome);
+  // Generated errors and pre-tool commentary are fallback surfaces, not authored answers.
+  const preparedPayloadCount = countSettledTurnDeliveryPayloads({
+    payloads: input.payloadsWithToolMedia,
+    attempt: input.attempt,
+  });
+  const payloadCount =
+    input.recoveredFinalAssistantPayloadsAfterPromptTimeout?.length ?? preparedPayloadCount;
+  const emptyAssistantReplyIsSilent = shouldTreatEmptyAssistantReplyAsSilent({
+    terminalReplyExpectation: resolveReplyExpectation(input.runParams),
+    payloadCount,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  if (emptyAssistantReplyIsSilent) {
+    return null;
+  }
+  const continuation = resolveSettledToolTerminalContinuation({
+    provider: input.activeErrorContext.provider,
+    modelId: input.activeErrorContext.model,
+    modelApi: input.modelApi,
+    executionContract: input.executionContract,
+    terminalReplyExpectation: resolveReplyExpectation(input.runParams),
+    replyDeliveryState: input.replyDeliveryState ?? "missing",
+    allowEmptyStopContinuation: true,
+    payloadCount,
+    hasTerminalToolPresentation: input.hasTerminalToolPresentation,
+    aborted: terminalAborted,
+    timedOut: terminalTimedOut,
+    attempt: input.attempt,
+  });
+  return continuation?.disableTools ? continuation.instruction : null;
 }

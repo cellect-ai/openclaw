@@ -28,12 +28,10 @@ type TranscriptScope = {
 };
 
 export async function readPreflightTranscriptContextMessages(
-  scope: TranscriptScope & { contextWindowTokens: number },
+  scope: TranscriptScope,
   signal?: AbortSignal,
 ): Promise<AgentMessage[]> {
-  const limits = resolveEmbeddedSessionContextLimits({
-    contextTokenBudget: scope.contextWindowTokens,
-  });
+  const limits = resolveEmbeddedSessionContextLimits({});
   const readLegacyProjection = async () => {
     signal?.throwIfAborted();
     const messages = (await readSessionMessagesAsync(scope, {
@@ -113,13 +111,7 @@ export async function readSessionLogSnapshot(params: {
 }
 
 export type TranscriptTokenEstimate = {
-  promptTokens: number;
-  promptTokenSource:
-    | "provider_usage"
-    | "provider_usage_plus_prompt_projection"
-    | "prompt_projection";
-  outputTokens?: number;
-  promptIncludesOutput?: boolean;
+  contextTokens: number;
 };
 
 function hasUsableProviderPromptUsage(
@@ -151,7 +143,7 @@ async function estimateProviderPromptTokens(
   return Math.ceil(priorPromptTokens) + Math.ceil(tokens);
 }
 
-export async function estimatePromptTokensFromSessionTranscript(
+export async function estimateContextTokensFromSessionTranscript(
   {
     abortSignal,
     ...params
@@ -178,28 +170,17 @@ export async function estimatePromptTokensFromSessionTranscript(
         abortSignal,
       }));
     const usage = snapshot.usage;
-    const normalizedOutputTokens =
-      usage?.outputTokens === undefined ? undefined : Math.ceil(usage.outputTokens);
     const providerUsage = hasUsableProviderPromptUsage(usage) ? usage : undefined;
     const messages = providerUsage
       ? providerUsage.trailingMessages
       : await readPreflightTranscriptContextMessages({ ...params, sessionId }, abortSignal);
-    const promptTokens = await estimateProviderPromptTokens(
+    const contextTokens = await estimateProviderPromptTokens(
       messages,
       params.contextWindowTokens,
-      providerUsage?.promptTokens,
+      providerUsage ? providerUsage.promptTokens + (providerUsage.outputTokens ?? 0) : 0,
     );
     return {
-      promptTokens,
-      promptTokenSource: providerUsage
-        ? messages.length > 0
-          ? "provider_usage_plus_prompt_projection"
-          : "provider_usage"
-        : "prompt_projection",
-      // Full-message estimation already includes assistant content. Preserve
-      // output only for projection against a separate persisted prompt fact.
-      ...(!providerUsage ? { promptIncludesOutput: true } : {}),
-      outputTokens: normalizedOutputTokens,
+      contextTokens,
     };
   } catch (error) {
     abortSignal?.throwIfAborted();

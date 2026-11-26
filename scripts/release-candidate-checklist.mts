@@ -44,7 +44,6 @@ import { readUpgradeSurvivorScenarioCatalog } from "./lib/upgrade-survivor-polic
 import {
   downloadFullReleaseNpmPreflight,
   verifyNpmPreflightProducer,
-  validateReleasePreflightTagIdentity,
 } from "./npm-preflight-tooling-identity.mjs";
 import {
   resolveNpmPreflightSdkSelectors,
@@ -66,7 +65,7 @@ import {
 type JsonRecord = Record<string, unknown>;
 type StringFields<K extends string> = Record<K, string>;
 type CandidateState = ReturnType<typeof buildReleaseCandidateState>;
-type WorkflowArtifact = Awaited<ReturnType<typeof runArtifacts>>[number];
+
 type GithubFetch = (url: string, init?: RequestInit) => Promise<Response>;
 type GithubApiOptions = Partial<{
   allowAnonymousFallback: boolean;
@@ -79,7 +78,7 @@ type TarballDescriptor = Record<
   "packageName" | "packageVersion" | "tarballName" | "tarballSha256",
   string
 >;
-type TelegramArtifact = Partial<WorkflowArtifact>;
+type TelegramArtifact = { digest?: string; id?: number; name?: string; workflowRunId?: number };
 type TelegramArtifactParams = {
   artifact: TelegramArtifact;
   manifest: JsonRecord;
@@ -157,7 +156,7 @@ function usage() {
   return `Usage: pnpm release:candidate -- --tag vYYYY.M.PATCH-beta.N [options]
 
 Dispatches or consumes release validation runs, validates the prepared npm tarball,
-builds plugin publish plans, writes a green evidence bundle, then prints the exact
+consumes admitted plugin publish plans, writes a green evidence bundle, then prints the exact
 selected publication command. --publication-route prepared selects the
 prepare-once release button for complete regular beta/stable releases.
 
@@ -173,11 +172,11 @@ Options:
   --full-release-validation-run-id <id>
                                       Reuse successful Full Release Validation run.
   --full-release-run <id>             Deprecated alias for --full-release-validation-run-id.
-  --npm-preflight-run <id>            Reuse successful OpenClaw NPM Release preflight run.
+  --npm-preflight-run <id>            Must match the selected Full Release Validation run.
   --plugin-sdk-api-acknowledgement <digest>
                                       8-character digest from the Plugin SDK API diff report.
   --windows-node-tag <tag>            Optional exact Windows Node tag for postpublish asset promotion.
-  --skip-dispatch                    Require Full Release Validation run; separate npm run only for historical recovery.
+  --skip-dispatch                    Require an admitted Full Release Validation run.
   --skip-local-generated-check        Do not run local generated release baseline checks.
   --run-parallels                    Force candidate Parallels smoke; beta defaults to postpublish release:beta-smoke.
   --skip-parallels                   Force-skip candidate Parallels smoke; stable/full run by default.
@@ -555,29 +554,17 @@ function runEarlyPluginSdkApiReview({
     npmDistTag,
     packageVersion,
   });
-  for (const tag of new Set(Object.values(bases))) {
-    run(
-      "git",
-      [
-        "fetch",
-        "--no-tags",
-        "--filter=blob:none",
-        "--depth=1",
-        "origin",
-        `+refs/tags/${tag}:refs/tags/${tag}`,
-      ],
-      { cwd: TOOLING_ROOT },
-    );
-  }
   const { reviewDir, evidencePath, reportPath, diffPath } = resolveEarlyPluginSdkApiReviewPaths({
     outputDir,
     targetRoot,
   });
   mkdirSync(reviewDir, { recursive: true });
+  const reviewRoot = mkdtempSync(join(tmpdir(), "openclaw-plugin-sdk-review-"));
   const args = [
-    "run",
-    "plugin-sdk:api:diff",
-    "--",
+    "--max-old-space-size=8192",
+    "--import",
+    join(TOOLING_ROOT, "scripts/tsx.mjs"),
+    join(TOOLING_ROOT, "scripts/plugin-sdk-api-diff.mts"),
     "--head",
     targetSha,
     "--evidence",
@@ -593,7 +580,44 @@ function runEarlyPluginSdkApiReview({
     args.push("--base", requireString(Object.values(bases)[0], "Plugin SDK API predecessor"));
   }
   console.log("Reviewing the Plugin SDK API while Full Release Validation runs...");
-  run("pnpm", args, { cwd: TOOLING_ROOT });
+  try {
+    run("git", ["init", "--initial-branch=review"], { cwd: reviewRoot });
+    run(
+      "git",
+      ["fetch", "--no-tags", "--depth=1", TOOLING_ROOT, `${toolingSha}:refs/heads/tooling`],
+      { cwd: reviewRoot },
+    );
+    run("git", ["symbolic-ref", "HEAD", "refs/heads/tooling"], { cwd: reviewRoot });
+    if (targetSha !== toolingSha) {
+      run(
+        "git",
+        ["fetch", "--no-tags", "--depth=1", targetRoot, `${targetSha}:refs/heads/target`],
+        { cwd: reviewRoot },
+      );
+    }
+    const origin = run("git", ["remote", "get-url", "origin"], {
+      capture: true,
+      cwd: TOOLING_ROOT,
+    }).trim();
+    run("git", ["remote", "add", "origin", origin], { cwd: reviewRoot });
+    for (const tag of new Set(Object.values(bases))) {
+      run(
+        "git",
+        [
+          "fetch",
+          "--no-tags",
+          "--filter=blob:none",
+          "--depth=1",
+          "origin",
+          `+refs/tags/${tag}:refs/tags/${tag}`,
+        ],
+        { cwd: reviewRoot },
+      );
+    }
+    run("node", args, { cwd: reviewRoot });
+  } finally {
+    rmSync(reviewRoot, { force: true, recursive: true });
+  }
   const evidence = readJson(evidencePath, "early Plugin SDK API evidence");
   const report = readFileSync(reportPath, "utf8").trim();
   try {
@@ -1225,131 +1249,11 @@ export function validateReleaseScenarioCatalogCompatibility({
   );
 }
 
-export async function validateNpmPreflightRunSource(
-  {
-    repository,
-    runId,
-    workflowRun,
-    workflowRef,
-    isTrustedWorkflowAncestor = gitIsAncestor,
-  }: {
-    repository: string;
-    runId: string;
-    workflowRun: Omit<RunInfo, "jobs" | "url">;
-    workflowRef: string;
-    isTrustedWorkflowAncestor?: (ancestor: string, target: string) => boolean;
-  },
-  apiOptions: GithubApiOptions = {},
-) {
-  const [workflowPath, fullRef] = String(workflowRun.workflowPath).split("@", 2);
-  if (
-    String(workflowRun.databaseId) !== runId ||
-    !Number.isSafeInteger(workflowRun.runAttempt) ||
-    workflowRun.runAttempt < 1 ||
-    workflowRun.repository !== repository ||
-    workflowRun.workflowName !== "OpenClaw NPM Release" ||
-    workflowPath !== ".github/workflows/openclaw-npm-release.yml" ||
-    workflowRun.event !== "workflow_dispatch" ||
-    workflowRun.status !== "completed" ||
-    workflowRun.conclusion !== "success" ||
-    !/^[a-f0-9]{40}$/u.test(workflowRun.headSha)
-  ) {
-    throw new Error(`npm preflight run ${runId} has invalid workflow identity`);
-  }
-  const ref = workflowRun.headBranch ?? "";
-  const protectedTag = workflowRef === "main" && ref.startsWith("release-publish/");
-  const expectedFullRef = `refs/${protectedTag ? "tags" : "heads"}/${ref}`;
-  if ((!protectedTag && ref !== workflowRef) || (fullRef && fullRef !== expectedFullRef)) {
-    throw new Error(`npm preflight run ${runId} workflow ref mismatch`);
-  }
-  const trustedRef = `refs/remotes/origin/${workflowRef}`;
-  if (!isTrustedWorkflowAncestor(workflowRun.headSha, trustedRef)) {
-    throw new Error(
-      `npm preflight workflow SHA ${workflowRun.headSha} is not reachable from trusted ${workflowRef}`,
-    );
-  }
-  if (protectedTag) {
-    const [tagRef, branches] = await Promise.all([
-      githubApi(`repos/${repository}/git/ref/tags/${ref}`, apiOptions),
-      githubApi(`repos/${repository}/git/matching-refs/heads/${ref}`, apiOptions),
-    ]);
-    validateReleasePreflightTagIdentity({
-      branches,
-      workflowRef: ref,
-      workflowFullRef: expectedFullRef,
-      workflowSha: workflowRun.headSha,
-      tagRef,
-    });
-  }
-  return { status: "passed", headSha: workflowRun.headSha, workflowRef: ref };
-}
-
 function requireString(value: unknown, label: string) {
   if (typeof value !== "string") {
     throw new TypeError(`${label} must be a string`);
   }
   return value;
-}
-
-async function runArtifacts(repo: string, runId: string) {
-  const data = await githubApi(`repos/${repo}/actions/runs/${runId}/artifacts?per_page=100`);
-  const artifacts = isRecord(data) && Array.isArray(data.artifacts) ? data.artifacts : [];
-  return artifacts.flatMap((artifact) => {
-    if (!isRecord(artifact) || typeof artifact.name !== "string") {
-      return [];
-    }
-    const workflowRun = isRecord(artifact.workflow_run) ? artifact.workflow_run : undefined;
-    return [
-      {
-        digest: typeof artifact.digest === "string" ? artifact.digest : undefined,
-        expired: typeof artifact.expired === "boolean" ? artifact.expired : undefined,
-        id: typeof artifact.id === "number" ? artifact.id : undefined,
-        name: artifact.name,
-        workflowRunId: typeof workflowRun?.id === "number" ? workflowRun.id : undefined,
-      },
-    ];
-  });
-}
-
-/**
- * Chooses the expected artifact name, allowing one same-prefix fallback per run.
- */
-export function resolveArtifactName(
-  artifacts: Array<{ expired?: boolean; name: string }>,
-  preferredName: string,
-  prefix: string,
-) {
-  const available = artifacts
-    .filter((artifact) => artifact.expired !== true)
-    .map((artifact) => artifact.name);
-  if (available.includes(preferredName)) {
-    return preferredName;
-  }
-  const candidates = available.filter((name) => name.startsWith(prefix));
-  if (candidates.length === 1) {
-    console.warn(`artifact ${preferredName} not found; using ${candidates[0]} from the same run`);
-    return candidates[0];
-  }
-  const candidateList =
-    available.length > 0 ? available.map((name) => `- ${name}`).join("\n") : "- <none>";
-  throw new Error(
-    `artifact ${preferredName} not found in run. Expected ${preferredName} or exactly one ${prefix}* fallback.\nAvailable artifacts:\n${candidateList}`,
-  );
-}
-
-async function resolveRunArtifact(
-  repo: string,
-  runId: string,
-  preferredName: string,
-  prefix: string,
-) {
-  const artifacts = await runArtifacts(repo, runId);
-  const name = resolveArtifactName(artifacts, preferredName, prefix);
-  const artifact = artifacts.find((candidate) => candidate.name === name);
-  if (!artifact) {
-    throw new Error(`resolved artifact ${name} disappeared from run ${runId}`);
-  }
-  return artifact;
 }
 
 function runLocalGeneratedCheckIfNeeded(options: ReturnType<typeof parseArgs>): LocalCheckResult {
@@ -1427,13 +1331,8 @@ function dispatchFullReleaseUsingHelper(
     !Number.isSafeInteger(observed?.id) ||
     Number(observed?.id) < 1
   ) {
-    const resumable =
-      record.kind === "openclaw.full-release-dispatch/v2" &&
-      record.phase === "prepared" &&
-      isRecord(record.refs) &&
-      record.refs.workflow === "intended";
     throw new Error(
-      `No observed Full Release Validation run. Next: pnpm ci:full-release -- ${resumable ? "--resume-request" : "--reconcile-request"} ${shellQuote(requestFile)}. The canonical helper revalidates admission; never redispatch uncertain work.`,
+      `No observed Full Release Validation run. Follow the canonical helper's recovery advice above; only it verifies whether resume is safe. Otherwise, Next: pnpm ci:full-release -- --reconcile-request ${shellQuote(requestFile)}.`,
     );
   }
   return String(observed!.id);
@@ -1538,7 +1437,6 @@ async function waitForSuccessfulRun(
     allowShaPinnedWorkflowRef?: boolean;
     workflowName: string;
     workflowRef: string;
-    validateSource?: (info: RunInfo) => ReturnType<typeof validateNpmPreflightRunSource>;
   },
 ) {
   let lastState = "";
@@ -1568,9 +1466,6 @@ async function waitForSuccessfulRun(
           `run ${runId} workflow mismatch: expected ${expected.workflowName}, got ${info.workflowName}`,
         );
       }
-      if (expected.validateSource) {
-        return { run: info, source: await expected.validateSource(info) };
-      }
       const acceptsPinnedWorkflow =
         expected.allowShaPinnedWorkflowRef && isShaPinnedReleaseValidationBranch(info.headBranch);
       if (info.headBranch !== expected.workflowRef && !acceptsPinnedWorkflow) {
@@ -1590,56 +1485,8 @@ function downloadArtifact(repo: string, runId: string, name: string, dir: string
   run("gh", ["run", "download", runId, "--repo", repo, "--name", name, "--dir", dir]);
 }
 
-async function downloadResolvedArtifact(
-  repo: string,
-  runId: string,
-  preferredName: string,
-  prefix: string,
-  dir: string,
-) {
-  const artifact = await resolveRunArtifact(repo, runId, preferredName, prefix);
-  downloadArtifact(repo, runId, artifact.name, dir);
-  return artifact;
-}
-
 function sha256(path: string) {
   return run("shasum", ["-a", "256", path], { capture: true }).trim().split(/\s+/u)[0] ?? "";
-}
-
-function collectPluginPlan(script: string, options: ReturnType<typeof parseArgs>): unknown {
-  const plan: unknown = JSON.parse(
-    run(
-      "node",
-      [
-        "--import",
-        "tsx",
-        join(TOOLING_ROOT, script),
-        "--selection-mode",
-        options.pluginPublishScope,
-      ],
-      { capture: true },
-    ),
-  );
-  console.log(formatPluginPlanSummary(script, plan).join("\n"));
-  return plan;
-}
-
-async function collectPluginPlanWithRetry(script: string, options: ReturnType<typeof parseArgs>) {
-  for (let attempt = 1; ; attempt += 1) {
-    try {
-      return collectPluginPlan(script, options);
-    } catch (error) {
-      if (attempt === 3) {
-        throw error;
-      }
-      console.warn(
-        `${script} failed on attempt ${attempt}; retrying: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-      await wait(5_000 * attempt);
-    }
-  }
 }
 
 function formatPluginPlanSummary(label: string, plan: unknown): string[] {
@@ -1681,7 +1528,7 @@ export function buildPrepareCommand(
     fullReleaseRunAttempt?: number;
     npmTelegramRunId?: string;
   },
-  npmPreflightSource?: Awaited<ReturnType<typeof validateNpmPreflightRunSource>>,
+  npmPreflightSource?: { workflowRef: string },
 ) {
   const workflowRef =
     options.publishWorkflowRef || npmPreflightSource?.workflowRef || options.workflowRef;
@@ -1970,13 +1817,11 @@ async function runTelegramIfNeeded(
   runAttempt: number,
   sourceSha: string,
   fullValidationEvidence: Awaited<ReturnType<typeof authenticateFullReleaseValidationEvidence>>,
-  npmUsesFullRun: boolean,
 ): Promise<TelegramResult> {
   if (options.skipTelegram) {
     return { status: "skipped" };
   }
-  // Only the admitted evidence policy defers this wait; legacy beta evidence
-  // still requires the separate Telegram qualification.
+  // The admitted beta coverage policy defers package Telegram until publication.
   if (fullValidationEvidence.coveragePolicy === "npm-beta-v1") {
     return { status: "deferred-postpublish" };
   }
@@ -1986,11 +1831,13 @@ async function runTelegramIfNeeded(
     (fullValidationEvidence.source === "candidate-owned-admission-v1" &&
       (qualificationManifest.releaseProfile === "stable" ||
         qualificationManifest.releaseProfile === "full"));
-  if (npmUsesFullRun && coversPackageTelegram && options.telegramProviderMode === "mock-openai") {
+  if (coversPackageTelegram && options.telegramProviderMode === "mock-openai") {
     const waived = qualificationManifest.waivers?.some(
       (waiver: JsonRecord) =>
-        waiver.jobName ===
-        "Run package acceptance / Telegram package acceptance / Run package Telegram E2E",
+        waiver.childRole === "releaseChecksCandidate" &&
+        (waiver.jobName === undefined ||
+          waiver.jobName ===
+            "Run package acceptance / Telegram package acceptance / Run package Telegram E2E"),
     );
     if (waived) {
       return { status: "waived", providerMode: "mock-openai" };
@@ -2068,6 +1915,14 @@ function checkCandidateAndroidVersion(targetSha: string, tag: string) {
   if (release?.channel !== "stable") {
     return undefined;
   }
+  const manifestPath = run(
+    "git",
+    ["ls-tree", "--name-only", targetSha, "--", "apps/android/version.json"],
+    { capture: true },
+  ).trim();
+  if (!manifestPath) {
+    return undefined;
+  }
   const manifest: unknown = JSON.parse(
     run("git", ["show", `${targetSha}:apps/android/version.json`], { capture: true }),
   );
@@ -2083,7 +1938,7 @@ function checkCandidateAndroidVersion(targetSha: string, tag: string) {
     targetVersion,
     message: matches
       ? `PASS: Android version ${androidVersion} matches release train ${targetVersion}.`
-      : `WARNING: Android version ${androidVersion} does not match release train ${targetVersion}; run node --import tsx scripts/android-pin-version.ts --version ${targetVersion} before tagging, or accept that Android will not ship for this release.`,
+      : `WARNING: Legacy Android version ${androidVersion} does not match release train ${targetVersion}; Android APK publication is skipped.`,
   };
 }
 
@@ -2255,8 +2110,7 @@ async function main() {
     });
   }
 
-  // Full validation qualifies its package producer. Explicit separate run IDs
-  // remain the recovery contract for releases prepared by older tooling.
+  // Full validation qualifies its own package producer; separate runs are not evidence.
   options.npmPreflightRunId ||= options.fullReleaseRunId;
   candidateState = updateReleaseCandidateState(statePath, candidateState, "waiting", {
     fullReleaseRunId: options.fullReleaseRunId,
@@ -2296,23 +2150,14 @@ async function main() {
     workflowRef: options.workflowRef,
     allowShaPinnedWorkflowRef: true,
   });
-  const npmUsesFullRun = options.npmPreflightRunId === options.fullReleaseRunId;
-  const { run: selectedNpmRun, source: npmPreflightSource } = npmUsesFullRun
-    ? {
-        run: fullRun,
-        source: { status: "passed", headSha: fullRun.headSha, workflowRef: options.workflowRef },
-      }
-    : await waitForSuccessfulRun(options.repo, options.npmPreflightRunId, {
-        workflowName: "OpenClaw NPM Release",
-        workflowRef: options.workflowRef,
-        validateSource: (workflowRun) =>
-          validateNpmPreflightRunSource({
-            repository: options.repo,
-            runId: options.npmPreflightRunId,
-            workflowRun,
-            workflowRef: options.workflowRef,
-          }),
-      });
+  if (options.npmPreflightRunId !== options.fullReleaseRunId) {
+    throw new Error("Npm preflight must use the selected Full Release Validation evidence.");
+  }
+  const npmPreflightSource = {
+    status: "passed",
+    headSha: fullRun.headSha,
+    workflowRef: options.workflowRef,
+  };
   candidateState = updateReleaseCandidateState(statePath, candidateState, "waiting", {
     npmPreflightRunId: options.npmPreflightRunId,
   });
@@ -2347,46 +2192,32 @@ async function main() {
     verifierSourceSha: toolingSha,
     verifierSourceContent: readFileSync(join(TOOLING_ROOT, "scripts/release-ci-summary.mjs")),
   });
-  if (fullValidationEvidence.source === "direct" && fullRun.headSha !== targetSha) {
-    throw new Error(`run SHA mismatch: tag=${targetSha} full=${fullRun.headSha}`);
-  }
-  if (npmUsesFullRun) {
-    rmSync(npmDir, { recursive: true, force: true });
-  }
-  const qualifiedPreflight = npmUsesFullRun
-    ? await downloadFullReleaseNpmPreflight({
-        manifest: fullManifest,
-        repository: options.repo,
-        runId: options.fullReleaseRunId,
-        runAttempt: fullRun.runAttempt,
-        sourceSha: targetSha,
-        toolingSha: fullRun.headSha,
-        outputDir: npmDir,
-        token: run("gh", ["auth", "token"], { capture: true }).trim(),
-      })
-    : undefined;
-  const npmProducerRunId = qualifiedPreflight?.producer.runId ?? options.npmPreflightRunId;
-  const npmRun = qualifiedPreflight
-    ? {
-        ...selectedNpmRun,
-        databaseId: Number(npmProducerRunId),
-        runAttempt: Number(qualifiedPreflight.producer.runAttempt),
-        workflowName: qualifiedPreflight.run.name,
-        workflowPath: qualifiedPreflight.run.path,
-        headBranch: qualifiedPreflight.run.head_branch,
-        headSha: qualifiedPreflight.run.head_sha,
-        url: qualifiedPreflight.run.html_url,
-      }
-    : selectedNpmRun;
-  const npmArtifact = qualifiedPreflight
-    ? { ...qualifiedPreflight.artifact, workflowRunId: Number(npmProducerRunId) }
-    : await downloadResolvedArtifact(
-        options.repo,
-        npmProducerRunId,
-        `openclaw-npm-preflight-${options.tag}`,
-        "openclaw-npm-preflight-",
-        npmDir,
-      );
+  rmSync(npmDir, { recursive: true, force: true });
+  const qualifiedPreflight = await downloadFullReleaseNpmPreflight({
+    manifest: fullManifest,
+    repository: options.repo,
+    runId: options.fullReleaseRunId,
+    runAttempt: fullRun.runAttempt,
+    sourceSha: targetSha,
+    toolingSha: fullRun.headSha,
+    outputDir: npmDir,
+    token: run("gh", ["auth", "token"], { capture: true }).trim(),
+  });
+  const npmProducerRunId = qualifiedPreflight.producer.runId;
+  const npmRun = {
+    ...fullRun,
+    databaseId: Number(npmProducerRunId),
+    runAttempt: Number(qualifiedPreflight.producer.runAttempt),
+    workflowName: qualifiedPreflight.run.name,
+    workflowPath: qualifiedPreflight.run.path,
+    headBranch: qualifiedPreflight.run.head_branch,
+    headSha: qualifiedPreflight.run.head_sha,
+    url: qualifiedPreflight.run.html_url,
+  };
+  const npmArtifact = {
+    ...qualifiedPreflight.artifact,
+    workflowRunId: Number(npmProducerRunId),
+  };
   const npmArtifactName = npmArtifact.name;
   if (!Number.isInteger(npmRun.runAttempt) || npmRun.runAttempt < 1) {
     throw new Error(`OpenClaw npm preflight run ${npmProducerRunId} has invalid attempt.`);
@@ -2473,15 +2304,13 @@ async function main() {
     );
   }
   localGeneratedCheck ??= runLocalGeneratedCheckIfNeeded(options);
-  // Only exact historical producers retain local, non-authoritative planning.
-  // B recovery consumes its original hosted observations without another sweep.
+  // Consume retained hosted observations; publication never reruns local planning.
   const publicationAdmission = fullValidationEvidence.publicationAdmission;
-  const pluginNpmPlan = publicationAdmission
-    ? publicationAdmission.observations.plans.npm
-    : await collectPluginPlanWithRetry("scripts/plugin-npm-release-plan.ts", options);
-  const pluginClawHubPlan = publicationAdmission
-    ? publicationAdmission.observations.plans.clawhub
-    : await collectPluginPlanWithRetry("scripts/plugin-clawhub-release-plan.ts", options);
+  if (!publicationAdmission) {
+    throw new Error("Full Release Validation publication admission is missing.");
+  }
+  const pluginNpmPlan = publicationAdmission.observations.plans.npm;
+  const pluginClawHubPlan = publicationAdmission.observations.plans.clawhub;
   const readinessFailures = evaluateReleasePublishGates({
     manifest: fullValidationEvidence.evidence.current.manifest,
     consumer: "publisher",
@@ -2548,7 +2377,8 @@ async function main() {
     revalidatedRegistryArtifacts.map((artifact) => artifact.tarballPath),
     targetRoot,
     targetSha,
-    fullValidationEvidence.run.headSha,
+    fullValidationEvidence.publicationAuthority?.admission.request.qualificationSha ??
+      fullValidationEvidence.run.headSha,
   );
   const npmTelegram = await runTelegramIfNeeded(
     options,
@@ -2557,7 +2387,6 @@ async function main() {
     npmRun.runAttempt,
     targetSha,
     fullValidationEvidence,
-    npmUsesFullRun,
   );
   const publicationOptions = {
     ...options,
@@ -2695,9 +2524,7 @@ async function main() {
       `- tarball sha256: ${actualTarballSha}`,
       `- npm dist-tag: ${options.npmDistTag}`,
       `- intended publication route: ${options.publicationRoute}`,
-      publicationAdmission
-        ? "- FRV registry observations are authenticated retained admission evidence, not publication authority. Pending owner actions and final publisher checks remain required."
-        : "- Historical FRV source admission and local registry plans are not registry eligibility or publication authority.",
+      "- FRV registry observations are authenticated retained admission evidence, not publication authority. Pending owner actions and final publisher checks remain required.",
       ...formatPluginPlanSummary("plugin npm plan", pluginNpmPlan),
       ...formatPluginPlanSummary("ClawHub plan", pluginClawHubPlan),
       `- Parallels: ${parallels.status}${parallels.reason ? ` (${parallels.reason})` : ""}`,

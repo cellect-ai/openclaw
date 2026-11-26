@@ -51,6 +51,7 @@ type CronCoreRunOptions = {
   streamBatch?: string;
   streamScheduleKey?: string;
   streamSourceIdentity?: string;
+  onConditionFired?: ExecuteJobCoreOptions["onConditionFired"];
   executionIdentity?: import("./state.js").CronExecutionIdentityAdmission;
 } & (
   | { runReceipt: CronRunReceiptHandle; runReceiptContext: OpenClawStateWorkerContext }
@@ -77,8 +78,8 @@ async function deliverPrimaryWebhook(
   if (
     plan.mode !== "webhook" ||
     result.triggerEval?.fired === false ||
-    // A skip before execution has status text, not output, even after a fired trigger.
-    (result.status === "skipped" && result.executionStarted === false)
+    // A run that never started has status text, not output, even after a fired trigger.
+    (result.status !== "error" && result.executionStarted === false)
   ) {
     return result;
   }
@@ -397,6 +398,7 @@ async function executeJobCoreWithTimeoutUnfinalized(
       onExecutionPhase: trackExecution ? (watchdog?.notePhase ?? accumulateExecution) : undefined,
       onLaneWait: watchdog && deferTimeoutUntilExecutionStart ? noteLaneState : undefined,
       assertRunCurrent,
+      onConditionFired: opts?.onConditionFired,
       executionIdentity: executionIdentity && {
         ...executionIdentity,
         onPostAdmission: (context) => {

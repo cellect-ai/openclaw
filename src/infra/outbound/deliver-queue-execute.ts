@@ -29,6 +29,7 @@ import {
   type QueuedDeliveryOwner,
 } from "./deliver-queue-state.js";
 import {
+  areOutboundPayloadsIntentionallySuppressed,
   OutboundDeliveryError,
   PlatformMessageNotDispatchedError,
   isOutboundDeliveryAdmissionClosedError,
@@ -66,8 +67,8 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
   producerClaimId?: string,
   producerLease?: DeliveryProducerLease,
 ): Promise<OutboundDeliveryResult[]> {
-  // Lease loss revokes queue mutation authority. Caller cancellation still
-  // follows the normal abort cleanup path through the combined signal.
+  // Lease loss stops initiation. Concrete receipts retain exact-claim settlement;
+  // the combined abort signal still fences preparation and every later send.
   const throwIfProducerLeaseLost = (): void => producerLease?.signal.throwIfAborted();
   const payloadCount = params.preparedBatch?.sourcePayloadCount ?? params.payloads.length;
   const ownsAuditTerminal = params.deliveryQueueId === undefined;
@@ -334,7 +335,9 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
       }
     },
     onError: (err: unknown, payload: NormalizedOutboundPayload) => {
-      throwIfProducerLeaseLost();
+      if (deliveredResults.length === 0) {
+        throwIfProducerLeaseLost();
+      }
       params.onError?.(err, payload);
     },
     onCanonicalDeliveryResult: (result) => {
@@ -358,6 +361,11 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     onDeliveryResult: async (result) => {
       captureCanonicalResult(result);
       deliveredResults.push(result);
+      // A concrete receipt moves this owner to claim-fenced settlement. Recovery
+      // shares this owner even when the nested execution has no local queueId.
+      if (params.deliveryQueueOwner) {
+        params.deliveryQueueOwner.signal = undefined;
+      }
       if (queueOwner && queuedPostSendState === undefined) {
         queuedPostSendState = await persistPostSendState(queueOwner);
       }
@@ -408,8 +416,11 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     const failedOutcomes = payloadOutcomes.filter((outcome) => outcome.status === "failed");
     allPayloadsSuppressed =
       results.length === 0 &&
-      hasCompletePayloadSuppression(publicationSuppressionsByPayload, payloadCount);
-    throwIfProducerLeaseLost();
+      (hasCompletePayloadSuppression(publicationSuppressionsByPayload, payloadCount) ||
+        areOutboundPayloadsIntentionallySuppressed(payloadOutcomes));
+    if (deliveredResults.length === 0) {
+      throwIfProducerLeaseLost();
+    }
     platformResultsReturned = true;
     if (queueOwner && publicationCapture.incompletePayloadSend) {
       const error = "platform send returned an incomplete physical result for the delivery batch";
@@ -567,7 +578,15 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
     }
     let err = caughtError;
     try {
-      throwIfProducerLeaseLost();
+      if (err instanceof OutboundDeliveryError && err.results.length > 0) {
+        deliveredResults = err.results;
+        if (params.deliveryQueueOwner) {
+          params.deliveryQueueOwner.signal = undefined;
+        }
+      }
+      if (deliveredResults.length === 0) {
+        throwIfProducerLeaseLost();
+      }
       if (isOutboundDeliveryAdmissionClosedError(err)) {
         throw err;
       }
@@ -583,9 +602,6 @@ export async function deliverOutboundPayloadsWithQueueCleanup(
         } catch (rejection) {
           err = rejection;
         }
-      }
-      if (err instanceof OutboundDeliveryError && err.results.length > 0) {
-        deliveredResults = err.results;
       }
       const failureIsProvenNotSent = isProvenBatchNotSent(err, payloadOutcomes);
       const hasPlatformSendEvidence =

@@ -1,4 +1,5 @@
-import childProcess, { ChildProcess } from "node:child_process";
+import childProcess from "node:child_process";
+import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import type { OpenClawPluginApi } from "openclaw/plugin-sdk/plugin-entry";
 import {
@@ -84,7 +85,18 @@ describe("session catalog Gateway methods", () => {
         const stdout = new PassThrough();
         const stderr = new PassThrough();
         const stdio: ShellProcess["stdio"] = [null, stdout, stderr, null, null];
-        const child = Object.assign(new ChildProcess(), { stdin: null, stdout, stderr, stdio });
+        const kill: ShellProcess["kill"] = vi.fn(() => true);
+        const child = Object.assign(new EventEmitter(), {
+          stdin: null,
+          stdout,
+          stderr,
+          stdio,
+          killed: false,
+          connected: false,
+          exitCode: null as ShellProcess["exitCode"],
+          signalCode: null as ShellProcess["signalCode"],
+          kill,
+        }) as ShellProcess;
         finishProbe = () => {
           child.stdout?.emit("data", Buffer.from("\0PATH=/catalog/bin\0"));
           child.emit("close", 0, null);
@@ -574,6 +586,9 @@ it("keeps a delayed source off the catalog RPC path", async () => {
     },
   });
   sessionSharePlugin.register(api);
+  if (service?.apiVersion !== 2) {
+    throw new Error("Expected catalog service API version 2");
+  }
   const scheduler = createTestPluginServiceScheduler();
   const context = { config, logger: api.logger, stateDir: "/unused", invokeNode, scheduler };
   await service?.start(context);

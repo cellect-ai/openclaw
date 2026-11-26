@@ -63,7 +63,12 @@ beforeEach(async () => {
   const queue = await vi.importActual<typeof import("../../process/command-queue.js")>(
     "../../process/command-queue.js",
   );
-  enqueueCommandInLaneMock.mockImplementation(queue.enqueueCommandInLane);
+  enqueueCommandInLaneMock.mockImplementation((lane, task) =>
+    queue.enqueueCommandInLane(
+      typeof lane === "string" ? lane : "compaction",
+      task as () => Promise<unknown>,
+    ),
+  );
   // Select the built-in direct runtime, not a mocked context-engine completion.
   const { delegateCompactionToRuntime } = await import("../../context-engine/delegate.js");
   resolveContextEngineMock.mockResolvedValue({
@@ -143,7 +148,7 @@ it.each(["prepared", "queued", "direct"] as const)(
           : undefined;
       if (prepared) {
         expect(prepared.reason).toBeUndefined();
-        expect(prepared.preparedSession?.sessionManager).toBeDefined();
+        expect(prepared.preparedSession?.memoryTranscript?.sessionManager).toBeDefined();
       }
       const params = {
         ...target,

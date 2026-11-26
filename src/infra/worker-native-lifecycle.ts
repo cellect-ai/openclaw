@@ -31,13 +31,14 @@ import {
 import { createCpuTrackedWorker, receiveWorkerMemoryPort } from "./worker-cpu.js";
 import { observeWorkerMessage, workerMessagePayloadBytes } from "./worker-message-metrics.js";
 import { NativeWorker } from "./worker-native-handle.js";
-import type {
-  NativeWorkerReply,
-  NativeWorkerRuntime,
-  NativeWorkerResourceDescriptor,
-  NativeWorkerResourceConnection,
-  NativeWorkerTaskPorts,
-  RetainedNativeWorker,
+import {
+  NATIVE_WORKER_LIFETIMES_KEY,
+  type NativeWorkerReply,
+  type NativeWorkerRuntime,
+  type NativeWorkerResourceDescriptor,
+  type NativeWorkerResourceConnection,
+  type NativeWorkerTaskPorts,
+  type RetainedNativeWorker,
 } from "./worker-native-lifecycle.types.js";
 import { nativePortIsOpen } from "./worker-native-port.js";
 
@@ -69,8 +70,6 @@ export type RetainedNativeWorkerSource = {
     input?: unknown,
   ): Promise<{
     port: MessagePort;
-    ref(this: void): void;
-    unref(this: void): void;
     retainBrokerUntilProcessExit(this: void): void;
     close(): Promise<void>;
   }>;
@@ -97,7 +96,7 @@ type NativeSource = RetainedNativeWorkerSource & {
 };
 
 const lifetime = resolveGlobalSingleton(
-  Symbol.for("openclaw.nativeWorkerLifetimes"),
+  NATIVE_WORKER_LIFETIMES_KEY,
   (): {
     nextId: number;
     sources: WeakMap<RuntimeWorkerGeneration, NativeSource>;
@@ -427,21 +426,8 @@ export function captureRetainedNativeWorkerSource(options?: {
         fail,
       );
       let closed = false;
-      let closing = false;
       const resource = {
         port: port2,
-        ref() {
-          lease.setReferenced(true);
-          port2.ref();
-        },
-        unref() {
-          // A late operation acknowledgment cannot release an in-progress close.
-          if (closing) {
-            return;
-          }
-          lease.setReferenced(false);
-          port2.unref();
-        },
         retainBrokerUntilProcessExit() {
           // Loaded native images retain physical tokens after domain ports close.
           // The broker already unrefs idle handles and joins on the host's real exit.
@@ -451,8 +437,6 @@ export function captureRetainedNativeWorkerSource(options?: {
           if (closed) {
             return;
           }
-          closing = true;
-          resource.ref();
           if (!attachment.dispatched) {
             lease.abandonUnattached();
           } else {

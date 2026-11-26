@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { configureAiTransportHost, getAiTransportHost, runWithAiTransportHost } from "@openclaw/ai";
+import { configureAiTransportHost, getAiTransportHost } from "@openclaw/ai";
 import { cleanupSessionResources } from "@openclaw/ai/internal/runtime";
 import { iterateSseFrames } from "@openclaw/ai/internal/shared";
 import { supportsClaudeInHistorySystemMessages } from "@openclaw/llm-core/model-contracts/anthropic";
@@ -19,10 +19,7 @@ import type { OpenClawConfig } from "../config/config.js";
 import { loadAndActivateRootPluginRegistry } from "../plugins/loader.js";
 import { createPluginCache, retirePluginCache, withPluginCache } from "../plugins/plugin-cache.js";
 import { clearActivePluginRegistry } from "../plugins/runtime.js";
-import {
-  captureOpenAIResponsesOutput,
-  normalizeOpenAIResponsesPrefixInput,
-} from "./embedded-agent-runner.wire.test-support.js";
+import { omitWireFields } from "./embedded-agent-runner.wire.test-support.js";
 import { clearEmbeddedSessionPromptStates } from "./embedded-agent-runner/session-prompt-state.js";
 import { buildStableCachePrefix, type LiveResolvedModel } from "./live-cache-test-support.js";
 import { buildUsageWithNoCost } from "./stream-message-shared.js";
@@ -216,7 +213,7 @@ export async function runEmbeddedReleasePrefixScenario(
     config.agents!.defaults!.bootstrapMaxChars = instructions.length + 4_096;
     config.agents!.defaults!.bootstrapTotalMaxChars = instructions.length + 8_192;
   }
-  let host: ReturnType<typeof getAiTransportHost> | undefined;
+  const host = getAiTransportHost();
   const cache = createPluginCache();
   const requests: Array<{ prefix: ProviderPrefixSnapshot; atMs: number; turn: number }> = [];
   const responseHistory = new Map<string, unknown[]>();
@@ -225,127 +222,145 @@ export async function runEmbeddedReleasePrefixScenario(
   const requestsPerTurn = provider === "openai" ? 3 : 1;
   let turn = 0;
   let wireFailure: Error | undefined;
+  configureAiTransportHost({
+    ...host,
+    buildModelFetch: (...args) => {
+      const fetchModel = host.buildModelFetch(...args) ?? globalThis.fetch;
+      return async (input, init) => {
+        let effectiveInput: unknown[] | undefined;
+        try {
+          await Promise.all(captureReads);
+          if (wireFailure) {
+            throw wireFailure;
+          }
+          expect(
+            requests.filter((request) => request.turn === turn).length,
+            "no provider retries",
+          ).toBeLessThan(requestsPerTurn);
+          const payload: unknown = await new Request(input, init).json();
+          let effectivePayload = payload;
+          if (provider === "openai") {
+            assert(payload && typeof payload === "object" && "input" in payload);
+            assert(Array.isArray(payload.input));
+            const previousId =
+              "previous_response_id" in payload ? payload.previous_response_id : undefined;
+            if (previousId !== undefined) {
+              assert.equal(typeof previousId, "string");
+              const inherited = responseHistory.get(previousId as string);
+              assert(inherited, "continuation references a captured provider response");
+              effectiveInput = [...inherited, ...payload.input];
+            } else {
+              effectiveInput = payload.input;
+            }
+            effectivePayload = {
+              ...payload,
+              input: effectiveInput.map((item) => {
+                // Cold replay omits provider item envelopes, including reasoning IDs
+                // that may name unstored records. Ciphertext, call IDs, and all
+                // model-visible content remain part of the exact prefix contract.
+                return isRecord(item) &&
+                  (item.type === "function_call" ||
+                    item.type === "reasoning" ||
+                    (item.type === "message" && item.role === "assistant"))
+                  ? omitWireFields(item, ["id", "status"])
+                  : item;
+              }),
+            };
+          }
+          // Stored outputs have provider-owned object key order. Canonicalize the
+          // effective context only; the captured wire and every content byte stay intact.
+          const prefix = snapshotProviderPrefix(api, JSON.parse(stableStringify(effectivePayload)));
+          const atMs = Date.now();
+          const previous = requests.at(-1);
+          if (previous) {
+            assertStableProviderPrefix(previous.prefix, prefix, {
+              label: `${provider} release turn ${turn + 1}`,
+            });
+            expect(
+              atMs - previous.atMs,
+              "provider request gap below cache-expiry noise",
+            ).toBeLessThan(30_000);
+          }
+          const history = prefix.history.join("\n");
+          const marker = `Reply with exactly CACHE-OK release-turn-${turn + 1}.`;
+          expect(history).toContain(marker);
+          expect(history, "prepend hook reached wire").toContain("Synthetic prefix hook before:");
+          expect(history, "append hook reached wire").toContain("Synthetic prefix hook after:");
+          if (turn >= 2) {
+            expect(history, "refreshed instructions reached history").toContain(
+              "Synthetic skill updated.",
+            );
+          }
+          requests.push({ prefix, atMs, turn });
+        } catch (error) {
+          wireFailure ??= toErrorObject(error, "Provider prefix capture failed");
+          throw error;
+        }
+        const response = await fetchModel(input, init);
+        if (effectiveInput) {
+          const inheritedInput = effectiveInput;
+          // The stored-response API appends the completed output before the next delta.
+          // Capture alongside the original stream without delaying its first event.
+          const capture = (async () => {
+            const reader = response.clone().body?.getReader();
+            assert(reader, "provider response has an event stream");
+            try {
+              for await (const { frame } of iterateSseFrames(() => reader.read())) {
+                for (const rawLine of frame.split("\n")) {
+                  const line = rawLine.trimEnd();
+                  if (!line.startsWith("data: ") || line === "data: [DONE]") {
+                    continue;
+                  }
+                  const event: unknown = JSON.parse(line.slice(6));
+                  if (!isRecord(event) || event.type !== "response.completed") {
+                    continue;
+                  }
+                  assert(isRecord(event.response));
+                  const completed = event.response;
+                  assert(typeof completed.id === "string" && Array.isArray(completed.output));
+                  // Completion status and log probabilities are response envelopes,
+                  // not replay input. Keep every model-visible field in the inherited context.
+                  const output = completed.output.map((item: unknown) => {
+                    if (!isRecord(item)) {
+                      return item;
+                    }
+                    const replayItem = omitWireFields(
+                      item,
+                      item.type === "function_call" ? ["status"] : [],
+                    );
+                    if (item.type === "function_call" && typeof item.arguments === "string") {
+                      replayItem.arguments = JSON.stringify(JSON.parse(item.arguments));
+                    }
+                    if (item.type === "message" && Array.isArray(item.content)) {
+                      replayItem.content = item.content.map((block: unknown) =>
+                        isRecord(block) ? omitWireFields(block, ["logprobs"]) : block,
+                      );
+                    }
+                    return replayItem;
+                  });
+                  responseHistory.set(completed.id, [...inheritedInput, ...output]);
+                  return;
+                }
+              }
+              assert.fail("provider stream ended before response.completed");
+            } finally {
+              // Tee cancellation can await the transport branch; terminal capture must not.
+              void reader.cancel().catch(() => {});
+              reader.releaseLock();
+            }
+          })().catch((error: unknown) => {
+            wireFailure ??= toErrorObject(error, "Provider response capture failed");
+          });
+          captureReads.push(capture);
+        }
+        return response;
+      };
+    },
+  });
   try {
     await withPluginCache(cache, async () => {
       // Direct runner callers need the same hook activation owned by Gateway startup.
       await loadAndActivateRootPluginRegistry({ config, workspaceDir, throwOnLoadError: true });
-      // First-use runtime setup must finish before the wire observer snapshots its host.
-      await import("./ai-transport-runtime-host.js");
-      const preparedHost = getAiTransportHost();
-      host = preparedHost;
-      configureAiTransportHost({
-        ...preparedHost,
-        buildModelFetch: (...args) => {
-          const fetchModel = preparedHost.buildModelFetch(...args) ?? globalThis.fetch;
-          return async (input, init) => {
-            let effectiveInput: unknown[] | undefined;
-            try {
-              await Promise.all(captureReads);
-              if (wireFailure) {
-                throw wireFailure;
-              }
-              expect(
-                requests.filter((request) => request.turn === turn).length,
-                "no provider retries",
-              ).toBeLessThan(requestsPerTurn);
-              const payload: unknown = await new Request(input, init).json();
-              let effectivePayload = payload;
-              if (provider === "openai") {
-                assert(payload && typeof payload === "object" && "input" in payload);
-                assert(Array.isArray(payload.input));
-                const previousId =
-                  "previous_response_id" in payload ? payload.previous_response_id : undefined;
-                if (previousId !== undefined) {
-                  assert.equal(typeof previousId, "string");
-                  const inherited = responseHistory.get(previousId as string);
-                  assert(inherited, "continuation references a captured provider response");
-                  effectiveInput = [...inherited, ...payload.input];
-                } else {
-                  effectiveInput = payload.input;
-                }
-                effectivePayload = {
-                  ...payload,
-                  input: normalizeOpenAIResponsesPrefixInput(effectiveInput),
-                };
-              }
-              // Stored outputs have provider-owned object key order. Canonicalize the
-              // effective context only; the captured wire and every content byte stay intact.
-              const prefix = snapshotProviderPrefix(
-                api,
-                JSON.parse(stableStringify(effectivePayload)),
-              );
-              const atMs = Date.now();
-              const previous = requests.at(-1);
-              if (previous) {
-                assertStableProviderPrefix(previous.prefix, prefix, {
-                  label: `${provider} release turn ${turn + 1}`,
-                });
-                expect(
-                  atMs - previous.atMs,
-                  "provider request gap below cache-expiry noise",
-                ).toBeLessThan(30_000);
-              }
-              const history = prefix.history.join("\n");
-              const marker = `Reply with exactly CACHE-OK release-turn-${turn + 1}.`;
-              expect(history).toContain(marker);
-              expect(history, "prepend hook reached wire").toContain(
-                "Synthetic prefix hook before:",
-              );
-              expect(history, "append hook reached wire").toContain("Synthetic prefix hook after:");
-              if (turn >= 2) {
-                expect(history, "refreshed instructions reached history").toContain(
-                  "Synthetic skill updated.",
-                );
-              }
-              requests.push({ prefix, atMs, turn });
-            } catch (error) {
-              wireFailure ??= toErrorObject(error, "Provider prefix capture failed");
-              throw error;
-            }
-            const response = await fetchModel(input, init);
-            if (effectiveInput) {
-              const inheritedInput = effectiveInput;
-              // The stored-response API appends the completed output before the next delta.
-              // Capture alongside the original stream without delaying its first event.
-              const capture = (async () => {
-                const reader = response.clone().body?.getReader();
-                assert(reader, "provider response has an event stream");
-                try {
-                  for await (const { frame } of iterateSseFrames(() => reader.read())) {
-                    for (const rawLine of frame.split("\n")) {
-                      const line = rawLine.trimEnd();
-                      if (!line.startsWith("data: ") || line === "data: [DONE]") {
-                        continue;
-                      }
-                      const event: unknown = JSON.parse(line.slice(6));
-                      if (!isRecord(event) || event.type !== "response.completed") {
-                        continue;
-                      }
-                      assert(isRecord(event.response));
-                      const completed = event.response;
-                      assert(typeof completed.id === "string" && Array.isArray(completed.output));
-                      const output = captureOpenAIResponsesOutput(completed.output);
-                      responseHistory.set(completed.id, [...inheritedInput, ...output]);
-                      return;
-                    }
-                  }
-                  assert.fail("provider stream ended before response.completed");
-                } finally {
-                  // Tee cancellation can await the transport branch; terminal capture must not.
-                  void reader.cancel().catch(() => {});
-                  reader.releaseLock();
-                }
-              })().catch((error: unknown) => {
-                wireFailure ??= toErrorObject(error, "Provider response capture failed");
-              });
-              captureReads.push(capture);
-            }
-            return response;
-          };
-        },
-      });
-      // Retain the wire observer across lazy installers of the process default.
-      const captureHost = getAiTransportHost();
       for (turn = 0; turn < 4; turn += 1) {
         const revision = turn < 2 ? "initial" : "updated";
         await fs.writeFile(
@@ -359,9 +374,7 @@ export async function runEmbeddedReleasePrefixScenario(
         if (provider !== "openai" || turn === 3) {
           cleanupSessionResources(sessionId);
         }
-        const run = await runWithAiTransportHost(captureHost, () =>
-          params.probe(config, `release-turn-${turn + 1}`),
-        );
+        const run = await params.probe(config, `release-turn-${turn + 1}`);
         await Promise.all(captureReads);
         if (wireFailure) {
           throw wireFailure;
@@ -405,9 +418,7 @@ export async function runEmbeddedReleasePrefixScenario(
     throw wireFailure ?? toErrorObject(error, "Live prefix scenario failed");
   } finally {
     await Promise.all(captureReads);
-    if (host) {
-      configureAiTransportHost(host);
-    }
+    configureAiTransportHost(host);
     try {
       cleanupSessionResources(sessionId);
     } finally {

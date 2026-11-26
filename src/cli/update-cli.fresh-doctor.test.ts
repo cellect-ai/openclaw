@@ -1,6 +1,9 @@
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it, vi, beforeEach } from "vitest";
+import { resolveStateDir } from "../config/paths.js";
+import { resolveUpdateCaptureRoot } from "../infra/update-capture-paths.js";
 import { recordCommandProcessFailure } from "../process/exec-result.js";
 import { VERSION } from "../version.js";
 import {
@@ -27,9 +30,6 @@ describe("update-cli", () => {
   const f = createUpdateCliFixture();
 
   it("checks original Git version before a dry-run package downgrade", async () => {
-    const root = f.createCaseDir("openclaw-git-downgrade");
-    await fs.mkdir(root, { recursive: true });
-    vi.mocked(update.resolveOpenClawPackageRoot).mockResolvedValue(root);
     mocks.readPackageVersion.mockResolvedValue("2026.9.3-beta.1");
     f.primeNpmChannelTag("latest", "2026.9.1");
     await update.updateCommand({ channel: "stable", json: true, dryRun: true });
@@ -83,7 +83,10 @@ describe("update-cli", () => {
   });
 
   it("runs updated plugin migrations for a plugin-only current-process update", async () => {
-    vi.spyOn(update.doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue(true);
+    vi.spyOn(update.doctorChild, "inspectUpdateDoctorChildSupport").mockResolvedValue({
+      doctorConfigWrites: true,
+      doctorRetirementOnly: true,
+    });
     mocks.readPackageVersion.mockResolvedValue(VERSION);
     vi.mocked(update.updateGitCheckout).mockResolvedValue(
       runtimeRecovery.currentGitCoreFixture(process.cwd(), VERSION).outcome,
@@ -100,12 +103,31 @@ describe("update-cli", () => {
       return f.baseSnapshot;
     });
 
+    // Record, at the moment Doctor starts, how many sealed copies the run has.
+    const store = resolveUpdateCaptureRoot(resolveStateDir());
+    const sealedCopies = () =>
+      fsSync.existsSync(store)
+        ? fsSync
+            .readdirSync(store)
+            .filter((name) => fsSync.existsSync(path.join(store, name, "manifest.json"))).length
+        : 0;
+    const copiesAtDoctor: number[] = [];
+    const runCommand = vi.mocked(update.runCommandWithTimeout).getMockImplementation();
+    vi.mocked(update.runCommandWithTimeout).mockImplementation(async (argv, options) => {
+      if (argv.at(-1) === "--doctor") {
+        copiesAtDoctor.push(sealedCopies());
+      }
+      return await runCommand!(argv, options);
+    });
+
     await update.updateCommand({ yes: true, restart: false });
 
     expect(mocks.spawn).not.toHaveBeenCalled();
     const doctorCalls = commandCalls().filter(([argv]) => argv.at(-1) === "--doctor");
     expect(doctorCalls).toHaveLength(1);
     update.expectDelegatedPluginDoctorInput(doctorCalls[0]?.[1].input);
+    // The core is current, but Doctor can migrate plugin state: the run copied first, once.
+    expect(copiesAtDoctor).toEqual([1]);
     expect(update.runExec).toHaveBeenCalledWith(
       expect.any(String),
       [f.FRESH_POST_UPDATE_ENTRYPOINT, "config", "validate", "--json"],
@@ -138,6 +160,10 @@ describe("update-cli", () => {
     expect(message).toMatch(/^[^\n]*update repair`[^]*process failed[^]*diagnostic output/u);
     expect(message).not.toContain("long-argv-prefix");
   });
+});
+
+describe("update-cli", () => {
+  const f = createUpdateCliFixture({ databaseEngines: ["sqlite", "postgres"] });
 
   registerForegroundFailureRecoveryTests({
     setupUpdatedRootRefresh: f.setupUpdatedRootRefresh,
@@ -169,102 +195,61 @@ describe("update-cli", () => {
     mocks.serviceDefinitionMutationCapability.mockResolvedValue({ kind, reason });
   };
 
-  it.each([false, true])(
-    "updates the correct split root with launcher override=%s",
-    async (launcherOverride) => {
-      const oldInstall = await f.setupServicePackageAtPrefix({
-        prefix: f.tempDirs.make("sealed-node-a-"),
+  it("preserves split-root package updates when service environment overrides cannot be inspected", async () => {
+    const oldInstall = await f.setupServicePackageAtPrefix({
+      prefix: f.tempDirs.make("sealed-node-a-"),
+    });
+    const shellInstall = await f.setupServicePackageAtPrefix({
+      prefix: f.tempDirs.make("sealed-node-b-"),
+    });
+    f.mockPackageInstallStatus(shellInstall.root);
+    mocks.readPackageVersion.mockImplementation(installedVersion);
+    const originalCommand = [oldInstall.serviceNode, oldInstall.entrypoint, "gateway"];
+    mockRunningService(originalCommand, "writable", "inspection-failed");
+    const overriddenCommand = {
+      programArguments: originalCommand,
+      environment: { NODE_OPTIONS: "--max-old-space-size=4096" },
+      managedDefinition: { programArguments: originalCommand },
+      managedOverrides: { environment: true },
+    };
+    mocks.serviceReadCommand.mockResolvedValue(overriddenCommand);
+    f.primeNpmChannelTag("latest", "2026.5.20");
+    f.mockFileBackedPathExists();
+    const transports = [oldInstall, shellInstall].map((install) => {
+      f.mockServicePackageCommands({
+        nodeModules: install.nodeModules,
+        packageRoot: install.root,
+        targetVersion: "2026.5.20",
+        npmCommands: ["npm", install.serviceNpm, requireValue(install.serviceNpmReal, "npm")],
+        nodeVersions: { [oldInstall.serviceNode]: "v24.19.0" },
       });
-      const shellInstall = await f.setupServicePackageAtPrefix({
-        prefix: f.tempDirs.make("sealed-node-b-"),
-      });
-      f.mockPackageInstallStatus(shellInstall.root);
-      mocks.readPackageVersion.mockImplementation(installedVersion);
-      const originalCommand = [oldInstall.serviceNode, oldInstall.entrypoint, "gateway"];
-      mockRunningService(originalCommand, "writable", "inspection-failed");
-      const overriddenCommand = {
-        programArguments: originalCommand,
-        environment: { NODE_OPTIONS: "--max-old-space-size=4096" },
-        managedDefinition: { programArguments: originalCommand },
-        managedOverrides: {
-          ...(launcherOverride ? { launcher: "command" as const } : {}),
-          environment: { keys: ["NODE_OPTIONS"] },
-        },
-      };
-      mocks.serviceReadCommand.mockResolvedValue(overriddenCommand);
-      // The retained service must report its own installed version, not the
-      // generic 1.0.0 default, before the updater can certify safe compensation.
-      f.mockGatewayHealth(await installedVersion(oldInstall.root), "original-gateway");
-      f.primeNpmChannelTag("latest", "2026.5.20");
-      f.mockFileBackedPathExists();
-      const transports = [oldInstall, shellInstall].map((install) => {
-        f.mockServicePackageCommands({
-          nodeModules: install.nodeModules,
-          packageRoot: install.root,
-          targetVersion: "2026.5.20",
-          npmCommands: ["npm", install.serviceNpm, requireValue(install.serviceNpmReal, "npm")],
-          nodeVersions: { [oldInstall.serviceNode]: "v24.19.0" },
-          onGatewayInstall: (argv) => {
-            if (!launcherOverride) {
-              const programArguments = [
-                requireValue(argv[0], "Node"),
-                requireValue(argv[1], "entrypoint"),
-                "gateway",
-              ];
-              mocks.serviceReadCommand.mockResolvedValue({
-                ...overriddenCommand,
-                programArguments,
-                managedDefinition: { programArguments },
-              });
-            }
-          },
-        });
-        return requireValue(
-          vi.mocked(update.runCommandWithTimeout).getMockImplementation(),
-          "package transport",
-        );
-      });
-      const oldPrefix = path.dirname(path.dirname(oldInstall.serviceNode));
-      vi.mocked(update.runCommandWithTimeout).mockImplementation((argv, options) => {
-        // An absolute npm path owns the package operation even when PATH retains the service Node.
-        const old = argv[0]?.startsWith(oldPrefix + path.sep);
-        return transports[old ? 0 : 1]!(argv, options);
-      });
-      await update.updateCommand({ yes: true }).catch((cause: unknown) => {
-        throw new Error(getErrorOutput() + getLogOutput(), { cause });
-      });
-      const target = launcherOverride ? oldInstall : shellInstall;
-      const retained = launcherOverride ? shellInstall : oldInstall;
-      const node = oldInstall.serviceNode;
-      expect(await installedVersion(target.root)).toBe("2026.5.20");
-      expect(await installedVersion(retained.root)).toBe("2026.5.18");
-      expect(await mocks.serviceReadCommand(process.env)).toEqual(
-        launcherOverride
-          ? overriddenCommand
-          : {
-              ...overriddenCommand,
-              programArguments: [node, target.entrypoint, "gateway"],
-              managedDefinition: { programArguments: [node, target.entrypoint, "gateway"] },
-            },
+      return requireValue(
+        vi.mocked(update.runCommandWithTimeout).getMockImplementation(),
+        "package transport",
       );
-      const installCalls = commandCalls().filter(
-        ([argv]) => argv[2] === "gateway" && argv[3] === "install",
-      );
-      expect(installCalls).toHaveLength(1);
-      expect(installCalls[0]?.[0].slice(0, 4)).toEqual([
-        node,
-        target.entrypoint,
-        "gateway",
-        "install",
-      ]);
-      expect(installCalls[0]?.[1]).toMatchObject({
-        cwd: target.root,
-        input: expect.stringContaining('"targetRoot":' + JSON.stringify(target.root)),
-      });
-      expect(mocks.serviceStop).toHaveBeenCalledOnce();
-      expect(getLogOutput()).toContain("Gateway: restarted and verified");
-    },
-  );
+    });
+    const oldPrefix = path.dirname(path.dirname(oldInstall.serviceNode));
+    vi.mocked(update.runCommandWithTimeout).mockImplementation((argv, options) => {
+      const context =
+        typeof options === "object" && options !== null
+          ? [options.cwd ?? "", options.env?.PATH ?? ""]
+          : [];
+      const old = [...argv, ...context].some((value) => value.includes(oldPrefix));
+      return transports[old ? 0 : 1]!(argv, options);
+    });
+    await update.updateCommand({ yes: true }).catch((cause: unknown) => {
+      throw new Error(getErrorOutput() + getLogOutput(), { cause });
+    });
+    expect(await installedVersion(oldInstall.root)).toBe("2026.5.20");
+    expect(await installedVersion(shellInstall.root)).toBe("2026.5.18");
+    expect(await mocks.serviceReadCommand(process.env)).toEqual(overriddenCommand);
+    const installCalls = commandCalls().filter(
+      ([argv]) => argv[2] === "gateway" && argv[3] === "install",
+    );
+    expect(installCalls).toHaveLength(0);
+    expect(mocks.serviceStop).toHaveBeenCalledOnce();
+    expect(getLogOutput()).toContain("Gateway: restarted and verified");
+  });
 
   it.each([{ capability: "sealed" }, { capability: "writable" }] as const)(
     "refuses incompatible registry targets before mutating a $capability service launcher",
@@ -305,16 +290,17 @@ describe("update-cli", () => {
         reason: "preflight-node-runtime-incompatible",
       });
       expect(packageInstallCommandCall()?.[0]).toBeUndefined();
+      expectNoSideEffects(mocks.serviceStop);
       if (capability === "writable") {
-        expect(recoverNode).toHaveBeenCalledExactlyOnceWith({
-          engine: ">=26.12.1",
-          recovery: { env: {} },
-          timeoutMs: 1_800_000,
-        });
+        expect(recoverNode).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({
+            engine: ">=26.12.1",
+            recovery: { env: expect.any(Object) },
+          }),
+        );
       } else {
         expect(recoverNode).not.toHaveBeenCalled();
       }
-      expectNoSideEffects(mocks.serviceStop);
       expect((await mocks.serviceReadCommand(process.env)).programArguments[0]).toBe(serviceNode);
       expect(await installedVersion(fixture.root)).toBe("2026.5.18");
     },

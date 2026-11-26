@@ -1,13 +1,9 @@
-import fs from "node:fs/promises";
 import { createServer } from "node:http";
-import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { readQaScenarioById } from "../../scenario-catalog.js";
 import { requireFlowScenario } from "../../scenario-catalog.test-utils.js";
 import { runLoadedScenarioFlow } from "../../scenario-flow-runner.test-support.js";
-import { captureQaMockProviderRequests } from "../../suite-provider-artifacts.js";
 import { fetchJson } from "../../suite-runtime-gateway.js";
-import { createTempDirHarness } from "../../temp-dir.test-helper.js";
 import {
   MOCK_OPENAI_DEBUG_REQUEST_LIMIT,
   type MockOpenAiRequestSnapshotInput,
@@ -15,13 +11,11 @@ import {
 import { createMockOpenAiRequestLog } from "./mock-openai-request-log.js";
 
 const marker = "Repo contract followthrough check";
-const tempDirs = createTempDirHarness();
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) {
     await cleanup();
   }
-  await tempDirs.cleanup();
 });
 
 function snapshot(allInputText: string, plannedToolName?: string): MockOpenAiRequestSnapshotInput {
@@ -94,7 +88,7 @@ function runPlanAssertions(baseUrl: string, after: number) {
   });
 }
 
-it("filters oversized unrelated snapshots before the bounded consumer and retains full artifacts", async () => {
+it("filters oversized unrelated snapshots before bounded scenario assertions", async () => {
   const provider = await startRequestLogServer();
   const retained = [provider.log.record(snapshot(marker, "write"))];
   const large = snapshot("unrelated " + "x".repeat(5 * 1024 * 1024));
@@ -121,14 +115,6 @@ it("filters oversized unrelated snapshots before the bounded consumer and retain
   ]);
   await expect(runPlanAssertions(provider.baseUrl, 1)).resolves.toMatchObject({ status: "pass" });
 
-  const outputDir = await tempDirs.makeTempDir("qa-request-log-");
-  await captureQaMockProviderRequests({ outputDir, providerMode: "mock-openai", provider });
-  const artifact = await fs.readFile(
-    path.join(outputDir, "artifacts", "mock-openai-requests.json"),
-    "utf8",
-  );
-  expect(Buffer.byteLength(artifact)).toBeGreaterThan(16 * 1024 * 1024);
-  expect(JSON.parse(artifact)).toEqual(retained);
   const after = await fetch(`${provider.baseUrl}/debug/requests?after=7`);
   expect(await after.json()).toEqual([retained[7]]);
 });

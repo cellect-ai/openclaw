@@ -19,7 +19,6 @@ import {
   resolveCodexMessageToolProvider,
   shouldWarnCodexDynamicToolBuildStageSummary,
 } from "./dynamic-tool-build.js";
-import { resolveGatewayOnlySkillDirs } from "./dynamic-tool-content.js";
 import {
   filterCodexDynamicTools,
   resolveCodexDynamicToolsLoadingForRuntime,
@@ -28,6 +27,7 @@ import {
   createCodexDynamicToolBridge,
   projectCodexExecutableDynamicTools,
 } from "./dynamic-tools.js";
+import { resolveGatewayOnlySkillDirs } from "./gateway-only-skills.js";
 import { buildCodexHookRequester } from "./hook-requester.js";
 import type { NativePendingChild } from "./native-subagent-monitor-types.js";
 import {
@@ -275,11 +275,17 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
         assertCurrent: connection.assertLegacyCurrent,
         startOptions: connection.appServer.start,
         authProfileId: connection.startupClientAuthProfileId,
+        authRequirement: connection.startupAuthRequirement,
         agentDir,
         config: params.config,
         timeoutMs: connection.appServer.requestTimeoutMs,
       }),
-    releaseClient: (client) => releaseCodexProbeClient(client, connection.attemptClientFactory),
+    releaseClient: (client) =>
+      releaseCodexProbeClient(
+        client,
+        connection.attemptClientFactory,
+        connection.callerOwnedAttemptClient,
+      ),
     assertCurrent: () => {
       runAbortController.signal.throwIfAborted();
       connection.assertCurrent();
@@ -365,6 +371,7 @@ export async function prepareCodexAttemptTools(runtime: CodexAttemptRuntime) {
       senderIsOwner: params.senderIsOwner,
       modelProvider: params.provider,
       modelId: params.modelId,
+      modelAuthProfileId: params.authProfileId,
       modelApi: params.model.api,
       modelContextWindowTokens: params.model.contextWindow,
       modelHasVision: params.model.input?.includes("image") ?? false,

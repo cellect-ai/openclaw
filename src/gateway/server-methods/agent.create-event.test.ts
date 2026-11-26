@@ -8,9 +8,6 @@ import {
   clearRuntimeConfigSnapshot,
   setRuntimeConfigSnapshot,
 } from "../../config/runtime-snapshot.js";
-import { pluginInvocationContext } from "../../plugins/plugin-instance-scope.js";
-import { PluginInvocationScope } from "../../plugins/plugin-invocation-scope.js";
-import { createEmptyPluginRegistry } from "../../plugins/registry-empty.js";
 import { rpcSourceTesting } from "../../sessions/session-lifecycle-admission.test-support.js";
 import { trackAsyncWork } from "../../shared/async-work-scope.js";
 import { useSessionStoreTempDirs } from "../../test-utils/session-state-cleanup.js";
@@ -56,18 +53,13 @@ vi.mock("../../agents/prepared-model-runtime.js", async (importOriginal) => {
   return {
     ...actual,
     acquireAgentRunPreparedModelRuntime: vi.fn(async (input, options) => {
-      expect(pluginInvocationContext.getStore()).toBeUndefined();
       preparedRuntimeMocks.acquired(
         getPreparedModelRuntimeBorrowedSnapshot(options.pluginGeneration),
         preparedRuntimeMocks.releaseDispatch.mock.calls.length,
       );
-      const invocation = new PluginInvocationScope(createEmptyPluginRegistry(), []);
       return {
-        run: <T>(run: () => T) => invocation.run(run),
-        [Symbol.asyncDispose]: async () => {
-          invocation.release();
-          await preparedRuntimeMocks.releaseSelected();
-        },
+        run: <T>(run: () => T): T => run(),
+        [Symbol.asyncDispose]: preparedRuntimeMocks.releaseSelected,
         snapshot: input,
         pluginGeneration: options.pluginGeneration,
       };
@@ -91,15 +83,11 @@ vi.mock("../../agents/prepared-model-runtime.js", async (importOriginal) => {
         metadataSnapshot: runtime.pluginGeneration.pluginMetadataSnapshot,
       };
       preparedRuntimeMocks.captured(snapshot);
-      const invocation = new PluginInvocationScope(createEmptyPluginRegistry(), []);
       onRuntimeLease?.({
-        run: <T>(run: () => T) => invocation.run(run),
         snapshot,
         pluginGeneration: runtime.pluginGeneration,
-        [Symbol.asyncDispose]: async () => {
-          invocation.release();
-          await preparedRuntimeMocks.releaseDispatch();
-        },
+        run: <T>(run: () => T): T => run(),
+        [Symbol.asyncDispose]: preparedRuntimeMocks.releaseDispatch,
       });
       return runtime;
     },
@@ -150,29 +138,25 @@ it.each(["immediate", "deferred workspace", "superseded catalog"] as const)(
     let execution: Promise<unknown> | undefined;
 
     const agent = expectDefined(agentHandlers.agent, "agent handler missing");
-    const callerScope = new PluginInvocationScope(createEmptyPluginRegistry(), []);
-    await callerScope.run(() =>
-      agent({
-        params: { message: "hi", sessionKey, idempotencyKey: runId },
-        respond,
-        context: {
-          trackExecution: (work: () => Promise<void>) => (execution = trackAsyncWork(work)),
-          dedupe: new Map(),
-          deps: {} as never,
-          logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } as never,
-          addChatRun: vi.fn(),
-          registerToolEventRecipient: vi.fn(),
-          getRuntimeConfig: configMocks.getRuntimeConfig,
-          getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
-          broadcastToConnIds,
-        } as never,
-        client: null,
-        isWebchatConnect: () => false,
-        req: { id: "req-agent-create-event" } as never,
-      }),
-    );
+    await agent({
+      params: { message: "hi", sessionKey, idempotencyKey: runId },
+      respond,
+      context: {
+        trackExecution: (work: () => Promise<void>) => (execution = trackAsyncWork(work)),
+        dedupe: new Map(),
+        deps: {} as never,
+        logGateway: { error: vi.fn(), warn: vi.fn(), info: vi.fn(), debug: vi.fn() } as never,
+        addChatRun: vi.fn(),
+        registerToolEventRecipient: vi.fn(),
+        getRuntimeConfig: configMocks.getRuntimeConfig,
+        getSessionEventSubscriberConnIds: () => new Set(["conn-1"]),
+        broadcastToConnIds,
+      } as never,
+      client: null,
+      isWebchatConnect: () => false,
+      req: { id: "req-agent-create-event" } as never,
+    });
 
-    callerScope.release();
     const responseCall = respond.mock.calls[0];
     await execution;
     expect(preparedRuntimeMocks.releaseDispatch).toHaveBeenCalledOnce();

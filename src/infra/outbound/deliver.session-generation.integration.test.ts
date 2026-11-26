@@ -1,10 +1,11 @@
 import { expect, it, vi } from "vitest";
 import { writeSessionEntry } from "../../config/sessions/session-accessor.sqlite-entry-store.js";
 import { replaceSessionEntrySync } from "../../config/sessions/session-accessor.sqlite-entry.js";
-import { deleteSessionEntryLifecycle } from "../../config/sessions/session-accessor.sqlite-lifecycle.js";
+import { chatRef } from "../../sessions/chat-ref.js";
 import { runSessionMutation } from "../../sessions/session-controller.lifecycle.js";
 import { openOpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { withOpenClawTestState } from "../../test-utils/openclaw-test-state.js";
+import { getDeliveryQueueEntryStatus } from "../delivery-queue-sqlite.test-support.js";
 import {
   createDeliveryBarrier,
   installQueueTestPlugin,
@@ -17,23 +18,19 @@ import { createRecoveryLog } from "./delivery-queue.test-helpers.js";
 
 const { internal: deliver } = useOutboundRuntime();
 type DeliveryOptions = Partial<Parameters<typeof deliver>[0]>;
+const queueStatus = (id: string) =>
+  getDeliveryQueueEntryStatus("outbound-session-generation-v1", id);
 
 function fixture() {
   const database = openOpenClawAgentDatabase({ agentId: "main" });
   const sessionKey = "agent:main:result-generation";
   const entry = { sessionId: "result-generation", lifecycleRevision: "original", updatedAt: 1 };
   writeSessionEntry(database, sessionKey, entry);
-  const generation = {
-    agentId: "main",
-    storePath: database.path,
-    sessionKey,
-    sessionId: entry.sessionId,
-    lifecycleRevision: entry.lifecycleRevision,
-  };
-  const update = (sessionId: string) =>
+  const generation = chatRef({ agentId: "main", storePath: database.path, sessionKey });
+  const update = (revision: string) =>
     replaceSessionEntrySync(
       { agentId: "main", storePath: database.path, sessionKey },
-      { ...entry, sessionId, updatedAt: 2, label: "unrelated later turn" },
+      { ...entry, lifecycleRevision: revision, updatedAt: 2, label: "unrelated later turn" },
     );
   installQueueTestPlugin();
   const send = vi.fn(async (_to: string, text: string) => ({ messageId: text }));
@@ -54,9 +51,9 @@ function fixture() {
   return { generation, update, send, dispatch, queued };
 }
 
-it.each(["result-generation", "rewound-generation"])(
-  "rechecks %s transcript after awaited dispatch preparation",
-  async (sessionId) => {
+it.each(["original", "reset"])(
+  "rechecks %s generation after awaited dispatch preparation",
+  async (revision) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       const { update, send, dispatch, queued } = fixture();
       const gate = createDeliveryBarrier();
@@ -72,13 +69,19 @@ it.each(["result-generation", "rewound-generation"])(
       );
       try {
         await gate.wait(operation);
-        update(sessionId);
+        update(revision);
       } finally {
         gate.release();
       }
       const result = await outcome;
-      expect(result).toMatchObject({ value: [{ messageId: "result" }] });
-      expect(send).toHaveBeenCalledOnce();
+      if (revision === "original") {
+        expect(result).toMatchObject({ value: [{ messageId: "result" }] });
+        expect(send).toHaveBeenCalledOnce();
+      } else {
+        expect(result).toHaveProperty("error");
+        expect(send).not.toHaveBeenCalled();
+        expect(queueStatus("sessions-send:held-result")).toBe("failed");
+      }
       expect(await dispatch("ordinary")).toMatchObject([{ messageId: "result" }]);
     });
   },
@@ -91,9 +94,9 @@ it("retains a completed result through temporary lifecycle unavailability", asyn
     const mutation = runSessionMutation({
       kind: "reset",
       scope: generation.storePath,
-      identities: [generation.sessionKey, generation.sessionId],
+      identities: [generation.sessionKey, "result-generation"],
       prepare: gate.hold,
-      run: () => Promise.resolve(update("result-generation")),
+      run: () => Promise.resolve(update("original")),
     });
     const deliveryIntentId = "sessions-send:transient-result";
     try {
@@ -140,7 +143,7 @@ it("retains a completed result through temporary lifecycle unavailability", asyn
   });
 });
 
-it("replays stored results across transcript edits", async () => {
+it("replays queued results to the conversation key across a reset", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const { generation, update, send } = fixture();
     const enqueue = (id: string) =>
@@ -159,7 +162,7 @@ it("replays stored results across transcript edits", async () => {
     for (const id of ids) {
       await enqueue(id);
     }
-    update("edited-generation");
+    update("original");
     const replay = () =>
       recoverPendingDeliveries({
         cfg: {},
@@ -169,52 +172,10 @@ it("replays stored results across transcript edits", async () => {
     await replay();
     expect(send.mock.calls.map((call) => call[1])).toEqual(ids);
     expect(await Promise.all(ids.map((id) => loadPendingDelivery(id)))).toEqual([null, null]);
-    await enqueue("sessions-send:revoked");
-    update("rewound-generation");
+    await enqueue("sessions-send:after-reset");
+    update("reset");
     await replay();
-    expect(send).toHaveBeenCalledTimes(3);
-    expect(await loadPendingDelivery("sessions-send:revoked")).toBeNull();
-  });
-});
-
-it("refuses queued results when recovery starts after deletion and recreation", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const { generation, send } = fixture();
-    const id = "sessions-send:deleted-conversation";
-    await enqueueDeliveryOnce(
-      {
-        channel: "matrix",
-        to: "!room:example",
-        payloads: [{ text: "old conversation result" }],
-        sessionGeneration: generation,
-        queuePolicy: "required",
-        requiresProducerClaim: true,
-      },
-      id,
-    );
-    const target = {
-      ...generation,
-      target: { canonicalKey: generation.sessionKey, storeKeys: [generation.sessionKey] },
-    };
-    expect(
-      await deleteSessionEntryLifecycle({
-        ...target,
-        archiveTranscript: false,
-        deleteTranscriptWithoutArchive: true,
-      }),
-    ).toMatchObject({ deleted: true });
-    replaceSessionEntrySync(generation, {
-      sessionId: "recreated-session",
-      lifecycleRevision: "recreated",
-      updatedAt: 3,
-    });
-    expect(await loadPendingDelivery(id)).not.toBeNull();
-    await recoverPendingDeliveries({
-      cfg: {},
-      log: createRecoveryLog(),
-      deliver: (params) => deliver({ ...params, deps: { matrix: send } }),
-    });
-    expect(send).not.toHaveBeenCalled();
-    expect(await loadPendingDelivery(id)).toBeNull();
+    expect(send.mock.calls.map((call) => call[1])).toEqual([...ids, "sessions-send:after-reset"]);
+    expect(await loadPendingDelivery("sessions-send:after-reset")).toBeNull();
   });
 });

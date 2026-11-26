@@ -234,23 +234,30 @@ export function createInternalHookEvent(
     type,
     action,
     sessionKey,
-    context: omitHookContextOperatorSources(context),
+    context:
+      "sessionEntry" in context || "previousSessionEntry" in context
+        ? omitHookContextOperatorSources(context)
+        : context,
     timestamp: new Date(),
     messages: [],
   };
 }
 
-/** Hook payloads must not disclose the private source used to recover a person. */
-function omitHookContextOperatorSources(context: Record<string, unknown>): Record<string, unknown> {
-  if (!("sessionEntry" in context) && !("previousSessionEntry" in context)) {
-    return context;
+/** Hook listeners receive session entries, never their recorded authentication sources. */
+export function omitHookSessionOperatorSources<T>(entry: T): T {
+  if (!isRecord(entry) || !Object.hasOwn(entry, "operatorSources")) {
+    return entry;
   }
+  const { operatorSources: _private, ...rest } = entry;
+  // SAFETY: removing one private key keeps every other field of the caller's entry shape.
+  return rest as T;
+}
+
+function omitHookContextOperatorSources(context: Record<string, unknown>): Record<string, unknown> {
   const next = { ...context };
   for (const key of ["sessionEntry", "previousSessionEntry"]) {
-    const entry = next[key];
-    if (isRecord(entry) && Object.hasOwn(entry, "operatorSources")) {
-      const { operatorSources: _private, ...projected } = entry;
-      next[key] = projected;
+    if (key in next) {
+      next[key] = omitHookSessionOperatorSources(next[key]);
     }
   }
   return next;

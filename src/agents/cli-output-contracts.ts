@@ -3,6 +3,7 @@ import type {
   CliBackendJsonlUsage,
   CliBackendParseJsonlEvent,
   CliBackendParseJsonlLifecycleEvent,
+  CliCompactionMeasurement,
 } from "../plugins/cli-backend.types.js";
 import type { AcceptedSessionSpawn } from "./accepted-session-spawn.js";
 import type { LiveEditDiffProgress } from "./embedded-agent-live-edit-diff.js";
@@ -53,6 +54,12 @@ export type CliOutput = {
    */
   diagnosticUsage?: CliUsage;
   toolSummary?: ToolSummaryTrace;
+  /** Completed native compactions this run observed, with the latest one's sizes. */
+  nativeCompaction?: {
+    compactionCount: number;
+    compactionTokensBefore?: number;
+    compactionTokensAfter?: number;
+  };
   errorText?: string;
   terminalFailure?: CliTerminalFailure;
   /** A caller interruption that ended the turn after usable assistant text was streamed. */
@@ -75,6 +82,8 @@ export type CliOutput = {
   didSendViaMessagingTool?: boolean;
   didDeliverSourceReplyViaMessageTool?: boolean;
   sourceReplyDelivered?: true;
+  /** A completed source reply was the last tool action; later model text is redundant. */
+  terminalSourceReplyDelivered?: true;
   messagingToolSentTexts?: string[];
   messagingToolSentMediaUrls?: string[];
   messagingToolSentTargets?: MessagingToolSend[];
@@ -106,7 +115,9 @@ export type CliThinkingProgress = {
   modelProgress?: true;
 };
 
-export type CliCompactionDelta = { phase: "start" } | { phase: "end"; completed: boolean };
+export type CliCompactionDelta =
+  | { phase: "start" }
+  | ({ phase: "end"; completed: boolean } & CliCompactionMeasurement);
 
 /** Tool-call start event reconstructed from CLI stream output. */
 export type CliToolUseStartDelta = {

@@ -22,7 +22,7 @@ import {
 import { stopSupervisedPredecessorGateway } from "./update-candidate-predecessor-stop.js";
 import type { UpdateDatabaseBackup } from "./update-database-backup.js";
 import { readUpdateDatabaseGenerations } from "./update-database-generations.js";
-import { runUpdateSqliteMigration } from "./update-doctor-migration-attribution.js";
+import { runUpdateSqliteMigration } from "./update-doctor-migration-context.js";
 import { createUpdateDoctorDatabaseWriteCapture } from "./update-doctor-result.js";
 import { createUpdateRun, getUpdateRun } from "./update-run-ledger.js";
 

@@ -75,7 +75,7 @@ export function isAgentRunDirectAbortReason(value: unknown): boolean {
 }
 
 /** Presentation fact from an explicit Stop; it never grants cancellation authority. */
-function isUserInitiatedAgentRunAbortReason(value: unknown): boolean {
+export function isUserInitiatedAgentRunAbortReason(value: unknown): boolean {
   return isAgentRunDirectAbortReason(value) && asOptionalRecord(value)?.userInitiated === true;
 }
 

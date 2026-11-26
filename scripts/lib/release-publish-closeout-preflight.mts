@@ -22,6 +22,7 @@ export function inspectPublishReleasePage(input: {
   tag: string;
   sourceSha: string;
   toolingSha: string;
+  retiredLineReason?: string;
   runGh: PublishPreflightGh;
 }) {
   // Initial publication always renders the frozen notes, including when no
@@ -68,6 +69,7 @@ export function inspectPublishReleasePage(input: {
     contributionRecordPath: notes.recordPath ?? undefined,
     regularStableVersion,
     mainPackageVersion,
+    retiredLineReason: input.retiredLineReason,
   };
   renderGithubReleaseNotes(target);
   lookup ??= readPublishPreflightRelease(input.runGh, input.repo, input.tag);

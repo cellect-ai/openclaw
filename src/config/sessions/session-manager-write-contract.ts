@@ -1,10 +1,6 @@
 import type { Result } from "@openclaw/normalization-core/result";
 import type { BashExecutionMessage, CustomMessage } from "../../agents/sessions/messages.js";
 import type {
-  CommittedCompactionBoundary,
-  PreparedCompactionAppend,
-} from "../../agents/sessions/session-compaction-persistence.types.js";
-import type {
   ModelChangeEntry,
   SessionEntry,
   SessionLeafControl,
@@ -27,6 +23,10 @@ import type {
 } from "./session-accessor.sqlite-contract.js";
 import type { SessionTranscriptRuntimeTarget } from "./session-accessor.types.js";
 import type {
+  CommittedCompactionBoundary,
+  PreparedCompactionAppend,
+} from "./session-compaction-persistence.types.js";
+import type {
   PreparedSessionTranscriptHydration as PreparedSessionTranscriptReload,
   SessionTranscriptContextSelection,
 } from "./session-history-read.types.js";
@@ -34,6 +34,7 @@ import type {
   SessionPendingInputWorkerFacts,
   SessionPendingInputWorkerReceipt,
 } from "./session-pending-input.types.js";
+import type { SessionMentionInvitation } from "./session-sharing-authority.types.js";
 import type { SessionTranscriptQuestionAnswerWorkerFacts } from "./session-transcript-read-fence.js";
 import type {
   InitialSessionTranscriptWriter,
@@ -67,6 +68,7 @@ export type InitialSessionEntryCommit = {
 };
 
 export type SessionMetadataMessageControl = {
+  mentionInvitation?: SessionMentionInvitation;
   pendingInput?: { facts: SessionPendingInputWorkerFacts; relocation?: string };
   questionAnswers?: SessionTranscriptQuestionAnswerWorkerFacts;
   freshMessageCheck?: true;

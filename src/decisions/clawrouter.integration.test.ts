@@ -11,18 +11,13 @@ import { listDecisionModels } from "../gateway/server-methods/models-list-capabi
 import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { getPluginInstance } from "../plugins/plugin-instance-scope.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
-import {
-  evaluateDecisionV2InRegistry,
-  inspectDecisionProviders,
-  prepareDecisionProviderReload,
-} from "./runtime.js";
+import { prepareDecisionProviderReload } from "./provider-reload.js";
+import { evaluateDecisionV2InRegistry } from "./runtime.js";
 import type { DecisionBatchV2 } from "./types-v2.js";
 
 const batch: DecisionBatchV2 = {
   state: { type: "text", text: "A damaged parcel" },
-  questions: {
-    damaged: { type: "boolean", instructions: "Is it damaged?" },
-  },
+  questions: { damaged: { type: "boolean", instructions: "Is it damaged?" } },
 };
 const catalog = {
   providers: [
@@ -98,14 +93,8 @@ it.each(["default", "per-agent"])(
       },
       async (state) => {
         const requests: Array<{ path?: string; auth?: string; body: unknown }> = [];
-        const requestAdmissionTimes: Array<{ path?: string; elapsedMs: number }> = [];
-        let evaluateStartedAt = 0;
         await withServer(
           (request, response) => {
-            requestAdmissionTimes.push({
-              path: request.url,
-              elapsedMs: Math.round(performance.now() - evaluateStartedAt),
-            });
             const chunks: Buffer[] = [];
             request.on("data", (chunk: Buffer) => chunks.push(chunk));
             request.on("end", () => {
@@ -129,32 +118,23 @@ it.each(["default", "per-agent"])(
             const evaluate = (agentId = "main") =>
               evaluateDecisionV2InRegistry(batch, decisionOptions({ agentId }), registry, config);
             try {
-              // Match the other source-only provider fixtures: compilation is setup,
-              // not part of the native request's unchanged operation deadline.
-              const importStartedAt = performance.now();
+              // Compile the lazy core executor and host SDK before the operation deadline starts.
+              const instance = getPluginInstance(registry.decisionProviders[0]!.host.record)!;
+              instance.loadModule("openclaw/plugin-sdk/agent-harness-runtime");
               await import("../agents/decision-inference.js");
-              const importElapsedMs = Math.round(performance.now() - importStartedAt);
               await using prepared = await prepareDecisionRuntime(
                 config,
                 "clawrouter",
                 "openai/gpt-6-luna",
                 "main",
               );
-              evaluateStartedAt = performance.now();
               const outcome = await evaluate();
-              const evaluation = {
-                importElapsedMs,
-                requestAdmissionTimes,
-                catalogRequests: requests.filter((request) => request.path === "/v1/catalog")
-                  .length,
-                evaluateElapsedMs: Math.round(performance.now() - evaluateStartedAt),
-                nativeRequests: requests.filter(
-                  (request) => request.path === "/v1/native/openai/v1/decisions",
-                ).length,
-              };
-              console.info("[clawrouter-fixture-timing] " + JSON.stringify(evaluation));
               expect(
-                listDecisionModels({ config, snapshot: prepared.snapshot.metadataSnapshot }),
+                listDecisionModels({
+                  config,
+                  snapshot: prepared.snapshot.metadataSnapshot,
+                  catalog: prepared.snapshot.modelCatalog.entries,
+                }),
               ).toContainEqual(
                 expect.objectContaining({
                   provider: "clawrouter",
@@ -165,7 +145,7 @@ it.each(["default", "per-agent"])(
               expect(
                 outcome,
                 outcome.status === "unavailable"
-                  ? `Decision unavailable: ${outcome.reason}; ${JSON.stringify(evaluation)}`
+                  ? `Decision unavailable: ${outcome.reason}`
                   : undefined,
               ).toMatchObject({
                 status: "ok",
@@ -189,7 +169,9 @@ it.each(["default", "per-agent"])(
                   ],
                 },
               });
-              expect(inspectDecisionProviders(config, registry)).toContainEqual(
+              expect(
+                registry.decisionProviders.map((entry) => entry.host.inspect(config)),
+              ).toContainEqual(
                 expect.objectContaining({ providerId: "clawrouter", activeRequests: 0 }),
               );
               const beforeDisabled = requests.length;

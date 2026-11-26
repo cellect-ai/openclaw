@@ -30,15 +30,17 @@ import { createPluginRecord } from "../src/plugins/status.test-fixtures.js";
 const endpointPreparation = vi.hoisted(() => ({
   beforeLookup: undefined as (() => void) | undefined,
 }));
-vi.mock("node:dns/promises", async (original) => {
-  const actual = await original<typeof import("node:dns/promises")>();
-  return {
-    ...actual,
+vi.mock("node:dns/promises", async (importOriginal) => {
+  const actual = await importOriginal<
+    typeof import("node:dns/promises") & { default: typeof import("node:dns/promises") }
+  >();
+  const overrides = {
     lookup: (...args: Parameters<typeof actual.lookup>) => {
       endpointPreparation.beforeLookup?.();
       return actual.lookup(...args);
     },
   };
+  return { ...actual, ...overrides, default: { ...actual.default, ...overrides } };
 });
 
 function createOriginatingRun(
@@ -367,6 +369,12 @@ describe.each(["discord", "slack"] as const)("official %s provider read boundary
         : dispatchChannelMessageAction(actionContext);
       if (mode.endsWith("allowed")) {
         expect(await invocation).not.toBeNull();
+      } else if (mode === "run-revoked-direct" || mode === "run-result-revoked-direct") {
+        // Direct dispatch retains the Gateway runtime guard and its actionable refusal.
+        await expect(invocation).rejects.toMatchObject({
+          name: "TypeError",
+          message: "The message turn has ended. Start a new turn to retry.",
+        });
       } else {
         await expect(invocation).rejects.toThrow(
           mode === "denied" ? "not allowed" : "no longer active",

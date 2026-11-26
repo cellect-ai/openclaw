@@ -59,6 +59,9 @@ def package_skill(skill_path, output_dir=None):
     if not skill_md.exists():
         print(f"[ERROR] SKILL.md not found in {skill_path}")
         return None
+    if skill_md.is_symlink():
+        print("[ERROR] SKILL.md is a symlink; replace it with a regular file before packaging.")
+        return None
 
     # Run validation before packaging
     print("Validating skill...")
@@ -69,26 +72,26 @@ def package_skill(skill_path, output_dir=None):
         return None
     print(f"[OK] {message}\n")
 
-    # Determine output location
     skill_name = skill_path.name
-    if output_dir:
-        output_path = Path(output_dir).resolve()
-        output_path.mkdir(parents=True, exist_ok=True)
-    else:
-        output_path = Path.cwd()
-
-    skill_filename = output_path / f"{skill_name}.skill"
-
     EXCLUDED_DIRS = {".git", ".svn", ".hg", "__pycache__", "node_modules"}
 
     # Create the .skill file (zip format)
     try:
+        if output_dir:
+            output_path = Path(output_dir).resolve()
+            output_path.mkdir(parents=True, exist_ok=True)
+        else:
+            output_path = Path.cwd()
+        skill_filename = output_path / f"{skill_name}.skill"
+
         archive_target = skill_filename.resolve()
         # Keep the previous artifact intact until the new ZIP is complete.
         with tempfile.TemporaryDirectory(dir=archive_target.parent) as staging_dir:
             staging_root = Path(staging_dir)
             staged_archive = staging_root / skill_filename.name
-            with zipfile.ZipFile(staged_archive, "w", zipfile.ZIP_DEFLATED) as zipf:
+            with zipfile.ZipFile(
+                staged_archive, "w", zipfile.ZIP_DEFLATED, strict_timestamps=False
+            ) as zipf:
                 # Fail on unreadable directories instead of silently omitting their contents.
                 paths = []
                 for directory, directories, filenames in os.walk(

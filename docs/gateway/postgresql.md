@@ -21,8 +21,9 @@ into the server. Review the [support matrix](#support-matrix) before deployment.
 Supported means the named flow has PostgreSQL conformance or live acceptance
 proof. It does not promise identical search ranking or latency across engines.
 Full conformance covers PostgreSQL 16–18 with UTF8 and the search extensions
-below. The additional-major qualification uses local Homebrew servers; Linux CI
-continues to run PostgreSQL 17. See the [qualification evidence](#server-major-qualification).
+below. Linux CI runs PostgreSQL 17 daily and PostgreSQL 16 and 18 weekly;
+manual qualification can run all three majors. See the
+[qualification evidence](#server-major-qualification) for the earlier Homebrew runs.
 
 | Family or surface                                 | Status                                  | Scope or remaining proof                                                                                                                                                                                                       |
 | ------------------------------------------------- | --------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
@@ -186,6 +187,9 @@ Incognito storage remains memory-only. The `memory-lancedb` plugin uses its own
 LanceDB store and is not switched by `database.engine`.
 
 Client credentials live in the fixed-local `client/credentials.sqlite` store.
+When those credentials are ready, the macOS app can prepare its local runtime
+pins without resolving the PostgreSQL connection secret. Credential recovery
+that needs the shared state store still requires a resolvable connection.
 Exec approvals go through the shared-state owner and require PostgreSQL to be
 reachable when that family uses PostgreSQL; they fail closed if it is unavailable.
 These ownership changes are complete, but the macOS app claim remains pending
@@ -195,31 +199,62 @@ When present, the local credential store is captured as a fixed-local resource,
 outside the engine families. User backups apply its credential sanitization;
 updater recovery captures it exactly.
 
-Existing-state reads, one-shot writes, and read-only agent database opens such
-as session loads reuse up to four idle PostgreSQL connections per worker.
-Writable agent database owners and maintenance opens keep dedicated connections.
-Each caller has exclusive use until close; an open transaction is never returned to
-the cache. Connection settings and the store
-namespace separate cache entries. Session setup runs when a backend connects,
-and an idle connection lost by the server is replaced at the next open. Workers
-close their cached connections after three minutes idle or on shutdown. Taking a
-connection from the cache cancels its idle timeout; checked-out connections are
-not expired by this cache.
+Read-only agent scopes retain their store identity and schema admission between
+reads, but return their PostgreSQL transport after the last borrower finishes.
+Each worker isolate caches **at most two returned transports across all stores**,
+keyed by connection and timeout settings. Reusing one for a different store changes
+its `search_path` before the next query. Same-store reuse within one second needs
+no extra query. After at least one second in the idle cache, the transport is
+validated before the next statement and reconnected if validation fails. An
+already-reported connection error also reconnects before reuse. A backend
+terminated less than one second after its last use can still fail the next
+statement if its termination notification has not arrived; user statements are
+never replayed after a connection failure.
+An open transaction is never returned to the cache; checked-out connections remain
+exclusive. Returned transports expire after three minutes idle or on worker shutdown.
+SQLite handle retention is unchanged.
+
+Budget PostgreSQL backends as the sum of each isolate's **checked-out connections
+plus up to two returned transports**, approximately `isolates × (active + 2)`.
+Here, active means a checked-out connection, including dedicated writable and
+maintenance handles, even when PostgreSQL reports it as idle. This is a retention
+bound, not a process-wide connection limit; concurrent work still needs headroom.
+
+A PostgreSQL 17 synthetic workload (four sessions per agent, startup through six
+idle minutes, then 130 history reads and a usage refresh) measured:
+
+| Agent stores | Earlier unbounded peak (role limit 200) | Bounded-retention peak (role limit 40) | Backends after six idle minutes |
+| ------------ | --------------------------------------- | -------------------------------------- | ------------------------------- |
+| 1            | 19                                      | 18                                     | 8                               |
+| 4            | 43                                      | 18                                     | 11                              |
+| 13           | 101                                     | 24                                     | 12                              |
+
+The final retirement policy was replayed at 1 and 13 stores; the 4-store row is
+from the preceding candidate. All bounded runs completed without connection-limit
+errors. The 13-store read burst peaked at 16 backends after the idle window.
+These are workload measurements, not universal limits.
+
+For one Gateway with this 1–13-store workload, use a runtime role limit of at least
+40 and server `max_connections` of at least 100, leaving room for administration
+and other clients. For multiple Gateways, budget each role separately and add their
+peak budgets, other clients, and PostgreSQL's reserved slots to `max_connections`.
+More concurrent work or plugin workers can require a larger budget even at the
+same agent count; check `pg_stat_activity` during startup and representative bursts.
 
 Gateway workers share four PostgreSQL I/O services per process. The Gateway
 starts them when it selects PostgreSQL, overlapping their initialization with
 config and plugin preparation. Replies wake only their own connection; blocked
 callers check for service failure at intervals of at most 50 milliseconds.
-This changes where connections run, not their exclusive ownership or idle retention. An
+These services multiplex connections; four services do not mean four backends. An
 externally constructed SDK or plugin worker without inherited pool endpoints
 starts its own four services on first PostgreSQL use. It emits a once-per-thread
 warning and `openclaw.postgres.pool.self-root` diagnostic with the worker label
 and thread ID. Worker diagnostics count these roots separately from physical
 I/O services, so unexpected worker creation remains visible.
 
-Usage reports retain their reader in the existing history worker between requests.
-Each report still uses a fresh read snapshot; database maintenance and worker
-shutdown close the retained connection before releasing custody.
+Usage reports retain their logical reader in the existing history worker between
+requests and return its idle transport. Each report still uses a fresh read snapshot;
+database maintenance and worker shutdown close the reader before releasing custody.
 
 ## Requirements
 
@@ -280,6 +315,15 @@ administrator has revoked those defaults, also grant the runtime role access to
 the required extension functions and types. Do not grant the runtime role
 permission to install extensions or access other installations' schemas merely
 to make admission pass.
+
+### Connection poolers
+
+Connect directly to PostgreSQL or use a pooler in **session mode**. Transaction-mode
+poolers, including PgBouncer with `pool_mode=transaction`, Supavisor transaction
+mode, and similar services, are **not supported**. The bridge relies on
+per-connection session state: `lock_timeout`, `statement_timeout`, `search_path`,
+and named prepared statements. A pooler must preserve that session for the life
+of the connection.
 
 ### Supply the connection securely
 
@@ -497,8 +541,10 @@ state directory for each Gateway. Each database may use the default
 Alternatively, independent installations can share a database with distinct
 prefixes such as `installation_a` and `installation_b`. Prefixes contain 1–27
 lowercase letters, digits, or underscores, beginning with a letter or underscore.
-New schemas have the shape `<prefix>_<store>_<uuid-prefix>`. Existing anchors keep
-their recorded namespace when the configured prefix changes.
+New schemas have the shape `<prefix>_<store>_<uuid-prefix>`. PostgreSQL reserves
+schema names starting with `pg_`, so OpenClaw rejects the prefix `pg` and prefixes
+starting with `pg_`. Existing anchors keep their recorded namespace when the
+configured prefix changes.
 
 A prefix is a naming convention, not an access-control boundary. Use separate
 roles and appropriate schema permissions if sharing a database. Extensions in
@@ -557,8 +603,8 @@ retain whole-installation behavior for homogeneous eligible families; mixed
 selections require `--family`.
 
 Mixed installations support matched backup/restore and compatible updates.
-Whole-installation backups containing any PostgreSQL store require offline
-custody. [Archive restore](#restore-all-postgresql-stores) imports captured
+Whole-installation archives containing PostgreSQL stores can be created while the
+Gateway runs; restore requires offline custody. [Archive restore](#restore-all-postgresql-stores) imports captured
 PostgreSQL stores into fresh namespaces and publishes matching local anchors.
 Updates require candidate proof of family-override support as well as support
 for each selected or retained PostgreSQL family.
@@ -567,6 +613,54 @@ Do not change a populated family's engine to evade a refusal. Configuration does
 not migrate data.
 
 ## Migrate an existing installation
+
+### Move an exact stopped source between disposable hosts
+
+An ordinary user backup intentionally sanitizes delivery and recovery state. It
+is not an exact migration source. When an external supervisor must retire a
+SQLite host before an offline migration job can run, use the native exact
+migration capture while the original host's filesystem is still available.
+Stop its Gateway and every embedded writer first; stopping the whole replica
+before capture may discard its only local files.
+
+Create a fresh verified filesystem archive for that quiesced installation, then:
+
+```bash
+openclaw database migration-capture capabilities --json
+openclaw database migration-capture create --base-archive /private/filesystem.tar.gz --output /private/migration-capsule --json
+openclaw database migration-capture restore /private/migration-capsule --manifest-sha256 <producer-manifest-digest> --target /private/new-staging --json
+```
+
+Creation requires exclusive offline ownership and an absent output directory
+outside the state/config roots. The private capsule contains the filesystem
+archive, exact native SQLite snapshots, and authored configuration/includes.
+Registered and retained native stores, fixed-local credentials, safety journals
+and daemon intent are discovered through the existing exact recovery owner.
+Codex and other opaque application files remain in the filesystem archive; their
+own processes must already have closed them. PostgreSQL sources and unsupported
+external database/config roots refuse rather than being silently omitted.
+
+Restore requires the producer's manifest digest, the same logical state/config
+paths, and a new empty staging target outside live state. It verifies the bound
+artifacts, extracts the full filesystem archive, then overlays exact native
+database/config images only inside that private staging tree. Shared/local
+credential bindings are re-admitted to the actual new file identities. Captured
+device/inode values are only source-pair evidence, never authority over a new
+host. An invalid capsule cannot publish a successful restore or mutate live
+state. The returned `archiveRoot`/`targetPath` and `exactMigration` receipt let the
+external lifecycle owner perform its existing state/config promotion before
+running the ordinary database porter.
+
+The receipt's exact profile covers the native database/configuration images.
+`verified: true` confirms artifact validation, not temporal consistency of an
+arbitrary base archive. The controller must create the base after the Gateway
+and every embedded or external writer have stopped, and keep them stopped through
+capture; matching `sourceStateDir` alone does not prove a consistent generation.
+Keep the complete capsule private; it includes credentials, claims and completion
+records deliberately absent from portable user backups. An incomplete capture
+is retained for diagnosis and never grants updater rollback or port-resume
+authority. This command does not create an active database-port manifest,
+import PostgreSQL namespaces, start services or enable multiple active Gateways.
 
 ### Prepare and port to PostgreSQL
 
@@ -667,11 +761,16 @@ the original data; never edit metadata or discard an anchor to force admission.
 
 ### Capture both server data and local state
 
-Stop the Gateway and embedded writers before capturing PostgreSQL. Then run:
+Run this while the Gateway is up or stopped:
 
 ```bash
 openclaw backup create --output ~/Backups/openclaw --verify
 ```
+
+With the Gateway running, each PostgreSQL store is exported from its own
+`REPEATABLE READ READ ONLY` snapshot while the Gateway keeps serving; stores are
+not captured at one shared instant. Sequence allocation facts are read inside
+that snapshot, so a restored store never reissues a captured row ID.
 
 The archive combines local files and SQLite images with each actual PostgreSQL
 store's matched **format-2 envelope**: original anchor, portable SQLite export image, and manifest
@@ -723,6 +822,10 @@ connection SecretRef before restoring; point that secret at the recovery server
 when recovering to another server. The live installation's selections do not
 override the archive. Restore publishes the recovered configuration last, after
 all stores and their matching anchors pass verification.
+`openclaw backup restore <archive> --target <dir> --postgres-connection-env <name>`
+imports into the server named by the DSN in that environment variable instead,
+for restore drills against a staging database; the restored configuration keeps
+the archived connection.
 `openclaw backup sqlite restore` remains SQLite-only.
 
 Git restore supports `--global`, `--agent <id>`, and `--store <id>` for recorded
@@ -768,7 +871,9 @@ procedure; there is no automatic discard or migration.
 
 ### Disaster recovery from Git
 
-Prepare explicit Git recovery points while offline, alongside the full archive:
+Prepare explicit Git recovery points alongside the full archive. Capture works
+while the Gateway runs, including scheduled Git backups; each store uses its own
+read-only snapshot, as with archive capture. Restore still requires offline custody:
 
 ```bash
 openclaw backup git init --repository ~/Backups/openclaw-git
@@ -903,6 +1008,11 @@ preserves current update-run history. Independent writes, changed recovery
 generations, or uncertain custody/commit outcomes prevent automatic restore and
 retain captures for recovery. This is not an unconditional rollback guarantee.
 See [update compatibility and recovery](/reference/database-engines#updates-and-target-compatibility).
+These captures are portable SQLite images by default. To keep their rows on the
+server and skip the local export, set `database.postgres.recoveryCaptures: "server"`;
+see [server recovery captures](/reference/database-engines#server-recovery-captures)
+for the durability and cleanup trade. [Original state captures](/cli/update/repair-and-recovery#original-state-captures)
+stay portable either way.
 
 Store owners run consecutive forward schema migrations under a writer transaction.
 Admission verifies the generated destination schema before publication. Missing
@@ -942,13 +1052,32 @@ settings. The synchronous bridge has a 120-second deadline. If it expires, the
 process root terminates the whole I/O service, resetting every connection assigned
 to that service (roughly a quarter of the process's PostgreSQL connections) with
 an unknown outcome. Runtime statements time out after 90 seconds, so the bridge
-deadline covers a wedged service or a black-holed network. Offline port and restore
+deadline covers a wedged service or a black-holed network. Schema admission and
+migration transactions (including update generation fingerprints), first-use search
+extension builds, and explicit search rebuilds use a one-hour statement timeout and
+a bridge deadline of one hour plus 30 seconds. Lock waits still stop after 60 seconds.
+The maintenance statement limit is transaction-local; nested rebuilds restore the
+caller's limit on success or rollback, and ordinary requests keep their runtime limits.
+This lets large stores finish maintenance that would otherwise fail on every retry
+at the runtime deadline. Work exceeding the maintenance budget still fails.
+Offline port and restore
 materialization use a direct asynchronous client with a one-hour statement timeout;
 those statements do not pass through the synchronous bridge.
 These are not per-operation config options.
 A timeout is a failure to investigate, not permission to delete recovery state.
 Inspect server load, locks, network, and storage, and retry only
 after resolving the reported cause.
+
+Runtime connections enable TCP keepalive with a 10-second initial delay. Each
+bridge request carries its deadline, and the I/O service closes that request's
+connection 20 seconds before the deadline (100 seconds for default runtime requests).
+Maintenance requests retain their one-hour statement budget and use the same
+deadline forwarding, including nested work and the commit callback.
+A lost response then fails only that connection instead of resetting the healthy
+connections on its I/O service. Connection setup and idle validation queries have
+a separate 10-second client timeout, leaving time to reconnect before sending
+caller SQL. A lost write or commit reply still has an unknown outcome and is never
+replayed.
 
 OpenClaw inherits the operator's `synchronous_commit` and other durability
 settings. PostgreSQL's default `on` makes acknowledged commits durable across
@@ -1173,9 +1302,15 @@ transparent replay of every operation. The shared-state worker retires its faile
 connection so a subsequent operation can reopen the store once PostgreSQL is
 available. The interrupted operation is not replayed. Recover server connectivity
 and inspect the operation's recorded result before repeating an external effect.
+State-lease heartbeats can reopen a failed connection and retry once. These
+reads and conditional renewals have no external effects; renewal still requires
+the same current owner and an unexpired row. If reconnection or the retry fails,
+the heartbeat reports lease loss as before.
+
 If another store remains unavailable, restart the Gateway through its service owner.
 
-The 120-second bridge deadline also has an unknown outcome and resets the whole
+An expired bridge deadline (120 seconds for runtime requests, one hour plus
+30 seconds for maintenance) also has an unknown outcome and resets the whole
 I/O service, including its other assigned connections. Check the recorded result
 through the owning feature after connectivity recovers; a lost reply does not
 prove that the write rolled back. Do not blindly repeat an operation that could
@@ -1195,7 +1330,13 @@ import: the agent 36 exact-path indexes support indexed lookup even before
 ## Roll back to SQLite
 
 Use the current compatible binary, keep the PostgreSQL secret available, and
-stop all writers. Run a **new reverse port**:
+stop all writers. [Installation ownership](/reference/database-engines#gateway-ownership-in-postgresql)
+requires every configurable family to use PostgreSQL. If you enabled it, set
+`database.postgres.ownership` to `state-directory` or remove the setting before
+porting any family to SQLite. If an earlier port is interrupted,
+[roll it back](#recover-an-interrupted-port) before editing the config.
+
+Run a **new reverse port**:
 
 ```bash
 openclaw database port --to sqlite --dry-run

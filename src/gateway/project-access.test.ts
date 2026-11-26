@@ -8,6 +8,7 @@ import { prepareUserProfileCatalog } from "../state/user-profile-list.js";
 import { ensureProfileForEmail } from "../state/user-profiles.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 import {
+  canRequesterUseRepositoryUrl,
   filterProjectsForRequester,
   type ProjectRequester,
   resolveRunProjectRequester,
@@ -87,8 +88,8 @@ describe("project access", () => {
     fetchImpl.mockClear();
     await expect(filterProjectsForRequester(cfg, projects, maintainer)).resolves.toEqual(projects);
     await expect(
-      filterProjectsForRequester(cfg, [project("openclaworg")], { kind: "internal" }),
-    ).resolves.toEqual([project("openclaworg")]);
+      canRequesterUseRepositoryUrl(cfg, project("openclaworg").originUrl, { kind: "internal" }),
+    ).resolves.toBe(true);
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -103,14 +104,14 @@ describe("project access", () => {
       })
       .mockResolvedValue(Response.json({ visibility: "private" }));
     vi.stubGlobal("fetch", fetchImpl);
-    const discovery = filterProjectsForRequester(cfg, [project("race")], guest);
+    const discovery = canRequesterUseRepositoryUrl(cfg, project("race").originUrl, guest);
     await started.promise;
-    const handoff = filterProjectsForRequester(cfg, [project("race")], guest, {
+    const handoff = canRequesterUseRepositoryUrl(cfg, project("race").originUrl, guest, {
       fresh: true,
     });
     held.resolve(Response.json({ visibility: "public" }));
-    await expect(handoff).resolves.toEqual([]);
-    await expect(discovery).resolves.toEqual([project("race")]);
+    await expect(handoff).resolves.toBe(false);
+    await expect(discovery).resolves.toBe(true);
   });
 
   it("binds background runs to the creator's live role", async () => {
@@ -154,19 +155,19 @@ describe("project access", () => {
     const visibility: Record<string, string | number> = { cached: "public", flaky: 403 };
     const fetchImpl = visibilityFetch(visibility);
     const check = (name = "cached", fresh = false) =>
-      filterProjectsForRequester(cfg, [project(name)], guest, { fresh });
+      canRequesterUseRepositoryUrl(cfg, project(name).originUrl, guest, { fresh });
 
-    await expect(check()).resolves.toEqual([project("cached")]);
+    await expect(check()).resolves.toBe(true);
     visibility.cached = "private";
-    await expect(check()).resolves.toEqual([project("cached")]);
-    await expect(check("cached", true)).resolves.toEqual([]);
+    await expect(check()).resolves.toBe(true);
+    await expect(check("cached", true)).resolves.toBe(false);
     visibility.cached = "public";
-    await expect(check()).resolves.toEqual([]);
+    await expect(check()).resolves.toBe(false);
     now += 10 * 60_000;
-    await expect(check()).resolves.toEqual([project("cached")]);
-    await expect(check("flaky")).resolves.toEqual([]);
+    await expect(check()).resolves.toBe(true);
+    await expect(check("flaky")).resolves.toBe(false);
     visibility.flaky = "public";
-    await expect(check("flaky")).resolves.toEqual([project("flaky")]);
+    await expect(check("flaky")).resolves.toBe(true);
     expect(fetchImpl).toHaveBeenCalledTimes(5);
 
     const enterprise = {
@@ -180,11 +181,11 @@ describe("project access", () => {
     };
     visibility.cached = "internal";
     await expect(
-      filterProjectsForRequester(enterprise, [enterpriseProject], guest),
-    ).resolves.toEqual([]);
+      canRequesterUseRepositoryUrl(enterprise, enterpriseProject.originUrl, guest),
+    ).resolves.toBe(false);
     expect(fetchImpl.mock.lastCall?.[0]).toBe(
       "https://ghe.example.test/api/v3/repos/project-access-test/cached",
     );
-    await expect(check()).resolves.toEqual([project("cached")]);
+    await expect(check()).resolves.toBe(true);
   });
 });

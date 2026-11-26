@@ -1,5 +1,4 @@
 import path from "node:path";
-import pMap from "p-map";
 import { waitForever } from "../src/cli/wait.ts";
 import { assertTestHomeSelection, combineTestHomeSelections } from "../test/test-home-policy.mts";
 import {
@@ -33,14 +32,16 @@ import { prepareVitestRuntime } from "./lib/vitest-build-prerequisites.mts";
 import { resolveVitestCacheRoot, resolveVitestCacheSlotPath } from "./lib/vitest-cache-slots.mts";
 import { collectVitestFileFilters, resolveExplicitVitestMode } from "./lib/vitest-cli-mode.mts";
 import { resolveVitestHomeSelection } from "./lib/vitest-home-selection.mts";
-import { isCiLikeEnv, shouldContinueVitestFailures } from "./lib/vitest-local-scheduling.mts";
 import { mergeVitestExitCodes, vitestInfrastructureExitCode } from "./lib/vitest-outcome.mts";
+import { runVitestPlans } from "./lib/vitest-plan-scheduling.mts";
 import {
   createVitestReportOwner,
   type VitestReportOwner,
   type VitestReportOutcome,
 } from "./lib/vitest-report-owner.mts";
 import { resolveVitestRuntimeCliSelections } from "./lib/vitest-runtime-selection.mts";
+import { getVitestWorkerDescriptor } from "./lib/vitest-worker-descriptor.mts";
+import { createVitestWorkerRun } from "./lib/vitest-worker-run.mts";
 
 const DATABASE_WORKER_CONFIG = "test/vitest/vitest.extension-database-workers.config.ts";
 const FS_MODULE_CACHE_PATH_ENV_KEY = "OPENCLAW_VITEST_FS_MODULE_CACHE_PATH";
@@ -428,25 +429,22 @@ export async function runExtensionBatchPlan(
     cwd,
   );
   const termination: { signal: NodeJS.Signals | null } = { signal: null };
+  const parentWorkers = getVitestWorkerDescriptor();
+  // One upstream loan serves every group and the final report replay.
+  const workers =
+    parentWorkers && resolveExplicitVitestMode(["run", ...vitestArgs]) !== "watch"
+      ? createVitestWorkerRun(env, parentWorkers)
+      : undefined;
   const onSignal = (value: NodeJS.Signals) => {
     termination.signal ??= value;
   };
-  if (reports) {
+  if (reports || workers) {
     process.on("SIGTERM", onSignal);
     process.on("SIGINT", onSignal);
   }
-  // Only the native joined process path can publish invocation evidence.
-  const nativeEvidence =
-    isCiLikeEnv(env) &&
-    !params.runGroup &&
-    !reports &&
-    resolveExplicitVitestMode(["run", ...vitestArgs]) !== "watch";
-  let completedInvocations = 0;
-  let failedInvocations = 0;
   let reportFailure: string | undefined;
   let exitCode = 0;
   let stopScheduling = false;
-  const started: Promise<unknown>[] = [];
   const runInvocation = async (
     invocation: ReturnType<typeof preparePlanGroup>["invocations"][number],
   ) => {
@@ -456,17 +454,11 @@ export async function runExtensionBatchPlan(
       if (!attempt) {
         const code = await runGroup({
           ...invocation,
-          ...(nativeEvidence
-            ? { evidenceLabel: `extension:${invocations.indexOf(invocation)}` }
-            : {}),
-          ...(nativeEvidence
+          workerRun: workers,
+          ...(workers
             ? {
                 onComplete: (value: VitestReportOutcome) => {
                   termination.signal ??= value.signal;
-                  if (!value.signal && (value.code === 0 || value.code === 1)) {
-                    completedInvocations++;
-                    failedInvocations += Number(value.code === 1);
-                  }
                 },
               }
             : {}),
@@ -478,6 +470,7 @@ export async function runExtensionBatchPlan(
       let outcome: VitestReportOutcome | undefined;
       const code = await runGroup({
         ...invocation,
+        workerRun: workers,
         args: attempt.args,
         onComplete(value) {
           outcome = value;
@@ -510,37 +503,23 @@ export async function runExtensionBatchPlan(
       reportFailure = "Runtime preparation failed; invocations unstarted";
       return exitCode;
     }
-    try {
-      for (const groups of phases) {
-        await pMap(
-          groups,
-          async (group) => {
-            if (
-              stopScheduling ||
-              (exitCode !== 0 &&
-                batchPlan.extensionCount > 1 &&
-                runtimePolicy !== "dual-all" &&
-                !shouldContinueVitestFailures(env)) ||
-              termination.signal
-            ) {
-              return;
-            }
-            const running = runPlanGroup(
-              group,
-              runInvocation,
-              allowEmptyAfterExclude,
-              () => stopScheduling || termination.signal !== null,
-            ).then((groupExitCode) => {
-              exitCode = mergeVitestExitCodes(exitCode, groupExitCode);
-            });
-            started.push(running);
-            await running;
-          },
-          { concurrency: parallelism, stopOnError: false },
-        );
-      }
-    } finally {
-      await Promise.allSettled(started);
+    for (const groups of phases) {
+      await runVitestPlans(groups, {
+        concurrency: parallelism,
+        shouldStop: () =>
+          stopScheduling ||
+          (exitCode !== 0 && batchPlan.extensionCount > 1 && runtimePolicy !== "dual-all") ||
+          termination.signal !== null,
+        run: async (group) => {
+          const code = await runPlanGroup(
+            group,
+            runInvocation,
+            allowEmptyAfterExclude,
+            () => stopScheduling || termination.signal !== null,
+          );
+          exitCode = mergeVitestExitCodes(exitCode, code);
+        },
+      });
     }
   } catch (error) {
     reportFailure = String(error);
@@ -551,33 +530,40 @@ export async function runExtensionBatchPlan(
     );
     throw error;
   } finally {
-    if (reports) {
+    try {
+      if (reports) {
+        try {
+          const reportCode = await reports.finish(
+            async (mergeArgs) => {
+              const args = mergeArgs.slice(1);
+              const configIndex = args.indexOf("--config");
+              const config = args.splice(configIndex, 2)[1]!;
+              let outcome: VitestReportOutcome | undefined;
+              const code = await runVitestBatch({
+                config,
+                args,
+                targets: [],
+                env,
+                homeMode,
+                workerRun: workers,
+                onComplete(value) {
+                  outcome = value;
+                  termination.signal ??= value.signal;
+                },
+              });
+              return outcome ?? { code, signal: null };
+            },
+            termination.signal ? `Cancelled by ${termination.signal}` : reportFailure,
+          );
+          exitCode = mergeVitestExitCodes(exitCode, reportCode);
+        } catch (error) {
+          exitCode = vitestInfrastructureExitCode(exitCode);
+          console.error(error);
+        }
+      }
+    } finally {
       try {
-        const reportCode = await reports.finish(
-          async (mergeArgs) => {
-            const args = mergeArgs.slice(1);
-            const configIndex = args.indexOf("--config");
-            const config = args.splice(configIndex, 2)[1]!;
-            let outcome: VitestReportOutcome | undefined;
-            const code = await runVitestBatch({
-              config,
-              args,
-              targets: [],
-              env,
-              homeMode,
-              onComplete(value) {
-                outcome = value;
-                termination.signal ??= value.signal;
-              },
-            });
-            return outcome ?? { code, signal: null };
-          },
-          termination.signal ? `Cancelled by ${termination.signal}` : reportFailure,
-        );
-        exitCode = mergeVitestExitCodes(exitCode, reportCode);
-      } catch (error) {
-        exitCode = vitestInfrastructureExitCode(exitCode);
-        console.error(error);
+        await workers?.dispose({ interrupted: Boolean(termination.signal) });
       } finally {
         process.off("SIGTERM", onSignal);
         process.off("SIGINT", onSignal);
@@ -589,24 +575,6 @@ export async function runExtensionBatchPlan(
         }
       }
     }
-  }
-  if (
-    nativeEvidence &&
-    !termination.signal &&
-    !reportFailure &&
-    completedInvocations === invocations.length &&
-    completedInvocations > 0 &&
-    (exitCode === 0 || exitCode === 1)
-  ) {
-    console.log(
-      `[shard:completion] ${JSON.stringify({
-        version: 1,
-        planned: invocations.length,
-        completed: completedInvocations,
-        invocations: invocations.length,
-        failedInvocations,
-      })}`,
-    );
   }
   return exitCode;
 }

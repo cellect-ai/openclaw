@@ -1,7 +1,9 @@
 import { isAcpRuntimeSpawnAvailable } from "../../../acp/runtime/availability.js";
 import { composeSessionSourceAssertion } from "../../../config/sessions/session-source-authority.js";
-import { resolveRunProjectRequester } from "../../../gateway/project-access.js";
-import * as execOwners from "../../../infra/exec-request-context.js";
+import {
+  readExecRequestOwners,
+  withExecRequestOwners,
+} from "../../../infra/exec-request-context.js";
 import { listRegisteredPluginAgentPromptGuidance } from "../../../plugins/command-registry-state.js";
 import { getCanonicalGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { hasDeliveryTargetFields } from "../../../utils/delivery-context.shared.js";
@@ -56,9 +58,12 @@ import {
 import { createInitialSubagentSession } from "./subagent-spawn-session-patch.js";
 import { bindThreadForSubagentSpawn } from "./subagent-spawn-thread-binding.js";
 import { emitSessionLifecycleEvent, mergeDeliveryContext } from "./subagent-spawn.runtime.js";
-import * as prompt from "./subagent-system-prompt.js";
+import { buildSubagentSpawnEnvelope } from "./subagent-system-prompt.js";
 
 export { SUBAGENT_SPAWN_CONTEXT_MODES, SUBAGENT_SPAWN_MODES } from "./subagent-spawn.types.js";
+
+const STRUCTURED_OUTPUT_INSTRUCTION =
+  'Call structured_output with {"result": <your final result>} until one payload is accepted, with at most one retry after a rejected attempt. The result value must match the requested JSON Schema. Do not call structured_output again after acceptance.';
 
 export async function spawnSubagentDirect(
   input: SpawnSubagentParams,
@@ -154,7 +159,7 @@ export async function spawnSubagentDirect(
       sandboxMode,
       swarmEnabled: swarmConfig.enabled,
       requesterSandboxed: ctx.sandboxed,
-      creatorProfileId,
+      spawnedBy: { profileId: creatorProfileId, operatorScopes: operatorAuthority?.scopes },
     });
     if (!childPlan.ok) {
       return childPlan.result;
@@ -217,10 +222,7 @@ export async function spawnSubagentDirect(
           cleanupUnlaunchedSession = () => cleanupCreatedSession(threadBindingReady);
         },
         cfg,
-        projectRequester: resolveRunProjectRequester(cfg, {
-          profileId: creatorProfileId,
-          operatorScopes: operatorAuthority?.scopes,
-        }),
+        projectRequester: childPlan.resolved.projectRequester,
         requesterAgentId,
         targetAgentId,
         childSessionKey,
@@ -324,7 +326,7 @@ export async function spawnSubagentDirect(
       return materializedAttachments;
     }
     const attachmentId = materializedAttachments?.attachmentId;
-    const envelope = prompt.buildSubagentSpawnEnvelope({
+    const envelope = buildSubagentSpawnEnvelope({
       completionMode,
       completionTarget: params.completionTarget,
       soleCollectorChild: soleImplicitMember,
@@ -342,10 +344,10 @@ export async function spawnSubagentDirect(
       acpEnabled: isAcpRuntimeSpawnAvailable({ config: cfg, sandboxed: childRuntimeSandboxed }),
       nativeCommandGuidanceLines: listRegisteredPluginAgentPromptGuidance({ surface: "subagent" }),
     });
-    let childSystemPrompt = prompt.withOutputSchema(
-      systemPrompt(envelope.systemPrompt),
-      params.outputSchema,
-    );
+    const profiledSystemPrompt = systemPrompt(envelope.systemPrompt);
+    let childSystemPrompt = params.outputSchema
+      ? `${profiledSystemPrompt}\n\n${STRUCTURED_OUTPUT_INSTRUCTION}`
+      : profiledSystemPrompt;
 
     if (materializedAttachments?.systemPromptSuffix) {
       childSystemPrompt = `${childSystemPrompt}\n\n${materializedAttachments.systemPromptSuffix}`;
@@ -527,7 +529,7 @@ export async function spawnSubagentDirect(
     // The pipeline now owns initialization, dispatch and registration failures.
     cleanupUnlaunchedSession = undefined;
     const pipelineResult = await runSpawnPipeline({
-      ...execOwners.withExecRequestOwners({}, execOwners.readExecRequestOwners(ctx)),
+      ...withExecRequestOwners({}, readExecRequestOwners(ctx)),
       adapter,
       assertActive,
       admissionReservation,

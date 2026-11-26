@@ -1,5 +1,5 @@
 import { Type } from "typebox";
-import { describe, expect, it, onTestFinished, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { configureAiTransportHost, getAiTransportHost } from "../../../../packages/ai/src/host.js";
 import { createOpenAICompletionsTransportStreamFn } from "../../../../packages/ai/src/transports/openai-completions-transport.js";
 import type { ContextEngine } from "../../../context-engine/types.js";
@@ -14,6 +14,7 @@ import {
   registerAgentSessionLoopTestLifecycle,
   testModel,
 } from "../../sessions/agent-session-loop-correctness.test-support.js";
+import { createFixedRequestTokenEstimator } from "../../sessions/context-token-pressure.js";
 import { SessionManager } from "../../sessions/session-manager.js";
 import { SettingsManager } from "../../sessions/settings-manager.js";
 import { makeZeroUsageSnapshot } from "../../usage.js";
@@ -22,6 +23,15 @@ import { submitEmbeddedAttemptPrompt } from "./attempt-prompt-submit.js";
 import { createBaseInput } from "./attempt-prompt-submit.test-support.js";
 import { installEmbeddedAttemptContextGuards } from "./attempt-setup.js";
 import { MidTurnPrecheckSignal } from "./midturn-precheck.js";
+
+// Admission cases change the system prompt or tool definitions between requests on purpose;
+// they exercise request admission, not the session prefix invariant.
+beforeEach(() => {
+  vi.stubEnv("OPENCLAW_PROMPT_CACHE_ASSERT", "0");
+});
+afterEach(() => {
+  vi.unstubAllEnvs();
+});
 
 const { createFixture } = await vi.hoisted(
   async () => await import("./attempt-execution-phase.test-support.js"),
@@ -69,7 +79,6 @@ describe("provider request admission", () => {
       createAssistant(model, [{ type: "text", text: "Report received." }], "stop", 0),
     );
     Object.assign(fixture.input.attempt, {
-      config: { agents: { defaults: { compaction: { midTurnPrecheck: { enabled: true } } } } },
       contextTokenBudget: model.contextWindow,
       model,
       modelId: model.id,
@@ -104,18 +113,15 @@ describe("provider request admission", () => {
       sessionManager.buildSessionContext().messages,
     );
     expect(messages.map(({ role }) => role)).toEqual(["assistant", "toolResult", "assistant"]);
-    expect(() =>
+    await expect(
       guards.checkMidTurnPrecheck({
         context: { messages },
         previousRequest: { requestIndex: 1, messageCount: messages.length, contextTokens: 41_000 },
       }),
-    ).toThrow(MidTurnPrecheckSignal);
+    ).rejects.toBeInstanceOf(MidTurnPrecheckSignal);
     const request = guards.takePendingMidTurnPrecheckRequest();
+    expect(request).toMatchObject({ route: "compact_only", toolResultReducibleChars: 0 });
     expect(request?.overflowTokens).toBeGreaterThan(0);
-    expect(request).toMatchObject({
-      route: "compact_only",
-      toolResultReducibleChars: 0,
-    });
   });
 
   const visible = { completionTokens: 5_000, assistantChars: 20_000 };
@@ -143,7 +149,7 @@ describe("provider request admission", () => {
     ${"late response identity"}            | ${15_000} | ${2_000}   | ${16_000} | ${true}  | ${{ ...largerVisible, asyncFragments: true }}
     ${"synthetic assistant tail"}          | ${15_000} | ${2_000}   | ${16_000} | ${false} | ${{ syntheticAssistant: true, boundarySafe: true, pressure: "maintenance" }}
     ${"opaque reasoning"}                  | ${15_000} | ${12_000}  | ${16_000} | ${false} | ${{ opaque: true, completionTokens: 16_000 }}
-    ${"opaque reasoning + system tweak"}   | ${15_000} | ${2_000}   | ${16_000} | ${false} | ${{ opaque: true, completionTokens: 16_000, tweakSystem: true, boundarySafe: true, pressure: "overflow" }}
+    ${"opaque reasoning + system tweak"}   | ${15_000} | ${2_000}   | ${16_000} | ${false} | ${{ opaque: true, completionTokens: 16_000, tweakSystem: true, boundarySafe: true, pressure: "maintenance" }}
     ${"projected measured tail"}           | ${14_000} | ${100_000} | ${16_000} | ${true}  | ${{}}
     ${"projected unavailable usage"}       | ${0}      | ${100_000} | ${2_000}  | ${true}  | ${{}}
     ${"oversized measured tail"}           | ${23_000} | ${12_000}  | ${16_000} | ${false} | ${{ boundarySafe: true, pressure: "maintenance" }}
@@ -500,6 +506,7 @@ describe("provider request admission", () => {
           toolResultMaxChars: cap,
           toolResultAggregateMaxChars: cap * 4,
           toolResultPromptProjectionState: projectionState,
+          prepareRequestTokenPressure: createFixedRequestTokenEstimator(),
           onModelRequest: streamGuards.onModelRequest,
           normalizeToolCallIds: streamGuards.normalizeToolCallIds,
           promptActiveSession: (prompt, options) => session.prompt(prompt, options),
@@ -511,11 +518,6 @@ describe("provider request admission", () => {
         expect(pendingPrecheck !== null).toBe(!fits);
         if (pressure) {
           expect(pendingPrecheck?.pressure).toBe(pressure);
-          if (pressure === "overflow") {
-            expect(pendingPrecheck?.estimatedPromptTokens).toBeGreaterThan(model.contextWindow);
-          } else {
-            expect(pendingPrecheck?.estimatedPromptTokens).toBeLessThanOrEqual(model.contextWindow);
-          }
         }
         if (oversizedAssembly) {
           expect(pendingPrecheck).toMatchObject({

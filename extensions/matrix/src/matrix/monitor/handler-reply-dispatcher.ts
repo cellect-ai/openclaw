@@ -2,6 +2,7 @@ import {
   createAcceptedChannelDeliveryResult,
   createChannelPartialDeliveryError,
   isChannelPartialDeliveryError,
+  type ChannelInboundTurnPlan,
 } from "openclaw/plugin-sdk/channel-inbound";
 import {
   createChannelDeliveryAccumulator,
@@ -104,6 +105,15 @@ function resolveVisibleMatrixReplyText(text?: string): string | undefined {
 /** Fi pairs a finished answer with the person's "Let me know" request by this field. */
 const MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY = "ai.cellect.let_me_know_answer";
 
+function resolveMatrixReplyExtraContent(payload: ReplyPayload) {
+  const content = resolveMatrixExtraContent(payload);
+  if (!content) return undefined;
+  // Only host-owned trigger and delivery facts may mark a completed reply.
+  delete content[MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY];
+  delete content[MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY];
+  return Object.keys(content).length ? content : undefined;
+}
+
 export function createMatrixReplyDispatcher(config: {
   cfg: CoreConfig;
   prefixOptions: Omit<ReturnType<typeof createReplyPrefixOptions>, "onModelSelected">;
@@ -163,6 +173,19 @@ export function createMatrixReplyDispatcher(config: {
   const progressDraftStreaming = streaming === "progress";
   // Tool, block, and final payloads are delivered separately but share one first-reply slot.
   let hasReplied = false;
+  const resolveReplyTargets = (reply: ReplyPayload) => {
+    const explicitReplyToId =
+      reply.replyToTag || reply.replyToCurrent ? reply.replyToId?.trim() : undefined;
+    const ambientReplyToId = threadTarget ?? replyToEventId;
+    return {
+      replyToId:
+        explicitReplyToId ||
+        (!threadTarget && replyToMode !== "off" && (replyToMode === "all" || !hasReplied)
+          ? (reply.replyToId ?? ambientReplyToId)?.trim()
+          : undefined),
+      fallbackReplyToId: threadTarget ? (reply.replyToId ?? ambientReplyToId)?.trim() : undefined,
+    };
+  };
   const deliverPayload = async (
     reply: ReplyPayload,
     additionalContent?: Record<string, unknown>,
@@ -188,17 +211,7 @@ export function createMatrixReplyDispatcher(config: {
       }
       return accepted.result();
     }
-    const explicitReplyToId =
-      reply.replyToTag || reply.replyToCurrent ? reply.replyToId?.trim() : undefined;
-    const ambientReplyToId = threadTarget ?? replyToEventId;
-    const replyToIdForReply =
-      explicitReplyToId ||
-      (!threadTarget && replyToMode !== "off" && (replyToMode === "all" || !hasReplied)
-        ? (reply.replyToId ?? ambientReplyToId)?.trim()
-        : undefined);
-    const fallbackReplyToId = threadTarget
-      ? (reply.replyToId ?? ambientReplyToId)?.trim()
-      : undefined;
+    const { replyToId: replyToIdForReply, fallbackReplyToId } = resolveReplyTargets(reply);
     const onDeliveryResult = (result: MatrixSendResult) => {
       // A concrete event consumes the first-reply slot even when a later event fails.
       accepted.add({ receipt: result.receipt }, result.content);
@@ -207,7 +220,7 @@ export function createMatrixReplyDispatcher(config: {
       }
     };
     // The reply's own event fields ride its first event, not a later chunk.
-    const replyContent = { ...resolveMatrixExtraContent(reply), ...additionalContent };
+    const replyContent = { ...resolveMatrixReplyExtraContent(reply), ...additionalContent };
     const extraContent = Object.keys(replyContent).length > 0 ? replyContent : undefined;
     const targets = mediaUrls.length > 0 ? mediaUrls : [undefined];
     try {
@@ -246,11 +259,14 @@ export function createMatrixReplyDispatcher(config: {
   };
   const { previewLifecycle } = draftController;
   let nonFinalReplyDeliveryFailed = false;
+  // A source-bound turn still owes its reply to the Matrix thread that admitted it.
   const isDurableFinal = (payload: ReplyPayload, info: MatrixReplyDispatchInfo) =>
-    durableProjection && !sourceReply && info.kind === "final" && !payload.isCompactionNotice;
+    (durableProjection || Boolean(sourceReply)) &&
+    info.kind === "final" &&
+    !payload.isCompactionNotice;
   const forwardBoundSourceReply = async (
     payload: ReplyPayload,
-    result: MatrixReplyDeliveryResult | void,
+    result: Pick<Partial<MatrixReplyDeliveryResult>, "visibleReplySent"> | void,
   ) => {
     if (
       !sourceReply ||
@@ -290,6 +306,36 @@ export function createMatrixReplyDispatcher(config: {
     draftController.updateDraftFromLatestFullText();
   };
 
+  const durable: ChannelInboundTurnPlan["delivery"]["durable"] = (payload, info) => {
+    if (!isDurableFinal(payload, info)) {
+      return false;
+    }
+    previewLifecycle.beginFinalDelivery();
+    const explicit = payload.replyToTag || payload.replyToCurrent;
+    const ambient =
+      !threadTarget && replyToMode !== "off" && (replyToMode === "all" || !hasReplied);
+    const replyToId = explicit
+      ? (payload.replyToId ?? null)
+      : ambient
+        ? (payload.replyToId ?? replyToEventId ?? null)
+        : null;
+    return {
+      to: `room:${roomId}`,
+      threadId: threadTarget,
+      replyToId,
+      noDirectFallback: true,
+      mediaAccess: resolveOutboundMediaAccessForConfig(cfg),
+      requiredCapabilities: deriveDurableFinalDeliveryRequirements({
+        payload,
+        replyToId,
+        threadId: threadTarget,
+        payloadTransport: true,
+        afterCommit: true,
+        reconcileUnknownSend: true,
+      }),
+    };
+  };
+
   return {
     preparePayload: async (payload: ReplyPayload, info: MatrixReplyDispatchInfo) => {
       if (!isDurableFinal(payload, info)) {
@@ -314,7 +360,7 @@ export function createMatrixReplyDispatcher(config: {
           matrix: {
             ...(threadTarget ? { fallbackReplyToId: prepared.replyToId ?? threadTarget } : {}),
             extraContent: {
-              ...resolveMatrixExtraContent(prepared),
+              ...resolveMatrixReplyExtraContent(prepared),
               ...letMeKnowAnswerContent,
               ...(source
                 ? {
@@ -331,35 +377,7 @@ export function createMatrixReplyDispatcher(config: {
         },
       };
     },
-    durable: (payload: ReplyPayload, info: MatrixReplyDispatchInfo) => {
-      if (!isDurableFinal(payload, info)) {
-        return false as const;
-      }
-      previewLifecycle.beginFinalDelivery();
-      const explicit = payload.replyToTag || payload.replyToCurrent;
-      const ambient =
-        !threadTarget && replyToMode !== "off" && (replyToMode === "all" || !hasReplied);
-      const replyToId = explicit
-        ? (payload.replyToId ?? null)
-        : ambient
-          ? (payload.replyToId ?? replyToEventId ?? null)
-          : null;
-      return {
-        to: `room:${roomId}`,
-        threadId: threadTarget,
-        replyToId,
-        noDirectFallback: true as const,
-        mediaAccess: resolveOutboundMediaAccessForConfig(cfg),
-        requiredCapabilities: deriveDurableFinalDeliveryRequirements({
-          payload,
-          replyToId,
-          threadId: threadTarget,
-          payloadTransport: true,
-          afterCommit: true,
-          reconcileUnknownSend: true,
-        }),
-      };
-    },
+    durable,
     onDelivered: async (
       payload: ReplyPayload,
       info: MatrixReplyDispatchInfo,
@@ -374,6 +392,7 @@ export function createMatrixReplyDispatcher(config: {
           { isError: payload.isError },
         );
         if (result.replyToId) hasReplied = true;
+        await forwardBoundSourceReply(payload, result);
       } else {
         previewLifecycle.observeSuppression();
       }
@@ -463,7 +482,7 @@ export function createMatrixReplyDispatcher(config: {
                     await loadMatrixSendModule();
                   const presentationContent = hasMedia
                     ? undefined
-                    : resolveMatrixExtraContent(payload);
+                    : resolveMatrixReplyExtraContent(payload);
                   const extraContent = {
                     ...(quietDraftStreaming
                       ? { [MATRIX_OPENCLAW_FINALIZED_PREVIEW_KEY]: true }
@@ -583,7 +602,7 @@ export function createMatrixReplyDispatcher(config: {
     },
     onReplyError: (err: unknown, info: { kind: "tool" | "block" | "final" }) => {
       if (info.kind === "final") {
-        if (durableProjection && !sourceReply && draftStream?.eventId()) {
+        if ((durableProjection || sourceReply) && draftStream?.eventId()) {
           previewLifecycle.retainPreview();
         }
         previewLifecycle.observeFailure();

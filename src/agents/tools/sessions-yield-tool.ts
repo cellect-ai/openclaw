@@ -7,10 +7,10 @@ import type { AnyAgentTool } from "./common.js";
 import { jsonResult, readToolStringParam } from "./common.js";
 
 const NO_PENDING_CHILD_COMPLETION_MESSAGE =
-  'No pending child completion is owned by this turn. This call did not pause the turn or schedule a continuation. Continue unfinished work; return its final result when complete. For background tools, follow their result\'s continuation instructions. Set waitFor: "message" only in a subagent session that is waiting for its requester to send it a continuation.';
+  "Nothing is pending that can resume this session: no child completion, background command with a completion notifier, or registered wake source. This call did not end or pause your turn. Reply to the user now. If work is unfinished, continue it or start the work you intended to wait for before yielding.";
 
 const WAIT_FOR_NOT_APPLIED_NOTE =
-  'waitFor: "message" was not applied: this turn yielded for its own pending child completions, which resume this session. Omit waitFor when yielding for children.';
+  'waitFor: "message" was not applied: this turn yielded for its own pending child completions or background commands, which resume this session. Omit waitFor when yielding for them.';
 
 /**
  * A harness runtime's yield claim: true when this turn owns a pending completion,
@@ -22,6 +22,8 @@ export type SessionsYieldRuntimeClaim =
 export type SessionsYieldClaimResult =
   | SessionsYieldRuntimeClaim
   | { schedulerOwned: true }
+  // The run's owner resumes it in its current operation after awaited commands exit.
+  | { resumesInPlace: true }
   | { messageWaitRegistered: boolean }
   | { error: string };
 export type SessionsYieldIntent = { waitFor?: "message"; acknowledgment?: string };
@@ -29,7 +31,12 @@ export type SessionsYieldCallback = (
   message: string,
   acknowledgment?: string,
   messageWaitRegistered?: boolean,
-  options?: { conditional: true },
+  options?: {
+    conditional?: true;
+    terminal?: import("../agent-tools.abort.js").ToolTurnHandoff;
+    /** End the turn but keep the reply operation open for the run's in-place resume. */
+    resumesInPlace?: true;
+  },
 ) => Promise<void> | void;
 
 /** Only an active child with an armed wake resumes this session after the turn ends. */
@@ -132,8 +139,9 @@ export function createSessionsYieldTool(opts?: {
     // A yield waits, so it must pause an async-tool response: the next request then
     // delivers this response's async results ahead of the yield result.
     async: false,
+    repeatable: true,
     description:
-      'End this turn to await pending child completions, not submit a final result. Return completed work normally. Does not message other sessions. Omit waitFor when yielding for your own children; their completions resume this session. Set waitFor:"message" only when a subagent has no pending children and waits for its requester to send it a continuation. For background tools, follow their continuation instructions. Automation turns end here; the scheduler delivers child output under the job delivery policy. Collector runs require explicit collection instead.',
+      'End this turn only to await registered child completions or wake-armed background commands (their exit resumes this session). If nothing can resume you, reply to the user now; this tool will keep your turn open. Return completed work normally. Does not message other sessions. Omit waitFor when yielding for your own children. Set waitFor:"message" only for an active subagent task waiting for its requester, not a new human conversation in a kept child session. For background tools, follow their continuation instructions. Automation turns end here; the scheduler delivers child output under the job delivery policy. Collector runs require explicit collection instead.',
     parameters: SessionsYieldToolSchema,
     execute: async (_toolCallId, args) => {
       const params = args as Record<string, unknown>;
@@ -186,18 +194,18 @@ export function createSessionsYieldTool(opts?: {
           status: "nothing_pending",
           message:
             waitFor === "message"
-              ? "No pending completion or eligible active native task is owned by this turn. This call did not pause the turn or schedule a continuation. Continue unfinished work; return its final result when complete."
+              ? `No active native task registered this message wait. ${NO_PENDING_CHILD_COMPLETION_MESSAGE}`
               : NO_PENDING_CHILD_COMPLETION_MESSAGE,
         });
       }
       // The runtime owns the actual pause/end-turn behavior; this tool records intent.
-      await opts.onYield(
-        message,
-        acknowledgment,
+      const messageWaitRegistered =
         typeof claim === "object" && "messageWaitRegistered" in claim
           ? claim.messageWaitRegistered
-          : undefined,
-      );
+          : undefined;
+      await (typeof claim === "object" && "resumesInPlace" in claim
+        ? opts.onYield(message, acknowledgment, messageWaitRegistered, { resumesInPlace: true })
+        : opts.onYield(message, acknowledgment, messageWaitRegistered));
       return jsonResult({
         status: "yielded",
         ...(acknowledgment ? { acknowledgment } : {}),

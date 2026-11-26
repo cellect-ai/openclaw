@@ -62,7 +62,7 @@ export function resolveSessionTranscriptsDirForAgent(
 }
 
 export function resolveDefaultSessionStorePath(agentId: string): string {
-  return path.join(resolveSessionTranscriptsDirForAgent(agentId), "sessions.json");
+  return `${resolveSessionTranscriptsDirForAgent(agentId)}${path.sep}sessions.json`;
 }
 
 /** Store selectors and explicit databases share the owning agent's session artifact directory. */
@@ -119,27 +119,36 @@ function resolveSessionsDir(opts?: SessionFilePathOptions): string {
   return resolveSessionTranscriptsDirForAgent(opts?.agentId ?? "");
 }
 
-type SessionPathFilesystem = {
-  realpath: (file: string) => string | undefined;
-  exists: (file: string) => boolean;
-};
+type SessionPathProbe = { kind: "realpath" | "existing"; path: string };
+type SessionPathResolution<T> = Generator<SessionPathProbe, T, string | undefined>;
 
-const sessionPathFilesystem: SessionPathFilesystem = {
-  realpath: (file) => safeRealpathSync(file) ?? undefined,
-  exists: (file) => fs.existsSync(file),
-};
+// Keep containment and restored-root policy identical for sync and async callers.
+function resolveSessionPathSync<T>(steps: SessionPathResolution<T>): T {
+  let step = steps.next();
+  while (!step.done) {
+    const probe = step.value;
+    step = steps.next(
+      probe.kind === "realpath"
+        ? (safeRealpathSync(probe.path) ?? undefined)
+        : fs.existsSync(probe.path)
+          ? probe.path
+          : undefined,
+    );
+  }
+  return step.value;
+}
 
-function resolvePathFromAgentSessionsDir(
+function* resolvePathFromAgentSessionsDir(
   agentSessionsDir: string,
   candidateAbsPath: string,
-  filesystem: SessionPathFilesystem,
-): string | undefined {
+): SessionPathResolution<string | undefined> {
   const agentBase =
-    filesystem.realpath(path.resolve(agentSessionsDir)) ?? path.resolve(agentSessionsDir);
+    (yield { kind: "realpath", path: path.resolve(agentSessionsDir) }) ??
+    path.resolve(agentSessionsDir);
   const relative = path.relative(agentBase, candidateAbsPath);
   // The caller already resolved the candidate; resolve this fallback root for containment.
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
-    return resolveRerootedSessionPath(agentBase, candidateAbsPath, filesystem);
+    return yield* resolveRerootedSessionPath(agentBase, candidateAbsPath);
   }
   return path.resolve(agentBase, relative);
 }
@@ -150,11 +159,10 @@ function resolvePathFromAgentSessionsDir(
 // `agents/<id>/sessions/<suffix>` tail onto the current sessions dir, but only
 // when the file exists there: genuine cross-root layouts keep their foreign
 // path via the structural fallback.
-function resolveRerootedSessionPath(
+function* resolveRerootedSessionPath(
   agentSessionsDir: string,
   candidateAbsPath: string,
-  filesystem: SessionPathFilesystem,
-): string | undefined {
+): SessionPathResolution<string | undefined> {
   const parsed = resolveAgentSessionsPathParts(candidateAbsPath);
   if (!parsed) {
     return undefined;
@@ -168,7 +176,7 @@ function resolveRerootedSessionPath(
   if (!contained || contained.startsWith("..") || path.isAbsolute(contained)) {
     return undefined;
   }
-  return filesystem.exists(rerooted) ? rerooted : undefined;
+  return yield { kind: "existing", path: rerooted };
 }
 
 function resolveSiblingAgentSessionsDir(
@@ -237,58 +245,57 @@ function resolveStructuralSessionFallbackPath(
   return path.normalize(path.resolve(candidateAbsPath));
 }
 
-function resolvePathWithinSessionsDir(
+function* resolvePathWithinSessionsDir(
   sessionsDir: string,
   candidate: string,
   opts?: { agentId?: string },
-  filesystem: SessionPathFilesystem = sessionPathFilesystem,
-): string {
+): SessionPathResolution<string> {
   const trimmed = candidate.trim();
   if (!trimmed) {
     throw new Error("Session file path must not be empty");
   }
   const resolvedBase = path.resolve(sessionsDir);
-  const realBase = filesystem.realpath(resolvedBase) ?? resolvedBase;
+  const realBase = (yield { kind: "realpath", path: resolvedBase }) ?? resolvedBase;
   // Normalize absolute paths that are within the sessions directory.
   // Older versions stored absolute sessionFile paths in sessions.json;
   // convert them to relative so the containment check passes.
   const realTrimmed = path.isAbsolute(trimmed)
-    ? (filesystem.realpath(trimmed) ?? trimmed)
+    ? ((yield { kind: "realpath", path: trimmed }) ?? trimmed)
     : trimmed;
   const normalized = path.isAbsolute(realTrimmed)
     ? path.relative(realBase, realTrimmed)
     : realTrimmed;
   if (normalized.startsWith("..") && path.isAbsolute(realTrimmed)) {
-    const tryAgentFallback = (agentId: string): string | undefined => {
+    const tryAgentFallback = function* (
+      agentId: string,
+    ): SessionPathResolution<string | undefined> {
       const normalizedAgentId = normalizeAgentId(agentId);
       const siblingSessionsDir = resolveSiblingAgentSessionsDir(realBase, normalizedAgentId);
       if (siblingSessionsDir) {
-        const siblingResolved = resolvePathFromAgentSessionsDir(
+        const siblingResolved = yield* resolvePathFromAgentSessionsDir(
           siblingSessionsDir,
           realTrimmed,
-          filesystem,
         );
         if (siblingResolved) {
           return siblingResolved;
         }
       }
-      return resolvePathFromAgentSessionsDir(
+      return yield* resolvePathFromAgentSessionsDir(
         resolveSessionTranscriptsDirForAgent(normalizedAgentId),
         realTrimmed,
-        filesystem,
       );
     };
 
     const explicitAgentId = opts?.agentId?.trim();
     if (explicitAgentId) {
-      const resolvedFromAgent = tryAgentFallback(explicitAgentId);
+      const resolvedFromAgent = yield* tryAgentFallback(explicitAgentId);
       if (resolvedFromAgent) {
         return resolvedFromAgent;
       }
     }
     const extractedAgentId = extractAgentIdFromAbsoluteSessionPath(realTrimmed);
     if (extractedAgentId) {
-      const resolvedFromPath = tryAgentFallback(extractedAgentId);
+      const resolvedFromPath = yield* tryAgentFallback(extractedAgentId);
       if (resolvedFromPath) {
         return resolvedFromPath;
       }
@@ -309,20 +316,11 @@ function resolvePathWithinSessionsDir(
   return path.resolve(realBase, normalized);
 }
 
-export function resolveSessionFilePathCore(
+export function* resolveSessionFilePathCoreSteps(
   sessionId: string,
   entry?: object,
   opts?: SessionFilePathOptions,
-): string {
-  return resolveSessionFilePathWithFilesystem(sessionId, entry, opts, sessionPathFilesystem);
-}
-
-function resolveSessionFilePathWithFilesystem(
-  sessionId: string,
-  entry: object | undefined,
-  opts: SessionFilePathOptions | undefined,
-  filesystem: SessionPathFilesystem,
-): string {
+): SessionPathResolution<string> {
   const sessionsDir = resolveSessionsDir(opts);
   const candidate =
     entry && "sessionFile" in entry && typeof entry.sessionFile === "string"
@@ -333,83 +331,22 @@ function resolveSessionFilePathWithFilesystem(
       return candidate;
     }
     try {
-      return resolvePathWithinSessionsDir(
-        sessionsDir,
-        candidate,
-        { agentId: opts?.agentId },
-        filesystem,
-      );
+      return yield* resolvePathWithinSessionsDir(sessionsDir, candidate, {
+        agentId: opts?.agentId,
+      });
     } catch {
       // Keep handlers alive when persisted metadata is stale/corrupt.
     }
   }
-  return resolvePathWithinSessionsDir(
-    sessionsDir,
-    `${validateSessionId(sessionId)}.jsonl`,
-    undefined,
-    filesystem,
-  );
+  return yield* resolvePathWithinSessionsDir(sessionsDir, `${validateSessionId(sessionId)}.jsonl`);
 }
 
-/** Gather bounded filesystem facts before applying the shared containment policy. */
-export async function resolveSessionFilePathCoreAsync(
+export function resolveSessionFilePathCore(
   sessionId: string,
-  entry?: { sessionFile?: string },
+  entry?: object,
   opts?: SessionFilePathOptions,
-): Promise<string> {
-  const sessionsDir = resolveSessionsDir(opts);
-  const candidate = entry?.sessionFile?.trim();
-  if (candidate?.startsWith(SQLITE_TRANSCRIPT_TARGET_PREFIX)) {
-    return candidate;
-  }
-  const realpaths = new Map<string, string | undefined>();
-  const prepareRealpath = async (file: string): Promise<string> => {
-    const resolved = await fs.promises.realpath(file).catch(() => undefined);
-    realpaths.set(file, resolved);
-    return resolved ?? file;
-  };
-  const base = await prepareRealpath(path.resolve(sessionsDir));
-  const absoluteCandidate =
-    candidate && path.isAbsolute(candidate) ? await prepareRealpath(candidate) : undefined;
-  const existing = new Set<string>();
-  if (absoluteCandidate) {
-    const agentIds = new Set([
-      opts?.agentId?.trim(),
-      extractAgentIdFromAbsoluteSessionPath(absoluteCandidate),
-    ]);
-    const roots = new Set<string>();
-    for (const agentId of agentIds) {
-      if (!agentId) {
-        continue;
-      }
-      const sibling = resolveSiblingAgentSessionsDir(base, agentId);
-      if (sibling) {
-        roots.add(sibling);
-      }
-      roots.add(resolveSessionTranscriptsDirForAgent(agentId));
-    }
-    const parsed = resolveAgentSessionsPathParts(absoluteCandidate);
-    await Promise.all(
-      [...roots].map(async (root) => {
-        const realRoot = await prepareRealpath(path.resolve(root));
-        if (parsed) {
-          const rerooted = path.resolve(realRoot, ...parsed.parts.slice(parsed.sessionsIndex + 1));
-          if (
-            await fs.promises.access(rerooted).then(
-              () => true,
-              () => false,
-            )
-          ) {
-            existing.add(rerooted);
-          }
-        }
-      }),
-    );
-  }
-  return resolveSessionFilePathWithFilesystem(sessionId, entry, opts, {
-    realpath: (file) => realpaths.get(file),
-    exists: (file) => existing.has(file),
-  });
+): string {
+  return resolveSessionPathSync(resolveSessionFilePathCoreSteps(sessionId, entry, opts));
 }
 
 export class SessionStoreAgentIdRequiredError extends Error {
@@ -430,8 +367,7 @@ export function resolveSessionStorePathCore(
     if (!opts?.agentId?.trim()) {
       throw new SessionStoreAgentIdRequiredError();
     }
-    const agentId = normalizeAgentId(opts.agentId);
-    return path.join(resolveSessionTranscriptsDirForAgent(agentId, env, homedir), "sessions.json");
+    return `${resolveSessionTranscriptsDirForAgent(opts.agentId, env, homedir)}${path.sep}sessions.json`;
   }
   let expandedStore = store;
   if (expandedStore.includes("{agentId}")) {

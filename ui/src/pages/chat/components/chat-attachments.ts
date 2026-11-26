@@ -93,14 +93,14 @@ export function appendChatAttachmentFiles(
     return 0;
   }
   if (!uploadsEnabled(props.uploadConfig)) {
-    showToast({ message: uploadsDisabledMessage() });
+    showToast({ severity: "error", message: uploadsDisabledMessage() });
     return 0;
   }
   const unsupported = props.imagesOnly
     ? candidates.filter((file) => !file.type.startsWith("image/"))
     : [];
   if (unsupported.length) {
-    showToast({ message: t("chat.attachments.imagesOnly") });
+    showToast({ severity: "error", message: t("chat.attachments.imagesOnly") });
   }
   const reads = props.attachmentReads ?? new ChatAttachmentReadLifecycle(() => {});
   const stagedBytes = stagedAttachmentBytes(props);
@@ -178,10 +178,9 @@ export function handleChatAttachmentPaste(e: ClipboardEvent, props: ChatAttachme
       (item) => item.kind === "file" || item.type.startsWith("image/"),
     );
     const text = e.clipboardData.getData("text/plain");
-    const hasInlineImage = /^data:image\//i.test(text.trim());
-    if (hasFiles || hasInlineImage) {
+    if (hasFiles || /^data:image\//i.test(text.trim())) {
       e.preventDefault();
-      showToast({ message: uploadsDisabledMessage() });
+      showToast({ severity: "error", message: uploadsDisabledMessage() });
       return;
     }
     // Large text remains ordinary native paste instead of becoming a file.
@@ -198,7 +197,8 @@ export function handleChatAttachmentPaste(e: ClipboardEvent, props: ChatAttachme
     imageFiles.push(pasted.file);
   }
   if (imageFiles.length === 0) {
-    // Clipboard text remains user input, including dropped native paste recovery.
+    // Clipboard text is user input regardless of length; file conversion would
+    // route it through document extraction's untrusted external-content boundary.
     recoverDroppedTextPaste(e, text ?? "");
     return;
   }

@@ -1,10 +1,10 @@
-import { randomUUID } from "node:crypto";
 import { stat } from "node:fs/promises";
 import { cloneEnvWithPlatformSemantics } from "../config/config-env-vars.js";
 import { createSessionWorkerExecutionSource } from "../config/sessions/session-worker-execution-source.js";
 import { resolveStateDir } from "../config/state-dir.js";
 import { runtimeProcessEntrypoints } from "../infra/runtime-process-entrypoints.js";
 import { resolveRuntimeWorkerUrl } from "../infra/runtime-worker-url.js";
+import { getArtifactPreservingSqliteRead } from "../infra/sqlite-snapshot-source.js";
 import {
   assertDatabaseFileIdentity,
   readDatabasePathIdentity,
@@ -13,7 +13,10 @@ import type { SqliteWorkerStore } from "../infra/sqlite-worker-store.js";
 import type { OpenClawAgentDatabaseOptions } from "../state/openclaw-agent-db-contract.js";
 import { registerOpenClawAgentDatabaseAsyncResource } from "../state/openclaw-agent-db-resources.js";
 import { captureOpenClawAgentDatabaseExecutionAsync } from "../state/openclaw-agent-execution.js";
-import { executeOpenClawAgentWorkerPublication } from "../state/openclaw-agent-worker-store.js";
+import {
+  openOpenClawAgentSqliteWorkerStore,
+  type OpenClawAgentSqliteWorkerStore,
+} from "../state/openclaw-agent-worker-store.js";
 import { runOpenClawAgentWorkerWrite } from "../state/openclaw-agent-write-admission.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { captureOpenClawStateReadContext } from "../state/openclaw-state-worker-context.js";
@@ -34,51 +37,33 @@ export async function withPluginModelCatalogWorker<T>(
   ) => Promise<T>,
 ): Promise<T> {
   const execution = await captureOpenClawAgentDatabaseExecutionAsync(options);
-  const source = createSessionWorkerExecutionSource(
-    () => execution.assertCurrent(),
-    "Catalog database publication authority expired",
-  );
+  let worker: OpenClawAgentSqliteWorkerStore<PluginModelCatalogCredentialOperations> | undefined;
   try {
-    return await runOpenClawAgentWorkerWrite(
+    if (prepare) {
+      await runOpenClawAgentWorkerWrite(options, () =>
+        execution.prepare(
+          createSessionWorkerExecutionSource(
+            () => execution.assertCurrent(),
+            "Catalog database preparation authority expired",
+          ),
+        ),
+      );
+    }
+    worker = await openOpenClawAgentSqliteWorkerStore<PluginModelCatalogCredentialOperations>(
       options,
-      async () => {
-        if (prepare) {
-          await execution.prepare(source);
-        }
-        const result = await execution.runExisting(source, async (scope) => ({
-          value: await operation({
-            execute: (command, commandOptions) =>
-              executeOpenClawAgentWorkerPublication<
-                PluginModelCatalogCredentialOperations,
-                typeof command.type
-              >(
-                scope,
-                {
-                  id: randomUUID(),
-                  moduleUrl: resolveRuntimeWorkerUrl(
-                    runtimeProcessEntrypoints.pluginModelCatalogCredentials,
-                  ).href,
-                  input: undefined,
-                  command,
-                },
-                commandOptions,
-              ),
-          }),
-        }));
-        if (!result) {
-          throw new Error("Agent database disappeared before catalog publication");
-        }
-        return result.value;
+      { execution },
+      {
+        moduleUrl: resolveRuntimeWorkerUrl(runtimeProcessEntrypoints.pluginModelCatalogCredentials),
+        input: undefined,
       },
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      undefined,
-      execution.capturedIdentity,
     );
+    return await worker.run(operation, () => execution.assertCurrent());
   } finally {
-    await execution.release();
+    try {
+      await worker?.close();
+    } finally {
+      await execution.release();
+    }
   }
 }
 
@@ -118,9 +103,12 @@ export async function loadPersistedPluginModelCatalogs(
       if (!identity.key.startsWith("file:")) {
         return [];
       }
+      const inspection = getArtifactPreservingSqliteRead(options.path);
       const catalogs = await readPluginModelCatalogsInWorker(
         {
           ...options,
+          path: inspection?.canonicalPath ?? options.path,
+          expectedIdentity: inspection,
           env: { ...env, OPENCLAW_STATE_DIR: resolveStateDir(env) },
           pluginIds: pluginIds && [...pluginIds],
         },

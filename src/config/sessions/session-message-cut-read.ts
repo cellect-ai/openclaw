@@ -14,7 +14,7 @@ import { projectTranscriptPayloadNavigationSql } from "./session-model-context-p
 import { transcriptEventReadBytesSql } from "./session-transcript-read-bytes.js";
 import { transcriptEventJsonSql, transcriptEventNavigationSql } from "./transcript-payload.js";
 
-const SESSION_MESSAGE_CUT_MAX_BYTES = 8 * 1024 * 1024;
+export const SESSION_MESSAGE_CUT_MAX_BYTES = 8 * 1024 * 1024;
 
 /** Keep message bodies out of the tree planner and hydrate only the row being copied. */
 export function readSessionMessageCut(
@@ -57,7 +57,6 @@ export function readSessionMessageCut(
     );
     const read = (seq: number): TranscriptEvent => JSON.parse(readRow(seq)!.event_json);
     let bytes = 0;
-    let payloadBytes = 0;
     for (const row of rows) {
       if (
         row.event_json === null ||
@@ -68,7 +67,6 @@ export function readSessionMessageCut(
           "Session history navigation exceeds its safe memory budget (8 MiB per event, 8 MiB of navigation, 100000 events); export the transcript to inspect it without changing this session.",
         );
       }
-      payloadBytes += row.payload_bytes;
       let event: TranscriptEvent = JSON.parse(row.event_json);
       // The header's lineage and the selected user's editor content are part of the result.
       if (isRecord(event) && (event.type === "session" || event.id === entryId)) {
@@ -88,7 +86,6 @@ export function readSessionMessageCut(
     }
     return {
       events,
-      payloadBytes,
       *hydrate(selected: readonly TranscriptEvent[]) {
         for (const event of selected) {
           const originalSeq = sequences.get(event);

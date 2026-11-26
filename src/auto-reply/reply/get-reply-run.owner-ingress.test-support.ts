@@ -16,6 +16,7 @@ export function createOwnerIngress(kind: string, channel: string, body: string, 
     ...turn(body, {
       ...createProviderSurface(channel),
       ChatType: "group",
+      AccountId: kind === "telegram-named-account" ? "work" : undefined,
       SenderId:
         kind === "owner-alias" || kind === "discord-owner-alias" ? "transport-alias" : "owner-1",
       InboundEventKind: kind === "room-event" ? "room_event" : undefined,
@@ -43,7 +44,11 @@ export function bindOwnerIngress(
     return;
   }
   bindCommandOwnerAuthority(params.sessionCtx, {
-    channelPrincipal: { channelId: channel, accountId: "default", senderId: "owner-1" },
+    channelPrincipal: {
+      channelId: channel,
+      accountId: kind === "telegram-named-account" ? "work" : "default",
+      senderId: "owner-1",
+    },
     isCurrent,
   });
 }

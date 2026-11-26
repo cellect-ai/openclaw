@@ -1,5 +1,5 @@
 import { executeSqliteQueryTakeFirstSync } from "../../infra/kysely-sync.js";
-import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db-contract.js";
+import type { OpenClawAgentDatabase } from "../../state/openclaw-agent-db.js";
 import { getSessionKysely } from "./session-accessor.sqlite-scope.js";
 import { parseSessionEntryJson } from "./session-accessor.sqlite-status.js";
 import { canonicalSessionKeyMigrationRequiredError } from "./session-canonical-key.js";

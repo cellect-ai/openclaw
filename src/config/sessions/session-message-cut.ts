@@ -11,6 +11,7 @@ import {
 } from "./session-accessor.sqlite-deletion.js";
 import type { retainPreparedSessionSharingFacts } from "./session-accessor.sqlite-entry-cache-publication-state.js";
 import { createSessionIdentityResultPublisher } from "./session-accessor.sqlite-identity.js";
+import { withSessionEntryWorker } from "./session-accessor.sqlite-replacement-worker.js";
 import { toDatabaseOptions, type ResolvedSqliteScope } from "./session-accessor.sqlite-scope.js";
 import type { SessionMessageCutMutationParams } from "./session-accessor.types.js";
 import { restoreSessionColdTranscript } from "./session-cold-storage.js";
@@ -96,8 +97,34 @@ export async function mutateSessionHistoryInWorker(
     assertCurrent,
   );
   assertCurrent();
-  if (intent.mode !== "fork") {
-    const prepared = await prepareMessageCutLocalWorkspace(
+  const mode = intent.mode;
+  if (mode !== "fork") {
+    if (preparedEntry.worktree) {
+      // The precheck reads the same indexed projection the commit uses, in the
+      // database's own worker; a vanished store simply defers to that commit.
+      const refused = await withSessionEntryWorker(
+        database,
+        undefined,
+        assertCurrent,
+        async (reader, workerSource) =>
+          reader.runExisting(workerSource, (worker) =>
+            worker.execute({
+              type: "session.messageCut.preflight",
+              input: {
+                sessionId: preparedEntry.sessionId,
+                entry: preparedEntry,
+                intent: { ...preparedIntent, mode },
+                sourceRepositoryWorkspaceId: preconditions?.sourceRepositoryWorkspaceId,
+              },
+            }),
+          ),
+      );
+      assertCurrent();
+      if (refused) {
+        return refused;
+      }
+    }
+    preparedIntent.settledLocalWorkspace = await prepareMessageCutLocalWorkspace(
       {
         agentId: resolved.agentId,
         env: database.env,
@@ -106,15 +133,7 @@ export async function mutateSessionHistoryInWorker(
       },
       preparedEntry,
       assertCurrent,
-      {
-        intent: preparedIntent,
-        sourceRepositoryWorkspaceId: preconditions?.sourceRepositoryWorkspaceId,
-      },
     );
-    if (prepared.status !== "settled") {
-      return prepared;
-    }
-    preparedIntent.settledLocalWorkspace = prepared.workspace;
   }
   const prepareContext = (run: (assertCurrent: () => void) => Promise<SessionMessageCutResult>) =>
     intent.mode === "fork"

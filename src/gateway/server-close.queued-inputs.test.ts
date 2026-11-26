@@ -16,6 +16,7 @@ import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths
 import { registerChatAbortController } from "./chat-abort.js";
 import { createGatewayMethodRegistry } from "./methods/registry.js";
 import { retainGatewayOperatorRun } from "./operator-run-cancellation.js";
+import { captureQueuedOperatorRecoverySource } from "./operator-run-recovery-source.js";
 import { getGatewayControlUiIngressHost } from "./remote-control-ui-ingress-host.js";
 import { createGatewayControlUiIngressFactory } from "./remote-control-ui-ingress.js";
 import { readClosedDatabase } from "./server-close.lifecycle.test-support.js";
@@ -108,9 +109,12 @@ it.for([false, true])(
               entry: registration.entry,
             });
             assert(retained.authority);
+            const source = captureQueuedOperatorRecoverySource(retained.authority);
+            assert(source?.kind === "gateway");
             pending = await stageSessionPendingInput(scope, {
               runId,
               message,
+              recoverySource: source,
               assertCurrent: retained.authority.assertCurrent,
             });
             assert(pending);
@@ -150,6 +154,10 @@ it.for([false, true])(
         signal: grant.signal,
         assertCurrent: () => grant.signal.throwIfAborted(),
       };
+      await factory.registerPrincipalRecovery?.(async () => ({
+        ...principal,
+        recoveryId: "queued-ingress-grant",
+      }));
       const binding = await factory.bindPrincipal(principal);
       expect(await binding.request(method, {})).toEqual({ status: "accepted" });
       assert(pending && registration?.entry && retained?.authority);
@@ -184,6 +192,27 @@ it.for([false, true])(
       );
       const marker = JSON.parse(String(session?.entry_json)).resumeAfterRestart;
       expect(marker.queuedInputIds).toEqual(revoke ? [] : [inputId]);
+      if (revoke) {
+        expect(marker.queuedInputSources).toBeUndefined();
+      } else {
+        expect(marker.queuedInputSources).toMatchObject({
+          [inputId]: {
+            runId,
+            source: {
+              kind: "gateway",
+              snapshot: {
+                sourceIngress: "principal",
+                scopes: ["operator.read", "operator.write"],
+                ingress: {
+                  pluginId: fixture.pluginId,
+                  audienceId: principal.audienceId,
+                  recoveryId: "queued-ingress-grant",
+                },
+              },
+            },
+          },
+        });
+      }
       const [stored] = readClosedDatabase(
         databasePath,
         "SELECT state, message_json, run_id FROM session_pending_inputs WHERE input_id = ?",

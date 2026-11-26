@@ -79,7 +79,7 @@ it.for(
     (["native", "dispatched"] as const).map((publication) => ({ action, publication })),
   ),
 )(
-  "accepts $action from a synchronous $publication final listener",
+  "accepts $action from a synchronous $publication final listener but refuses the live turn",
   async ({ action, publication }, { signal }) => {
     const fixture = await createFixture({ active: false });
     const runId = `terminal-${publication}-${action}`;
@@ -131,42 +131,34 @@ it.for(
       operation!.freezeAbort();
       emitAgentEvent({ runId, stream: "assistant", data: { text: "Final answer" } });
       emitAgentEvent({ runId, stream: "lifecycle", data: { phase: "end" } });
-      return undefined;
+      return { text: "Final answer" };
     });
     const mutate = createMutation(fixture, action);
     const invoke = (respond: RespondFn) => clientRequest.runInAsyncScope(() => mutate(respond));
     const finalResponse = vi.fn<RespondFn>();
     let mutation: Promise<void> | undefined;
-    let finalPublished = false;
     const settle = settlementOwner.waitForTerminalSessionRunSettlement;
-    vi.spyOn(settlementOwner, "waitForTerminalSessionRunSettlement").mockImplementation(
-      (params) => {
-        const result = settle(params);
-        if (finalPublished) {
-          settlementEntered.resolve();
-        }
-        return result;
-      },
-    );
     vi.mocked(fixture.context.broadcast).mockImplementation((event, payload) => {
-      const finalPayload = payload as { state?: string; runId?: string };
-      if (event !== "chat" || finalPayload.state !== "final" || finalPayload.runId !== runId) {
+      const frame = asOptionalRecord(payload);
+      if (event !== "chat" || frame?.state !== "final" || frame.runId !== runId || mutation) {
         return;
       }
-      finalPublished = true;
+      vi.spyOn(settlementOwner, "waitForTerminalSessionRunSettlement").mockImplementation(
+        (params) => {
+          const result = settle(params);
+          settlementEntered.resolve();
+          return result;
+        },
+      );
+      mutation = invoke(finalResponse);
       finalObserved.resolve();
-      mutation ??= invoke(finalResponse);
     });
     try {
       await fixture.send();
       await withinTest(modelEntered.promise, signal);
-      // Compact intentionally preempts an abortable live turn; its preemption
-      // contract is covered by the compaction tests, not this terminal listener.
-      if (action !== "compact") {
-        const liveResponse = vi.fn<RespondFn>();
-        await invoke(liveResponse);
-        expectActiveRunRefusal(liveResponse, action);
-      }
+      const liveResponse = vi.fn<RespondFn>();
+      await invoke(liveResponse);
+      expectActiveRunRefusal(liveResponse, action);
       modelRelease.resolve();
       await withinTest(finalObserved.promise, signal);
       await withinTest(settlementEntered.promise, signal);
@@ -176,23 +168,17 @@ it.for(
     } finally {
       modelRelease.resolve();
       releaseRetainedWork();
-      try {
-        await fixture.cleanup();
-        await mutation;
-      } finally {
-        try {
-          if (subscriptions) {
-            heartbeatNotifications.onEvent = () => {};
-            subscriptions.transcriptUnsub();
-            subscriptions.lifecycleUnsub();
-            await subscriptions.agentUnsub();
-          }
-          await subscriptionParams.scheduler.stop();
-        } finally {
-          clientRequest.emitDestroy();
-          vi.restoreAllMocks();
-        }
+      await fixture.cleanup();
+      await mutation;
+      if (subscriptions) {
+        heartbeatNotifications.onEvent = () => {};
+        subscriptions.transcriptUnsub();
+        subscriptions.lifecycleUnsub();
+        await subscriptions.agentUnsub();
       }
+      await subscriptionParams.scheduler.stop();
+      clientRequest.emitDestroy();
+      vi.restoreAllMocks();
     }
   },
 );

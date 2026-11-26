@@ -2,6 +2,7 @@ import fs from "node:fs";
 import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { expectBytesEqual } from "../../test/helpers/file-snapshots.js";
 import * as nodeSqlite from "../infra/node-sqlite.js";
 import * as snapshotSource from "../infra/sqlite-snapshot-source.js";
 import { readDatabasePathIdentitySync } from "../infra/sqlite-worker-identity.js";
@@ -40,10 +41,11 @@ const repair = (apply: boolean, authority?: DoctorSqliteMaintenanceAuthority) =>
 const seedEntry = (key: string, fields: Record<string, unknown>) =>
   seedSessionEntry(state.env, key, fields);
 
-it("closes a captured session inspection reader before removing its private snapshot", async () => {
+it("closes a captured journal inspection reader before removing its private snapshot", async () => {
   const legacy = seedEntry("captured-inspection", { pendingFinalDelivery: true });
+  // A rollback journal still requires private recovery, even under stopped-writer custody.
   const sidecars = ["-wal", "-shm"].map((suffix) => {
-    const file = legacy.databasePath + suffix;
+    const file = `${legacy.databasePath}${suffix}`;
     return { file, bytes: fs.readFileSync(file) };
   });
   expect(sidecars[0]!.bytes.length).toBeGreaterThan(0);
@@ -51,6 +53,7 @@ it("closes a captured session inspection reader before removing its private snap
   for (const { file, bytes } of sidecars) {
     fs.writeFileSync(file, bytes);
   }
+  fs.writeFileSync(`${legacy.databasePath}-journal`, Buffer.alloc(512));
   const originalBytes = fs.readFileSync(legacy.databasePath);
   const generations = readUpdateDatabaseGenerations([legacy.databasePath]);
   const warnings: string[] = [];
@@ -59,18 +62,23 @@ it("closes a captured session inspection reader before removing its private snap
     signal: new AbortController().signal,
     warn: (message) => warnings.push(message),
   })!;
-  let snapshot: ReturnType<typeof snapshotSource.prepareSqliteReadOnlyLocationSync> | undefined;
+  let snapshot:
+    | Awaited<ReturnType<typeof snapshotSource.startSqliteReadOnlyLocationAsync>["result"]>
+    | undefined;
   let reader: DatabaseSync | undefined;
   const openAtCleanup: boolean[] = [];
-  const prepare = snapshotSource.prepareSqliteReadOnlyLocationSync;
-  vi.spyOn(snapshotSource, "prepareSqliteReadOnlyLocationSync").mockImplementation((...args) => {
-    snapshot = prepare(...args);
-    const prepared = snapshot;
+  const prepare = snapshotSource.startSqliteReadOnlyLocationAsync;
+  vi.spyOn(snapshotSource, "startSqliteReadOnlyLocationAsync").mockImplementation((...args) => {
+    const preparation = prepare(...args);
     return {
-      ...prepared,
-      cleanup() {
+      ...preparation,
+      result: preparation.result.then((prepared) => {
+        snapshot = prepared;
+        return prepared;
+      }),
+      startClose() {
         openAtCleanup.push(reader?.isOpen ?? true);
-        return prepared.cleanup();
+        return preparation.startClose();
       },
     };
   });
@@ -97,49 +105,64 @@ it("closes a captured session inspection reader before removing its private snap
       await capture.settle();
       expect(capture.receipt).toMatchObject({ unchanged: true, fromGenerations: generations });
       expect(warnings).toEqual([]);
-      expect(fs.readFileSync(legacy.databasePath)).toEqual(originalBytes);
+      expectBytesEqual(fs.readFileSync(legacy.databasePath), originalBytes, "inspected database");
     } finally {
       await scope.close();
-      snapshot?.cleanup();
+      await snapshot?.cleanupAsync();
     }
   });
 });
 
-it("inspects a drained captured database in place without a private copy", async () => {
-  const legacy = seedEntry("captured-drained", { pendingFinalDelivery: true });
-  closeOpenClawAgentDatabasesForTest();
-  const directory = path.dirname(legacy.databasePath);
-  expect(fs.existsSync(`${legacy.databasePath}-journal`)).toBe(false);
-  expect(fs.statSync(`${legacy.databasePath}-wal`, { throwIfNoEntry: false })?.size ?? 0).toBe(0);
-  const originalBytes = fs.readFileSync(legacy.databasePath);
-  const originalEntries = fs.readdirSync(directory).toSorted();
-  const generations = readUpdateDatabaseGenerations([legacy.databasePath]);
-  const capture = createUpdateDoctorDatabaseWriteCapture(generations, {
-    env: state.env,
-    signal: new AbortController().signal,
-    warn: () => {},
-  })!;
-  // A private image costs the whole family, which a full disk during activation cannot spare.
-  const privateCopy = vi.spyOn(snapshotSource, "prepareSqliteReadOnlyLocationSync");
-  await withMaintenance(async (authority) => {
-    const scope = createOpenClawDatabaseMaintenanceScope({
-      schemaMaintenance: true,
-      assertOwnerCurrent: () => authority.assertCurrent(),
-    });
-    try {
-      await capture.admit();
-      const result = await scope.run(() => capture.run(() => repair(false, authority)));
-      expect(result).toMatchObject({ found: 1, repaired: 0, scannedStores: 1 });
-      await capture.settle();
-      expect(capture.receipt).toMatchObject({ unchanged: true, fromGenerations: generations });
-    } finally {
-      await scope.close();
+it.each(["drained", "wal"])(
+  "preserves the captured generation during a %s inspection",
+  async (kind) => {
+    const legacy = seedEntry("captured-drained", { pendingFinalDelivery: true });
+    const family =
+      kind === "wal"
+        ? ["", "-wal", "-shm"].map((suffix) => ({
+            file: legacy.databasePath + suffix,
+            bytes: fs.readFileSync(legacy.databasePath + suffix),
+          }))
+        : [];
+    closeOpenClawAgentDatabasesForTest();
+    for (const { file, bytes } of family) {
+      fs.writeFileSync(file, bytes);
     }
-  });
-  expect(privateCopy.mock.calls.map(([pathname]) => pathname)).not.toContain(legacy.databasePath);
-  expect(fs.readFileSync(legacy.databasePath)).toEqual(originalBytes);
-  expect(fs.readdirSync(directory).toSorted()).toEqual(originalEntries);
-});
+    const directory = path.dirname(legacy.databasePath);
+    expect(fs.existsSync(`${legacy.databasePath}-journal`)).toBe(false);
+    expect(
+      (fs.statSync(`${legacy.databasePath}-wal`, { throwIfNoEntry: false })?.size ?? 0) > 0,
+    ).toBe(kind === "wal");
+    const originalBytes = fs.readFileSync(legacy.databasePath);
+    const originalEntries = fs.readdirSync(directory).toSorted();
+    const generations = readUpdateDatabaseGenerations([legacy.databasePath]);
+    const capture = createUpdateDoctorDatabaseWriteCapture(generations, {
+      env: state.env,
+      signal: new AbortController().signal,
+      warn: () => {},
+    })!;
+    // A private image costs the whole family, which a full disk during activation cannot spare.
+    const privateCopy = vi.spyOn(snapshotSource, "startSqliteReadOnlyLocationAsync");
+    await withMaintenance(async (authority) => {
+      const scope = createOpenClawDatabaseMaintenanceScope({
+        schemaMaintenance: true,
+        assertOwnerCurrent: () => authority.assertCurrent(),
+      });
+      try {
+        await capture.admit();
+        const result = await scope.run(() => capture.run(() => repair(false, authority)));
+        expect(result).toMatchObject({ found: 1, repaired: 0, scannedStores: 1 });
+        await capture.settle();
+        expect(capture.receipt).toMatchObject({ unchanged: true, fromGenerations: generations });
+      } finally {
+        await scope.close();
+      }
+    });
+    expect(privateCopy).toHaveBeenCalledTimes(kind === "wal" ? 1 : 0);
+    expectBytesEqual(fs.readFileSync(legacy.databasePath), originalBytes, "inspected database");
+    expect(fs.readdirSync(directory).toSorted()).toEqual(originalEntries);
+  },
+);
 
 it("refuses an in-place captured inspection when the source changes during the read", async () => {
   const legacy = seedEntry("captured-changed", { pendingFinalDelivery: true });
@@ -160,7 +183,7 @@ it("refuses an in-place captured inspection when the source changes during the r
       await capture.admit();
       // An immutable open cannot see a writer, so the changed file must invalidate the read.
       const changed = new Date(Date.now() + 60_000);
-      expect(() =>
+      await expect(
         scope.run(() =>
           capture.run(() =>
             entryRepairs.scanDoctorSessionEntryRecords(
@@ -170,7 +193,7 @@ it("refuses an in-place captured inspection when the source changes during the r
             ),
           ),
         ),
-      ).toThrow(/source changed during in-place inspection/);
+      ).rejects.toThrow(/source changed during in-place inspection/);
     } finally {
       await scope.close();
     }

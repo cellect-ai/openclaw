@@ -139,7 +139,7 @@ async function storedInstall(record: (destinations: string[], completedAt: strin
   await closeOpenClawStateDatabaseAsync();
   return await retireSessionSqliteRecovery({
     env,
-    preview: inspectSessionSqliteRecovery({ cfg: {}, env }),
+    preview: await inspectSessionSqliteRecovery({ cfg: {}, env }),
     readConfig: async () => ({}),
     confirm: async () => true,
   });

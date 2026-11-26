@@ -5,6 +5,10 @@ beta/stable, extended-stable, or a release-repair branch. Audit each selected fi
 before applying it; complete the full inventory before freezing the candidate.
 This is not a title search or permission to expand a frozen release.
 
+For an individual fix-status check or a verified cumulative source count, use
+[fix-inclusion tracing](fix-inclusion.md). Keep its source-to-carrier mapping in
+this inventory, not a second release-state store.
+
 ## Start from the shared ledger
 
 Start with [shared candidates and assessments](hotfix-ledger-management.md),
@@ -22,8 +26,6 @@ Use the shared [release-process improvement rules](../SKILL.md#shared-release-bo
 for branch backports and independently pinned Q/P tooling; preserve intake
 approval, frozen-candidate identity, and required requalification.
 
-The required [bundled Codex update](preparation.md#update-and-pin-bundled-codex-required) is not subject to these optional hotfix thresholds.
-
 For product hotfixes:
 
 - **Extended-stable:** generally take only P0 and P1 hotfixes.
@@ -34,6 +36,8 @@ For product hotfixes:
 Assess actual impact, dependency closure, and maintenance risk, not just labels.
 These are selection defaults, not permission to expand frozen intake, bypass
 approval, or weaken validation. Record exceptions and rationale in the ledger.
+
+The required [bundled Codex update](preparation.md#update-and-pin-bundled-codex-required) is not subject to the optional product hotfix thresholds.
 
 ## Freeze the Audit
 
@@ -109,20 +113,26 @@ for the batch:
 ```bash
 pnpm release:backport-probe -- \
   --baseline "$baseline_sha" \
+  --scan-end "$pinned_main_sha" \
   --candidate "$candidate_sha" > backport-probe.tsv
 ```
 
-The helper uses `git merge-tree --write-tree` with the candidate's parent as
-the explicit merge base, so it simulates that single patch without checking out
-or resetting a worktree. The TSV binds the resolved candidate and baseline,
-classification (`clean`, `conflicted`, or `already-covered`), conflict count,
-touched-file count, every touched path, and whether that path conflicts. It
-refuses root and merge commits whose cherry-pick mainline is ambiguous.
+The helper first requires every candidate to be reachable from the pinned scan
+end, then uses `git merge-tree --write-tree` with the candidate's parent as the
+explicit merge base. This simulates that single patch without checking out or
+resetting a worktree. The TSV binds the resolved candidate, baseline, and scan
+end; records reachability; and reports a patch classification (`clean`,
+`conflicted`, or `already-covered`), conflict count, touched-file count, every
+touched path, and whether that path conflicts. It refuses unreachable, root,
+and merge commits whose provenance or cherry-pick mainline is ambiguous.
 
-Record a failed probe with its exact reason. A clean probe is triage evidence
-only; it does not approve a backport. If the commit needs companions, probe and
-assess the smallest ordered final fix rather than treating each clean commit as
-an independent candidate.
+Every row remains `contract-review-required`: the mechanical probe cannot prove
+runtime reachability, caller-chain closure, or prerequisite dependencies. Record
+a failed probe with its exact reason. A clean patch classification is triage
+evidence only; it does not approve a backport. Trace callers and prerequisites
+under [Close Selected Contracts Before Qualification](#close-selected-contracts-before-qualification).
+If the commit needs companions, probe and assess the smallest ordered final fix
+rather than treating each clean commit as an independent candidate.
 
 ## Close Selected Contracts Before Qualification
 
@@ -162,7 +172,8 @@ pnpm release:backport-companions -- \
 ```
 
 Disposition every reported later same-path commit, later mention of the
-selected PR number, existing neighbor test, selected-file reference/registry,
+selected PR number or commit SHA (whole 7–40-character tokens, case-insensitive),
+existing neighbor test, selected-file reference/registry,
 candidate file-set difference, and candidate content difference. A whole-file
 difference is inspection evidence, not a failure: a release adaptation or the
 final selected companion sequence can differ legitimately. This scan is
@@ -221,7 +232,9 @@ proposed set for maintainer approval unless selection authority was explicitly
 delegated. During open preparation, a maintainer may instead approve an exact,
 dependency-closed group while independent discovery continues. Record that
 approval and the unfinished audit scope; do not call the full inventory complete
-or advance its scan cursor until every entry is accounted for. Follow the
+or advance its scan cursor until every entry is accounted for. Freezing with an
+unfinished inventory is the operator's call; say how much is still unreviewed
+first. Follow the
 [owner intake procedure](release-owner.md#prepare-and-admit-hotfixes) to integrate
 ready approved groups without waiting for unrelated audit lanes.
 

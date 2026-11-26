@@ -115,9 +115,14 @@ export type GatewayCrashLoopBreakerDecision = ReturnType<
   typeof buildGatewayCrashLoopBreakerDecision
 >;
 
+export type GatewayRestartResumeWindow = { startedAt: number; endedAt: number };
+export type GatewayRestartResumeWindows = Record<string, GatewayRestartResumeWindow[]>;
+
 export type GatewayBootLifecycleStart = {
   decision: GatewayCrashLoopBreakerDecision;
   id: string | undefined;
+  restartResumeWindow?: GatewayRestartResumeWindow;
+  restartResumeWindows?: GatewayRestartResumeWindows;
   previousCrash?: GatewayCrashRecord;
 };
 
@@ -146,7 +151,10 @@ export async function readGatewayLastInstallationReplacementAsync(env = process.
     : undefined;
 }
 
-/** Match the latest shutdown to the inspected process using a fresh owner read. */
+/**
+ * Whether that Gateway process recorded, as the latest shutdown, its exit for a replaced
+ * installation. Stop authority depends on the answer, so it never reuses an inspection snapshot.
+ */
 export async function didGatewayExitForReplacedInstallation(pid: number, env = process.env) {
   const shutdown = await readLastShutdownRecord(env, true);
   return shutdown?.pid === pid && isInstallationReplacement(shutdown.reason);
@@ -189,6 +197,18 @@ export async function beginGatewayBootLifecycle(
     gatewayLifecycleLog.warn(`crash-loop breaker state unavailable; fail-open: ${String(err)}`);
     return { decision: buildGatewayCrashLoopBreakerDecision({ uncleanBoots: 0 }), id: undefined };
   }
+}
+
+/** A completed agent pass retires only the crash intervals captured by that boot. */
+export async function completeGatewayAgentRestartRecovery(
+  agentId: string,
+  through: number,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<void> {
+  const context = captureOpenClawStateWorkerContext({ env });
+  await runOpenClawStateWorkerOperation(context, (scope) =>
+    scope.execute({ type: "gatewayBoot.recoveredAgent", input: { agentId, through } }),
+  );
 }
 
 /** Runtime readers share the boot owner's decision without opening SQLite on the main thread. */

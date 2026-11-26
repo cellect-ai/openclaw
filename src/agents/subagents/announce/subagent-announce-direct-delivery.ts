@@ -1,11 +1,16 @@
 import { normalizeOptionalLowercaseString } from "@openclaw/normalization-core/string-coerce";
 import { completionRequiresMessageToolDelivery } from "../../../auto-reply/reply/completion-delivery-policy.js";
+import { resolveQueueSettings } from "../../../auto-reply/reply/queue.js";
+import { runOutsideAdmittedTurnScopes } from "../../../auto-reply/reply/queue/drain-admission-scope.js";
+import { getRuntimeConfig as getSubagentAnnounceRuntimeConfig } from "../../../config/config.js";
 import { bindInProcessSessionRun } from "../../../gateway/in-process-session-run.js";
+import { resolveExternalBestEffortDeliveryTarget } from "../../../infra/outbound/best-effort-delivery.js";
 import { stringifyRouteThreadId } from "../../../plugin-sdk/channel-route.js";
 import {
   INTERNAL_PROVENANCE_SOURCE_CHANNEL,
   isAgentMediatedCompletionSourceTool,
 } from "../../../sessions/input-provenance.js";
+import { waitForReplyOperationBackend } from "../../../sessions/session-controller.state.js";
 import {
   submitSessionControllerSteer,
   type SessionControllerSteerResult,
@@ -46,11 +51,8 @@ import {
   SourceOwnerChangedError,
 } from "./subagent-announce-delivery-retry.js";
 import {
-  getSubagentAnnounceRuntimeConfig,
   getSubagentRequesterSessionActivity as resolveRequesterSessionActivity,
   loadRequesterSessionEntry,
-  resolveExternalBestEffortDeliveryTarget,
-  resolveQueueSettings,
   withSubagentRequesterDelivery,
 } from "./subagent-announce-delivery.runtime.js";
 import { createDirectAnnounceResponseClassifier } from "./subagent-announce-direct-response.js";
@@ -70,17 +72,18 @@ function completionHandoffPendingResult(): SubagentAnnounceDeliveryResult {
     path: "none",
     reason: "completion_handoff_pending",
     terminal: true,
-    disposition: "intentional_non_delivery",
   };
 }
 
 export async function sendSubagentAnnounceDirectly(
   params: SubagentAnnounceDirectParams,
 ): Promise<SubagentAnnounceDeliveryResult> {
-  return withSubagentRequesterDelivery(
-    params.targetRequesterSessionKey,
-    params,
-    sendSubagentAnnounceDirectlyBound,
+  return runOutsideAdmittedTurnScopes(() =>
+    withSubagentRequesterDelivery(
+      params.targetRequesterSessionKey,
+      params,
+      sendSubagentAnnounceDirectlyBound,
+    ),
   );
 }
 
@@ -219,7 +222,7 @@ async function sendSubagentAnnounceDirectlyBound(
         delivered: false,
         path: "none",
         reason: "completion_handoff_unavailable",
-        error: "completion requester session is unavailable or replaced",
+        error: "completion requester session is unavailable",
         terminal: true,
         disposition: "intentional_non_delivery",
       };
@@ -297,6 +300,24 @@ async function sendSubagentAnnounceDirectlyBound(
     ) {
       let steer: SessionControllerSteerResult;
       try {
+        // Recovery owns the turn before its backend is ready. Queuing behind it can
+        // deadlock a parent waiting for this result; steering resolves its live owner below.
+        const requesterOperation = params.controllerInput.mailbox.owner.active;
+        // A finalizing cron run holds the turn to read its child's settled result.
+        // It will not attach a new backend; let the existing cron handoff run below.
+        const cronAwaitingCompletionHandoff =
+          !agentMediatedCompletion &&
+          isCronRunSessionKey(canonicalRequesterSessionKey) &&
+          (!requesterActivity.sessionId ||
+            !isEmbeddedAgentRunHandleActive(requesterActivity.sessionId));
+        if (requesterOperation && !cronAwaitingCompletionHandoff) {
+          await waitForReplyOperationBackend(
+            requesterOperation,
+            params.signal
+              ? AbortSignal.any([params.signal, params.controllerInput.abortSignal])
+              : params.controllerInput.abortSignal,
+          );
+        }
         steer = await submitSessionControllerSteer({
           input: params.controllerInput,
           text: turnMessage,
@@ -341,21 +362,13 @@ async function sendSubagentAnnounceDirectlyBound(
         }
         throw error;
       }
-      // Source retirement cannot turn consumed-but-unconfirmed shadow input into a known no-op.
-      if (params.steerActiveRequester && steer.status === "indeterminate") {
-        return {
-          delivered: false,
-          path: "steered",
-          error: steer.errorMessage,
-          disposition: "ambiguous",
-        };
-      }
-      // Steering consumes admission; its result remains valid while the delivery owner is current.
-      if (!isCompletionDeliveryAllowed()) {
-        return sourceOwnerChangedResult();
-      }
+      // A committed steer delivered the result; a later owner change cannot undo that.
       if (steer.status === "accepted") {
         return { delivered: true, path: "steered" };
+      }
+      // Otherwise steering consumed admission; its outcome counts while the owner is current.
+      if (!isCompletionDeliveryAllowed()) {
+        return sourceOwnerChangedResult();
       }
       if (steer.status === "indeterminate") {
         // The input was consumed without a confirmed commit; it is never replayed.
@@ -425,6 +438,7 @@ async function sendSubagentAnnounceDirectlyBound(
       bestEffortDeliver: params.bestEffortDeliver,
       internalEvents: params.internalEvents,
       channel: shouldDeliverAgentFinal ? deliveryTarget.channel : sessionOnlyOriginChannel,
+      ...(params.inputAttachments?.length ? { attachments: params.inputAttachments } : {}),
       accountId: directAgentOrigin?.accountId,
       to: directAgentOrigin?.to,
       threadId: stringifyRouteThreadId(directAgentOrigin?.threadId),
@@ -439,10 +453,9 @@ async function sendSubagentAnnounceDirectlyBound(
         : {}),
       idempotencyKey: params.directIdempotencyKey,
     };
-    // Public completions bind the selected requester, including a nested fallback.
-    // Private and settle completions keep their captured incarnation checked above.
+    // Completions bind the current requester chat, including a nested fallback.
     const boundRequesterSessionId = requesterSessionBound
-      ? params.completionRequesterSessionId
+      ? requesterActivity.sessionId
       : isSubagentCompletion
         ? requesterSessionId
         : undefined;
@@ -450,10 +463,7 @@ async function sendSubagentAnnounceDirectlyBound(
       directAgentParams = bindInProcessSessionRun(directAgentParams, {
         sessionKey: canonicalRequesterSessionKey,
         sessionId: boundRequesterSessionId,
-        lifecycleRevision:
-          (requesterSessionBound
-            ? params.completionRequesterLifecycleRevision
-            : requesterLifecycleRevision) ?? null,
+        lifecycleRevision: requesterLifecycleRevision ?? null,
         runId: params.directIdempotencyKey,
       });
     }
@@ -482,6 +492,7 @@ async function sendSubagentAnnounceDirectlyBound(
       }
       directAnnounceResponse = await runAnnounceAgentCall({
         agentParams: directAgentParams,
+        subagentCompletions: params.subagentCompletions,
         controllerInput: params.controllerInput,
         replyExpectation: inputReplyExpectation,
         // A resumed parent has no inbound channel dispatcher to keep activity visible.

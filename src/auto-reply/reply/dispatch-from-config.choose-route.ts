@@ -12,7 +12,6 @@ import { createPluginSubagentRequesterContext } from "../../plugins/runtime/suba
 import {
   buildCaptionedFinalTextFallback,
   cleanDeferredFinalText,
-  isCaptionedFinalTextPayload,
   mergeDeferredFinalText,
   shouldDeferFinalTtsText,
 } from "../../tts/captioned-final.js";
@@ -21,6 +20,7 @@ import { registerReplyDispatcherSettledTask } from "../dispatch-dispatcher.js";
 import {
   copyReplyPayloadMetadata,
   getReplyPayloadMetadata,
+  isReplyPayloadTerminalContent,
   setReplyPayloadMetadata,
   type ReplyPayload,
 } from "../reply-payload.js";
@@ -180,7 +180,7 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
     accountId: replyRoute.accountId,
     inboundAudio: state.inboundAudio,
   };
-  const deferFinalTtsText = shouldDeferFinalTtsText(captionedFinalTtsContext);
+  const deferFinalTtsText = await shouldDeferFinalTtsText(captionedFinalTtsContext);
   let commandReplyIndex = 0;
   const commandBlockMirror = (payload: ReplyPayload) => {
     const metadata = getReplyPayloadMetadata(payload);
@@ -217,7 +217,7 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
       payload,
     );
   };
-  const cleanDeferredFinalDirectives = shouldCleanTtsDirectiveText(captionedFinalTtsContext);
+  const cleanDeferredFinalDirectives = await shouldCleanTtsDirectiveText(captionedFinalTtsContext);
   const { recordBlockOutcome, getBlockReplyOutcome } = createBlockFinalOutcomeTracker();
   const sendTrackedBlockReply = (operation: ReplyDispatchOperation) => {
     const payload = operation.kind === "prepared" ? operation.plan.payload : operation.payload;
@@ -339,7 +339,7 @@ export async function chooseDispatchRoute(state: PrepareDispatchOperationReadySt
       markInboundDedupeReplayUnsafe();
       finalReplyDeliveryStarted = true;
     }
-    const shouldAttachDeferredText = deferFinalTtsText && isCaptionedFinalTextPayload(payload);
+    const shouldAttachDeferredText = deferFinalTtsText && isReplyPayloadTerminalContent(payload);
     const deferredRawText = shouldAttachDeferredText
       ? mergeDeferredFinalText(options.deferredTtsText ?? "", payload.text)
       : undefined;

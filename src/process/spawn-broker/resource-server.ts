@@ -1,6 +1,7 @@
 import { EventEmitter } from "node:events";
 import { chmod, mkdir, rm } from "node:fs/promises";
 import { createServer } from "node:net";
+import { dirname } from "node:path";
 import { serialize } from "node:v8";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { throwCollectedErrors, throwSettledAggregate } from "../../infra/error-graph-internal.js";
@@ -73,18 +74,13 @@ type Resource = {
 /** The broker retains resource owners independently of their submitting Worker's socket. */
 export async function createBrokerNativeResourceServer(options: {
   endpoint: string;
-  /**
-   * Decided by the parent's resource authority. The broker creates and removes exactly this
-   * directory and never derives one from its own platform or the endpoint's shape.
-   */
-  directory: string | undefined;
   secret: string;
   generation: number;
   reportParent: (message: BrokerResourceResponse) => Promise<void>;
   canAdmit: () => boolean;
 }) {
   const resources = new Map<number, Resource>();
-  const { directory } = options;
+  const directory = process.platform === "win32" ? undefined : dirname(options.endpoint);
   const connections = new Set<ResourceSocket>();
   let available = true;
   let sourceSealed = false;
@@ -456,7 +452,11 @@ export async function createBrokerNativeResourceServer(options: {
           if (!live() || sourceSealed) {
             return;
           }
-          current.owner = module.default(current.target, attachment.input, current.ownerPort);
+          current.owner = module.createNativeWorkerResource(
+            current.target,
+            attachment.input,
+            current.ownerPort,
+          );
           current.created = true;
           publish(current, { type: "resource-created", id: attachment.id });
         })().catch((error: unknown) => {

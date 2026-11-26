@@ -335,6 +335,14 @@ on:
         required: false
       CEREBRAS_API_KEY:
         required: false
+      CELERIS_API_KEY:
+        required: false
+      FASTINO_API_KEY:
+        required: false
+      NACE_API_KEY:
+        required: false
+      PERPLEXITY_API_KEY:
+        required: false
       DEEPINFRA_API_KEY:
         required: false
       DEEPSEEK_API_KEY:
@@ -374,6 +382,20 @@ on:
       OPENROUTER_API_KEY:
         required: false
       QWEN_API_KEY:
+        required: false
+      PARALLEL_API_KEY:
+        required: false
+      REQUESTY_API_KEY:
+        required: false
+      SENSEAUDIO_API_KEY:
+        required: false
+      SUBQ_API_KEY:
+        required: false
+      SUBQ_DECISION_MODEL:
+        required: false
+      TYPESAFE_API_KEY:
+        required: false
+      XIAOMI_API_KEY:
         required: false
       FAL_KEY:
         required: false
@@ -1086,6 +1108,7 @@ jobs:
         id: upload_package
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          compression-level: 0
           name: ${{ env.PACKAGE_ARTIFACT_NAME }}
           path: |
             .artifacts/docker-e2e-package/openclaw-current.tgz
@@ -1098,6 +1121,7 @@ jobs:
         if: steps.resolve.outputs.plugin_registry_manifest_sha256 != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
+          compression-level: 0
           name: ${{ env.TELEGRAM_PLUGIN_REGISTRY_ARTIFACT_NAME }}
           path: .artifacts/package-acceptance-telegram-plugin-registry/
           retention-days: 14
@@ -1384,7 +1408,7 @@ jobs:
 
       - name: Upload npm 12 installed tree inventory
         if: always() && steps.npm12_install.outcome == 'success'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.0
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: npm12-installed-tree-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/npm12-installed-tree.jsonl
@@ -1448,6 +1472,10 @@ jobs:
       FACTORY_API_KEY: ${{ secrets.FACTORY_API_KEY }}
       BYTEPLUS_API_KEY: ${{ secrets.BYTEPLUS_API_KEY }}
       CEREBRAS_API_KEY: ${{ secrets.CEREBRAS_API_KEY }}
+      CELERIS_API_KEY: ${{ secrets.CELERIS_API_KEY }}
+      FASTINO_API_KEY: ${{ secrets.FASTINO_API_KEY }}
+      NACE_API_KEY: ${{ secrets.NACE_API_KEY }}
+      PERPLEXITY_API_KEY: ${{ secrets.PERPLEXITY_API_KEY }}
       DEEPINFRA_API_KEY: ${{ secrets.DEEPINFRA_API_KEY }}
       DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
       DASHSCOPE_API_KEY: ${{ secrets.DASHSCOPE_API_KEY }}
@@ -1468,6 +1496,13 @@ jobs:
       GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
       OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
       QWEN_API_KEY: ${{ secrets.QWEN_API_KEY }}
+      PARALLEL_API_KEY: ${{ secrets.PARALLEL_API_KEY }}
+      REQUESTY_API_KEY: ${{ secrets.REQUESTY_API_KEY }}
+      SENSEAUDIO_API_KEY: ${{ secrets.SENSEAUDIO_API_KEY }}
+      SUBQ_API_KEY: ${{ secrets.SUBQ_API_KEY }}
+      SUBQ_DECISION_MODEL: ${{ secrets.SUBQ_DECISION_MODEL }}
+      TYPESAFE_API_KEY: ${{ secrets.TYPESAFE_API_KEY }}
+      XIAOMI_API_KEY: ${{ secrets.XIAOMI_API_KEY }}
       FAL_KEY: ${{ secrets.FAL_KEY }}
       RUNWAY_API_KEY: ${{ secrets.RUNWAY_API_KEY }}
       DEEPGRAM_API_KEY: ${{ secrets.DEEPGRAM_API_KEY }}

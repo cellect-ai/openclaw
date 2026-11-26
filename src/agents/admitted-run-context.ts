@@ -24,6 +24,8 @@ import {
   validateAgentRunDelegatedAuthority,
   type AgentRunDelegatedAuthority,
 } from "../infra/agent-run-registry.js";
+import { scopeOperatorAccessDecisions } from "../infra/operator-access-decision.js";
+import { isOperatorAuthorityUnavailable } from "../infra/operator-authority-error.js";
 import type { PluginHookRequesterContinuation } from "../plugins/hook-agent-context.types.js";
 import { prepareGatewayContextBindingOwner } from "../plugins/runtime/gateway-context-binding-owner.js";
 import { assertAdmittedRunOperatorAuthority } from "./admitted-run-operator-authority.js";
@@ -69,6 +71,8 @@ export type PreparedAgentRunAdmission = Readonly<{
   ) => Promise<AdmittedRunContext>;
   /** Checks latched source revocation after normal close; never grants execution authority. */
   assertSourceCurrent: () => void;
+  /** Checks open preparation and its exact admitted owner without evaluating source predicates. */
+  assertCurrent: () => void;
   /** Host-only source restriction available before the runtime prepares its tools. */
   readOperatorAuthority?: () => AdmittedRunOperatorAuthority | undefined;
   /** Idempotently closes the exact delegated approval lease, if admission occurred. */
@@ -307,9 +311,16 @@ export function captureAdmittedRunActiveAssertion(
     }
     assertSource();
   };
-  return Object.assign(composeSessionSourceAssertion([source.assertCurrent], assertLocalCurrent), {
-    assertScopeCurrent: () => assertLocalCurrent(source.assertBinding),
-  });
+  return Object.assign(
+    composeSessionSourceAssertion(
+      [source.assertCurrent],
+      scopeOperatorAccessDecisions(assertLocalCurrent),
+      { synchronousCheck: true },
+    ),
+    {
+      assertScopeCurrent: () => assertLocalCurrent(source.assertBinding),
+    },
+  );
 }
 
 /** Idempotently compare-releases the authority captured by this admission. */
@@ -417,19 +428,25 @@ export function prepareAgentRunAdmission(params: {
   let sourceFailure: Error | undefined;
   const assertSourceCurrent =
     (sourceAssertion || assertOperatorCurrent) &&
-    composeSessionSourceAssertion([sourceAssertion, assertOperatorCurrent], (assertSources) => {
-      if (sourceFailure) {
-        throw sourceFailure;
-      }
-      try {
-        assertSources();
-      } catch (error) {
-        sourceFailure = new Error("source execution authority is no longer active", {
-          cause: error,
-        });
-        throw error;
-      }
-    });
+    composeSessionSourceAssertion(
+      [sourceAssertion, assertOperatorCurrent],
+      scopeOperatorAccessDecisions((assertSources: () => void) => {
+        if (sourceFailure) {
+          throw sourceFailure;
+        }
+        try {
+          assertSources();
+        } catch (error) {
+          if (!isOperatorAuthorityUnavailable(error)) {
+            sourceFailure = new Error("source execution authority is no longer active", {
+              cause: error,
+            });
+          }
+          throw error;
+        }
+      }),
+      { synchronousCheck: true },
+    );
   let admittedRuntimeKind: ExecutionIdentityAdmissionFacts["runtime"]["kind"] | undefined;
   let admittedRuntimeInstanceId: string | undefined;
   let admitted: Promise<AdmittedRunContext> | undefined;
@@ -440,19 +457,39 @@ export function prepareAgentRunAdmission(params: {
       throw new Error("prepared execution context is already closed");
     }
   };
-  const scopedSource = composeSessionSourceAssertion([assertSourceCurrent], (assertSource) => {
-    assertPreparationOpen();
-    assertSource();
-  });
+  const scopedSource = composeSessionSourceAssertion(
+    [assertSourceCurrent],
+    (assertSource) => {
+      assertPreparationOpen();
+      assertSource();
+    },
+    { synchronousCheck: true },
+  );
   const prepared: PreparedAgentRunAdmission = Object.freeze({
     operationalRunInstance,
-    assertSourceCurrent: Object.assign(composeSessionSourceAssertion([assertSourceCurrent]), {
-      assertScopeCurrent: assertPreparationOpen,
-      prepareSessionSourceScope: () => {
-        assertPreparationOpen();
-        return prepareSessionSourceScope(scopedSource);
+    assertCurrent: () => {
+      assertPreparationOpen();
+      if (!admittedContext) {
+        return;
+      }
+      const lease = delegatedAuthorityLeases.get(admittedContext);
+      const assertActive =
+        lease && captureAdmittedRunActiveAssertion(admittedContext, lease.authority);
+      if (!assertActive) {
+        throw new Error("prepared execution authority is no longer active");
+      }
+      assertActive.assertScopeCurrent();
+    },
+    assertSourceCurrent: Object.assign(
+      composeSessionSourceAssertion([assertSourceCurrent], undefined, { synchronousCheck: true }),
+      {
+        assertScopeCurrent: assertPreparationOpen,
+        prepareSessionSourceScope: () => {
+          assertPreparationOpen();
+          return prepareSessionSourceScope(scopedSource);
+        },
       },
-    }),
+    ),
     readOperatorAuthority: () => {
       if (operatorAuthority) {
         if (closed) {
@@ -485,6 +522,7 @@ export function prepareAgentRunAdmission(params: {
       admitted ??= runWithSessionSourceScope(
         assertSourceCurrent,
         async () => {
+          operatorAuthority?.reauthorize?.();
           assertSourceCurrent?.();
           const facts = executionIdentitySpawnAdmission({
             operation: "attach",

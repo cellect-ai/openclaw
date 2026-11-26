@@ -28,7 +28,7 @@ describe("OpenClaw shell refresh notice", () => {
       expect(button).toBeDefined();
       return button!;
     });
-    expect(view.container.textContent).toContain("Refresh required");
+    expect(view.container.textContent).toContain("OpenClaw was updated");
     reload.click();
     expect(onRefresh).toHaveBeenCalledOnce();
   });

@@ -24,7 +24,6 @@ import { safeEqualSecret } from "openclaw/plugin-sdk/security-runtime";
 import {
   asOptionalRecord,
   normalizeOptionalString,
-  normalizeTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import type { SlackTokenSource } from "./accounts.js";
@@ -45,7 +44,7 @@ import {
   getSlackWriteClient,
 } from "./client.js";
 import { assertSlackDetachedTargetAllowed } from "./detached-target-admission.js";
-import { getSlackWebApiErrorData } from "./errors.js";
+import { enrichSlackWebApiError } from "./errors.js";
 import { chunkSlackMrkdwnText, markdownToSlackMrkdwnChunks } from "./format.js";
 import { SLACK_EDIT_TEXT_MAX_BYTES, SLACK_TEXT_LIMIT } from "./limits.js";
 import type { SlackEventScope } from "./monitor/event-scope.js";
@@ -119,6 +118,8 @@ type SlackSendOpts = {
   textIsSlackMrkdwn?: boolean;
   /** Slack-private literal fallback text; disables mrkdwn parsing. */
   textIsSlackPlainText?: boolean;
+  /** Native literal display, including explicit mention tokens and disabled unfurls. */
+  literalText?: boolean;
   /** Producer-owned placement of authored text after final block compilation. */
   authoredTextPlacement?: SlackAuthoredTextPlacement;
   /** Slack-private authored text outside blocks; enables ordered plain accessibility text. */
@@ -162,34 +163,6 @@ export function setSlackDefaultSendIdentity(accountId: string, identity?: SlackS
   } else {
     slackDefaultSendIdentities.delete(normalizedAccountId);
   }
-}
-
-function enrichSlackWebApiError(err: unknown): unknown {
-  if (!(err instanceof Error)) {
-    return err;
-  }
-  const data = getSlackWebApiErrorData(err);
-  const code = normalizeOptionalString(data?.error);
-  if (!code) {
-    return err;
-  }
-  const details: string[] = [];
-  const needed = normalizeOptionalString(data?.needed);
-  if (needed) {
-    details.push(`needed: ${needed}`);
-  }
-  const scopes = normalizeTrimmedStringList(data?.response_metadata?.scopes);
-  if (scopes.length) {
-    details.push(`granted: ${scopes.join(", ")}`);
-  }
-  const acceptedScopes = normalizeTrimmedStringList(data?.response_metadata?.acceptedScopes);
-  if (acceptedScopes.length) {
-    details.push(`accepted: ${acceptedScopes.join(", ")}`);
-  }
-  const message = `${err.message || `An API error occurred: ${code}`}${
-    details.length ? ` (${details.join("; ")})` : ""
-  }`;
-  return message === err.message ? err : new Error(message);
 }
 
 function readSlackRequestErrorMessage(value: unknown): string {
@@ -832,7 +805,9 @@ export async function sendMessageSlack(
 ): Promise<SlackSendResult> {
   const normalizedMessage = normalizeOptionalString(message) ?? "";
   const trimmedMessage =
-    options.textIsSlackPlainText && normalizedMessage ? message : normalizedMessage;
+    (options.textIsSlackPlainText || options.literalText) && normalizedMessage
+      ? message
+      : normalizedMessage;
   const cfg = requireRuntimeConfig(options.cfg, "Slack send");
   const account = resolveSlackAccount({
     cfg,
@@ -950,6 +925,7 @@ export async function sendMessageSlack(
           identity: sendIdentity,
           unfurl,
           ...part,
+          ...(opts.literalText ? { literalText: true } : {}),
         });
         const { response } = posted;
         sendIdentity = posted.identity;
@@ -1023,7 +999,7 @@ export async function sendMessageSlack(
         messages = pendingBlockFallback.fallbackMessages;
       } else {
         let resolvedChunks: string[];
-        if (opts.textIsSlackPlainText) {
+        if (opts.textIsSlackPlainText || opts.literalText) {
           resolvedChunks = trimmedMessage
             ? chunkTextForOutbound(trimmedMessage, textChunkLimit, { preserveWhitespace: true })
             : [];

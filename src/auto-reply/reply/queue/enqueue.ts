@@ -147,8 +147,7 @@ export function enqueueFollowupRun(
       if (isDiscardableRoomEvent(run)) {
         discardOverflowRoomEvent(run, "queue-cap-new", queue);
       } else {
-        run.onQueueDisposition?.("queue-cap-new");
-        completeFollowupRunLifecycle(run);
+        settleFollowupQueueRefusal(queue, run);
       }
       return false;
     }
@@ -210,6 +209,15 @@ export function enqueueFollowupRun(
           }
           return onAbandoned?.();
         };
+        const onDropped = lifecycle.onDropped;
+        if (onDropped) {
+          lifecycle.onDropped = (reason) => {
+            if (mailbox.recentSources.get(recentMessageIdKey)?.inputInstance === inputInstance) {
+              mailbox.recentSources.delete(recentMessageIdKey);
+            }
+            return onDropped(reason);
+          };
+        }
       }
     }
     if (runFollowup) {
@@ -252,6 +260,27 @@ export function enqueueFollowupRun(
     retireSessionControllerInput(input);
     throw error;
   }
+}
+
+function settleFollowupQueueRefusal(
+  queue: ReturnType<typeof getFollowupQueue>,
+  run: FollowupRun,
+): void {
+  let protectedPendingCount = 0;
+  for (const item of queue.items) {
+    if (!queue.inFlight.has(item) && item.protectFromQueueOverflow === true) {
+      protectedPendingCount += 1;
+    }
+  }
+  // Protected work can fill the cap even after every evictable source is removed.
+  // That is retryable backpressure under every policy, including drop:new.
+  const reason =
+    queue.dropPolicy === "new" && protectedPendingCount < queue.cap ? "queue-cap-new" : "queue-cap";
+  run.onQueueDisposition?.(reason);
+  completeFollowupRunLifecycle(
+    run,
+    reason === "queue-cap-new" ? { kind: "dropped", reason } : undefined,
+  );
 }
 
 function isDiscardableRoomEvent(run: FollowupRun): boolean {
@@ -322,7 +351,13 @@ function applyFollowupQueueOverflow(
     }
   }
   const elidedSummaryLines: string[] = [];
-  const capacity = { ...queue, items: queue.items };
+  // The generic drop policy owns temporary lines; publish only paired mailbox entries.
+  const summarySources = queue.summaryEntries.map(({ source }) => source);
+  const capacity = {
+    ...queue,
+    items: queue.items,
+    summaryLines: queue.summaryEntries.map(({ line }) => line),
+  };
   const shouldEnqueue = applyQueueDropPolicy({
     queue: capacity,
     inFlight: queue.inFlight,
@@ -344,7 +379,7 @@ function applyFollowupQueueOverflow(
             source.controllerInput.payload = "summary";
           }
         }
-        queue.summarySources.push(...dropped);
+        summarySources.push(...dropped);
         return;
       }
       for (const item of dropped) {
@@ -354,16 +389,19 @@ function applyFollowupQueueOverflow(
           item.controllerInput.payload = "unbound";
         }
         item.onQueueDisposition?.("queue-cap-old");
-        completeFollowupRunLifecycle(item);
+        completeFollowupRunLifecycle(item, { kind: "dropped", reason: "queue-cap-old" });
       }
     },
     isProtected: (item) => item.protectFromQueueOverflow === true,
   });
   queue.droppedCount = capacity.droppedCount;
-  queue.summaryLines = capacity.summaryLines;
   if (queue.dropPolicy === "summarize") {
-    const overflow = Math.max(0, queue.summarySources.length - queue.summaryLines.length);
-    const removed = queue.summarySources.splice(0, overflow);
+    const overflow = Math.max(0, summarySources.length - capacity.summaryLines.length);
+    const removed = summarySources.splice(0, overflow);
+    queue.summaryEntries = summarySources.map((source, index) => ({
+      source,
+      line: capacity.summaryLines[index]!,
+    }));
     for (const [index, item] of removed.entries()) {
       const summaryLine = elidedSummaryLines[index];
       if (summaryLine === undefined) {
@@ -378,16 +416,12 @@ function applyFollowupQueueOverflow(
       if (elision?.contextKey !== contextKey) {
         elision = {
           contextKey,
-          count: 0,
-          sources: [],
-          summaryLines: [],
+          entries: [],
           sourceRefs: new Map<FollowupRun, FollowupRun>(),
         };
         queue.summaryElisions.push(elision);
       }
-      elision.sources.push(compactSource);
-      elision.count = elision.sources.length;
-      elision.summaryLines.push(summaryLine);
+      elision.entries.push({ source: compactSource, line: summaryLine });
       elision.sourceRefs.set(item, compactSource);
       if (queue.activeSummarySources.has(item)) {
         queue.activeSummarySources.add(compactSource);
@@ -396,8 +430,7 @@ function applyFollowupQueueOverflow(
     }
   }
   if (!shouldEnqueue) {
-    run.onQueueDisposition?.(queue.dropPolicy === "new" ? "queue-cap-new" : "queue-cap");
-    completeFollowupRunLifecycle(run);
+    settleFollowupQueueRefusal(queue, run);
   }
   return shouldEnqueue;
 }
@@ -543,9 +576,8 @@ export function reserveSteerCandidate(
         return "steer";
       } catch (error) {
         const cancelled = isFollowupRunAborted(run) || input.abortSignal.aborted;
-        // Failed original execution authority is cancellation, not a new
-        // runnable fallback. No native handoff has occurred in this frame.
-        finish(true);
+        // No native handoff occurred; only recorded cancellation ends queued custody.
+        finish(cancelled);
         if (cancelled) {
           return "cancelled";
         }

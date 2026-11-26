@@ -17,21 +17,21 @@ import {
 } from "../daemon/systemd-hints.js";
 import { classifySystemdUnavailableDetail } from "../daemon/systemd-unavailable.js";
 import { isWSLEnv } from "../infra/wsl.js";
-import { getResolvedLoggerFileTarget } from "../logging/logger.js";
+import { getResolvedLoggerSettings } from "../logging.js";
 
-export function buildGatewayRuntimeHints(
+export async function buildGatewayRuntimeHints(
   runtime: GatewayServiceRuntime | undefined,
   options: { platform?: NodeJS.Platform; env?: Record<string, string | undefined> } = {},
-): string[] {
+): Promise<string[]> {
   const hints: string[] = [];
   if (!runtime) {
     return hints;
   }
   const platform = options.platform ?? process.platform;
   const env = options.env ?? process.env;
-  const fileLog = (() => {
+  const fileLog = await (async () => {
     try {
-      return getResolvedLoggerFileTarget().file;
+      return (await getResolvedLoggerSettings()).file;
     } catch {
       return null;
     }

@@ -43,6 +43,7 @@ import {
   observeReleaseNpmState,
   readReleasePublicationPackages,
 } from "./lib/release-publish-state.mts";
+import { validateRetiredLineReason } from "./lib/release-version.mjs";
 import { verifyReleasePreflightToolingIdentity } from "./npm-preflight-tooling-identity.mjs";
 import { validateNpmPublishBoundary } from "./openclaw-npm-extended-stable-release.mjs";
 import { verifyOpenClawNpmResumeRun } from "./openclaw-npm-resume-run.mts";
@@ -130,10 +131,11 @@ export async function runReleasePublishPreflight(
       ) {
         throw new Error("Core npm publication requires plugin_publish_scope=all-publishable.");
       }
-      if (options.publishOpenclawNpm !== false && options.npmDistTag === "extended-stable") {
-        throw new Error(
-          "Extended-stable core npm publication uses its canonical extended-stable workflow.",
-        );
+      if (options.retiredLinePublicationReason !== undefined) {
+        validateRetiredLineReason(options.retiredLinePublicationReason);
+        if (options.npmDistTag !== "extended-stable") {
+          throw new Error("A retired-line decision requires the extended-stable npm dist-tag.");
+        }
       }
       if (
         options.pluginPublishScope === "selected"
@@ -197,6 +199,10 @@ export async function runReleasePublishPreflight(
     );
   }
   const sourceSha = releaseSha ?? context.targetSha;
+  const includeStableCloseout =
+    !options.tag.includes("-beta.") &&
+    options.npmDistTag !== "extended-stable" &&
+    options.publishOpenclawNpm !== false;
   let workflowRef = options.workflowRef.replace(/^refs\/(?:heads|tags)\//u, "");
   let toolingSha = context.toolingSha ?? "";
   await check(
@@ -409,9 +415,7 @@ export async function runReleasePublishPreflight(
       for (const consumer of [
         "publisher",
         ...(options.publishOpenclawNpm === false ? [] : ["core-npm"]),
-        ...(!options.tag.includes("-beta.") && options.publishOpenclawNpm !== false
-          ? ["stable-closeout"]
-          : []),
+        ...(includeStableCloseout ? ["stable-closeout"] : []),
       ] as const) {
         rows.push(
           ...evaluateReleasePublishGates({
@@ -560,6 +564,7 @@ export async function runReleasePublishPreflight(
             tag: options.tag,
             sourceSha,
             toolingSha,
+            retiredLineReason: options.retiredLinePublicationReason,
             runGh,
           }),
       );
@@ -625,7 +630,7 @@ export async function runReleasePublishPreflight(
       );
     }
   }
-  if (!options.tag.includes("-beta.") && options.publishOpenclawNpm !== false) {
+  if (includeStableCloseout) {
     if (sourceSha) {
       rows.push(
         ...inspectStableCloseoutPreflight({

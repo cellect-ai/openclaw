@@ -28,6 +28,7 @@ import {
 import { matchesProviderPluginRef } from "../plugins/provider-registry-shared.js";
 import { prepareProviderExternalAuthWithPlugin } from "../plugins/provider-runtime.js";
 import { getPluginRuntimeGenerationRegistry } from "../plugins/runtime/generation-scope.js";
+import { getPluginRuntimeLoadContextState } from "../plugins/runtime/load-context-state.js";
 import { resolveManifestSyntheticAuthProviderRefState } from "../plugins/synthetic-auth.runtime.js";
 import { resolveNonEnvSecretRefApiKeyMarker } from "../secrets/provider-credential-values.js";
 import { runTasksWithConcurrency } from "../utils/run-with-concurrency.js";
@@ -71,7 +72,8 @@ type ImplicitProviderParams = {
   env?: NodeJS.ProcessEnv;
   workspaceDir?: string;
   explicitProviders?: Record<string, ProviderConfig> | null;
-  pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners">;
+  pluginMetadataSnapshot?: Pick<PluginMetadataSnapshot, "index" | "manifestRegistry" | "owners"> &
+    Partial<Pick<PluginMetadataSnapshot, "normalizePluginId">>;
   preparedStaticProviderCatalog?: PreparedProviderStaticCatalog;
   providerDiscoveryProviderIds?: readonly string[];
   staticCatalogProviderIds?: readonly string[];
@@ -447,6 +449,8 @@ export async function prepareImplicitProviderStaticCatalog(
   params.signal?.throwIfAborted();
   const env = params.env ?? process.env;
   const discoveryScope = resolveImplicitProviderDiscoveryScope(params);
+  const registry = getPluginRuntimeGenerationRegistry();
+  const loadContext = getPluginRuntimeLoadContextState(registry);
   const providers = await resolveRuntimePluginDiscoveryProviders({
     config: params.config,
     workspaceDir: params.workspaceDir,
@@ -455,7 +459,7 @@ export async function prepareImplicitProviderStaticCatalog(
     ...(params.pluginMetadataSnapshot
       ? { pluginMetadataSnapshot: params.pluginMetadataSnapshot }
       : {}),
-    discoveryEntriesOnly: !getPluginRuntimeGenerationRegistry(),
+    discoveryEntriesOnly: !registry,
     includeSyntheticAuthProviders: true,
   });
   const staticCatalogProviderIds = params.staticCatalogProviderIds
@@ -511,6 +515,16 @@ export async function prepareImplicitProviderStaticCatalog(
   // be narrower because startup only executes hooks for unresolved configured model refs.
   return Object.freeze({
     providers: Object.freeze(providers),
+    // Capture before discovery awaits. Rebinding a retained registry invalidates these handles;
+    // weak provenance must not extend the registry or its old config/environment lifetime.
+    ...(registry && loadContext
+      ? {
+          runtimeProvenance: Object.freeze({
+            registry: new WeakRef(registry),
+            loadContext: new WeakRef(loadContext),
+          }),
+        }
+      : {}),
     // Record excluded hooks as empty so later static consumers cannot execute them again.
     entries: Object.freeze([
       ...prepared.entries.map((entry) => {
@@ -559,9 +573,25 @@ export async function resolveImplicitProviders(
         inDiscoveryScope(provider),
       )
     : undefined;
+  const provenance = params.preparedStaticProviderCatalog?.runtimeProvenance;
+  const registry = getPluginRuntimeGenerationRegistry();
+  const loadContext = getPluginRuntimeLoadContextState(registry);
+  const reuseRuntimeProviders =
+    registry !== undefined &&
+    loadContext !== undefined &&
+    provenance?.registry.deref() === registry &&
+    provenance.loadContext.deref() === loadContext;
   const preparedProviders =
-    params.providerDiscoveryEntriesOnly === true && params.preparedStaticProviderCatalog?.providers
-      ? params.preparedStaticProviderCatalog.providers.filter(inDiscoveryScope)
+    (params.providerDiscoveryEntriesOnly === true || reuseRuntimeProviders) &&
+    params.preparedStaticProviderCatalog?.providers
+      ? params.preparedStaticProviderCatalog.providers.filter(
+          (provider) =>
+            inDiscoveryScope(provider) &&
+            // Preparation also retains auth-only siblings; they must not replace catalogs
+            // with the same identity or enter live catalog credential preparation.
+            (params.providerDiscoveryEntriesOnly === true ||
+              (provider.catalog ?? provider.staticCatalog)),
+        )
       : [];
   const preparedPluginIds = new Set(
     preparedProviders.flatMap((provider) => (provider.pluginId ? [provider.pluginId] : [])),

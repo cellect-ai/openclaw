@@ -46,7 +46,7 @@ it("delivers a finished child to the live requester when the recorded store path
     const requesterSessionKey = "agent:main:main";
     await upsertSessionEntryCore(
       { storePath: cfg.session.store, sessionKey: requesterSessionKey, agentId: "main" },
-      { sessionId: "live-requester", lifecycleRevision: "live-revision", updatedAt: 1 },
+      { sessionId: "live-requester", updatedAt: 1 },
     );
     const turns: string[] = [];
     const handler = ({ params, respond }: GatewayRequestHandlerOptions) => {
@@ -103,9 +103,8 @@ it("delivers a finished child to the live requester when the recorded store path
       vi.mocked(config.getRuntimeConfig).mockReturnValue(cfg);
       await upsertSessionEntryCore(
         { storePath: cfg.session.store, sessionKey: requesterSessionKey, agentId: "main" },
-        { sessionId: "live-requester", lifecycleRevision: "live-revision", updatedAt: 2 },
+        { sessionId: "live-requester", updatedAt: 2 },
       );
-      publishSystemEventStoreResolver(() => cfg.session.store);
       const requester = await delivery.loadRequesterSessionEntry(requesterSessionKey, "main");
       expect(recordedStorePath).toBeDefined();
       expect(requester.storePath).not.toBe(recordedStorePath);

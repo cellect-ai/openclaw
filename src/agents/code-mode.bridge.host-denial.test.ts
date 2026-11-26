@@ -32,7 +32,7 @@ import {
   testing,
   waitUntilCompleted,
 } from "./code-mode.test-support.js";
-import { consumeTrustedToolNoStartError } from "./tool-result-error.js";
+import { consumeToolExecutionNotStarted as consumeTrustedToolNoStartError } from "./tool-effect-receipt.js";
 import { createToolTerminalObserver } from "./tool-terminal-outcome.js";
 import { jsonResult, type AnyAgentTool } from "./tools/common.js";
 import * as gatewayTool from "./tools/gateway.js";
@@ -400,7 +400,7 @@ describe("Code Mode subscribed host denial", () => {
           : `const results = await Promise.allSettled([${expressions.join(",")}]); throw new Error(results.find(r => r.status === "rejected").reason.message);`;
       let details = await harness.run(code);
       if (order === "late-settlement") {
-        // Rejection settles the cell immediately; cancellation cannot undo started effects.
+        // Rejection settles the cell without replaying or draining its late sibling.
         expect(details.status).toBe("failed");
         await expect(fs.readFile(marker, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
         releaseLateMutation.resolve();

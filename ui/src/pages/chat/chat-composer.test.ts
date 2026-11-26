@@ -162,8 +162,6 @@ function dictationPointer(type: "pointerdown" | "pointerup", pointerId: number):
   return event as PointerEvent;
 }
 
-const mountComposer = (overrides: Parameters<typeof props>[0]) => renderComposer(overrides, true);
-
 beforeEach(() => {
   onTestFinished(installChatComposerPickerDismissal(document));
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue(undefined);
@@ -233,36 +231,36 @@ it("shows actionable connecting guidance in a visible status region", () => {
   expect(button(container, t("chat.composer.stopVoiceInput")).disabled).toBe(false);
 });
 
-it("shows the same microphone guidance while dictation waits for access", async () => {
-  vi.useFakeTimers();
+it("shows dictation starting at once and microphone guidance only when access is slow", async () => {
+  // Exercise the pending microphone phase with both lazy dictation modules already loaded.
+  await import("./components/composer-dictation-status.tsx");
+  await import("./composer-dictation-session.ts");
   openMicrophoneMock.mockReturnValue(new Promise(() => {}));
   const dismissRecovery = vi.fn();
-  const { container, query } = mountComposer({
-    gatewayClient: {
-      request: vi.fn(async (method: string) =>
-        method === "talk.session.create"
-          ? {
-              sessionId: "dictation-test",
-              audio: { inputEncoding: "g711_ulaw", inputSampleRateHz: 8000 },
-            }
-          : { transcription: { ready: true } },
-      ),
-      addEventListener: () => () => {},
-    } as unknown as GatewayBrowserClient,
-    onToggleRealtimeTalk: vi.fn(),
-    realtimeTalkStatus: "error",
-    realtimeTalkDetail: "The selected microphone is unavailable",
-    onUseSystemDefaultMicrophone: vi.fn(),
-    onDismissRealtimeTalkError: dismissRecovery,
-  });
+  const { container, query } = await mountTalk(
+    { transcription: { ready: true } },
+    {
+      realtimeTalkStatus: "error",
+      realtimeTalkDetail: "The selected microphone is unavailable",
+      onUseSystemDefaultMicrophone: vi.fn(),
+      onDismissRealtimeTalkError: dismissRecovery,
+    },
+    true,
+  );
   await vi.advanceTimersByTimeAsync(0);
   voiceButton(container).dispatchEvent(dictationPointer("pointerdown", 15));
   expect(dismissRecovery).toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(800);
-  expect(query('.agent-chat__talk-status[role="status"]')?.textContent).toContain(
+  expect(openMicrophoneMock).toHaveBeenCalledOnce();
+  const starting = query('.agent-chat__dictation-status[role="status"]');
+  expect(starting?.textContent).toBe(t("chat.composer.dictationStarting"));
+  expect(
+    starting?.querySelector('.agent-chat__voice-activity[data-status="connecting"]'),
+  ).not.toBeNull();
+  await vi.advanceTimersByTimeAsync(1_000);
+  expect(query('.agent-chat__dictation-status[role="status"]')?.textContent).toBe(
     microphoneGuidance,
   );
-  expect(query(".agent-chat__dictation-phase")).toBeNull();
 });
 
 it("clears a live whitespace draft when the last rendered draft was already empty", () => {
@@ -375,7 +373,7 @@ it("replaces the composer with the archived-session notice", () => {
   ).toBeNull();
   banner?.querySelector<HTMLButtonElement>("button")?.click();
   expect(onAction).toHaveBeenCalledOnce();
-  const stop = query<HTMLButtonElement>(`[aria-label="${t("chat.runControls.stopGenerating")}"]`);
+  const stop = query<HTMLButtonElement>(`[aria-label="${t("chat.runControls.stop")}"]`);
   expect(stop).not.toBeNull();
   stop?.click();
   expect(onAbort).toHaveBeenCalledOnce();

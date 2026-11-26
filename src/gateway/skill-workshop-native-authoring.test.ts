@@ -3,7 +3,7 @@ import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { prepareSystemAgentRunAdmission } from "../agents/admitted-run-context.js";
 import { withGatewayToolCallerIdentity } from "../agents/tools/gateway-caller-context.js";
-import { createConfiguredSkillWorkshopTool } from "../agents/tools/skill-workshop-tool-factory.js";
+import { createConfiguredSkillWorkshopTool } from "../skills/workshop-host/skill-workshop-tool-factory.js";
 import { prepareReplyWorkshopAuthoring } from "../auto-reply/reply/reply-workshop-authoring.js";
 import type { MsgContext } from "../auto-reply/templating.js";
 import { buildChannelInboundEventContext } from "../channels/inbound-event/context.js";
@@ -13,10 +13,10 @@ import { createHostChannelIngressRuntime } from "../channels/message-access/runt
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { registerAgentRunContext } from "../infra/agent-run-registry.js";
-import { listWorkshopChanges } from "../skills/workshop/changes.js";
-import * as workshopChanges from "../skills/workshop/changes.js";
-import { resolveWorkshopSkillsDir } from "../skills/workshop/skills-root.js";
-import { resolveSkillWorkshopToolConstructionBlock } from "../skills/workshop/tool-availability.js";
+import { listWorkshopChanges } from "../skills/workshop-host/changes.js";
+import * as workshopChanges from "../skills/workshop-host/changes.js";
+import { resolveWorkshopSkillsDir } from "../skills/workshop-host/skills-root.js";
+import { resolveSkillWorkshopToolConstructionBlock } from "../skills/workshop-host/tool-availability.js";
 import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
 async function fixture(

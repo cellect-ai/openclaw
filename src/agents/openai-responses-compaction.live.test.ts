@@ -29,7 +29,7 @@ live(
     const model = makeProviderModel(
       "openai-responses",
       "openai",
-      process.env.OPENCLAW_LIVE_RESPONSES_MODEL || "gpt-5.6",
+      process.env.OPENCLAW_LIVE_RESPONSES_MODEL || "gpt-5.6-luna",
       { baseUrl: "https://api.openai.com/v1", maxTokens: 512 },
     );
     const client = new OpenAI({ apiKey, maxRetries: 0 });
@@ -68,28 +68,9 @@ live(
       output,
     );
     const serialized = JSON.stringify(saved);
-    const storedIds: string[] = [];
     try {
-      // Store the checkpoint once before proving stateless replay; repeated storage may succeed.
-      const wireOutput = compact.output;
-      if (!wireOutput.every((item) => item.type === "message" || item.type === "compaction")) {
-        throw new Error("Unexpected compact endpoint output item");
-      }
-      const input = [...wireOutput, { role: "user" as const, content: "Reply exactly ACK." }];
-      const stream = await client.responses.create({
-        model: model.id,
-        input,
-        store: true,
-        stream: true,
-        reasoning: { effort: "low" },
-        max_output_tokens: 256,
-      });
-      for await (const event of stream) {
-        if (event.type === "response.completed") {
-          storedIds.push(event.response.id);
-        }
-      }
-      expect(storedIds).toHaveLength(1);
+      // Exercise our stateless replay contract, not whether the provider still
+      // rejects a separate stored replay of the same checkpoint.
       for (let reload = 0; reload < 3; reload++) {
         const forceStoredReplay = reload === 2;
         cleanupSessionResources();
@@ -169,9 +150,6 @@ live(
       }
     } finally {
       cleanupSessionResources();
-      for (const id of storedIds) {
-        await client.responses.delete(id);
-      }
     }
   },
   180_000,

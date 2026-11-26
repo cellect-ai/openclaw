@@ -12,6 +12,7 @@ import {
   decodeGatewayOperatorRecoverySource,
   type RestartRecoveryOperatorSource,
 } from "../gateway/operator-run-recovery-source.codec.js";
+import { hasTransferredCronOwner } from "./human-owner.js";
 import type { CronInferenceBinding } from "./inference-binding.js";
 import { resolveCronRunAdmissionSource } from "./run-authority.js";
 import type { CronRuntimeAuthority } from "./runtime-authority.js";
@@ -43,13 +44,14 @@ export type ScheduledRequesterRef =
 type ParentlessScheduledPrincipal =
   /** A parent key without a link. Every decision equals the legacy one until bound. */
   | Readonly<{ kind: "unbound-parent"; parentSessionKey: string }>
-  | Readonly<{ kind: "operator"; basis: "trusted-policy" | "unlinked-legacy" }>
+  | Readonly<{ kind: "operator"; basis: "trusted-policy" | "unlinked-legacy" | "operator-source" }>
   | Readonly<{ kind: "ingress"; ingress: ScheduledIngress }>;
 
 type ScheduledPrincipal =
   | Readonly<{ kind: "parent"; parent: ScheduledParentRef; requester: ScheduledRequesterRef }>
   | ParentlessScheduledPrincipal;
 
+/** The principal a stored job names, before its parent row is read. */
 type StoredScheduledPrincipal =
   | Readonly<{ kind: "parent"; parent: ScheduledParentLink; requester: ScheduledRequesterRef }>
   | ParentlessScheduledPrincipal;
@@ -180,6 +182,7 @@ type BuilderJob = Pick<
   | "payload"
   | "operatorSource"
   | "sourceConversation"
+  | "ownerProfileId"
   | "createdActor"
   | "toolsAllowProvenance"
   | "toolsAllowExecTarget"
@@ -190,7 +193,10 @@ type BuilderJob = Pick<
 
 /** Which requester an occurrence must recheck; the caller runs that owner's check. */
 export function resolveScheduledRequester(
-  job: Pick<CronStoredJob, "operatorSource" | "toolsAllowProvenance" | "createdActor">,
+  job: Pick<
+    CronStoredJob,
+    "operatorSource" | "toolsAllowProvenance" | "createdActor" | "ownerProfileId"
+  >,
 ): ScheduledRequesterRef {
   if (job.operatorSource) {
     return {
@@ -202,7 +208,7 @@ export function resolveScheduledRequester(
   if (channelRequester) {
     return { kind: "channel", requester: channelRequester };
   }
-  const profileId = profileIdOf(job.createdActor);
+  const profileId = job.ownerProfileId ?? profileIdOf(job.createdActor);
   // The parent row's creator records who opened the conversation, not who
   // authorized this job, so it is never a fallback.
   return profileId ? { kind: "profile", profileId } : { kind: "unknown" };
@@ -229,9 +235,13 @@ export function resolveScheduledPrincipal(
     } catch {
       return { error: "stored operator source is invalid" };
     }
+    const parent = source.kind === "gateway" ? job.sourceConversation : source;
+    if (!parent) {
+      return { kind: "operator", basis: "operator-source" };
+    }
     return {
       kind: "parent",
-      parent: { agentId: source.agentId, sessionKey: source.sessionKey },
+      parent: { agentId: source.agentId, sessionKey: parent.sessionKey },
       requester: { kind: "operator-source", source },
     };
   }
@@ -280,6 +290,14 @@ function resolveAuthority(
     basis,
     ...(admissionSource ? { admissionSource } : {}),
   });
+  // Resetting resource lineage must not turn a retained non-owner grant into a legacy owner.
+  if (facts.trigger === "cron" && job.operatorSource) {
+    return withSource(facts.requesterCheck?.owner === true, "operator-source");
+  }
+  if (facts.trigger === "cron" && hasTransferredCronOwner(job) && !job.operatorSource) {
+    const owner = facts.requesterCheck?.owner === true;
+    return withSource(owner, owner ? "profile-role" : "none");
+  }
   if (principal.kind === "parent") {
     const { requester } = principal;
     if (requester.kind === "unknown") {

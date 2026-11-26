@@ -73,9 +73,9 @@ export async function collectHeartbeatTaskMigrationFindings(
   const findings: HealthFinding[] = [];
   for (const agent of resolveHeartbeatTaskMigrationAgents(cfg)) {
     const finding = { ...MIGRATION_FINDING_DEFAULTS, path: storePath, target: agent.agentId };
-    let monitor: ReturnType<typeof readLegacyHeartbeatScratch>;
+    let monitor: Awaited<ReturnType<typeof readLegacyHeartbeatScratch>>;
     try {
-      monitor = readLegacyHeartbeatScratch(storePath, agent.agentId, { env });
+      monitor = await readLegacyHeartbeatScratch(storePath, agent.agentId, { env });
     } catch (error) {
       const deferred = error instanceof CronStoreSelectionRequiredError;
       findings.push({
@@ -256,9 +256,9 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
     scratch: NonNullable<CronJobScratchState["scratch"]>;
   }> = [];
   for (const agent of resolveHeartbeatTaskMigrationAgents(params.cfg)) {
-    let monitor: ReturnType<typeof readLegacyHeartbeatScratch>;
+    let monitor: Awaited<ReturnType<typeof readLegacyHeartbeatScratch>>;
     try {
-      monitor = readLegacyHeartbeatScratch(storePath, agent.agentId, { env });
+      monitor = await readLegacyHeartbeatScratch(storePath, agent.agentId, { env });
     } catch (error) {
       warnings.push(
         `Agent "${agent.agentId}" heartbeat scratch could not be inspected: ${errorMessage(error)}.`,
@@ -315,7 +315,7 @@ export async function maybeMigrateHeartbeatTasksToCron(params: {
 
   for (const candidate of candidates) {
     const { agent, document, jobId, scratch } = candidate;
-    const session = resolveLegacyHeartbeatSession(
+    const session = await resolveLegacyHeartbeatSession(
       params.cfg,
       agent.agentId,
       agent.heartbeat,

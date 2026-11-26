@@ -4,7 +4,7 @@ import path from "node:path";
 import { sameFileIdentity, type FileIdentityStat } from "@openclaw/fs-safe/advanced";
 import { extractErrorCode } from "@openclaw/normalization-core/error-coercion";
 import { getChildLogger } from "../logging/logger.js";
-import { registerSqliteCacheExitClose } from "./sqlite-wal.js";
+import { registerProcessExitCleanup } from "./process-exit-cleanup.js";
 
 export async function removePublicationStagingDirectory(
   stagingDir: string,
@@ -40,7 +40,7 @@ export async function removePublicationStagingDirectory(
     }
     // NFS may keep .nfs aliases until the last native handle closes. Never
     // unlink those aliases; retry only empty-directory removal at process exit.
-    registerSqliteCacheExitClose(() => {
+    registerProcessExitCleanup(() => {
       const current = fsSync.lstatSync(stagingDir, { bigint: true, throwIfNoEntry: false });
       if (current?.isDirectory() && sameFileIdentity(expectedIdentity, current)) {
         fsSync.rmdirSync(stagingDir);

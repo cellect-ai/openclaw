@@ -1,31 +1,33 @@
 import { expect, it } from "vitest";
 import { captureRuntimeConfigAsyncReader } from "../../../config/config.js";
-import { createContext } from "../../../gateway/server-plugin-in-process-dispatch.test-support.js";
-import { claimAgentRunContext, releaseAgentRunContext } from "../../../infra/agent-run-registry.js";
-import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
+import { createDirectChatContext } from "../../../gateway/server-chat.agent-events.test-helpers.js";
 import {
-  markGatewayRestartDraining,
-  resetGatewayWorkAdmission,
-} from "../../../process/gateway-work-admission.js";
+  claimAgentRunContext,
+  hasLiveAgentRunContext,
+  releaseAgentRunContext,
+} from "../../../infra/agent-run-registry.js";
+import { bindGatewayContextResolver } from "../../../plugins/runtime/gateway-request-scope.js";
 import { withOpenClawTestState } from "../../../test-utils/openclaw-test-state.js";
 import { createSubagentRunRecord } from "../../subagent-test-fixtures.test-helpers.js";
 import { createAgentsWaitTool } from "../../tools/agents-wait-tool.js";
 import { subagentRuns } from "./subagent-registry-memory.js";
 import { createSubagentRegistryRestorer } from "./subagent-registry-restore.js";
-import { saveSubagentRegistryToSqlite } from "./subagent-registry-state.fixture.test-support.js";
 import {
-  terminateLiveSubagentsForShutdown,
-  resetSubagentRegistryForTests,
-  testing,
-} from "./subagent-registry.test-helpers.js";
+  loadSubagentRegistryFromSqlite,
+  saveSubagentRegistryToSqlite,
+} from "./subagent-registry-state.fixture.test-support.js";
+import { terminateLiveSubagentsForShutdown } from "./subagent-registry.js";
+import { resetSubagentRegistryForTests, testing } from "./subagent-registry.test-helpers.js";
 
-it.each(["crash", "shutdown"] as const)(
+it.each(["recorded failure", "shutdown"] as const)(
   "collects recorded child outcomes after %s",
   async (restart) => {
     await withOpenClawTestState({ scenario: "minimal" }, async () => {
       await resetSubagentRegistryForTests({ persist: false });
       await captureRuntimeConfigAsyncReader()();
-      const startedAt = Math.floor(performance.timeOrigin) - 1000;
+      // Restoration finalizes recorded terminal outcomes; it does not reconstruct
+      // execution after a crash (the intentionally lossy #185730 contract).
+      const startedAt = Date.now() - 1000;
       const entries = ["captured", "interrupted-1", "interrupted-2"].map((runId) =>
         createSubagentRunRecord({
           runId,
@@ -41,7 +43,14 @@ it.each(["crash", "shutdown"] as const)(
           execution:
             runId === "captured"
               ? { status: "terminal", startedAt, endedAt: startedAt + 1, outcome: { status: "ok" } }
-              : { status: "running", startedAt },
+              : restart === "recorded failure"
+                ? {
+                    status: "terminal",
+                    startedAt,
+                    endedAt: startedAt + 1,
+                    outcome: { status: "error", error: "child execution failed" },
+                  }
+                : { status: "running", startedAt },
           ...(runId === "captured"
             ? {
                 completion: {
@@ -60,38 +69,33 @@ it.each(["crash", "shutdown"] as const)(
           ensureListener() {},
           warn() {},
         }).activate();
-      const claims: Array<{ runId: string; token: ReturnType<typeof claimAgentRunContext> }> = [];
+      const executionClaims: Array<{ runId: string; claim: string | undefined }> = [];
       try {
         saveSubagentRegistryToSqlite(new Map(entries.map((entry) => [entry.runId, entry])));
         await restore();
         if (restart === "shutdown") {
-          const gateway = createContext();
+          const gateway = createDirectChatContext();
           const resolveGatewayContext = () => gateway;
           for (const entry of subagentRuns.values()) {
             bindGatewayContextResolver(entry, resolveGatewayContext);
             if (entry.execution.status === "running") {
-              const token = claimAgentRunContext(
+              const claim = claimAgentRunContext(
                 entry.runId,
-                { agentId: "main", sessionKey: entry.childSessionKey },
+                { sessionKey: entry.childSessionKey },
                 { trackOwner: true, ownsContext: true },
               );
-              expect(token).toBeDefined();
-              claims.push({ runId: entry.runId, token });
+              executionClaims.push({ runId: entry.runId, claim });
+              expect(hasLiveAgentRunContext(entry.runId)).toBe(true);
             }
           }
-          markGatewayRestartDraining();
           await terminateLiveSubagentsForShutdown(resolveGatewayContext);
-          resetGatewayWorkAdmission();
-          for (const { runId, token } of claims) {
-            releaseAgentRunContext(runId, token);
-            expect(subagentRuns.get(runId)).toMatchObject({
-              execution: {
-                status: "terminal",
-                outcome: { status: "error", error: "Gateway stopped" },
-              },
-              collectorCompletion: { status: "failed" },
+          for (const { runId, claim } of executionClaims) {
+            expect(subagentRuns.get(runId)?.execution).toMatchObject({
+              status: "terminal",
+              outcome: { status: "error", error: "Gateway stopped" },
             });
             expect(subagentRuns.get(runId)?.killReconciliation).toBeUndefined();
+            releaseAgentRunContext(runId, claim);
           }
           await resetSubagentRegistryForTests({ persist: false });
           await restore();
@@ -111,7 +115,7 @@ it.each(["crash", "shutdown"] as const)(
             ...entries.slice(1).map((entry) => ({
               runId: entry.runId,
               status: "failed",
-              error: expect.stringMatching(/restart|Gateway stopped/),
+              error: expect.stringMatching(/child execution failed|Gateway stopped/),
             })),
           ],
           pending: [],
@@ -125,12 +129,80 @@ it.each(["crash", "shutdown"] as const)(
           );
         }
       } finally {
-        resetGatewayWorkAdmission();
-        for (const { runId, token } of claims) {
-          releaseAgentRunContext(runId, token);
+        for (const { runId, claim } of executionClaims) {
+          releaseAgentRunContext(runId, claim);
         }
         await resetSubagentRegistryForTests({ persist: false });
       }
     });
   },
 );
+
+it("restores legacy shutdown outcomes without reviving explicit Stop or delivered work", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async () => {
+    await resetSubagentRegistryForTests({ persist: false });
+    await captureRuntimeConfigAsyncReader()();
+    const endedAt = Math.floor(performance.timeOrigin) - 1000;
+    const entries = ["interrupted", "explicit-stop", "delivered"].map((runId) =>
+      createSubagentRunRecord({
+        runId,
+        childAgentId: "main",
+        childSessionKey: `agent:main:subagent:${runId}`,
+        childSessionIdentity: { sessionId: runId, lifecycleRevision: runId },
+        requesterSessionKey: "agent:main:main",
+        requesterAgentId: "main",
+        spawnMode: "run",
+        cleanup: "keep",
+        expectsCompletionMessage: true,
+        execution: {
+          status: "terminal",
+          startedAt: endedAt - 10_000_000,
+          endedAt,
+          outcome: { status: "error", error: "Gateway stopped" },
+          suppressSessionEffects: true,
+        },
+        endedReason: "subagent-killed",
+        completion: { required: true },
+        delivery: { status: runId === "delivered" ? "delivered" : "pending" },
+        cleanupHandled: true,
+        cleanupCompletedAt: endedAt,
+        suppressAnnounceReason: "killed",
+        killReconciliation: {
+          killedAt: endedAt,
+          suppressTaskDelivery: true,
+          taskCancellationAccepted: runId === "explicit-stop" ? true : undefined,
+        },
+      }),
+    );
+    try {
+      saveSubagentRegistryToSqlite(new Map(entries.map((entry) => [entry.runId, entry])));
+      await createSubagentRegistryRestorer({
+        runs: subagentRuns,
+        ensureListener() {},
+        warn() {},
+      }).activate();
+      const stored = loadSubagentRegistryFromSqlite();
+      expect(stored.get("interrupted")).toMatchObject({
+        endedReason: "subagent-error",
+        completion: { required: true, resultText: null, capturedAt: endedAt },
+        delivery: { status: "pending" },
+        cleanupHandled: false,
+      });
+      expect(stored.get("interrupted")?.killReconciliation).toBeUndefined();
+      expect(stored.get("interrupted")?.cleanupCompletedAt).toBeUndefined();
+      for (const runId of ["explicit-stop", "delivered"]) {
+        expect(stored.get(runId)).toMatchObject({
+          endedReason: "subagent-killed",
+          cleanupCompletedAt: endedAt,
+          killReconciliation: { killedAt: endedAt, suppressTaskDelivery: true },
+        });
+      }
+      // Restoring metadata grants no authority to deliver historical work.
+      for (const entry of subagentRuns.values()) {
+        expect(subagentRuns.isCompletionAuthorityRetired(entry)).toBe(true);
+      }
+    } finally {
+      await resetSubagentRegistryForTests({ persist: false });
+    }
+  });
+});

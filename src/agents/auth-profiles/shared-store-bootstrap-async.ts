@@ -68,7 +68,10 @@ export async function prepareFreshSharedAuthStoreWriteAsync(params: {
   const legacySourcesPresent = await Promise.all(
     legacySourcePaths.map((source) => canAccess(source)),
   );
-  const commits = watchAuthProfileNativeCommits(sourcePath);
+  const commits = watchAuthProfileNativeCommits(
+    sourceIdentity?.canonicalPath ?? sourcePath,
+    sourceIdentity,
+  );
   const unchanged = commits.capture();
   const assertBinding = () => {
     const currentOwnership = getPreparedSharedAuthStoreOwnership(params.env);

@@ -197,8 +197,7 @@ it.each([false, true])(
         typeof event === "object" &&
         "sql" in event &&
         typeof event.sql === "string" &&
-        event.sql.includes('from "session_nodes"') &&
-        event.sql.includes('"entry_json"') &&
+        event.sql.startsWith('with "projected_nodes"') &&
         event.sql.includes('order by "session_key"')
       ) {
         scans.push(database.db.isTransaction);
@@ -248,7 +247,7 @@ it.each([false, true])(
     } finally {
       port1.close();
       port2.close();
-      workerAdmission.finish();
+      await workerAdmission.finish();
       statements.unsubscribe(observe);
     }
     expect(scans).toEqual(changed ? [false, true] : [false]);

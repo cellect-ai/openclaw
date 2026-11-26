@@ -4,6 +4,7 @@ import {
   createSpawnMock,
   useManagedServiceHandoffLifecycleFixture,
 } from "./update-managed-service-handoff-fixture.test-support.js";
+import type { ChildProcess } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -29,6 +30,7 @@ import {
   isManagedServiceInspectionCommand,
   registerManagedHandoffOwnerTests,
 } from "./update-managed-service-handoff-lifecycle.test-support.js";
+import * as boundaryProcesses from "./update-managed-service-handoff-process.test-support.js";
 import type { ManagedServiceUpdateHandoffParams } from "./update-managed-service-handoff-types.js";
 import { pathExists } from "./update-managed-service-native.test-support.js";
 import { recordUpdateRunStep } from "./update-run-ledger.js";
@@ -185,6 +187,38 @@ describe("managed service update handoff", () => {
     expect(tracker.dirs.size).toBe(0);
   });
 
+  itUnix("reaps the parent when fixture setup rejects", async () => {
+    let parent: ChildProcess | undefined;
+    let closed = false;
+    const createParent = boundaryProcesses.createManagedServiceBoundaryParent;
+    const observer = vi
+      .spyOn(boundaryProcesses, "createManagedServiceBoundaryParent")
+      .mockImplementation((spawn) => {
+        const result = createParent(spawn);
+        parent = result.parent;
+        void result.parentClosed.then(() => {
+          closed = true;
+        });
+        return result;
+      });
+    try {
+      await expect(
+        runBoundary("systemd", {
+          async prepareState() {
+            await Promise.resolve();
+            throw new Error("fixture setup rejected");
+          },
+        }),
+      ).rejects.toThrow("fixture setup rejected");
+      expect(observer).toHaveBeenCalledTimes(1);
+      expect(closed).toBe(true);
+    } finally {
+      observer.mockRestore();
+      // The regression must reap its real parent even on the broken fixture.
+      await boundaryProcesses.createManagedServiceBoundaryCleanup(() => [parent])();
+    }
+  });
+
   itUnix("tracks the real handoff artifacts with Bun runtime arguments", async () => {
     const root = tempDirs.make("openclaw-handoff-bun-args-");
     const result = await startHandoff({
@@ -268,7 +302,9 @@ describe("managed service update handoff", () => {
         }
       }
       if (outcome === "data-at-risk") {
-        expect(result.log).toContain("keep the gateway stopped: data at risk (unreadable-state)");
+        expect(result.log).toContain(
+          "gateway left stopped: data at risk (unreadable-state) recorded and not yet verified; run openclaw update repair to verify the state and restart the gateway",
+        );
       }
       if (outcome === "unsafe") {
         expect(result.log).toContain("runtime-verification-failed");

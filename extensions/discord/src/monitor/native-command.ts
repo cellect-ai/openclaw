@@ -1,5 +1,6 @@
 import { ApplicationCommandOptionType } from "discord-api-types/v10";
 import { resolveDirectStatusReplyForSession } from "openclaw/plugin-sdk/command-status-runtime";
+import { loadCommandArgMenuModelCatalog } from "openclaw/plugin-sdk/command-surface";
 import { ensureConfiguredBindingRouteReady } from "openclaw/plugin-sdk/conversation-binding-runtime";
 import { buildPairingReply } from "openclaw/plugin-sdk/conversation-runtime";
 import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-runtime";
@@ -14,7 +15,10 @@ import {
   type CommandArgs,
   type NativeCommandSpec,
 } from "openclaw/plugin-sdk/native-command-registry";
-import type { PluginCommandNativeCandidate } from "openclaw/plugin-sdk/plugin-command-runtime";
+import {
+  pluginCommandResultContinuesAgent,
+  type PluginCommandNativeCandidate,
+} from "openclaw/plugin-sdk/plugin-command-runtime";
 import { getRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import { createSubsystemLogger, logVerbose } from "openclaw/plugin-sdk/runtime-env";
 import { getSessionEntryAsync } from "openclaw/plugin-sdk/session-store-runtime";
@@ -455,6 +459,14 @@ async function dispatchDiscordCommandInteraction(
           route: effectiveRoute,
         })
       : null;
+  // Native /think must not wait on provider discovery; persisted rows retain its metadata.
+  const menuModelCatalog =
+    command.key === "think" && menuNeedsModelContext
+      ? await loadCommandArgMenuModelCatalog({
+          cfg,
+          ...(menuModelContext?.agentId ? { agentId: menuModelContext.agentId } : {}),
+        })
+      : undefined;
   // Normal dispatch owns the unavailable-binding reply; do not offer choices it cannot apply.
   const menu =
     command.key === "verbose" && bindingReadiness?.ok === false
@@ -463,16 +475,11 @@ async function dispatchDiscordCommandInteraction(
           command,
           args: commandArgs,
           cfg,
-          session:
-            command.key === "verbose" || command.key === "think"
-              ? {
-                  agentId: menuModelContext?.agentId ?? effectiveRoute.agentId,
-                  sessionKey: effectiveRoute.sessionKey,
-                }
-              : undefined,
+          session: command.key === "verbose" ? effectiveRoute : undefined,
           provider: menuModelContext?.provider,
           model: menuModelContext?.model,
           agentRuntime: menuModelContext?.agentRuntime,
+          catalog: menuModelCatalog,
         });
   if (policy?.isCurrent() === false) {
     return reject("Access policy changed. Try this interaction again.", true);
@@ -543,34 +550,37 @@ async function dispatchDiscordCommandInteraction(
       messageThreadId,
       threadParentId: pluginThreadParentId,
     });
-    if (pluginReply.suppressReply === true) {
-      await settleDiscordInteractionWithoutVisibleReply(interaction);
+    // A continuing command hands this turn to the agent through the normal reply path below.
+    if (!pluginCommandResultContinuesAgent(pluginReply)) {
+      if (pluginReply.suppressReply === true) {
+        await settleDiscordInteractionWithoutVisibleReply(interaction);
+        return { accepted: true, effectiveRoute };
+      }
+      const recordReply = async (replyText: string) => {
+        await recordDeliveredCommandExchange({
+          config: cfg,
+          agentId: pluginCommandAgentId,
+          sessionKey: effectiveRoute.sessionKey,
+          expectedSessionId: targetSessionEntry?.sessionId,
+          commandText: prompt,
+          commandId: `discord:${accountId}:${channelId}:${interaction.id}`,
+          replyId: "plugin-reply",
+          replyText,
+        });
+      };
+      if (hasRenderableReplyPayload(pluginReply)) {
+        await deliverDiscordInteractionReply({
+          interaction,
+          payload: pluginReply,
+          ...resolveDiscordInteractionReplyOptions({ cfg, discordConfig, accountId }),
+          responseEphemeral,
+          onDelivered: recordReply,
+        });
+      } else if (await respond(DISCORD_EMPTY_VISIBLE_REPLY_WARNING)) {
+        await recordReply(DISCORD_EMPTY_VISIBLE_REPLY_WARNING);
+      }
       return { accepted: true, effectiveRoute };
     }
-    const recordReply = async (replyText: string) => {
-      await recordDeliveredCommandExchange({
-        config: cfg,
-        agentId: pluginCommandAgentId,
-        sessionKey: effectiveRoute.sessionKey,
-        expectedSessionId: targetSessionEntry?.sessionId,
-        commandText: prompt,
-        commandId: `discord:${accountId}:${channelId}:${interaction.id}`,
-        replyId: "plugin-reply",
-        replyText,
-      });
-    };
-    if (hasRenderableReplyPayload(pluginReply)) {
-      await deliverDiscordInteractionReply({
-        interaction,
-        payload: pluginReply,
-        ...resolveDiscordInteractionReplyOptions({ cfg, discordConfig, accountId }),
-        responseEphemeral,
-        onDelivered: recordReply,
-      });
-    } else if (await respond(DISCORD_EMPTY_VISIBLE_REPLY_WARNING)) {
-      await recordReply(DISCORD_EMPTY_VISIBLE_REPLY_WARNING);
-    }
-    return { accepted: true, effectiveRoute };
   }
 
   const pickerCommandContext = shouldOpenDiscordModelPickerFromCommand({

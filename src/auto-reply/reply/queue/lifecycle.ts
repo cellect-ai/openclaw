@@ -1,6 +1,12 @@
+import { isOperatorAuthorityUnavailable } from "../../../infra/operator-authority-error.js";
 import { defaultRuntime } from "../../../runtime.js";
 import { completeSessionControllerSourceLifecycle } from "../../../sessions/session-controller.mailbox-source.js";
-import { submitSessionControllerInput } from "../../../sessions/session-controller.mailbox.js";
+import {
+  retireSessionControllerInput,
+  submitSessionControllerInput,
+} from "../../../sessions/session-controller.mailbox.js";
+import type { FollowupQueueDisposition } from "../../get-reply-options.types.js";
+import { replyCallbackCustody } from "../reply-callback-custody.js";
 import type { ReplyOperationRunState } from "../reply-operation-run-state.js";
 import {
   startFollowupRunPreAdoptionHeartbeatWithCustody,
@@ -114,7 +120,10 @@ export function markFollowupRunEnqueued(run: FollowupRun): boolean {
     // Deferral publishes the source and can synchronously wake its RPC waiters.
     state.enqueued = true;
     try {
+      state.releaseCallbacks = run[replyCallbackCustody]?.retain();
       if (run.turnAdoptionLifecycle?.onDeferred?.() === false) {
+        state.releaseCallbacks?.();
+        state.releaseCallbacks = undefined;
         state.enqueued = false;
         return false;
       }
@@ -139,19 +148,43 @@ export function retireFollowupRunCancellation(run: FollowupRun): void {
 }
 export async function admitFollowupRunLifecycle(
   run: FollowupRun | FollowupLifecycleSource,
+  admitUserTurn?: () => Promise<void>,
 ): Promise<void> {
   const state = custody(run);
   run.operatorAuthority?.assertCurrent();
   if (state.adopted) {
-    return;
+    return await admitUserTurn?.();
   }
   if (state.adopting) {
-    return await state.adopting;
+    await state.adopting;
+    return await admitUserTurn?.();
   }
   if (state.completed) {
     throw new Error("Input completed before source adoption");
   }
   const admission = Promise.resolve().then(async () => {
+    if (state.enqueued) {
+      try {
+        run.operatorAuthority?.reauthorize?.();
+      } catch (error) {
+        const input = run.controllerInput;
+        if (input && !isOperatorAuthorityUnavailable(error)) {
+          state.failure = error;
+          const recorder = run.userTurnTranscriptRecorder;
+          try {
+            recorder?.markBlocked();
+            recorder?.finishPendingInput?.("cancelled");
+            await recorder?.waitForPendingInputSettlement?.();
+          } finally {
+            retireSessionControllerInput(input);
+          }
+        }
+        throw error;
+      }
+    }
+    // Reject queued authority before consuming its receipt, but acknowledge the
+    // source only after input persistence succeeds.
+    await admitUserTurn?.();
     await run.turnAdoptionLifecycle?.onAdopted();
     // A successful custody callback commits before the post-await authority check.
     state.adopted = true;
@@ -173,7 +206,7 @@ export async function admitFollowupRunLifecycle(
 /** Adapter registers source identity before the canonical custody owner settles it. */
 export function completeFollowupRunLifecycle(
   run: FollowupRun | FollowupLifecycleSource,
-  disposition?: "consumed",
+  disposition?: "consumed" | { kind: "dropped"; reason: FollowupQueueDisposition },
 ): void {
   const state = custody(run);
   if (!state.completed && disposition === "consumed") {

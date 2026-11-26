@@ -9,7 +9,7 @@ import {
   openOpenClawStateDatabase,
 } from "../../state/openclaw-state-db.js";
 import { withCliCommandCleanup, withCliProcessScope } from "../runtime-cleanup-scope.js";
-import { captureMutableUpdateCompensation } from "./update-command-mutable-signals.js";
+import { runMutableUpdateRecovery } from "./update-command-mutable-signals.js";
 
 const roots: string[] = [];
 afterEach(() => {
@@ -34,7 +34,7 @@ it("lets rollback acquire state ownership after a signal cancels the CLI's comma
         resources.beginClose(new DOMException("CLI stopping (SIGTERM)", "AbortError"));
         expect(getAsyncWorkSignal()?.aborted).toBe(true);
         await expect(acquire()).rejects.toThrow("failed to acquire gateway state ownership");
-        await captureMutableUpdateCompensation({})(async () => {
+        await runMutableUpdateRecovery(async () => {
           expect(getAsyncWorkSignal()?.aborted).toBe(false);
           const owner = await acquire();
           await owner?.release();

@@ -10,7 +10,7 @@ import { buildSessionEntry, streamSessionEntry } from "./session-files.js";
 const sessionDirs = useSessionStoreTempDirs(afterAll, "session-entry-yield-");
 
 describe("buildSessionEntry responsiveness", () => {
-  // SQLite exports render in the transcript worker and settle legacy observers after success.
+  // SQLite exports render in the transcript worker and settle observers after export.
   it.each(["archive", "sqlite"])(
     "yields at raw ordinals even for excluded %s records",
     async (source) => {
@@ -115,7 +115,7 @@ describe("buildSessionEntry responsiveness", () => {
         { ...scope, onTranscriptMessage: (message) => observed.push(message) },
         {
           onPage() {
-            expect(observed).toEqual([]);
+            expect(observed).toHaveLength(0);
             if (change === "rewrite" && !changed) {
               changed = true;
               expect(

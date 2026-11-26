@@ -168,11 +168,11 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
         const finishPreparation = createDeferred();
         const phases: string[] = [];
         let cleanupRejected = false;
-        // Exercise copy cleanup rather than the same-filesystem atomic exchange.
-        const exchange =
-          rollbackFailure === "backup-cleanup" ? publishWithoutPathExchange() : undefined;
         const originalRename = fs.rename.bind(fs);
         const originalUnlink = fs.unlink.bind(fs);
+        // A project root that no rename can move has no exchange either.
+        const exchangeSpy =
+          rollbackFailure === "backup-cleanup" ? publishWithoutPathExchange() : undefined;
         const backupRenameSpy = vi.spyOn(fs, "rename").mockImplementation(async (...args) => {
           if (rollbackFailure === "backup-cleanup" && String(args[0]) === project) {
             throw Object.assign(new Error("cross-device move"), { code: "EXDEV" });
@@ -303,9 +303,9 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
           }
         }
         const result = await update.finally(() => {
+          exchangeSpy?.mockRestore();
           backupRenameSpy.mockRestore();
           backupUnlinkSpy.mockRestore();
-          exchange?.mockRestore();
         });
         if (rollbackFailure === "backup-cleanup") {
           expect(cleanupRejected).toBe(true);
@@ -313,15 +313,12 @@ describe.runIf(process.platform !== "win32")("native package transactions", () =
           expect(result.activePackageRoot).toBeNull();
           expect(result.recovery?.serviceRestartSafe).toBe(false);
           assert(retained, "transaction missing");
-          // The published backup owns compensation even though source cleanup failed.
           expect(await retained.rollback(() => {})).toMatchObject({
             exitCode: 0,
             activePackageRoot: packageRoot,
           });
           await expectVersion(packageRoot, "1.0.0");
           await expectText(path.join(packageRoot, "dist", "index.js"), "export {};\n");
-          await expectText(metadata, "original metadata\n");
-          await expectText(sibling, "unrelated package\n");
           return;
         }
         if (shimFailure) {

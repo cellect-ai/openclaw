@@ -15,6 +15,7 @@ import type {
   CliBackendMessageInjection,
   CliBackendToolPermissionRequest,
   CliBackendToolPermissionResult,
+  CliBackendTurnInterrupt,
   CliBackendUserInputRequest,
   CliBackendUserInputResult,
 } from "../../plugins/cli-backend.types.js";
@@ -31,10 +32,10 @@ import type { CliTerminalInterruption } from "../cli-output-contracts.js";
 import { resolveExecDefaultsAsync } from "../exec-defaults.js";
 import { FailoverError, isSignalTimeoutReason } from "../failover-error.js";
 import { withAgentQuestionAnswerAuthority } from "../harness/host-private-capabilities.js";
+import { buildHarnessHostRequester } from "../harness/host-requester.js";
 import { runStructuredInput } from "../harness/structured-input-execution.js";
 import { compileStructuredInputQuestions } from "../harness/structured-input.js";
 import { resolveExecToolConfig } from "../lazy-exec-tool.js";
-import { resolveToolLoopDetectionConfig } from "../tool-loop-detection-config.js";
 import {
   restartCliLiveSession,
   createCliLiveSessionCapability,
@@ -53,8 +54,8 @@ import { createSteeredCliMessageInjection } from "./execute-plugin.steered-trans
 import { attachCliReplyBackend, createCliRunCurrentAssertion } from "./execution-target.js";
 import { createCliFailoverError as failover } from "./exit-error.js";
 import * as noOutputPolicy from "./no-output-timeout-policy.js";
-import { normalizeCliToolName } from "./tool-policy.js";
-import type { CliMcpCapture, PreparedCliRunContext } from "./types.js";
+import { isCliNativeToolCallable, normalizeCliToolName } from "./tool-policy.js";
+import type { PreparedCliRunContext } from "./types.js";
 
 function denyTool(message: string): CliBackendToolPermissionResult {
   return { behavior: "deny", message };
@@ -92,11 +93,7 @@ async function createPluginToolPermissionHandler(params: {
       return denyTool("OpenClaw denied an unnamed native tool.");
     }
     const discoveryOnly = run.cliToolAvailability?.discovery?.includes(toolName) === true;
-    if (
-      run.cliToolAvailability &&
-      !run.cliToolAvailability.native.includes(toolName) &&
-      !discoveryOnly
-    ) {
+    if (!discoveryOnly && !isCliNativeToolCallable(run, toolName, params.context.backendResolved)) {
       return denyTool(`OpenClaw denied native tool ${toolName}: it is unavailable to this run.`);
     }
 
@@ -137,14 +134,7 @@ async function createPluginToolPermissionHandler(params: {
       }
     }
 
-    const requester = {
-      ...((run.messageChannel ?? run.messageProvider)
-        ? { channel: run.messageChannel ?? run.messageProvider }
-        : {}),
-      ...(run.agentAccountId ? { accountId: run.agentAccountId } : {}),
-      ...(run.senderId ? { senderId: run.senderId } : {}),
-      ...(run.senderIsOwner !== undefined ? { senderIsOwner: run.senderIsOwner } : {}),
-    };
+    const requester = buildHarnessHostRequester(run);
     const hookResult = await runBeforeToolCallHook({
       toolName: canonicalToolName,
       params: policyInput,
@@ -168,10 +158,6 @@ async function createPluginToolPermissionHandler(params: {
         turnSourceTo: run.chatId ?? run.currentChannelId,
         turnSourceAccountId: run.agentAccountId,
         turnSourceThreadId: run.currentThreadTs,
-        loopDetection: resolveToolLoopDetectionConfig({
-          cfg: run.config,
-          agentId: run.agentId,
-        }),
       },
     });
     try {
@@ -402,7 +388,13 @@ export async function executePluginOwnedProcess(params: {
   setOnActiveLoopbackAskUserDeadlineChange?: (listener: (() => void) | undefined) => void;
   onNoOutputTimeout?: (error: FailoverError) => void;
   onInterrupted?: (reason: CliTerminalInterruption["reason"]) => boolean;
-  mcpCapture?: CliMcpCapture;
+  mcpCapture?: {
+    captureKey?: string;
+    beginCapture: (captureKey: string | undefined, assertCurrent: () => void) => void;
+    registerTurnInterrupt?: (interrupt: CliBackendTurnInterrupt | undefined) => void;
+    waitForTurnInterrupt?: () => Promise<void>;
+    onInputSubmitted?: () => void;
+  };
   liveSession?: {
     requiredGeneration?: string;
   };
@@ -545,7 +537,6 @@ export async function executePluginOwnedProcess(params: {
     assertCurrent();
     if (params.liveSession) {
       await ensureCliLiveSessionMemory(params.context, signal);
-      assertCurrent();
       liveSession = createCliLiveSessionCapability({
         context: params.context,
         argv: [command, ...executionArgs],
@@ -562,10 +553,13 @@ export async function executePluginOwnedProcess(params: {
       params.mcpCapture?.beginCapture(params.mcpCapture.captureKey, assertCaptureCurrent);
     }
     const historyWriter = params.context.cliHistoryWriter;
+    const { prepareCredentialUse } = params.context.preparedBackend;
     await historyWriter?.assertReadable();
     assertCurrent();
     const started = await runWithAgentToolSourceExecutionScope(assertCurrent, async () => {
       assertCurrent();
+      // Warm transports retain their first turn's async context. Bind every host
+      // callback here so reused transports enter the current turn's source scope.
       const execution = params.execute({
         command,
         argv0: params.executionArgv0,
@@ -582,29 +576,33 @@ export async function executePluginOwnedProcess(params: {
         ...(params.sessionId ? { sessionId: params.sessionId } : {}),
         useResume: params.useResume,
         abortSignal: signal,
-        assertCurrent,
+        assertCurrent: AsyncLocalStorage.bind(assertCurrent),
+        ...(prepareCredentialUse
+          ? { prepareCredentialUse: AsyncLocalStorage.bind(prepareCredentialUse) }
+          : {}),
         // Host-internal, not in the plugin SDK type, like the forwarded auth credential: a
         // native login can change after the check above, so the bundled Claude runtime
         // repeats it where saved turn context leaves, at prompt send and the prompt hook answer.
         ...(historyWriter?.bindsNativeLogin
           ? {
-              assertPrivateInputCurrent: () =>
+              assertPrivateInputCurrent: AsyncLocalStorage.bind(() =>
                 historyWriter.checkNativeLoginBoundary(historyWriter.replaysHistory),
+              ),
             }
           : {}),
         timeoutMs: run.timeoutMs,
         ...(run.executionMode ? { executionMode: run.executionMode } : {}),
         ...(run.cliToolAvailability ? { toolAvailability: run.cliToolAvailability } : {}),
         ...(liveSession ? { liveSession } : {}),
-        registerTurnStatus: (status: CliBackendTurnStatus) => {
+        registerTurnStatus: AsyncLocalStorage.bind((status: CliBackendTurnStatus) => {
           assertCurrent();
           const registration: ReplyBackendTurnStatus = bindCliTurnStatus(
             status,
             () => turnStatus === registration && assertionSucceeds(assertCurrent),
           );
           turnStatus = registration;
-        },
-        registerTurnInterrupt: (interrupt) => {
+        }),
+        registerTurnInterrupt: AsyncLocalStorage.bind((interrupt: CliBackendTurnInterrupt) => {
           assertCurrent();
           params.mcpCapture?.registerTurnInterrupt?.({
             interrupt: async (reason) => {
@@ -617,21 +615,24 @@ export async function executePluginOwnedProcess(params: {
               }
             },
           });
-        },
+        }),
         ...(detachReplyBackend
           ? {
-              registerMessageInjection: (injection: CliBackendMessageInjection) => {
-                messageInjection = injection;
-              },
+              registerMessageInjection: AsyncLocalStorage.bind(
+                (injection: CliBackendMessageInjection) => {
+                  messageInjection = injection;
+                },
+              ),
             }
           : {}),
-        // Warm transports retain their first turn's async context across plugin refreshes.
         requestToolPermission: AsyncLocalStorage.bind(requestToolPermission),
-        requestUserInput: createPluginUserInputHandler({
-          context: params.context,
-          abortSignal: signal,
-          onPendingInput: updatePendingApproval,
-        }),
+        requestUserInput: AsyncLocalStorage.bind(
+          createPluginUserInputHandler({
+            context: params.context,
+            abortSignal: signal,
+            onPendingInput: updatePendingApproval,
+          }),
+        ),
       });
       const executionIterator = execution[Symbol.asyncIterator]();
       iterator = executionIterator;

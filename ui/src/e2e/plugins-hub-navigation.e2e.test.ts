@@ -144,7 +144,7 @@ async function expectHeaderCopy(page: Page, active: "plugins" | "skills" | "skil
   const expected = {
     plugins: {
       title: "Plugins",
-      subtitle: "Extend your Claw with tools",
+      subtitle: "Add capabilities with plugins.",
       docs: "https://docs.openclaw.ai/plugins/manage-plugins",
     },
     skills: {
@@ -162,6 +162,8 @@ async function expectHeaderCopy(page: Page, active: "plugins" | "skills" | "skil
   expect(await header.getByRole("heading", { level: 1 }).textContent()).toBe(expected.title);
   // All three routes share the settings-style header. Allow subtitle wrapping
   // to change its height, but keep the visible title and tabs left-aligned.
+  // The phone's floating header carries the title, leaving it for assistive tech.
+  const floatingHeader = (await page.locator(".shell--floating-header").count()) > 0;
   await expect
     .poll(() =>
       header.evaluate((element) => {
@@ -178,7 +180,7 @@ async function expectHeaderCopy(page: Page, active: "plugins" | "skills" | "skil
         };
       }),
     )
-    .toEqual({ visibleTitle: true, leftAligned: true, tabsBelowIntro: true });
+    .toEqual({ visibleTitle: !floatingHeader, leftAligned: true, tabsBelowIntro: true });
   expect(await header.locator(".page-subtitle").textContent()).toContain(expected.subtitle);
   expect(await header.getByRole("link", { name: "Learn more" }).getAttribute("href")).toBe(
     expected.docs,
@@ -221,6 +223,39 @@ async function expectActivePanelLabel(page: Page, labelId: string) {
 }
 
 suite.define(() => {
+  it("replaces the disconnected catalog without stale cards", async () => {
+    const context = await createContext({ width: 1200, height: 900 });
+    const page = await context.newPage();
+    const gateway = await installMockGateway(page, {
+      featureMethods: ["plugins.list", "plugins.catalog.browse", "plugins.catalog.categories"],
+      methodResponses,
+    });
+    try {
+      await page.goto(suite.server.baseUrl + "plugins");
+      const catalog = page.locator(".plugin-catalog-results");
+      const search = catalog.getByRole("searchbox");
+      await catalog.locator(".plugin-catalog-card").first().waitFor();
+      await gateway.setOnline(false);
+      await page.waitForFunction(
+        () => window.openclawControlUi?.snapshot().gatewayPhase === "reconnecting",
+      );
+      await captureScreenshot(
+        page,
+        (process.env.OPENCLAW_PROOF_STAGE ?? "after") + "-catalog-disconnected.png",
+      );
+      await expect.poll(() => catalog.textContent()).toContain("Plugin catalog unavailable");
+      expect(await catalog.locator(".plugin-catalog-card").count()).toBe(0);
+      await search.fill("tool");
+      await expect.poll(() => catalog.textContent()).toContain("Plugin catalog unavailable");
+      expect(await search.inputValue()).toBe("tool");
+      await gateway.setOnline(true);
+      await search.fill("");
+      await catalog.locator(".plugin-catalog-card").first().waitFor();
+    } finally {
+      await context.close();
+    }
+  });
+
   it("keeps model-provider video capabilities discoverable in Media across pagination", async () => {
     const context = await createContext({ width: 1200, height: 928 });
     const page = await context.newPage();
@@ -538,13 +573,20 @@ suite.define(() => {
         await skillsTab.focus();
         await page.keyboard.press("Enter");
         await waitForControlUiRoute(page, { pathname: "/skills", routeId: "skills" });
-        await expect
-          .poll(() =>
-            page
-              .getByRole("searchbox", { name: "Search skills", exact: true })
-              .evaluate((input) => input === document.activeElement),
-          )
-          .toBe(true);
+        // Phone arrival keeps keyboard focus on the tab instead of opening the text keyboard.
+        if (viewport.width <= 768) {
+          await expect
+            .poll(() => page.evaluate(() => document.activeElement?.id))
+            .toBe("plugins-tab-skills");
+        } else {
+          await expect
+            .poll(() =>
+              page
+                .getByRole("searchbox", { name: "Search skills", exact: true })
+                .evaluate((input) => input === document.activeElement),
+            )
+            .toBe(true);
+        }
         expectStableHeader(await headerGeometry(page), pluginsHeader);
         await expectHeaderCopy(page, "skills");
         await expectActivePanelLabel(page, "plugins-tab-skills");
@@ -590,6 +632,75 @@ suite.define(() => {
         await waitForControlUiRoute(page, { pathname: "/plugins", routeId: "plugins" });
         expectStableHeader(await headerGeometry(page), pluginsHeader);
         await expectHeaderCopy(page, "plugins");
+      } finally {
+        await context.close();
+      }
+    },
+  );
+  it.each([
+    {
+      locale: "en",
+      direction: "ltr",
+      wheel: 1,
+      initial: ["true", "false"],
+      final: ["false", "true"],
+    },
+    {
+      locale: "ar",
+      direction: "rtl",
+      wheel: -1,
+      initial: ["false", "true"],
+      final: ["true", "false"],
+    },
+  ])(
+    "reports physical discovery scroll edges in $direction",
+    async ({ locale, direction, wheel, initial, final }) => {
+      const context = await createContext({ width: 390, height: 844 });
+      const page = await context.newPage();
+      try {
+        const config = { ui: { prefs: { locale } } };
+        const profileId = "scroll-operator";
+        await installMockGateway(page, {
+          authMethod: "trusted-proxy",
+          authMode: "trusted-proxy",
+          presenceUsers: [{ id: profileId, self: true }],
+          bootstrapPreferences: { profileId, config, entries: {} },
+          featureMethods: [
+            "plugins.list",
+            "plugins.catalog.browse",
+            "plugins.catalog.categories",
+            "config.get",
+          ],
+          methodResponses: {
+            ...methodResponses,
+            "config.get": {
+              ...methodResponses["config.get"],
+              config,
+              sourceConfig: config,
+              runtimeConfig: config,
+            },
+          },
+        });
+        await page.goto(suite.server.baseUrl + "plugins");
+        await expect.poll(() => page.locator("html").getAttribute("dir")).toBe(direction);
+        const chips = page.locator(".plugin-catalog-chips");
+        await expect
+          .poll(() => chips.evaluate((element) => element.scrollWidth - element.clientWidth))
+          .toBeGreaterThan(4);
+        const edges = () =>
+          chips.evaluate((element: HTMLElement) => [
+            element.dataset.atStart,
+            element.dataset.atEnd,
+          ]);
+        await expect.poll(edges).toEqual(initial);
+        await chips.hover();
+        const distance = await chips.evaluate(
+          (element) => element.scrollWidth - element.clientWidth,
+        );
+        await page.mouse.wheel((wheel * distance) / 2, 0);
+        await expect.poll(edges).toEqual(["false", "false"]);
+        await page.mouse.wheel(wheel * distance, 0);
+        await expect.poll(edges).toEqual(final);
       } finally {
         await context.close();
       }

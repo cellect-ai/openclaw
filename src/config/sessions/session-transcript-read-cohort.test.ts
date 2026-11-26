@@ -31,12 +31,12 @@ it.each(["sibling", "same"] as const)(
       const consume = vi.fn((snapshot: string) => snapshot);
       const reading = readSessionTranscriptCohort(
         { agentId: target.agentId, path: storePath, env: process.env },
+        target,
         read,
         consume,
         () => {},
         undefined,
         "history.hydration",
-        target,
       );
       if (kind === "same") {
         await expect(reading).rejects.toThrow("Session entry changed during read");

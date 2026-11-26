@@ -369,14 +369,13 @@ describe("requester continuation persisted automation management", () => {
         );
         expect(closeAdmittedRunDelegatedAuthority(admitted)).toBe(true);
         release.resolve();
-        await expect(pending).rejects.toThrow(/authority|admitted run/i);
+        const message =
+          "invalid cron.get params: The message turn has ended. Start a new turn to retry.";
+        await expect(pending).rejects.toThrow(message);
         expect(responses).toHaveBeenCalledExactlyOnceWith(
           false,
           undefined,
-          expect.objectContaining({
-            code: "INVALID_REQUEST",
-            message: expect.stringMatching(/authority|admitted run/i),
-          }),
+          expect.objectContaining({ code: "INVALID_REQUEST", message }),
         );
       } finally {
         release.resolve();
@@ -508,8 +507,15 @@ describe("requester continuation persisted automation management", () => {
       ]);
       expect(await fixture.readRuntimeAuthority()).toEqual(fixture.runtimeAuthority);
     } else {
-      // An absent or wrong-method grant stops at the method-scope fence.
-      expect(error).toMatchObject({ message: "missing scope: operator.admin" });
+      // Write now passes the method fence, but cannot bypass job ownership or grant binding.
+      expect(error).toMatchObject({
+        code: "INVALID_REQUEST",
+        message: expect.stringContaining(
+          admin
+            ? "Automation admin grant is missing, expired, or already used."
+            : "Automation not found: " + fixture.before[0]!.id,
+        ),
+      });
       expect(await fixture.read()).toEqual(fixture.before);
     }
   });

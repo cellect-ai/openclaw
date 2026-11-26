@@ -350,11 +350,12 @@ it("preserves mixed tool arguments through a reentrant direct SQLite append", as
     { toolCallId: "mixed_code", details: { value: 42 } },
     { toolCallId: "mixed_other", details: { receivedOriginal: true } },
   ]);
+  // The answered unavailable call stays in history, as the live provider context sent it.
   expect(reentrant).toMatchObject({
     content: [
-      { id: "mixed_rejected", name: "unavailable", arguments: {} },
-      { id: "mixed_code", arguments: { code: source } },
-      { id: "mixed_other", arguments: { code: source } },
+      { id: "mixed_rejected", name: "unavailable" },
+      { arguments: { code: source } },
+      { arguments: { code: source } },
     ],
   });
   const stored = manager
@@ -369,7 +370,7 @@ it("preserves mixed tool arguments through a reentrant direct SQLite append", as
   expect(stored[1]).toMatchObject({
     message: {
       content: [
-        { id: "mixed_rejected", name: "unavailable", arguments: {} },
+        { id: "mixed_rejected", name: "unavailable" },
         { id: "mixed_code", arguments: { code: source } },
         { id: "mixed_other", arguments: { code: source } },
       ],

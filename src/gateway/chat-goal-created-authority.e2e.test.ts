@@ -95,6 +95,9 @@ it(
         VITEST: process.env.VITEST,
         OPENCLAW_TEST_MINIMAL_GATEWAY: undefined,
         OPENCLAW_DISABLE_BUNDLED_PLUGINS: "1",
+        // Keep this synthetic loopback provider out of inherited external proxies.
+        NO_PROXY: [process.env.NO_PROXY, "127.0.0.1", "localhost", "::1"].filter(Boolean).join(","),
+        no_proxy: [process.env.no_proxy, "127.0.0.1", "localhost", "::1"].filter(Boolean).join(","),
       },
     });
     await using cleanup = new AsyncDisposableStack();
@@ -201,9 +204,9 @@ it(
           }
         } else if (scenario.parentCalls === 5) {
           expect(scenario.revoke).toBe(false);
-          expect((JSON.stringify(output) ?? "").replaceAll("\\", "")).toContain(
-            'cannot create sessions for agent "sibling"',
-          );
+          expect(typeof output === "string" ? JSON.parse(output) : output).toMatchObject({
+            status: "forbidden",
+          });
           reply("The delegated item is done. The remaining Goal item is unfinished.");
         } else if (scenario.parentCalls === 6) {
           expect(scenario.revoke).toBe(false);
@@ -405,7 +408,7 @@ it(
           loadSessionEntry({ agentId: "main", sessionKey: scenario.sessionKey })?.goal,
         ).toMatchObject(
           scenario.revoke
-            ? { status: "active", continuationTurns: 0 }
+            ? { status: "paused", continuationTurns: 0 }
             : { status: "complete", continuationTurns: 1 },
         );
         if (!scenario.revoke) {
@@ -428,7 +431,20 @@ it(
         if (scenario.revoke) {
           // The administrator may still inspect the canonical history; only the
           // revoked requester's publication stream is required to be silent.
-          // Role changes refresh projected avatar URLs, not durable message identity/content.
+          // The child input committed before revocation. Its consumed delivery stays
+          // successful even though the requester stopped before answering (#200249).
+          assert(scenario.childRunId);
+          expect(getSubagentRunByRunId(scenario.childRunId)?.delivery).toMatchObject({
+            status: "delivered",
+            requesterDelivery: { state: "consumed" },
+          });
+          expect(beforeHistory?.messages.at(-1)).toMatchObject({
+            role: "assistant",
+            content: [{ type: "subagent_completion" }],
+            subagentCompletions: [{ runId: scenario.childRunId }],
+          });
+          // No replay or false delivery-failure notice may change the committed history.
+          // Role changes refresh projected avatar URLs, not prior durable message content.
           expect(transcriptContent(history.messages)).toEqual(
             transcriptContent(beforeHistory?.messages),
           );

@@ -33,6 +33,7 @@ import {
   runCodexAppServerAttempt,
   writeCodexAppServerBinding,
 } from "./run-attempt.context-engine.test-support.js";
+import { createSteeringRecorder } from "./run-attempt.steering.test-support.js";
 import { readCodexAppServerBinding } from "./session-binding.test-helpers.js";
 import {
   attachSqliteSessionTarget,
@@ -63,7 +64,7 @@ async function startAttempt(
   harness: ReturnType<typeof createStartedThreadHarness>,
 ) {
   const run = runCodexAppServerAttempt(params);
-  await run.waitForTurnAccepted();
+  await harness.waitForMethod("turn/start");
   return async (threadId = "thread-1") => {
     await harness.completeTurn("completed", threadId);
     return run;
@@ -115,13 +116,11 @@ async function createSqliteParams(
   const params = createParams(sqliteSessionFile, sqliteWorkspaceDir);
   await attachSqliteSessionTarget(params, storePath, sessionId);
   const message = userMessage("hello", Date.now());
-  params.userTurnTranscriptRecorder = {
+  params.userTurnTranscriptRecorder = createSteeringRecorder(
     message,
-    resolveMessage: async () => message,
-    markRuntimePersisted() {},
-    getAdmissionReceipt: () => undefined,
-    isBlocked: () => false,
-  } as EmbeddedRunAttemptParams["userTurnTranscriptRecorder"];
+    async () => undefined,
+    () => false,
+  );
   return params;
 }
 
@@ -328,12 +327,13 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
       };
       if (withRecorder) {
         params.userTurnTranscriptRecorder = {
+          ...createSteeringRecorder(
+            admittedMessage,
+            async () => undefined,
+            () => false,
+          ),
           message: undefined,
-          resolveMessage: async () => admittedMessage,
-          markRuntimePersisted() {},
-          getAdmissionReceipt: () => undefined,
-          isBlocked: () => false,
-        } as EmbeddedRunAttemptParams["userTurnTranscriptRecorder"];
+        };
       }
       params.pluginRuntimeRefreshMessages = [
         admittedMessage,
@@ -599,9 +599,8 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
     }
     recorder.markRuntimePersistencePending = vi.fn();
     recorder.markRuntimePersisted = vi.fn();
-    recorder.markSentToProvider = vi.fn(() => {
-      throw new Error("admission is not available before Codex turn/start");
-    });
+    const markSentToProvider = vi.fn();
+    recorder.markSentToProvider = markSentToProvider;
     const harness = createStartedThreadHarness(async (method) => {
       if (method === "turn/start") {
         await harness.notify({
@@ -618,20 +617,24 @@ describe("runCodexAppServerAttempt context-engine lifecycle", () => {
             },
           },
         });
+        // Buffered output must not acknowledge submission before turn/start accepts.
+        expect(recorder.markSentToProvider).not.toHaveBeenCalled();
       }
       return undefined;
     });
 
     const run = runCodexAppServerAttempt(params);
-    await run.waitForTurnAccepted();
+    await harness.waitForMethod("turn/start");
     await awaitGateBeforeSettlement(
       delivered.promise,
       run,
       "Codex attempt completed before delivering its buffered async item",
     );
     expect(params.onBlockReply).toHaveBeenCalledOnce();
-    expect(recorder.markSentToProvider).not.toHaveBeenCalled();
+    // #199695 acknowledges submission after the accepted prompt is committed.
+    expect(recorder.markSentToProvider).toHaveBeenCalledOnce();
     expect(recorder.markRuntimePersisted).toHaveBeenCalledOnce();
+    expect(recorder.markRuntimePersisted).toHaveBeenCalledBefore(markSentToProvider);
     expect(beforeMessageWrite).toHaveBeenCalledWith(
       expect.objectContaining({ message: expect.objectContaining({ role: "user" }) }),
       { agentId: "main", sessionKey: params.sessionKey },

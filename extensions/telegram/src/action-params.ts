@@ -1,12 +1,14 @@
 import {
   readPositiveIntegerParam,
   readStringOrNumberParam,
+  readStringParam,
 } from "openclaw/plugin-sdk/channel-actions";
 import {
   asOptionalRecord,
   isRecord,
   normalizeUniqueTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { resolveTelegramTargetChatType } from "./targets.js";
 
 const TELEGRAM_FORUM_TOPIC_ICON_COLORS = [
   0x6fb9f0, 0xffd67e, 0xcb86db, 0x8eee98, 0xff93b2, 0xfb6f5f,
@@ -14,6 +16,7 @@ const TELEGRAM_FORUM_TOPIC_ICON_COLORS = [
 type TelegramForumTopicIconColor = (typeof TELEGRAM_FORUM_TOPIC_ICON_COLORS)[number];
 const SEND_MEDIA_FIELDS = ["mediaUrl", "media", "path", "filePath", "fileUrl"];
 const ATTACHMENT_MEDIA_FIELDS = ["media", "mediaUrl", "path", "filePath", "fileUrl", "url"];
+const TELEGRAM_MESSAGE_EFFECT_ID_RE = /^\d+$/;
 
 export function readTelegramPositiveIntegerParam(params: Record<string, unknown>, key: string) {
   return readPositiveIntegerParam(params, key, { message: `${key} must be a positive integer.` });
@@ -54,17 +57,6 @@ export function readTelegramReplyToMessageId(params: Record<string, unknown>) {
   );
 }
 
-export function readTelegramSendMediaUrls(params: Record<string, unknown>) {
-  const attachments = Array.isArray(params.attachments) ? params.attachments.filter(isRecord) : [];
-  return normalizeUniqueTrimmedStringList([
-    ...SEND_MEDIA_FIELDS.map((field) => params[field]),
-    ...(Array.isArray(params.mediaUrls) ? params.mediaUrls : []),
-    ...attachments.flatMap((attachment) =>
-      ATTACHMENT_MEDIA_FIELDS.map((field) => attachment[field]),
-    ),
-  ]);
-}
-
 export function normalizeTelegramDeliveryPin(params: Record<string, unknown>) {
   const delivery = asOptionalRecord(params.delivery);
   const pin = delivery ? delivery.pin : params.pin === true ? true : undefined;
@@ -80,4 +72,28 @@ export function normalizeTelegramDeliveryPin(params: Record<string, unknown>) {
     ...(raw.notify === true ? { notify: true } : {}),
     ...(raw.required === true ? { required: true } : {}),
   } as const;
+}
+
+/** Telegram effects take a numeric Bot API id and apply only to known private chats. */
+export function readTelegramMessageEffectId(params: Record<string, unknown>, to: string) {
+  const effectId = readStringParam(params, "effectId") ?? readStringParam(params, "effect");
+  if (
+    !effectId ||
+    !TELEGRAM_MESSAGE_EFFECT_ID_RE.test(effectId) ||
+    resolveTelegramTargetChatType(to) !== "direct"
+  ) {
+    return undefined;
+  }
+  return effectId;
+}
+
+export function readTelegramSendMediaUrls(params: Record<string, unknown>) {
+  const attachments = Array.isArray(params.attachments) ? params.attachments.filter(isRecord) : [];
+  return normalizeUniqueTrimmedStringList([
+    ...SEND_MEDIA_FIELDS.map((field) => params[field]),
+    ...(Array.isArray(params.mediaUrls) ? params.mediaUrls : []),
+    ...attachments.flatMap((attachment) =>
+      ATTACHMENT_MEDIA_FIELDS.map((field) => attachment[field]),
+    ),
+  ]);
 }

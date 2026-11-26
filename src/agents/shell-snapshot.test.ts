@@ -60,7 +60,7 @@ describe("exec shell snapshots", () => {
     );
   async function wrapShell(shell: string, cwd: string, env: NodeJS.ProcessEnv, command: string) {
     setTestEnvValue("SHELL", shell);
-    const shellArgs = getShellConfig().args;
+    const shellArgs = (await getShellConfig()).args;
     const wrapped = await maybeWrapCommandWithShellSnapshot({
       command,
       shell,

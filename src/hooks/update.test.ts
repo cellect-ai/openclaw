@@ -113,6 +113,12 @@ describe("updateNpmInstalledHookPacks", () => {
     expect(installNpm).not.toHaveBeenCalled();
   });
 
+  it("starts no hook pack update once interrupted", async () => {
+    const result = await update({ config: configFor(), signal: AbortSignal.abort() });
+    expect(installNpm).not.toHaveBeenCalled();
+    expect(result.outcomes).toEqual([]);
+  });
+
   it.each([
     ["1.0.0", true],
     ["1.0.0-01", true],

@@ -5,7 +5,7 @@ import { createServer, type ServerResponse } from "node:http";
 import { text as readText } from "node:stream/consumers";
 import { Worker } from "node:worker_threads";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import type { ModelsListResult } from "../../../packages/gateway-protocol/src/schema/agents-models-skills.js";
 import { createDeferred, withinTest } from "../../../test/helpers/promise.js";
 import {
@@ -14,6 +14,7 @@ import {
 } from "../../agents/prepared-model-runtime.js";
 import { registerPreparedModelRuntimePublicationListener } from "../../agents/prepared-model-runtime.publication-events.js";
 import type { OpenClawConfig } from "../../config/types.js";
+import { UnresolvedSecretInputError } from "../../config/types.secrets.js";
 import type { ChatMetadataResult } from "./chat-metadata-contract.js";
 import { waitForCatalogPublication } from "./models-auth-catalog.test-support.js";
 import {
@@ -36,6 +37,13 @@ it("model reads recover a failed shared-worker publication and retain the failed
   const provider = "recovery-fixture";
   const sibling = "healthy-fixture";
   const providers = [provider, sibling];
+  const preparationFailure = new UnresolvedSecretInputError({
+    path: `models.providers.${provider}.apiKey`,
+    ref: { source: "env", provider: "default", id: "UNRESOLVED_FIXTURE_KEY" },
+  });
+  // Static preparation crosses native plugin and Vitest loaders; retain the host error identity.
+  const failureKey = `__catalog_recovery_${state.root}`;
+  Object.defineProperty(globalThis, failureKey, { configurable: true, value: preparationFailure });
   const events = new EventEmitter();
   const workers = new Map<number, Worker>();
   const workerChannel = channel("worker_threads");
@@ -103,15 +111,6 @@ it("model reads recover a failed shared-worker publication and retain the failed
   try {
     await using listening = await serveModelsEndpoint(endpoint);
     const { baseUrl } = listening;
-    // Route only this owned loopback fixture directly; preserve all other proxy routing.
-    // The proxy matcher recognizes bypass-all only when the entire value is "*".
-    const inheritedNoProxy = process.env.no_proxy ?? process.env.NO_PROXY;
-    const noProxy =
-      inheritedNoProxy === "*"
-        ? inheritedNoProxy
-        : [inheritedNoProxy, new URL(baseUrl).host].filter(Boolean).join(",");
-    Object.assign(state.envVars, { NO_PROXY: noProxy, no_proxy: noProxy });
-    state.applyEnv();
     const pluginPath = await writeCatalogPlugin(
       state,
       providers,
@@ -122,8 +121,8 @@ it("model reads recover a failed shared-worker publication and retain the failed
             staticCatalog: provider === ${JSON.stringify(provider)} ? {
               order: "simple", async run() {
                 const response = await fetch(${JSON.stringify(`${baseUrl}/prepare`)});
-                if (response.ok) return null;
-                return { get provider() { throw new Error("Fixture runtime preparation failed"); } };
+                if (!response.ok) throw globalThis[${JSON.stringify(failureKey)}];
+                return null;
               },
             } : undefined,
             catalog: { order: "profile", async run(ctx) {
@@ -216,11 +215,13 @@ it("model reads recover a failed shared-worker publication and retain the failed
       const worker = workers.get(heldThread);
       expect(worker).toBeDefined();
       expect(heldThread).toBeGreaterThan(0);
-      // Fail real result normalization after worker exit, without synthesizing publication events.
+      // Hold the discovery retry deadline still without faking Gateway I/O or RPC timers.
+      vi.useFakeTimers({ toFake: ["Date"] });
+      // Fail real preparation after worker exit, without synthesizing publication events.
       failedPreparations = 1;
       await worker!.terminate();
       expect((await withinTest(recoveryFailed.promise, signal)).message).toContain(
-        "Fixture runtime preparation failed",
+        preparationFailure.message,
       );
       // Picker and chat must repair stale errors without a Gateway restart or plugin reload.
       const [rechecked, metadata] = await Promise.all([
@@ -274,10 +275,12 @@ it("model reads recover a failed shared-worker publication and retain the failed
       expect(catalogModelIds(refreshed, provider)).toEqual(["original", "recovered"]);
       expect(refreshed.refreshFailed).not.toBe(true);
     } finally {
+      vi.useRealTimers();
       releasePublication?.();
       releaseResponses();
     }
   } finally {
+    Reflect.deleteProperty(globalThis, failureKey);
     workerChannel.unsubscribe(recordWorker);
     await Promise.all(providerWork);
   }

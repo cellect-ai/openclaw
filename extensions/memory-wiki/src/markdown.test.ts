@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { describe, expect, it } from "vitest";
+import { extractWikiLinks } from "./markdown-links.js";
 import {
   extractHumanNotesBlock,
+  formatWikiLink,
   parseWikiMarkdown,
   preserveHumanNotesBlock,
   renderWikiMarkdown,
@@ -10,7 +13,7 @@ import {
   toWikiPageSummary,
 } from "./markdown.js";
 
-function scanWikiLinkTargets(raw: string): string[] {
+function scanWikiSummary(raw: string) {
   const result = scanWikiPageSummary({
     absolutePath: "/tmp/wiki/entities/test.md",
     relativePath: "entities/test.md",
@@ -19,7 +22,7 @@ function scanWikiLinkTargets(raw: string): string[] {
   if (result.status !== "valid") {
     throw new Error(`Expected valid wiki page scan, got ${result.status}`);
   }
-  return result.page.linkTargets;
+  return result.page;
 }
 
 it.each([
@@ -118,33 +121,41 @@ describe("toWikiPageSummary", () => {
 it.each([
   [
     "longer closing fence",
-    "# Longer Close\n\n```scala\ndef handle(req: Request[A]): Future[Option[User]] = ???\n````\n\nProse: [[RealTarget]]",
-    "RealTarget",
+    "```scala\n# install first\ndef handle(req: Request[A]): Future[Option[User]] = ???\n````\n\n# Longer Close\n\nProse: [[RealTarget]]",
+    { title: "Longer Close", linkTargets: ["RealTarget"] },
   ],
   [
     "shorter inner fence",
-    "# Long Fence With Shorter Inner Line\n\n``````bash\nsome code\n```\n[[not-a-link]]\n``````\n\nAfter fence: [[RealPage]]",
-    "RealPage",
+    "# Long `Fence` With Shorter Inner Line\n\n``````bash\nsome code\n```\n[[not-a-link]]\n``````\n\nAfter fence: [[RealPage]]",
+    { title: "Long `Fence` With Shorter Inner Line", linkTargets: ["RealPage"] },
   ],
-])("excludes fenced link targets with a %s (#97945)", (_name, markdown, target) => {
-  expect(scanWikiLinkTargets(markdown)).toEqual([target]);
+])("ignores fenced links and title comments (%s, #97945)", (_name, markdown, expected) => {
+  expect(scanWikiSummary(markdown)).toMatchObject(expected);
 });
 
-it("keeps inline link filtering while parsing CommonMark destinations", () => {
+it.each(["Plain", "[x]", "[x", "]", "a\\", "`C:\\x[y]`", "*raw* _text_ &amp; <tag>"])(
+  "renders native link titles literally: %s",
+  (title) => {
+    const relativePath = "sources/meeting notes.md";
+    for (const sourceRelativeTo of ["index.md", "entities/plan.md"]) {
+      const link = formatWikiLink({ renderMode: "native", relativePath, sourceRelativeTo, title });
+      expect(extractWikiLinks(link, sourceRelativeTo)).toEqual([relativePath]);
+      expect(JSON.stringify(fromMarkdown(link))).toContain(`"value":${JSON.stringify(title)}`);
+    }
+  },
+);
+
+it("filters literal links while parsing CommonMark destinations", () => {
   const markdown = [
-    '[[Wiki target|Alias]]\n\n[Plan](../syntheses/plan(v2).md?view=full#details "Project plan")\n\n[Escaped](../syntheses/plan\\(v3\\).md)\n\n![Image](../assets/diagram.png)',
-    "[External](https://example.com/page.md)\n\n[Anchor](#details)\n\n`[Inline code](inline.md)`\n\n```markdown\n[Fenced code](fenced.md)\n```",
+    '\\\\[[Wiki target|Alias]]\n\n[Plan](../syntheses/plan(v2).md?view=full#details "Project plan")\n\n[Escaped](../syntheses/plan\\(v3\\).md)\n\n![Image](../assets/diagram.png)',
+    "[External](https://example.com/page.md)\n\n[Anchor](#details)\n\n`[Inline code](inline.md)`\n\n```markdown\n[Fenced code](fenced.md)\n```\n\n<!-- [[missing-comment]] [[Literal]] -->\n<!--\n[[missing-multiline]]\n-->\n\\[[missing-escape]] and \\[[Literal]]\n\\\\\\[[missing-odd-run]]",
     "<!-- openclaw:wiki:related:start -->\n\n[Generated](generated.md)\n\n<!-- openclaw:wiki:related:end -->",
     "[Reference][ref]\n\n[ref]: reference.md\n\n[Notes](../syntheses/plan%20notes.md)\n\n[Cafe](../syntheses/caf%C3%A9.md#menu)\n\n[Malformed](../syntheses/100%.md)",
   ].join("\n\n");
 
-  expect(scanWikiLinkTargets(markdown)).toEqual([
-    "Wiki target",
-    "syntheses/plan(v2).md",
-    "syntheses/plan(v3).md",
-    "assets/diagram.png",
-    "syntheses/plan notes.md",
-    "syntheses/café.md",
-    "syntheses/100%.md",
-  ]);
+  expect(scanWikiSummary(markdown).linkTargets).toEqual(
+    "Wiki target\nsyntheses/plan(v2).md\nsyntheses/plan(v3).md\nassets/diagram.png\nsyntheses/plan notes.md\nsyntheses/café.md\nsyntheses/100%.md".split(
+      "\n",
+    ),
+  );
 });

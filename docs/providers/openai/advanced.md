@@ -323,6 +323,14 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     replaying a request after output or tool work has started. Azure and custom
     endpoint storage policies are unchanged.
 
+    On the native OpenAI endpoint, replayed reasoning that carries encrypted
+    content is sent without its item ID, and the message and tool-call IDs that
+    depend on it are omitted too. A turn
+    sent with `store: false` (for example, one that carries a compaction
+    checkpoint) returns item IDs that name no stored record. A later stored
+    request records that reasoning under its ID, and the next stored request fails
+    with `item_conflict` after output has started. Prompt caching is unchanged.
+
     If the server rejects saved items with `item_conflict` before output starts,
     OpenClaw automatically retries once using saved conversation text and tool
     results, without the rejected item IDs, reasoning, or compaction checkpoint.
@@ -335,12 +343,14 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     use the edited value. Older transcripts without those bytes use the recovery
     above when rejected. Unaffected sessions keep their prompt prefix and continuation.
     Gateway logs record `item_conflict_recovery`, a session hash, and the outcome
-    (`started`, `recovered`, `failed`, or `deferred`). If both requests fail, the reply offers
-    retry, `/compact`, and model-switch guidance. A response that already produced
-    output is not automatically replayed, because tools may have done work; its
-    repair is saved for the next request (`deferred`), including a new run or an
-    internal session-effects fork of that history. Successful requests that apply
-    a saved repair also log `recovered`. Subagent completion deliveries with a
+    (`started`, `recovered`, `failed`, or `deferred`). If recovery fails, the reply offers
+    retry, `/compact`, and model-switch guidance. After output starts, the transport
+    saves the repair for the next request (`deferred`). The active runtime retries
+    once in the same turn only when its execution evidence proves the entire run
+    is replay-safe, with no potential tool side effects and no pending or committed delivery.
+    Otherwise the visible failure remains, and the saved repair applies to a later
+    request, including a new run or an internal session-effects fork of that history.
+    Successful requests that apply a saved repair also log `recovered`. Subagent completion deliveries with a
     deferred repair retry automatically, up to three delivery attempts, without
     waiting for another user message. Encrypted checkpoints remain bound to their
     original session.
@@ -545,6 +555,22 @@ fallback even with explicit `agentRuntime.id: "codex"`; see
     - Accept `params.chat_template_kwargs` for OpenAI-compatible Completions
       proxies such as vLLM
     - Do not force strict tool schemas or native-only headers
+
+    Both native OpenAI and compatible `openai-completions` routes accept
+    `params.extraBody` (alias `extra_body`). For example, to send an explicit
+    [OpenAI safety identifier](https://developers.openai.com/api/docs/guides/safety-best-practices#implement-safety-identifiers),
+    configure a model with `api: "openai-completions"` and set its per-model
+    params:
+
+    ```json5
+    { extraBody: { safety_identifier: "<stable-user-id-hash>" } }
+    ```
+
+    Supply a stable, non-PII hash yourself; OpenClaw does not derive this value
+    from channel senders or other user identity. A shared static value identifies
+    the shared scope, not each person using it. This passthrough belongs to the
+    embedded OpenClaw runtime; it does not apply to models configured directly
+    with `api: "openai-responses"` or to the native Codex runtime.
 
     If a usable tool schema is incompatible with requested strict mode, the request uses
     `strict: false`. Debug logs report the downgrade under `openai-transport`,

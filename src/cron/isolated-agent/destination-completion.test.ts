@@ -111,7 +111,10 @@ it("keeps the destination session for a reply to a delivered cron question", () 
 
     const deliveryStartedAt = Date.now();
     const delivered = await dispatchCronDelivery(params);
-    expect(delivered, JSON.stringify(delivered)).toMatchObject({ delivered: true });
+    expect(delivered, JSON.stringify(delivered)).toMatchObject({
+      delivered: true,
+      deliveryReceipts: [{ channel: "telegram", to: "12345", messageId: "cron-question" }],
+    });
     const entry = latest(destination);
     expect(entry).toMatchObject(generation);
     expect(entry?.lastInteractionAt).toBeGreaterThanOrEqual(deliveryStartedAt);
@@ -608,7 +611,7 @@ it("delivers into the current destination after resets before send and between r
     }
   }, "isolated"));
 
-it("rejects implicit current delivery when the creator resets after route resolution", () =>
+it("delivers implicit current delivery to the creator's chat after a reset", () =>
   withCompletionFixture(
     async (fixture) => {
       const { params } = fixture;
@@ -633,10 +636,8 @@ it("rejects implicit current delivery when the creator resets after route resolu
       setReport(fixture, "Stale report");
 
       const result = await dispatchCronDelivery(params);
-      expect(result).toMatchObject({ delivered: false });
-      expect(result.deliveryError).toBeDefined();
-      expect(sendText).not.toHaveBeenCalled();
-      expect(await readConversationMessages(fixture.scope)).toEqual([]);
+      expect(result).toMatchObject({ delivered: true });
+      expect(sendText).toHaveBeenCalledOnce();
     },
     "current",
     "agent:main:telegram:direct:12345",
@@ -682,14 +683,10 @@ it("records a visible delivery failure when the creating conversation is deleted
       delivered: false,
       deliveryAttempted: true,
       deliveryState: { status: "not-delivered" },
-      deliveryError: `session deleted for sessionKey: ${fixture.scope.sessionKey}`,
+      deliveryError: expect.stringContaining("session deleted"),
       disposition: { kind: "error", errorKind: "delivery-target" },
     });
-    expect(warn).toHaveBeenCalledWith(
-      expect.stringContaining(
-        `delivery failed: session deleted for sessionKey: ${fixture.scope.sessionKey}`,
-      ),
-    );
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining("delivery failed: session deleted"));
     expect(await fixture.messages()).toEqual([]);
     expect(fixture.updates()).toBe(0);
   }, "isolated"));

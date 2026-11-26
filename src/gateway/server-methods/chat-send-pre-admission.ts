@@ -43,7 +43,7 @@ type ChatSendRetryParams = Pick<
 > & {
   request: Pick<
     ChatSendPreAdmissionParams["request"],
-    "goalOperation" | "requestIdentity" | "rawMessage" | "mentions" | "workContext"
+    "goalOperation" | "requestIdentity" | "rawMessage" | "mentions" | "workContext" | "appContext"
   >;
   session: Pick<
     ChatSendPreAdmissionParams["session"],
@@ -398,6 +398,8 @@ export async function runChatSendPreAdmission(
         },
         assertCurrent,
         cascadeDescendants: true,
+        // A Gateway chat.send "/stop" is an explicit user Stop.
+        announceRunStopped: true,
       });
       try {
         // Descendant cancellation can aggregate a later authority failure.

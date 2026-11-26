@@ -81,7 +81,7 @@ NODE_24_MIN_MINOR=16
 NODE_24_MIN_PATCH=0
 NODE_26_MIN_MINOR=1
 NODE_26_MIN_PATCH=0
-NODE_SUPPORTED_VERSION_LABEL="24.22.1+ or 26.12.1+"
+NODE_SUPPORTED_VERSION_LABEL="24.16.0+ on 24.x or 26.1.0+"
 
 ORIGINAL_PATH="${PATH:-}"
 
@@ -644,12 +644,14 @@ run_with_spinner() {
     fi
 }
 
+# Quiet steps hide output, so they never read the terminal. A terminal stdin
+# under sudo-rs use_pty with redirected output stops apt with SIGTTOU (#203460).
 run_quiet_step() {
     local title="$1"
     shift
 
     if [[ "$VERBOSE" == "1" ]]; then
-        run_with_spinner "$title" "$@"
+        run_with_spinner "$title" "$@" < /dev/null
         return $?
     fi
 
@@ -662,18 +664,14 @@ run_quiet_step() {
         local log_quoted=""
         printf -v cmd_quoted '%q ' "$@"
         printf -v log_quoted '%q' "$log"
-        run_with_spinner "$title" bash -c "${cmd_quoted}>${log_quoted} 2>&1" || cmd_exit=$?
+        run_with_spinner "$title" bash -c "${cmd_quoted}</dev/null >${log_quoted} 2>&1" || cmd_exit=$?
         if (( cmd_exit == 0 )); then
             return 0
         fi
     else
         # Keep users informed even when gum spinner cannot run (for example shell functions).
         ui_info "${title}"
-        if needs_stdin_isolation; then
-            "$@" < /dev/null >"$log" 2>&1 || cmd_exit=$?
-        else
-            "$@" >"$log" 2>&1 || cmd_exit=$?
-        fi
+        "$@" < /dev/null >"$log" 2>&1 || cmd_exit=$?
         if (( cmd_exit == 0 )); then
             return 0
         fi
@@ -987,7 +985,7 @@ run_npm_global_install() {
         local log_quoted=""
         printf -v cmd_quoted '%q ' "${cmd[@]}"
         printf -v log_quoted '%q' "$log"
-        run_with_spinner "Installing OpenClaw package" bash -c "${cmd_quoted}>${log_quoted} 2>&1" || install_status=$?
+        run_with_spinner "Installing OpenClaw package" bash -c "${cmd_quoted}</dev/null >${log_quoted} 2>&1" || install_status=$?
     else
         ui_info "Installing OpenClaw package"
         "${cmd[@]}" < /dev/null >"$log" 2>&1 || install_status=$?
@@ -1287,7 +1285,7 @@ Options:
   --bun-path <absolute path>          Use an existing OpenClaw Bun fork executable
   --beta                               Use beta if available, else latest
   --git-dir, --dir <path>             Checkout directory (default: ~/openclaw)
-  --no-git-update                      Skip git pull for existing checkout
+  --no-git-update                     Skip rebasing local main (Git fetches can still occur)
   --no-onboard                          Skip onboarding (non-interactive)
   --no-prompt                           Disable prompts (required in CI/automation)
   --verify                              Run a post-install smoke verify
@@ -1522,7 +1520,8 @@ install_homebrew() {
                 exit 1
             fi
             ui_info "Homebrew not found, installing"
-            run_quiet_step "Installing Homebrew" run_remote_bash "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" || return $?
+            # Interactive: Homebrew asks for the admin password and confirmation on the terminal.
+            run_with_safe_stdin run_remote_bash "https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh" || return $?
 
             # Add Homebrew to PATH for this session
             if [[ -f "/opt/homebrew/bin/brew" ]]; then
@@ -1612,8 +1611,8 @@ node_version_is_supported() {
     node_version_components_are_supported "$major" "$minor" "$patch"
 }
 
-# Fallback covers latest and extended-stable until both defaults publish relaxed engines.
-NODE_PACKAGE_ENGINE=">=24.22.1 <25 || >=26.12.1"
+# Unknown package metadata must not trigger a download for a recommendation alone.
+NODE_PACKAGE_ENGINE=">=24.16.0 <25 || >=26.1.0"
 
 node_components_satisfy_package_engine() {
     local major="$1" minor="$2" patch="$3" range="$4"
@@ -2004,10 +2003,6 @@ ensure_macos_default_node_active() {
         return 0
     fi
 
-    local active_path active_version
-    active_path="$(command -v node 2>/dev/null || echo "not found")"
-    active_version="$(node -v 2>/dev/null || echo "missing")"
-
     if [[ -z "$brew_node_prefix" || ! -x "${brew_node_prefix}/bin/node" ]]; then
         ui_error "Homebrew ${NODE_BREW_FORMULA} is not installed on disk"
         echo "The previous 'brew install' step appears to have failed."
@@ -2015,9 +2010,9 @@ ensure_macos_default_node_active() {
         return 1
     fi
 
-    ui_error "Node.js v${NODE_DEFAULT_MAJOR} was installed but this shell is using ${active_version} (${active_path})"
-    echo "Add this to your shell profile and restart shell:"
-    echo "  export PATH=\"${brew_node_prefix}/bin:\$PATH\""
+    # Homebrew's node is first on PATH here, so a rejected runtime is a stale keg, not a shadowing one.
+    ui_error "Homebrew ${NODE_BREW_FORMULA} $(node -v 2>/dev/null || echo "missing") does not meet OpenClaw's Node.js requirement (${NODE_PACKAGE_ENGINE})"
+    echo "Run 'brew update && brew upgrade ${NODE_BREW_FORMULA}', then rerun the installer."
     return 1
 }
 
@@ -2145,6 +2140,7 @@ check_node() {
         NODE_VERSION="$(node_major_version || true)"
         if node_binary_is_supported node; then
             ui_success "Node.js v$(node -v | cut -d'v' -f2) found"
+            warn_node_security_patch "$(node -v)"
             print_active_node_paths || true
             return 0
         else
@@ -2733,12 +2729,13 @@ warn_shell_path_missing_dir() {
         managed_node_bin=""
         managed_node_home_form=""
     fi
-    local shell_name="${SHELL:-}" quoted_dir fish_dir
+    local shell_name="${SHELL:-}" quoted_dir fish_dir quote_escape="'\\''"
     shell_name="${shell_name##*/}"
     # Keep path bytes literal, including history expansion in interactive Bash.
     quoted_dir="${managed_node_bin:-$dir}"
     fish_dir="$quoted_dir"
-    quoted_dir="${quoted_dir//\'/\'\\\'\'}"
+    # Bash 3.2 reinterprets inline quote escapes in pattern replacements.
+    quoted_dir="${quoted_dir//\'/$quote_escape}"
     quoted_dir="'$quoted_dir'"
     fish_dir="${fish_dir//\\/\\\\}"
     fish_dir="${fish_dir//\"/\\\"}"
@@ -3939,18 +3936,6 @@ main() {
     OPENCLAW_BIN="$(resolve_installed_openclaw_bin || true)"
     warn_duplicate_openclaw_global_installs || true
 
-    # PATH warning: installs can succeed while the user's login shell still lacks npm's global bin dir.
-    local npm_bin=""
-    npm_bin="$(npm_global_bin_dir || true)"
-    if [[ "$INSTALL_METHOD" == "npm" ]]; then
-        warn_shell_path_missing_dir "$npm_bin" "npm global bin dir"
-    fi
-    if [[ "$INSTALL_METHOD" == "git" ]]; then
-        if [[ -x "$HOME/.local/bin/openclaw" ]]; then
-            warn_shell_path_missing_dir "$HOME/.local/bin" "user-local bin dir (~/.local/bin)"
-        fi
-    fi
-
     local config_present=false defer_success=false
     if has_openclaw_config; then
         config_present=true
@@ -4033,15 +4018,34 @@ main() {
         return 1
     fi
 
+    # Keep caller-shell setup separate from PATH changes in this child process.
+    local shell_bin="" shell_bin_label=""
+    if [[ "$INSTALL_METHOD" == "npm" ]]; then
+        shell_bin="$(npm_global_bin_dir || true)"
+        shell_bin_label="npm global bin dir"
+    elif [[ -x "$HOME/.local/bin/openclaw" ]]; then
+        shell_bin="$HOME/.local/bin"
+        shell_bin_label="user-local bin dir (~/.local/bin)"
+    fi
+    local shell_setup_needed=false
+    if [[ -n "$shell_bin" ]] && ! path_has_dir "$ORIGINAL_PATH" "$shell_bin"; then
+        shell_setup_needed=true
+    fi
+
     local installed_version=""
     installed_version="$(resolve_openclaw_version)"
     echo ""
-    if [[ -n "$installed_version" ]]; then
+    if [[ "$shell_setup_needed" == "true" ]]; then
+        ui_warn "Installed; one shell setup step remains${installed_version:+ (${installed_version})}"
+    elif [[ -n "$installed_version" ]]; then
         ui_celebrate "🦞 OpenClaw installed successfully (${installed_version})!"
     else
         ui_celebrate "🦞 OpenClaw installed successfully!"
     fi
-    if [[ "$is_upgrade" == "true" ]]; then
+    if [[ "$shell_setup_needed" == "true" ]]; then
+        echo "  A piped installer cannot change its parent shell environment."
+        warn_shell_path_missing_dir "$shell_bin" "$shell_bin_label"
+    elif [[ "$is_upgrade" == "true" ]]; then
         ui_info "Upgrade complete"
     else
         local completion_messages=(

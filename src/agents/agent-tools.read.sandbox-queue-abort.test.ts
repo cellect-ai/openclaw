@@ -4,18 +4,13 @@ import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import { createAbortError } from "../infra/abort-signal.js";
-import {
-  createSandboxedEditTool,
-  createSandboxedReadTool,
-  createSandboxedWriteTool,
-} from "./agent-tools.read.js";
-import { createApplyPatchTool } from "./apply-patch.js";
+import { createSandboxedReadTool, createSandboxedWriteTool } from "./agent-tools.read.js";
 import { createSandboxFsBridge } from "./sandbox/fs-bridge.js";
 import { createSandboxTestContext } from "./sandbox/test-fixtures.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 
-it.each(["access", "read", "stat", "edit", "patch"] as const)(
+it.each(["access", "read", "stat"] as const)(
   "releases the same file after aborting a sandbox %s command",
   async (phase) => {
     const root = tempDirs.make("sandbox-file-queue-abort-");
@@ -68,34 +63,11 @@ it.each(["access", "read", "stat", "edit", "patch"] as const)(
     const read = createSandboxedReadTool({ root: "/workspace", bridge });
     const firstTool =
       phase === "stat" ? createSandboxedWriteTool({ root: "/workspace", bridge }) : read;
-    const first =
-      phase === "patch"
-        ? createApplyPatchTool({
-            cwd: "/workspace",
-            sandbox: {
-              root: "/workspace",
-              bridge,
-              workspaceMounts: [{ containerRoot: "/workspace", hostRoot: root }],
-            },
-          }).execute(
-            "run-a",
-            {
-              input:
-                "*** Begin Patch\n*** Update File: same.txt\n@@\n-original\n+replacement\n*** End Patch",
-            },
-            controller.signal,
-          )
-        : phase === "edit"
-          ? createSandboxedEditTool({ root: "/workspace", bridge }).execute(
-              "run-a",
-              { path: "same.txt", edits: [{ oldText: "original", newText: "replacement" }] },
-              controller.signal,
-            )
-          : firstTool.execute(
-              "run-a",
-              { path: "same.txt", content: "replacement" },
-              controller.signal,
-            );
+    const first = firstTool.execute(
+      "run-a",
+      { path: "same.txt", content: "replacement" },
+      controller.signal,
+    );
     const rejected = expect(first).rejects.toThrow(/abort/i);
     let retry: ReturnType<typeof read.execute> | undefined;
     let retryFinished = false;

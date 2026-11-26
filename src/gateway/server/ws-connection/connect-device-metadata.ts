@@ -13,6 +13,7 @@ import {
   isMobilePairingSetupBootstrapProfile,
   isNodePairingSetupBootstrapProfile,
   isVoiceNodePairingSetupBootstrapProfile,
+  NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE,
   resolveBootstrapProfileScopesForRole,
   type DeviceBootstrapProfile,
 } from "../../../shared/device-bootstrap-profile.js";
@@ -64,7 +65,10 @@ export function isSetupCodeHandoffBootstrapClient(params: {
     (isMobilePairingSetupBootstrapProfile(params.profile) &&
       isSetupCodeMobileBootstrapClient(params.client)) ||
     (isNodePairingSetupBootstrapProfile(params.profile) &&
-      params.client.id === GATEWAY_CLIENT_IDS.NODE_HOST) ||
+      (params.client.id === GATEWAY_CLIENT_IDS.NODE_HOST ||
+        (params.client.id === GATEWAY_CLIENT_IDS.IOS_APP &&
+          deviceBootstrapProfilesEqual(params.profile, NODE_PAIRING_SETUP_BOOTSTRAP_PROFILE) &&
+          isSetupCodeMobileBootstrapClient(params.client)))) ||
     (isVoiceNodePairingSetupBootstrapProfile(params.profile) &&
       isSetupCodeVoiceNodeBootstrapClient(params.client))
   );

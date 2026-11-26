@@ -57,20 +57,16 @@ it("discovers live tests without scanning source roots in-process", () => {
 
     expect(files.length).toBeGreaterThan(0);
     expect(files.every((file) => file.endsWith(".live.test.ts"))).toBe(true);
+    expect(files).not.toContain("src/gateway/gateway-thinking-probe.live.test.ts");
   });
 });
 
-it("covers every native live test except the manual thinking experiment in the release partition", () => {
+it("covers every native live test in the release partition", () => {
   const selectedFiles = live.RELEASE_LIVE_TEST_SHARDS.flatMap((shard) =>
     live.selectLiveShardFiles(shard, allFiles),
   );
   expect(allFiles.length).toBeGreaterThan(0);
-  const manualProbe = "src/gateway/gateway-thinking-probe.live.test.ts";
-  expect(allFiles).toContain(manualProbe);
-  expect(selectedFiles).not.toContain(manualProbe);
-  expect(
-    [...new Set([...selectedFiles, manualProbe])].toSorted((a, b) => a.localeCompare(b)),
-  ).toEqual(allFiles);
+  expect([...new Set(selectedFiles)].toSorted((a, b) => a.localeCompare(b))).toEqual(allFiles);
 });
 
 it.each([
@@ -202,13 +198,22 @@ it("requires live shard report evidence for each selected file", () => {
 });
 
 it.each([
+  ["extensions/agentsapi/agentsapi-harness.live.test.ts", "OPENCLAW_LIVE_AGENTSAPI"],
+  ["extensions/comfy/comfy.live.test.ts", "COMFY_LIVE_TEST"],
+  [
+    "extensions/codex/src/app-server/isolated-completion.acceptance.live.test.ts",
+    "OPENCLAW_LIVE_RESEARCH_ACCEPTANCE",
+  ],
+  [
+    "extensions/codex/src/app-server/isolated-completion.real-binary.live.test.ts",
+    "OPENCLAW_LIVE_CODEX_OUTPUT_SCHEMA",
+  ],
   ["test/e2e/crabbox-sandbox.live.test.ts", "OPENCLAW_E2E_CRABBOX"],
-  ["test/gateway-local-codex-goal-resume.live.test.ts", "OPENCLAW_LIVE_CODEX_GOAL_RESUME"],
+  ["src/gateway/gateway-codex-subagent-shell.live.test.ts", "OPENCLAW_LIVE_CODEX_SUBAGENT_SHELL"],
   [
     "src/gateway/gateway-personal-native-child-abort.live.test.ts",
     "OPENCLAW_LIVE_CODEX_HARNESS_PERSONAL_STOP",
   ],
-  ["src/agents/tools/sessions-send-retained-child.live.test.ts", "OPENCLAW_LIVE_RETAINED_CHILD"],
 ])("respects explicit opt-in and pass evidence for %s", (reviewFile, optInEnv) => {
   const payload = report(
     1,
@@ -219,6 +224,12 @@ it.each([
   const expectedFiles = [REASONING_FILE, reviewFile];
 
   expectReport(payload, undefined, expectedFiles, {});
+  expectReport(
+    report(1, 2, reportFile(REASONING_FILE, "passed"), reportFile(reviewFile, "failed")),
+    `selected live test files had no passing assertions: ${reviewFile}`,
+    expectedFiles,
+    {},
+  );
   expectReport(
     payload,
     `selected live test files had no passing assertions: ${reviewFile}`,

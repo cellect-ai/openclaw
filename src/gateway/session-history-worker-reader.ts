@@ -5,6 +5,7 @@ import type {
   SessionHistoryWorkerRequest,
   SessionHistoryWorkerResult,
 } from "../config/sessions/session-history-types.js";
+import type { prepareCliSessionHistoryReader } from "./cli-session-history.js";
 import type { PreparedSessionHistoryReadTarget } from "./session-history-read.types.js";
 import { createReadonlySessionHistoryReader } from "./session-history-readonly-reader.js";
 import type { GatewaySessionStoreReadSources } from "./session-utils-store.types.js";
@@ -205,6 +206,8 @@ export async function readSessionHistoryRequest(
     const { getCliSessionBinding } = await import("../config/sessions/cli-session-binding.js");
     const { readCronJobNamesInDatabase } = await import("../cron/store/job-name.kernel.js");
     const { resolveCronStoreSelectionInDatabase } = await import("../cron/store/paths.js");
+    const { runInScopedOpenClawAgentReadSnapshot } =
+      await import("../state/openclaw-agent-db-readonly-scope.js");
     const { withExistingOpenClawStateDatabaseReadOnly } =
       await import("../state/openclaw-state-db-readonly.js");
     const { getUserProfileDisplaysNative } = await import("../state/user-profile-list.native.js");
@@ -216,15 +219,19 @@ export async function readSessionHistoryRequest(
     const { resolveCurrentUserProfileDisplay } = await import("./current-user-profile-display.js");
     const { readChatHistoryPageKernel } = await import("./chat-history-page-kernel.js");
     const { encodeChatHistoryResponsePage } = await import("./chat-history-response-page.js");
-    const cli = getCliSessionBinding(request.params.entry, "claude-cli")?.sessionId
-      ? await (
-          await import("./cli-session-history.js")
-        ).prepareCliSessionHistoryReader(request.params, options.readers)
-      : undefined;
+    let cli: Awaited<ReturnType<typeof prepareCliSessionHistoryReader>>;
     try {
-      const page = await readChatHistoryPageKernel(request.params, {
-        ...options,
-        ...(cli ? { readers: cli.readers, readMessageSequence: cli.sequence } : {}),
+      // One PostgreSQL snapshot serves the CLI import check and every transcript read of this page.
+      const page = await runInScopedOpenClawAgentReadSnapshot(async () => {
+        cli = getCliSessionBinding(request.params.entry, "claude-cli")?.sessionId
+          ? await (
+              await import("./cli-session-history.js")
+            ).prepareCliSessionHistoryReader(request.params, options.readers)
+          : undefined;
+        return readChatHistoryPageKernel(request.params, {
+          ...options,
+          ...(cli ? { readers: cli.readers, readMessageSequence: cli.sequence } : {}),
+        });
       });
       cli?.applyPagination(page);
       const messages = page.messages.filter(

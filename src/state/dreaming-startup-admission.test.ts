@@ -133,7 +133,7 @@ function dreamingFixture(state: OpenClawTestState, config: OpenClawConfig) {
   const hook = owner.registry.typedHooks.find(
     (entry) => entry.hookName === "gateway_start",
   )?.handler;
-  assert(service && service.apiVersion !== 2 && hook, "Missing Memory Core startup lifecycle");
+  assert(service && service.apiVersion === 2 && hook, "Missing Memory Core startup lifecycle");
   const scheduler = createTestPluginServiceScheduler();
   const context = {
     config,
@@ -248,8 +248,9 @@ it.for(["inspection", "preparation"] as const)(
           state,
           async (admission, activate) => {
             const joining = createDeferredCore();
-            const wait = admission.waitForAgentPreparation.bind(admission);
-            vi.spyOn(admission, "waitForAgentPreparation").mockImplementation((...args) => {
+            const observer = admission.observation;
+            const wait = observer.waitForAgentPreparation;
+            vi.spyOn(observer, "waitForAgentPreparation").mockImplementation((...args) => {
               expect(getAgentDatabaseStartupAdmission()).toBeUndefined();
               const preparation = wait(...args);
               joining.resolve();
@@ -302,7 +303,7 @@ it("does not wait for unrelated pending agents when the selected agent is prepar
       await expect(
         cleanupSessionLifecycleArtifacts({ ...cleanupParams, agentId: "healthy" }),
       ).resolves.toEqual(emptyCleanup);
-      expect(admission.hasPendingAgents).toBe(true);
+      expect(admission.observation.hasPendingAgents).toBe(true);
     });
   });
 });
@@ -441,7 +442,10 @@ it.for([
     const service = owner.registry.services.find(
       (entry) => entry.service.id === "memory-core-index",
     )?.service;
-    assert(registeredRuntime && service && service.apiVersion !== 2, "Missing indexing lifecycle");
+    assert(
+      registeredRuntime && service && service.apiVersion !== 2 && service.apiVersion !== 3,
+      "Missing indexing lifecycle",
+    );
     const runtime = (getPluginOriginalValue(registeredRuntime, instance) ??
       registeredRuntime) as typeof registeredRuntime;
     // Service restarts reopen indexes only after a manager has run in this process.
@@ -462,9 +466,10 @@ it.for([
         state,
         async (admission, activate) => {
           const joined = createDeferredCore();
-          const wait = admission.waitForAgentPreparation.bind(admission);
+          const observer = admission.observation;
+          const wait = observer.waitForAgentPreparation;
           let joinedPreparation = false;
-          vi.spyOn(admission, "waitForAgentPreparation").mockImplementation((...args) => {
+          vi.spyOn(observer, "waitForAgentPreparation").mockImplementation((...args) => {
             const preparation = wait(...args);
             joinedPreparation ||= preparation !== undefined;
             joined.resolve();

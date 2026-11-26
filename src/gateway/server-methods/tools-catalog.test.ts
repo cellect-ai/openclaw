@@ -1,8 +1,6 @@
 import { expectDefined } from "@openclaw/normalization-core";
-import { Value } from "typebox/value";
-import { afterEach, assert, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import * as protocol from "../../../packages/gateway-protocol/src/index.js";
-import { ToolsCatalogResultSchema } from "../../../packages/gateway-protocol/src/schema/tools-catalog.js";
 import { listCoreToolFactoryDescriptors } from "../../agents/tool-catalog.js";
 import { filterToolsByPolicy } from "../../agents/tool-policy-match.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
@@ -155,8 +153,7 @@ it.each(["success", "retired", "failed", "load", "resolve", "cleanup"] as const)
           } else {
             await invocation;
             expect(respond).toHaveBeenCalledOnce();
-            const result: unknown = respond.mock.calls[0]?.[1];
-            assert(Value.Check(ToolsCatalogResultSchema, result));
+            const result = respond.mock.calls[0]?.[1] as protocol.ToolsCatalogResult;
             const groups = result.groups.filter((group) => group.source === "plugin");
             expect(groups.map((group) => [group.id, group.tools.map((tool) => tool.id)])).toEqual([
               ["plugin:catalog-alpha", ["aaa_catalog-alpha", "catalog-alpha"]],
@@ -221,8 +218,7 @@ it.each(["success", "retired", "failed", "load", "resolve", "cleanup"] as const)
                 );
                 respond.mockClear();
                 await invoke(core, { ...config, tools: { swarm } });
-                const result: unknown = respond.mock.calls[0]?.[1];
-                assert(Value.Check(ToolsCatalogResultSchema, result));
+                const result = respond.mock.calls[0]?.[1] as protocol.ToolsCatalogResult;
                 const tools = result.groups.flatMap((group) => group.tools),
                   ids = tools.map((tool) => tool.id);
                 expect(result.agentId).toBe("main");

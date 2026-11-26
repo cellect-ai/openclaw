@@ -26,6 +26,10 @@ import {
   type SessionStopExecution,
 } from "../../sessions/session-controller.stop.js";
 import {
+  isExplicitRunStopSource,
+  notifySessionRunStopped,
+} from "../../sessions/session-run-stopped.js";
+import {
   waitForChatAbortAcknowledgment,
   waitForChatAbortTerminalPersistence,
 } from "../chat-abort-lifecycle-internal.js";
@@ -233,6 +237,20 @@ export function prepareChatSessionAbort(
     }
   }
 
+  // Preview the identities this prepared Stop can cancel so an explicit-stop bridge can
+  // register suppression before the abort effect. The final result.runIds still records
+  // only what actually committed; these are the same selected identities.
+  const selectedRunIds = [
+    ...new Set([
+      ...capturedTargets.map(({ runId }) => runId),
+      ...[...controllerRuns.values()].map(({ runId }) => runId),
+      ...stopCapture.effects.flatMap((effect) => (effect.run?.runId ? [effect.run.runId] : [])),
+      ...(params.requester.isAdmin && canCancelWorkerSession
+        ? (workerCancellation?.runIds ?? [])
+        : []),
+    ]),
+  ];
+
   let workerCancellationPersistence: Promise<string[]> | undefined;
   let stopExecution: SessionStopExecution | undefined;
   // Reentrant cancellation can revoke the next effect. Keep committed outcomes
@@ -371,18 +389,29 @@ export function prepareChatSessionAbort(
         }
       }
     };
-    const isCommandStop = ["channel-user", "client-session", "client-run"].includes(
-      params.stopSource,
-    );
+    const isCommandStop = isExplicitRunStopSource(params.stopSource);
     if (!params.hookContext && isCommandStop) {
       throw new Error(`Stop source ${params.stopSource} requires command hook context`);
+    }
+    // Accepted Stop with confirmed authority. The notification never precedes this gate, so a
+    // rejected Stop announces nothing.
+    if (params.announceRunStopped === true && isExplicitRunStopSource(params.stopSource)) {
+      notifySessionRunStopped({
+        source: params.stopSource,
+        sessions: [{ agentId: params.agentId, sessionKey: params.sessionKey }],
+        runIds: selectedRunIds,
+      });
     }
     const stopRequest = {
       capture: stopCapture,
       assertCurrent: params.assertCurrent,
       reason: createChatAbortSignalReason(
         params.stopReason,
-        matchesVerifiedRunStopActor(params.stopActor, params) ? params.stopActor : undefined,
+        params.userInitiated === false
+          ? false
+          : matchesVerifiedRunStopActor(params.stopActor, params)
+            ? params.stopActor
+            : params.userInitiated,
       ),
       preservePendingInputs: params.preservePendingInputs,
       hookContext: params.hookContext,
@@ -429,6 +458,7 @@ export function prepareChatSessionAbort(
     acceptsRequest,
     commands,
     sessionOrigin,
+    selectedRunIds,
     result,
     abort: abortAuthorizedRuns,
     async finish() {

@@ -5,7 +5,6 @@ import type { ProviderRuntimeModel } from "../../plugins/provider-runtime-model.
 import { normalizeAcceptedSessionSpawnResult } from "../accepted-session-spawn.js";
 import { setCompactionSafeguardRuntime } from "../agent-hooks/compaction-safeguard-runtime.js";
 import compactionSafeguardExtension, {
-  executeCompactionSafeguard,
   runCompactionSafeguard,
 } from "../agent-hooks/compaction-safeguard.js";
 import { resolveEffectiveCompactionMode } from "../agent-settings.js";
@@ -13,14 +12,14 @@ import {
   finalizeToolTerminalPresentation,
   peekAdjustedParamsForToolCall,
 } from "../agent-tools.before-tool-call.js";
-import { createAgentToolResultMiddlewareRunner } from "../harness/tool-result-middleware.js";
+import { createAgentToolResultMiddlewareApplier } from "../harness/tool-result-middleware.js";
 import type { AgentToolResult } from "../runtime/index.js";
 import type { ToolResultEvent } from "../sessions/extensions/types.js";
 import type { ExtensionFactory, SessionManager } from "../sessions/index.js";
 import { isToolResultError } from "../tool-result-error.js";
 import { recordEmbeddedToolReceipt } from "./tool-send-receipts.js";
 
-/** The builtin loader exposes the same configuration to array and prepared execution. */
+/** The private loader knows the builtin it installs; generic extension paths do not. */
 export function resolveEmbeddedCompactionSafeguard(params: {
   cfg: OpenClawConfig | undefined;
   workspaceDir: string;
@@ -34,7 +33,6 @@ export function resolveEmbeddedCompactionSafeguard(params: {
   return {
     factory: compactionSafeguardExtension,
     execute: runCompactionSafeguard,
-    executePrepared: executeCompactionSafeguard,
     runtime: {
       identifierPolicy: compactionCfg?.identifierPolicy,
       qualityGuardEnabled: qualityGuardCfg?.enabled ?? true,
@@ -68,7 +66,7 @@ export function buildEmbeddedExtensionFactories(params: {
   // Snapshot the prepared session once; tool results must never rediscover
   // mutable session identity after a later turn has started.
   const sessionId = params.sessionId ?? sessionManager.getSessionId?.();
-  const runner = createAgentToolResultMiddlewareRunner({
+  const applyToolResultMiddleware = createAgentToolResultMiddlewareApplier({
     runtime: "openclaw",
     ...(agentId ? { agentId } : {}),
     ...(sessionId ? { sessionId } : {}),
@@ -89,10 +87,10 @@ export function buildEmbeddedExtensionFactories(params: {
           ? event.toolCallId
           : undefined;
       const toolCallId = eventToolCallId ?? `openclaw-${randomUUID()}`;
-      const current = {
+      const current: AgentToolResult<unknown> = {
         content: Array.isArray(event.content) ? event.content : [],
         details: event.details,
-      } satisfies AgentToolResult<unknown>;
+      };
       if (eventToolCallId) {
         // Delivery evidence stays private so middleware may fully replace result details.
         recordEmbeddedToolReceipt(
@@ -106,7 +104,7 @@ export function buildEmbeddedExtensionFactories(params: {
       const adjustedInput = eventToolCallId
         ? peekAdjustedParamsForToolCall(eventToolCallId, runId)
         : undefined;
-      const result = await runner.applyToolResultMiddleware({
+      const update = await applyToolResultMiddleware({
         threadId: event.threadId,
         turnId: event.turnId,
         toolCallId,
@@ -118,6 +116,7 @@ export function buildEmbeddedExtensionFactories(params: {
         isError: event.isError,
         result: current,
       });
+      const result = update ?? current;
       const isAcceptedSessionSpawn =
         event.toolName === "sessions_spawn" && normalizeAcceptedSessionSpawnResult(result) !== null;
       const hasError = event.isError === true || inputHadErrorStatus || isToolResultError(result);
@@ -129,6 +128,10 @@ export function buildEmbeddedExtensionFactories(params: {
           result,
           isError,
         });
+      }
+      // No middleware ran, so classification alone must not rewrite the tool's outcome.
+      if (update === undefined && isError === event.isError) {
+        return undefined;
       }
       return {
         content: result.content,

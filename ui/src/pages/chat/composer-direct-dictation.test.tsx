@@ -40,7 +40,12 @@ const dictationHarness = vi.hoisted(() => {
       return true;
     });
 
-    constructor(private options: { onCommit: (transcript: string) => void }) {
+    constructor(
+      private options: {
+        onCommit: (transcript: string) => void;
+        prepareSession?: () => Promise<string | undefined>;
+      },
+    ) {
       super();
       this.update(options);
       harness.controllers.push(this);
@@ -49,7 +54,10 @@ const dictationHarness = vi.hoisted(() => {
       this.addEventListener("change", listener);
       return () => this.removeEventListener("change", listener);
     }
-    update(options: { onCommit: (transcript: string) => void }) {
+    update(options: {
+      onCommit: (transcript: string) => void;
+      prepareSession?: () => Promise<string | undefined>;
+    }) {
       this.options = options;
       harness.options = options;
     }
@@ -61,7 +69,10 @@ const dictationHarness = vi.hoisted(() => {
     }
   }
   const harness = {
-    options: null as null | { onCommit: (transcript: string) => void },
+    options: null as null | {
+      onCommit: (transcript: string) => void;
+      prepareSession?: () => Promise<string | undefined>;
+    },
     controllers: [] as Controller[],
   };
   return Object.assign(harness, { Controller });
@@ -204,8 +215,11 @@ describe("DirectDictationControl", () => {
     controller.transcript = "spoken";
     expect(control.previewDraft()).toBe("draft spoken");
     const { container, update } = mountControl(control, true);
-    expect(container.querySelector(".agent-chat__dictation-status")?.textContent).toContain(
-      "Listening",
+    // The phase view is a lazy chunk that loads with the first dictation.
+    await vi.waitFor(() =>
+      expect(container.querySelector(".agent-chat__dictation-status")?.textContent).toContain(
+        "Listening",
+      ),
     );
     expect(container.querySelector(".agent-chat__dictation-phase--listening")).not.toBeNull();
     container.querySelector<HTMLButtonElement>(".chat-send-btn--dictating")?.click();
@@ -226,7 +240,7 @@ describe("DirectDictationControl", () => {
     expect(controller.finishActive).toHaveBeenCalledTimes(2);
   });
 
-  it("keeps the status visible after Stop until transcription settles", async () => {
+  it("keeps the lazy status visible after Stop until transcription settles", async () => {
     const { control } = fixture();
     control.prepare("agent-a");
     const controller = expectDefined(dictationHarness.controllers[0], "dictation owner");
@@ -246,7 +260,7 @@ describe("DirectDictationControl", () => {
         /Finishing|Transcribing/,
       ),
     );
-    expect(container.querySelector('.agent-chat__dictation-status[role="status"]')).not.toBeNull();
+    expect(container.querySelector('[data-status="thinking"]')).not.toBeNull();
     controller.transcribing = false;
     update();
     expect(container.querySelector(".agent-chat__dictation-status")).toBeNull();
