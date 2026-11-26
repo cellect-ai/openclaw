@@ -329,6 +329,7 @@ function normalizePendingDeliveryNotice(
   const createdAt = normalizeOptionalTimestamp(value.createdAt);
   const intentId = normalizeOptionalString(value.intentId);
   const sourceMessageId = normalizeOptionalString(value.sourceMessageId);
+  const deliveryId = normalizeOptionalString(value.deliveryId);
   return createdAt !== undefined &&
     intentId &&
     (value.state === "owed" || value.state === "unresolved" || value.state === "acknowledged")
@@ -338,6 +339,7 @@ function normalizePendingDeliveryNotice(
         intentId,
         state: value.state,
         ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(deliveryId ? { deliveryId } : {}),
       }
     : undefined;
 }

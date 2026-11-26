@@ -156,6 +156,7 @@ it("publishes Matrix delivery uncertainty against the earlier request without wr
       createdAt: 1,
       context: matrixContext,
       sourceMessageId: "$earlier",
+      deliveryId: "member-1",
       state: "owed",
     },
   });
@@ -164,9 +165,9 @@ it("publishes Matrix delivery uncertainty against the earlier request without wr
     ...matrixContext,
     agentId: "main",
     text: "Delivery of an earlier reply could not be confirmed.",
-    replyDelivery: { triggerEventId: "$earlier" },
+    replyDelivery: { triggerEventId: "$earlier", deliveryId: "member-1" },
     assertDeliveryCurrent: expect.any(Function),
-    idempotencyKey: "main-session-restart-recovery:pending-final:intent-1",
+    idempotencyKey: "main-session-restart-recovery:pending-final:intent-1:member-1",
   });
   expect(appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
   expectNotice("acknowledged");

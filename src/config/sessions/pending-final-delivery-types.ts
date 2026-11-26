@@ -57,5 +57,7 @@ export type PendingDeliveryNoticeState = {
   context: DeliveryContext;
   intentId: string;
   sourceMessageId?: string;
+  /** Specific logical reply member whose delivery is still unconfirmed. */
+  deliveryId?: string;
   state: "owed" | "unresolved" | "acknowledged";
 };

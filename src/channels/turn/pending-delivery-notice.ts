@@ -54,7 +54,7 @@ export async function deliverPendingDeliveryNotice(
       }
       // Start under the reader's FIFO admission: settlement cannot invalidate owed debt first.
       read?.assertCurrent();
-      const idempotencyKey = `main-session-restart-recovery:pending-final:${notice.intentId}`;
+      const idempotencyKey = `main-session-restart-recovery:pending-final:${notice.intentId}${notice.deliveryId ? `:${notice.deliveryId}` : ""}`;
       const delivery = runtime
         .sendNotice({
           channel: context.channel,
@@ -65,7 +65,10 @@ export async function deliverPendingDeliveryNotice(
           ...(context.channel === "matrix"
             ? {
                 text: MATRIX_NOTICE,
-                replyDelivery: { triggerEventId: notice.sourceMessageId },
+                replyDelivery: {
+                  triggerEventId: notice.sourceMessageId,
+                  ...(notice.deliveryId ? { deliveryId: notice.deliveryId } : {}),
+                },
                 assertDeliveryCurrent: async () => {
                   const current = await readSessionEntryReadOnlyInWorker({
                     ...scope,
@@ -75,6 +78,7 @@ export async function deliverPendingDeliveryNotice(
                     current?.sessionId !== entry.sessionId ||
                     current.lifecycleRevision !== entry.lifecycleRevision ||
                     current.pendingDeliveryNotice?.intentId !== notice.intentId ||
+                    current.pendingDeliveryNotice.deliveryId !== notice.deliveryId ||
                     current.pendingDeliveryNotice.state !== "owed" ||
                     deliveryContextKey(deliveryContextFromSession(current)) !==
                       deliveryContextKey(context)
@@ -129,6 +133,7 @@ export async function deliverPendingDeliveryNotice(
       current.sessionId === entry.sessionId &&
       (current.lifecycleRevision ?? null) === (entry.lifecycleRevision ?? null) &&
       current.pendingDeliveryNotice?.intentId === notice.intentId &&
+      current.pendingDeliveryNotice.deliveryId === notice.deliveryId &&
       current.pendingDeliveryNotice.state !== "acknowledged"
         ? {
             // Retain the terminal fact: queue settlement may replay after this

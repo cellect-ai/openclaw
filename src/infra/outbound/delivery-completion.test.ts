@@ -417,6 +417,30 @@ describe("pending-final delivery completion", () => {
     },
   );
 
+  it("moves Matrix notice debt to a sibling only when the first member is confirmed", async () => {
+    await updatePending({
+      context: { channel: "matrix", to: "room:!test:example.org", threadId: "$root" },
+      sourceMessageId: "$request",
+      deliveries: [...deliveries("queued"), { id: "delivery-2", state: "queued" }],
+    });
+    const sibling = { ...completion, deliveryId: "delivery-2" };
+    await settle("unknown");
+    await settle("unknown", undefined, undefined, sibling);
+    expect(read()?.pendingDeliveryNotice).toMatchObject({
+      deliveryId,
+      sourceMessageId: "$request",
+      state: "owed",
+    });
+    await settle("delivered");
+    expect(read()?.pendingDeliveryNotice).toMatchObject({
+      deliveryId: "delivery-2",
+      sourceMessageId: "$request",
+      state: "owed",
+    });
+    await settle("delivered", undefined, undefined, sibling);
+    expect(read()?.pendingDeliveryNotice).toBeUndefined();
+  });
+
   it("settles only the custom queue root while another delivery remains queued", async () => {
     const entry = read()!;
     const target = { ...sessionScope(), storePath: path.join(tmpDir, "custom-agent.sqlite") };

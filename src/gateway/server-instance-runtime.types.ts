@@ -95,7 +95,7 @@ export type GatewayLifecycleRuntime = {
     accountId?: string;
     threadId?: string | number;
     text: string;
-    replyDelivery?: { triggerEventId?: string };
+    replyDelivery?: { triggerEventId?: string; deliveryId?: string };
     assertDeliveryCurrent?: () => Promise<void>;
     idempotencyKey: string;
     isCurrent?: (cfg: OpenClawConfig) => boolean;
