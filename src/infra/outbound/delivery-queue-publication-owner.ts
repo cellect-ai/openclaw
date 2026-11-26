@@ -7,6 +7,8 @@ export type DeliveryPublicationOwner = Readonly<{
   version: 1;
   normalizedTarget: string;
   routeDigest: string;
+  /** Additive, so rollback versions can still reconcile their original route digest. */
+  agentId?: string | null;
 }>;
 
 export function requiresDeliveryPublicationOwner(entry: QueuedDelivery): boolean {
@@ -41,7 +43,12 @@ export function captureDeliveryPublicationOwner(
   normalizedTarget: string,
 ): DeliveryPublicationOwner {
   if (!normalizedTarget.trim()) throw new Error("Delivery publication target is empty");
-  return { version: 1, normalizedTarget, routeDigest: routeDigest(entry, normalizedTarget) };
+  return {
+    version: 1,
+    normalizedTarget,
+    routeDigest: routeDigest(entry, normalizedTarget),
+    agentId: entry.session?.agentId ?? null,
+  };
 }
 
 /** Pure worker-safe validation: no channel registry or provider code lookup. */
@@ -53,7 +60,8 @@ export function assertDeliveryPublicationOwner(entry: QueuedDelivery): void {
     fact.version !== 1 ||
     typeof fact.normalizedTarget !== "string" ||
     !fact.normalizedTarget.trim() ||
-    fact.routeDigest !== routeDigest(entry, fact.normalizedTarget)
+    fact.routeDigest !== routeDigest(entry, fact.normalizedTarget) ||
+    (fact.agentId !== undefined && fact.agentId !== (entry.session?.agentId ?? null))
   ) {
     throw new Error(
       "Delivery publication owner requires reconciliation: missing or inconsistent frozen route",

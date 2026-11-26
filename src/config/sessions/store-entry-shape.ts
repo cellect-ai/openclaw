@@ -184,6 +184,7 @@ export function normalizePendingFinalDelivery(
   }
   const intentId = normalizeOptionalString(value.intentId);
   const sourceRunId = normalizeOptionalString(value.sourceRunId);
+  const sourceMessageId = normalizeOptionalString(value.sourceMessageId);
   const deliveries = normalizePendingFinalDeliveries(value.deliveries);
   const sourceGeneration = normalizeOptionalString(value.sourceGeneration);
   if (
@@ -205,6 +206,7 @@ export function normalizePendingFinalDelivery(
     ...(isRecord(value.context) ? { context: value.context } : {}),
     ...(intentId ? { intentId } : {}),
     ...(sourceRunId ? { sourceRunId } : {}),
+    ...(sourceMessageId ? { sourceMessageId } : {}),
     ...(deliveries ? { deliveries } : {}),
     ...(value.dispatchState
       ? {
@@ -326,10 +328,19 @@ function normalizePendingDeliveryNotice(
   }
   const createdAt = normalizeOptionalTimestamp(value.createdAt);
   const intentId = normalizeOptionalString(value.intentId);
+  const sourceMessageId = normalizeOptionalString(value.sourceMessageId);
+  const deliveryId = normalizeOptionalString(value.deliveryId);
   return createdAt !== undefined &&
     intentId &&
     (value.state === "owed" || value.state === "unresolved" || value.state === "acknowledged")
-    ? { createdAt, context: value.context, intentId, state: value.state }
+    ? {
+        createdAt,
+        context: value.context,
+        intentId,
+        state: value.state,
+        ...(sourceMessageId ? { sourceMessageId } : {}),
+        ...(deliveryId ? { deliveryId } : {}),
+      }
     : undefined;
 }
 

@@ -89,11 +89,14 @@ export type GatewayLifecycleRuntime = {
     signal?: AbortSignal,
   ) => Promise<T>;
   sendNotice: (params: {
+    agentId?: string;
     channel: string;
     to: string;
     accountId?: string;
     threadId?: string | number;
     text: string;
+    replyDelivery?: { triggerEventId?: string; deliveryId?: string };
+    assertDeliveryCurrent?: () => Promise<void>;
     idempotencyKey: string;
     isCurrent?: (cfg: OpenClawConfig) => boolean;
   }) => Promise<{

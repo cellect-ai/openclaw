@@ -130,6 +130,7 @@ describe("admission-owned publication route across native worker registries", ()
     "normalized-target",
     "raw-route",
     "account",
+    "agent",
     "thread",
     "caller-evidence",
   ] as const)(
@@ -158,6 +159,7 @@ describe("admission-owned publication route across native worker registries", ()
               : {}),
             ...(fault === "raw-route" ? { to: "channel:other" } : {}),
             ...(fault === "account" ? { accountId: "other" } : {}),
+            ...(fault === "agent" ? { session: { ...entry.session!, agentId: "other" } } : {}),
             ...(fault === "thread" ? { threadId: "other" } : {}),
           }),
         );

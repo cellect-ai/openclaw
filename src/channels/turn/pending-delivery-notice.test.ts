@@ -112,6 +112,7 @@ it.each([
   if (status === "completed") {
     expect(sendNotice).toHaveBeenCalledWith({
       ...context,
+      agentId: "main",
       text: PENDING_DELIVERY_NOTICE,
       idempotencyKey: "main-session-restart-recovery:pending-final:intent-1",
     });
@@ -142,4 +143,34 @@ it("leaves a replacement notice owed when an earlier send finishes", async () =>
   sent.resolve({ suppressed: false });
   await attempt;
   expect(entry().pendingDeliveryNotice).toEqual(replacement);
+});
+
+it("publishes Matrix delivery uncertainty against the earlier request without writing an answer", async () => {
+  const matrixRoute = { channel: "matrix", accountId: "work" };
+  const matrixContext = { ...matrixRoute, to: "room:!room:example.org", threadId: "$root" };
+  await replaceSessionEntry(locator(), {
+    ...entry(),
+    delivery: { kind: "external", route: matrixRoute, context: matrixContext, origin: {} },
+    pendingDeliveryNotice: {
+      intentId: "intent-1",
+      createdAt: 1,
+      context: matrixContext,
+      sourceMessageId: "$earlier",
+      deliveryId: "member-1",
+      state: "owed",
+    },
+  });
+  await deliver();
+  expect(sendNotice).toHaveBeenCalledExactlyOnceWith({
+    ...matrixContext,
+    agentId: "main",
+    text: "Delivery of an earlier reply could not be confirmed.",
+    replyDelivery: { triggerEventId: "$earlier", deliveryId: "member-1" },
+    assertDeliveryCurrent: expect.any(Function),
+    idempotencyKey: "main-session-restart-recovery:pending-final:intent-1:member-1",
+  });
+  expect(appendAssistantMessageToSessionTranscript).not.toHaveBeenCalled();
+  expectNotice("acknowledged");
+  const [sent] = sendNotice.mock.calls[0]!;
+  await expect(sent.assertDeliveryCurrent()).rejects.toThrow("superseded");
 });

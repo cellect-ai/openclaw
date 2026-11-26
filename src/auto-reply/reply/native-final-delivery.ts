@@ -6,8 +6,8 @@ import type {
 import { applySessionEntryOperation } from "../../config/sessions/session-accessor.sqlite-entry.js";
 import { readSessionEntryReadOnlyInWorker } from "../../config/sessions/session-entry-read-runtime.js";
 import { getAgentRunLifecycleGeneration } from "../../infra/agent-run-registry.js";
-import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import type { OutboundDeliveryResult } from "../../infra/outbound/deliver-types.js";
+import { settlePendingFinalDelivery } from "../../infra/outbound/delivery-completion.js";
 import { captureDeliveryPublicationEvidence } from "../../infra/outbound/delivery-queue-publication-evidence.js";
 import type { DeliveryPublicationEvidence } from "../../infra/outbound/delivery-queue-publication.types.js";
 import { normalizeTargetForProvider } from "../../infra/outbound/target-normalization.js";
@@ -35,6 +35,7 @@ export async function admitNativeFinalDeliveryPlan(params: {
   storePath: string;
   sessionKey: string;
   runId: string;
+  sourceMessageId?: string;
   payloads: readonly ReplyPayload[];
   context?: DeliveryContext;
   commandOwnerReference?: Plan["commandOwnerReference"];
@@ -46,6 +47,7 @@ export async function admitNativeFinalDeliveryPlan(params: {
     sessionId: params.operation.sessionId,
     intentId: randomUUID(),
     sourceRunId: params.runId,
+    sourceMessageId: params.sourceMessageId,
     sourceGeneration: params.operation.lifecycleGeneration ?? getAgentRunLifecycleGeneration(),
     commandOwnerReference: params.commandOwnerReference,
   };
@@ -62,6 +64,7 @@ export async function admitNativeFinalDeliveryPlan(params: {
     createdAt: Date.now(),
     intentId: reference.intentId,
     sourceRunId: reference.sourceRunId,
+    sourceMessageId: reference.sourceMessageId,
     sourceGeneration: reference.sourceGeneration,
     dispatchState: "open",
     deliveries,
@@ -97,6 +100,7 @@ export function nativeFinalDeliveryReference(
     deliveryId,
     sourceRunId,
     sourceGeneration,
+    sourceMessageId,
   } = completion;
   return {
     agentId,
@@ -107,8 +111,22 @@ export function nativeFinalDeliveryReference(
     deliveryId,
     sourceRunId,
     sourceGeneration,
+    ...(sourceMessageId ? { sourceMessageId } : {}),
   };
 }
+export function readNativeFinalReplySource(payload: ReplyPayload):
+  | {
+      sourceMessageId: string;
+      deliveryId: string;
+    }
+  | undefined {
+  const completion = getReplyPayloadMetadata(payload)?.pendingFinalDeliveryCompletion;
+  if (completion?.sourceMessageId) {
+    return { sourceMessageId: completion.sourceMessageId, deliveryId: completion.deliveryId };
+  }
+  return undefined;
+}
+
 export function registerNativeFinalDeliveryListener(
   listener: (reference: Plan) => Promise<void>,
 ): () => void {

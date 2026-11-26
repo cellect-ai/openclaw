@@ -21,6 +21,7 @@ import { readReplyAdmissionSession } from "./reply-input-placement.js";
 
 export type PendingReplyDelivery = {
   context?: DeliveryContext;
+  sourceMessageId?: string;
   deliveries: NonNullable<SessionEntry["pendingFinalDelivery"]>["deliveries"];
   intentId: string;
   text: string;
@@ -153,6 +154,7 @@ export function createReplyInputAdmission(params: {
               createdAt: Date.now(),
               intentId: delivery.intentId,
               deliveries: delivery.deliveries,
+              ...(delivery.sourceMessageId ? { sourceMessageId: delivery.sourceMessageId } : {}),
               ...(delivery.context ? { context: delivery.context } : {}),
             },
           };

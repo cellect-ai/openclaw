@@ -76,21 +76,6 @@ function projectPendingFinalDeliveryState(
     (current === "unknown" && input.state === "unknown");
   const settled = terminal ? current : input.state;
   const existingNotice = entry.pendingDeliveryNotice;
-  const owedNotice =
-    settled === "unknown" &&
-    pending.context &&
-    pending.intentId &&
-    existingNotice?.intentId !== pending.intentId &&
-    (!existingNotice || existingNotice.createdAt <= pending.createdAt)
-      ? {
-          pendingDeliveryNotice: {
-            createdAt: pending.createdAt,
-            context: pending.context,
-            intentId: pending.intentId,
-            state: "owed" as const,
-          },
-        }
-      : undefined;
   const result = evidence?.result;
   const platformMessageId = result?.platformMessageId?.trim();
   const context = pending.context;
@@ -123,9 +108,38 @@ function projectPendingFinalDeliveryState(
     state: settled,
     ...(receipt ? { receipt } : {}),
   });
+  const firstUnknown = updatedDeliveries.find(({ state }) => state === "unknown");
+  const unconfirmedId =
+    context?.channel === "matrix" && pending.sourceMessageId ? firstUnknown?.id : undefined;
+  const sameIntentNotice =
+    existingNotice?.intentId === pending.intentId ? existingNotice : undefined;
+  const owesReplacement =
+    unconfirmedId &&
+    sameIntentNotice?.deliveryId &&
+    !updatedDeliveries.some(
+      ({ id, state }) => id === sameIntentNotice.deliveryId && state === "unknown",
+    );
+  const owedNotice =
+    pending.context &&
+    pending.intentId &&
+    ((settled === "unknown" &&
+      !sameIntentNotice &&
+      (!existingNotice || existingNotice.createdAt <= pending.createdAt)) ||
+      owesReplacement)
+      ? {
+          pendingDeliveryNotice: {
+            createdAt: pending.createdAt,
+            context: pending.context,
+            intentId: pending.intentId,
+            ...(pending.sourceMessageId ? { sourceMessageId: pending.sourceMessageId } : {}),
+            ...(unconfirmedId ? { deliveryId: unconfirmedId } : {}),
+            state: "owed" as const,
+          },
+        }
+      : undefined;
   const clearsNotice =
     existingNotice?.state !== "acknowledged" &&
-    !updatedDeliveries.some((delivery) => delivery.state === "unknown") &&
+    !firstUnknown &&
     settled !== "queued" &&
     settled !== "unknown" &&
     existingNotice?.intentId === pending.intentId;

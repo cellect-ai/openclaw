@@ -22,21 +22,31 @@ import { asOptionalRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { chunkTextForOutbound } from "openclaw/plugin-sdk/text-chunking";
 import { resolveMatrixReplyPublication } from "./matrix/projection-publication.js";
 import {
+  MATRIX_REPLY_DELIVERY_KEY,
+  parseMatrixReplyDeliveryStatus,
+} from "./matrix/reply-delivery-status.js";
+import {
   editMessageMatrix,
   redactMessageMatrix,
   sendMessageMatrix,
   sendPollMatrix,
 } from "./matrix/send.js";
-import type { MatrixExtraContentFields } from "./matrix/send/types.js";
+import {
+  MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY,
+  MATRIX_STREAM_PHASE_CONTENT_KEY,
+  type MatrixExtraContentFields,
+} from "./matrix/send/types.js";
 import { matrixPresentationCapabilities } from "./presentation-capabilities.js";
 
 const MATRIX_OPENCLAW_PRESENTATION_KEY = "com.openclaw.presentation" as const;
 const MATRIX_OPENCLAW_PRESENTATION_TYPE = "message.presentation" as const;
 const MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY = "com.openclaw.voice_transcript" as const;
+const MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY = "ai.cellect.let_me_know_answer" as const;
 const MATRIX_EMPTY_PRESENTATION_FALLBACK_TEXT = "---";
 
 type MatrixChannelData = {
   editEventId?: string;
+  fallbackReplyToId?: string;
   /** Previous voice transcript to redact after this threaded replacement lands. */
   supersedeEventId?: string;
   extraContent?: MatrixExtraContentFields;
@@ -135,6 +145,12 @@ export function resolveMatrixExtraContent(
 ): MatrixExtraContentFields | undefined {
   const presentation = resolveMatrixPresentationContent(payload);
   const raw = asOptionalRecord(resolveMatrixChannelData(payload).extraContent);
+  const isFinalAnswer = raw?.[MATRIX_STREAM_PHASE_CONTENT_KEY] === "answer";
+  const answerTrigger = resolveReplyTrigger(raw?.[MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY]);
+  const replyTrigger = isFinalAnswer
+    ? resolveReplyTrigger(raw?.[MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY])
+    : undefined;
+  const deliveryId = asOptionalRecord(raw?.[MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY])?.deliveryId;
   const voice = asOptionalRecord(raw?.[MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]);
   const trustedVoice =
     voice?.version === 1 &&
@@ -188,14 +204,46 @@ export function resolveMatrixExtraContent(
             : {}),
         }
       : undefined;
-  if (!presentation && !trustedVoice && !trustedDecision) {
+  const trustedDelivery = parseMatrixReplyDeliveryStatus(raw?.[MATRIX_REPLY_DELIVERY_KEY]);
+  if (
+    !presentation &&
+    !trustedVoice &&
+    !trustedDecision &&
+    !trustedDelivery &&
+    !answerTrigger &&
+    !isFinalAnswer
+  ) {
     return undefined;
   }
   return {
     ...(presentation ? { [MATRIX_OPENCLAW_PRESENTATION_KEY]: presentation } : {}),
     ...(trustedVoice ? { [MATRIX_VOICE_TRANSCRIPT_CONTENT_KEY]: trustedVoice } : {}),
     ...(trustedDecision ? { "ai.cellect.card": trustedDecision } : {}),
+    ...(trustedDelivery
+      ? { msgtype: "m.notice", [MATRIX_REPLY_DELIVERY_KEY]: trustedDelivery }
+      : {}),
+    ...(answerTrigger ? { [MATRIX_LET_ME_KNOW_ANSWER_CONTENT_KEY]: answerTrigger } : {}),
+    ...(replyTrigger
+      ? {
+          [MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]: {
+            ...replyTrigger,
+            ...(typeof deliveryId === "string" && /^[0-9a-f-]{36}$/iu.test(deliveryId)
+              ? { deliveryId }
+              : {}),
+          },
+        }
+      : {}),
+    ...(isFinalAnswer ? { [MATRIX_STREAM_PHASE_CONTENT_KEY]: "answer" } : {}),
   };
+}
+
+function resolveReplyTrigger(value: unknown): { version: 1; triggerEventId: string } | undefined {
+  const marker = asOptionalRecord(value);
+  return marker?.version === 1 &&
+    typeof marker.triggerEventId === "string" &&
+    /^\$\S{1,254}$/u.test(marker.triggerEventId)
+    ? { version: 1, triggerEventId: marker.triggerEventId }
+    : undefined;
 }
 
 function resolveMatrixDeliveryProgress(
@@ -302,6 +350,8 @@ export const matrixOutbound: ChannelOutboundAdapter = {
       resolveOutboundSendDep<typeof sendMessageMatrix>(deps, "matrix") ?? sendMessageMatrix;
     const resolvedThreadId =
       threadId !== undefined && threadId !== null ? String(threadId) : undefined;
+    const targetRoomId = to.replace(/^(?:matrix:)?(?:room:|channel:)?/i, "");
+    const fallback = resolveMatrixChannelData(payload).fallbackReplyToId;
     const resolveReplyToId = createReplyToFanout({
       ...(replyToId != null ? { replyToId } : {}),
       ...(replyToIdSource !== undefined ? { replyToIdSource } : {}),
@@ -309,6 +359,8 @@ export const matrixOutbound: ChannelOutboundAdapter = {
     });
     const urls = resolveSendableOutboundReplyParts(payload).mediaUrls;
     const payloadText = resolveMatrixPayloadText(payload);
+    const { [MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]: terminalTrigger, ...firstContent } =
+      resolveMatrixExtraContent(payload) ?? {};
     const sendOptions = {
       cfg,
       mediaAccess,
@@ -354,17 +406,25 @@ export const matrixOutbound: ChannelOutboundAdapter = {
         ...sendOptions,
         mediaUrl,
         replyToId: resolveReplyToId(),
+        fallbackReplyToId:
+          resolvedThreadId && typeof fallback === "string" && /^\$\S{1,254}$/u.test(fallback)
+            ? fallback
+            : undefined,
         deliveryPartIndex: index,
         deliveryPartCount: urls.length || 1,
         publication: resolveMatrixReplyPublication(
           payload,
           accountId ?? undefined,
-          undefined,
+          targetRoomId.startsWith("!") ? targetRoomId : undefined,
           resolvedThreadId,
           index,
           index === (urls.length || 1) - 1,
         ),
-        extraContent: index === 0 ? resolveMatrixExtraContent(payload) : undefined,
+        extraContent:
+          index === 0 && Object.keys(firstContent).length > 0 ? firstContent : undefined,
+        ...(terminalTrigger && index === (urls.length || 1) - 1
+          ? { terminalExtraContent: { [MATRIX_REPLY_TO_TRIGGER_CONTENT_KEY]: terminalTrigger } }
+          : {}),
       });
     if (urls.length > 0) {
       const sentResults: Awaited<ReturnType<typeof sendMessageMatrix>>[] = [];

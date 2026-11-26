@@ -10,6 +10,7 @@ import { setReplyPayloadMetadata } from "../reply-payload.js";
 import type { ReplyPayload } from "../types.js";
 import {
   resolveReplyRunDeliveryContext,
+  resolveReplyDeliverySourceMessageId,
   resolveSourceReplyPolicy,
   scheduleFollowupDrainAfterReplyOperationClear,
   type RunReplyAgentParams,
@@ -273,11 +274,21 @@ async function executePreparedReplyAgentRunWithCompletion(
           if (!sourceReplyPolicy.suppressDelivery) {
             const pendingFinalDeliveryIntentId = crypto.randomUUID();
             const pendingFinalDeliveryDeliveryId = crypto.randomUUID();
+            const deliveryContext = resolveReplyRunDeliveryContext({
+              ...context,
+              sessionKey,
+              sessionEntry: activeSessionEntry,
+            });
+            const sourceMessageId = resolveReplyDeliverySourceMessageId(
+              context.sessionCtx,
+              deliveryContext,
+            );
             setReplyPayloadMetadata(hookReply, {
               pendingFinalDeliveryCompletion: {
                 agentId: followupRun.run.agentId,
                 deliveryId: pendingFinalDeliveryDeliveryId,
                 intentId: pendingFinalDeliveryIntentId,
+                sourceMessageId,
                 sessionId: replyOperation.sessionId,
                 sessionKey,
                 storePath,
@@ -287,11 +298,8 @@ async function executePreparedReplyAgentRunWithCompletion(
               text: hookFinalDeliveryText ?? "",
               intentId: pendingFinalDeliveryIntentId,
               deliveries: [{ id: pendingFinalDeliveryDeliveryId, state: "prepared" }],
-              context: resolveReplyRunDeliveryContext({
-                ...context,
-                sessionKey,
-                sessionEntry: activeSessionEntry,
-              }),
+              context: deliveryContext,
+              sourceMessageId,
             });
           }
         }

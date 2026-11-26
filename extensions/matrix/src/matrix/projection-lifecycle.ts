@@ -30,6 +30,15 @@ export function startMatrixProjectionLifecycle(api: OpenClawPluginApi) {
   }
   const handle = api.runtime.events.registerConversationLifecycleTransport({
     transportId: "matrix-conversation-v2",
+    onSlowPublish: (detail) => {
+      const { roomId, revision, ...durations } = detail;
+      const fields = Object.entries(durations).flatMap(([name, value]) =>
+        value === undefined ? [] : [`${name}=${Math.round(value)}`],
+      );
+      api.logger.warn(
+        `matrix: slow lifecycle publish room=${roomId} revision=${revision} ${fields.join(" ")}`,
+      );
+    },
     async onRetiredProducer(source, assertRetired) {
       const { retireMatrixSourceFinalPlans } = await import("./projection-source-result.js");
       assertRetired();

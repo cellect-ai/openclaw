@@ -527,3 +527,12 @@ describe("native business decision-card transport", () => {
     }
   });
 });
+
+it("preserves the earlier request identity on a Matrix delivery status", () => {
+  const status = { version: 1, state: "uncertain", triggerEventId: "$earlier" };
+  expect(
+    resolveMatrixExtraContent({
+      channelData: { matrix: { extraContent: { "ai.cellect.reply_delivery": status } } },
+    }),
+  ).toEqual({ msgtype: "m.notice", "ai.cellect.reply_delivery": status });
+});

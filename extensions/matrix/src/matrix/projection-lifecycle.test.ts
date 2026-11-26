@@ -605,7 +605,7 @@ describe("Matrix canonical binding held by another gateway", () => {
   });
   it("dispatches a run in another thread of the room without admitting it", async () => {
     await relate();
-    await expect(admit("$elsewhere")).resolves.toBeUndefined();
+    await expect(admit("$elsewhere")).resolves.toBe(false);
     expect(resolve()).toEqual([]);
   });
 });

@@ -296,6 +296,7 @@ const matrixChannelOutbound: ChannelOutboundAdapter = {
     durableFinal: {
       text: true,
       media: true,
+      payload: true,
       replyTo: true,
       thread: true,
       messageSendingHooks: true,
@@ -361,7 +362,7 @@ const matrixMessageAdapter = {
       afterCommit: true,
       reconcileUnknownSend: true,
     },
-    reconcileUnknownSendKinds: { text: true, media: true },
+    reconcileUnknownSendKinds: { text: true, media: true, payload: true },
     reconcileUnknownSend: async (ctx) =>
       await (await loadMatrixChannelRuntime()).reconcileMatrixUnknownSend(ctx),
     afterUnknownSendTerminal: async (ctx) =>

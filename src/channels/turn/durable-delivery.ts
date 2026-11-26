@@ -172,11 +172,19 @@ async function deliverInboundReplyWithMessageSendContext(
 
   try {
     // Final delivery is a new operation of the admitting Gateway, not of the completed model turn.
-    const deliver = (cfg: OpenClawConfig, assertCurrent?: () => void) =>
-      deliverAdmittedInboundReply({ ...input, cfg }, sendBatch, () => {
+    const deliver = async (cfg: OpenClawConfig, assertCurrent?: () => void) => {
+      const result = await deliverAdmittedInboundReply({ ...input, cfg }, sendBatch, () => {
         assertCurrent?.();
         input.assertDirectAdapterHandoff?.();
       });
+      if (result.status === "unsupported" && input.noDirectFallback) {
+        throw new PlatformMessageNotDispatchedError("Required final delivery is unavailable", {
+          cause: new Error(`durable transport: ${result.capability ?? result.reason}`),
+          retryable: false,
+        });
+      }
+      return result;
+    };
     const registry = getPluginRuntimeGatewayRequestScope()?.pluginRegistry;
     const owner = registry && getPluginRegistryGatewayOwner(registry);
     if (!registry || !owner) {

@@ -1,5 +1,10 @@
 import type { ConversationLifecyclePublication } from "./conversation-lifecycle.reducer.js";
 import type { ConversationProjectionBinding } from "./conversation-lifecycle.reducer.js";
+export type LifecycleWriteTiming = {
+  writerWaitMs: number;
+  workerWriteMs: number;
+  committedAt: number;
+};
 export type ConversationLifecycleTransportOptions = {
   transportId: string;
   resolveBindings: (
@@ -10,6 +15,18 @@ export type ConversationLifecycleTransportOptions = {
     event: ConversationLifecyclePublication,
     transactionId: string,
   ) => Promise<void>;
+  /** Slow successful publications only. Carries no message or event body. */
+  onSlowPublish?: (
+    detail: Readonly<{
+      roomId: string;
+      revision: number;
+      ageAtSendMs?: number;
+      writerWaitMs?: number;
+      workerWriteMs?: number;
+      committedToSendMs?: number;
+      matrixAckMs: number;
+    }>,
+  ) => void;
   /** Recovery may seal native final membership; the session worker owns the actual fence. */
   onRetiredProducer?: (
     source: Readonly<{

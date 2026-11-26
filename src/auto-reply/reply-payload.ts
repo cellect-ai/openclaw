@@ -313,6 +313,7 @@ export type ReplyPayloadMetadata = {
     intentId: string;
     recoveryRunId?: string;
     sourceRunId?: string;
+    sourceMessageId?: string;
     sourceGeneration?: string;
     sessionId: string;
     sessionKey: string;

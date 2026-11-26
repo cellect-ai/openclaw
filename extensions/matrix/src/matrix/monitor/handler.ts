@@ -15,7 +15,6 @@ import { getAgentScopedMediaLocalRoots } from "openclaw/plugin-sdk/media-local-r
 import { getGlobalHookRunner } from "openclaw/plugin-sdk/plugin-runtime";
 import { resolveInboundLastRouteSessionKey } from "openclaw/plugin-sdk/routing";
 import { resolvePinnedMainDmOwnerFromAllowlist } from "openclaw/plugin-sdk/security-runtime";
-import { prepareMatrixReplyPayload } from "../../outbound.js";
 import { isPollEventType } from "../poll-types.js";
 import {
   admitMatrixProjectionExecution,
@@ -341,29 +340,6 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
       });
       const { draftStream } = draftController;
       draftControllerRef = draftController;
-      const replyDispatcher = createMatrixReplyDispatcher({
-        cfg,
-        prefixOptions,
-        humanDelay: resolveHumanDelayConfig(cfg, _route.agentId),
-        typingCallbacks,
-        streaming,
-        draftStream,
-        draftController,
-        client,
-        roomId,
-        runtime,
-        replyToMode,
-        threadTarget,
-        replyToEventId: replyToEventId ?? undefined,
-        letMeKnowTriggerEventId,
-        sourceReply: sourceReplyAdmission
-          ? { sessionKey: sourceReplyAdmission.sessionKey, eventId: messageId }
-          : undefined,
-        accountId: _route.accountId,
-        mediaLocalRoots,
-        logVerboseMessage,
-      });
-      const { deliverReply, onReplyError, turnDispatcherOptions } = replyDispatcher;
       const pinnedMainDmOwner = isDirectMessage
         ? resolvePinnedMainDmOwnerFromAllowlist({
             dmScope: cfg.session?.dmScope,
@@ -376,8 +352,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         route: _route,
         sessionKey: _route.sessionKey,
       });
+      let durableProjection: boolean;
       try {
-        await admitMatrixProjectionExecution({
+        durableProjection = await admitMatrixProjectionExecution({
           core,
           cfg,
           client,
@@ -418,6 +395,30 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
         }
         throw err;
       }
+      const replyDispatcher = createMatrixReplyDispatcher({
+        cfg,
+        prefixOptions,
+        humanDelay: resolveHumanDelayConfig(cfg, _route.agentId),
+        typingCallbacks,
+        streaming,
+        draftStream,
+        draftController,
+        client,
+        roomId,
+        runtime,
+        replyToMode,
+        threadTarget,
+        replyToEventId: replyToEventId ?? undefined,
+        letMeKnowTriggerEventId,
+        sourceReply: sourceReplyAdmission
+          ? { sessionKey: sourceReplyAdmission.sessionKey, eventId: messageId }
+          : undefined,
+        accountId: _route.accountId,
+        mediaLocalRoots,
+        durableProjection,
+        logVerboseMessage,
+      });
+      const { deliverReply, onReplyError, turnDispatcherOptions } = replyDispatcher;
       const turnResultPromise = core.channel.inbound.run({
         channel: "matrix",
         accountId: _route.accountId,
@@ -492,7 +493,9 @@ export function createMatrixRoomMessageHandler(params: MatrixMonitorHandlerParam
             },
             delivery: {
               observeMessageSent: true,
-              preparePayload: prepareMatrixReplyPayload,
+              preparePayload: replyDispatcher.preparePayload,
+              durable: replyDispatcher.durable,
+              onDelivered: replyDispatcher.onDelivered,
               deliver: deliverReply,
               onError: (err, info) => onReplyError(err, info as Parameters<typeof onReplyError>[1]),
             },
