@@ -46,7 +46,8 @@ vi.mock("./send/client.js", () => ({
   ) => await run(client),
 }));
 
-vi.mock("./send/targets.js", () => ({
+vi.mock("./send/targets.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./send/targets.js")>()),
   resolveMatrixRoomId: vi.fn(async () => "!room:example.org"),
 }));
 
