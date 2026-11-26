@@ -1,5 +1,6 @@
 import { ErrorCodes } from "../../../packages/gateway-protocol/src/index.js";
 import { acquireSessionActorStorage } from "../../config/sessions/session-actor-storage-acquisition.js";
+import { CHAT_SESSION_STORAGE_ADMISSION_ENDED_MESSAGE } from "../../config/sessions/session-actor-storage-admission.js";
 import { runWithSessionActorStorage } from "../../config/sessions/session-actor-storage-binding.js";
 import { isIncognitoSessionKey } from "../../routing/session-key.js";
 import {
@@ -31,7 +32,7 @@ export async function runChatSendWithStorage(
   let retained = false;
   const assertCurrent = () => {
     if (!active) {
-      throw new Error("Chat session storage admission ended");
+      throw new Error(CHAT_SESSION_STORAGE_ADMISSION_ENDED_MESSAGE);
     }
   };
   const binding = await acquireSessionActorStorage(

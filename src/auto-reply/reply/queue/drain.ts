@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { runAgentHarnessBeforeMessageWriteHook } from "../../../agents/harness/hook-helpers.js";
 import { normalizeChatType } from "../../../channels/chat-type.js";
 import { compareChannelAdmissionParticipants } from "../../../channels/message-access/admission-evidence.js";
+import { runWithCurrentOrFreshSessionActorStorage } from "../../../config/sessions/session-actor-storage-readmission.js";
 import { racePromiseWithAbortSignal } from "../../../infra/abort-signal.js";
 import { channelRouteDedupeKey } from "../../../plugin-sdk/channel-route.js";
 import { PluginInstanceUnavailableError } from "../../../plugins/plugin-instance-error.js";
@@ -402,15 +403,17 @@ export function rememberFollowupDrainCallback(
       // after the request that triggered the drain has closed its own scope.
       await runWithGatewayDetachedWorkContinuation(
         () =>
-          runOutsideAdmittedGenerationScopes(() => {
-            entered = true;
-            // Consume this request; a kick during execution re-enables dispatch.
-            mailbox.dispatchEnabled = false;
-            // The retiring turn may wake this mailbox from its own async context.
-            return runWithSessionControllerCleanup(() =>
-              executeClaim(claim, runFollowup, admissionSessionRebind),
-            );
-          }),
+          runWithCurrentOrFreshSessionActorStorage(mailbox.key, () =>
+            runOutsideAdmittedGenerationScopes(() => {
+              entered = true;
+              // Consume this request; a kick during execution re-enables dispatch.
+              mailbox.dispatchEnabled = false;
+              // The retiring turn may wake this mailbox from its own async context.
+              return runWithSessionControllerCleanup(() =>
+                executeClaim(claim, runFollowup, admissionSessionRebind),
+              );
+            }),
+          ),
         "session:mailbox-turn",
       );
     } catch (error) {

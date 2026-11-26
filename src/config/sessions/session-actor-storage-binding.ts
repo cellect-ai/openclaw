@@ -52,7 +52,7 @@ export type SessionActorStorageScope = {
 
 const currentBinding = resolveGlobalSingleton(
   Symbol.for("openclaw.sessionActorStorageBinding"),
-  () => new AsyncLocalStorage<SessionActorStorageBinding>(),
+  () => new AsyncLocalStorage<SessionActorStorageBinding | undefined>(),
 );
 
 export function runWithSessionActorStorage<T>(
@@ -63,6 +63,14 @@ export function runWithSessionActorStorage<T>(
     throw new Error("Session storage binding requires a memory actor");
   }
   return currentBinding.run(binding, run);
+}
+
+/**
+ * Leave the inherited session-storage binding for this callback and for awaits
+ * it creates. AsyncLocalStorage.exit only covers the synchronous call.
+ */
+export function runWithoutSessionActorStorage<T>(run: () => T): T {
+  return currentBinding.run(undefined, run);
 }
 
 /** Borrow the selected actor for an exact logical session, never a native fallback. */
