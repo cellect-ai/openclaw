@@ -377,7 +377,7 @@ export default definePluginEntry({
       isAdminAgent: (agentId) =>
         agentId?.toLowerCase() === FI_ADMIN_DELEGATION_AGENT_ID &&
         agentId.toLowerCase() === configFromRuntime(api).adminAgentId.toLowerCase(),
-      provenToolRequester: adminDelegation.provenToolRequester,
+      provenToolRequester: (context) => adminDelegation.provenToolRequester(context, true),
     });
     const projectionConnection = () => {
       const config = configFromRuntime(api);

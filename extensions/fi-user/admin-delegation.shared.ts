@@ -100,7 +100,9 @@ export type DelegationDiagnosticReason =
   | "mint-reply-invalid"
   | "mint-held"
   | "mint-issued"
-  | "mint-request-failed";
+  | "mint-request-failed"
+  | "attachment-requester-unproven"
+  | "attachment-requester-route-unavailable";
 
 export type Arrivals = {
   senders: Set<string>;

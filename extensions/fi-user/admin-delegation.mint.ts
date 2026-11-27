@@ -527,27 +527,36 @@ export function createAdminDelegationMint(
    * that answers for them: the same proof a sandbox command needs for its
    * token, for a Fi call the plugin makes itself. Nothing when unproven.
    */
-  const provenToolRequester: RequesterProofReader = (ctx) => {
+  const provenToolRequester = (
+    ctx: Parameters<RequesterProofReader>[0],
+    reportAttachmentFailure = false,
+  ) => {
     const environment = ctx.hostHookFiEnvironment;
-    const proven = provenRequester(ctx, environment);
+    const proven = provenRequester(ctx, environment, reportAttachmentFailure);
     if (!proven || !environment) {
       return proven;
     }
     // A hook run is answered only by the Fi it named, whichever branch proved it.
     const route = withHookFiRoute(proven.connection, environment);
-    return route &&
+    if (
+      route &&
       route.baseUrl === proven.connection.baseUrl.replace(/\/+$/, "") &&
       route.brokerTokenEnv === proven.connection.brokerTokenEnv
-      ? proven
-      : undefined;
+    ) {
+      return proven;
+    }
+    if (reportAttachmentFailure) diagnose(ctx, "attachment-requester-route-unavailable");
+    return undefined;
   };
 
   const provenRequester = (
     ctx: Parameters<RequesterProofReader>[0],
     environment: "dev" | "staging" | "prod" | undefined,
+    reportAttachmentFailure: boolean,
   ): ReturnType<RequesterProofReader> => {
     const config = withHookFiRoute(configFromRuntime(api), environment);
     if (!config) {
+      if (reportAttachmentFailure) diagnose(ctx, "attachment-requester-route-unavailable");
       return undefined;
     }
     const agentId = ctx.agentId?.toLowerCase();
@@ -588,6 +597,22 @@ export function createAdminDelegationMint(
           requester: { ...channel, accountId: ctx.agentAccountId },
         }) !== run.voice)
     ) {
+      if (reportAttachmentFailure) {
+        diagnose(ctx, "attachment-requester-unproven", () => ({
+          tenantPresent: Boolean(config.tenantOrgId),
+          agentMatches: Boolean(agentId && agentId === config.adminAgentId.toLowerCase()),
+          sessionPresent: Boolean(sessionKey),
+          runPresent: Boolean(run),
+          runAgentMatches: Boolean(run && run.agentId === agentId),
+          runSessionMatches: Boolean(run && run.sessionKey === sessionKey),
+          requesterPresent: Boolean(requester),
+          requesterMatches: Boolean(requester && run?.sender === JSON.stringify(requester)),
+          senderPresent: Boolean(run?.sender),
+          adminActionSession: adminActionSessions.has(ctx.sessionKey ?? ""),
+          hasContinuation: Boolean(run?.continuation),
+          hasVoiceTurn: Boolean(run?.voice),
+        }));
+      }
       return undefined;
     }
     const isMailSource = Boolean(
@@ -597,6 +622,7 @@ export function createAdminDelegationMint(
       ? mailWakeConnection(config, ctx.hostMailWakeEnvironment)
       : undefined;
     if (isMailSource && !sourceConnection) {
+      if (reportAttachmentFailure) diagnose(ctx, "attachment-requester-route-unavailable");
       return undefined;
     }
     if ("requester_slack_user_id" in requester) {
@@ -624,6 +650,13 @@ export function createAdminDelegationMint(
             (ctx.messageChannel === "matrix" ? ctx.agentAccountId : undefined),
         )
       : matrixConnection(config, run.continuation?.accountId ?? ctx.agentAccountId);
+    if (!matrix && reportAttachmentFailure) {
+      diagnose(ctx, "attachment-requester-route-unavailable", () => ({
+        accountPresent: Boolean(ctx.agentAccountId),
+        sourceAccountPresent: Boolean(run.matrixOrigin?.accountId),
+        continuationAccountPresent: Boolean(run.continuation?.accountId),
+      }));
+    }
     return matrix
       ? {
           connection: { ...config, ...matrix, baseUrl: matrix.baseUrl.replace(/\/+$/, "") },

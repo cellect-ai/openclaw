@@ -33,12 +33,12 @@ export function createAdminDelegationDiagnostic(api: OpenClawPluginApi) {
       ) {
         return;
       }
-      // The existing SDK run owner bounds delivery and clears its two bits on
+      // The existing SDK run owner bounds delivery and clears its bits on
       // settlement. No diagnostic map, timer, writer, or token state is added.
       const namespace = "admin-delegation-diagnostics";
       const previous = api.runContext.getRunContext({ runId, namespace });
       const delivered = typeof previous === "number" ? previous : 0;
-      const bit = reason.startsWith("turn-") ? 1 : 2;
+      const bit = reason.startsWith("turn-") ? 1 : reason.startsWith("mint-") ? 2 : 4;
       if (
         (delivered & bit) !== 0 ||
         !api.runContext.setRunContext({ runId, namespace, value: delivered | bit })

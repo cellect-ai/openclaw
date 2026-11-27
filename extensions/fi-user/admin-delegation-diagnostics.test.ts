@@ -139,6 +139,52 @@ describe("opt-in admin delegation diagnostics", () => {
     }
   });
 
+  it("distinguishes a refused attachment handoff from a successful mint in the same run", async () => {
+    const turn = plugin({}, selected);
+    await turn.arrive(matrix.arrive);
+    await turn.start({ ...matrix.start, runId });
+    expect((await turn.exec({ ...matrix.exec, runId }))?.params.env?.FI_DELEGATED_USER_TOKEN).toBe(
+      TOKEN,
+    );
+    const handoff = turn.runtimeContext("matrix", "fi-file-artifacts") as {
+      capture(context: object, request: object): unknown;
+    };
+    const context = {
+      runId,
+      agentId: "cellect-fi-admin",
+      sessionKey: MATRIX_SESSION,
+      messageChannel: "matrix",
+      requesterSenderId: "@other:matrix.example",
+      agentAccountId: "adminprod",
+    };
+    const request = {
+      importTo: {
+        objectType: "project",
+        objectSlug: "fixture-project",
+        category: "correspondence",
+        dateDoc: "2026-11-27",
+      },
+    };
+    for (let count = 0; count < 2; count++) {
+      expect(() => handoff.capture(context, request)).toThrow("verified requester");
+    }
+    const rows = diagnostics(turn);
+    expect(rows.map((row) => row.reason)).toEqual([
+      "turn-admitted",
+      "mint-issued",
+      "attachment-requester-unproven",
+    ]);
+    expect(rows[2]).toMatchObject({
+      runPresent: true,
+      runSessionMatches: true,
+      senderPresent: true,
+      requesterPresent: true,
+      requesterMatches: false,
+    });
+    expect(JSON.stringify(rows)).not.toContain(context.requesterSenderId);
+    expect(mints()).toHaveLength(1);
+  });
+
   it("selects only the configured run and preserves successful admission", async () => {
     const turn = plugin({}, selected);
     await turn.arrive(matrix.arrive);
