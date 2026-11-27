@@ -127,8 +127,17 @@ export type Proof = {
   sourceAccountId?: string;
 };
 
-/** A run admitted for a verified Matrix reply in a Slack source session's projection. */
-export type MatrixOrigin = { matrixUserId: string; accountId?: string };
+/**
+ * A run admitted for a verified Matrix reply in a Slack source session's projection.
+ * `roomId` and `eventId` are the source guard's event. Fi requires that event on a
+ * Matrix mint, and a Slack session never records an entitlement turn for it.
+ */
+export type MatrixOrigin = {
+  matrixUserId: string;
+  accountId?: string;
+  roomId: string;
+  eventId: string;
+};
 
 /** Who a sandbox last ran a token-bearing command for, and until when that token lives. */
 export type Custody = {
@@ -221,6 +230,38 @@ export function matrixOriginRequester(
   return origin && !run.continuation && senderId?.trim() === origin.matrixUserId
     ? { requester_matrix_user_id: origin.matrixUserId }
     : undefined;
+}
+
+const SOURCE_TURN_ROOM = /^![^\s:]+(?::\S+)?$/;
+const SOURCE_TURN_EVENT = /^\$\S+$/;
+
+/**
+ * The admitted Matrix event of a source-session run, for a Fi mint.
+ * Entitlement turns are skipped for these sessions, so without this Fi
+ * answers `turn_required` and the command never runs. `markBrief` is a no-op:
+ * Fi still binds a Desk brief to the event, and this session has no
+ * entitlement turn to raise.
+ */
+export function matrixOriginTurn(
+  run: Run | undefined,
+): { roomId: string; eventId: string; senderId: string; markBrief(): void } | undefined {
+  const origin = run?.matrixOrigin;
+  if (
+    !origin ||
+    run.continuation ||
+    !SOURCE_TURN_ROOM.test(origin.roomId) ||
+    origin.roomId.length > 256 ||
+    !SOURCE_TURN_EVENT.test(origin.eventId) ||
+    origin.eventId.length > 256
+  ) {
+    return undefined;
+  }
+  return {
+    roomId: origin.roomId,
+    eventId: origin.eventId,
+    senderId: origin.matrixUserId,
+    markBrief() {},
+  };
 }
 
 /** Every use retains the exact host capability; copied identity fields prove nothing. */

@@ -255,7 +255,11 @@ describe("registered Fi-admin structured operation transport", () => {
       )
       .find((tool) => tool.name === "fi_admin_operation")!;
     await tool.execute("projected", { action: "discover" });
-    expect(mintBody()).toEqual({ requesterMatrixUserId: senderId, agentId: "cellect-fi-admin" });
+    expect(mintBody()).toEqual({
+      requesterMatrixUserId: senderId,
+      agentId: "cellect-fi-admin",
+      turn: { roomId, eventId },
+    });
   });
 
   it("refuses a Matrix environment changed while minting for the same person", async () => {

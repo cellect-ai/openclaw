@@ -20,6 +20,7 @@ import {
   remember,
   type Run,
   matrixOriginRequester,
+  matrixOriginTurn,
   continuationCurrent,
 } from "./admin-delegation.shared.js";
 import {
@@ -424,7 +425,9 @@ export function createAdminDelegationMint(
           agentId: FI_ADMIN_DELEGATION_AGENT_ID,
           mailWakeEnvironment: ctx.hostMailWakeEnvironment,
           signal: AbortSignal.timeout(budget),
-          ...("requesterMatrixUserId" in body ? { turn: delegationTurnFor(api, ctx) } : {}),
+          ...("requesterMatrixUserId" in body
+            ? { turn: delegationTurnFor(api, ctx) ?? matrixOriginTurn(run) }
+            : {}),
         }).then((delegation) =>
           delegation
             ? { token: delegation.fi?.token, expiresAt: delegation.fi?.expiresAt }
@@ -628,7 +631,7 @@ export function createAdminDelegationMint(
             requesterMatrixUserId: requester.requester_matrix_user_id,
             ...mailWakeDelegationContext(ctx),
           },
-          turn: delegationTurnFor(api, ctx),
+          turn: delegationTurnFor(api, ctx) ?? matrixOriginTurn(run),
         }
       : undefined;
   };

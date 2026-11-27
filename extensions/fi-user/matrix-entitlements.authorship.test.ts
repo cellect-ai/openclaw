@@ -740,6 +740,32 @@ describe("the turn a delegation is minted for", () => {
     expect(markBrief).toHaveBeenCalledOnce();
   });
 
+  it("the workbook transport sends the proven requester's source-session turn when the run recorded none", async () => {
+    const eventId = "$reply";
+    const sourceTurn = { roomId, eventId, senderId, markBrief: vi.fn() };
+    fetchMock.mockImplementation(async (url: string) =>
+      url === MINT ? mintResponse({ turn: { authorship: "person" } }) : allow(),
+    );
+    const transport = delegatedWorkbookTransport(
+      {} as never,
+      {
+        runId: "run-1",
+        agentId: "cellect-fi-admin",
+        sessionKey: "agent:cellect-fi-admin:slack:channel:c1:thread:1",
+        messageChannel: "slack",
+        assertInvocationCurrent: () => {},
+      } as never,
+      () => ({
+        connection: config as never,
+        body: { requesterMatrixUserId: senderId },
+        turn: sourceTurn,
+      }),
+    );
+    await transport!.authorize(new AbortController().signal);
+    expect(mintBodies()[0]?.turn).toEqual({ roomId, eventId });
+    expect(sourceTurn.markBrief).not.toHaveBeenCalled();
+  });
+
   it("an exchange outside Matrix sends no turn", async () => {
     const h = fixture();
     await h.reply(replyContext());
